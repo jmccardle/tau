@@ -139,7 +139,7 @@ class TestSubmitRefusesAForeignCaller:
         assert "different event loop" in message
         # Refused at the door: nothing was admitted, so the session is untouched.
         assert session.is_streaming is False
-        assert session._turn_lock.locked() is False
+        assert session.cursor.turn_lock.locked() is False
         assert session.session_log.entries() == before
 
     async def test_submit_from_a_plain_thread_with_no_loop_raises(self):

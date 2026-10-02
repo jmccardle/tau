@@ -256,17 +256,16 @@ async def test_set_auto_compaction_returns_the_live_tip_although_it_moves_nothin
 
 
 class _LeafReadWatcher(Cursor):
-    """A ``Cursor`` that records, for every read of ``leaf``, whether the
-    session's ``turn_lock`` was held at the time."""
+    """A ``Cursor`` that records, for every read of ``leaf``, whether its own
+    ``turn_lock`` — the one D-1's guard takes — was held at the time."""
 
-    def __init__(self, log: InMemorySessionLog, lock: asyncio.Lock) -> None:
+    def __init__(self, log: InMemorySessionLog) -> None:
         super().__init__(log, None)
-        self._lock = lock
         self.reads_while_locked: list[bool] = []
 
     @property
     def leaf(self) -> str | None:
-        self.reads_while_locked.append(self._lock.locked())
+        self.reads_while_locked.append(self.turn_lock.locked())
         return self._leaf
 
 
@@ -288,7 +287,7 @@ async def test_set_auto_compaction_reads_the_cursor_under_the_same_guard_as_the_
     which a later edit could silently undo: the response bytes are identical
     either way, so only an observer of WHEN the read happens can see it.
     """
-    watcher = _LeafReadWatcher(InMemorySessionLog(), real_session.turn_lock)
+    watcher = _LeafReadWatcher(InMemorySessionLog())
     real_session.cursor = watcher
 
     await real_handler._handle_request(

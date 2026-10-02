@@ -265,8 +265,8 @@ async def test_follow_up_reenters_within_same_prompt() -> None:
     assert session_users == ["go", "the follow up question"]
 
     # The queue is drained — no leftover follow-up, and none leaked to nextTurn.
-    assert session._pending_follow_up_messages == []
-    assert session._pending_next_turn_messages == []
+    assert session.cursor.follow_up_queue == []
+    assert session.cursor.next_turn_queue == []
 
 
 # ── nextTurn ─────────────────────────────────────────────────────────────────
@@ -299,12 +299,12 @@ async def test_next_turn_lands_on_the_next_prompt() -> None:
         await session.prompt("first")
 
     assert "saved for later" not in _user_texts(session.messages)
-    assert session._pending_next_turn_messages == ["saved for later"]
+    assert session.cursor.next_turn_queue == ["saved for later"]
 
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_fake_stream_text):
         returned = await session.prompt("second")
 
-    assert session._pending_next_turn_messages == []
+    assert session.cursor.next_turn_queue == []
     session_users = _user_texts(session.messages)
     assert "saved for later" in session_users
     # Order: the injected nextTurn message follows its triggering user turn.
@@ -326,9 +326,9 @@ async def test_queue_message_rejects_unknown_deliver_as() -> None:
     session = _make_session()
     with pytest.raises(ValueError, match="followUp"):
         session._queue_message("x", deliver_as="whenever")
-    assert session._pending_follow_up_messages == []
-    assert session._pending_next_turn_messages == []
-    assert session._pending_steer_messages == []
+    assert session.cursor.follow_up_queue == []
+    assert session.cursor.next_turn_queue == []
+    assert session.cursor.steer_queue == []
 
 
 async def test_queue_message_steer_lands_on_the_steering_queue() -> None:
@@ -342,9 +342,9 @@ async def test_queue_message_steer_lands_on_the_steering_queue() -> None:
     session = _make_session()
     session._queue_message("turn left", deliver_as="steer")
 
-    assert session._pending_follow_up_messages == []
-    assert session._pending_next_turn_messages == []
-    assert len(session._pending_steer_messages) == 1
-    queued = session._pending_steer_messages[0]
+    assert session.cursor.follow_up_queue == []
+    assert session.cursor.next_turn_queue == []
+    assert len(session.cursor.steer_queue) == 1
+    queued = session.cursor.steer_queue[0]
     assert queued.role == "user"
     assert queued.content[0].text == "turn left"

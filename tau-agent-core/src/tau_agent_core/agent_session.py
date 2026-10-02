@@ -20,6 +20,7 @@ import copy
 import hashlib
 import inspect
 import os
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from dataclasses import dataclass, replace
@@ -58,7 +59,7 @@ from tau_agent_core.session_log import (
     agent_spec_in_force,
     session_log_is_addressable,
 )
-from tau_agent_core.cursor import Cursor
+from tau_agent_core.cursor import TURN_CURSOR, Cursor
 from tau_agent_core.agent_loop import AgentLoop, completed_messages
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
@@ -571,6 +572,7 @@ class AgentSession:
             cursor = Cursor.newest(session_log)
         self._bus_available = bus_available
         self._cursor = cursor
+        self._cursors: dict[str, Cursor] = {cursor.id: cursor}
         self._model = model
         self._system_prompt = system_prompt
         self._tools: list[AgentTool] = tools or []
@@ -598,21 +600,15 @@ class AgentSession:
         self._loaded_extensions: dict[str, LoadedExtension] = {}
         self._disabled_paths: set[str] = set()
         self._extension_load_errors: list["ExtensionLoadError"] = []
-        self._is_streaming = False
-        self._abort_signal = AbortSignal()
-        self._turn_lock: asyncio.Lock = asyncio.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
             self._loop = None
         self._threadsafe_tasks: dict[str, asyncio.Task[Any]] = {}
-        self._pre_turn_leaf: str | None = None
         self._turn_token_counter: int = 0
-        self._current_turn_token: int | None = None
-        self._current_submission: Submission | None = None
-        self._turn_task: asyncio.Task[Any] | None = None
         self._forked_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._delivery_tasks: dict[str, asyncio.Task[Any]] = {}
         self._api_key = api_key
         self._reasoning = reasoning
         if compaction_policy is not None and compaction_settings is not None:
@@ -629,27 +625,17 @@ class AgentSession:
             self._compaction_settings = compaction_settings or DEFAULT_COMPACTION_SETTINGS
         self._policy_turns_used = 0
         self._model_resolver = model_resolver
-        self._last_usage: dict[str, Any] | None = None
 
         self._token_counter: TextCounter = counter_for(model, fallback=True)
         self._calibrator = ContextCalibrator()
         self._calibration_seen: set[tuple[int, int]] = set()
-        self._turn_persistence: _TurnPersistence | None = None
-        self._in_flight_context: list[dict[str, Any]] | None = None
         self._usage_valid_after = _newest_compaction_ms(self._cursor.entries())
 
         self._side_usage: dict[str, int] = zero_usage()
 
-        self._deferred_ops: list[dict[str, Any]] = []
-        self._pending_follow_up_messages: list[str] = []
-        self._pending_next_turn_messages: list[str] = []
-        self._pending_steer_messages: list[UserMessage] = []
-
         self._session_event_tasks: set[asyncio.Task[None]] = set()
 
         self._pending_agent_specs: list[dict[str, Any]] = []
-        self._persistence_settled = asyncio.Event()
-        self._persistence_settled.set()
 
         self._extension_api = self._make_extension_api()
         self._extension_runner = ExtensionRunner(context=self._extension_api.context)
@@ -766,7 +752,7 @@ class AgentSession:
         """
         pending, self._pending_agent_specs = self._pending_agent_specs, []
         for spec in pending:
-            await self._cursor.append_custom_entry("agent_spec", spec)
+            await self._turn_cursor().append_custom_entry("agent_spec", spec)
 
     @agent_facing(topic="sessions")
     async def start(self) -> None:
@@ -785,7 +771,7 @@ class AgentSession:
     @property
     def messages(self) -> list[dict[str, Any]]:
         """The model-input context at this session's cursor."""
-        return self._cursor.context()
+        return self._turn_cursor().context()
 
     @property
     def cursor(self) -> Cursor:
@@ -798,6 +784,60 @@ class AgentSession:
     @cursor.setter
     def cursor(self, cursor: Cursor) -> None:
         self._cursor = cursor
+        self._cursors[cursor.id] = cursor
+
+    def _turn_cursor(self) -> Cursor:
+        """The cursor the code running now acts on.
+
+        Inside a turn that is the turn's cursor (:data:`~tau_agent_core.cursor.TURN_CURSOR`),
+        which a hook or tool running in it inherits; anywhere else it is
+        :attr:`cursor`. A ``TURN_CURSOR`` belonging to another session is ignored.
+        """
+        cursor = TURN_CURSOR.get()
+        if cursor is not None and self._cursors.get(cursor.id) is cursor:
+            return cursor
+        return self._cursor
+
+    @property
+    def cursors(self) -> tuple[Cursor, ...]:
+        """Every live cursor on this session's trees, the head's included, oldest first."""
+        return tuple(self._cursors.values())
+
+    async def open_cursor(
+        self, at: str | None, *, owner: Cursor | None = None, label: str = ""
+    ) -> Cursor:
+        """Open a cursor at ``at`` on the head's tree, live until :meth:`close_cursor`.
+
+        ``owner`` is the cursor the new one answers to: aborting the owner aborts
+        it (:meth:`abort`). A ``cursor_open`` channel event announces it.
+
+        Raises:
+            ValueError: ``at`` names no entry.
+        """
+        cursor = Cursor(self._cursor.log, at, owner=owner, label=label)
+        self._cursors[cursor.id] = cursor
+        await self._events.emit_channel("cursor_open", cursor=cursor)
+        return cursor
+
+    async def close_cursor(self, cursor: Cursor) -> None:
+        """Retire ``cursor``; a ``cursor_close`` channel event announces it.
+
+        Raises:
+            ValueError: ``cursor`` is the head's, which a head swap replaces instead.
+            RuntimeError: a turn still holds it.
+        """
+        if cursor is self._cursor:
+            raise ValueError("close_cursor: the head's cursor is replaced, never closed")
+        if cursor.busy:
+            raise RuntimeError(f"close_cursor: cursor {cursor.id} is running a turn")
+        if self._cursors.pop(cursor.id, None) is not None:
+            await self._events.emit_channel("cursor_close", cursor=cursor)
+
+    def _registered(self, cursor: Cursor) -> Cursor:
+        """``cursor``, if this session opened it; raise rather than run a stranger's."""
+        if self._cursors.get(cursor.id) is not cursor:
+            raise ValueError(f"cursor {cursor.id} was not opened by this session")
+        return cursor
 
     @property
     def session_log(self) -> SessionLog:
@@ -810,20 +850,20 @@ class AgentSession:
 
     @session_log.setter
     def session_log(self, log: SessionLog) -> None:
-        self._cursor = Cursor.newest(log)
+        self.cursor = Cursor.newest(log)
 
     @property
     def state(self) -> SessionState:
         """Read-only access to session state. Identity is the session UUID (§4.2)."""
         return SessionState(
             session_id=self._cursor.session_id,
-            status="running" if self._is_streaming else "idle",
+            status="running" if self._cursor.is_streaming else "idle",
         )
 
     @property
     def is_streaming(self) -> bool:
         """Whether the agent loop is currently streaming."""
-        return self._is_streaming
+        return self._cursor.is_streaming
 
     @property
     def is_aborted(self) -> bool:
@@ -838,7 +878,7 @@ class AgentSession:
         so this is always "is the turn in flight right now aborted", never a
         stale answer from a turn that already finished.
         """
-        return self._abort_signal.is_aborted()
+        return self._cursor.abort_signal.is_aborted()
 
     @property
     def shutdown_requested(self) -> bool:
@@ -891,7 +931,7 @@ class AgentSession:
         events of its own, so nothing it does needs a credit the blocked writer
         would have to release.
         """
-        return self._persistence_settled
+        return self._cursor.persistence_settled
 
     @property
     def turn_lock(self) -> asyncio.Lock:
@@ -917,7 +957,7 @@ class AgentSession:
         session's own current turn task, or it deadlocks exactly as a reentrant
         ``submit()`` call would.
         """
-        return self._turn_lock
+        return self._cursor.turn_lock
 
     def get_model(self) -> dict[str, Any]:
         """The active model as ``{id, provider, context_window}`` (S45).
@@ -1042,7 +1082,7 @@ class AgentSession:
                 f"performed({mutation!r}) was handed a cursor in `data`. This method is "
                 "what puts it there, and two writers of one field is the drift it removes."
             )
-        cursor = self._cursor.leaf
+        cursor = self._turn_cursor().leaf
         returns = declared.returns or {}
         carries = "cursor" in returns.get("properties", {})
         return Performed(
@@ -1148,7 +1188,11 @@ class AgentSession:
         measured telemetry for every later reader. Same bug class as the
         ``SessionLog.entries()`` shallow copy.
         """
-        return copy.deepcopy(self._last_usage) if self._last_usage is not None else None
+        return (
+            copy.deepcopy(self._turn_cursor().last_usage)
+            if self._turn_cursor().last_usage is not None
+            else None
+        )
 
     def record_side_usage(self, usage: dict[str, int]) -> None:
         """Add an out-of-loop completion's tokens to the session's side ledger.
@@ -1297,7 +1341,7 @@ class AgentSession:
 
         model, api_key = self._summarizer()
         messages, usage = await summarize_and_navigate(
-            self._cursor,
+            self._turn_cursor(),
             target_id,
             model,
             api_key=api_key,
@@ -1316,7 +1360,7 @@ class AgentSession:
         Returns:
             A :class:`CompactionRecord`, or ``None`` if this path never compacted.
         """
-        for entry in reversed(self._cursor.tree().path()):
+        for entry in reversed(self._turn_cursor().tree().path()):
             if entry.get("type") != "compaction":
                 continue
             return CompactionRecord(
@@ -1364,7 +1408,7 @@ class AgentSession:
             return
         usage = message.get("usage")
         if isinstance(usage, dict):
-            self._last_usage = copy.deepcopy(usage)
+            self._turn_cursor().last_usage = copy.deepcopy(usage)
 
     def subscribe(self, handler: Callable[[AgentEvent], Any]) -> Callable[[], None]:
         """Subscribe to agent events. Returns unsubscribe function.
@@ -1495,6 +1539,7 @@ class AgentSession:
         (``"quit" | "reload" | "new" | "resume" | "fork"``).
         """
         await self._cancel_forked_tasks()
+        await self._cancel_task_registry(self._delivery_tasks)
         await self._cancel_task_registry(self._threadsafe_tasks)
         if not self._extension_runner.has_handlers("session_shutdown"):
             return
@@ -1758,8 +1803,8 @@ class AgentSession:
         Returns whether it moved anything — false in the ordinary case, where the
         extension held no lock.
         """
-        entries = self._cursor.entries()
-        request = request_at_cursor(entries, self._cursor.leaf)
+        entries = self._turn_cursor().entries()
+        request = request_at_cursor(entries, self._turn_cursor().leaf)
         if request is None or not request.lock or request.extension != path:
             return False
         # The REQUEST's parent, not the cursor's: the cursor may be a provenance node above it.
@@ -1768,7 +1813,7 @@ class AgentSession:
             None,
         )
         await self._flush_pending_agent_specs()
-        self._cursor.move(str(parent) if parent is not None else None)
+        self._turn_cursor().move(str(parent) if parent is not None else None)
         return True
 
     async def enable_extension(self, path: str) -> ExtensionActionResult:
@@ -1854,7 +1899,7 @@ class AgentSession:
         """
         return {} if self._max_turns is None else {"max_turns": self._max_turns}
 
-    async def _reserve_turn_or_reject(self) -> bool:
+    async def _reserve_turn_or_reject(self, cursor: Cursor) -> bool:
         """Reserve the in-flight-turn slot if free; ``False`` without blocking if not.
 
         The non-blocking half of admission's concurrency guard — LangGraph's
@@ -1870,9 +1915,9 @@ class AgentSession:
         calls out by name; the latter has no ``Submission``/``SubmissionResult``
         to carry a refusal through, so it turns a ``False`` here into a raise.
         """
-        if self._turn_lock.locked():
+        if cursor.turn_lock.locked():
             return False
-        await self._turn_lock.acquire()
+        await cursor.turn_lock.acquire()
         return True
 
     # -- Task marshalling (docs/SUBMISSION-LIFECYCLE.md phase 4) --------------
@@ -2168,32 +2213,27 @@ class AgentSession:
             )
 
     def _stamp_event(self, event: AgentEvent) -> AgentEvent:
-        """Attach :attr:`_current_submission`'s provenance to ``event``.
+        """Attach the turn's cursor and its submission's provenance to ``event``.
 
         docs/SUBMISSION-LIFECYCLE.md "Provenance on events" — Jupyter's
-        ``parent_header``: a *copy* of the causing submission's identity, carried
-        onto every event so a renderer can decide HOW to show a turn without the
-        core knowing any renderer exists. ``event.model_copy`` because
-        :class:`AgentEvent` is a plain (non-frozen) pydantic model shared with
-        whatever emitted it — mutating it in place would be visible to that
-        caller too, which is not this method's business.
-
-        Returns ``event`` UNCHANGED when no submission is current (e.g.
-        ``continue_conversation()``, which does not set
-        :attr:`_current_submission`) — an honest "nothing to attribute this to",
-        not four fabricated ``None``s indistinguishable from the real default.
+        ``parent_header``: a *copy* of the causing submission's identity, so a
+        renderer decides HOW to show a turn without the core knowing any renderer
+        exists. ``cursor_id`` says WHICH turn, now that several run at once
+        (docs/CURSORS.md §6). A copy, because :class:`AgentEvent` is shared with
+        whatever emitted it. The four submission fields stay unset for a turn
+        no submission drove (``continue_conversation()``), rather than fabricated.
         """
-        sub = self._current_submission
-        if sub is None:
-            return event
-        return event.model_copy(
-            update={
-                "submission_id": sub.submission_id,
-                "source": sub.source,
-                "submitter": sub.submitter,
-                "correlation": dict(sub.correlation),
-            }
-        )
+        cursor = self._turn_cursor()
+        update: dict[str, Any] = {"cursor_id": cursor.id}
+        sub = cursor.submission
+        if sub is not None:
+            update.update(
+                submission_id=sub.submission_id,
+                source=sub.source,
+                submitter=sub.submitter,
+                correlation=dict(sub.correlation),
+            )
+        return event.model_copy(update=update)
 
     async def _emit_stamped(self, event: AgentEvent) -> None:
         """The ``emit=`` callable a submission-driven turn's :class:`AgentLoop` gets.
@@ -2301,7 +2341,7 @@ class AgentSession:
             dispatched = dispatch_builtin(
                 invocation.name,
                 invocation.args,
-                cursor=self._cursor.leaf,
+                cursor=self._turn_cursor().leaf,
                 vocabulary=vocabulary,
             )
             if isinstance(dispatched, Ready) and invocation.origin == "extension":
@@ -2376,8 +2416,14 @@ class AgentSession:
         *,
         context: list[dict[str, Any]] | None = None,
         on_admitted: Callable[[], None] | None = None,
+        cursor: Cursor | None = None,
     ) -> SubmissionResult:
         """The single admission point every input source funnels through.
+
+        ``cursor`` is the position the turn extends: :attr:`cursor` by default, or
+        any cursor this session opened (:meth:`open_cursor`). Every strategy below
+        acts on that cursor's own lock, queues and abort signal, so turns on two
+        cursors run concurrently (docs/CURSORS.md §2).
 
         Reference: docs/SUBMISSION-LIFECYCLE.md, "The one door" (phase 1, part 2).
         TUI, headless, RPC, the SDK, and every extension are meant to converge on
@@ -2657,6 +2703,7 @@ class AgentSession:
                 is the part that exists today and is not affected.
         """
         self._bind_or_check_loop("submit()")
+        cur = self._cursor if cursor is None else self._registered(cursor)
 
         depth = next_submission_depth(sub.depth)
         if depth != sub.depth:
@@ -2673,7 +2720,7 @@ class AgentSession:
                 "automatically'."
             )
 
-        if self._turn_task is not None and asyncio.current_task() is self._turn_task:
+        if cur.turn_task is not None and asyncio.current_task() is cur.turn_task:
             raise RuntimeError(
                 "submit(): reentrant self-submission. This call is running on "
                 "the same asyncio task as the turn currently in flight on this "
@@ -2708,16 +2755,16 @@ class AgentSession:
             )
 
         if sub.multitask_strategy == "reject":
-            if not await self._reserve_turn_or_reject():
+            if not await self._reserve_turn_or_reject(cur):
                 return SubmissionResult(
                     accepted=False,
                     submission_id=sub.submission_id,
                     rejection_reason="a turn is already in flight",
                 )
         elif sub.multitask_strategy == "enqueue":
-            await self._turn_lock.acquire()
+            await cur.turn_lock.acquire()
         elif sub.multitask_strategy == "steer":
-            if not await self._reserve_turn_or_reject():
+            if not await self._reserve_turn_or_reject(cur):
                 steer_depth_token = DRIVING_SUBMISSION_DEPTH.set(sub.depth)
                 steer_input_token = SUBMISSION_ALLOWS_USER_INPUT.set(sub.allow_user_input)
                 try:
@@ -2727,19 +2774,19 @@ class AgentSession:
                     SUBMISSION_ALLOWS_USER_INPUT.reset(steer_input_token)
                 if early is not None:
                     return early
-                self._pending_steer_messages.append(self._queued_content_to_user(text, images))
+                cur.steer_queue.append(self._queued_content_to_user(text, images))
                 return SubmissionResult(accepted=True, submission_id=sub.submission_id, messages=[])
         elif sub.multitask_strategy == "rollback":
-            was_in_flight = self._turn_lock.locked()
-            rollback_target = self._pre_turn_leaf
-            aborted_token = self._current_turn_token
+            was_in_flight = cur.turn_lock.locked()
+            rollback_target = cur.pre_turn_leaf
+            aborted_token = cur.turn_token
             if was_in_flight:
-                self._abort_signal.abort()
-                self._pending_steer_messages.clear()
-            await self._turn_lock.acquire()
+                cur.abort_signal.abort()
+                cur.steer_queue.clear()
+            await cur.turn_lock.acquire()
             if was_in_flight:
-                if rollback_target is None or self._current_turn_token != aborted_token:
-                    self._turn_lock.release()
+                if rollback_target is None or cur.turn_token != aborted_token:
+                    cur.turn_lock.release()
                     return SubmissionResult(
                         accepted=False,
                         submission_id=sub.submission_id,
@@ -2752,10 +2799,10 @@ class AgentSession:
                             "aborted turn's"
                         ),
                     )
-                self._cursor.move(rollback_target)
+                cur.move(rollback_target)
         elif sub.multitask_strategy == "fork":
-            fork_point = self._cursor.leaf
-            reason = self._cursor.tree().fork_admission_reason(fork_point)
+            fork_point = cur.leaf
+            reason = cur.tree().fork_admission_reason(fork_point)
             if reason is not None:
                 return SubmissionResult(
                     accepted=False, submission_id=sub.submission_id, rejection_reason=reason
@@ -2775,19 +2822,19 @@ class AgentSession:
 
         depth_token = DRIVING_SUBMISSION_DEPTH.set(sub.depth)
         user_input_token = SUBMISSION_ALLOWS_USER_INPUT.set(sub.allow_user_input)
+        cursor_token = TURN_CURSOR.set(cur)
         try:
-            self._current_submission = sub
-            self._turn_task = asyncio.current_task()
+            cur.submission = sub
+            cur.turn_task = asyncio.current_task()
 
             self._turn_token_counter += 1
-            self._current_turn_token = self._turn_token_counter
+            cur.turn_token = self._turn_token_counter
             if self._submission_runs_a_turn(sub):
                 await self._flush_pending_agent_specs()
-            self._pre_turn_leaf = self._cursor.leaf
+            cur.pre_turn_leaf = cur.leaf
 
-            self._is_streaming = True
-            self._abort_signal = AbortSignal()
-            self._extension_api.context._signal = self._abort_signal
+            cur.is_streaming = True
+            cur.abort_signal = AbortSignal()
 
             original_text = sub.text
             text, images, early = await self._apply_input_pipeline(sub)
@@ -2811,8 +2858,8 @@ class AgentSession:
                 self._policy_turns_used += 1
                 self._compaction_policy.admit_turn(self._policy_turns_used)
 
-            next_turn = self._pending_next_turn_messages
-            self._pending_next_turn_messages = []
+            next_turn = cur.next_turn_queue
+            cur.next_turn_queue = []
             queued = [self._queued_content_to_user(c) for c in next_turn]
 
             side_usage_before = self.side_usage
@@ -2848,12 +2895,13 @@ class AgentSession:
                 )
 
         finally:
-            self._is_streaming = False
-            self._current_submission = None
-            self._turn_task = None
+            cur.is_streaming = False
+            cur.submission = None
+            cur.turn_task = None
+            TURN_CURSOR.reset(cursor_token)
             DRIVING_SUBMISSION_DEPTH.reset(depth_token)
             SUBMISSION_ALLOWS_USER_INPUT.reset(user_input_token)
-            self._turn_lock.release()
+            cur.turn_lock.release()
 
     def _spawn_fork(self, sub: Submission, fork_point: str | None) -> None:
         """Schedule a ``multitask_strategy="fork"`` submission as a supervised task.
@@ -2917,6 +2965,83 @@ class AgentSession:
             self._surface_extension_error(
                 ExtensionError(
                     extension_path=f"fork:{submission_id}", event="fork", error=str(error)
+                )
+            )
+
+    def deliver_queued(self, cursor: Cursor) -> None:
+        """Run what ``cursor`` still holds as turns on its own tree, then close it.
+
+        For a cursor no head is attached to any more — the one a head swap left
+        behind (docs/CURSORS.md §8). Its accepted messages are delivered where they
+        were aimed, the way a sub-agent's turn runs with nobody watching, rather
+        than discarded. Supervised: :meth:`emit_session_shutdown` cancels it, and
+        :meth:`wait_for_deliveries` awaits it.
+
+        Raises:
+            ValueError: ``cursor`` is the head's, or this session did not open it.
+        """
+        if self._registered(cursor) is self._cursor:
+            raise ValueError("deliver_queued: the head's cursor delivers through its own turns")
+        task = asyncio.get_running_loop().create_task(self._deliver_queued(cursor))
+        self._delivery_tasks[cursor.id] = task
+        task.add_done_callback(lambda t: self._on_delivery_done(cursor.id, t))
+
+    async def wait_for_deliveries(self) -> None:
+        """Await every :meth:`deliver_queued` still running."""
+        while self._delivery_tasks:
+            await asyncio.gather(*list(self._delivery_tasks.values()), return_exceptions=True)
+
+    async def _deliver_queued(self, cursor: Cursor) -> None:
+        """Drain ``cursor``'s queues, one submission per turn, then close it.
+
+        Waits out a turn already holding the cursor first; a submission that
+        reached the cursor just before a head swap still runs. Each turn takes the oldest next-turn or follow-up text as its prompt; the
+        submission it drives drains the rest the ordinary way (next-turn texts beside
+        its user node, steers before its first call, follow-ups at its end). A cursor
+        holding only steers turns the first into the prompt. The queues keep no
+        submitter, so these turns are attributed to ``cursor:<id>``.
+        """
+        while True:
+            async with cursor.turn_lock:
+                pass
+            if not cursor.has_queued:
+                break
+            if cursor.next_turn_queue:
+                text, images = cursor.next_turn_queue.pop(0), None
+            elif cursor.follow_up_queue:
+                text, images = cursor.follow_up_queue.pop(0), None
+            else:
+                steer = cursor.steer_queue.pop(0)
+                blocks = list(getattr(steer, "content", []) or [])
+                text = "".join(
+                    getattr(b, "text", "") for b in blocks if getattr(b, "type", "") == "text"
+                )
+                images = [
+                    b.model_dump() for b in blocks if getattr(b, "type", "") == "image"
+                ] or None
+            await self.submit(
+                Submission(
+                    text=text,
+                    images=images,
+                    source="extension",
+                    submitter=f"cursor:{cursor.id}",
+                    submission_id=uuid.uuid4().hex,
+                    multitask_strategy="enqueue",
+                ),
+                cursor=cursor,
+            )
+        await self.close_cursor(cursor)
+
+    def _on_delivery_done(self, cursor_id: str, task: asyncio.Task[Any]) -> None:
+        """Untrack a finished delivery; surface an unexpected exception (Fail-Early)."""
+        self._delivery_tasks.pop(cursor_id, None)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            self._surface_extension_error(
+                ExtensionError(
+                    extension_path=f"deliver:{cursor_id}", event="deliver_queued", error=str(error)
                 )
             )
 
@@ -3145,9 +3270,9 @@ class AgentSession:
             emit=self._emit_stamped,
             tools=self._build_turn_tools(),
             model=self._model,
-            abort_signal=self._abort_signal,
+            abort_signal=self._turn_cursor().abort_signal,
             hook_dispatcher=self._extension_runner,
-            steer_queue=self._pending_steer_messages,
+            steer_queue=self._turn_cursor().steer_queue,
             mid_turn_compactor=self._compact_mid_turn,
         )
 
@@ -3160,10 +3285,10 @@ class AgentSession:
             turn_messages=turn_messages,
             persist=persist,
         )
-        self._turn_persistence = turn
+        self._turn_cursor().turn_persistence = turn
 
         # Cleared BEFORE loop.run, because loop.run is what emits agent_end.
-        self._persistence_settled.clear()
+        self._turn_cursor().persistence_settled.clear()
         try:
             try:
                 final_messages = await loop.run(
@@ -3184,9 +3309,9 @@ class AgentSession:
                 final_messages[turn.loop_written :], turn_messages, persist=persist
             )
         finally:
-            self._turn_persistence = None
-            self._in_flight_context = None
-            self._persistence_settled.set()
+            self._turn_cursor().turn_persistence = None
+            self._turn_cursor().in_flight_context = None
+            self._turn_cursor().persistence_settled.set()
 
         return turn_messages
 
@@ -3235,25 +3360,27 @@ class AgentSession:
             await self._flush_pending_agent_specs()
         for pre_msg in pre_user_messages:
             if persist:
-                await self._cursor.append_custom_message(
+                await self._turn_cursor().append_custom_message(
                     pre_msg, custom_type=str(pre_msg["customType"])
                 )
             turn_messages.append(pre_msg)
 
         user_dict = user_msg.model_dump()
         if persist:
-            await self._cursor.append_message(user_dict)
+            await self._turn_cursor().append_message(user_dict)
         turn_messages.append(user_dict)
 
         for qmsg in queued:
             qdict = qmsg.model_dump()
             if persist:
-                await self._cursor.append_message(qdict)
+                await self._turn_cursor().append_message(qdict)
             turn_messages.append(qdict)
 
         for cmsg in post_user_messages:
             if persist:
-                await self._cursor.append_custom_message(cmsg, custom_type=str(cmsg["customType"]))
+                await self._turn_cursor().append_custom_message(
+                    cmsg, custom_type=str(cmsg["customType"])
+                )
             turn_messages.append(cmsg)
 
     async def _end_of_prompt_drain(self, turn_messages: list[dict[str, Any]]) -> None:
@@ -3277,8 +3404,8 @@ class AgentSession:
         await self._maybe_auto_compact()
         await self._drain_deferred_ops()
 
-        while self._pending_follow_up_messages:
-            follow_up = self._pending_follow_up_messages.pop(0)
+        while self._turn_cursor().follow_up_queue:
+            follow_up = self._turn_cursor().follow_up_queue.pop(0)
             follow_up_messages = await self._run_one_turn(follow_up, None, None)
             turn_messages.extend(follow_up_messages)
             await self._maybe_auto_compact()
@@ -3318,7 +3445,9 @@ class AgentSession:
         )
         for raw in injected:
             node = self._custom_message_node(raw, hook="user_turn_end")
-            await self._cursor.append_custom_message(node, custom_type=str(node["customType"]))
+            await self._turn_cursor().append_custom_message(
+                node, custom_type=str(node["customType"])
+            )
             turn_messages.append(node)
 
     async def continue_conversation(self) -> list[dict[str, Any]]:
@@ -3342,7 +3471,8 @@ class AgentSession:
         Returns:
             List of messages produced by the agent loop.
         """
-        if not await self._reserve_turn_or_reject():
+        cur = self._cursor
+        if not await self._reserve_turn_or_reject(cur):
             raise RuntimeError(
                 "continue_conversation(): a turn is already in flight on this "
                 "session. This is one of the two admission-guarded doors "
@@ -3353,17 +3483,17 @@ class AgentSession:
                 "and this method does not."
             )
 
-        self._is_streaming = True
-        self._abort_signal = AbortSignal()
-        self._extension_api.context._signal = self._abort_signal
-        self._turn_task = asyncio.current_task()
+        cursor_token = TURN_CURSOR.set(cur)
+        cur.is_streaming = True
+        cur.abort_signal = AbortSignal()
+        cur.turn_task = asyncio.current_task()
         self._turn_token_counter += 1
-        self._current_turn_token = self._turn_token_counter
-        # Before the leaf is read: the record belongs ahead of the turn, not in it.
-        await self._flush_pending_agent_specs()
-        self._pre_turn_leaf = self._cursor.leaf
-
+        cur.turn_token = self._turn_token_counter
         try:
+            # Before the leaf is read: the record belongs ahead of the turn, not in it.
+            await self._flush_pending_agent_specs()
+            cur.pre_turn_leaf = cur.leaf
+
             # Get existing messages from session for context
             context_messages = self.messages
 
@@ -3380,12 +3510,12 @@ class AgentSession:
             # Create and run the agent loop (continuation mode)
             loop = AgentLoop(
                 config=config,
-                emit=self._events.emit,
+                emit=self._emit_stamped,
                 tools=self._build_turn_tools(),
                 model=self._model,
-                abort_signal=self._abort_signal,
+                abort_signal=cur.abort_signal,
                 hook_dispatcher=self._extension_runner,
-                steer_queue=self._pending_steer_messages,
+                steer_queue=cur.steer_queue,
             )
 
             # Run the loop — handles LLM call, tool execution, re-tries
@@ -3399,9 +3529,10 @@ class AgentSession:
             return turn_messages
 
         finally:
-            self._is_streaming = False
-            self._turn_task = None
-            self._turn_lock.release()
+            cur.is_streaming = False
+            cur.turn_task = None
+            TURN_CURSOR.reset(cursor_token)
+            cur.turn_lock.release()
 
     async def compact(self, custom_instructions: str | None = None) -> CompactionResult | None:
         """Compact the active conversation into an LLM-generated summary.
@@ -3522,7 +3653,7 @@ class AgentSession:
         were spent and no text was produced, so a start with no end would leave
         every renderer holding an open box forever.
         """
-        path_entries = self._cursor.tree().context_entries()
+        path_entries = self._turn_cursor().tree().context_entries()
         if not any(e.get("type") in ("message", "customMessage") for e in path_entries):
             return None
         preparation = prepare_compaction(path_entries, self._compaction_settings)
@@ -3544,7 +3675,7 @@ class AgentSession:
         self._usage_valid_after = self._timestamp()
         covered = _covered_span(path_entries, result.first_kept_entry_id)
         await self._flush_pending_agent_specs()
-        await self._cursor.append_compaction(
+        await self._turn_cursor().append_compaction(
             summary=result.summary,
             first_kept_id=result.first_kept_entry_id,
             tokens_before=result.tokens_before,
@@ -3552,7 +3683,9 @@ class AgentSession:
             summary_usage=result.usage,
             covered_entries=len(covered),
             covered_tokens=estimate_span_tokens(covered),
-            agent_spec_id=agent_spec_in_force(self._cursor.entries(), self._cursor.leaf),
+            agent_spec_id=agent_spec_in_force(
+                self._turn_cursor().entries(), self._turn_cursor().leaf
+            ),
         )
         return result
 
@@ -3615,10 +3748,11 @@ class AgentSession:
         tokenizer or the character classes produced it, and whether the
         chat-template framing is inside it.
         """
+        in_flight = self._turn_cursor().in_flight_context
         if messages is not None:
             path = messages
-        elif self._in_flight_context is not None:
-            path = self._in_flight_context
+        elif in_flight is not None:
+            path = in_flight
         else:
             path = self.messages
         self._observe_calibration(path)
@@ -3654,13 +3788,13 @@ class AgentSession:
         if context_window <= 0:
             return None
 
-        turn = self._turn_persistence
+        turn = self._turn_cursor().turn_persistence
         if turn is None:
             return None
 
         unwritten = [self._as_message_dict(m) for m in produced[turn.loop_written :]]
         path = [*self.messages, *[m for m in unwritten if m is not None]]
-        self._in_flight_context = path
+        self._turn_cursor().in_flight_context = path
         estimate = self.context_estimate(path)
         if not must_compact(estimate.tokens, context_window, self._compaction_settings):
             return None
@@ -3677,7 +3811,7 @@ class AgentSession:
         finally:
             await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
         compacted = list(self.messages)
-        self._in_flight_context = compacted
+        self._turn_cursor().in_flight_context = compacted
         return compacted
 
     @staticmethod
@@ -3753,11 +3887,11 @@ class AgentSession:
         additively (decision 5).
         """
         if deliver_as == "followUp":
-            self._pending_follow_up_messages.append(content)
+            self._turn_cursor().follow_up_queue.append(content)
         elif deliver_as == "nextTurn":
-            self._pending_next_turn_messages.append(content)
+            self._turn_cursor().next_turn_queue.append(content)
         elif deliver_as == "steer":
-            self._pending_steer_messages.append(self._queued_content_to_user(content))
+            self._turn_cursor().steer_queue.append(self._queued_content_to_user(content))
         else:
             raise ValueError(
                 "_queue_message: deliver_as must be 'followUp', 'nextTurn' or "
@@ -3766,11 +3900,15 @@ class AgentSession:
 
     def _defer_compact(self, custom_instructions: str | None = None) -> None:
         """Record a deferred compaction intent (drained at prompt()'s tail, S20)."""
-        self._deferred_ops.append({"kind": "compact", "custom_instructions": custom_instructions})
+        self._turn_cursor().deferred_ops.append(
+            {"kind": "compact", "custom_instructions": custom_instructions}
+        )
 
     def _defer_fork(self, entry_id: str | None = None, mode: str = "in_place") -> None:
         """Record a deferred fork intent (drained at prompt()'s tail, S20)."""
-        self._deferred_ops.append({"kind": "fork", "entry_id": entry_id, "mode": mode})
+        self._turn_cursor().deferred_ops.append(
+            {"kind": "fork", "entry_id": entry_id, "mode": mode}
+        )
 
     async def _drain_deferred_ops(self) -> None:
         """Apply the recorded deferred compact/fork intents exactly once.
@@ -3781,10 +3919,10 @@ class AgentSession:
         the immediate paths (``compact`` / ``ctx.fork``); Fail-Early on an unknown
         kind rather than silently dropping it.
         """
-        if not self._deferred_ops:
+        if not self._turn_cursor().deferred_ops:
             return
-        ops = self._deferred_ops
-        self._deferred_ops = []
+        ops = self._turn_cursor().deferred_ops
+        self._turn_cursor().deferred_ops = []
         ctx = self._extension_api.context
         for op in ops:
             kind = op["kind"]
@@ -3817,8 +3955,13 @@ class AgentSession:
             }
         )
 
-    def abort(self) -> None:
-        """Abort the current agent turn, and every still-running forked branch.
+    def abort(self, cursor: Cursor | None = None) -> None:
+        """Abort ``cursor``'s turn, every cursor it owns, and every still-running forked branch.
+
+        ``cursor`` defaults to the one the caller acts on (:meth:`_turn_cursor`).
+        Owned cursors are aborted first, deepest first, so a sub-agent stops before
+        the turn that spawned it (docs/CURSORS.md §6). Each loses its queued steers:
+        the turn they were aimed at is gone.
 
         A ``multitask_strategy="fork"`` submission's second agent is a REAL
         ``AgentSession``, but not one an ``abort()`` caller has a handle to — it
@@ -3840,11 +3983,26 @@ class AgentSession:
         never about, arriving from a source the aborting user cannot see. They are
         drained at session shutdown instead (:meth:`emit_session_shutdown`).
         """
-        self._is_streaming = False
-        self._abort_signal.abort()
-        self._pending_steer_messages.clear()
+        target = self._turn_cursor() if cursor is None else self._registered(cursor)
+        for owned in reversed(self._owned_by(target)):
+            owned.abort_signal.abort()
+            owned.steer_queue.clear()
+        target.is_streaming = False
+        target.abort_signal.abort()
+        target.steer_queue.clear()
         for task in self._forked_tasks.values():
             task.cancel()
+
+    def _owned_by(self, owner: Cursor) -> list[Cursor]:
+        """Live cursors ``owner`` owns, directly or through another, shallowest first."""
+        found: list[Cursor] = []
+        frontier = [owner]
+        while frontier:
+            parent = frontier.pop(0)
+            children = [c for c in self._cursors.values() if c.owner is parent]
+            found.extend(children)
+            frontier.extend(children)
+        return found
 
     def _resolve_extension_tools(self) -> list[AgentTool]:
         """Resolve the registry's active extension tools into ``AgentTool``s.
@@ -3932,10 +4090,12 @@ class AgentSession:
                         "extension-origin type is required (Fail-Early)"
                     )
                 if persist:
-                    await self._cursor.append_custom_message(msg_dict, custom_type=str(custom_type))
+                    await self._turn_cursor().append_custom_message(
+                        msg_dict, custom_type=str(custom_type)
+                    )
             else:
                 if persist:
-                    await self._cursor.append_message(msg_dict)
+                    await self._turn_cursor().append_message(msg_dict)
             turn_messages.append(msg_dict)
 
     def _custom_message_node(
@@ -4026,7 +4186,7 @@ class AgentSession:
             timestamp=self._timestamp(),
         )
         await self._flush_pending_agent_specs()
-        entry_id = await self._cursor.append_custom_message(
+        entry_id = await self._turn_cursor().append_custom_message(
             node, custom_type=str(message["customType"])
         )
         self._announce_append("custom_message", entry_id=entry_id, message=node)
@@ -4086,7 +4246,7 @@ class AgentSession:
         if not isinstance(data, dict):
             raise ValueError(f"append_entry: data must be a dict, got {type(data).__name__}")
         await self._flush_pending_agent_specs()
-        return await self._cursor.append_custom_entry(custom_type, data)
+        return await self._turn_cursor().append_custom_entry(custom_type, data)
 
     @property
     def pending_request(self) -> ExtensionRequest | None:
@@ -4096,7 +4256,7 @@ class AgentSession:
         draw, and :meth:`submit` reads it to decide whether to refuse, so the
         thing a user is looking at and the thing that refused them are one entry.
         """
-        return request_at_cursor(self._cursor.entries(), self._cursor.leaf)
+        return request_at_cursor(self._turn_cursor().entries(), self._turn_cursor().leaf)
 
     async def answer_request(
         self, request_id: str, action: str, values: dict[str, Any] | None = None
@@ -4127,7 +4287,7 @@ class AgentSession:
                 rejects. Fail-Early: nothing is coerced and no partial answer is
                 persisted.
         """
-        request = find_request(self._cursor.entries(), request_id)
+        request = find_request(self._turn_cursor().entries(), request_id)
         if request is None:
             raise ValueError(f"answer_request: no extension request with id {request_id!r}")
         if request.ask is None:

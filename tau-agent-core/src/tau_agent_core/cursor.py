@@ -2,21 +2,25 @@
 
 A :class:`~tau_agent_core.session_log.SessionLog` stores entries and nothing else.
 Every writer holds a :class:`Cursor`: the entry its next append is parented to,
-plus the typed appenders that write there and move it. A head, ``tau -p``, an
-RPC client and a sub-agent each hold one; none of them is privileged.
+the typed appenders that write there and move it, and the state of the turn that
+is extending it (§2). A head, ``tau -p``, an RPC client and a sub-agent each hold
+one; none of them is privileged.
 """
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from contextvars import ContextVar
 from typing import Any
 
+from tau_llm.abort import AbortSignal
 from tau_llm.docs import agent_facing
 
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import SessionLog, default_leaf
 
-__all__ = ["Cursor"]
+__all__ = ["Cursor", "TURN_CURSOR"]
 
 
 def _require_entry(log: SessionLog, entry_id: str | None, what: str) -> None:
@@ -37,6 +41,25 @@ class Cursor:
         log: The tree's storage, shared with every other cursor on it.
         owner: The cursor that opened this one (a sub-agent's spawner), or ``None``.
         label: What the cursor was opened to do, for display.
+        turn_lock: Held while a turn extends this cursor; one turn at a time here,
+            any number across cursors.
+        abort_signal: The running turn's signal; a fresh one per admitted turn.
+        steer_queue: ``UserMessage``s the running loop delivers before its next call.
+        follow_up_queue: Texts that re-enter the loop when the current prompt ends.
+        next_turn_queue: Texts injected alongside the next prompt's user turn.
+        deferred_ops: Compact/fork intents recorded mid-turn, applied at its tail.
+        pre_turn_leaf: The leaf just before the running turn's user node (rollback's
+            target).
+        turn_token: Which admitted turn is running; a rollback checks it is unchanged.
+        turn_task: The ``asyncio.Task`` running the turn, for the reentrancy guard.
+        submission: The submission whose turn is running, for event provenance.
+        is_streaming: Whether a turn is running here.
+        last_usage: The newest completion's usage on this cursor's path.
+        turn_persistence: What the running turn has yet to write, for a mid-turn
+            compaction or an exception to flush.
+        in_flight_context: The running turn's context, for a mid-turn estimate.
+        persistence_settled: Clear from a turn's ``agent_end`` until its messages
+            are written (docs/ASYNC-SESSION-LOG.md §3.3).
     """
 
     def __init__(
@@ -58,6 +81,22 @@ class Cursor:
         self.owner = owner
         self.label = label
         self._leaf = leaf
+        self.turn_lock = asyncio.Lock()
+        self.abort_signal = AbortSignal()
+        self.steer_queue: list[Any] = []
+        self.follow_up_queue: list[str] = []
+        self.next_turn_queue: list[str] = []
+        self.deferred_ops: list[dict[str, Any]] = []
+        self.pre_turn_leaf: str | None = None
+        self.turn_token: int | None = None
+        self.turn_task: asyncio.Task[Any] | None = None
+        self.submission: Any = None
+        self.is_streaming = False
+        self.last_usage: dict[str, Any] | None = None
+        self.turn_persistence: Any = None
+        self.in_flight_context: list[dict[str, Any]] | None = None
+        self.persistence_settled = asyncio.Event()
+        self.persistence_settled.set()
 
     @classmethod
     def newest(cls, log: SessionLog, *, owner: Cursor | None = None, label: str = "") -> Cursor:
@@ -68,6 +107,16 @@ class Cursor:
     def leaf(self) -> str | None:
         """The entry the next append is parented to; ``None`` before the root."""
         return self._leaf
+
+    @property
+    def busy(self) -> bool:
+        """Whether a turn holds this cursor."""
+        return self.turn_lock.locked()
+
+    @property
+    def has_queued(self) -> bool:
+        """Whether a steer, follow-up or next-turn message waits here."""
+        return bool(self.steer_queue or self.follow_up_queue or self.next_turn_queue)
 
     @property
     def session_id(self) -> str:
@@ -182,3 +231,12 @@ class Cursor:
         """
         self.move(from_id)
         return await self.append("branch_summary", summary=summary, fromId=from_id)
+
+
+TURN_CURSOR: ContextVar[Cursor | None] = ContextVar("TURN_CURSOR", default=None)
+"""The cursor the running turn extends, published by ``AgentSession.submit``.
+
+A ContextVar for the reason ``DRIVING_SUBMISSION_DEPTH`` is one: it is causal, so a
+hook, a tool and any task they start see the cursor of the turn that started them,
+without that cursor being threaded through every call (docs/CURSORS.md §7).
+"""

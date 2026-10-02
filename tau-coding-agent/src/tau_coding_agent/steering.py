@@ -79,7 +79,7 @@ class SteeringBuffer:
     Two lists because an undelivered line has two states, and only the first is
     the head's to give back on its own: ``pending`` is text no door has taken, and
     ``delivered`` is the raw text of a ``"steer"`` submission the core accepted
-    with ``messages=[]`` — parked in ``_pending_steer_messages`` until the running
+    with ``messages=[]`` — parked on the cursor's ``steer_queue`` until the running
     loop weaves it in, and cleared by ``AgentSession.abort`` without telling
     anyone (agent_session.py:3353). Keeping it here until the ``steer_message``
     render event confirms the weave is what lets an abort reclaim it.

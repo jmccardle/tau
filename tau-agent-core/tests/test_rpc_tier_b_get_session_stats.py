@@ -449,7 +449,7 @@ async def test_usage_is_null_before_any_completion(handler: RPCHandler) -> None:
 async def test_usage_reflects_get_usage(session: AgentSession, handler: RPCHandler) -> None:
     """Same precedent test_agent_session_runtime.py:265 uses to seed usage
     without running a real completion: set the private ledger directly."""
-    session._last_usage = {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
+    session.cursor.last_usage = {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
     result = await _call(handler)
     assert result["usage"] == {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10}
 

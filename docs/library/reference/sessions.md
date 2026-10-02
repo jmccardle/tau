@@ -42,12 +42,17 @@ position someone already holds.
 ### abort
 
 ```python
-abort() -> None
+abort(cursor: Cursor | None = None) -> None
 ```
 
 `tau_agent_core.agent_session.AgentSession.abort`
 
-Abort the current agent turn, and every still-running forked branch.
+Abort ``cursor``'s turn, every cursor it owns, and every still-running forked branch.
+
+``cursor`` defaults to the one the caller acts on (:meth:`_turn_cursor`).
+Owned cursors are aborted first, deepest first, so a sub-agent stops before
+the turn that spawned it (docs/CURSORS.md §6). Each loses its queued steers:
+the turn they were aimed at is gone.
 
 A ``multitask_strategy="fork"`` submission's second agent is a REAL
 ``AgentSession``, but not one an ``abort()`` caller has a handle to — it
@@ -68,6 +73,10 @@ by the same mechanism as any other turn. Cancelling the rest would discard
 submissions that have not been admitted yet, i.e. input this abort was
 never about, arriving from a source the aborting user cannot see. They are
 drained at session shutdown instead (:meth:`emit_session_shutdown`).
+
+**Parameters**
+
+- `cursor: Cursor | None = None` — *(no description)*
 
 ### answer_request
 
@@ -97,6 +106,25 @@ The dispatched command's :class:`ExtensionCommandResult`. ``handled`` is ``False
 **Raises**
 
 - `ValueError` — no such request, the request carries no ask, an unknown action label, or values that :func:`validate_form_values` rejects. Fail-Early: nothing is coerced and no partial answer is persisted.
+
+### close_cursor
+
+```python
+async close_cursor(cursor: Cursor) -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.close_cursor`
+
+Retire ``cursor``; a ``cursor_close`` channel event announces it.
+
+**Parameters**
+
+- `cursor: Cursor` — *(no description)*
+
+**Raises**
+
+- `ValueError` — ``cursor`` is the head's, which a head swap replaces instead.
+- `RuntimeError` — a turn still holds it.
 
 ### compact
 
@@ -224,6 +252,36 @@ List of messages produced by the agent loop.
 **Raises**
 
 - `RuntimeError` — a turn is already in flight on this session.
+
+### cursors
+
+`tau_agent_core.agent_session.AgentSession.cursors: tuple[Cursor, ...]`
+
+Every live cursor on this session's trees, the head's included, oldest first.
+
+### deliver_queued
+
+```python
+deliver_queued(cursor: Cursor) -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.deliver_queued`
+
+Run what ``cursor`` still holds as turns on its own tree, then close it.
+
+For a cursor no head is attached to any more — the one a head swap left
+behind (docs/CURSORS.md §8). Its accepted messages are delivered where they
+were aimed, the way a sub-agent's turn runs with nobody watching, rather
+than discarded. Supervised: :meth:`emit_session_shutdown` cancels it, and
+:meth:`wait_for_deliveries` awaits it.
+
+**Parameters**
+
+- `cursor: Cursor` — *(no description)*
+
+**Raises**
+
+- `ValueError` — ``cursor`` is the head's, or this session did not open it.
 
 ### disable_extension
 
@@ -683,6 +741,29 @@ file stem. ``None`` leaves the constructor-supplied map (default ``{}``).
 `tau_agent_core.agent_session.AgentSession.messages: list[dict[str, Any]]`
 
 The model-input context at this session's cursor.
+
+### open_cursor
+
+```python
+async open_cursor(at: str | None, *, owner: Cursor | None = None, label: str = '') -> Cursor
+```
+
+`tau_agent_core.agent_session.AgentSession.open_cursor`
+
+Open a cursor at ``at`` on the head's tree, live until :meth:`close_cursor`.
+
+``owner`` is the cursor the new one answers to: aborting the owner aborts
+it (:meth:`abort`). A ``cursor_open`` channel event announces it.
+
+**Parameters**
+
+- `at: str | None` — *(no description)*
+- `owner: Cursor | None = None` — *(no description)*
+- `label: str = ''` — *(no description)*
+
+**Raises**
+
+- `ValueError` — ``at`` names no entry.
 
 ### pending_request
 
@@ -1234,12 +1315,17 @@ Read-only access to session state. Identity is the session UUID (§4.2).
 ### submit
 
 ```python
-async submit(sub: Submission, *, context: list[dict[str, Any]] | None = None, on_admitted: Callable[[], None] | None = None) -> SubmissionResult
+async submit(sub: Submission, *, context: list[dict[str, Any]] | None = None, on_admitted: Callable[[], None] | None = None, cursor: Cursor | None = None) -> SubmissionResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.submit`
 
 The single admission point every input source funnels through.
+
+``cursor`` is the position the turn extends: :attr:`cursor` by default, or
+any cursor this session opened (:meth:`open_cursor`). Every strategy below
+acts on that cursor's own lock, queues and abort signal, so turns on two
+cursors run concurrently (docs/CURSORS.md §2).
 
 Reference: docs/SUBMISSION-LIFECYCLE.md, "The one door" (phase 1, part 2).
 TUI, headless, RPC, the SDK, and every extension are meant to converge on
@@ -1493,6 +1579,7 @@ the "bus disconnected randomly" bug the spec names. See
 - `sub: Submission` — *(no description)*
 - `context: list[dict[str, Any]] | None = None` — *(no description)*
 - `on_admitted: Callable[[], None] | None = None` — *(no description)*
+- `cursor: Cursor | None = None` — *(no description)*
 
 **Raises**
 
@@ -1693,6 +1780,16 @@ extensions costs nothing and is the same object every test already reads.
 
 Cached against the registry's ``flows_revision`` because building it runs the
 whole registry cross-check and a head asks on every keystroke.
+
+### wait_for_deliveries
+
+```python
+async wait_for_deliveries() -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.wait_for_deliveries`
+
+Await every :meth:`deliver_queued` still running.
 
 ### watch_side_completion
 
@@ -2464,6 +2561,12 @@ position a reopened tree starts from is :func:`default_leaf` (§4).
 - `owner: Cursor | None = None` — The cursor that opened this one (a sub-agent's spawner), or ``None``.
 - `label: str = ''` — What the cursor was opened to do, for display.
 
+### abort_signal
+
+`tau_agent_core.cursor.Cursor.abort_signal`
+
+The running turn's signal; a fresh one per admitted turn.
+
 ### append
 
 ```python
@@ -2595,6 +2698,12 @@ Append a ``message`` entry.
 
 - `message: dict[str, Any]` — *(no description)*
 
+### busy
+
+`tau_agent_core.cursor.Cursor.busy: bool`
+
+Whether a turn holds this cursor.
+
 ### context
 
 ```python
@@ -2604,6 +2713,12 @@ context() -> list[dict[str, Any]]
 `tau_agent_core.cursor.Cursor.context`
 
 What the model receives from this position (``ConversationTree.context_for``).
+
+### deferred_ops
+
+`tau_agent_core.cursor.Cursor.deferred_ops: list[dict[str, Any]]`
+
+Compact/fork intents recorded mid-turn, applied at its tail.
 
 ### entries
 
@@ -2615,11 +2730,41 @@ entries() -> list[dict[str, Any]]
 
 Every entry of the tree, all branches — not only this cursor's path.
 
+### follow_up_queue
+
+`tau_agent_core.cursor.Cursor.follow_up_queue: list[str]`
+
+Texts that re-enter the loop when the current prompt ends.
+
+### has_queued
+
+`tau_agent_core.cursor.Cursor.has_queued: bool`
+
+Whether a steer, follow-up or next-turn message waits here.
+
 ### id
 
 `tau_agent_core.cursor.Cursor.id`
 
 Runtime identity, unique per cursor; never written to an entry.
+
+### in_flight_context
+
+`tau_agent_core.cursor.Cursor.in_flight_context: list[dict[str, Any]] | None`
+
+The running turn's context, for a mid-turn estimate.
+
+### is_streaming
+
+`tau_agent_core.cursor.Cursor.is_streaming`
+
+Whether a turn is running here.
+
+### last_usage
+
+`tau_agent_core.cursor.Cursor.last_usage: dict[str, Any] | None`
+
+The newest completion's usage on this cursor's path.
 
 ### move
 
@@ -2655,11 +2800,43 @@ A cursor at ``log``'s default leaf: where a reopened tree continues.
 - `owner: Cursor | None = None` — *(no description)*
 - `label: str = ''` — *(no description)*
 
+### next_turn_queue
+
+`tau_agent_core.cursor.Cursor.next_turn_queue: list[str]`
+
+Texts injected alongside the next prompt's user turn.
+
+### persistence_settled
+
+`tau_agent_core.cursor.Cursor.persistence_settled`
+
+Clear from a turn's ``agent_end`` until its messages
+are written (docs/ASYNC-SESSION-LOG.md §3.3).
+
+### pre_turn_leaf
+
+`tau_agent_core.cursor.Cursor.pre_turn_leaf: str | None`
+
+The leaf just before the running turn's user node (rollback's
+target).
+
 ### session_id
 
 `tau_agent_core.cursor.Cursor.session_id: str`
 
 The id of the tree this cursor extends.
+
+### steer_queue
+
+`tau_agent_core.cursor.Cursor.steer_queue: list[Any]`
+
+``UserMessage``s the running loop delivers before its next call.
+
+### submission
+
+`tau_agent_core.cursor.Cursor.submission: Any`
+
+The submission whose turn is running, for event provenance.
 
 ### tree
 
@@ -2670,6 +2847,32 @@ tree() -> ConversationTree
 `tau_agent_core.cursor.Cursor.tree`
 
 The tree folded at this cursor's leaf.
+
+### turn_lock
+
+`tau_agent_core.cursor.Cursor.turn_lock`
+
+Held while a turn extends this cursor; one turn at a time here,
+any number across cursors.
+
+### turn_persistence
+
+`tau_agent_core.cursor.Cursor.turn_persistence: Any`
+
+What the running turn has yet to write, for a mid-turn
+compaction or an exception to flush.
+
+### turn_task
+
+`tau_agent_core.cursor.Cursor.turn_task: asyncio.Task[Any] | None`
+
+The ``asyncio.Task`` running the turn, for the reentrancy guard.
+
+### turn_token
+
+`tau_agent_core.cursor.Cursor.turn_token: int | None`
+
+Which admitted turn is running; a rollback checks it is unchanged.
 
 ## CustomMessageEntry
 <!-- agent: yes -->

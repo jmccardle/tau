@@ -326,7 +326,7 @@ class TestDispatchOutcomes:
         await session.submit(_human("/compact", "c-6"))
 
         assert session.is_streaming is False
-        assert session._turn_lock.locked() is False
+        assert session.cursor.turn_lock.locked() is False
 
 
 # ── the input hook chain still runs first (spec step order 2 then 3) ──────────

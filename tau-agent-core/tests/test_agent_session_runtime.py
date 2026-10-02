@@ -268,20 +268,20 @@ async def test_new_session_resets_the_documented_set(session: AgentSession, runt
     old_log = session.session_log
     await session.cursor.append_message({"role": "user", "content": "hi"})
 
-    session._last_usage = {"input_tokens": 5}
+    session.cursor.last_usage = {"input_tokens": 5}
     session.record_side_usage({"input_tokens": 3, "output_tokens": 2, "total_tokens": 5})
-    session._pending_follow_up_messages.append("queued-follow-up")
-    session._pending_next_turn_messages.append("queued-next-turn")
+    session.cursor.follow_up_queue.append("queued-follow-up")
+    session.cursor.next_turn_queue.append("queued-next-turn")
     from tau_llm.types import UserMessage
 
-    session._pending_steer_messages.append(
+    session.cursor.steer_queue.append(
         UserMessage.model_validate(
             {"role": "user", "content": [{"type": "text", "text": "x"}], "timestamp": _TS}
         )
     )
-    session._deferred_ops.append({"kind": "compact", "custom_instructions": None})
-    session._is_streaming = True
-    session._pre_turn_leaf = session.cursor.leaf
+    session.cursor.deferred_ops.append({"kind": "compact", "custom_instructions": None})
+    session.cursor.is_streaming = True
+    session.cursor.pre_turn_leaf = session.cursor.leaf
 
     result = await runtime.new_session(persist=False)
 
@@ -290,12 +290,12 @@ async def test_new_session_resets_the_documented_set(session: AgentSession, runt
     assert result["cancelled"] is False
     assert session.get_usage() is None
     assert session.side_usage == zero_usage()
-    assert session._pending_follow_up_messages == []
-    assert session._pending_next_turn_messages == []
-    assert session._pending_steer_messages == []
-    assert session._deferred_ops == []
+    assert session.cursor.follow_up_queue == []
+    assert session.cursor.next_turn_queue == []
+    assert session.cursor.steer_queue == []
+    assert session.cursor.deferred_ops == []
     assert session.is_streaming is False
-    assert session._pre_turn_leaf is None
+    assert session.cursor.pre_turn_leaf is None
     # log + cursor: a cursor on a brand new, empty log — not the dirty one.
     assert session.session_log is not old_log
     assert session.cursor.leaf is None
@@ -599,13 +599,6 @@ async def test_rebind_does_not_run_on_a_vetoed_swap(session: AgentSession, runti
     assert calls == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "ROADMAP 'A queued message is lost silently when a session is swapped': "
-        "_reset_transient_state clears the queues and nothing reports it"
-    ),
-)
 @pytest.mark.parametrize("deliver_as", ["steer", "followUp", "nextTurn"])
 async def test_a_swap_never_discards_a_queued_message_without_a_trace(
     session: AgentSession, runtime, deliver_as: str
@@ -613,16 +606,50 @@ async def test_a_swap_never_discards_a_queued_message_without_a_trace(
     """An accepted message either reaches a tree or is named by an event.
 
     Design-neutral on purpose: delivering it to the tree it was aimed at, or
-    reporting the discard, both pass. Only the silent clear fails.
+    reporting the discard, both pass. Only the silent clear fails. The built
+    answer is delivery (docs/CURSORS.md §8): the old cursor runs it in the
+    background on its own tree.
     """
     old_log = session.session_log
     seen: list[str] = []
     session.subscribe(lambda event: seen.append(event.model_dump_json()))
     session._queue_message("QUEUED-BEFORE-SWAP", deliver_as=deliver_as)
 
-    result = await runtime.new_session(persist=False)
+    with patch("tau_agent_core.agent_loop.stream_simple", return_value=_Stream("answered")):
+        result = await runtime.new_session(persist=False)
+        await session.wait_for_deliveries()
 
     assert result["cancelled"] is False
     in_old_tree = "QUEUED-BEFORE-SWAP" in repr(old_log.entries())
     in_an_event = any("QUEUED-BEFORE-SWAP" in dumped for dumped in seen)
     assert in_old_tree or in_an_event
+
+
+async def test_a_swap_delivers_the_queue_to_the_old_tree_and_retires_its_cursor(
+    session: AgentSession, runtime
+):
+    """§8: the old cursor runs its queue where it was aimed, then closes; the head
+    moves on to a fresh cursor on the new tree, which holds nothing."""
+    old_log = session.session_log
+    old_cursor = session.cursor
+    session._queue_message("follow this up", deliver_as="followUp")
+
+    with patch("tau_agent_core.agent_loop.stream_simple", return_value=_Stream("done")):
+        await runtime.new_session(persist=False)
+        await session.wait_for_deliveries()
+
+    texts = repr(old_log.entries())
+    assert "follow this up" in texts and "done" in texts
+    assert session.cursor is not old_cursor
+    assert not session.cursor.has_queued
+    assert old_cursor not in session.cursors, "the delivered cursor is closed"
+    assert "follow this up" not in repr(session.session_log.entries())
+
+
+async def test_a_swap_of_an_idle_head_with_nothing_queued_closes_it_at_once(
+    session: AgentSession, runtime
+):
+    old_cursor = session.cursor
+    await runtime.new_session(persist=False)
+    assert old_cursor not in session.cursors
+    assert session.cursors == (session.cursor,)

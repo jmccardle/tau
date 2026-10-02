@@ -60,19 +60,19 @@ async def test_clear_chat_resets_dirtied_runtime_state(app, wait_for_workers_set
         session = app.current_backend.agent_session
         assert session is not None  # sanity: the runtime branch is live
 
-        session._last_usage = Usage(input_tokens=9, output_tokens=9, total_tokens=18)
-        session._pending_follow_up_messages = [{"role": "user", "content": "queued"}]
-        session._pending_next_turn_messages = [{"role": "user", "content": "also queued"}]
-        session._is_streaming = True
+        session.cursor.last_usage = Usage(input_tokens=9, output_tokens=9, total_tokens=18)
+        session.cursor.follow_up_queue = [{"role": "user", "content": "queued"}]
+        session.cursor.next_turn_queue = [{"role": "user", "content": "also queued"}]
+        session.cursor.is_streaming = True
 
         await app.action_clear_chat()
         await pilot.pause()
         await wait_for_workers_settled(app)
 
-        assert session._last_usage is None
-        assert session._pending_follow_up_messages == []
-        assert session._pending_next_turn_messages == []
-        assert session._is_streaming is False
+        assert session.cursor.last_usage is None
+        assert session.cursor.follow_up_queue == []
+        assert session.cursor.next_turn_queue == []
+        assert session.cursor.is_streaming is False
         assert app._session_event_unsub is not None
 
 

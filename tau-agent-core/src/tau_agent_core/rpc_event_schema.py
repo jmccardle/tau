@@ -138,6 +138,12 @@ class WireEvent(BaseModel):
         default=None,
         description="The extension that vetoed the call; paired with blocked.",
     )
+    cursor_id: str | None = Field(
+        default=None,
+        description="The cursor whose turn emitted this event (docs/CURSORS.md "
+        "§6). Several cursors run turns on one session at once; a host routes "
+        "by this. None outside a turn.",
+    )
     submission_id: str | None = Field(
         default=None,
         description="The Submission that drove this turn, if any (E4/G6). None "

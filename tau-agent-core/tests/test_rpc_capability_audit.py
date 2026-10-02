@@ -170,6 +170,28 @@ NOT_EXPOSED: dict[str, str] = {
         "AgentSessionRuntime) — no verb hands a host the SessionLog itself, nor "
         "lets one set it; get_session_stats (D-3) reads `.entries()` through it."
     ),
+    "cursors": (
+        "The live Cursor registry (docs/CURSORS.md §2). Cursors have no wire "
+        "identity until the web head addresses them by id; a host sees one "
+        "position, the session's, through every mutator's `cursor` field."
+    ),
+    "open_cursor": (
+        "Opens a second position on the tree for a sub-agent or a detached "
+        "delivery. An RPC client drives one position; addressing several over "
+        "the wire is the web head's record, not this verb set."
+    ),
+    "close_cursor": (
+        "Retires a cursor open_cursor opened; the head's is never closed. Same "
+        "reason as open_cursor: no wire identity for cursors yet."
+    ),
+    "deliver_queued": (
+        "Runs what a detached cursor still holds; called by AgentSessionRuntime's "
+        "swap, which new_session/fork/switch_session already reach."
+    ),
+    "wait_for_deliveries": (
+        "Awaits deliver_queued's background turns, for a caller that must know "
+        "they finished; their events already reach a host on the bus."
+    ),
     "cursor": (
         "The Cursor object this session extends (docs/CURSORS.md). Its leaf is "
         "on the wire as every mutator's `cursor` field (E5) and get_state's; "

@@ -748,7 +748,7 @@ abort() -> None
 
 `tau_agent_core.extension_types.ExtensionContext.abort`
 
-Abort the current operation by calling signal.abort() if available.
+Trip :attr:`signal`, the running turn's, if there is one.
 
 ### compact
 
@@ -856,10 +856,11 @@ never produced — and one that fails the very membership check it just passed.
 
 `tau_agent_core.extension_types.ExtensionContext.cursor: Any`
 
-The :class:`~tau_agent_core.cursor.Cursor` the bound session extends.
+The :class:`~tau_agent_core.cursor.Cursor` this handler acts on.
 
-``ctx.cursor.leaf`` is "where am I": a cursor is not durable, so it cannot
-be recovered from :meth:`entries` (docs/CURSORS.md §4).
+Inside a turn, that turn's cursor; outside one, the head's. ``ctx.cursor.leaf``
+is "where am I": a cursor is not durable, so it cannot be recovered from
+:meth:`entries` (docs/CURSORS.md §4, §7).
 
 ### emit_veto_record
 

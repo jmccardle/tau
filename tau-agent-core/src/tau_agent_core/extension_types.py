@@ -906,7 +906,14 @@ class ExtensionContext:
 
     @property
     def signal(self) -> Any | None:
-        """AbortSignal for this context."""
+        """The abort signal of the turn this handler runs in.
+
+        With a session bound, that is the running turn's cursor
+        (``TURN_CURSOR``), so two cursors' concurrent turns each see their own
+        (docs/CURSORS.md §7). Without one, the signal this context was built with.
+        """
+        if self._session is not None:
+            return self._session._turn_cursor().abort_signal
         return self._signal
 
     @property
@@ -932,9 +939,10 @@ class ExtensionContext:
         return self._ui
 
     def abort(self) -> None:
-        """Abort the current operation by calling signal.abort() if available."""
-        if self._signal:
-            self._signal.abort()
+        """Trip :attr:`signal`, the running turn's, if there is one."""
+        signal = self.signal
+        if signal:
+            signal.abort()
 
     def shutdown(self) -> None:
         """Request a shutdown: marks `shutdown_requested` and, if a
@@ -1127,12 +1135,13 @@ class ExtensionContext:
 
     @property
     def cursor(self) -> Any:
-        """The :class:`~tau_agent_core.cursor.Cursor` the bound session extends.
+        """The :class:`~tau_agent_core.cursor.Cursor` this handler acts on.
 
-        ``ctx.cursor.leaf`` is "where am I": a cursor is not durable, so it cannot
-        be recovered from :meth:`entries` (docs/CURSORS.md §4).
+        Inside a turn, that turn's cursor; outside one, the head's. ``ctx.cursor.leaf``
+        is "where am I": a cursor is not durable, so it cannot be recovered from
+        :meth:`entries` (docs/CURSORS.md §4, §7).
         """
-        return self._require_session().cursor
+        return self._require_session()._turn_cursor()
 
     def entries(self) -> list[dict[str, Any]]:
         """The bound session log's raw, append-only entries (all kinds).

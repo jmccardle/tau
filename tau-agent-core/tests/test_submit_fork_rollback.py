@@ -332,13 +332,13 @@ class TestRollback:
             )
             await asyncio.sleep(0)
             assert session.is_streaming is True
-            pre_a_leaf = session._pre_turn_leaf  # what rollback SHOULD target
+            pre_a_leaf = session.cursor.pre_turn_leaf  # what rollback SHOULD target
 
             task_b = asyncio.create_task(
                 session.submit(_sub("turn B", "b-1", multitask_strategy="rollback"))
             )
             await asyncio.sleep(0)
-            assert session._abort_signal.is_aborted() is True, "rollback must abort A"
+            assert session.cursor.abort_signal.is_aborted() is True, "rollback must abort A"
 
             gate.set()  # let A's (and then B's) stream_simple call return
             result_a = await asyncio.wait_for(task_a, timeout=1.0)
@@ -396,7 +396,7 @@ class TestRollback:
             task_continue = asyncio.create_task(session.continue_conversation())
             await asyncio.sleep(0)
             assert session.is_streaming is True
-            pre_continue_leaf = session._pre_turn_leaf
+            pre_continue_leaf = session.cursor.pre_turn_leaf
             assert pre_continue_leaf is not None, (
                 "continue_conversation() must record a pre-turn leaf now — "
                 "before the fix this attribute was never written by this method"
@@ -406,7 +406,7 @@ class TestRollback:
                 session.submit(_sub("steer away", "rb-1", multitask_strategy="rollback"))
             )
             await asyncio.sleep(0)
-            assert session._abort_signal.is_aborted() is True, (
+            assert session.cursor.abort_signal.is_aborted() is True, (
                 "rollback must abort the continuation"
             )
 
@@ -471,7 +471,7 @@ class TestRollback:
                 session.submit(_sub("turn C", "c-1", multitask_strategy="rollback"))
             )
             await asyncio.sleep(0)
-            assert session._abort_signal.is_aborted() is True, "rollback must abort A"
+            assert session.cursor.abort_signal.is_aborted() is True, "rollback must abort A"
 
             gate_a.set()  # let A's stream_simple call return; A unwinds and releases the lock
             await asyncio.wait_for(task_a, timeout=1.0)

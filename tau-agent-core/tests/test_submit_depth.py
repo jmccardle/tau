@@ -112,8 +112,8 @@ class TestDepthPropagation:
         def ext(api):
             async def on_input(event, ctx):
                 session = held[0]
-                assert session._current_submission is not None
-                depths.append(session._current_submission.depth)
+                assert session.cursor.submission is not None
+                depths.append(session.cursor.submission.depth)
                 # The self-continuation: a task created from inside the turn.
                 spawned.append(
                     asyncio.create_task(session.submit(_self_sub("again", f"chain-{len(depths)}")))
@@ -149,8 +149,8 @@ class TestDepthPropagation:
         assert "MAX_SUBMISSION_DEPTH" in message
 
         # Fail-Early: a refusal, not a silent drop, and nothing left half-held.
-        assert session._turn_lock.locked() is False
-        assert session._current_submission is None
+        assert session.cursor.turn_lock.locked() is False
+        assert session.cursor.submission is None
 
     async def test_the_admitted_record_carries_the_derived_depth(self):
         """``submit()`` ``replace()``s the record, so ``_current_submission`` (what
@@ -163,8 +163,8 @@ class TestDepthPropagation:
         def ext(api):
             async def on_input(event, ctx):
                 session = held[0]
-                assert session._current_submission is not None
-                seen.append(session._current_submission)
+                assert session.cursor.submission is not None
+                seen.append(session.cursor.submission)
                 if len(seen) == 1:
                     spawned.append(
                         asyncio.create_task(session.submit(_self_sub("again", "nested-1")))
@@ -200,8 +200,8 @@ class TestDepthPropagation:
         def ext(api):
             async def on_input(event, ctx):
                 session = held[0]
-                assert session._current_submission is not None
-                depths.append(session._current_submission.depth)
+                assert session.cursor.submission is not None
+                depths.append(session.cursor.submission.depth)
                 ready.set()
                 for _ in range(5):
                     await asyncio.sleep(0)
@@ -236,8 +236,8 @@ class TestDepthPropagation:
         def ext(api):
             async def on_input(event, ctx):
                 session = held[0]
-                assert session._current_submission is not None
-                depths.append(session._current_submission.depth)
+                assert session.cursor.submission is not None
+                depths.append(session.cursor.submission.depth)
 
             api.on("input", on_input)
 

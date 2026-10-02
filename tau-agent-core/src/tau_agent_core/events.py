@@ -107,6 +107,9 @@ class AgentEvent(BaseModel):
             short: before it, a run stopped by ``max_turns`` emitted the same
             ``agent_end`` as one where the model simply had nothing more to say,
             so a caller could not tell a truncated answer from a complete one.
+        cursor_id: The :class:`~tau_agent_core.cursor.Cursor` whose turn emitted
+            this event. Several cursors run turns on one session at once, so a
+            renderer routes by it (docs/CURSORS.md §6). ``None`` outside a turn.
         submission_id: The ``Submission`` that drove this turn, if any — Jupyter's
             ``parent_header``. ``None`` for a turn not driven through ``submit()``
             (e.g. ``continue_conversation()``, which predates the Submission
@@ -177,6 +180,7 @@ class AgentEvent(BaseModel):
     error: str | None = None
     end_reason: AgentEndReason | None = None
 
+    cursor_id: str | None = None
     submission_id: str | None = None
     source: SubmissionSource | None = None
     submitter: str | None = None

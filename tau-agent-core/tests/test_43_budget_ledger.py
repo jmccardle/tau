@@ -206,7 +206,7 @@ async def test_token_mode_warns_then_stops_across_turns(tmp_path) -> None:
     assert any(m.get("customType") == "budget_warning" for m in custom_roles)
     assert any(m.get("customType") == "budget_stop" for m in custom_roles)
 
-    assert session._abort_signal.is_aborted() is True
+    assert session.cursor.abort_signal.is_aborted() is True
 
     # Both crossings landed in the cross-session CostLedger.
     records = cost_ledger.records()

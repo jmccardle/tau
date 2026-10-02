@@ -432,13 +432,13 @@ class TestInboundAdmission:
 
         try:
             # A turn genuinely holds the session's in-flight slot.
-            await session._turn_lock.acquire()
+            await session.cursor.turn_lock.acquire()
             try:
                 await connection.subscriptions[0].cb(
                     _FakeMsg(_INBOUND, _envelope(_INBOUND, {"text": "second"}, "flow-8"))
                 )
             finally:
-                session._turn_lock.release()
+                session.cursor.turn_lock.release()
 
             assert len(dropped) == 1
             assert dropped[0]["subject"] == _INBOUND

@@ -43,6 +43,14 @@ can fan out to the right stream. ``None`` alongside ``submission_id``
 (an EMPTY dict would claim "a submission with no correlation data";
 ``None`` says "no submission stamped this event" instead).
 
+### cursor_id
+
+`tau_agent_core.events.AgentEvent.cursor_id: str | None`
+
+The :class:`~tau_agent_core.cursor.Cursor` whose turn emitted
+this event. Several cursors run turns on one session at once, so a
+renderer routes by it (docs/CURSORS.md §6). ``None`` outside a turn.
+
 ### delta
 
 `tau_agent_core.events.AgentEvent.delta: str | None`

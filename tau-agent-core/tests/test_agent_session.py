@@ -129,7 +129,7 @@ class TestAgentSessionCreation:
             session_log=self.create_sample_session_manager(),
             model=self.create_sample_model(),
         )
-        assert session._abort_signal is not None
+        assert session.cursor.abort_signal is not None
 
     def test_agent_session_is_streaming_initially_false(self):
         """AgentSession starts with _is_streaming = False."""
@@ -137,7 +137,7 @@ class TestAgentSessionCreation:
             session_log=self.create_sample_session_manager(),
             model=self.create_sample_model(),
         )
-        assert session._is_streaming is False
+        assert session.cursor.is_streaming is False
 
     def test_messages_property_returns_active_messages(self):
         """AgentSession.messages returns the current active path messages."""
@@ -699,9 +699,9 @@ class TestAbortDuringPrompt:
     def test_abort_sets_abort_signal(self):
         """abort() sets the abort signal."""
         session = self.create_session()
-        assert not session._abort_signal.is_aborted()
+        assert not session.cursor.abort_signal.is_aborted()
         session.abort()
-        assert session._abort_signal.is_aborted()
+        assert session.cursor.abort_signal.is_aborted()
 
     def test_multiple_aborts_are_idempotent(self):
         """Calling abort() multiple times has no additional effect."""
@@ -709,7 +709,7 @@ class TestAbortDuringPrompt:
         session.abort()
         session.abort()
         session.abort()
-        assert session._abort_signal.is_aborted()
+        assert session.cursor.abort_signal.is_aborted()
         assert session.is_streaming is False
 
 
@@ -877,7 +877,7 @@ class TestCreateAgentSession:
         assert len(session._tools) == 2
         assert session._tools[0].name == "read"
         assert session._tools[1].name == "bash"
-        assert session._is_streaming is False
+        assert session.cursor.is_streaming is False
 
     def test_tools_unknown_raises_error(self):
         """create_agent_session() raises ValueError for unknown tool names."""

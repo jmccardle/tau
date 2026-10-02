@@ -141,8 +141,8 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
     than the exclusions above: it is not a projection of any ``AgentEvent``
     field at all (E5/F3, phase-2 review B1). This function runs synchronously
     inside ``AgentLoop._emit_agent_end``, strictly BEFORE
-    ``AgentSession._run_one_turn`` persists the turn — reading the session
-    log's cursor here would capture the PRE-persistence tip, the exact
+    ``AgentSession._run_one_turn`` persists the turn — reading the cursor's
+    leaf here would capture the PRE-persistence tip, the exact
     stale-tip bug B1 fixes. ``rpc/transport.py``'s writer
     (``_write_stdout`` → ``RPCHandler.prepare_outbound``, composed onto
     ``RPCHandler``) fills ``cursor`` in immediately before serializing an
@@ -160,6 +160,7 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
         end_reason=event.end_reason,
         blocked=event.blocked,
         blocked_by=event.blocked_by,
+        cursor_id=event.cursor_id,
         submission_id=event.submission_id,
         source=event.source,
         submitter=event.submitter,

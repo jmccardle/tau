@@ -119,11 +119,11 @@ class TestSubmitStampsTheExtensionsOwnIdentity:
         session = _session()
         api = _bound(session, "/x/nats_bus.py")
 
-        await session._turn_lock.acquire()
+        await session.cursor.turn_lock.acquire()
         try:
             result = await api.submit("while busy")
         finally:
-            session._turn_lock.release()
+            session.cursor.turn_lock.release()
 
         assert result.accepted is False
         assert result.rejection_reason and "in flight" in result.rejection_reason
@@ -133,11 +133,11 @@ class TestSubmitStampsTheExtensionsOwnIdentity:
         session = _session()
         api = _bound(session, "/x/nats_bus.py")
 
-        await session._turn_lock.acquire()
+        await session.cursor.turn_lock.acquire()
         task = asyncio.create_task(api.submit("after you", multitask_strategy="enqueue"))
         await asyncio.sleep(0.05)
         assert not task.done(), "enqueue must wait, not run alongside the in-flight turn"
-        session._turn_lock.release()
+        session.cursor.turn_lock.release()
 
         result = await task
         assert result.accepted is True
@@ -253,11 +253,11 @@ class TestCtxPromptIsADeprecatedAlias:
         session = _session()
         ctx = self._ctx(session)
 
-        await session._turn_lock.acquire()
+        await session.cursor.turn_lock.acquire()
         task = asyncio.create_task(ctx.prompt("after you"))
         await asyncio.sleep(0.05)
         assert not task.done(), "ctx.prompt must still enqueue, not reject"
-        session._turn_lock.release()
+        session.cursor.turn_lock.release()
 
         messages = await task
         assert messages

@@ -184,7 +184,7 @@ class TestUnknownStrategy:
 
         # Named gap, not a silent fallback: nothing was admitted.
         assert session.is_streaming is False
-        assert session._turn_lock.locked() is False
+        assert session.cursor.turn_lock.locked() is False
 
 
 class TestDepthCap:
@@ -197,7 +197,7 @@ class TestDepthCap:
             )
 
         assert session.is_streaming is False
-        assert session._turn_lock.locked() is False
+        assert session.cursor.turn_lock.locked() is False
 
 
 @pytest.mark.usefixtures("fake_llm")
@@ -231,7 +231,7 @@ class TestStoreHistoryAndSilent:
 
         # Named gap, not a silent fallback: nothing was admitted, nothing ran.
         assert session.is_streaming is False
-        assert session._turn_lock.locked() is False
+        assert session.cursor.turn_lock.locked() is False
         assert session.session_log.entries() == before
 
 
@@ -346,7 +346,7 @@ class TestOnAdmittedTiming:
             with pytest.raises(RuntimeError, match="boom"):
                 await session.submit(_sub("hi", "s-1"), on_admitted=_boom)
 
-            assert session._turn_lock.locked() is False
+            assert session.cursor.turn_lock.locked() is False
 
             # A second call must not hang behind a wedged lock.
             result = await asyncio.wait_for(session.submit(_sub("hi", "s-2")), timeout=2.0)

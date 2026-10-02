@@ -19,9 +19,8 @@ the other way: ``AgentSession.session_log`` is ALREADY a settable property
 (``agent_session.py`` — added for exactly this purpose) and ``messages`` is
 ALREADY derived from the log at read time, never stored
 (``session.cursor.context()``). So τ's
-runtime does not rebuild an ``AgentSession`` at all — it resets a defined,
-NARROW slice of the EXISTING one's transient state (H3) and swaps in a new
-``SessionLog``, leaving everything else — model, tools, extensions, the
+runtime does not rebuild an ``AgentSession`` at all — it gives the EXISTING one
+a new head cursor on a new ``SessionLog`` (H3), leaving everything else — model, tools, extensions, the
 provider's pooled HTTP client — untouched. "That warmth is the entire reason a
 host pools a process instead of respawning" (§4[6]).
 
@@ -66,62 +65,24 @@ no abort signalled, no lock touched, no log swapped. This is pi's own
 ordering (``emitBeforeSwitch``/``emitBeforeFork`` run before
 ``teardownCurrent()``).
 
-**H3 — the reset set**, applied by :meth:`_reset_transient_state`, called
-while :attr:`AgentSession.turn_lock` is held, immediately before the new
-``session_log`` is assigned:
+**H3 — what a swap replaces.** The head's cursor: assigning the new
+``session_log`` opens a fresh cursor at its default leaf, and every per-turn
+field lives on a cursor (docs/CURSORS.md §2), so the new one starts with no
+usage, no queues, no deferred ops and no rollback target. ``side_usage`` is reset
+to zero as well, because it is session-wide.
 
-======================  ============================================  =======
-Item                    Reset to                                       How
-======================  ============================================  =======
-``session_log``         a fresh/loaded/forked ``ConversationSession``  assigned by the caller, right after this method
-``cursor``              a new cursor at the new log's default leaf     assigning :attr:`session_log` opens it
-last-compaction anchor  intrinsic to the log above — CLEARED, not      (nothing separate to touch: the anchor is a
-                        re-derived                                     property of the log's ENTRIES, found by
-                                                                        ``ConversationTree``'s scan for the last
-                                                                        ``compaction``/``elide`` entry — a log with no
-                                                                        such entry has no anchor, full stop; carrying
-                                                                        one over from the OLD log, or re-deriving one,
-                                                                        would be exactly the fallback Fail-Early
-                                                                        forbids — see §10 "resolved")
-usage                   ``None`` (an honest "no completion yet",       ``_last_usage = None``
-                        never a fabricated zero)
-``side_usage``          zero (a session that has spent nothing off     ``_side_usage = zero_usage()``
-                        the loop is a true zero, not a placeholder)
-queued messages         empty                                         ``_pending_follow_up_messages``,
-                                                                        ``_pending_next_turn_messages``,
-                                                                        ``_pending_steer_messages`` all cleared
-deferred ops            empty                                         ``_deferred_ops = []``
-streaming flag          ``False``                                     ``_is_streaming = False`` (already guaranteed
-                                                                        by the turn-lock wait below; set explicitly
-                                                                        so this method's OWN postcondition does not
-                                                                        depend on reading that guarantee correctly)
-======================  ============================================  =======
+The old cursor is not cleared (§8). If it still holds an accepted message, or a
+submission is waiting on its lock, :meth:`AgentSession.deliver_queued` runs it
+there as background turns with no head attached, then closes it; otherwise it
+is closed at once. Nothing accepted is discarded by a swap.
 
-One item beyond H3's literal list is reset for a real correctness reason, not
-a stylistic extra: ``_pre_turn_leaf`` (the log-cursor-before-the-last-turn
-bookkeeping a ``rollback`` submission reads) is cleared to ``None`` alongside
-the log swap. Left unreset, it would hold an entry id from the DISCARDED log;
-a ``rollback`` submitted against the fresh session would then either move the
-cursor to an id that does not exist in the new log or get lucky and refuse (if ``_current_turn_token``
-happens not to match) — neither is acceptable, and clearing it to ``None``
-makes ``rollback`` refuse HONESTLY ("no turn to roll back to") every time,
-which is the correct answer for a session that has just been reset. This is
-folded into "the log" conceptually (it is a reference INTO the log) rather
-than its own H3 line item.
-
-**Anything NOT on the list above survives on purpose** — system prompt,
-model, tools, extensions (both the inline-factory and file-loaded kind, and
-their registered tools/commands/shortcuts), the provider's pooled HTTP
-client, the ``EventBus`` and every subscription on it (including
-``RPCHandler``'s own — see H4 below), ``_turn_token_counter`` (documented on
-``AgentSession`` itself as "NEVER reset" — resetting it would break the very
-staleness detection ``rollback`` depends on), and the ``CompactionPolicy``/
-``_policy_turns_used`` pair (a MEASUREMENT-run feature; a policy-bound run
-calling session-lifecycle verbs is outside this phase's scope, and resetting
-the turn count out from under a live policy bound would be a second,
-undiscussed behaviour change, not a reset-set item this phase was asked to
-define). That warmth is the entire reason a host pools a process instead of
-respawning.
+**Anything else survives on purpose** — system prompt, model, tools,
+extensions and their registrations, the provider's pooled HTTP client, the
+``EventBus`` and every subscription on it (including ``RPCHandler``'s own — see
+H4 below), ``_turn_token_counter`` (resetting it would break the staleness
+detection ``rollback`` depends on), and the ``CompactionPolicy``/
+``_policy_turns_used`` pair. That warmth is the entire reason a host pools a
+process instead of respawning.
 
 **H4 — atomicity with respect to the event stream.** ``AgentSession``'s
 ``EventBus`` is fire-and-forget in the sense that an emitter does not care
@@ -137,16 +98,16 @@ returned — which is strictly after every ``AgentEvent`` that turn emitted has
 already been synchronously dispatched to ``RPCHandler._forward_event`` and
 ``put_nowait``'d onto the outbound queue.
 
-So: :meth:`_apply_swap` calls ``session.abort()`` (a request, not a
-guarantee — see ``AgentSession.abort``'s own docstring) and then
-``await session.turn_lock.acquire()``, BOUNDED by :data:`DEFAULT_SWAP_TIMEOUT_S`
+So: :meth:`_apply_swap` aborts the head's cursor if it is busy (a request,
+not a guarantee — see ``AgentSession.abort``'s own docstring) and then awaits
+that cursor's ``turn_lock``, BOUNDED by :data:`DEFAULT_SWAP_TIMEOUT_S`
 (phase-3 review Finding 1 — see that constant's own docstring for the
 timeout value and why an unbounded wait here is a defect, not a design: the
 RPC reader is strictly serial, so a handler that blocks forever wedges every
 later request behind it, including ``abort`` itself). Two outcomes:
 
 - **Timed out**: the turn did not free the lock in time. Nothing has been
-  touched — no reset, no log swap — so this returns
+  touched — no new cursor, no log swap — so this returns
   ``{"cancelled": False, "blocked": True, "reason": <str>}`` rather than
   raising, the same "a refusal is a result, not an exception" shape
   ``SubmissionResult.rejection_reason`` already uses one layer down
@@ -424,7 +385,7 @@ class AgentSessionRuntime:
         target: str | None,
     ) -> dict[str, Any]:
         """The shared critical section behind all three verbs — H2 veto,
-        H3 reset, H4 atomicity, and the Finding-1 bounded wait. See the
+        H3 cursor replacement, H4 atomicity, and the Finding-1 bounded wait. See the
         module docstring for the reasoning; this is deliberately the ONE
         place that reasoning is implemented.
         """
@@ -434,9 +395,11 @@ class AgentSessionRuntime:
             if await runner.emit_session_before_switch(reason, target):
                 return {"cancelled": True}
 
-        session.abort()
+        old = session.cursor
+        if old.busy:
+            session.abort(old)
         try:
-            await asyncio.wait_for(session.turn_lock.acquire(), timeout=self._swap_timeout_s)
+            await asyncio.wait_for(old.turn_lock.acquire(), timeout=self._swap_timeout_s)
         except asyncio.TimeoutError:
             return {
                 "cancelled": False,
@@ -449,10 +412,15 @@ class AgentSessionRuntime:
             }
         try:
             new_log = build_log()
-            self._reset_transient_state()
+            session._side_usage = zero_usage()
             session.session_log = new_log
         finally:
-            session.turn_lock.release()
+            old.turn_lock.release()
+
+        if old.has_queued or old.busy:
+            session.deliver_queued(old)
+        else:
+            await session.close_cursor(old)
 
         if self._rebind is not None:
             maybe_awaitable = self._rebind(session)
@@ -466,20 +434,3 @@ class AgentSessionRuntime:
             "cursor": session.cursor.leaf,
             "store": self._store,
         }
-
-    def _reset_transient_state(self) -> None:
-        """H3's reset set, minus the items the log swap itself accounts for
-        (cursor, last-compaction anchor — see the module docstring's table).
-        Called while :attr:`AgentSession.turn_lock` is held, immediately
-        before the caller assigns the new ``session_log``.
-        """
-        session = self._session
-        session._last_usage = None
-        session._side_usage = zero_usage()
-        session._pending_follow_up_messages = []
-        session._pending_next_turn_messages = []
-        session._pending_steer_messages = []
-        session._deferred_ops = []
-        session._is_streaming = False
-        # See the module docstring's "One item beyond H3's literal list" note.
-        session._pre_turn_leaf = None

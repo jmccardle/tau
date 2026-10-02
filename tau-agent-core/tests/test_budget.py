@@ -229,7 +229,7 @@ async def test_usd_budget_warns_then_aborts_through_the_loop() -> None:
     assert warn_node["role"] == "toolResult"
     # The guard tripped and the live abort signal is set.
     assert guard.tripped is True
-    assert session._abort_signal.is_aborted() is True
+    assert session.cursor.abort_signal.is_aborted() is True
     # Running spend crossed the ceiling.
     assert guard.mode == "usd"
     assert guard.running_usd >= 1.0
@@ -257,7 +257,7 @@ async def test_token_budget_aborts_through_the_loop() -> None:
     assert warn_node is not None
     assert warn_node["role"] == "toolResult"
     assert guard.tripped is True
-    assert session._abort_signal.is_aborted() is True
+    assert session.cursor.abort_signal.is_aborted() is True
     assert guard.mode == "tokens"
     assert guard.running_tokens >= 150_000
 

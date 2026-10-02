@@ -241,7 +241,7 @@ class TestDeliveryPoint:
         )
         assert active.index("do the thing") < active.index("actually, use ripgrep")
         assert "actually, use ripgrep" in _joined(turn_result.messages)
-        assert session._pending_steer_messages == [], "the queue is drained, not copied"
+        assert session.cursor.steer_queue == [], "the queue is drained, not copied"
 
     async def test_two_steers_for_one_turn_arrive_together_in_order(self):
         """Both are delivered before the SAME next call, in submission order.
@@ -330,7 +330,7 @@ class TestDeliveryPoint:
             await asyncio.wait_for(turn, timeout=2.0)
 
         assert len(provider.calls) == 1, "max_turns=1 must not be exceeded by a steer"
-        assert len(session._pending_steer_messages) == 1, "and the content is not dropped"
+        assert len(session.cursor.steer_queue) == 1, "and the content is not dropped"
 
 
 class TestNoTurnInFlight:
@@ -352,8 +352,8 @@ class TestNoTurnInFlight:
         assert result.messages, "a steer with nothing to steer runs its own turn"
         assert len(provider.calls) == 1
         assert "go" in _texts(provider.calls[0])
-        assert session._pending_steer_messages == []
-        assert session._turn_lock.locked() is False
+        assert session.cursor.steer_queue == []
+        assert session.cursor.turn_lock.locked() is False
         assert session.is_streaming is False
 
         active = _joined(
@@ -376,7 +376,7 @@ class TestNoTurnInFlight:
 
         payload = _texts(provider.calls[0])
         assert payload.index("go") < payload.index("read the config first")
-        assert session._pending_steer_messages == []
+        assert session.cursor.steer_queue == []
 
 
 class TestAbortAndRollback:
@@ -399,7 +399,7 @@ class TestAbortAndRollback:
             while not provider.calls:
                 await asyncio.sleep(0)
             await session.submit(_sub("steered", "s-1", multitask_strategy="steer"))
-            assert len(session._pending_steer_messages) == 1
+            assert len(session.cursor.steer_queue) == 1
 
             rollback = asyncio.create_task(
                 session.submit(_sub("scratch that", "r-1", multitask_strategy="rollback"))
@@ -412,7 +412,7 @@ class TestAbortAndRollback:
         assert rollback_result.accepted is True
         for call in provider.calls:
             assert "steered" not in _joined(call)
-        assert session._pending_steer_messages == []
+        assert session.cursor.steer_queue == []
 
     async def test_abort_clears_the_steering_queue_and_only_that_one(self):
         """``AgentSession.abort()`` → pi's ``clearSteeringQueue()``.
@@ -428,9 +428,9 @@ class TestAbortAndRollback:
 
         session.abort()
 
-        assert session._pending_steer_messages == []
-        assert session._pending_follow_up_messages == ["follow me"]
-        assert session._pending_next_turn_messages == ["next me"]
+        assert session.cursor.steer_queue == []
+        assert session.cursor.follow_up_queue == ["follow me"]
+        assert session.cursor.next_turn_queue == ["next me"]
 
 
 class TestReentrancy:
@@ -467,7 +467,7 @@ class TestReentrancy:
 
         assert len(surfaced) == 1
         assert "reentrant self-submission" in surfaced[0].error
-        assert session._pending_steer_messages == [], "a refused steer queues nothing"
+        assert session.cursor.steer_queue == [], "a refused steer queues nothing"
         assert "mid-turn" not in _joined(provider.calls[0])
 
 
