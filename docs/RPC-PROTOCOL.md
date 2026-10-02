@@ -35,7 +35,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 137,333 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 137,505 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -122,7 +122,7 @@ what rides on top of this on every response):
       ]
     },
     "session": {
-      "description": "F2's session tuple: {store, session_id, lane, cursor, addressable}. `lane` is always 'primary' in v1 (lanes are Tier C, not this phase). Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
+      "description": "F2's session tuple: {store, session_id, cursor_id, cursor, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
       "type": "object"
     }
   },
@@ -499,7 +499,7 @@ what rides on top of this on every response):
       ]
     },
     "session": {
-      "description": "F2's session tuple: {store, session_id, lane, cursor, addressable}. `lane` is always 'primary' in v1 (lanes are Tier C, not this phase). Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
+      "description": "F2's session tuple: {store, session_id, cursor_id, cursor, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
       "type": "object"
     }
   },
@@ -549,7 +549,7 @@ what rides on top of this on every response):
       ]
     },
     "multitask_strategy": {
-      "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 its events reach no channel this handler forwards; see docs/REMOTE-CONTROL.md \u00a73 Tier C open_lane.",
+      "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
       "enum": [
         "reject",
         "enqueue",
@@ -681,7 +681,7 @@ what rides on top of this on every response):
       ]
     },
     "session": {
-      "description": "F2's session tuple: {store, session_id, lane, cursor, addressable}. `lane` is always 'primary' in v1 (lanes are Tier C, not this phase). Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
+      "description": "F2's session tuple: {store, session_id, cursor_id, cursor, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
       "type": "object"
     }
   },
@@ -2269,7 +2269,7 @@ what rides on top of this on every response):
       ]
     },
     "multitask_strategy": {
-      "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 its events reach no channel this handler forwards; see docs/REMOTE-CONTROL.md \u00a73 Tier C open_lane.",
+      "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
       "enum": [
         "reject",
         "enqueue",

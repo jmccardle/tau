@@ -36,6 +36,12 @@ def _usage(read: int, total: int, output: int = 10, reported: bool = True) -> di
     }
 
 
+class _OwnedCursor:
+    """A cursor as the router reads it: owned, so its submission is a sub-agent's."""
+
+    owner = object()
+
+
 def _calls(*pairs: tuple[int, int], reported: bool = True) -> list[CompletionCache]:
     """Completions as ``(cache_read, prompt)``, all reporting unless told otherwise."""
     return [CompletionCache(read=r, prompt=p, reported=reported) for r, p in pairs]
@@ -150,8 +156,9 @@ class TestTheNoticeReachesLaneEnd:
         assert (await _turn("b", (0, 0, 0)))["cache_notice"] is None
 
     async def test_a_branch_does_not_date_the_next_user_turn(self):
-        """The cross-lane clock fault: a sub-agent closing seconds before a user
-        turn used to supply that turn's gap, though it shares no prefix with it."""
+        """The cross-lane clock fault: a sub-agent's turn (an owned cursor's
+        submission) closing seconds before a user turn must not supply that turn's
+        gap, because it shares no prefix with it."""
         from tau_agent_core.events import AgentEvent
         from tau_agent_core.submission import Submission
         from tau_coding_agent.backends import RenderRouter
@@ -172,14 +179,10 @@ class TestTheNoticeReachesLaneEnd:
         await router.on_agent_event(_end("a", 1_000_000))
         await router.on_submission_end(submission=first, side_usage={})
 
-        branch_event = AgentEvent(
-            type="message_end",
-            timestamp=1_600_000,
-            message=_usage(read=0, total=30_010),
-            submission_id=None,
-        )
-        await router.on_branch_event(lane="sub", label="agent", event=branch_event)
-        await router.on_branch_end(lane="sub", label="agent")
+        branch = Submission(text="agent", source="agent", submitter="fork:agent", submission_id="b")
+        await router.on_submission_start(submission=branch, text="agent", cursor=_OwnedCursor())
+        await router.on_agent_event(_end("b", 1_600_000))
+        await router.on_submission_end(submission=branch, side_usage={})
 
         second = Submission(text="go", source="interactive", submitter="human", submission_id="c")
         await router.on_submission_start(submission=second, text="go")

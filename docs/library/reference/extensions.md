@@ -6,27 +6,28 @@
 <!-- agent: yes -->
 
 ```python
-class BranchResult(ok: bool, lane: str, label: str, leaf: str | None, messages: list[dict[str, Any]], error: str | None)
+class BranchResult(ok: bool, cursor_id: str, label: str, leaf: str | None, messages: list[dict[str, Any]], error: str | None)
 ```
 
 `tau_agent_core.extension_types.BranchResult`
 
-What a C2/W14 branch sub-agent came back with (``ctx.spawn_branch``).
+What a sub-agent came back with (``ctx.spawn_branch``, ``AgentSession.spawn``).
 
 ``ok`` is the field callers must actually read. A sub-agent that failed returns a
 ``BranchResult`` with ``ok=False`` rather than raising, because failure containment
-is the design (§9.2/5) — one bad evaluator in a fan-out must not kill the primary
-turn. The cost of that choice is that an unchecked ``ok`` turns a failure into an
-empty-but-successful-looking answer, so the field is first and the docstrings say so.
+is the design (§9.2/5) — one bad evaluator in a fan-out must not kill the turn that
+spawned it. An unchecked ``ok`` turns a failure into an empty-but-successful-looking
+answer, so the field is first.
 
-``leaf`` is the branch's final entry id — the handle the spawner's **fold step** uses
+``leaf`` is the sub-agent's final entry id — the handle the spawner's fold step uses
 to read the verdict back (or to ``ctx.summarize_branch(leaf)`` it) before making its
-one distilled append on the primary cursor.
+one distilled append on its own cursor. ``cursor_id`` names the cursor its events
+carried; the cursor is closed by the time this is returned.
 
 **Constructor parameters**
 
 - `ok: bool` — *(no description)*
-- `lane: str` — *(no description)*
+- `cursor_id: str` — *(no description)*
 - `label: str` — *(no description)*
 - `leaf: str | None` — *(no description)*
 - `messages: list[dict[str, Any]]` — *(no description)*
@@ -1208,65 +1209,21 @@ True once `shutdown()` has been called on this context (P3).
 ### spawn_branch
 
 ```python
-async spawn_branch(parent_id: str | None, prompt: str, *, tools: list[str], model: Any = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None) -> 'BranchResult'
+async spawn_branch(parent_id: str | None, prompt: str, *, tools: list[str], model: Any = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = False) -> 'BranchResult'
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.spawn_branch`
 
 Run a tool-using sub-agent on its own cursor in THIS conversation (C2/W14).
 
-The sub-agent is a real ``AgentSession`` over a second
-:class:`~tau_agent_core.cursor.Cursor` on the same log, owned by this
-session's cursor. Its turns are a real in-tree branch, so the tree stays the
-single truth for everything the agent did, and on the JMFTS store the
-finished branch is already a searchable subtree.
+Resolves ``model`` (a name, a ``Model`` or ``None`` for the session's) and
+delegates to :meth:`AgentSession.spawn`, which documents the cursor it opens,
+the frame it runs under and how failure is contained (docs/CURSORS.md §6).
 
-``parent_id`` chooses the inherited context: the fold walks up from it, so the
-sub-agent sees exactly the shared conversation prefix down to that point, plus
-its own work. Its writes can never reach the spawner's context nor move its
-cursor — structurally, not by a filter: they are never ancestors of the
-spawner's leaf, and a leaf→root walk cannot wander (docs/LANE-REMOVAL.md §3.1).
-Nothing on disk marks them as a sub-agent's, because a sub-agent's branch and a
-user's fork are the same shape and are meant to read the same (§1).
-
-``tools`` is a **required hard allowlist**, deliberately not defaulted. Sub-agents
-share the process and cwd, so "inherit the parent's tools" would silently hand a
-retrieval evaluator ``write`` and ``bash``; and defaulting to ``[]`` would just as
-silently produce a sub-agent that cannot do the job it was spawned for. Naming the
-tools is the only option that cannot fail quietly. Pass ``[]`` to mean none.
-
-Every name is checked against what the spawning session actually offers the
-model — ``session._build_turn_tools()``, so the constructor's tools AND the
-extensions' registrations, resolved exactly as a turn resolves them. A name
-that is not in that list raises. Consequently ``no_tools="all"`` yields an
-empty list here, so a non-empty allowlist on such a session raises rather
-than routing tools around the suppression.
-
-``system_prompt`` defaults to ``None``, which inherits the spawning session's own
-prompt (``session._system_prompt``) — today's behaviour, unchanged for every
-existing caller. Passing a string forks with a *different* spec instead: the one
-concrete blocker on "fork at a node with a different spec"
-(NODE-ADDRESSABLE-AGENTS.md §5 recipe 2, W1) was that this call hardcoded the
-parent's prompt with no override.
-
-**Failure is contained, not propagated** (§9.2/5): a sub-agent that errors marks
-its own branch and returns ``ok=False``; it never aborts the primary loop. A
-raise here would mean one bad evaluator in a fan-out kills the whole turn.
-
-**The branch's events are bracketed**: each one is forwarded onto the primary
-bus's ``branch_event`` channel, and a single terminal ``branch_end`` (carrying
-``lane``, ``label`` and the ``error`` that ended it, or ``None``) is emitted
-from a ``finally`` — so a consumer that opened something on the first event can
-close it whether the branch finished, failed, or was cancelled.
-
-**The sub-agent starts with no extensions** (NODE-ADDRESSABLE-AGENTS.md Decision
-4 / W4), by choice rather than oversight: the constructor below passes no
-``extensions=``, so a forked session never re-registers the parent's hooks. This
-is deliberate, not a gap to file — inheriting them would make the hook runner
-re-entrant across two concurrent turns (the parent's turn still running, the
-branch's turn also running, both walking the same registered hook state), which
-is a materially larger change than this method's scope. A caller that wants the
-sub-agent to carry extensions loads them onto ``sub`` itself before ``prompt()``.
+``tools`` is a **required hard allowlist**: "inherit the spawner's tools" would
+hand a retrieval evaluator ``write`` and ``bash`` silently, and an empty default
+would produce a sub-agent that cannot do its job just as silently. Pass ``[]``
+to mean none.
 
 **Parameters**
 
@@ -1277,10 +1234,15 @@ sub-agent to carry extensions loads them onto ``sub`` itself before ``prompt()``
 - `max_turns: int | None = None` — *(no description)*
 - `label: str | None = None` — *(no description)*
 - `system_prompt: str | None = None` — *(no description)*
+- `hooks: bool = False` — *(no description)*
 
 **Returns**
 
-class:`BranchResult`. **Check ``ok``** — a failed branch returns a result, it does not raise.
+class:`BranchResult`. **Check ``ok``** — a failed sub-agent returns a result, it does not raise.
+
+**Raises**
+
+- `ValueError` — a tool is not one the spawning turn offers, or ``parent_id`` names no entry.
 
 ### summarize_branch
 

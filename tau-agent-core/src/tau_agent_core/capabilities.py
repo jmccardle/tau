@@ -668,9 +668,10 @@ _SESSION_LIFECYCLE_RETURNS: dict[str, Any] = {
         "session": {
             "type": "object",
             "description": (
-                "F2's session tuple: {store, session_id, lane, cursor, "
-                "addressable}. `lane` is always 'primary' in v1 (lanes are "
-                "Tier C, not this phase). Present only when cancelled is "
+                "F2's session tuple: {store, session_id, cursor_id, cursor, "
+                "addressable}. `cursor_id` names the cursor this connection "
+                "now drives (docs/CURSORS.md), which every forwarded event's "
+                "`cursor_id` matches. Present only when cancelled is "
                 "false. `addressable` (finding 7 of the Tier B review) is "
                 "the field that says whether `session_id` is a value "
                 "ANOTHER call can use: true means list_sessions returns this "

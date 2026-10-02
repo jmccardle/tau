@@ -431,6 +431,7 @@ class AgentSessionRuntime:
             "cancelled": False,
             "session": new_log,
             "session_id": new_log.id,
+            "cursor_id": session.cursor.id,
             "cursor": session.cursor.leaf,
             "store": self._store,
         }

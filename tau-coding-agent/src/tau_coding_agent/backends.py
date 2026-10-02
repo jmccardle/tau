@@ -51,8 +51,6 @@ from tau_agent_core.truncation import dropped_tool_calls
 
 DEFAULT_LANE = "main"
 
-#: What a sub-agent's lane key starts with, as opposed to a submission's.
-BRANCH_LANE_PREFIX = "branch:"
 
 DEFAULT_TOOL_NAMES: tuple[str, ...] = ("read", "write", "edit", "bash", "ls", "grep", "find")
 
@@ -382,15 +380,14 @@ class TurnStream:
 class RenderRouter:
     """Demultiplex ONE session's whole bus into per-lane render events (B3-a).
 
-    Reference: docs/SUBMISSION-LIFECYCLE.md, end of "Phasing" — *"backends.py:200
-    stream_chat is single-stream by construction, and nothing yet subscribes to
-    the branch_event channel, so a fork today is unobservable"*.
+    Reference: docs/SUBMISSION-LIFECYCLE.md, end of "Phasing".
 
     A frontend attaches this ONCE, for the life of the session, instead of
     subscribing per awaited turn. Every submission that runs a turn becomes a
-    lane; every ``fork``/``spawn_branch`` sub-agent becomes a second lane; the
-    events of each are tagged with it so a renderer can draw them side by side
-    rather than interleaving them into one transcript.
+    lane — a ``fork``/``spawn_branch`` sub-agent's included, since its turn is a
+    submission on its own cursor (docs/CURSORS.md §6) — and the events of each
+    are tagged with it so a renderer can draw them side by side rather than
+    interleaving them into one transcript.
 
     Follows Jupyter's rule, which the spec states explicitly and which is easy to
     get backwards: *"a frontend filters on 'is this mine?' to decide HOW to
@@ -423,8 +420,8 @@ class RenderRouter:
 
     ``cache_notice`` is this router's :class:`PromptCacheObserver` verdict on the
     closing lane. The observer is shared across lanes because its latch is a fact
-    about the server, but a branch lane names no prefix — a sub-agent's prompt is
-    not the conversation's, so it neither reads nor writes the cross-turn clock.
+    about the server, but a sub-agent's lane names no prefix — its prompt is not
+    the conversation's, so it neither reads nor writes the cross-turn clock.
 
     An agent event whose ``submission_id`` names no open lane is NOT dropped in
     silence: it goes to ``on_orphan`` with a reason. Those exist — a
@@ -446,6 +443,7 @@ class RenderRouter:
         self._on_orphan = on_orphan
         self._lanes: dict[str, TurnStream] = {}
         self._identity: dict[str, tuple[str | None, str | None]] = {}
+        self._sub_agent_lanes: set[str] = set()
         self._prompt_cache = PromptCacheObserver()
         self._detach: Callable[[], None] | None = None
 
@@ -471,12 +469,24 @@ class RenderRouter:
         return list(self._lanes)
 
     async def on_submission_start(
-        self, *, submission: Submission, text: str, images: Any = None
+        self,
+        *,
+        submission: Submission,
+        text: str,
+        images: Any = None,
+        cursor: Any = None,
     ) -> None:
-        """Open the lane for an admitted submission (``submission_start`` channel)."""
+        """Open the lane for an admitted submission (``submission_start`` channel).
+
+        A sub-agent's turn is a submission on the same bus (docs/CURSORS.md §6), so
+        it opens a lane here like any other; its cursor having an ``owner`` is what
+        marks its prompt as not the conversation's.
+        """
         lane = submission.submission_id
         self._lanes[lane] = TurnStream(lane)
         self._identity[lane] = (submission.source, submission.submitter)
+        if cursor is not None and cursor.owner is not None:
+            self._sub_agent_lanes.add(lane)
         await self._deliver(
             {
                 "kind": "lane_start",
@@ -550,81 +560,6 @@ class RenderRouter:
             payload["error"] = event.error
         await self._deliver(payload)
 
-    async def on_branch_event(self, *, lane: str, label: str, event: AgentEvent) -> None:
-        """Route one sub-agent event (``branch_event`` channel) into its branch lane.
-
-        A branch opens its lane on its FIRST event, because the
-        ``submission_start``/``submission_end`` pair the primary path uses is
-        emitted on the SUB-session's bus and only its ``AgentEvent``s are forwarded
-        here (``ExtensionContext.spawn_branch``).
-
-        It closes on :meth:`on_branch_end`, NOT on the sub-agent's own
-        ``agent_end``. That was the original bracket and it leaked: ``agent_end``
-        used to be reachable only by falling out of ``AgentLoop.run``'s while loop,
-        so a branch whose turn raised (a dropped connection; a provider
-        ``ErrorEvent``, which the loop turns into a ``RuntimeError``) or was
-        cancelled (``abort()`` cancels every forked task) emitted no ``agent_end``
-        at all — and ``spawn_branch`` contains the failure, so no other signal
-        arrived either. The lane, its exchange and its LaneStrip entry were then
-        held open for the rest of the session: a permanently "Working…" exchange,
-        which is the silent-hang shape this lifecycle exists to remove.
-
-        ``AgentLoop`` now closes that bracket from an ``except`` that re-raises, so
-        the specific leak above is fixed at the source — but ``branch_end`` stays
-        the bracket regardless, for the same reason ``submission_end`` does on the
-        primary path: a branch can fail BEFORE ``agent_start`` (an admission
-        refusal on the sub-session), and one span can contain more than one loop.
-        A bracket that only exists once the loop has started cannot close a span
-        that never got that far. ``branch_end`` is emitted from a ``finally``, so
-        it arrives however the branch ended.
-
-        The branch's own events carry the SUB-session's provenance (its
-        ``prompt()`` wrapper says ``interactive``/``human``), which would be a lie
-        on the primary transcript — a person did not type this. The lane is
-        re-identified as ``source="agent"``, ``submitter="fork:<label>"``: τ
-        driving itself, which is what :data:`SubmissionSource` reserves ``"agent"``
-        for.
-        """
-        key = f"{BRANCH_LANE_PREFIX}{lane}"
-        if key not in self._lanes:
-            self._lanes[key] = TurnStream(key)
-            self._identity[key] = ("agent", f"fork:{label}")
-            await self._deliver(
-                {
-                    "kind": "lane_start",
-                    "lane": key,
-                    "source": "agent",
-                    "submitter": f"fork:{label}",
-                    "correlation": {"branch_lane": lane, "branch_label": label},
-                    "text": label,
-                }
-            )
-        await self._route(key, event)
-
-    async def on_branch_end(self, *, lane: str, label: str, error: str | None = None) -> None:
-        """Close a branch lane on the sub-agent's terminal event (``branch_end``).
-
-        The counterpart of :meth:`on_submission_end`, and emitted from the same
-        kind of ``finally`` — see :meth:`on_branch_event` for why the sub-agent's
-        ``agent_end`` cannot serve as the bracket.
-
-        A ``branch_end`` for a lane that was never opened is real and is REPORTED,
-        not silently ignored: a branch that failed before emitting even
-        ``agent_start`` (an admission refusal on the sub-session) rendered nothing,
-        so there is no exchange to finalize — but a renderer that swallowed that
-        would be indistinguishable from one that had stopped working. ``error``
-        rides the reason so the report names what ended the branch.
-        """
-        key = f"{BRANCH_LANE_PREFIX}{lane}"
-        if key not in self._lanes:
-            self._orphan(
-                f"branch lane {key!r} ({label!r}) ended without ever opening — the "
-                "sub-agent emitted no event, so nothing was rendered for it "
-                f"(error: {error!r})"
-            )
-            return
-        await self._close(key)
-
     async def close_all(self) -> None:
         """Close every still-open lane — the renderer teardown (session swap, quit).
 
@@ -651,9 +586,11 @@ class RenderRouter:
             self._orphan(f"lane {lane!r} closed twice, or was never opened")
             return
         source, submitter = self._identity.pop(lane, (None, None))
+        sub_agent = lane in self._sub_agent_lanes
+        self._sub_agent_lanes.discard(lane)
         cache_notice = self._prompt_cache.observe_turn(
             stream.completions,
-            prefix=None if lane.startswith(BRANCH_LANE_PREFIX) else CONVERSATION_PREFIX,
+            prefix=None if sub_agent else CONVERSATION_PREFIX,
             first_event_ms=stream.first_event_ms,
             last_event_ms=stream.last_event_ms,
         )
@@ -1881,18 +1818,15 @@ class TauBackend(Backend):
         *,
         on_orphan: Callable[[str], None] | None = None,
     ) -> RenderRouter:
-        """Wire a :class:`RenderRouter` across all six of this session's channels.
+        """Wire a :class:`RenderRouter` across this session's four render channels.
 
-        The ``AgentEvent`` stream carries the turns; ``submission_start`` /
+        The ``AgentEvent`` stream carries the turns — every cursor's, a sub-agent's
+        included, each tagged with its ``cursor_id``; ``submission_start`` /
         ``submission_end`` carry the submission spans that bracket them (which
         ``agent_start``/``agent_end`` cannot — a followUp re-entry runs a second
-        loop inside one submission); ``branch_event`` carries a forked sub-agent's
-        events, which until now had no consumer anywhere, which is the concrete
-        sense in which "a fork today is unobservable"; ``branch_end`` is that
-        sub-agent's own span close, emitted from a ``finally`` so a branch that
-        raised or was cancelled cannot leave its lane open forever; and
-        ``custom_message`` carries an extension's durable message, which belongs
-        to none of the other five because it belongs to no completion.
+        loop inside one submission), emitted from a ``finally`` so a turn that
+        raised or was cancelled cannot leave its lane open; and ``custom_message``
+        carries an extension's durable message, which belongs to no completion.
 
         See :meth:`Backend.subscribe_render` for the contract.
         """
@@ -1901,8 +1835,6 @@ class TauBackend(Backend):
             self.agent_session.subscribe(router.on_agent_event),
             self.agent_session.subscribe_channel("submission_start", router.on_submission_start),
             self.agent_session.subscribe_channel("submission_end", router.on_submission_end),
-            self.agent_session.subscribe_channel("branch_event", router.on_branch_event),
-            self.agent_session.subscribe_channel("branch_end", router.on_branch_end),
             self.agent_session.subscribe_channel("custom_message", router.on_custom_message),
         ]
 
@@ -2076,7 +2008,9 @@ class TauBackend(Backend):
 
         Passes ALL of ``context`` as the LLM context so the agent loop has full
         conversation history (system prompt, prior assistant/tool results).
-        Returns (assistant_text, usage, new_messages, tool_calls, result).
+        Returns (assistant_text, usage, new_messages, tool_calls, result). Only the
+        head cursor's events reach either channel: a sub-agent a tool spawns
+        mid-turn emits on the same bus, and its text is not this answer's.
 
         Two consumer channels are driven from the agent-core event bus:
 
@@ -2100,6 +2034,7 @@ class TauBackend(Backend):
         ``tool_calls_info`` for chat persistence (deduplicated by id).
         """
         stream = TurnStream()
+        head = self.agent_session.cursor
 
         side_usage_before = self.agent_session.side_usage
 
@@ -2113,6 +2048,8 @@ class TauBackend(Backend):
             arrival order (assistant text after a tool call ends up *after* it, not
             pinned above it).
             """
+            if event.cursor_id is not None and event.cursor_id != head.id:
+                return
             for structured in stream.feed(event):
                 if structured["kind"] == "text_delta":
                     callback(structured["delta"])
@@ -2130,6 +2067,8 @@ class TauBackend(Backend):
             lifecycle and the two consumers must not share an accumulator.
             """
             if on_json_event is None:
+                return
+            if event.cursor_id is not None and event.cursor_id != head.id:
                 return
             for payload in json_mode_payloads(json_projector, event):
                 on_json_event(payload)

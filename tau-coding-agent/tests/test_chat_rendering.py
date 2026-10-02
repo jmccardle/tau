@@ -944,16 +944,28 @@ async def test_reload_multiple_user_turns_make_separate_exchanges():
 
 
 class _FakeEvent:
-    """Minimal stand-in for tau_agent_core AgentEvent (attribute access)."""
+    """Minimal stand-in for tau_agent_core AgentEvent (attribute access).
+
+    ``cursor_id`` defaults to ``None``, which the head's event filter passes.
+    """
+
+    cursor_id = None
 
     def __init__(self, **kw):
         self.__dict__.update(kw)
+
+
+class _HeadCursor:
+    """The one attribute ``stream_chat`` reads off the session's cursor."""
+
+    id = "head"
 
 
 class _FakeSession:
     """Replays a scripted AgentEvent sequence through the subscribed handler."""
 
     def __init__(self, events):
+        self.cursor = _HeadCursor()
         self._events = events
         self._handler = None
         self._side = dict.fromkeys(

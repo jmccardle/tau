@@ -843,7 +843,7 @@ async def test_multitask_strategy_fork_is_rejected_not_silently_no_opd(handler, 
     assert "result" not in response
     assert response["error"]["code"] == dialect.INVALID_PARAMS
     assert "fork" in response["error"]["message"]
-    assert "open_lane" in response["error"]["message"]
+    assert "its own cursor" in response["error"]["message"]
     assert response["error"]["data"]["multitask_strategy"] == "fork"
     # Never admitted: AgentSession.submit() must not have been reached at all.
     session.submit.assert_not_called()

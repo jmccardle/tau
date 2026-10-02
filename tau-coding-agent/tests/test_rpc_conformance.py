@@ -680,7 +680,7 @@ async def test_new_session_resets_state_and_returns_the_addressable_tuple(fake_h
         # (Session._init_state), so "empty" means "no message entries", not
         # "no entries at all".
         assert result["session"]["store"] == "file"
-        assert result["session"]["lane"] == "primary"
+        assert isinstance(result["session"]["cursor_id"], str)
         assert isinstance(result["session"]["cursor"], str)
         # E5: the resulting cursor, also at top level, matches.
         assert result["cursor"] == result["session"]["cursor"]

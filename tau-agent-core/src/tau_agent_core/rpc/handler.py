@@ -402,11 +402,13 @@ class RPCHandler:
         (see that function's docstring); every other event type projects to
         exactly one.
 
-        This is also the single feed of the handler's `PromptCacheObserver`, and
-        the reason it is safe to feed here without naming a prefix: this
-        subscription is one conversation's, so a sub-agent's completions never
-        reach it. The observer answers only on `agent_end`, where the answer
-        becomes `WireEvent.cache_notice`.
+        **Only the session's own cursor is forwarded.** A sub-agent's or a detached
+        cursor's turn emits on the same bus with a different `cursor_id`
+        (docs/CURSORS.md §6); an RPC client drives one position, and interleaving
+        another cursor's deltas into its stream would garble the transcript it
+        renders. That also keeps the handler's `PromptCacheObserver`, fed only
+        here, to one conversation's completions. The observer answers only on
+        `agent_end`, where the answer becomes `WireEvent.cache_notice`.
 
         **T3/G4 — this is the backpressure mechanism, not a separate "pace
         hook".** `EventBus.emit` (`events.py`) calls each subscribed handler
@@ -440,6 +442,8 @@ class RPCHandler:
         while the item waits in the queue. `_cursor` is popped off (never
         serialized) before the item reaches `json.dumps`.
         """
+        if event.cursor_id is not None and event.cursor_id != self._session.cursor.id:
+            return
         cache_notice = self._prompt_cache.feed_event(event)
         for params in wire_events.project_event(
             self._delta_projector, event, cache_notice=cache_notice

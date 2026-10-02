@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any
 
 from tau_llm.abort import AbortSignal
@@ -20,7 +21,33 @@ from tau_llm.docs import agent_facing
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import CONFIG_ENTRY_TYPE, CONFIG_KEYS, SessionLog, default_leaf
 
-__all__ = ["Cursor", "TURN_CURSOR"]
+__all__ = ["Cursor", "TURN_CURSOR", "TurnFrame"]
+
+
+@agent_facing(topic="sessions")
+@dataclass(frozen=True)
+class TurnFrame:
+    """How a cursor's turns differ from its session's (docs/CURSORS.md §6).
+
+    A sub-agent's cursor carries one; the head's carries none and runs as the
+    session is configured. The frame is recorded in the tree like any other
+    config the first time the cursor's turn appends.
+
+    Attributes:
+        tools: Names the turn may call, a subset of the session's; required, so a
+            sub-agent never inherits ``write`` and ``bash`` by accident. ``()`` is none.
+        model: The model to run, or ``None`` for the session's.
+        system_prompt: The prompt to run under, or ``None`` for the session's.
+        max_turns: The loop's turn ceiling for this cursor; ``None`` is no ceiling.
+        hooks: Whether extension hooks run on this cursor's turns. Off by default:
+            a sub-agent stays as constrained as its spawner asked.
+    """
+
+    tools: tuple[str, ...]
+    model: Any = None
+    system_prompt: str | None = None
+    max_turns: int | None = None
+    hooks: bool = False
 
 
 def _require_entry(log: SessionLog, entry_id: str | None, what: str) -> None:
@@ -60,6 +87,8 @@ class Cursor:
         in_flight_context: The running turn's context, for a mid-turn estimate.
         persistence_settled: Clear from a turn's ``agent_end`` until its messages
             are written (docs/ASYNC-SESSION-LOG.md §3.3).
+        frame: The :class:`TurnFrame` this cursor's turns run under, or ``None``
+            for the session's own.
     """
 
     def __init__(
@@ -97,6 +126,7 @@ class Cursor:
         self.in_flight_context: list[dict[str, Any]] | None = None
         self.persistence_settled = asyncio.Event()
         self.persistence_settled.set()
+        self.frame: TurnFrame | None = None
 
     @classmethod
     def newest(cls, log: SessionLog, *, owner: Cursor | None = None, label: str = "") -> Cursor:

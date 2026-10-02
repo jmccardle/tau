@@ -37,7 +37,7 @@ from tau_agent_core.events import (
     SideCompletionPurpose,
     SideCompletionReason,
 )
-from tau_agent_core.extension_types import ExtensionAPI, validate_form_values
+from tau_agent_core.extension_types import BranchResult, ExtensionAPI, validate_form_values
 from tau_agent_core.extension_locks import (
     RESPONSE_ENTRY_TYPE,
     ExtensionRequest,
@@ -60,7 +60,7 @@ from tau_agent_core.session_log import (
     config_entry_at,
     session_log_is_addressable,
 )
-from tau_agent_core.cursor import TURN_CURSOR, Cursor
+from tau_agent_core.cursor import TURN_CURSOR, Cursor, TurnFrame
 from tau_agent_core.agent_loop import AgentLoop, completed_messages
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
@@ -644,6 +644,7 @@ class AgentSession:
         self._extension_api = self._make_extension_api()
         self._extension_runner = ExtensionRunner(context=self._extension_api.context)
         self._extension_runner.on_error(self._surface_extension_error)
+        self._quiet_runner = ExtensionRunner(context=self._extension_api.context)
         self._events.on_error(self._surface_notify_error)
         self._events.on("message_end", self._record_completion_usage)
         for ext in self._extensions:
@@ -660,14 +661,22 @@ class AgentSession:
         loaded_paths = [
             path for path in self._loaded_extensions if path not in self._disabled_paths
         ]
+        frame = self._turn_cursor().frame
+        model = self._turn_model()
         return {
-            "model_spec": self.get_model(),
+            "model_spec": {
+                "id": model.id,
+                "provider": model.provider,
+                "context_window": model.context_window,
+            },
             "thinking": self._reasoning,
-            "tools": [t.name for t in self._tools],
+            "tools": [t.name for t in self._tools]
+            if frame is None
+            else [t.name for t in self._turn_tools()],
             "extensions": [_extension_factory_label(ext) for ext in self._extensions]
             + loaded_paths,
             "cwd": self._cwd,
-            "system_prompt_digest": _system_prompt_digest(self._system_prompt),
+            "system_prompt_digest": _system_prompt_digest(self._turn_system_prompt()),
         }
 
     async def _record_config(self) -> None:
@@ -1356,28 +1365,19 @@ class AgentSession:
         """Subscribe to one of the bus's NON-``AgentEvent`` channels. Returns unsubscribe.
 
         :meth:`subscribe` covers the ``AgentEvent`` stream, whose ``type`` Literal is
-        deliberately closed (S49). Everything that is lifecycle rather than a loop
-        event rides a separate string channel instead, and until now the only way to
-        reach one from outside was to reach into ``_events`` — so ``branch_event``
-        had no public consumer at all, which is why a fork was unobservable
-        (docs/SUBMISSION-LIFECYCLE.md, end of "Phasing").
+        deliberately closed (S49); lifecycle rides separate string channels.
 
         The channels a renderer cares about:
 
-        - ``"submission_start"`` — ``(submission, text, images)``, once per admitted
-          submission that will actually run a turn, before the loop starts. The
+        - ``"submission_start"`` — ``(submission, text, images, cursor)``, once per
+          admitted submission that will actually run a turn, before the loop starts.
+          ``cursor`` is the one it extends; a sub-agent's has an ``owner``. The
           submission-level bracket ``agent_start`` is not: a followUp re-entry runs a
           second ``loop.run()`` inside one ``submit()``.
         - ``"submission_end"`` — ``(submission, side_usage)``, in a ``finally``, so it
           arrives however the turn ended.
-        - ``"branch_event"`` — ``(lane, label, event)``, one per ``AgentEvent`` a
-          ``spawn_branch``/``fork`` sub-agent emits, tagged with the branch's lane.
-        - ``"branch_end"`` — ``(lane, label, error)``, once per branch, in a
-          ``finally``, so it arrives however the branch ended (returned, contained
-          failure, or cancelled by ``abort()``). The branch's OWN ``agent_end`` is
-          not that bracket: ``AgentLoop.run`` emits it after the while loop rather
-          than from a ``finally``, so a branch that raised or was cancelled never
-          emits one — and a consumer bracketing on it holds the span open forever.
+        - ``"cursor_open"`` / ``"cursor_close"`` — ``(cursor)``, when
+          :meth:`open_cursor` / :meth:`close_cursor` run (docs/CURSORS.md §4).
 
         Handlers may be sync or async and are dispatched exactly like
         :meth:`subscribe`'s (fire-and-forget; an exception is surfaced through the
@@ -1824,7 +1824,41 @@ class AgentSession:
         would be a second source of truth that silently drifts. That default is now
         ``None``: no ceiling, until a caller states one.
         """
-        return {} if self._max_turns is None else {"max_turns": self._max_turns}
+        frame = self._turn_cursor().frame
+        max_turns = self._max_turns if frame is None else frame.max_turns
+        return {} if max_turns is None else {"max_turns": max_turns}
+
+    def _turn_model(self) -> Model:
+        """The model the running turn calls: its cursor frame's, else the session's."""
+        frame = self._turn_cursor().frame
+        return self._model if frame is None or frame.model is None else frame.model
+
+    def _turn_system_prompt(self) -> str:
+        """The prompt the running turn runs under: its cursor frame's, else the session's."""
+        frame = self._turn_cursor().frame
+        if frame is None or frame.system_prompt is None:
+            return self._system_prompt
+        return frame.system_prompt
+
+    def _turn_tools(self) -> list[AgentTool]:
+        """The tools the running turn offers: the session's, narrowed by its cursor's frame."""
+        tools = self._build_turn_tools()
+        frame = self._turn_cursor().frame
+        if frame is None:
+            return tools
+        allowed = set(frame.tools)
+        return [t for t in tools if t.name in allowed]
+
+    def _hooks(self) -> ExtensionRunner:
+        """The runner the running turn dispatches hooks through.
+
+        A cursor whose frame turns hooks off gets a runner with no registrations,
+        which is every hook point answering "no handlers" (docs/CURSORS.md §6).
+        """
+        frame = self._turn_cursor().frame
+        return (
+            self._quiet_runner if frame is not None and not frame.hooks else self._extension_runner
+        )
 
     async def _reserve_turn_or_reject(self, cursor: Cursor) -> bool:
         """Reserve the in-flight-turn slot if free; ``False`` without blocking if not.
@@ -2308,8 +2342,9 @@ class AgentSession:
         """
         text = sub.text
         images = sub.images
-        if self._extension_runner.has_handlers("input"):
-            input_result = await self._extension_runner.emit_input(
+        hooks = self._hooks()
+        if hooks.has_handlers("input"):
+            input_result = await hooks.emit_input(
                 text, images, source=sub.source, submitter=sub.submitter
             )
             if input_result["handled"]:
@@ -2442,8 +2477,8 @@ class AgentSession:
              producing a bad prefix. On success, a second agent is spawned in a
              SUPERVISED background task (:meth:`_spawn_fork`,
              :attr:`_forked_tasks`) — reusing ``ctx.spawn_branch``'s entire
-             mechanism (a second cursor, tool scoping, failure containment,
-             ``branch_event`` forwarding) — and ``submit()`` returns
+             mechanism (an owned cursor, tool scoping, failure containment) —
+             and ``submit()`` returns
              ``accepted=True`` immediately, before the branch's turn finishes;
              there is no caller left to await it the way ``spawn_branch``'s
              caller does.
@@ -2735,7 +2770,7 @@ class AgentSession:
                 )
             fork_depth_token = DRIVING_SUBMISSION_DEPTH.set(sub.depth)
             try:
-                self._spawn_fork(sub, fork_point)
+                self._spawn_fork(sub, fork_point, cur)
             finally:
                 DRIVING_SUBMISSION_DEPTH.reset(fork_depth_token)
             return SubmissionResult(accepted=True, submission_id=sub.submission_id, messages=[])
@@ -2790,7 +2825,7 @@ class AgentSession:
 
             side_usage_before = self.side_usage
             await self._events.emit_channel(
-                "submission_start", submission=sub, text=text, images=images
+                "submission_start", submission=sub, text=text, images=images, cursor=cur
             )
             try:
                 turn_messages = await self._run_one_turn(
@@ -2829,53 +2864,117 @@ class AgentSession:
             SUBMISSION_ALLOWS_USER_INPUT.reset(user_input_token)
             cur.turn_lock.release()
 
-    def _spawn_fork(self, sub: Submission, fork_point: str | None) -> None:
-        """Schedule a ``multitask_strategy="fork"`` submission as a supervised task.
+    async def spawn(
+        self,
+        at: str | None,
+        prompt: str,
+        *,
+        tools: list[str],
+        model: Model | None = None,
+        max_turns: int | None = None,
+        label: str | None = None,
+        system_prompt: str | None = None,
+        hooks: bool = False,
+        owner: Cursor | None = None,
+    ) -> BranchResult:
+        """Run ``prompt`` as a sub-agent turn on a new cursor at ``at`` (docs/CURSORS.md §6).
 
-        docs/SUBMISSION-LIFECYCLE.md "fork" / NODE-ADDRESSABLE-AGENTS.md §5: the
-        cost of ``fork`` is not tree work (``ctx.spawn_branch`` already does all
-        of it — a second cursor, tool scoping, failure containment, forwarding the
-        branch's own events onto the ``branch_event`` channel) — it is lifecycle.
-        ``spawn_branch`` is designed to be awaited by its caller; a fork
-        submission has none, so this wraps the SAME coroutine in an
-        ``asyncio.Task`` and tracks it in :attr:`_forked_tasks`, keyed by
-        ``sub.submission_id`` (chosen up front — the sub-agent's cursor does not
-        exist until the coroutine opens it, which is too late to key a registry
-        meant to reference the task before it finishes).
+        The cursor is owned by ``owner`` (default: the running turn's), so aborting
+        the owner aborts it, and it runs under a :class:`~tau_agent_core.cursor.TurnFrame`:
+        only ``tools``, ``model``/``system_prompt`` when given, ``max_turns``, and
+        no extension hooks unless ``hooks``. Its turn is an ordinary submission
+        (``source="agent"``, ``submitter="fork:<label>"``) whose events carry its
+        cursor's id. Its first append records that frame as a config entry, so the
+        sub-agent's spec is in the tree. The cursor is closed before this returns.
 
-        The forked session runs with THIS session's own tools (a second full
-        agent, not a scoped-down evaluator — spawn_branch's allowlist exists to
-        protect against inheriting tools BY ACCIDENT; a fork explicitly asks to
-        continue the same job) and turn cap. It does NOT inherit this session's
-        extensions (`spawn_branch` passes none — NODE-ADDRESSABLE-AGENTS.md
-        decision 4), abort signal (it gets its OWN, fresh, inside the new
-        ``AgentSession``), or usage ledger (``_last_usage``/``_side_usage`` stay
-        per-session) — see the work item's report for whether that is a gap or a
-        documented choice.
+        **Failure is contained, not propagated** (§9.2/5): a sub-agent that raises
+        marks its branch with a ``branch_error`` entry and returns ``ok=False``; one
+        bad evaluator in a fan-out must not kill the turn that spawned it.
 
-        "Own tools" means everything a turn of THIS session is built from,
-        extension registrations included: a continuation missing half the
-        vocabulary cannot perform the job it was forked to continue. That is not
-        in tension with the line above — the extensions themselves do not carry,
-        so no hook, command or subscription runs in the fork; an extension's
-        TOOL does, still bound to the parent's ``ctx``, which is what an
-        extension tool closes over wherever it is called from.
+        Raises:
+            ValueError: a name in ``tools`` is not one the spawning turn offers, or
+                ``at`` names no entry.
+        """
+        available = {t.name for t in self._turn_tools()}
+        missing = [t for t in tools if t not in available]
+        if missing:
+            raise ValueError(
+                f"spawn: tool(s) {missing!r} are not available on this session "
+                f"(available: {sorted(available)}). A sub-agent silently missing a tool it "
+                "was told to use would return a confident wrong answer."
+            )
+        cursor = await self.open_cursor(
+            at, owner=self._turn_cursor() if owner is None else owner, label=label or prompt[:60]
+        )
+        cursor.frame = TurnFrame(
+            tools=tuple(tools),
+            model=model,
+            system_prompt=system_prompt,
+            max_turns=max_turns,
+            hooks=hooks,
+        )
+        sub = Submission(
+            text=prompt,
+            source="agent",
+            submitter=f"fork:{cursor.label}",
+            submission_id=uuid.uuid4().hex,
+            multitask_strategy="enqueue",
+        )
+        try:
+            result = await self.submit(sub, cursor=cursor)
+        except Exception as exc:  # noqa: BLE001 — containment is the point (§9.2/5)
+            await cursor.append_custom_entry(
+                "branch_error", {"label": cursor.label, "error": str(exc)}
+            )
+            return BranchResult(
+                ok=False,
+                cursor_id=cursor.id,
+                label=cursor.label,
+                leaf=cursor.leaf,
+                messages=[],
+                error=str(exc),
+            )
+        finally:
+            if not cursor.busy:
+                await self.close_cursor(cursor)
+        if not result.accepted:
+            return BranchResult(
+                ok=False,
+                cursor_id=cursor.id,
+                label=cursor.label,
+                leaf=cursor.leaf,
+                messages=[],
+                error=result.rejection_reason or "the sub-agent's submission was refused",
+            )
+        return BranchResult(
+            ok=True,
+            cursor_id=cursor.id,
+            label=cursor.label,
+            leaf=cursor.leaf,
+            messages=list(result.messages),
+            error=None,
+        )
 
-        Errors are surfaced, never silently swallowed (Fail-Early): ``spawn_branch``
-        itself contains a failing branch as a ``BranchResult(ok=False, ...)``, so
-        the task should not normally raise — if it somehow does anyway (a bug,
-        not a modelled failure), :meth:`_on_fork_task_done` routes it through the
-        same :meth:`_surface_extension_error` sink a raising hook uses, rather
-        than letting ``asyncio``'s "Task exception was never retrieved" warning
-        be the only trace of it.
+    def _spawn_fork(self, sub: Submission, fork_point: str | None, owner: Cursor) -> None:
+        """Run a ``multitask_strategy="fork"`` submission as a supervised :meth:`spawn`.
+
+        docs/SUBMISSION-LIFECYCLE.md "fork": a fork is a sub-agent nobody awaits, so
+        this wraps :meth:`spawn` in a task tracked in :attr:`_forked_tasks`, keyed by
+        ``sub.submission_id`` (known now; the cursor is not opened until the task runs).
+        It offers every tool a turn of ``owner``'s would — a fork continues the same
+        job — under ``owner``'s turn cap, with no extension hooks (NODE-ADDRESSABLE-AGENTS.md
+        decision 4). An exception the task should never raise is surfaced through
+        :meth:`_surface_extension_error` (:meth:`_on_fork_task_done`), not left to
+        asyncio's "never retrieved" warning.
         """
         submission_id = sub.submission_id
         task = asyncio.get_running_loop().create_task(
-            self._extension_api.context.spawn_branch(
+            self.spawn(
                 fork_point,
                 sub.text,
-                tools=[t.name for t in self._build_turn_tools()],
+                tools=[t.name for t in self._turn_tools()],
                 max_turns=self._max_turns,
+                owner=owner,
             )
         )
         self._forked_tasks[submission_id] = task
@@ -3163,12 +3262,15 @@ class AgentSession:
         system_prompt_override: str | None = None
         pre_user_messages: list[dict[str, Any]] = []
         post_user_messages: list[dict[str, Any]] = []
-        if self._extension_runner.has_handlers("before_agent_start"):
+        hooks = self._hooks()
+        if hooks.has_handlers("before_agent_start"):
             stored_prompt = _leading_system_prompt(context_messages)
-            before = await self._extension_runner.emit_before_agent_start(
+            before = await hooks.emit_before_agent_start(
                 prompt=text,
                 images=images,
-                system_prompt=stored_prompt if stored_prompt is not None else self._system_prompt,
+                system_prompt=stored_prompt
+                if stored_prompt is not None
+                else self._turn_system_prompt(),
             )
             if before is not None:
                 if before.get("system_prompt") is not None:
@@ -3181,10 +3283,11 @@ class AgentSession:
                         post_user_messages.append(node)
 
         # Build the agent loop config
+        model = self._turn_model()
         config = AgentLoopConfig(
-            system_prompt=self._system_prompt,
+            system_prompt=self._turn_system_prompt(),
             system_prompt_override=system_prompt_override,
-            temperature=self._model.temperature,
+            temperature=model.temperature,
             api_key=self._api_key,
             reasoning=self._reasoning,
             tool_execution_mode=self._tool_execution_mode,
@@ -3194,10 +3297,10 @@ class AgentSession:
         loop = AgentLoop(
             config=config,
             emit=self._emit_stamped,
-            tools=self._build_turn_tools(),
-            model=self._model,
+            tools=self._turn_tools(),
+            model=model,
             abort_signal=self._turn_cursor().abort_signal,
-            hook_dispatcher=self._extension_runner,
+            hook_dispatcher=hooks,
             steer_queue=self._turn_cursor().steer_queue,
             mid_turn_compactor=self._compact_mid_turn,
         )
@@ -3362,10 +3465,11 @@ class AgentSession:
         once-per-prompt ``settled`` is notify-only too, ``agent-harness.ts:533``).
         Deliberate — §12.4's consolidative tempo has no correct home without it.
         """
-        if not self._extension_runner.has_handlers("user_turn_end"):
+        hooks = self._hooks()
+        if not hooks.has_handlers("user_turn_end"):
             return
         loop_turns = sum(1 for m in turn_messages if m.get("role") == "assistant")
-        injected = await self._extension_runner.emit_user_turn_end(
+        injected = await hooks.emit_user_turn_end(
             loop_turns=loop_turns,
             messages=list(turn_messages),
         )
@@ -3424,9 +3528,10 @@ class AgentSession:
             context_messages = self.messages
 
             # Build the agent loop config
+            model = self._turn_model()
             config = AgentLoopConfig(
-                system_prompt=self._system_prompt,
-                temperature=self._model.temperature,
+                system_prompt=self._turn_system_prompt(),
+                temperature=model.temperature,
                 api_key=self._api_key,
                 reasoning=self._reasoning,
                 tool_execution_mode=self._tool_execution_mode,
@@ -3437,10 +3542,10 @@ class AgentSession:
             loop = AgentLoop(
                 config=config,
                 emit=self._emit_stamped,
-                tools=self._build_turn_tools(),
-                model=self._model,
+                tools=self._turn_tools(),
+                model=model,
                 abort_signal=cur.abort_signal,
-                hook_dispatcher=self._extension_runner,
+                hook_dispatcher=self._hooks(),
                 steer_queue=cur.steer_queue,
             )
 
@@ -3708,7 +3813,7 @@ class AgentSession:
         """
         if not self._compaction_settings.enabled:
             return None
-        context_window = int(getattr(self._model, "context_window", 0) or 0)
+        context_window = int(getattr(self._turn_model(), "context_window", 0) or 0)
         if context_window <= 0:
             return None
 
@@ -3763,7 +3868,7 @@ class AgentSession:
             CompactionPolicyViolation: a declared policy's budget was exceeded.
         """
         settings = self._compaction_settings
-        context_window = getattr(self._model, "context_window", 0) or 0
+        context_window = getattr(self._turn_model(), "context_window", 0) or 0
 
         if self._compaction_policy is not None:
             self._compaction_policy.observe_context(

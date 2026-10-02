@@ -1,9 +1,8 @@
 """B3-a — the TUI renders from a persistent bus subscription, not one awaited stream.
 
 docs/SUBMISSION-LIFECYCLE.md, end of "Phasing": *"backends.py:200 stream_chat is
-single-stream by construction, and nothing yet subscribes to the branch_event
-channel, so a fork today is unobservable."* That was a SIGNATURE gap, not a
-rendering one — one awaited call, one buffer, one exchange, so a second concurrent
+single-stream by construction ... so a fork today is unobservable."* That was a
+SIGNATURE gap, not a rendering one — one awaited call, one buffer, one exchange, so a second concurrent
 agent and a turn the TUI never initiated had nowhere to go.
 
 What these pin:
@@ -14,7 +13,8 @@ What these pin:
   another's transcript;
 * a turn from a NON-interactive source is rendered — badged with its origin, not
   filtered out (the spec's Jupyter rule, which it warns is easy to get backwards);
-* a forked sub-agent's lane, which had no consumer at all, renders too;
+* a sub-agent's turn — a submission on an owned cursor (docs/CURSORS.md §6) —
+  renders too, attributed to the agent;
 * Esc still aborts the turn that is generating, and only it.
 
 B3-b continues in the same file, because it is the same subject: having made a
@@ -35,10 +35,10 @@ loop is scripted — the same idiom as ``test_tui_submission_source``: everythin
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 
-from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.submission import Submission
 from tau_coding_agent.app import TauApp
@@ -127,6 +127,19 @@ async def _until(pilot, predicate, tries: int = 200) -> None:
             return
         await pilot.pause()
     raise AssertionError("condition never became true")
+
+
+class _OwnedCursor:
+    """A cursor as the router reads it: owned, so its submission is a sub-agent's."""
+
+    owner = object()
+
+
+def _fork(submission_id: str, label: str) -> Submission:
+    """The submission ``AgentSession.spawn`` admits for a sub-agent labelled ``label``."""
+    return Submission(
+        text=label, source="agent", submitter=f"fork:{label}", submission_id=submission_id
+    )
 
 
 def _top_level(display: transcript.ChatDisplay) -> list:
@@ -299,30 +312,31 @@ async def test_a_bus_submission_is_rendered_not_dropped(scripted):
 
 
 async def test_a_forked_branch_gets_its_own_labelled_lane(scripted):
-    """``branch_event`` had no consumer anywhere — the concrete sense in which a
-    fork was unobservable. It is a lane now, attributed to the agent rather than
-    borrowing the sub-session's interactive/human stamp."""
+    """A sub-agent's turn is an ordinary submission on the same bus, so it gets a
+    lane like any other — attributed to the agent (``agent · fork:<label>``), not
+    to the human who typed the head's turn."""
     app, holder, _gate = scripted
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
-        session = holder["backend"].agent_session
+        events = holder["backend"].agent_session._events
 
-        await session._events.emit_channel(
-            "branch_event",
-            lane="lane-2",
-            label="explore",
-            event=AgentEvent(type="turn_start", timestamp=_TS, turn_index=0),
+        await events.emit_channel(
+            "submission_start",
+            submission=_fork("sub-2", "explore"),
+            text="explore",
+            cursor=_OwnedCursor(),
         )
-        await session._events.emit_channel(
-            "branch_event",
-            lane="lane-2",
-            label="explore",
-            event=AgentEvent(
+        await events.emit(
+            AgentEvent(type="turn_start", timestamp=_TS, turn_index=0, submission_id="sub-2")
+        )
+        await events.emit(
+            AgentEvent(
                 type="message_update",
                 timestamp=_TS,
                 message={"role": "assistant", "content": [{"type": "text", "text": "forked"}]},
-            ),
+                submission_id="sub-2",
+            )
         )
         await pilot.pause()
 
@@ -332,35 +346,35 @@ async def test_a_forked_branch_gets_its_own_labelled_lane(scripted):
         assert users[0].border_subtitle == "agent · fork:explore"
         exchange = display.query(ExchangeBox).first()
         assert "agent · fork:explore" in exchange.title
-        step = display.active_step("branch:lane-2")
+        step = display.active_step("sub-2")
         assert step is not None and step.content_text == "forked"
 
 
-async def test_a_failed_fork_closes_its_lane_instead_of_hanging_on_working(scripted, monkeypatch):
-    """The B3 rework defect, at the surface the reader actually sees.
+async def test_a_failed_fork_closes_its_lane_instead_of_hanging_on_working(scripted):
+    """A sub-agent whose first provider call fails must not leave an ExchangeBox
+    titled "agent · fork:… · Working…" and a "⑂ 1 other lane" strip behind.
 
-    The branch lane used to be bracketed by first-event → the sub-agent's own
-    ``agent_end``, and ``AgentLoop.run`` emits that after its while loop rather
-    than from a ``finally``. So a fork whose first provider call failed left an
-    ExchangeBox titled "agent · fork:… · Working…" and a footer strip reading
-    "⑂ 1 other lane" for the rest of the session, with no event left that could
-    ever clear them. Driven through the real ``ctx.spawn_branch``, so the terminal
-    ``branch_end`` is the real one.
+    ``submission_end`` is emitted from a ``finally``, so it closes the lane however
+    the turn ended. Driven through the real ``ctx.spawn_branch`` and the real
+    agent loop, with only the provider call patched to fail.
     """
     app, holder, _gate = scripted
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
         session = holder["backend"].agent_session
+        del session._run_one_turn  # the sub-agent runs the real loop, not the script
+        await session.cursor.append_message(
+            {"role": "user", "content": [{"type": "text", "text": "shared prefix"}]}
+        )
 
-        async def _boom(self, text, images=None, context=None):
-            await self._events.emit(AgentEvent(type="turn_start", timestamp=_TS, turn_index=0))
+        async def _boom(model, context, options=None):
             raise RuntimeError("the provider dropped the connection")
 
-        monkeypatch.setattr(AgentSession, "prompt", _boom)
-        result = await session._extension_api.context.spawn_branch(
-            session.cursor.leaf, "explore", tools=[]
-        )
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_boom):
+            result = await session._extension_api.context.spawn_branch(
+                session.cursor.leaf, "explore", tools=[]
+            )
         await pilot.pause()
 
         assert result.ok is False, "the failure is contained, as it always was"
@@ -464,51 +478,46 @@ async def test_a_forks_answer_stays_attributed_after_its_exchange_is_unwrapped(s
     reader was left with said "Assistant" and nothing else, which is precisely
     mistaking a sub-agent's text for the main agent's.
 
-    Driven end to end through the real ``branch_event`` / ``branch_end`` channels —
-    the same ``emit_channel`` calls ``ExtensionContext.spawn_branch`` makes — so the
-    router's branch bracket (open on first event, close on ``branch_end``) is
-    exercised too.
+    Driven through the bus channels a sub-agent's submission uses —
+    ``submission_start`` with its owned cursor, its stamped events, and
+    ``submission_end`` — so the router's lane bracket is exercised too.
     """
     app, holder, _gate = scripted
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.action_new_chat()
-        session = holder["backend"].agent_session
+        events = holder["backend"].agent_session._events
+        fork = _fork("sub-9", "explore")
 
-        async def branch(event: AgentEvent) -> None:
-            await session._events.emit_channel(
-                "branch_event", lane="lane-9", label="explore", event=event
-            )
+        async def branch(**fields) -> None:
+            await events.emit(AgentEvent(timestamp=_TS, submission_id="sub-9", **fields))
 
-        await branch(AgentEvent(type="turn_start", timestamp=_TS, turn_index=0))
+        await events.emit_channel(
+            "submission_start", submission=fork, text="explore", cursor=_OwnedCursor()
+        )
+        await branch(type="turn_start", turn_index=0)
         await branch(
-            AgentEvent(
-                type="message_update",
-                timestamp=_TS,
-                message={"role": "assistant", "content": [{"type": "text", "text": "sub-answer"}]},
-            )
+            type="message_update",
+            message={"role": "assistant", "content": [{"type": "text", "text": "sub-answer"}]},
         )
         await pilot.pause()
 
         display = app.query_one(transcript.ChatDisplay)
-        step = display.active_step("branch:lane-9")
+        step = display.active_step("sub-9")
         assert step is not None
         assert step.has_class(transcript.LANE_FOREIGN_CLASS)
         assert step.border_subtitle == "agent · fork:explore"
 
         await branch(
-            AgentEvent(
-                type="message_end",
-                timestamp=_TS,
-                message={
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "sub-answer"}],
-                    "usage": {"input_tokens": 90, "output_tokens": 11, "total_tokens": 101},
-                },
-            )
+            type="message_end",
+            message={
+                "role": "assistant",
+                "content": [{"type": "text", "text": "sub-answer"}],
+                "usage": {"input_tokens": 90, "output_tokens": 11, "total_tokens": 101},
+            },
         )
-        await branch(AgentEvent(type="agent_end", timestamp=0))
-        await session._events.emit_channel("branch_end", lane="lane-9", label="explore", error=None)
+        await branch(type="agent_end")
+        await events.emit_channel("submission_end", submission=fork, side_usage={})
         await pilot.pause()
 
         # The exchange really is gone (no tools to group) …

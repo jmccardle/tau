@@ -1289,6 +1289,44 @@ Cumulative tokens spent on completions OUTSIDE the agent loop.
 A copy — the ledger is the session's own record, and handing out a live alias
 would let one reader's arithmetic rewrite it (see :meth:`get_usage`).
 
+### spawn
+
+```python
+async spawn(at: str | None, prompt: str, *, tools: list[str], model: Model | None = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = False, owner: Cursor | None = None) -> BranchResult
+```
+
+`tau_agent_core.agent_session.AgentSession.spawn`
+
+Run ``prompt`` as a sub-agent turn on a new cursor at ``at`` (docs/CURSORS.md §6).
+
+The cursor is owned by ``owner`` (default: the running turn's), so aborting
+the owner aborts it, and it runs under a :class:`~tau_agent_core.cursor.TurnFrame`:
+only ``tools``, ``model``/``system_prompt`` when given, ``max_turns``, and
+no extension hooks unless ``hooks``. Its turn is an ordinary submission
+(``source="agent"``, ``submitter="fork:<label>"``) whose events carry its
+cursor's id. Its first append records that frame as a config entry, so the
+sub-agent's spec is in the tree. The cursor is closed before this returns.
+
+**Failure is contained, not propagated** (§9.2/5): a sub-agent that raises
+marks its branch with a ``branch_error`` entry and returns ``ok=False``; one
+bad evaluator in a fan-out must not kill the turn that spawned it.
+
+**Parameters**
+
+- `at: str | None` — *(no description)*
+- `prompt: str` — *(no description)*
+- `tools: list[str]` — *(no description)*
+- `model: Model | None = None` — *(no description)*
+- `max_turns: int | None = None` — *(no description)*
+- `label: str | None = None` — *(no description)*
+- `system_prompt: str | None = None` — *(no description)*
+- `hooks: bool = False` — *(no description)*
+- `owner: Cursor | None = None` — *(no description)*
+
+**Raises**
+
+- `ValueError` — a name in ``tools`` is not one the spawning turn offers, or ``at`` names no entry.
+
 ### start
 
 ```python
@@ -1418,8 +1456,8 @@ Owns, in order (the spec's numbered list):
      producing a bad prefix. On success, a second agent is spawned in a
      SUPERVISED background task (:meth:`_spawn_fork`,
      :attr:`_forked_tasks`) — reusing ``ctx.spawn_branch``'s entire
-     mechanism (a second cursor, tool scoping, failure containment,
-     ``branch_event`` forwarding) — and ``submit()`` returns
+     mechanism (an owned cursor, tool scoping, failure containment) —
+     and ``submit()`` returns
      ``accepted=True`` immediately, before the branch's turn finishes;
      there is no caller left to await it the way ``spawn_branch``'s
      caller does.
@@ -1672,28 +1710,19 @@ subscribe_channel(channel: str, handler: Callable[..., Any]) -> Callable[[], Non
 Subscribe to one of the bus's NON-``AgentEvent`` channels. Returns unsubscribe.
 
 :meth:`subscribe` covers the ``AgentEvent`` stream, whose ``type`` Literal is
-deliberately closed (S49). Everything that is lifecycle rather than a loop
-event rides a separate string channel instead, and until now the only way to
-reach one from outside was to reach into ``_events`` — so ``branch_event``
-had no public consumer at all, which is why a fork was unobservable
-(docs/SUBMISSION-LIFECYCLE.md, end of "Phasing").
+deliberately closed (S49); lifecycle rides separate string channels.
 
 The channels a renderer cares about:
 
-- ``"submission_start"`` — ``(submission, text, images)``, once per admitted
-  submission that will actually run a turn, before the loop starts. The
+- ``"submission_start"`` — ``(submission, text, images, cursor)``, once per
+  admitted submission that will actually run a turn, before the loop starts.
+  ``cursor`` is the one it extends; a sub-agent's has an ``owner``. The
   submission-level bracket ``agent_start`` is not: a followUp re-entry runs a
   second ``loop.run()`` inside one ``submit()``.
 - ``"submission_end"`` — ``(submission, side_usage)``, in a ``finally``, so it
   arrives however the turn ended.
-- ``"branch_event"`` — ``(lane, label, event)``, one per ``AgentEvent`` a
-  ``spawn_branch``/``fork`` sub-agent emits, tagged with the branch's lane.
-- ``"branch_end"`` — ``(lane, label, error)``, once per branch, in a
-  ``finally``, so it arrives however the branch ended (returned, contained
-  failure, or cancelled by ``abort()``). The branch's OWN ``agent_end`` is
-  not that bracket: ``AgentLoop.run`` emits it after the while loop rather
-  than from a ``finally``, so a branch that raised or was cancelled never
-  emits one — and a consumer bracketing on it holds the span open forever.
+- ``"cursor_open"`` / ``"cursor_close"`` — ``(cursor)``, when
+  :meth:`open_cursor` / :meth:`close_cursor` run (docs/CURSORS.md §4).
 
 Handlers may be sync or async and are dispatched exactly like
 :meth:`subscribe`'s (fire-and-forget; an exception is surfaced through the
@@ -2759,6 +2788,13 @@ Every entry of the tree, all branches — not only this cursor's path.
 `tau_agent_core.cursor.Cursor.follow_up_queue: list[str]`
 
 Texts that re-enter the loop when the current prompt ends.
+
+### frame
+
+`tau_agent_core.cursor.Cursor.frame: TurnFrame | None`
+
+The :class:`TurnFrame` this cursor's turns run under, or ``None``
+for the session's own.
 
 ### has_queued
 
@@ -4265,6 +4301,29 @@ A node in the browsable session tree (pi ``SessionTreeNode``).
 - `preview: str` — *(no description)*
 - `is_leaf: bool` — *(no description)*
 - `children: list[TreeNode] = list()` — *(no description)*
+
+## TurnFrame
+<!-- agent: yes -->
+
+```python
+class TurnFrame(tools: tuple[str, ...], model: Any = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = False)
+```
+
+`tau_agent_core.cursor.TurnFrame`
+
+How a cursor's turns differ from its session's (docs/CURSORS.md §6).
+
+A sub-agent's cursor carries one; the head's carries none and runs as the
+session is configured. The frame is recorded in the tree like any other
+config the first time the cursor's turn appends.
+
+**Constructor parameters**
+
+- `tools: tuple[str, ...]` — Names the turn may call, a subset of the session's; required, so a sub-agent never inherits ``write`` and ``bash`` by accident. ``()`` is none.
+- `model: Any = None` — The model to run, or ``None`` for the session's.
+- `system_prompt: str | None = None` — The prompt to run under, or ``None`` for the session's.
+- `max_turns: int | None = None` — The loop's turn ceiling for this cursor; ``None`` is no ceiling.
+- `hooks: bool = False` — Whether extension hooks run on this cursor's turns. Off by default: a sub-agent stays as constrained as its spawner asked.
 
 ## View
 <!-- agent: yes -->

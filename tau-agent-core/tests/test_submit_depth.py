@@ -31,7 +31,6 @@ import pytest
 
 from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.extension_types import ExtensionContext
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import (
@@ -267,11 +266,11 @@ class TestForkInheritsDepth:
 
         seen: list[int | None] = []
 
-        async def _recording_spawn_branch(self, parent_id, prompt, **kwargs):
+        async def _recording_spawn(at, prompt, **kwargs):
             seen.append(DRIVING_SUBMISSION_DEPTH.get())
             return None
 
-        monkeypatch.setattr(ExtensionContext, "spawn_branch", _recording_spawn_branch)
+        monkeypatch.setattr(session, "spawn", _recording_spawn)
 
         result = await session.submit(
             Submission(

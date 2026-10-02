@@ -1,16 +1,21 @@
-"""ctx.spawn_branch — the C2/W14 branch sub-agent (JMFTS-INTEGRATION-PLAN.md §9.2).
+"""ctx.spawn_branch — a sub-agent is an owned cursor on the spawner's session.
 
-The live end-to-end path (a real sub-agent, a real tool call, a real verdict) was
-verified against the llama.cpp box during W14. What is pinned here is the behaviour
-that must not SILENTLY regress: tool scoping, failure containment, and the structural
-isolation of a branch's work.
+docs/CURSORS.md §6, from JMFTS-INTEGRATION-PLAN.md §9.2. The sub-agent's turn is an
+ordinary submission on its own cursor, run under a TurnFrame, so the provider is
+faked at ``stream_simple`` and everything else is real. What is pinned is the
+behaviour that must not SILENTLY regress: tool scoping, failure containment, the
+structural isolation of a branch's work, and the cursor's lifecycle.
 """
 
 from __future__ import annotations
 
 import asyncio
+from typing import Any
+from unittest.mock import patch
 
 import pytest
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
+from tau_llm.types import AssistantMessage, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.cursor import Cursor
@@ -37,6 +42,7 @@ class _Tool:
         self.label = name
         self.description = f"the {name} tool"
         self.parameters = {"type": "object", "properties": {}}
+        self.execution_mode = "parallel"
         self.calls: list[dict] = []
 
     async def execute(self, tool_call_id, args, signal=None, on_update=None):
@@ -59,12 +65,74 @@ async def _session(tools: list) -> tuple[AgentSession, InMemorySessionLog]:
     return session, log
 
 
+class _Stream:
+    def __init__(self, message: AssistantMessage) -> None:
+        self._message = message
+
+    def __aiter__(self):
+        async def _gen():
+            text = "".join(b.text for b in self._message.content if isinstance(b, TextContent))
+            yield TextDeltaEvent(delta=text, partial=self._message)
+            yield DoneEvent(final=self._message, usage=self._message.usage)
+
+        return _gen()
+
+    async def result(self) -> AssistantMessage:
+        return self._message
+
+    def abort(self) -> None:
+        pass
+
+
+def _reply(text: str, calls: list[ToolCall] | None = None) -> AssistantMessage:
+    return AssistantMessage(
+        content=[TextContent(text=text), *(calls or [])],
+        api="openai-completions",
+        provider="openai",
+        model="m",
+        stop_reason="toolUse" if calls else "stop",
+        timestamp=1_700_000_000_000,
+        usage=Usage(input_tokens=1, output_tokens=1, total_tokens=2),
+    )
+
+
+class _Provider:
+    """A ``stream_simple`` stand-in that records every request it was sent."""
+
+    def __init__(self, answer: Any = "verdict") -> None:
+        self.answer = answer
+        self.requests: list[dict[str, Any]] = []
+
+    async def stream(self, model: Any, context: Any, options: Any = None) -> _Stream:
+        self.requests.append(context)
+        answer = self.answer(len(self.requests)) if callable(self.answer) else self.answer
+        if isinstance(answer, BaseException):
+            raise answer
+        return _Stream(answer if isinstance(answer, AssistantMessage) else _reply(answer))
+
+    def tool_names(self, index: int = 0) -> list[str]:
+        return [t.name for t in self.requests[index]["tools"] or []]
+
+    def system_prompt(self, index: int = 0) -> str:
+        first = self.requests[index]["messages"][0]
+        return first["content"] if isinstance(first, dict) and first.get("role") == "system" else ""
+
+
+def _lifecycle(session: AgentSession) -> list[tuple[str, Any]]:
+    """Every cursor_open / cursor_close this session's bus publishes."""
+    seen: list[tuple[str, Any]] = []
+    session._events.on("cursor_open", lambda cursor: seen.append(("open", cursor)))
+    session._events.on("cursor_close", lambda cursor: seen.append(("close", cursor)))
+    return seen
+
+
 async def test_asking_for_an_unavailable_tool_raises_before_any_model_call():
     """Fail-Early, and BEFORE the model runs. A sub-agent silently missing a tool it was
     told to use does not error — it returns a confident wrong answer ("I couldn't find
     it"), which reads exactly like a real verdict."""
     session, log = await _session([_Tool("lookup")])
     before = [e["id"] for e in log.entries()]
+    lifecycle = _lifecycle(session)
 
     with pytest.raises(ValueError, match="not available on this session"):
         await session._extension_api.context.spawn_branch(
@@ -72,24 +140,22 @@ async def test_asking_for_an_unavailable_tool_raises_before_any_model_call():
         )
 
     assert [e["id"] for e in log.entries()] == before, "nothing was written"
+    assert lifecycle == [], "no cursor was opened for a sub-agent that never started"
 
 
-async def test_the_allowlist_is_a_hard_filter(monkeypatch):
+async def test_the_allowlist_is_a_hard_filter():
     """Sub-agents share the process and cwd, so 'inherit the parent's tools' would hand a
-    retrieval evaluator `write` and `bash`. Only the named tools reach the sub-agent."""
-    lookup, danger = _Tool("lookup"), _Tool("write")
-    session, log = await _session([lookup, danger])
+    retrieval evaluator `write` and `bash`. Only the named tools reach the provider."""
+    session, log = await _session([_Tool("lookup"), _Tool("write")])
+    provider = _Provider()
 
-    captured: dict = {}
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
+        result = await session._extension_api.context.spawn_branch(
+            session.cursor.leaf, "go", tools=["lookup"]
+        )
 
-    async def _fake_prompt(self, text, images=None, context=None):
-        captured["tools"] = [t.name for t in self._tools]
-        return []
-
-    monkeypatch.setattr(AgentSession, "prompt", _fake_prompt)
-    await session._extension_api.context.spawn_branch(session.cursor.leaf, "go", tools=["lookup"])
-
-    assert captured["tools"] == ["lookup"], "write must not be handed to the sub-agent"
+    assert result.ok
+    assert provider.tool_names() == ["lookup"], "write must not be handed to the sub-agent"
 
 
 async def _extension_session() -> tuple[AgentSession, InMemorySessionLog]:
@@ -128,41 +194,28 @@ async def _extension_session() -> tuple[AgentSession, InMemorySessionLog]:
     return session, log
 
 
-async def test_a_branch_may_hold_a_tool_that_came_from_an_extension(monkeypatch):
-    """The allowlist must be checked against what the SESSION has, not against `_tools`.
+async def test_a_branch_may_hold_a_tool_that_came_from_an_extension():
+    """The allowlist is checked against what a TURN offers, not against `_tools`.
 
     `_tools` is only the constructor's list; an extension's registrations are merged in
-    by `_build_turn_tools`, which is what every turn's loop is built from. Reading
-    `_tools` here meant that on a session whose tools all arrive that way — `tools=[]`
-    plus `no_tools="builtin"` — every non-empty allowlist raised "not available on this
-    session" naming a tool the model had just successfully called, and `tools=[]` (a
-    sub-agent that can think and do nothing) was the only value that did not.
+    by `_build_turn_tools`. On a session whose tools all arrive that way — `tools=[]`
+    plus `no_tools="builtin"` — reading `_tools` made every non-empty allowlist raise.
     """
     session, log = await _extension_session()
     assert [t.name for t in session._tools] == [], "the shape the bug needs"
+    provider = _Provider()
 
-    captured: dict = {}
-
-    async def _fake_prompt(self, text, images=None, context=None):
-        captured["tools"] = [t.name for t in self._tools]
-        return []
-
-    monkeypatch.setattr(AgentSession, "prompt", _fake_prompt)
-    result = await session._extension_api.context.spawn_branch(
-        session.cursor.leaf, "go", tools=["remember"]
-    )
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
+        result = await session._extension_api.context.spawn_branch(
+            session.cursor.leaf, "go", tools=["remember"]
+        )
 
     assert result.ok
-    assert captured["tools"] == ["remember"], "scoping still applies — `say` must not cross"
+    assert provider.tool_names() == ["remember"], "scoping still applies — `say` must not cross"
 
 
-async def test_the_refusal_still_fires_and_now_names_the_extension_tools():
-    """Fail-Early is unchanged; only the list it is checked against is corrected.
-
-    The `available:` list is the assertion that matters. It used to read `[]` on this
-    session, which is what made the error unactionable — it said "not available on this
-    session" about a session where two tools were.
-    """
+async def test_the_refusal_still_fires_and_names_the_extension_tools():
+    """The `available:` list is what makes the refusal actionable."""
     session, log = await _extension_session()
 
     with pytest.raises(ValueError, match=r"\['bash'\].*available: \['remember', 'say'\]"):
@@ -171,169 +224,177 @@ async def test_the_refusal_still_fires_and_now_names_the_extension_tools():
         )
 
 
-async def test_a_failing_sub_agent_is_contained_and_marks_its_branch(monkeypatch):
+async def test_a_failing_sub_agent_is_contained_and_marks_its_branch():
     """§9.2/5. A raise here would mean one bad evaluator in a fan-out kills the
     spawner's whole turn. The failure comes back as a RESULT, and the branch records it."""
     session, log = await _session([])
     tip = session.cursor.leaf
+    provider = _Provider(RuntimeError("the sub-agent exploded"))
 
-    async def _boom(self, text, images=None, context=None):
-        raise RuntimeError("the sub-agent exploded")
-
-    monkeypatch.setattr(AgentSession, "prompt", _boom)
-    result = await session._extension_api.context.spawn_branch(tip, "go", tools=[])
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
+        result = await session._extension_api.context.spawn_branch(tip, "go", tools=[])
 
     assert result.ok is False
     assert "exploded" in (result.error or "")
     assert session.cursor.leaf == tip, "a failed branch must not move the spawner's cursor"
-
     marks = [e for e in log.entries() if e.get("customType") == "branch_error"]
     assert len(marks) == 1, "the branch is marked, so the failure is visible in the tree"
-    assert marks[0]["data"] == {"label": result.label, "error": "the sub-agent exploded"}
-    assert "branchOf" not in marks[0]
+    assert marks[0]["data"] == {"label": result.label, "error": result.error}
 
 
-async def test_the_sub_agents_work_never_reaches_the_spawners_context(
-    monkeypatch,
-):
+async def test_the_sub_agents_work_never_reaches_the_spawners_context():
     session, log = await _session([])
     tip = session.cursor.leaf
+    provider = _Provider("SUB-AGENT ONLY")
 
-    async def _work(self, text, images=None, context=None):
-        # the sub-agent writes through its OWN cursor, on the spawner's log
-        await self.cursor.append_message(
-            {"role": "assistant", "content": [{"type": "text", "text": "SUB-AGENT ONLY"}]}
-        )
-        return []
-
-    monkeypatch.setattr(AgentSession, "prompt", _work)
-    result = await session._extension_api.context.spawn_branch(tip, "go", tools=[])
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
+        result = await session._extension_api.context.spawn_branch(tip, "go", tools=[])
 
     assert result.ok is True
     assert all("branchOf" not in e for e in log.entries()), "no durable branch marker"
-
     assert session.cursor.leaf == tip, "the spawner's cursor did not move"
     assert "SUB-AGENT ONLY" not in str(session.cursor.context())
-
-    # ...and the spawner can still read the verdict back, via the branch's leaf.
     assert result.leaf is not None
     assert "SUB-AGENT ONLY" in str(Cursor(log, result.leaf).context())
 
 
-async def test_system_prompt_defaults_to_the_parents_but_can_be_overridden(monkeypatch):
-    """W1 (NODE-ADDRESSABLE-AGENTS.md §5/W1): ``system_prompt`` was hardcoded to
-    ``session._system_prompt`` with no override, which was the one concrete blocker on
-    'fork at a node with a different spec'. Default behaviour must be unchanged; passing
-    a string must reach the sub-agent's ``AgentSession`` instead."""
+async def test_the_sub_agents_frame_is_recorded_where_its_turn_begins():
+    """docs/CURSORS.md §6: the frame is a config entry on the branch, not a constructor
+    argument nobody can read back."""
+    session, log = await _session([_Tool("lookup"), _Tool("write")])
+
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_Provider().stream):
+        result = await session._extension_api.context.spawn_branch(
+            session.cursor.leaf, "go", tools=["lookup"]
+        )
+
+    from tau_agent_core.session_log import config_at
+
+    assert result.leaf is not None
+    assert config_at(log.entries(), result.leaf)["tools"] == ["lookup"]
+    assert config_at(log.entries(), session.cursor.leaf).get("tools") != ["lookup"]
+
+
+async def test_system_prompt_defaults_to_the_parents_but_can_be_overridden():
+    """W1 (NODE-ADDRESSABLE-AGENTS.md §5/W1): passing a prompt forks with a different
+    spec; omitting it runs under the spawner's."""
     session, log = await _session([])
-    captured: dict = {}
+    session._system_prompt = "the parent's prompt"
+    provider = _Provider()
 
-    async def _fake_prompt(self, text, images=None, context=None):
-        captured["system_prompt"] = self._system_prompt
-        return []
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
+        await session._extension_api.context.spawn_branch(session.cursor.leaf, "go", tools=[])
+        await session._extension_api.context.spawn_branch(
+            session.cursor.leaf, "go", tools=[], system_prompt="you are a critic"
+        )
 
-    monkeypatch.setattr(AgentSession, "prompt", _fake_prompt)
-
-    await session._extension_api.context.spawn_branch(session.cursor.leaf, "go", tools=[])
-    assert captured["system_prompt"] == "", "unchanged default: inherits the parent's prompt"
-
-    await session._extension_api.context.spawn_branch(
-        session.cursor.leaf, "go", tools=[], system_prompt="you are a critic"
-    )
-    assert captured["system_prompt"] == "you are a critic"
+    assert provider.system_prompt(0) == "the parent's prompt"
+    assert provider.system_prompt(1) == "you are a critic"
 
 
-async def test_max_turns_bounds_the_sub_agent(monkeypatch):
+async def test_max_turns_bounds_the_sub_agent():
     """A looping sub-agent must not be able to burn the spawner's budget."""
-    session, log = await _session([])
-    captured: dict = {}
-
-    async def _fake_prompt(self, text, images=None, context=None):
-        captured["max_turns"] = self._max_turns
-        return []
-
-    monkeypatch.setattr(AgentSession, "prompt", _fake_prompt)
-    await session._extension_api.context.spawn_branch(
-        session.cursor.leaf, "go", tools=[], max_turns=3
+    session, log = await _session([_Tool("lookup")])
+    provider = _Provider(
+        lambda n: _reply("again", [ToolCall(id=f"c{n}", name="lookup", arguments={})])
     )
 
-    assert captured["max_turns"] == 3
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
+        result = await session._extension_api.context.spawn_branch(
+            session.cursor.leaf, "go", tools=["lookup"], max_turns=3
+        )
+
+    assert result.ok, result.error
+    assert len(provider.requests) == 3
 
 
-def _branch_ends(session: AgentSession) -> list[dict]:
-    """Record every ``branch_end`` this session's bus publishes."""
-    seen: list[dict] = []
-    session._events.on("branch_end", lambda **kw: seen.append(kw))
-    return seen
-
-
-async def test_a_finished_branch_announces_its_end_exactly_once(monkeypatch):
+async def test_a_sub_agent_opens_and_closes_exactly_one_owned_cursor():
     session, log = await _session([])
-    ends = _branch_ends(session)
+    lifecycle = _lifecycle(session)
 
-    async def _work(self, text, images=None, context=None):
-        return []
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_Provider().stream):
+        result = await session._extension_api.context.spawn_branch(
+            session.cursor.leaf, "go", tools=[]
+        )
 
-    monkeypatch.setattr(AgentSession, "prompt", _work)
-    result = await session._extension_api.context.spawn_branch(session.cursor.leaf, "go", tools=[])
+    (kind_open, opened), (kind_close, closed) = lifecycle
+    assert (kind_open, kind_close) == ("open", "close")
+    assert opened is closed and opened.id == result.cursor_id
+    assert opened.owner is session.cursor
+    assert opened not in session.cursors
 
-    assert ends == [{"lane": result.lane, "label": result.label, "error": None}]
 
-
-async def test_a_failing_branch_still_announces_its_end(monkeypatch):
-    """The bracket has to survive the failure it is meant to report. A consumer
-    that opened a span on the branch's first event (the TUI opens a render lane)
-    closes it here — the sub-agent's own ``agent_end`` never arrives, because
-    ``AgentLoop.run`` emits it after the while loop rather than from a ``finally``."""
+async def test_a_failing_sub_agent_still_closes_its_cursor():
     session, log = await _session([])
-    ends = _branch_ends(session)
+    lifecycle = _lifecycle(session)
+    provider = _Provider(RuntimeError("the provider dropped the connection"))
 
-    async def _boom(self, text, images=None, context=None):
-        raise RuntimeError("the provider dropped the connection")
-
-    monkeypatch.setattr(AgentSession, "prompt", _boom)
-    result = await session._extension_api.context.spawn_branch(session.cursor.leaf, "go", tools=[])
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
+        result = await session._extension_api.context.spawn_branch(
+            session.cursor.leaf, "go", tools=[]
+        )
 
     assert result.ok is False
-    assert ends == [
-        {"lane": result.lane, "label": result.label, "error": "the provider dropped the connection"}
-    ]
+    assert [kind for kind, _ in lifecycle] == ["open", "close"]
 
 
-async def test_a_cancelled_branch_still_announces_its_end(monkeypatch):
+async def test_a_cancelled_sub_agent_still_closes_its_cursor():
     """``abort()`` cancels every forked task and ``CancelledError`` is not an
-    ``Exception``, so the containment handler never sees it — the ``finally``
-    does. A bare cancel stringifies to "", so the error names the TYPE rather
-    than reporting an empty reason."""
+    ``Exception``, so the containment handler never sees it — the ``finally`` does."""
     session, log = await _session([])
-    ends = _branch_ends(session)
+    lifecycle = _lifecycle(session)
     running = asyncio.Event()
 
-    async def _hang(self, text, images=None, context=None):
+    async def _hang(model: Any, context: Any, options: Any = None) -> _Stream:
         running.set()
         await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
 
-    monkeypatch.setattr(AgentSession, "prompt", _hang)
-    task = asyncio.get_running_loop().create_task(
-        session._extension_api.context.spawn_branch(session.cursor.leaf, "go", tools=[])
-    )
-    await running.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_hang):
+        task = asyncio.get_running_loop().create_task(
+            session._extension_api.context.spawn_branch(session.cursor.leaf, "go", tools=[])
+        )
+        await running.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert [kind for kind, _ in lifecycle] == ["open", "close"]
+
+
+async def test_aborting_the_spawner_aborts_the_sub_agent():
+    """The owner relation is the abort cascade (docs/CURSORS.md §6)."""
+    session, log = await _session([])
+    lifecycle = _lifecycle(session)
+    running = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _gated(model: Any, context: Any, options: Any = None) -> _Stream:
+        running.set()
+        await release.wait()
+        return _Stream(_reply("late"))
+
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_gated):
+        task = asyncio.get_running_loop().create_task(
+            session._extension_api.context.spawn_branch(session.cursor.leaf, "go", tools=[])
+        )
+        await running.wait()
+        sub_cursor = lifecycle[0][1]
+        session.abort(session.cursor)
+        assert sub_cursor.abort_signal.is_aborted()
+        release.set()
         await task
 
-    assert len(ends) == 1
-    assert ends[0]["error"] == "CancelledError"
 
+async def test_every_event_of_the_sub_agents_turn_carries_its_cursor():
+    session, log = await _session([])
+    seen: list[Any] = []
+    session.subscribe(seen.append)
 
-async def test_a_branch_that_never_started_announces_nothing(monkeypatch):
-    """The bracket is only owed for a branch that actually ran. The allowlist
-    check raises BEFORE the sub-agent exists, so there is no span to close and no
-    ``branch_end`` claiming one ended."""
-    session, log = await _session([_Tool("lookup")])
-    ends = _branch_ends(session)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_Provider().stream):
+        result = await session._extension_api.context.spawn_branch(
+            session.cursor.leaf, "go", tools=[]
+        )
 
-    with pytest.raises(ValueError, match="not available on this session"):
-        await session._extension_api.context.spawn_branch(session.cursor.leaf, "go", tools=["bash"])
-
-    assert ends == []
+    assert seen and {e.cursor_id for e in seen} == {result.cursor_id}
+    assert {e.source for e in seen} == {"agent"}

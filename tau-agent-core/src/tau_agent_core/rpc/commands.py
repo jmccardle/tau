@@ -561,13 +561,12 @@ _MULTITASK_STRATEGY_ENUM = ["reject", "enqueue", "steer", "rollback", "fork"]
 
 _UNSUPPORTED_MULTITASK_STRATEGIES: dict[str, str] = {
     "fork": (
-        "multitask_strategy='fork' is not supported over RPC yet: a fork's "
-        "AgentEvents are forwarded on AgentSession's 'branch_event' channel, "
-        "which this RPC handler does not subscribe to, so the submission "
-        "would be accepted and then silently produce nothing observable. "
-        "Tier C's open_lane/list_lanes (docs/REMOTE-CONTROL.md §3) is the "
-        "future route for this; 'steer' is unaffected — it delivers into the "
-        "in-flight turn's own observable stream."
+        "multitask_strategy='fork' is not supported over RPC yet: a fork runs "
+        "on its own cursor, and this handler forwards only the session's own "
+        "cursor's events, so the submission would be accepted and then "
+        "silently produce nothing observable. Addressing cursors over a wire "
+        "is the web head's record (docs/CURSORS.md §11); 'steer' is "
+        "unaffected — it delivers into the in-flight turn's own stream."
     ),
 }
 
@@ -596,8 +595,8 @@ _SUBMISSION_PROPERTIES: dict[str, Any] = {
         "description": (
             "Concurrency policy against an in-flight turn. Defaults to 'reject'. "
             "'fork' is a recognized value but currently REJECTED at submission "
-            "time (-32602, phase-2 review S3) — its events reach no channel this "
-            "handler forwards; see docs/REMOTE-CONTROL.md §3 Tier C open_lane."
+            "time (-32602, phase-2 review S3) — it runs on its own cursor, whose "
+            "events this handler does not forward (docs/CURSORS.md §6)."
         ),
     },
     "expand_commands": {
@@ -1323,9 +1322,6 @@ async def _handle_get_capabilities(
     return capabilities.build_capabilities()
 
 
-_PRIMARY_LANE = "primary"
-
-
 def _require_runtime(handler: "RPCHandler") -> Any:
     """`handler.runtime`, or a clear failure — never a bare `AttributeError`
     three calls deep. Production wiring (`tau_coding_agent.rpc_mode.run_rpc`)
@@ -1356,8 +1352,8 @@ def _require_runtime(handler: "RPCHandler") -> Any:
 
 
 def _lifecycle_result(outcome: dict[str, Any]) -> dict[str, Any]:
-    """`AgentSessionRuntime`'s `{cancelled, session, session_id, cursor,
-    store}` -> the wire shape `SESSION_LIFECYCLE_RESULT_SCHEMA` describes.
+    """`AgentSessionRuntime`'s `{cancelled, session, session_id, cursor_id,
+    cursor, store}` -> the wire shape `SESSION_LIFECYCLE_RESULT_SCHEMA` describes.
 
     Finding 1 (phase-3 review): a `blocked` outcome (the in-flight turn did
     not stop within the runtime's bounded wait — `AgentSessionRuntime
@@ -1381,7 +1377,7 @@ def _lifecycle_result(outcome: dict[str, Any]) -> dict[str, Any]:
         "session": {
             "store": outcome["store"],
             "session_id": outcome["session_id"],
-            "lane": _PRIMARY_LANE,
+            "cursor_id": outcome["cursor_id"],
             "cursor": outcome["cursor"],
             "addressable": session_log_is_addressable(outcome["session"]),
         },

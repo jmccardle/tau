@@ -548,7 +548,7 @@ async def test_an_unpersisted_tuple_still_reports_its_store_and_cursor(
 
     assert result["session"]["addressable"] is False
     assert result["session"]["store"] == "file"
-    assert result["session"]["lane"] == "primary"
+    assert result["session"]["cursor_id"] == handler.session.cursor.id
     assert "cursor" in result
     assert result["cursor"] == result["session"]["cursor"]
 

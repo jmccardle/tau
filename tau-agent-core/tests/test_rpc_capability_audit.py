@@ -184,6 +184,11 @@ NOT_EXPOSED: dict[str, str] = {
         "Retires a cursor open_cursor opened; the head's is never closed. Same "
         "reason as open_cursor: no wire identity for cursors yet."
     ),
+    "spawn": (
+        "Runs a sub-agent on an owned cursor; reached by extensions through "
+        "ctx.spawn_branch and by the 'fork' strategy, which this wire declines "
+        "until cursors are addressable (the web head's record)."
+    ),
     "deliver_queued": (
         "Runs what a detached cursor still holds; called by AgentSessionRuntime's "
         "swap, which new_session/fork/switch_session already reach."

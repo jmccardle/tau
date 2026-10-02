@@ -4,7 +4,7 @@ Reference: docs/SUBMISSION-LIFECYCLE.md, "fork" / decision 2 (phase 2, parts 2-3
 Reference: docs/NODE-ADDRESSABLE-AGENTS.md §2 (I1), decision 7 / T5 (entries() is
 total).
 
-fork's sub-agent machinery (ctx.spawn_branch, a Cursor owned by the session's)
+fork's sub-agent machinery (AgentSession.spawn, a Cursor owned by the session's)
 is covered by test_spawn_branch.py; these tests pin submit()'s OWN
 responsibilities: the turn-complete admission check, scheduling a SUPERVISED
 background task rather than awaiting one, and not touching the in-flight turn.
@@ -121,23 +121,22 @@ class TestForkAdmission:
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def _gated_prompt(self, text, images=None, context=None):
+        async def _gated(model, context, options=None):
             started.set()
             await release.wait()
-            return []
+            return _Stream("done")
 
-        monkeypatch.setattr(AgentSession, "prompt", _gated_prompt)
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_gated):
+            result = await session.submit(_sub("branch off", "fork-2", multitask_strategy="fork"))
 
-        result = await session.submit(_sub("branch off", "fork-2", multitask_strategy="fork"))
+            assert result.accepted is True
+            assert result.messages == []
+            # The branch has not necessarily even started yet — submit() did not wait.
+            assert "fork-2" in session._forked_tasks
 
-        assert result.accepted is True
-        assert result.messages == []
-        # The branch has not necessarily even started yet — submit() did not wait.
-        assert "fork-2" in session._forked_tasks
-
-        await asyncio.wait_for(started.wait(), timeout=1.0)
-        release.set()
-        await asyncio.wait_for(session._forked_tasks["fork-2"], timeout=1.0)
+            await asyncio.wait_for(started.wait(), timeout=1.0)
+            release.set()
+            await asyncio.wait_for(session._forked_tasks["fork-2"], timeout=1.0)
         # Done-callback cleanup: the registry does not accumulate finished tasks.
         assert session._forked_tasks == {}
 
@@ -170,15 +169,14 @@ class TestForkAdmission:
 
         captured: dict = {}
 
-        async def _capture(self, text, images=None, context=None):
-            captured["tools"] = [t.name for t in self._tools]
-            return []
+        async def _capture(model, context, options=None):
+            captured["tools"] = [t.name for t in context["tools"] or []]
+            return _Stream("done")
 
-        monkeypatch.setattr(AgentSession, "prompt", _capture)
-
-        result = await session.submit(_sub("carry on", "fork-8", multitask_strategy="fork"))
-        assert result.accepted is True
-        await asyncio.wait_for(session._forked_tasks["fork-8"], timeout=1.0)
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_capture):
+            result = await session.submit(_sub("carry on", "fork-8", multitask_strategy="fork"))
+            assert result.accepted is True
+            await asyncio.wait_for(session._forked_tasks["fork-8"], timeout=1.0)
 
         assert captured["tools"] == ["say"], "the fork must be able to do the job"
 
@@ -190,17 +188,10 @@ class TestForkAdmission:
         session = AgentSession(session_log=log, model=_model(), tools=[])
         tip = session.cursor.leaf
 
-        async def _work(self, text, images=None, context=None):
-            await self.cursor.append_message(
-                {"role": "assistant", "content": [{"type": "text", "text": "BRANCH ONLY"}]}
-            )
-            return []
-
-        monkeypatch.setattr(AgentSession, "prompt", _work)
-
-        result = await session.submit(_sub("branch off", "fork-3", multitask_strategy="fork"))
-        assert result.accepted is True
-        await asyncio.wait_for(session._forked_tasks["fork-3"], timeout=1.0)
+        with patch("tau_agent_core.agent_loop.stream_simple", return_value=_Stream("BRANCH ONLY")):
+            result = await session.submit(_sub("branch off", "fork-3", multitask_strategy="fork"))
+            assert result.accepted is True
+            await asyncio.wait_for(session._forked_tasks["fork-3"], timeout=1.0)
 
         assert session.cursor.leaf == tip, "fork must never move the session's cursor"
         assert "BRANCH ONLY" in str(log.entries()), "the branch's work IS in the log"
@@ -211,12 +202,10 @@ class TestForkAdmission:
         log = InMemorySessionLog()
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
-        async def _work(self, text, images=None, context=None):
-            return []
-
-        monkeypatch.setattr(AgentSession, "prompt", _work)
-        result = await session.submit(_sub("go", "fork-4", multitask_strategy="fork"))
-        assert result.accepted is True
+        with patch("tau_agent_core.agent_loop.stream_simple", return_value=_Stream("ok")):
+            result = await session.submit(_sub("go", "fork-4", multitask_strategy="fork"))
+            assert result.accepted is True
+            await asyncio.wait_for(session._forked_tasks["fork-4"], timeout=1.0)
 
 
 class TestForkTaskRegistry:
@@ -226,21 +215,20 @@ class TestForkTaskRegistry:
 
         started = asyncio.Event()
 
-        async def _slow_prompt(self, text, images=None, context=None):
+        async def _slow(model, context, options=None):
             started.set()
             await asyncio.sleep(30)
-            return []  # pragma: no cover — cancelled long before this returns
+            raise AssertionError("cancelled long before this")  # pragma: no cover
 
-        monkeypatch.setattr(AgentSession, "prompt", _slow_prompt)
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_slow):
+            result = await session.submit(_sub("go", "fork-5", multitask_strategy="fork"))
+            assert result.accepted is True
+            task = session._forked_tasks["fork-5"]
+            await asyncio.wait_for(started.wait(), timeout=1.0)
 
-        result = await session.submit(_sub("go", "fork-5", multitask_strategy="fork"))
-        assert result.accepted is True
-        task = session._forked_tasks["fork-5"]
-        await asyncio.wait_for(started.wait(), timeout=1.0)
-
-        session.abort()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=1.0)
+            session.abort()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=1.0)
         assert task.cancelled()
         assert session._forked_tasks == {}, "the done-callback must untrack a cancelled fork"
 
@@ -252,34 +240,33 @@ class TestForkTaskRegistry:
 
         started = asyncio.Event()
 
-        async def _slow_prompt(self, text, images=None, context=None):
+        async def _slow(model, context, options=None):
             started.set()
             await asyncio.sleep(30)
-            return []  # pragma: no cover
+            raise AssertionError("cancelled long before this")  # pragma: no cover
 
-        monkeypatch.setattr(AgentSession, "prompt", _slow_prompt)
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_slow):
+            result = await session.submit(_sub("go", "fork-6", multitask_strategy="fork"))
+            assert result.accepted is True
+            await asyncio.wait_for(started.wait(), timeout=1.0)
 
-        result = await session.submit(_sub("go", "fork-6", multitask_strategy="fork"))
-        assert result.accepted is True
-        await asyncio.wait_for(started.wait(), timeout=1.0)
-
-        await asyncio.wait_for(session.emit_session_shutdown(), timeout=1.0)
+            await asyncio.wait_for(session.emit_session_shutdown(), timeout=1.0)
         assert session._forked_tasks == {}
 
     async def test_a_raising_fork_surfaces_through_the_extension_error_sink(self, monkeypatch):
-        """Fail-Early: an unmodelled exception from the fork task (spawn_branch
-        itself contains modelled failures as BranchResult(ok=False)) must not
-        vanish as an untraced asyncio 'Task exception was never retrieved'."""
+        """Fail-Early: an unmodelled exception from the fork task (``spawn`` itself
+        contains modelled failures as BranchResult(ok=False)) must not vanish as an
+        untraced asyncio 'Task exception was never retrieved'."""
         log = InMemorySessionLog()
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
         surfaced: list = []
         session._surface_extension_error = lambda err: surfaced.append(err)  # type: ignore[method-assign]
 
-        async def _boom(parent_id, prompt, **kwargs):
-            raise RuntimeError("spawn_branch itself blew up")
+        async def _boom(at, prompt, **kwargs):
+            raise RuntimeError("spawn itself blew up")
 
-        monkeypatch.setattr(session._extension_api.context, "spawn_branch", _boom, raising=False)
+        monkeypatch.setattr(session, "spawn", _boom)
 
         result = await session.submit(_sub("go", "fork-7", multitask_strategy="fork"))
         assert result.accepted is True

@@ -1,23 +1,22 @@
 """The multi-lane render seam — ``TurnStream`` + ``RenderRouter`` (B3-a).
 
-docs/SUBMISSION-LIFECYCLE.md, end of "Phasing": *"backends.py:200 stream_chat is
-single-stream by construction, and nothing yet subscribes to the branch_event
-channel, so a fork today is unobservable."* This file pins the replacement — a
-demultiplexer that turns ONE session's whole bus into per-lane render events, so
-two concurrent turns and a turn no frontend initiated are both representable.
+docs/SUBMISSION-LIFECYCLE.md, end of "Phasing". This file pins a demultiplexer
+that turns ONE session's whole bus into per-lane render events, so two concurrent
+turns — a sub-agent's on its own cursor included — and a turn no frontend
+initiated are all representable.
 
 Driven against a real ``AgentSession`` where the wiring is what matters
 (``subscribe_render``), and against hand-built events where a specific shape is
-(orphans, branch lanes, interleaving).
+(orphans, sub-agent lanes, interleaving).
 """
 
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 
-from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.submission import Submission
 from tau_coding_agent.backends import (
@@ -366,100 +365,55 @@ class TestRenderRouterLanes:
         assert seen and seen[0]["kind"] == "lane_start"
 
 
-class TestRenderRouterBranches:
-    """A fork's sub-agent is a second lane — the thing that was unobservable."""
+class _OwnedCursor:
+    """The one attribute the router reads off a cursor: who owns it."""
 
-    async def test_a_branch_opens_its_own_lane_attributed_to_the_agent(self):
+    def __init__(self, owner: object | None) -> None:
+        self.owner = owner
+
+
+class TestRenderRouterSubAgents:
+    """A sub-agent's turn is a submission on its own cursor (docs/CURSORS.md §6)."""
+
+    async def test_a_sub_agent_opens_its_own_lane_attributed_to_the_agent(self):
         seen: list[dict] = []
         router = RenderRouter(seen.append)
-
-        await router.on_branch_event(
-            lane="lane-2",
-            label="explore the tests",
-            event=_text_event("whatever", "branching"),
+        sub = Submission(
+            text="explore the tests", source="agent", submitter="fork:explore", submission_id="b1"
         )
 
-        assert seen[0] == {
-            "kind": "lane_start",
-            "lane": "branch:lane-2",
-            "source": "agent",
-            "submitter": "fork:explore the tests",
-            "correlation": {"branch_lane": "lane-2", "branch_label": "explore the tests"},
-            "text": "explore the tests",
-        }
-        assert seen[1] == {"kind": "text_delta", "delta": "branching", "lane": "branch:lane-2"}
-
-    async def test_the_branch_lane_does_not_borrow_the_sub_sessions_provenance(self):
-        """The forked session's own ``prompt()`` stamps interactive/human, which
-        would be a lie on the primary transcript — nobody typed it."""
-        seen: list[dict] = []
-        router = RenderRouter(seen.append)
-        event = _text_event("sub-submission", "x")
-        event.source = "interactive"
-        event.submitter = "human"
-
-        await router.on_branch_event(lane="lane-2", label="l", event=event)
-
-        assert seen[0]["source"] == "agent"
-        assert seen[0]["submitter"] == "fork:l"
-
-    async def test_a_branch_lane_closes_on_its_terminal_branch_end(self):
-        seen: list[dict] = []
-        router = RenderRouter(seen.append)
-
-        await router.on_branch_event(lane="lane-2", label="l", event=_text_event("s", "hi"))
-        await router.on_branch_event(
-            lane="lane-2", label="l", event=AgentEvent(type="agent_end", timestamp=0)
+        await router.on_submission_start(
+            submission=sub, text="explore the tests", cursor=_OwnedCursor(owner=object())
         )
-        await router.on_branch_end(lane="lane-2", label="l", error=None)
+        await router.on_agent_event(_text_event("b1", "branching"))
 
-        assert router.open_lanes == []
-        assert seen[-1]["kind"] == "lane_end" and seen[-1]["lane"] == "branch:lane-2"
-
-    async def test_agent_end_alone_does_not_close_a_branch_lane(self):
-        """The bracket is ``branch_end``, not ``agent_end``, because
-        ``AgentLoop.run`` emits ``agent_end`` AFTER its while loop rather than from
-        a ``finally``. Closing on it would mean a branch that raised or was
-        cancelled never closed at all — so exactly ONE close arrives, and it
-        arrives however the branch ended."""
-        seen: list[dict] = []
-        router = RenderRouter(seen.append)
-
-        await router.on_branch_event(lane="lane-2", label="l", event=_text_event("s", "hi"))
-        await router.on_branch_event(
-            lane="lane-2", label="l", event=AgentEvent(type="agent_end", timestamp=0)
+        assert seen[0]["kind"] == "lane_start"
+        assert (seen[0]["lane"], seen[0]["source"], seen[0]["submitter"]) == (
+            "b1",
+            "agent",
+            "fork:explore",
         )
+        assert seen[1] == {"kind": "text_delta", "delta": "branching", "lane": "b1"}
 
-        assert router.open_lanes == ["branch:lane-2"]
-        assert [e["kind"] for e in seen].count("lane_end") == 0
-
-    async def test_a_branch_end_for_a_lane_that_never_opened_is_reported_not_swallowed(self):
-        """A branch that failed before emitting anything rendered nothing, so there
-        is no lane to close — but silence there is indistinguishable from a renderer
-        that stopped working, so it is reported."""
-        orphans: list[str] = []
-        router = RenderRouter(lambda _e: None, on_orphan=orphans.append)
-
-        await router.on_branch_end(lane="lane-2", label="l", error="boom")
-
-        assert len(orphans) == 1
-        assert "branch:lane-2" in orphans[0] and "boom" in orphans[0]
-
-    async def test_a_branch_and_the_primary_turn_are_separate_lanes(self):
-        """The concurrency a ``fork`` submission actually produces: the in-flight
-        turn is untouched and a second agent runs beside it."""
+    async def test_a_sub_agent_and_the_head_turn_are_separate_lanes(self):
+        """The concurrency a ``fork`` actually produces: the head's turn is untouched
+        and a second agent runs beside it, on the same bus."""
         seen: list[dict] = []
         router = RenderRouter(seen.append)
-        sub = Submission(text="main", source="interactive", submitter="human", submission_id="m")
+        head = Submission(text="main", source="interactive", submitter="human", submission_id="m")
+        branch = Submission(text="go", source="agent", submitter="fork:l", submission_id="b")
 
-        await router.on_submission_start(submission=sub, text="main")
+        await router.on_submission_start(submission=head, text="main")
         await router.on_agent_event(_text_event("m", "primary"))
-        await router.on_branch_event(lane="lane-2", label="l", event=_text_event("s", "forked"))
+        await router.on_submission_start(
+            submission=branch, text="go", cursor=_OwnedCursor(owner=object())
+        )
+        await router.on_agent_event(_text_event("b", "forked"))
         await router.on_agent_event(_text_event("m", "primaryX"))
 
         lanes = {e["lane"] for e in seen if e["kind"] == "text_delta"}
-        assert lanes == {"m", "branch:lane-2"}
-        assert router.open_lanes == ["m", "branch:lane-2"]
+        assert lanes == {"m", "b"}
+        assert router.open_lanes == ["m", "b"]
 
 
 class TestSubscribeRenderWiring:
@@ -514,15 +468,11 @@ class TestSubscribeRenderWiring:
 
         assert seen == []
 
-    async def test_a_branch_whose_turn_raises_still_closes_its_lane(self, monkeypatch):
-        """The B3 rework defect, end to end through the real ``branch_event`` /
-        ``branch_end`` channels. A sub-agent whose first provider call fails (a
-        dropped connection, an ``ErrorEvent`` the loop turns into a ``RuntimeError``)
-        emits ``agent_start`` and then nothing — ``AgentLoop.run`` emits
-        ``agent_end`` after its while loop, not from a ``finally``. Before the fix
-        the lane stayed in ``open_lanes`` for the rest of the session: a
-        permanently "Working…" exchange and a LaneStrip entry that never cleared.
-        """
+    async def test_a_sub_agent_whose_turn_raises_still_closes_its_lane(self):
+        """A sub-agent whose provider call fails emits ``agent_start`` and then
+        nothing from the loop, so ``submission_end`` — emitted from a ``finally`` —
+        is the bracket that closes its lane. A leaked lane is a permanently
+        "Working…" exchange."""
         backend = _backend()
         session = backend.agent_session
         await session.cursor.append_message(
@@ -531,24 +481,22 @@ class TestSubscribeRenderWiring:
         seen: list[dict] = []
         router = backend.subscribe_render(seen.append)
 
-        async def _boom(self, text, images=None, context=None):
-            await self._events.emit(AgentEvent(type="agent_start", timestamp=0))
+        async def _boom(model, context, options=None):
             raise RuntimeError("the provider dropped the connection")
 
-        monkeypatch.setattr(AgentSession, "prompt", _boom)
-        result = await session._extension_api.context.spawn_branch(
-            session.cursor.leaf, "explore", tools=[]
-        )
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_boom):
+            result = await session._extension_api.context.spawn_branch(
+                session.cursor.leaf, "explore", tools=[]
+            )
 
-        assert result.ok is False, "a failing branch is contained, not raised"
-        assert router.open_lanes == [], "the branch lane must not be leaked"
-        assert [e["kind"] for e in seen] == ["lane_start", "lane_end"]
-        assert seen[-1]["lane"] == "branch:" + result.lane
+        assert result.ok is False, "a failing sub-agent is contained, not raised"
+        assert router.open_lanes == [], "the lane must not be leaked"
+        assert seen[0]["kind"] == "lane_start" and seen[-1]["kind"] == "lane_end"
+        assert seen[0]["submitter"] == "fork:explore"
 
-    async def test_a_cancelled_branch_still_closes_its_lane(self, monkeypatch):
-        """``AgentSession.abort()`` (Esc) cancels every forked task, and
-        ``CancelledError`` is not an ``Exception`` — ``spawn_branch``'s containment
-        handler never sees it. The lane still has to close."""
+    async def test_a_cancelled_sub_agent_still_closes_its_lane(self):
+        """``abort()`` cancels every forked task, and ``CancelledError`` is not an
+        ``Exception`` — the containment handler never sees it. The lane still closes."""
         backend = _backend()
         session = backend.agent_session
         await session.cursor.append_message(
@@ -558,21 +506,22 @@ class TestSubscribeRenderWiring:
         router = backend.subscribe_render(seen.append)
         streaming = asyncio.Event()
 
-        async def _hang(self, text, images=None, context=None):
-            await self._events.emit(AgentEvent(type="agent_start", timestamp=0))
+        async def _hang(model, context, options=None):
             streaming.set()
             await asyncio.sleep(3600)
 
-        monkeypatch.setattr(AgentSession, "prompt", _hang)
-        task = asyncio.get_running_loop().create_task(
-            session._extension_api.context.spawn_branch(session.cursor.leaf, "explore", tools=[])
-        )
-        await streaming.wait()
-        assert len(router.open_lanes) == 1 and router.open_lanes[0].startswith("branch:")
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_hang):
+            task = asyncio.get_running_loop().create_task(
+                session._extension_api.context.spawn_branch(
+                    session.cursor.leaf, "explore", tools=[]
+                )
+            )
+            await streaming.wait()
+            assert len(router.open_lanes) == 1
 
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
         assert router.open_lanes == []
         assert seen[-1]["kind"] == "lane_end"

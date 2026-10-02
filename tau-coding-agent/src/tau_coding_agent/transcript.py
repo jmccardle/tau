@@ -568,8 +568,9 @@ class ChatDisplay(MessageList):
     """Main chat display area with incremental, arrival-ordered rendering.
 
     One user→answer span is an **exchange**, and each concurrently-streaming turn
-    is a **lane** (B3-a) — keyed by ``submission_id``, or ``branch:<lane>`` for a
-    forked sub-agent. Lanes render side by side without interleaving; a lane
+    is a **lane** (B3-a) — keyed by ``submission_id``, a sub-agent's included,
+    since its turn is a submission on its own cursor (docs/CURSORS.md §6). Lanes
+    render side by side without interleaving; a lane
     nobody named is :data:`DEFAULT_LANE`, which is what every pre-B3-a caller (the
     reload path, a test replaying widget events) implicitly used.
 
