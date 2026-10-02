@@ -273,7 +273,7 @@ still pass does not make it one less.
 | `append_navigate`, `navigate` entries | assigning `cursor.leaf`; no entry | old entries are inert |
 | `lane` (sub-agent identity) | `cursor.id`, `cursor_id` on events | |
 | `lane` (TUI render stream per submission) | a turn stream keyed by `submission_id` within the cursor's stream | `TurnStream` already names it |
-| `RenderRouter`'s lanes, `open_lane`, `lane_start`/`lane_end` | streams keyed by `cursor_id`; `turn_start`/`turn_end` brackets | `test_tui_multi_lane_render.py` is renamed to match |
+| `RenderRouter`'s lanes, `open_lane`, `lane_start`/`lane_end` | streams keyed by `cursor_id`; `submission_start`/`submission_end` brackets | the bracket names come from the bus channels they are built from (`backends.py:475-493`); `turn_start`/`turn_end` are already `AgentEvent` types and are not reused. `test_tui_multi_lane_render.py` is renamed to match |
 | `branch_event`, `branch_end` channels | `cursor_id` on every event; `cursor_open`/`cursor_close` | §6 |
 | `BranchResult.lane` | the result's `cursor_id` | |
 | "primary cursor", "primary leaf" | "the head's cursor" | 42 `src` lines say "primary"; some mean "primary bus" and stay |
