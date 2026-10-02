@@ -178,7 +178,9 @@ class _FakeCatalog(SessionCatalog):
         session = _FakeConversationSession(cwd, model, backend, name)
         if system_prompt:
             # Sync core, like every real catalog: `create` is not a coroutine.
-            session._log._append_now("message", message={"role": "system", "content": system_prompt})
+            session._log._append_now(
+                "message", message={"role": "system", "content": system_prompt}
+            )
         self._sessions[session.id] = session
         return session
 
@@ -188,7 +190,9 @@ class _FakeCatalog(SessionCatalog):
         # Mirrors FileSessionCatalog: same construction, never registered.
         session = _FakeConversationSession(cwd, model, backend, name)
         if system_prompt:
-            session._log._append_now("message", message={"role": "system", "content": system_prompt})
+            session._log._append_now(
+                "message", message={"role": "system", "content": system_prompt}
+            )
         return session
 
     def load(self, ref: str) -> ConversationSession:
@@ -366,7 +370,9 @@ async def test_last_compaction_anchor_is_cleared_not_rederived(session: AgentSes
     proves it is genuinely GONE, not carried over or recomputed."""
     log = session.session_log
     first = await log.append_message({"role": "user", "content": "turn one"})
-    await log.append_compaction(summary="a summary", first_kept_id=first, tokens_before=100, **_PROV)
+    await log.append_compaction(
+        summary="a summary", first_kept_id=first, tokens_before=100, **_PROV
+    )
     # Sanity: the OLD log really does have a splice anchor before the reset.
     old_active = ConversationTree(log.entries(), log.cursor).context_for()
     assert any(m.get("role") == "user" and "summary" in str(m.get("content")) for m in old_active)
@@ -631,3 +637,32 @@ async def test_rebind_does_not_run_on_a_vetoed_swap(session: AgentSession, runti
 
     assert result == {"cancelled": True}
     assert calls == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "ROADMAP 'A queued message is lost silently when a session is swapped': "
+        "_reset_transient_state clears the queues and nothing reports it"
+    ),
+)
+@pytest.mark.parametrize("deliver_as", ["steer", "followUp", "nextTurn"])
+async def test_a_swap_never_discards_a_queued_message_without_a_trace(
+    session: AgentSession, runtime, deliver_as: str
+):
+    """An accepted message either reaches a tree or is named by an event.
+
+    Design-neutral on purpose: delivering it to the tree it was aimed at, or
+    reporting the discard, both pass. Only the silent clear fails.
+    """
+    old_log = session.session_log
+    seen: list[str] = []
+    session.subscribe(lambda event: seen.append(event.model_dump_json()))
+    session._queue_message("QUEUED-BEFORE-SWAP", deliver_as=deliver_as)
+
+    result = await runtime.new_session(persist=False)
+
+    assert result["cancelled"] is False
+    in_old_tree = "QUEUED-BEFORE-SWAP" in repr(old_log.entries())
+    in_an_event = any("QUEUED-BEFORE-SWAP" in dumped for dumped in seen)
+    assert in_old_tree or in_an_event
