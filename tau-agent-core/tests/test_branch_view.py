@@ -283,3 +283,20 @@ async def test_summarizing_the_sub_agents_own_branch_still_works(primary):
 
     assert "the sub-agent's question" in text
     assert "the sub-agent's VERDICT" in text
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="docs/CURSORS.md §1.1: reload takes the last entry of any kind, so a "
+    "branch's navigate becomes the conversation's reload point",
+)
+async def test_a_cursor_move_is_not_a_reload_point() -> None:
+    """Reopening lands on the newest content in the tree (§4), not on a navigate target."""
+    log = InMemorySessionLog()
+    root = await log.append_message(_msg("user", "a"))
+    await log.append_message(_msg("assistant", "b"))
+    branch = open_branch(log, root, label="sub")
+    newest = await branch.append_message(_msg("user", "sub"))
+    await branch.append_navigate(root)
+
+    assert resolve_cursor(log.entries()) == newest
