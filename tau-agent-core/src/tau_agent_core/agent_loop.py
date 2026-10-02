@@ -765,16 +765,24 @@ class AgentLoop:
         """
 
         messages = convert_to_llm(list(context))
-        system_prompt = self.config.system_prompt
-        if system_prompt:
-            # Check if context already starts with a system message
-            _first_role = (
+        opens_with_system = (
+            bool(messages)
+            and (
                 messages[0].get("role", "")
                 if isinstance(messages[0], dict)
-                else (getattr(messages[0], "role", ""))
+                else getattr(messages[0], "role", "")
             )
-            if _first_role != "system":
-                messages.insert(0, {"role": "system", "content": system_prompt})
+            == "system"
+        )
+        override = self.config.system_prompt_override
+        if override is not None:
+            frame = {"role": "system", "content": override}
+            if opens_with_system:
+                messages[0] = frame
+            else:
+                messages.insert(0, frame)
+        elif self.config.system_prompt and not opens_with_system:
+            messages.insert(0, {"role": "system", "content": self.config.system_prompt})
 
         context_dict = {
             "messages": messages,

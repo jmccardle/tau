@@ -157,7 +157,16 @@ Default 3; ``None`` disables the check.
 
 `tau_agent_core.agent_loop_types.AgentLoopConfig.system_prompt: str | None`
 
-System prompt for the agent
+System prompt for the agent, sent only when the context
+does not already open with a system message
+
+### system_prompt_override
+
+`tau_agent_core.agent_loop_types.AgentLoopConfig.system_prompt_override: str | None`
+
+This run's prompt from a ``before_agent_start``
+handler; replaces the context's leading system message, or opens
+the context when there is none
 
 ### temperature
 

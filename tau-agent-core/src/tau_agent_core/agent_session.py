@@ -261,6 +261,22 @@ def _ends_with_user_text(messages: list[Any], text: str) -> bool:
     return _message_text(last.get("content", "")).strip() == text.strip()
 
 
+def _leading_system_prompt(messages: list[Any]) -> str | None:
+    """The text of the context's opening system message, or ``None`` if it has none.
+
+    That message is the prompt the model actually receives, because the loop
+    only sends ``AgentLoopConfig.system_prompt`` into a context without one.
+    """
+    first = messages[0] if messages else None
+    if first is None:
+        return None
+    role = first.get("role") if isinstance(first, dict) else getattr(first, "role", None)
+    if role != "system":
+        return None
+    content = first.get("content") if isinstance(first, dict) else getattr(first, "content", "")
+    return _message_text(content)
+
+
 def _system_prompt_digest(system_prompt: str) -> str:
     """SHA-256 hex digest of the system prompt text — NEVER the prompt itself.
 
@@ -3117,18 +3133,19 @@ class AgentSession:
         if context_ends_with_user:
             context_messages = context_messages[:-1]
 
-        turn_system_prompt = self._system_prompt
+        system_prompt_override: str | None = None
         pre_user_messages: list[dict[str, Any]] = []
         post_user_messages: list[dict[str, Any]] = []
         if self._extension_runner.has_handlers("before_agent_start"):
+            stored_prompt = _leading_system_prompt(context_messages)
             before = await self._extension_runner.emit_before_agent_start(
                 prompt=text,
                 images=images,
-                system_prompt=self._system_prompt,
+                system_prompt=stored_prompt if stored_prompt is not None else self._system_prompt,
             )
             if before is not None:
                 if before.get("system_prompt") is not None:
-                    turn_system_prompt = before["system_prompt"]
+                    system_prompt_override = before["system_prompt"]
                 for msg in before.get("messages") or []:
                     node = self._custom_message_node(msg)
                     if msg.get("position") == MESSAGE_POSITION_BEFORE_USER:
@@ -3138,7 +3155,8 @@ class AgentSession:
 
         # Build the agent loop config
         config = AgentLoopConfig(
-            system_prompt=turn_system_prompt,
+            system_prompt=self._system_prompt,
+            system_prompt_override=system_prompt_override,
             temperature=self._model.temperature,
             api_key=self._api_key,
             reasoning=self._reasoning,

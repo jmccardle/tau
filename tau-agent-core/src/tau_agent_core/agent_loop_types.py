@@ -63,7 +63,11 @@ class AgentLoopConfig(BaseModel):
 
     Attributes:
         model: Model identifier (e.g., "gpt-4o")
-        system_prompt: System prompt for the agent
+        system_prompt: System prompt for the agent, sent only when the context
+            does not already open with a system message
+        system_prompt_override: This run's prompt from a ``before_agent_start``
+            handler; replaces the context's leading system message, or opens
+            the context when there is none
         tool_execution_mode: How tools are executed
         max_retries: Maximum retry attempts for failed tool calls
         max_turns: Turn ceiling, or ``None`` (the default) for no ceiling
@@ -77,6 +81,7 @@ class AgentLoopConfig(BaseModel):
 
     model: str | None = None
     system_prompt: str | None = None
+    system_prompt_override: str | None = None
     tool_execution_mode: Literal["sequential", "parallel"] = "parallel"
     max_retries: int = Field(default=3, ge=0)
     max_turns: int | None = Field(default=None, ge=1)

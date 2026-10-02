@@ -184,3 +184,77 @@ async def test_no_before_agent_start_handlers_leaves_base_prompt_and_no_injectio
     messages = captured["context"]["messages"]
     assert _system_text(messages) == "BASE"
     assert _user_texts(messages) == ["hello"]
+
+
+def _system_texts(messages: list[Any]) -> list[str]:
+    return [
+        str(m.get("content", ""))
+        for m in messages
+        if isinstance(m, dict) and m.get("role") == "system"
+    ]
+
+
+async def _session_with_stored_prompt(stored: str, fresh: str) -> AgentSession:
+    """A session whose tree already opens with a system message, as the file store's does."""
+    session = _make_session(system_prompt=fresh)
+    await session._session_log.append_message(
+        {"role": "system", "content": stored, "timestamp": _TS}
+    )
+    return session
+
+
+async def test_the_override_reaches_the_wire_when_the_tree_holds_the_prompt() -> None:
+    """A handler's prompt replaces the tree's leading system message for this turn.
+
+    The file store writes the system prompt as the tree's first entry, so the
+    loop's "insert unless the context already starts with one" skipped the
+    override on every TUI and ``-p`` session.
+    """
+    session = await _session_with_stored_prompt("STORED", fresh="FRESH")
+    seen: dict[str, Any] = {}
+
+    def pirate(event, ctx):
+        seen["system_prompt"] = event["system_prompt"]
+        return {"system_prompt": event["system_prompt"] + "\nA"}
+
+    session._extension_runner.register_extension("mem:pirate").on("before_agent_start", pirate)
+
+    captured: dict[str, Any] = {}
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=_capturing_stream(captured),
+    ):
+        await session.prompt("hello")
+
+    assert seen["system_prompt"] == "STORED"
+    assert _system_texts(captured["context"]["messages"]) == ["STORED\nA"]
+
+
+async def test_no_handler_leaves_the_stored_prompt_alone() -> None:
+    """Without an override the tree's prompt is what the model sees, once."""
+    session = await _session_with_stored_prompt("STORED", fresh="FRESH")
+
+    captured: dict[str, Any] = {}
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=_capturing_stream(captured),
+    ):
+        await session.prompt("hello")
+
+    assert _system_texts(captured["context"]["messages"]) == ["STORED"]
+
+
+async def test_the_override_is_not_persisted() -> None:
+    """The override is this turn's frame; the tree keeps the stored prompt."""
+    session = await _session_with_stored_prompt("STORED", fresh="FRESH")
+    session._extension_runner.register_extension("mem:pirate").on(
+        "before_agent_start", lambda event, ctx: {"system_prompt": "PIRATE"}
+    )
+
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=_capturing_stream({}),
+    ):
+        await session.prompt("hello")
+
+    assert _system_texts(session.messages) == ["STORED"]
