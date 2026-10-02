@@ -1153,6 +1153,7 @@ class AgentLoop:
                     tool_call_id=result.tool_call_id,
                     tool_name=result.tool_name,
                     result=result.content,
+                    details=result.details,
                     is_error=result.is_error,
                 )
             )

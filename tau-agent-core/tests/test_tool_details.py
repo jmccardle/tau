@@ -19,6 +19,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
@@ -133,7 +135,7 @@ def _detail_ext(name: str, details: dict[str, Any] | None):
     return ext
 
 
-def _make_session(*extensions) -> AgentSession:
+def _make_session(*extensions, mode: str = "parallel") -> AgentSession:
     model = Model(
         id="gpt-4o",
         name="GPT-4o",
@@ -147,6 +149,7 @@ def _make_session(*extensions) -> AgentSession:
         session_log=InMemorySessionLog(),
         model=model,
         extensions=list(extensions),
+        tool_execution_mode=mode,  # type: ignore[arg-type]
     )
 
 
@@ -190,9 +193,14 @@ async def test_a_tool_declaring_no_details_reports_none() -> None:
     assert _details_of(messages, "bare") is None
 
 
-async def test_details_reach_the_tool_execution_end_event() -> None:
-    """A live head subscribed to the bus sees the same value the message holds."""
-    session = _make_session(_detail_ext("probed", DETAILS))
+@pytest.mark.parametrize("mode", ["parallel", "sequential"])
+async def test_details_reach_the_tool_execution_end_event(mode: str) -> None:
+    """A live head sees the value the message holds, on both execution paths.
+
+    edit, write and bash run sequentially, so a sequential path that drops it
+    hides every diff from a live head.
+    """
+    session = _make_session(_detail_ext("probed", DETAILS), mode=mode)
     seen: list[AgentEvent] = []
 
     def collect(event: AgentEvent) -> None:
