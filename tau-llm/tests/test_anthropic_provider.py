@@ -1316,3 +1316,41 @@ class TestLifetime:
 
     def test_aclose_on_an_unused_provider_is_a_no_op(self):
         asyncio.run(_provider().aclose())
+
+
+class TestAbort:
+    """A tripped ``AbortSignal`` ends the stream at the next delta, with the partial."""
+
+    def test_a_signal_tripped_mid_stream_stops_at_the_next_event(self):
+        from tau_llm.abort import AbortSignal
+
+        signal = AbortSignal()
+        events = [SimpleNamespace(type="text", text=part) for part in ("one ", "two ", "three")]
+
+        class _AbortingStream(_FakeStream):
+            def __aiter__(self):
+                async def gen():
+                    for event in self._events:
+                        yield event
+                        signal.abort()
+
+                return gen()
+
+        client = _FakeClient([], _final())
+        client.messages.stream = lambda **_: _FakeStreamManager(_AbortingStream(events, _final()))
+        provider = _provider()
+        provider._client = client
+
+        async def drive():
+            stream = await provider.stream_chat(
+                _model(), [{"role": "user", "content": "hi"}], None, {"abort_signal": signal}
+            )
+            return [event async for event in stream]
+
+        out = asyncio.run(drive())
+
+        deltas = [e.delta for e in out if isinstance(e, TextDeltaEvent)]
+        assert deltas == ["one "]
+        assert isinstance(out[-1], DoneEvent)
+        assert out[-1].final.stop_reason == "aborted"
+        assert out[-1].final.content[0].text == "one "

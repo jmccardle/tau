@@ -525,7 +525,7 @@ class GoogleGenerativeAIProvider(Provider):
                     config=cast(Any, config),
                 )
                 async for chunk in stream:
-                    if abort_signal is not None and getattr(abort_signal, "aborted", False):
+                    if abort_signal is not None and abort_signal.is_aborted():
                         yield DoneEvent(
                             final=state.build_message(stop_reason="aborted"), usage=state.usage
                         )

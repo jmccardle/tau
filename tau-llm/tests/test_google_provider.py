@@ -699,3 +699,44 @@ def test_usage_never_reports_a_negative_input_when_the_whole_prompt_was_cached()
     converted = google_provider._usage_from_google(usage)
 
     assert (converted.input_tokens, converted.cache_read_tokens) == (0, 10)
+
+
+async def test_a_signal_tripped_mid_stream_stops_at_the_next_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tripped ``AbortSignal`` ends the stream at the next chunk, with the partial."""
+    from types import SimpleNamespace
+
+    from tau_llm.abort import AbortSignal
+    from tau_llm.streaming import DoneEvent, TextDeltaEvent
+
+    signal = AbortSignal()
+
+    def chunk(text: str) -> Any:
+        part = SimpleNamespace(text=text, thought=False, function_call=None, thought_signature=None)
+        candidate = SimpleNamespace(finish_reason=None, content=SimpleNamespace(parts=[part]))
+        return SimpleNamespace(usage_metadata=None, candidates=[candidate])
+
+    async def chunks() -> Any:
+        for text in ("one ", "two ", "three"):
+            yield chunk(text)
+            signal.abort()
+
+    class _Models:
+        async def generate_content_stream(self, **kwargs: Any) -> Any:
+            return chunks()
+
+    class _Client:
+        aio = type("A", (), {"models": _Models()})()
+
+    provider = _provider()
+    monkeypatch.setattr(provider, "_get_client", lambda: _Client())
+
+    stream = await provider.stream_chat(
+        _model(), [{"role": "user", "content": "hi"}], None, {"abort_signal": signal}
+    )
+    out = [event async for event in stream]
+
+    assert [e.delta for e in out if isinstance(e, TextDeltaEvent)] == ["one "]
+    assert isinstance(out[-1], DoneEvent)
+    assert out[-1].final.stop_reason == "aborted"
