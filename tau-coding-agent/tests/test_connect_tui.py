@@ -7,6 +7,7 @@ real ``TauApp`` under Textual's pilot, holding a :class:`RemoteConnection`.
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -14,15 +15,18 @@ from unittest.mock import patch
 import pytest
 from websockets.asyncio.server import serve as ws_serve
 
-from tau_llm.streaming import DoneEvent, TextDeltaEvent
-from tau_llm.types import AssistantMessage, TextContent, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent, ThinkingDeltaEvent
+from tau_llm.types import AssistantMessage, TextContent, ThinkingContent, ToolCall, Usage
 
 from tau_coding_agent.serve import protocol as p
 from tau_coding_agent.serve.client import Address, ServeClient
 from tau_coding_agent.serve.daemon import Daemon
 from tau_coding_agent.serve.remote import RemoteBackend, RemoteConnection
 from tau_coding_agent.session_store import FileSessionCatalog, Session
+from tau_coding_agent.testing.render import save_render
 from tau_coding_agent.testing.sandbox import build_tau_app
+
+SHOTS = Path(os.environ.get("TAU_SHOTS", "")) if os.environ.get("TAU_SHOTS") else None
 
 _CONFIG: dict[str, Any] = {
     "default_model": "fake",
@@ -222,3 +226,100 @@ async def test_the_extensions_view_under_connect_lists_the_daemons_load_errors(
         assert infos == []
         assert "## Load errors" in listing and "broken.py" in listing and "nope" in listing
     await remote.close()
+
+
+class _ToolStream:
+    """Reasoning, then a streamed answer that calls ``ls``; after the result, a short answer."""
+
+    def __init__(self, after_tool: bool) -> None:
+        self._after_tool = after_tool
+
+    def __aiter__(self):
+        async def gen():
+            if self._after_tool:
+                content: list[Any] = [TextContent(text="There is one file, notes.txt.")]
+            else:
+                content = [
+                    ThinkingContent(thinking="The user wants a listing; ls answers that."),
+                    TextContent(text="Let me look at the directory first."),
+                    ToolCall(id="call-ls", name="ls", arguments={"path": "."}),
+                ]
+            final = AssistantMessage(
+                content=content,
+                api="openai-completions",
+                provider="openai",
+                model="fake-model",
+                stop_reason="stop" if self._after_tool else "toolUse",
+                usage=Usage(input_tokens=40, output_tokens=12, total_tokens=52),
+            )
+            for block in content:
+                if isinstance(block, ThinkingContent):
+                    for word in block.thinking.split(" "):
+                        yield ThinkingDeltaEvent(delta=word + " ", partial=final)
+                elif isinstance(block, TextContent):
+                    for word in block.text.split(" "):
+                        yield TextDeltaEvent(delta=word + " ", partial=final)
+            yield DoneEvent(final=final, usage=final.usage)
+
+        return gen()
+
+    def abort(self) -> None:
+        pass
+
+
+async def _tool_stream(model: Any, context: Any, options: Any = None) -> _ToolStream:
+    last = context["messages"][-1]
+    role = last.get("role") if isinstance(last, dict) else last.role
+    return _ToolStream(after_tool=role == "toolResult")
+
+
+async def test_a_streamed_turn_under_connect_renders_as_the_daemons_own_bus_does(
+    daemon, tau_home, tmp_path
+):
+    """Text, reasoning and a tool call: the wire's bounded events, rejoined with the
+    entries, give the router what the daemon's in-process bus gives it."""
+    served, address = daemon
+    (tmp_path / "notes.txt").write_text("notes\n")
+    other = await ServeClient.connect(address, client="other")
+    created = await other.request(p.CreateSession(cwd=str(tmp_path)))
+    session_id = created["session_id"]
+    await other.attach(session_id)
+    local: list[dict[str, Any]] = []
+    served.hosts[session_id].backend.subscribe_render(local.append)
+
+    remote = RemoteConnection(address, cwd=str(tmp_path))
+    app = build_tau_app(tau_home, remote=remote)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_tool_stream):
+        async with app.run_test(size=(110, 40)) as pilot:
+            await _until(pilot, lambda: remote._ready.is_set())
+            await app._remote_open(session_id)
+            rendered: list[dict[str, Any]] = []
+            orphans: list[str] = []
+            RemoteBackend(remote, session_id).subscribe_render(
+                rendered.append, on_orphan=orphans.append
+            )
+            await app.on_input_submitted(_Submit("what is here?"))
+            await _until(pilot, lambda: not app.is_generating and len(app.messages) >= 5)
+            await _until(pilot, lambda: any(e["kind"] == "stream_end" for e in rendered))
+            await pilot.pause(0.1)
+            if SHOTS is not None:
+                from textual.widgets import Collapsible
+
+                for fold in app.query(Collapsible):
+                    fold.collapsed = False
+                app.refresh(layout=True)
+                await pilot.pause(0.5)
+                save_render(app, SHOTS, "connect-streamed-turn")
+
+    assert orphans == []
+    kinds = [e["kind"] for e in rendered]
+    assert {"reasoning_delta", "text_delta", "tool_call", "tool_result"} <= set(kinds)
+    call = next(e for e in rendered if e["kind"] == "tool_call")
+    assert call["arguments"] == {"path": "."}
+    result = next(e for e in rendered if e["kind"] == "tool_result")
+    assert "notes.txt" in result["result"]
+    assert rendered == local
+    end = rendered[-1]
+    assert end["kind"] == "stream_end" and end["output"] == 24 and end["context"] == 40
+    await remote.close()
+    await other.close()

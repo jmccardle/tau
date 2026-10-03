@@ -2368,6 +2368,7 @@ class TauApp(App):
         The subtitle carries the summariser's model on the way in and what it
         SPENT on the way out — the one place those tokens are visible, because
         side work runs outside the agent loop and no ``turn_end`` counts it.
+        Under ``--connect`` the daemon sends neither, and the box says ``done``.
 
         ``_side_box`` is keyed by purpose, matching ``RenderRouter``'s own
         assumption that one purpose runs at a time. A delta or an end that finds
@@ -2398,7 +2399,7 @@ class TauApp(App):
         text = event.get("text")
         if text is not None and text != box.content_text:
             box.update_content(str(text))
-        box.set_subtitle(self._side_cost(event.get("usage")))
+        box.set_subtitle(self._side_cost(event["usage"]) if "usage" in event else "done")
         self._refresh_subtitle()
 
     @staticmethod

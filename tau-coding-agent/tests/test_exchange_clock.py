@@ -11,17 +11,13 @@ Reference: docs/MESSAGE-TIMESTAMPS.md §3.
 
 from __future__ import annotations
 
+from tau_agent_core.events import AgentEvent
 from tau_coding_agent.backends import TurnStream
 from tau_coding_agent.transcript import span_seconds
 
 
-class _Event:
-    """The two fields ``TurnStream.feed`` reads off an AgentEvent."""
-
-    def __init__(self, type_: str, timestamp: int | None) -> None:
-        self.type = type_
-        self.timestamp = timestamp
-        self.turn_index = 0
+def _Event(type_: str, timestamp: int) -> AgentEvent:
+    return AgentEvent(type=type_, timestamp=timestamp, turn_index=0)
 
 
 def _span(*stamps: int | None) -> list[dict]:
@@ -47,8 +43,8 @@ class TestLiveStreamClock:
 
     def test_events_without_a_clock_do_not_fabricate_one(self):
         stream = TurnStream(stream_id="main")
-        stream.feed(_Event("turn_start", None))
-        stream.feed(_Event("turn_start", None))
+        stream.feed_wire({"type": "turn_start", "timestamp": None})
+        stream.feed_wire({"type": "turn_start", "timestamp": None})
         assert stream.elapsed_seconds is None
 
 

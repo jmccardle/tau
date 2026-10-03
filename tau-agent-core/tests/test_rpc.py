@@ -40,6 +40,7 @@ from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.commands import FRONTEND_COMMANDS
 from tau_agent_core.flows import Performed, Ready, View
+from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.rpc import (
     RPCEvent,
@@ -1206,7 +1207,7 @@ async def test_forward_event_enqueues_a_notification(handler):
 
 async def test_forward_event_resets_the_projector_on_turn_start(handler):
     """E1: the projector is per-handler but reset per turn (see
-    RPCHandler.__init__'s comment on `_delta_projector` for why turn_start,
+    wire_events.project_event's docstring for why turn_start,
     specifically, is the correct reset point for this subscription)."""
     await handler._forward_event(
         AgentEvent(
@@ -1826,7 +1827,7 @@ def test_project_event_non_message_types_are_1to1(real_handler):
         tool_name="bash",
         is_error=False,
     )
-    (payload,) = wire_events.project_event(real_handler._delta_projector, event)
+    (payload,) = wire_events.project_event(MessageDeltaProjector(), event)
     assert payload["type"] == "tool_execution_end"
     assert payload["timestamp"] == 123
     assert payload["tool_call_id"] == "c1"
@@ -1838,7 +1839,7 @@ def test_project_event_non_message_types_are_1to1(real_handler):
 
 def test_project_event_agent_end_carries_count_not_messages(real_handler):
     event = AgentEvent(type="agent_end", timestamp=1, messages=[{"role": "user"}])
-    (payload,) = wire_events.project_event(real_handler._delta_projector, event)
+    (payload,) = wire_events.project_event(MessageDeltaProjector(), event)
     assert payload["message_count"] == 1
     assert "messages" not in payload
 
@@ -1860,7 +1861,7 @@ def test_project_event_agent_end_carries_the_error_reason(real_handler):
         is_error=True,
         error="RuntimeError: Connection refused",
     )
-    (payload,) = wire_events.project_event(real_handler._delta_projector, event)
+    (payload,) = wire_events.project_event(MessageDeltaProjector(), event)
     assert payload["is_error"] is True
     assert payload["error"] == "RuntimeError: Connection refused"
 
@@ -1868,13 +1869,13 @@ def test_project_event_agent_end_carries_the_error_reason(real_handler):
 def test_project_event_normal_agent_end_has_no_error(real_handler):
     """The paired case: a clean close must not fabricate a reason."""
     event = AgentEvent(type="agent_end", timestamp=1, messages=[], is_error=False)
-    (payload,) = wire_events.project_event(real_handler._delta_projector, event)
+    (payload,) = wire_events.project_event(MessageDeltaProjector(), event)
     assert payload["is_error"] is False
     assert payload["error"] is None
 
 
 def test_project_event_message_update_yields_a_bounded_delta(real_handler):
-    projector = real_handler._delta_projector
+    projector = MessageDeltaProjector()
     first = AgentEvent(
         type="message_update",
         timestamp=1,
@@ -1897,7 +1898,7 @@ def test_project_event_replace_case_resets_not_appends(real_handler):
     """E1: BlockDelta.replace=True means the receiver must RESET its
     accumulator to `delta`, not append it — the defect the TUI's backends.py
     deliberately ignores (its own comment says so) and the wire must not."""
-    projector = real_handler._delta_projector
+    projector = MessageDeltaProjector()
     first = AgentEvent(
         type="message_update",
         timestamp=1,
@@ -1924,7 +1925,7 @@ def test_project_event_drops_non_diffable_block_and_returns_nothing(real_handler
             "content": [{"type": "toolCall", "id": "c1", "name": "bash", "arguments": {}}],
         },
     )
-    assert wire_events.project_event(real_handler._delta_projector, event) == []
+    assert wire_events.project_event(MessageDeltaProjector(), event) == []
 
 
 def test_project_event_returns_one_wireevent_per_changed_diffable_block(real_handler):
@@ -1932,7 +1933,7 @@ def test_project_event_returns_one_wireevent_per_changed_diffable_block(real_han
     thinking and a text change (a ToolCallDeltaEvent-triggered update can, per
     event_projection.py's docstring) projects to two wire events, each tagged
     with its own block_type."""
-    projector = real_handler._delta_projector
+    projector = MessageDeltaProjector()
     event = AgentEvent(
         type="message_update",
         timestamp=1,
@@ -2048,3 +2049,24 @@ async def test_a_notification_error_carries_a_null_id(handler):
     await handler._send_error(None, dialect.PARSE_ERROR, "Parse error")
     (response,) = await _drain(handler)
     assert response["id"] is None
+
+
+def test_the_projector_keeps_two_cursors_streaming_at_once_apart():
+    """A comparison interleaves two cursors on one bus; each cursor's deltas
+    rebuild its own text, never a diff against the other's."""
+    projector = wire_events.WireEventProjector()
+    texts = {"a": "", "b": ""}
+    rebuilt = {"a": "", "b": ""}
+    for word in ("one ", "two ", "three "):
+        for cursor, prefix in (("a", "A:"), ("b", "B:")):
+            texts[cursor] += prefix + word
+            event = AgentEvent(
+                type="message_update",
+                timestamp=1,
+                cursor_id=cursor,
+                message={"role": "assistant", "content": [{"type": "text", "text": texts[cursor]}]},
+            )
+            for payload in projector.project(event):
+                assert payload["replace"] is False
+                rebuilt[payload["cursor_id"]] += payload["delta"]
+    assert rebuilt == texts

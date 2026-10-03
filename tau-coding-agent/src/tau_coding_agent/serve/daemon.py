@@ -35,6 +35,7 @@ from tau_agent_core.projections import (
     path_completion,
     request_payload,
 )
+from tau_agent_core.rpc.wire_events import WireEventProjector
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.session_log import SessionLog, is_incomplete
 from tau_agent_core.submission import Submission
@@ -199,6 +200,7 @@ class SessionHost:
         self.epoch = uuid.uuid4().hex[:12]
         self.seq = 0
         self.history: collections.deque[dict[str, Any]] = collections.deque(maxlen=REPLAY_BOUND)
+        self.wire = WireEventProjector()
         self.clients: set[Client] = set()
         self.ui = ServeUI(self)
         self._cursors_seen: list[p.CursorState] = []
@@ -383,19 +385,19 @@ class SessionHost:
             self.daemon.log(f"{self.tag} client {client.id} detached")
 
     def _on_write(self, kind: str, entry: dict[str, Any]) -> None:
+        cursor = TURN_CURSOR.get()
+        cursor_id = cursor.id if cursor is not None else None
         if kind == "entry_open":
-            cursor = TURN_CURSOR.get()
-            self._open_entries[entry["id"]] = (
-                entry.get("type", "?"),
-                cursor.id if cursor is not None else None,
-            )
+            self._open_entries[entry["id"]] = (entry.get("type", "?"), cursor_id)
         elif kind == "entry_final":
-            self._open_entries.pop(entry["id"], None)
-        self.publish(kind, p.to_wire(p.EntryEventData(entry=entry)))
+            opened = self._open_entries.pop(entry["id"], None)
+            if opened is not None:
+                cursor_id = opened[1]
+        self.publish(kind, p.to_wire(p.EntryEventData(entry=entry, cursor_id=cursor_id)))
 
     def _on_agent_event(self, event: Any) -> None:
-        data = event.model_dump(mode="json")
-        self.publish("agent_event", data)
+        for data in self.wire.project(event):
+            self.publish("agent_event", data)
         if event.type == "tool_execution_start" and event.tool_call_id:
             self._tool_started[event.tool_call_id] = time.monotonic()
         elif event.type == "tool_execution_end" and event.tool_call_id:

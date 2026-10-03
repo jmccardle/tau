@@ -267,7 +267,8 @@ what it receives; tau-code generates its types from it. `PROTOCOL_VERSION` is
 - **Every event's data is typed.** `protocol.EVENT_DATA` maps each kind to its
   data. `Event` in the schema is a `oneOf` of one `<Kind>Event` per kind, with
   `x-data` naming each kind's data. `agent_event` is `AgentEvent`'s own pydantic
-  schema, because the daemon sends the whole model and not RPC's `WireEvent`.
+  schema, because the daemon sends the whole model and not RPC's `WireEvent`
+  (until the agent_event note below).
 - **Entries, messages and specs are TypedDicts.** The daemon forwards them as
   dicts, so they are shapes, not records it builds: `Entry` (one shape per
   entry `type`; an unfinished entry matches only `IncompleteEntry`), `Message`
@@ -298,6 +299,64 @@ what it receives; tau-code generates its types from it. `PROTOCOL_VERSION` is
   `--web-root DIR` overrides `serve.web_root`. `-d` probes with a real hello and
   starts no second daemon where one answers. It waits for a hello that carries
   its child's pid. `-d --json` prints one `ServeStarted` object.
+
+Built note (agent_event, protocol 0.4), 2026-10-03. `agent_event` was
+`AgentEvent.model_dump()`. A `message_update` carried the whole message so far on
+every chunk, so the bytes grew with the square of the reply: on the socket, in
+the replay history, and again on replay. It also lacked the fields tau-code's
+live view reads (`block_type`, `replace`, `stop_reason`, `dropped_tool_calls`,
+`cache_notice`). `PROTOCOL_VERSION` stays `0.4`, which no client had yet.
+
+- **`agent_event` data is RPC's `WireEvent`.** Its `$def` is `WireEvent`,
+  generated from `tau_agent_core.rpc_event_schema.WireEvent`, the model that
+  types RPC's event lines. The daemon builds it with
+  `rpc/wire_events.WireEventProjector`, which the RPC handler now uses too. It
+  holds one `MessageDeltaProjector` per cursor, because two cursors stream at
+  once in a comparison, and one `PromptCacheObserver` whose turns are kept per
+  cursor. RPC filters to one cursor, so its bytes are unchanged:
+  `test_rpc.py`, the conformance tests and `docs/RPC-PROTOCOL.md` regenerate
+  as before. `cursor` is always null on this wire, since the `cursors` event
+  carries every leaf.
+- **Entry events name their cursor.** `EntryEventData.cursor_id` is the cursor
+  whose turn or request made the write. An `entry_final` names the cursor that
+  opened the entry. This field is how a client joins the two event kinds.
+- **The TUI renders the wire projection, locally and remotely.**
+  `TurnStream.feed` projects an `AgentEvent` with `project_event` and reads only
+  the result, through `feed_wire`. `WireEvent` leaves out what the TUI draws
+  beside the text: tool arguments and results, usage, and a steer's words. So
+  `feed_wire` takes them as an `EventDetail`. Locally, `EventDetail.of(event)`
+  reads them off the event. Under `--connect`, `remote.WireJoin` reads them
+  from the entries that arrive on the same socket:
+  - arguments come from the assistant entry finalized before the tool ran;
+  - a result comes from its toolResult entry, so the end event waits for it in
+    a sequential batch;
+  - usage comes from the assistant entry the cursor finalized just before a
+    `message_end` that has a `stop_reason`;
+  - a held `message_start` becomes a steer when the cursor's next entry is a
+    user message.
+
+  The other way was to rebuild `AgentEvent` from the deltas. It loses because
+  the entries are the only source for those fields, and inverting the
+  projection would derive the same thing a second time.
+  `test_connect_tui.py` checks that the render events a remote TUI builds equal
+  the ones the daemon's own bus produces for the same turn. That turn has
+  reasoning, text and a tool call.
+- **What `--connect` does not show.** A side completion's model and spend are
+  not on the wire. A compaction entry records them (`summarizerModelId`,
+  `summaryUsage`) but arrives after the end event, and a branch summary records
+  neither. So the box under `--connect` shows its streamed text and says `done`,
+  where the local box shows the cost. It does not say "cost not reported",
+  which would be false.
+- **Replay keeps deltas.** The history now holds bounded items, so keeping them
+  costs little. Replay sends the events a client missed, and the TUI draws a
+  live message from its deltas. If deltas were left out, a client that
+  reconnected mid-message would show that message cut short until a reload.
+  `entry_final` repairs the replica, not the drawn text.
+- Measured with a reply of 30,000 text characters and 7,500 reasoning
+  characters, in ten-character chunks: before, 50,653,566 bytes of
+  `agent_event`, the largest `message_update` 30,730 B. After, 2,612,247 bytes,
+  every `message_update` about 700 B. `test_serve_schema.py` checks that the
+  size per frame stays flat and the total stays linear.
 
 ## 6. `tau serve`
 

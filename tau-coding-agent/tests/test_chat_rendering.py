@@ -943,16 +943,11 @@ async def test_reload_multiple_user_turns_make_separate_exchanges():
         assert len(list(display.query(ExchangeBox))) == 1
 
 
-class _FakeEvent:
-    """Minimal stand-in for tau_agent_core AgentEvent (attribute access).
+def _FakeEvent(**kw):
+    """A real ``AgentEvent``; ``cursor_id`` stays ``None``, which the head's filter passes."""
+    from tau_agent_core.events import AgentEvent
 
-    ``cursor_id`` defaults to ``None``, which the head's event filter passes.
-    """
-
-    cursor_id = None
-
-    def __init__(self, **kw):
-        self.__dict__.update(kw)
+    return AgentEvent(**kw)
 
 
 class _HeadCursor:
@@ -1716,11 +1711,13 @@ def test_the_duplicate_message_end_restates_the_same_total():
     assert again[0]["output"] == 30
 
 
-def test_a_message_end_with_no_message_publishes_nothing():
-    """No message, no boundary — there is nothing to have ended."""
+def test_a_message_end_with_no_message_still_marks_the_boundary():
+    """The wire never carries the message, so the event is the boundary, not its content."""
     from tau_coding_agent.backends import TurnStream
 
-    assert TurnStream().feed(_FakeEvent(type="message_end", timestamp=_TS, message=None)) == []
+    (boundary,) = TurnStream().feed(_FakeEvent(type="message_end", timestamp=_TS, message=None))
+    assert boundary["kind"] == "completion_end"
+    assert boundary["output"] == 0
 
 
 def test_the_completion_boundary_carries_the_stop_reason():

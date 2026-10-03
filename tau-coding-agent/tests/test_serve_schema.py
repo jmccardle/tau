@@ -21,7 +21,8 @@ from schema_check import SchemaError, validate
 from test_serve import _CONFIG, _fake_stream, _serve, _until
 from websockets.asyncio.client import connect
 
-from tau_llm.types import AssistantMessage, TextContent, Usage
+from tau_llm.streaming import DoneEvent, TextDeltaEvent, ThinkingDeltaEvent
+from tau_llm.types import AssistantMessage, TextContent, ThinkingContent, Usage
 
 from tau_coding_agent import __version__
 from tau_coding_agent.serve import cli as serve_cli
@@ -550,3 +551,80 @@ def test_web_root_flag_overrides_the_config_and_a_file_is_refused(tmp_path, caps
     address = serve_cli.Address(None, None, str(tmp_path / "t.sock"))
     code = asyncio.run(serve_cli.serve(address, {"serve": {"web_root": str(not_a_dir)}}))
     assert code == 2 and "is not a directory" in capsys.readouterr().err
+
+
+def _chunked(chunks: int):
+    """A provider streaming ``chunks`` ten-character text deltas after a quarter as many of reasoning."""
+
+    class _Stream:
+        def __init__(self, model_id: str) -> None:
+            self.final = AssistantMessage(
+                content=[
+                    ThinkingContent(thinking="ponder it " * (chunks // 4)),
+                    TextContent(text="lorem ips " * chunks),
+                ],
+                api="openai-completions",
+                provider="openai",
+                model=model_id,
+                stop_reason="stop",
+                usage=Usage(input_tokens=3, output_tokens=2, total_tokens=5),
+            )
+
+        def __aiter__(self):
+            async def gen():
+                for _ in range(chunks // 4):
+                    yield ThinkingDeltaEvent(delta="ponder it ", partial=self.final)
+                for _ in range(chunks):
+                    yield TextDeltaEvent(delta="lorem ips ", partial=self.final)
+                yield DoneEvent(final=self.final, usage=self.final.usage)
+
+            return gen()
+
+        def abort(self) -> None:
+            pass
+
+    async def stream(model: Any, context: Any, options: Any = None) -> _Stream:
+        return _Stream(model.id)
+
+    return stream
+
+
+async def _long_reply(daemon: Any, tmp_path: Path, chunks: int) -> tuple[Recorder, Any]:
+    client = await Recorder.open(daemon.address)
+    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    head = (await client.request(p.Attach(session_id=session_id)))["head_cursor_id"]
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_chunked(chunks)):
+        await client.request(p.Submit(session_id=session_id, cursor_id=head, text="go"))
+        await _until(lambda: bool(client.channel("submission_end")), timeout=30)
+    await client.close()
+    return client, daemon.daemon.hosts[session_id]
+
+
+async def test_a_long_reply_streams_bounded_deltas_that_rebuild_the_answer(daemon, tmp_path):
+    """agent_event is RPC's WireEvent: a message_update carries a chunk, not the
+    message so far, so its size does not grow with the reply and the total is linear."""
+    measured = {}
+    for chunks in (200, 2000):
+        client, host = await _long_reply(daemon, tmp_path, chunks)
+        client.check()
+        frames = client.events("agent_event")
+        updates = [f for f in frames if f["data"]["type"] == "message_update"]
+        text = "".join(f["data"]["delta"] for f in updates if f["data"]["block_type"] == "text")
+        thinking = "".join(
+            f["data"]["delta"] for f in updates if f["data"]["block_type"] == "thinking"
+        )
+        assert text == "lorem ips " * chunks
+        assert thinking == "ponder it " * (chunks // 4)
+        assert all("message" not in f["data"] for f in frames)
+        measured[chunks] = (
+            max(len(json.dumps(f)) for f in updates),
+            sum(len(json.dumps(f)) for f in frames),
+            sum(len(json.dumps(f)) for f in host.history if f["kind"] == "agent_event"),
+        )
+    (small_max, small_total, small_kept), (big_max, big_total, big_kept) = (
+        measured[200],
+        measured[2000],
+    )
+    assert big_max <= small_max + 8, "a frame grows by its seq's digits, not by the reply"
+    assert big_total < 12 * small_total, "ten times the reply is about ten times the bytes"
+    assert big_kept < 12 * small_kept, "the replay history holds bounded items"

@@ -20,6 +20,7 @@ for good the first time any completion reads a cached token.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, NamedTuple
 
 #: The highest minimum cacheable prefix of any current model (Haiku 4.5).
@@ -185,9 +186,7 @@ class PromptCacheObserver:
     def __init__(self) -> None:
         self._last_completion_ms: dict[str, int] = {}
         self._cache_confirmed = False
-        self._turn: list[CompletionCache] = []
-        self._turn_started_ms: int | None = None
-        self._turn_prefix: str | None = None
+        self._turns: dict[str | None, _OpenTurn] = {}
 
     @property
     def cache_confirmed(self) -> bool:
@@ -235,8 +234,10 @@ class PromptCacheObserver:
         """Accumulate one ``AgentEvent`` and return the notice its turn earns.
 
         For a caller subscribed to ONE conversation's bus, where an
-        ``agent_start``/``agent_end`` pair brackets a turn. A sub-agent's events
-        arrive on the sub-session's bus and must not be fed here.
+        ``agent_start``/``agent_end`` pair brackets a turn. Turns are told apart by
+        ``cursor_id``, so two cursors running at once (a comparison) each close
+        their own turn. A sub-agent's events arrive on the sub-session's bus and
+        must not be fed here.
 
         A turn whose events carry no ``submission_id`` names no prefix: an
         LLM-backed compaction and a ``continue_conversation()`` resume both run a
@@ -249,28 +250,34 @@ class PromptCacheObserver:
         """
         kind = getattr(event, "type", None)
         timestamp = getattr(event, "timestamp", None)
+        key = getattr(event, "cursor_id", None)
         if kind == "agent_start":
-            self._turn = []
-            self._turn_started_ms = timestamp
-            self._turn_prefix = (
-                CONVERSATION_PREFIX if getattr(event, "submission_id", None) else None
-            )
+            prefix = CONVERSATION_PREFIX if getattr(event, "submission_id", None) else None
+            self._turns[key] = _OpenTurn([], timestamp, prefix)
             return None
         if kind == "message_end":
             message = getattr(event, "message", None)
             usage = message.get("usage") if isinstance(message, dict) else None
             if isinstance(usage, dict):
-                self._turn.append(completion_cache(usage))
+                self._turns.setdefault(key, _OpenTurn([], None, None)).completions.append(
+                    completion_cache(usage)
+                )
             return None
         if kind != "agent_end":
             return None
-        reason = self.observe_turn(
-            self._turn,
-            prefix=self._turn_prefix,
-            first_event_ms=self._turn_started_ms,
+        turn = self._turns.pop(key, None) or _OpenTurn([], None, None)
+        return self.observe_turn(
+            turn.completions,
+            prefix=turn.prefix,
+            first_event_ms=turn.started_ms,
             last_event_ms=timestamp,
         )
-        self._turn = []
-        self._turn_started_ms = None
-        self._turn_prefix = None
-        return reason
+
+
+@dataclass
+class _OpenTurn:
+    """One cursor's turn as :meth:`PromptCacheObserver.feed_event` accumulates it."""
+
+    completions: list[CompletionCache]
+    started_ms: int | None
+    prefix: str | None

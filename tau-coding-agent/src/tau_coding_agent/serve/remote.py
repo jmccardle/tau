@@ -8,6 +8,7 @@ works with, built over a replica of the daemon's tree:
 - :class:`RemoteCursor`: the head cursor's position, as the daemon last said.
 - :class:`RemoteCatalog`: the daemon's session listing, for the sidebar and picker.
 - :class:`RemoteBackend`: the ``Backend`` the TUI drives, each call a request.
+- :class:`WireJoin`: the daemon's bounded events rejoined with its entries, for rendering.
 
 A client never writes the tree: :class:`ReplicaSession` refuses ``append_at``,
 so a TUI path that still writes locally fails with a message naming it.
@@ -28,7 +29,6 @@ from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.capabilities import Argument, Domain
 from tau_agent_core.compaction import CompactionDetails, CompactionResult
 from tau_agent_core.conversation_tree import ConversationTree
-from tau_agent_core.events import AgentEvent
 from tau_agent_core.extension_locks import ExtensionRequest, request_at
 from tau_agent_core.flows import DomainValue, DomainValues, FlowStep, Performed, Ready, View
 from tau_agent_core.sdk import ExtensionInfo, ExtensionLoadError, LoadExtensionsResult
@@ -36,7 +36,13 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, 
 from tau_agent_core.session_log import config_at, default_leaf, session_name
 from tau_agent_core.submission import Submission, SubmissionResult
 
-from tau_coding_agent.backends import Backend, RenderHandler, RenderRouter
+from tau_coding_agent.backends import (
+    Backend,
+    EventDetail,
+    RenderHandler,
+    RenderRouter,
+    result_text,
+)
 from tau_coding_agent.serve import protocol as p
 from tau_coding_agent.serve.client import Address, Replica, ServeClient, ServeError
 
@@ -465,6 +471,136 @@ def value_from_wire(answer: dict[str, Any]) -> Any:
     raise RemoteUnsupportedError(f"the daemon answered with a {kind!r} this head cannot read")
 
 
+class WireJoin:
+    """Rejoins the daemon's ``agent_event`` with the entries a turn writes, for a router.
+
+    ``agent_event`` is RPC's bounded ``WireEvent``: it leaves out a tool's
+    arguments and result, and a message's content and usage, because the entry
+    events carry them. This reads them back, keyed by tool call id or by the
+    ``cursor_id`` an entry event and an ``agent_event`` both name, and hands the
+    router what a local bus would (:class:`~tau_coding_agent.backends.EventDetail`):
+
+    - ``tool_execution_start`` takes its arguments from the assistant entry
+      finalized before the tool ran.
+    - ``tool_execution_end`` takes its result from the toolResult entry, which a
+      sequential batch writes after the event (so the event is held) and a
+      parallel one before it.
+    - ``message_end`` with a ``stop_reason`` takes usage from the assistant entry
+      its cursor finalized just before it.
+    - ``message_start`` is held: when its cursor's next entry is a user message,
+      it was a steer, delivered with that message.
+    - ``side_completion_*`` carries no model, text or spend; the box keeps its
+      streamed text and says so.
+
+    Every frame passes through :meth:`frame` in the daemon's order, after the
+    client applied it to the replica.
+    """
+
+    def __init__(self, router: RenderRouter, *, on_orphan: Callable[[str], None] | None) -> None:
+        self._router = router
+        self._on_orphan = on_orphan
+        self._args: dict[str, dict[str, Any]] = {}
+        self._finished: dict[str | None, dict[str, Any]] = {}
+        self._ended: dict[str, dict[str, Any]] = {}
+        self._running: set[str] = set()
+        self._results: dict[str, str] = {}
+        self._starts: dict[str | None, dict[str, Any]] = {}
+
+    async def frame(self, frame: dict[str, Any]) -> None:
+        """Apply one event frame of the session."""
+        kind = frame["kind"]
+        data = frame["data"]
+        if kind in ("entry_open", "entry_append", "entry_final"):
+            await self._entry(kind, data["entry"], data.get("cursor_id"))
+        elif kind == "agent_event":
+            await self._agent_event(data)
+        elif kind == "channel":
+            await self._channel(data["name"], data["payload"])
+
+    async def _entry(self, kind: str, entry: dict[str, Any], cursor_id: str | None) -> None:
+        message = entry.get("message") if entry.get("type") == "message" else None
+        if not isinstance(message, dict) or kind == "entry_open":
+            return
+        role = message.get("role")
+        if role == "assistant" and kind == "entry_final":
+            self._finished[cursor_id] = message
+            for block in message.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "toolCall":
+                    self._args[str(block.get("id"))] = block.get("arguments") or {}
+        elif role == "toolResult":
+            call_id = str(message.get("tool_call_id"))
+            text = result_text(message.get("content"))
+            wire = self._ended.pop(call_id, None)
+            if wire is None:
+                if call_id in self._running:
+                    self._results[call_id] = text
+            else:
+                await self._router.on_wire_event(wire, EventDetail(result=text))
+        elif role == "user" and cursor_id in self._starts:
+            start = self._starts.pop(cursor_id)
+            await self._router.on_wire_event(start, EventDetail(message=message))
+
+    async def _agent_event(self, wire: dict[str, Any]) -> None:
+        kind = wire["type"]
+        cursor_id = wire.get("cursor_id")
+        self._starts.pop(cursor_id, None)
+        detail = EventDetail()
+        if kind == "message_start":
+            self._starts[cursor_id] = wire
+            return
+        if kind == "tool_execution_start":
+            call_id = str(wire.get("tool_call_id"))
+            self._running.add(call_id)
+            args = self._args.pop(call_id, None)
+            if args is None:
+                self._orphan(f"tool call {call_id} started with no finalized entry naming it")
+            detail = EventDetail(args=args)
+        elif kind == "tool_execution_end":
+            call_id = str(wire.get("tool_call_id"))
+            self._running.discard(call_id)
+            result = self._results.pop(call_id, None)
+            if result is None:
+                self._ended[call_id] = wire
+                return
+            detail = EventDetail(result=result)
+        elif kind == "message_end" and wire.get("stop_reason") is not None:
+            message = self._finished.pop(cursor_id, None)
+            if message is None:
+                self._orphan(f"cursor {cursor_id} ended a completion it finalized no entry for")
+            detail = EventDetail(message=message)
+        elif kind == "side_completion_end":
+            detail = EventDetail(spend_known=False)
+        await self._router.on_wire_event(wire, detail)
+
+    async def _channel(self, name: str, payload: dict[str, Any]) -> None:
+        router = self._router
+        if name == "submission_start":
+            owner = object() if payload.get("owner_id") else None
+            await router.on_submission_start(
+                submission=Submission(**payload["submission"]),
+                text=payload.get("text", ""),
+                images=payload.get("images"),
+                cursor=SimpleNamespace(id=payload.get("cursor_id"), owner=owner),
+            )
+        elif name == "submission_end":
+            submission_id = payload["submission"]["submission_id"]
+            for call_id, wire in list(self._ended.items()):
+                if wire.get("submission_id") == submission_id:
+                    del self._ended[call_id]
+                    self._orphan(f"tool call {call_id} ended with no result entry written")
+                    await router.on_wire_event(wire, EventDetail())
+            await router.on_submission_end(
+                submission=Submission(**payload["submission"]),
+                side_usage=payload.get("side_usage"),
+            )
+        elif name == "custom_message":
+            await router.on_custom_message(entry_id=payload["entry_id"], message=payload["message"])
+
+    def _orphan(self, reason: str) -> None:
+        if self._on_orphan is not None:
+            self._on_orphan(reason)
+
+
 class RemoteBackend(Backend):
     """The ``Backend`` the TUI drives under ``--connect``: the daemon's session, by request.
 
@@ -604,36 +740,10 @@ class RemoteBackend(Backend):
     def subscribe_render(
         self, handler: RenderHandler, *, on_orphan: Callable[[str], None] | None = None
     ) -> RenderRouter:
-        """Feed the daemon's events into a :class:`RenderRouter`, as a local bus would."""
+        """Feed the daemon's events into a :class:`RenderRouter` through a :class:`WireJoin`."""
         router = RenderRouter(handler, on_orphan=on_orphan)
-
-        async def feed(frame: dict[str, Any]) -> None:
-            kind = frame["kind"]
-            data = frame["data"]
-            if kind == "agent_event":
-                await router.on_agent_event(AgentEvent.model_validate(data))
-            elif kind == "channel":
-                name = data["name"]
-                payload = data["payload"]
-                if name == "submission_start":
-                    owner = object() if payload.get("owner_id") else None
-                    await router.on_submission_start(
-                        submission=Submission(**payload["submission"]),
-                        text=payload.get("text", ""),
-                        images=payload.get("images"),
-                        cursor=SimpleNamespace(id=payload.get("cursor_id"), owner=owner),
-                    )
-                elif name == "submission_end":
-                    await router.on_submission_end(
-                        submission=Submission(**payload["submission"]),
-                        side_usage=payload.get("side_usage"),
-                    )
-                elif name == "custom_message":
-                    await router.on_custom_message(
-                        entry_id=payload["entry_id"], message=payload["message"]
-                    )
-
-        router.bind_detach(self._remote.listen(self._session_id, feed))
+        join = WireJoin(router, on_orphan=on_orphan)
+        router.bind_detach(self._remote.listen(self._session_id, join.frame))
         return router
 
     def abort(self) -> None:

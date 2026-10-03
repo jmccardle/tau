@@ -35,9 +35,9 @@ from typing import (
 
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.compaction import CompactionResult
-from tau_agent_core.events import AgentEvent
 from tau_agent_core.extension_locks import ExtensionRequest as ExtensionRequestRecord
 from tau_agent_core.flows import FlowStep, Performed, Ready, View
+from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.submission import MultitaskStrategy, SubmissionResult, SubmissionSource
 from tau_llm.types import (
     AssistantMessage,
@@ -1292,9 +1292,16 @@ class EntryEventData:
     """An ``entry_open``, ``entry_final`` or ``entry_append``: one log write.
 
     Apply by ``entry.id``, last write wins, keeping the first position (§4.1).
+
+    Attributes:
+        entry: The entry as the log now holds it.
+        cursor_id: The cursor whose turn or request wrote it; an ``entry_final``
+            names the cursor that opened the entry. Null for a write no cursor
+            made. A client joins ``agent_event`` to the entries a turn writes by it.
     """
 
     entry: Annotated[dict[str, Any], Shape(Entry)]
+    cursor_id: str | None = None
 
 
 @dataclass
@@ -1451,7 +1458,7 @@ EVENT_DATA: dict[str, Any] = {
     "entry_open": EntryEventData,
     "entry_final": EntryEventData,
     "entry_append": EntryEventData,
-    "agent_event": AgentEvent,
+    "agent_event": WireEvent,
     "channel": ChannelEventData,
     "cursors": CursorsEventData,
     "request": RequestEventData,
@@ -1460,9 +1467,11 @@ EVENT_DATA: dict[str, Any] = {
 }
 """What each event kind carries in ``data``.
 
-``agent_event`` is ``tau_agent_core.events.AgentEvent`` whole, as
-``model_dump(mode="json")`` writes it: not RPC's bounded ``WireEvent``
-projection. It changes no state; the entry events carry every write.
+``agent_event`` is RPC's ``WireEvent``, built by the same
+``tau_agent_core.rpc.wire_events.WireEventProjector``: ``message_update``
+carries a delta, never the whole message. Unbounded fields (a tool's arguments
+and result, a message's content and usage) are left out; the entry events carry
+them. It changes no state.
 """
 
 EVENT_KINDS = tuple(EVENT_DATA)

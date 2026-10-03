@@ -354,7 +354,7 @@ A push for an attached session, numbered per session within an `epoch`.
 | `entry_open` | [EntryEventData](#entryeventdata) |
 | `entry_final` | [EntryEventData](#entryeventdata) |
 | `entry_append` | [EntryEventData](#entryeventdata) |
-| `agent_event` | [AgentEvent](#agentevent) |
+| `agent_event` | [WireEvent](#wireevent) |
 | `channel` | [ChannelEventData](#channeleventdata) |
 | `cursors` | [CursorsEventData](#cursorseventdata) |
 | `request` | [RequestEventData](#requesteventdata) |
@@ -363,9 +363,11 @@ A push for an attached session, numbered per session within an `epoch`.
 
 What each event kind carries in `data`.
 
-`agent_event` is `tau_agent_core.events.AgentEvent` whole, as
-`model_dump(mode="json")` writes it: not RPC's bounded `WireEvent`
-projection. It changes no state; the entry events carry every write.
+`agent_event` is RPC's `WireEvent`, built by the same
+`tau_agent_core.rpc.wire_events.WireEventProjector`: `message_update`
+carries a delta, never the whole message. Unbounded fields (a tool's arguments
+and result, a message's content and usage) are left out; the entry events carry
+them. It changes no state.
 
 ## `tau serve -d --json`
 
@@ -384,39 +386,6 @@ Not a frame. `tau serve -d` starts no second daemon where one answers a hello.
 
 Every `$defs` entry the requests above do not already show, by name.
 
-### AgentEvent
-
-A single event from the agent loop.
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `type` | `"agent_start"` \| `"agent_end"` \| `"turn_start"` \| `"turn_end"` \| `"message_start"` \| `"message_update"` \| `"message_end"` \| `"tool_execution_start"` \| `"tool_execution_update"` \| `"tool_execution_end"` \| `"side_completion_start"` \| `"side_completion_update"` \| `"side_completion_end"` | yes |  |
-| `timestamp` | integer | yes |  |
-| `message` | object \| null | no |  |
-| `turn_index` | integer \| null | no |  |
-| `tool_call_id` | string \| null | no |  |
-| `tool_name` | string \| null | no |  |
-| `args` | object \| null | no |  |
-| `result` | any \| null | no |  |
-| `details` | object \| null | no |  |
-| `is_error` | boolean | no |  |
-| `blocked` | boolean | no |  |
-| `blocked_by` | string \| null | no |  |
-| `tool_results` | list of object \| null | no |  |
-| `messages` | list of object \| null | no |  |
-| `error` | string \| null | no |  |
-| `end_reason` | `"done"` \| `"terminate"` \| `"aborted"` \| `"max_turns"` \| `"repeat_tool_calls"` \| `"error"` \| null | no |  |
-| `cursor_id` | string \| null | no |  |
-| `submission_id` | string \| null | no |  |
-| `source` | `"interactive"` \| `"rpc"` \| `"extension"` \| `"bus"` \| `"timer"` \| `"webhook"` \| `"voice"` \| `"agent"` \| null | no |  |
-| `submitter` | string \| null | no |  |
-| `correlation` | object \| null | no |  |
-| `purpose` | `"compaction"` \| `"branch_summary"` \| null | no |  |
-| `reason` | `"manual"` \| `"threshold"` \| `"navigate"` \| null | no |  |
-| `delta` | string \| null | no |  |
-| `text` | string \| null | no |  |
-| `usage` | object of integer \| null | no |  |
-
 ### AgentEventEvent
 
 A `agent_event` event.
@@ -427,7 +396,7 @@ A `agent_event` event.
 | `epoch` | string | yes |  |
 | `seq` | integer | yes |  |
 | `kind` | `"agent_event"` | yes |  |
-| `data` | [AgentEvent](#agentevent) | yes |  |
+| `data` | [WireEvent](#wireevent) | yes |  |
 | `type` | `"event"` | yes |  |
 
 ### Argument
@@ -853,7 +822,8 @@ An `entry_open`, `entry_final` or `entry_append`: one log write.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `entry` | [Entry](#entry) | yes |  |
+| `entry` | [Entry](#entry) | yes | The entry as the log now holds it. |
+| `cursor_id` | string \| null | no | The cursor whose turn or request wrote it; an `entry_final` names the cursor that opened the entry. Null for a write no cursor made. A client joins `agent_event` to the entries a turn writes by it. |
 
 ### EntryFinalEvent
 
@@ -1688,3 +1658,35 @@ A named surface only a head can open.
 | `name` | string | yes | The view's name, a key of `tau_agent_core.capabilities.VIEW_COMMANDS`. |
 | `state` | object \| null | no | What a head draws the view from. `None` everywhere today — no capability projects the session tree yet (docs/VSCODE-HEAD.md §6), and this is the spot that payload lands in when one does, with no change to the union. |
 | `unavailable_because` | string \| null | no | Why no `state` rides with this, in a sentence a head can print. A head that has its own view of that name ignores it and opens it; a head that has none prints it and does nothing else. Not a fallback: it is the same idiom the RPC table's seven `declined_because` entries already use. |
+
+### WireEvent
+
+The wire projection of ``AgentEvent`` (D3) — REMOTE-CONTROL.md's designed shape, and (as of unit 2B) what ``rpc/handler.py`` actually sends: ``rpc/wire_events.py`` constructs instances of this class rather than a hand-shaped dict. See the module docstring's Status note and the field-by-field comment above this class.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"agent_start"` \| `"agent_end"` \| `"turn_start"` \| `"turn_end"` \| `"message_start"` \| `"message_update"` \| `"message_end"` \| `"tool_execution_start"` \| `"tool_execution_update"` \| `"tool_execution_end"` \| `"side_completion_start"` \| `"side_completion_update"` \| `"side_completion_end"` | yes | Event type discriminator. |
+| `timestamp` | integer | yes | Milliseconds since epoch. |
+| `turn_index` | integer \| null | no | Turn number (turn_*). |
+| `tool_call_id` | string \| null | no | Tool call id (tool_*). |
+| `tool_name` | string \| null | no | Tool name (tool_*). |
+| `is_error` | boolean | no | Whether this event represents an error. |
+| `error` | string \| null | no | Why an agent_end closed when the loop raised rather than finishing (e.g. 'RuntimeError: Connection refused'). None on a normal close; always paired with is_error=True when set. Without it 'the agent finished' and 'the agent died mid-turn' are the same event on the wire. |
+| `end_reason` | `"done"` \| `"terminate"` \| `"aborted"` \| `"max_turns"` \| `"repeat_tool_calls"` \| `"error"` \| null | no | How an agent_end closed: 'done' (the model had nothing more to say), 'terminate' (a tool asked to stop), 'aborted', 'max_turns' (the ceiling truncated the run), 'repeat_tool_calls' (the loop stopped itself because the model kept repeating an identical, wholly-failing batch) or 'error'. None on every other event type. `error` says whether the loop raised; this says how it stopped when it did not, which is what tells a host that an answer is TRUNCATED rather than finished. |
+| `blocked` | boolean | no | Whether a tool_execution_end is an extension veto (S50), distinct from a generic errored result. |
+| `blocked_by` | string \| null | no | The extension that vetoed the call; paired with blocked. |
+| `cursor_id` | string \| null | no | The cursor whose turn emitted this event (docs/CURSORS.md §6). Several cursors run turns on one session at once; a host routes by this. None outside a turn. |
+| `submission_id` | string \| null | no | The Submission that drove this turn, if any (E4/G6). None for an event from a call that never went through submit()/prompt() — never a fabricated id. |
+| `source` | `"interactive"` \| `"rpc"` \| `"extension"` \| `"bus"` \| `"timer"` \| `"webhook"` \| `"voice"` \| `"agent"` \| null | no | The submission's origin (E4). None alongside submission_id. |
+| `submitter` | string \| null | no | WHO submitted (E4). None alongside submission_id. |
+| `correlation` | object \| null | no | The submission's free-form origin detail (E4). None alongside submission_id — an empty dict would claim a submission with no correlation data, which is a different statement. |
+| `delta` | string \| null | no | One text fragment that arrived. On message_update (E1) it is a diffable content-block's prefix-diff against the previous message_update in the same turn, never the cumulative message; only a diffable block kind sets it (see block_type), and a non-diffable block change (e.g. a growing toolCall) produces no wire event. On side_completion_update it is the next fragment of the summary. Both are applied the same way, which is why they share a field rather than asking a client to keep two accumulators — see `replace`. None for all other event types. |
+| `block_type` | `"text"` \| `"thinking"` \| null | no | Which diffable content-block kind `delta` belongs to. Set exactly when `delta` is set — 'text' on a side_completion_update, which has no other kind. |
+| `replace` | boolean | no | Only meaningful when delta is set. False (the common case): delta is an incremental suffix — append it to whatever was already accumulated for this block_type this turn. True: the provider replaced rather than extended the block's content — delta is the block's ENTIRE new value, and the receiver must RESET its accumulator to delta rather than appending. Mirrors event_projection.BlockDelta.replace exactly. |
+| `message_count` | integer \| null | no | Count of messages produced this turn, on agent_end (E2). The messages themselves are pulled via get_messages, never pushed. None for all other event types. |
+| `stop_reason` | `"stop"` \| `"length"` \| `"toolUse"` \| `"error"` \| `"aborted"` \| null | no | Why the model stopped this completion, on the message_end that carries usage. 'length' means the output cap ended it, so the content is a PREFIX and not an answer — the one value an operator has to act on. None on the content-only duplicate message_end (which carries no usage either) and on every other event type. This rides a field of its own because the message it belongs to is excluded from the wire; it is a closed enum, not unbounded content. See docs/TRUNCATED-TOOL-CALLS.md. |
+| `dropped_tool_calls` | integer \| null | no | How many tool calls this completion lost because the stream ended mid-argument, on message_end. A truncated or aborted arguments buffer is a prefix, so the provider drops the call rather than running it on a repaired or empty payload, and this is the only record that it existed. Null rather than 0 when none were dropped, so 'none lost' and 'not reported' stay distinguishable. None for all other event types. |
+| `cache_notice` | string \| null | no | One sentence saying this turn's prompt cache should have been read and was not, on agent_end. Null is the normal case and says nothing was observed: the cache was read, the server accounts for no cache, the prompt is under the minimum cacheable prefix, or a read earlier in this session already proved caching is on. A host renders it as a warning; see docs/PROMPT-CACHING.md §7 for the three gates. None for all other event types. |
+| `purpose` | `"compaction"` \| `"branch_summary"` \| null | no | Which side completion a side_completion_* event reports: 'compaction' or 'branch_summary'. Side work spends tokens and produces text outside any turn, so it stamps no submission_id and a host keys on this instead. The summary TEXT and what it cost are deliberately not on the wire — both land in the session log as a compaction or branch_summary entry, which get_entry serves with tokens_before, covered_tokens and summary_usage attached. Pushing unbounded content through an event is what WireEvent exists to avoid. None for all other event types. See docs/STREAMING-SIDE-WORK.md. |
+| `reason` | `"manual"` \| `"threshold"` \| `"navigate"` \| null | no | What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. None for all other event types. |
+| `cursor` | string \| null | no | The session log's resulting cursor, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |

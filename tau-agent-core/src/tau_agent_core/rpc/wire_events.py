@@ -42,8 +42,33 @@ from typing import Any
 
 from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.events import AgentEvent
+from tau_agent_core.prompt_cache import PromptCacheObserver
 from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.truncation import dropped_tool_calls
+
+
+class WireEventProjector:
+    """One bus's ``AgentEvent`` stream as :class:`WireEvent` payloads: what both wires send.
+
+    The RPC handler and ``tau serve``'s daemon each hold one, so the two wires
+    send the same bytes for the same event. It owns the state :func:`project_event`
+    needs: a :class:`MessageDeltaProjector` per cursor, because two cursors stream
+    at once on one bus (a comparison) and one projector would diff each cursor's
+    text against the other's; and one :class:`PromptCacheObserver`, whose latch
+    is a fact about the server and whose turns are kept per cursor.
+    """
+
+    def __init__(self) -> None:
+        self._deltas: dict[str | None, MessageDeltaProjector] = {}
+        self._cache = PromptCacheObserver()
+
+    def project(self, event: AgentEvent) -> list[dict[str, Any]]:
+        """The wire payloads ``event`` produces; see :func:`project_event`."""
+        projector = self._deltas.setdefault(event.cursor_id, MessageDeltaProjector())
+        payloads = project_event(projector, event, cache_notice=self._cache.feed_event(event))
+        if event.type == "agent_end":
+            self._deltas.pop(event.cursor_id, None)
+        return payloads
 
 
 def project_event(

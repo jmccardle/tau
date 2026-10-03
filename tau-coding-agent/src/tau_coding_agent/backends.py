@@ -11,6 +11,7 @@ AgentSession runs against a scratch InMemorySessionLog, caller owns persistence)
 import re
 import sys
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterator, Literal, Sequence, cast
 from uuid import uuid4
 from tau_llm.compat import Compat
@@ -28,6 +29,7 @@ from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.extension_locks import ExtensionRequest
 from tau_agent_core.messages import CUSTOM_ROLE
 from tau_agent_core.event_projection import MessageDeltaProjector
+from tau_agent_core.rpc.wire_events import project_event
 from tau_agent_core.flows import Performed
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.prompt_cache import (
@@ -146,6 +148,56 @@ def _json_line(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+@dataclass(frozen=True)
+class EventDetail:
+    """What an agent event carries that its wire projection leaves out, for a renderer.
+
+    ``WireEvent`` drops every unbounded field (docs/REMOTE-CONTROL.md E1/E2), and
+    the TUI draws some of them. A local bus reads them off the ``AgentEvent``
+    (:meth:`of`); ``tau --connect`` reads them out of the entries the daemon
+    pushes (``serve.remote.WireJoin``). ``None`` means not carried.
+
+    Attributes:
+        message: The message a ``message_start`` or ``message_end`` brackets.
+        args: A ``tool_execution_start``'s arguments.
+        result: A ``tool_execution_end``'s result, as text.
+        model: The model a ``side_completion_start`` runs.
+        text: A ``side_completion_end``'s finished text.
+        usage: What a ``side_completion_end`` spent.
+        spend_known: False when the spend was not sent (a ``tau --connect``
+            side completion), so a renderer does not call it unreported.
+    """
+
+    message: dict[str, Any] | None = None
+    args: dict[str, Any] | None = None
+    result: str | None = None
+    model: str | None = None
+    text: str | None = None
+    usage: dict[str, int] | None = None
+    spend_known: bool = True
+
+    @classmethod
+    def of(cls, event: AgentEvent) -> "EventDetail":
+        """The detail a local ``AgentEvent`` carries."""
+        return cls(
+            message=event.message if event.type in ("message_start", "message_end") else None,
+            args=event.args,
+            result=result_text(event.result) if event.type == "tool_execution_end" else None,
+            model=(event.message or {}).get("model")
+            if event.type == "side_completion_start"
+            else None,
+            text=event.text,
+            usage=event.usage,
+        )
+
+
+def result_text(result: Any) -> str:
+    """A tool result as one line of text: a block list's texts joined by spaces."""
+    if isinstance(result, list):
+        return " ".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in result)
+    return "" if result is None else str(result)
+
+
 class TurnStream:
     """One stream's worth of agent events, normalized into widget-lifecycle dicts.
 
@@ -154,8 +206,11 @@ class TurnStream:
     all.
 
     :meth:`feed` returns the normalized events for one agent event, in order, each
-    tagged with this stream's id under ``"stream"``. It also accumulates what a caller needs
-    when the stream closes: the assistant text, the tool-call records for chat
+    tagged with this stream's id under ``"stream"``. It projects the event onto
+    the wire (:func:`~tau_agent_core.rpc.wire_events.project_event`) and reads
+    only that, plus an :class:`EventDetail`, through :meth:`feed_wire` — which is
+    also how ``tau --connect`` feeds the daemon's ``agent_event``. It also
+    accumulates what a caller needs when the stream closes: the assistant text, the tool-call records for chat
     persistence, the real token totals, and the last completion's telemetry.
 
     Event shapes (all dicts with ``"kind"`` and ``"stream"``)::
@@ -170,7 +225,7 @@ class TurnStream:
          "stop_reason": str | None, "dropped_tool_calls": int}
 
     Tool widgets are driven off ``tool_execution_start`` / ``tool_execution_end``
-    (which carry name/args/result directly), NOT off ``message_end`` toolCall
+    (their detail carries arguments and result), NOT off ``message_end`` toolCall
     blocks — the agent loop emits ``message_end`` twice per tool-bearing turn, so
     consuming it for rendering would duplicate. ``message_end`` is used only to
     harvest ``tool_calls`` for chat persistence (deduplicated by id), the
@@ -224,63 +279,71 @@ class TurnStream:
             return None
         return (self.last_event_ms - self.first_event_ms) / 1000
 
-    def _note_clock(self, event: Any) -> None:
+    def _note_clock(self, stamp: Any) -> None:
         """Widen this stream's span by one event's timestamp (epoch ms)."""
-        stamp = getattr(event, "timestamp", None)
         if not isinstance(stamp, int) or isinstance(stamp, bool):
             return
         if self.first_event_ms is None:
             self.first_event_ms = stamp
         self.last_event_ms = stamp
 
-    def feed(self, event: Any) -> list[dict[str, Any]]:
-        """Normalize one agent event into zero or more render events."""
-        if not hasattr(event, "type"):
-            return []
-        self._note_clock(event)
-        if event.type == "turn_start":
-            self._delta_projector.reset()
-            return [self._tag({"kind": "turn_start", "turn_index": event.turn_index})]
-        if event.type == "message_start":
-            return self._feed_message_start(event)
-        if event.type == "message_update":
-            return self._feed_message_update(event)
-        if event.type == "message_end":
-            return self._harvest_message_end(event)
-        if event.type == "tool_execution_start":
+    def feed(self, event: AgentEvent) -> list[dict[str, Any]]:
+        """Normalize one agent event: project it as the wire does, then :meth:`feed_wire`."""
+        self._note_clock(event.timestamp)
+        detail = EventDetail.of(event)
+        out: list[dict[str, Any]] = []
+        for wire in project_event(self._delta_projector, event):
+            out.extend(self.feed_wire(wire, detail))
+        return out
+
+    def feed_wire(
+        self, wire: dict[str, Any], detail: EventDetail | None = None
+    ) -> list[dict[str, Any]]:
+        """Normalize one wire event (a ``WireEvent`` payload) into render events.
+
+        Args:
+            wire: What :func:`~tau_agent_core.rpc.wire_events.project_event` made,
+                here or in a ``tau serve`` daemon.
+            detail: What the wire leaves out; see :class:`EventDetail`.
+        """
+        detail = detail or EventDetail()
+        kind = wire["type"]
+        self._note_clock(wire.get("timestamp"))
+        if kind == "turn_start":
+            return [self._tag({"kind": "turn_start", "turn_index": wire.get("turn_index")})]
+        if kind == "message_start":
+            return self._feed_message_start(detail.message)
+        if kind == "message_update":
+            return self._feed_delta(wire)
+        if kind == "message_end":
+            return self._harvest_message_end(wire, detail.message)
+        if kind == "tool_execution_start":
             return [
                 self._tag(
                     {
                         "kind": "tool_call",
-                        "id": getattr(event, "tool_call_id", "") or "",
-                        "name": getattr(event, "tool_name", "") or "",
-                        "arguments": getattr(event, "args", None) or {},
+                        "id": wire.get("tool_call_id") or "",
+                        "name": wire.get("tool_name") or "",
+                        "arguments": detail.args or {},
                     }
                 )
             ]
-        if event.type == "tool_execution_end":
-            return [self._feed_tool_execution_end(event)]
+        if kind == "tool_execution_end":
+            return [self._feed_tool_execution_end(wire, detail.result)]
         return []
 
     def _tag(self, structured: dict[str, Any]) -> dict[str, Any]:
         structured["stream"] = self.stream_id
         return structured
 
-    def _feed_message_start(self, event: Any) -> list[dict[str, Any]]:
+    def _feed_message_start(self, message: dict[str, Any] | None) -> list[dict[str, Any]]:
         """Normalize a ``message_start`` — only a USER one produces a render event.
 
-        Reference: docs/TUI-STEERING.md §5. The agent loop emits ``message_start``
-        for an assistant completion (``_stream_response``) and for a provider
-        error, and both are rendered off the deltas and the ``message_end`` that
-        follow them, so this drops those.
-
-        A ``message_start`` whose message is a USER one has exactly one producer:
-        ``AgentLoop._deliver_steer`` weaving a steering message into the running
-        turn. It carries content that will never appear in any other event on
-        this stream — the deltas that follow belong to the model's answer to it —
-        so a renderer that ignored it would show the answer and not the question.
+        Reference: docs/TUI-STEERING.md §5. An assistant completion and a provider
+        error are rendered off the deltas and the ``message_end`` that follow. A
+        USER message here has one producer, ``AgentLoop._deliver_steer``, and its
+        content appears in no other event on this stream.
         """
-        message = getattr(event, "message", None)
         if not message or message.get("role") != "user":
             return []
         content = message.get("content", "")
@@ -294,25 +357,23 @@ class TurnStream:
             )
         return [self._tag({"kind": "steer_message", "text": text})]
 
-    def _feed_message_update(self, event: Any) -> list[dict[str, Any]]:
-        message = getattr(event, "message", None)
-        if not message:
+    def _feed_delta(self, wire: dict[str, Any]) -> list[dict[str, Any]]:
+        delta = wire.get("delta")
+        if delta is None:
             return []
-        out: list[dict[str, Any]] = []
-        for block_delta in self._delta_projector.project(message):
-            if block_delta.delta is None:
-                continue
-            if block_delta.type == "text":
-                self.text_chunks.append(block_delta.delta)
-                out.append(self._tag({"kind": "text_delta", "delta": block_delta.delta}))
-            elif block_delta.type == "thinking":
-                out.append(self._tag({"kind": "reasoning_delta", "delta": block_delta.delta}))
-        return out
+        if wire.get("block_type") == "text":
+            if wire.get("replace"):
+                self.text_chunks.clear()
+            self.text_chunks.append(delta)
+            return [self._tag({"kind": "text_delta", "delta": delta})]
+        if wire.get("block_type") == "thinking":
+            return [self._tag({"kind": "reasoning_delta", "delta": delta})]
+        return []
 
-    def _harvest_message_end(self, event: Any) -> list[dict[str, Any]]:
-        message = getattr(event, "message", None)
-        if not message:
-            return []
+    def _harvest_message_end(
+        self, wire: dict[str, Any], message: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        message = message or {}
         content = message.get("content", [])
         if isinstance(content, list):
             for block in content:
@@ -335,9 +396,9 @@ class TurnStream:
             self.completions.append(completion_cache(usage))
             extra = usage.get("extra")
             self.last_extra = extra if isinstance(extra, dict) else {}
-            reason = message.get("stop_reason")
-            self.last_stop_reason = reason if isinstance(reason, str) else None
-            self.last_dropped_tool_calls = dropped_tool_calls(usage)
+        if isinstance(usage, dict) or wire.get("stop_reason") is not None:
+            self.last_stop_reason = wire.get("stop_reason")
+            self.last_dropped_tool_calls = int(wire.get("dropped_tool_calls") or 0)
         return [
             self._tag(
                 {
@@ -350,16 +411,12 @@ class TurnStream:
             )
         ]
 
-    def _feed_tool_execution_end(self, event: Any) -> dict[str, Any]:
-        tool_call_id = getattr(event, "tool_call_id", "") or ""
-        is_error = getattr(event, "is_error", False)
-        blocked = bool(getattr(event, "blocked", False))
-        blocked_by = getattr(event, "blocked_by", None)
-        result = getattr(event, "result", "")
-        if isinstance(result, list):
-            result = " ".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in result)
-        result_str = str(result)
-        # Record result against the persisted tool call (if tracked).
+    def _feed_tool_execution_end(self, wire: dict[str, Any], result: str | None) -> dict[str, Any]:
+        tool_call_id = wire.get("tool_call_id") or ""
+        is_error = bool(wire.get("is_error"))
+        blocked = bool(wire.get("blocked"))
+        blocked_by = wire.get("blocked_by")
+        result_str = result or ""
         for tc in self.tool_calls:
             if tc["id"] == tool_call_id:
                 tc["result"] = result_str[:200]
@@ -369,7 +426,7 @@ class TurnStream:
             {
                 "kind": "tool_result",
                 "id": tool_call_id,
-                "name": getattr(event, "tool_name", "") or "",
+                "name": wire.get("tool_name") or "",
                 "result": result_str,
                 "is_error": is_error,
                 "blocked": blocked,
@@ -409,7 +466,7 @@ class RenderRouter:
         {"kind": "side_start", "purpose": str, "model": str}
         {"kind": "side_delta", "purpose": str, "delta": str}
         {"kind": "side_end", "purpose": str, "text": str | None,
-         "usage": dict | None, "error": str | None}
+         "usage": dict | None (absent: not sent), "error": str | None}
 
     ``output`` is every token the stream GENERATED, summed across its completions
     and including the side-usage delta ``submission_end`` reports for work done
@@ -517,21 +574,48 @@ class RenderRouter:
         await self._deliver({"kind": "custom_message", "entry_id": entry_id, "message": message})
 
     async def on_agent_event(self, event: AgentEvent) -> None:
-        """Route one ``AgentEvent`` from the primary bus into its submission's stream."""
+        """Route one ``AgentEvent`` from the primary bus into its submission's stream.
+
+        The stream projects it onto the wire and renders that (:meth:`TurnStream.feed`),
+        so a local bus and ``tau --connect`` (:meth:`on_wire_event`) draw one way.
+        """
         if event.type.startswith("side_completion_"):
-            await self._route_side_completion(event)
+            (wire,) = project_event(MessageDeltaProjector(), event)
+            await self._route_side_completion(wire, EventDetail.of(event))
             return
-        stream_id = event.submission_id
+        stream = self._stream_for(event.type, event.submission_id)
+        if stream is not None:
+            for structured in stream.feed(event):
+                await self._deliver(structured)
+
+    async def on_wire_event(self, wire: dict[str, Any], detail: EventDetail) -> None:
+        """Route one wire event (a ``tau serve`` ``agent_event``) with its rejoined detail."""
+        if wire["type"].startswith("side_completion_"):
+            await self._route_side_completion(wire, detail)
+            return
+        stream = self._stream_for(wire["type"], wire.get("submission_id"))
+        if stream is not None:
+            for structured in stream.feed_wire(wire, detail):
+                await self._deliver(structured)
+
+    def _stream_for(self, kind: str, stream_id: str | None) -> TurnStream | None:
+        """The open stream an event belongs to, or None after reporting it as an orphan."""
         if stream_id is None:
             self._orphan(
-                f"{event.type} carries no submission_id — it was emitted outside "
+                f"{kind} carries no submission_id — it was emitted outside "
                 "submit() (continue_conversation, or a compact/navigate), so there "
                 "is no stream to render it into"
             )
-            return
-        await self._route(stream_id, event)
+            return None
+        stream = self._streams.get(stream_id)
+        if stream is None:
+            self._orphan(
+                f"{kind} names stream {stream_id!r}, which is not open — the event "
+                "arrived before its stream_start or after its stream_end"
+            )
+        return stream
 
-    async def _route_side_completion(self, event: AgentEvent) -> None:
+    async def _route_side_completion(self, wire: dict[str, Any], detail: EventDetail) -> None:
         """Emit a side completion's three render events. Not a stream.
 
         Side work belongs to no submission, so it cannot open a stream — and it
@@ -544,21 +628,25 @@ class RenderRouter:
         lock, and a branch summary runs from a modal. Two concurrent side
         completions of the same purpose would share a box, which is why the
         ``purpose`` — not a generated id — is the key.
+
+        ``usage`` is left off a ``side_end`` whose detail says the spend was not
+        sent, so a renderer can tell "not sent" from "not reported".
         """
         kind = {
             "side_completion_start": "side_start",
             "side_completion_update": "side_delta",
             "side_completion_end": "side_end",
-        }[event.type]
-        payload: dict[str, Any] = {"kind": kind, "purpose": event.purpose}
-        if event.type == "side_completion_start":
-            payload["model"] = (event.message or {}).get("model", "")
-        elif event.type == "side_completion_update":
-            payload["delta"] = event.delta or ""
+        }[wire["type"]]
+        payload: dict[str, Any] = {"kind": kind, "purpose": wire.get("purpose")}
+        if kind == "side_start":
+            payload["model"] = detail.model or ""
+        elif kind == "side_delta":
+            payload["delta"] = wire.get("delta") or ""
         else:
-            payload["text"] = event.text
-            payload["usage"] = event.usage
-            payload["error"] = event.error
+            payload["text"] = detail.text
+            if detail.spend_known:
+                payload["usage"] = detail.usage
+            payload["error"] = wire.get("error")
         await self._deliver(payload)
 
     async def close_all(self) -> None:
@@ -569,17 +657,6 @@ class RenderRouter:
         """
         for stream_id in list(self._streams):
             await self._close(stream_id)
-
-    async def _route(self, stream_id: str, event: AgentEvent) -> None:
-        stream = self._streams.get(stream_id)
-        if stream is None:
-            self._orphan(
-                f"{getattr(event, 'type', '?')} names stream {stream_id!r}, which is not "
-                "open — the event arrived before its stream_start or after its stream_end"
-            )
-            return
-        for structured in stream.feed(event):
-            await self._deliver(structured)
 
     async def _close(self, stream_id: str, *, side_usage: dict[str, int] | None = None) -> None:
         stream = self._streams.pop(stream_id, None)

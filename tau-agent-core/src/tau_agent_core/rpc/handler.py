@@ -20,8 +20,6 @@ import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TextIO
 
-from tau_agent_core.event_projection import MessageDeltaProjector
-from tau_agent_core.prompt_cache import PromptCacheObserver
 from tau_agent_core.rpc import commands, dialect, transport, wire_events
 from tau_llm.docs import agent_facing
 
@@ -169,8 +167,7 @@ class RPCHandler:
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self.compaction_in_flight: str | None = None
         self._compaction_aborter: "Callable[[], None] | None" = None
-        self._delta_projector = MessageDeltaProjector()
-        self._prompt_cache = PromptCacheObserver()
+        self._wire = wire_events.WireEventProjector()
         self._session.subscribe(self._forward_event)
 
     @property
@@ -397,8 +394,8 @@ class RPCHandler:
         "event" notifications.
 
         Bound as the single, permanent `session.subscribe` handler (see
-        `__init__`). Routes through `wire_events.project_event` (E1/E2/E4) —
-        a `message_update` may project into zero, one, or several wire events
+        `__init__`). Routes through `wire_events.WireEventProjector`, which
+        `tau serve` shares (E1/E2/E4) — a `message_update` may project into zero, one, or several wire events
         (see that function's docstring); every other event type projects to
         exactly one.
 
@@ -444,10 +441,7 @@ class RPCHandler:
         """
         if event.cursor_id is not None and event.cursor_id != self._session.cursor.id:
             return
-        cache_notice = self._prompt_cache.feed_event(event)
-        for params in wire_events.project_event(
-            self._delta_projector, event, cache_notice=cache_notice
-        ):
+        for params in self._wire.project(event):
             item: dict[str, Any] = {
                 "jsonrpc": "2.0",
                 "method": "event",

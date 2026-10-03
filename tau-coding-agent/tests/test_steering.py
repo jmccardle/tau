@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.app import TauApp
+from tau_agent_core.events import AgentEvent
 from tau_coding_agent.backends import TurnStream
 from tau_coding_agent.config import ConfigError
 from tau_coding_agent import chat_widgets, editor_widgets, transcript
@@ -503,10 +504,8 @@ class TestTheSetting:
         assert template[STEERING_CONFIG_KEY] in STEERING_STRATEGIES
 
 
-class _Event:
-    def __init__(self, type: str, message: dict | None) -> None:
-        self.type = type
-        self.message = message
+def _Event(type: str, message: dict | None) -> AgentEvent:
+    return AgentEvent(type=type, timestamp=1, message=message)
 
 
 class TestRenderingADeliveredSteer:

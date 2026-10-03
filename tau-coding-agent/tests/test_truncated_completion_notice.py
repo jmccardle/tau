@@ -134,17 +134,14 @@ def test_the_stream_puts_the_count_on_completion_end():
     records a call it refused to run."""
     from tau_coding_agent.backends import TurnStream
 
-    class _Event:
-        type = "message_end"
-        timestamp = 1
-
-        def __init__(self, message):
-            self.message = message
+    from tau_agent_core.events import AgentEvent
 
     stream = TurnStream(stream_id="main")
     events = stream.feed(
-        _Event(
-            {
+        AgentEvent(
+            type="message_end",
+            timestamp=1,
+            message={
                 "role": "assistant",
                 "content": [],
                 "stop_reason": "length",
@@ -153,7 +150,7 @@ def test_the_stream_puts_the_count_on_completion_end():
                     "output_tokens": 90,
                     "extra": {"dropped_partial_tool_calls": 3},
                 },
-            }
+            },
         )
     )
     assert events[0]["stop_reason"] == "length"

@@ -12,15 +12,13 @@ from __future__ import annotations
 
 from tau_agent_core.prompt_cache import CompletionCache
 
+from tau_agent_core.events import AgentEvent
 from tau_coding_agent.backends import TurnStream
 
 
-class _Event:
-    def __init__(self, timestamp: int, message: dict | None = None) -> None:
-        self.type = "message_end" if message else "turn_start"
-        self.timestamp = timestamp
-        self.message = message
-        self.turn_index = 0
+def _Event(timestamp: int, message: dict | None = None) -> AgentEvent:
+    kind = "message_end" if message else "turn_start"
+    return AgentEvent(type=kind, timestamp=timestamp, message=message, turn_index=0)
 
 
 def _usage(read: int, total: int, output: int = 10, reported: bool = True) -> dict:
