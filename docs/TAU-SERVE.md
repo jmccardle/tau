@@ -239,7 +239,23 @@ a subscriber, not a second source.
   `openssl rand -hex 32` as one way to make a token. There is no TLS: `ssh -L`
   covers that.
 - **The port.** There is a default port, so `tau --connect buildbox` needs nothing
-  else. I have not picked a number yet.
+  else. Built: 8256 (John's pick, 2026-10-03).
+
+Built note (2026-10-03, `serve/http.py`, commit 4a432f4), found during M4:
+browsers apply no same-origin policy to WebSocket handshakes. So with the token
+off, any page open in the user's browser could connect to `127.0.0.1:8256` and
+drive a tool-running agent. John chose:
+
+- **An Origin check, on by default.** A handshake whose `Origin` header is
+  present and names neither its own `Host` header nor an entry of
+  `serve.allowed_origins` gets HTTP 403, and the daemon logs it. Clients outside
+  a browser send no `Origin` and pass. Comparing against `Host` rather than the
+  bind address keeps `ssh -L` and `docker -p` remaps working. Tokens stay opt-in.
+- **The daemon hosts the web client.** A plain HTTP request is served from
+  `serve.web_root`, with `index.html` for a directory and a 404 for anything
+  outside the root, so the page and its socket share one origin. tau-code's
+  `packages/server` no longer needs to exist to serve it. A `web_root` that is
+  not a directory fails at start.
 
 ### 6.3 Unix sockets
 
