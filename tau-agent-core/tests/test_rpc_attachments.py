@@ -15,11 +15,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import os
 import pytest
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.rpc import commands
-from tau_agent_core.rpc.commands import _submission_from_params
+from tau_agent_core.rpc.commands import submission_from_params
 from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import Model
@@ -38,17 +39,20 @@ def _model() -> Model:
 
 
 @pytest.fixture
-def handler() -> RPCHandler:
-    return RPCHandler(AgentSession(session_log=InMemorySessionLog(), tools=[], model=_model()))
+def handler(workspace: Path) -> RPCHandler:
+    session = AgentSession(
+        session_log=InMemorySessionLog(), tools=[], model=_model(), cwd=str(workspace)
+    )
+    return RPCHandler(session)
 
 
 @pytest.fixture
 def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A directory with a known shape, made the PROCESS working directory.
+    """A directory with a known shape: the session's cwd and the process's.
 
-    `complete_path` and the expansion both read `Path.cwd()` — that identity is
-    the point of the verb (a host cannot list the right filesystem for itself),
-    so a test that passed a cwd in would be testing a seam neither has.
+    `complete_path` and the expansion both resolve against the session's cwd,
+    which under `--mode rpc` is the process's; a host cannot list the right
+    filesystem for itself.
     """
     (tmp_path / "notes.txt").write_text("the note body\n", encoding="utf-8")
     (tmp_path / "nouns.md").write_text("# nouns\n", encoding="utf-8")
@@ -158,7 +162,7 @@ async def test_cursor_is_required(handler, workspace) -> None:
 def test_without_the_flag_an_at_word_stays_literal_text(workspace) -> None:
     """The 1.3 behaviour, pinned: expansion is opt-in, and a host that does not
     ask for it gets byte-identical text."""
-    sub, report = _submission_from_params({"text": "read @notes.txt"})
+    sub, report = submission_from_params({"text": "read @notes.txt"}, os.getcwd())
     assert sub.text == "read @notes.txt"
     assert report is None
 
@@ -167,7 +171,9 @@ def test_the_flag_prepends_the_block_and_keeps_the_at_word(workspace) -> None:
     """docs/FILE-ATTACHMENTS.md §2: blocks go in FRONT and the `@word` stays
     where the human typed it — the model reads the material first and the
     instruction last, and the instruction still names the file as they did."""
-    sub, report = _submission_from_params({"text": "read @notes.txt", "expand_attachments": True})
+    sub, report = submission_from_params(
+        {"text": "read @notes.txt", "expand_attachments": True}, os.getcwd()
+    )
     assert (
         sub.text
         == '<attachment filename="notes.txt">\nthe note body\n</attachment>\nread @notes.txt'
@@ -178,7 +184,9 @@ def test_the_flag_prepends_the_block_and_keeps_the_at_word(workspace) -> None:
 def test_an_at_word_naming_nothing_is_reported_as_unresolved(workspace) -> None:
     """It is left in the text as prose, which is correct — and SAID, which is
     the difference between a deliberate fallthrough and a silent one."""
-    sub, report = _submission_from_params({"text": "read @nope.txt", "expand_attachments": True})
+    sub, report = submission_from_params(
+        {"text": "read @nope.txt", "expand_attachments": True}, os.getcwd()
+    )
     assert sub.text == "read @nope.txt"
     assert report == {"expanded": 0, "images": 0, "unresolved": ["nope.txt"], "failures": []}
 
@@ -186,7 +194,7 @@ def test_an_at_word_naming_nothing_is_reported_as_unresolved(workspace) -> None:
 def test_expand_attachments_is_not_passed_to_the_submission(workspace) -> None:
     """It is a wire-level instruction to the handler, not a Submission field.
     A Submission that carried it would raise on a field it has never had."""
-    sub, _ = _submission_from_params({"text": "hi", "expand_attachments": True})
+    sub, _ = submission_from_params({"text": "hi", "expand_attachments": True}, os.getcwd())
     assert not hasattr(sub, "expand_attachments")
 
 
@@ -194,8 +202,8 @@ def test_the_hosts_own_images_survive_expansion(workspace) -> None:
     """A host may send images AND ask for expansion. Letting either win loses
     one of them silently."""
     image = {"type": "image", "data": "aGk=", "mime_type": "image/png"}
-    sub, report = _submission_from_params(
-        {"text": "read @notes.txt", "images": [image], "expand_attachments": True}
+    sub, report = submission_from_params(
+        {"text": "read @notes.txt", "images": [image], "expand_attachments": True}, os.getcwd()
     )
     assert sub.images == [image]
     assert report["expanded"] == 1
@@ -250,6 +258,8 @@ async def test_a_path_the_popup_offers_is_a_path_the_expansion_resolves(handler,
     offered = [m["name"] for m in listing["completion"]["matches"] if not m["is_dir"]]
 
     for name in offered:
-        _, report = _submission_from_params({"text": f"@{name}", "expand_attachments": True})
+        _, report = submission_from_params(
+            {"text": f"@{name}", "expand_attachments": True}, os.getcwd()
+        )
         assert report["unresolved"] == [], f"{name} was offered but did not resolve"
         assert report["expanded"] == 1, name

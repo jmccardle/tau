@@ -197,6 +197,10 @@ NOT_EXPOSED: dict[str, str] = {
         "Awaits deliver_queued's background turns, for a caller that must know "
         "they finished; their events already reach a host on the bus."
     ),
+    "acting_cursor": (
+        "The cursor a call acts on: the head over stdio, the named cursor under "
+        "tau serve. A host addresses it by `cursor_id`, never reads the object."
+    ),
     "cursor": (
         "The Cursor object this session extends (docs/CURSORS.md). Its leaf is "
         "on the wire as every mutator's `leaf` field (E5) and get_state's; "

@@ -424,7 +424,7 @@ class TestExtensionAPISession:
     async def test_set_session_name_with_session(self):
         """Appends a ``session_info`` at the acting cursor (``apply_session_name``)."""
         mock_session = MagicMock()
-        acting = mock_session._turn_cursor.return_value
+        acting = mock_session.acting_cursor
         acting.append = AsyncMock(return_value="e1")
         api = ExtensionAPI(session=mock_session)
         await api.set_session_name("new_name")

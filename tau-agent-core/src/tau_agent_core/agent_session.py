@@ -681,7 +681,7 @@ class AgentSession:
         loaded_paths = [
             path for path in self._loaded_extensions if path not in self._disabled_paths
         ]
-        frame = self._turn_cursor().frame
+        frame = self.acting_cursor.frame
         model = self._turn_model()
         return {
             "model_spec": {
@@ -706,7 +706,7 @@ class AgentSession:
         turn it governs: config takes effect where it is recorded (docs/CURSORS.md
         §5). Writes nothing when the path already says the same.
         """
-        cursor = self._turn_cursor()
+        cursor = self.acting_cursor
         recorded = config_at(cursor.entries(), cursor.leaf)
         changed = {k: v for k, v in self._frame_config().items() if recorded.get(k, _UNSET) != v}
         if changed:
@@ -728,7 +728,7 @@ class AgentSession:
     @property
     def messages(self) -> list[dict[str, Any]]:
         """The model-input context at this session's cursor."""
-        return self._turn_cursor().context()
+        return self.acting_cursor.context()
 
     @property
     def cursor(self) -> Cursor:
@@ -748,17 +748,24 @@ class AgentSession:
         self._cursor = cursor
         self._cursors[cursor.id] = cursor
 
-    def _turn_cursor(self) -> Cursor:
+    @property
+    def acting_cursor(self) -> Cursor:
         """The cursor the code running now acts on.
 
-        Inside a turn that is the turn's cursor (:data:`~tau_agent_core.cursor.TURN_CURSOR`),
-        which a hook or tool running in it inherits; anywhere else it is
-        :attr:`cursor`. A ``TURN_CURSOR`` belonging to another session is ignored.
+        :data:`~tau_agent_core.cursor.TURN_CURSOR` when it is set to one of this
+        session's cursors: inside a turn, its cursor, which a hook or tool running in
+        it inherits; under ``tau serve``, the cursor a request names. Anywhere else
+        :attr:`cursor`.
         """
         cursor = TURN_CURSOR.get()
         if cursor is not None and self._cursors.get(cursor.id) is cursor:
             return cursor
         return self._cursor
+
+    @property
+    def cwd(self) -> str:
+        """The absolute directory this session's tools and ``@path`` references resolve in."""
+        return self._cwd
 
     @property
     def cursors(self) -> tuple[Cursor, ...]:
@@ -1044,7 +1051,7 @@ class AgentSession:
                 f"performed({mutation!r}) was handed a leaf in `data`. This method is "
                 "what puts it there, and two writers of one field is the drift it removes."
             )
-        leaf = self._turn_cursor().leaf
+        leaf = self.acting_cursor.leaf
         returns = declared.returns or {}
         carries = "leaf" in returns.get("properties", {})
         return Performed(
@@ -1150,8 +1157,8 @@ class AgentSession:
         ``SessionLog.entries()`` shallow copy.
         """
         return (
-            copy.deepcopy(self._turn_cursor().last_usage)
-            if self._turn_cursor().last_usage is not None
+            copy.deepcopy(self.acting_cursor.last_usage)
+            if self.acting_cursor.last_usage is not None
             else None
         )
 
@@ -1302,7 +1309,7 @@ class AgentSession:
 
         model, api_key = self._summarizer()
         messages, usage = await summarize_and_navigate(
-            self._turn_cursor(),
+            self.acting_cursor,
             target_id,
             model,
             api_key=api_key,
@@ -1321,7 +1328,7 @@ class AgentSession:
         Returns:
             A :class:`CompactionRecord`, or ``None`` if this path never compacted.
         """
-        for entry in reversed(self._turn_cursor().tree().path()):
+        for entry in reversed(self.acting_cursor.tree().path()):
             if entry.get("type") != "compaction":
                 continue
             return CompactionRecord(
@@ -1369,7 +1376,7 @@ class AgentSession:
             return
         usage = message.get("usage")
         if isinstance(usage, dict):
-            self._turn_cursor().last_usage = copy.deepcopy(usage)
+            self.acting_cursor.last_usage = copy.deepcopy(usage)
 
     def subscribe(self, handler: Callable[[AgentEvent], Any]) -> Callable[[], None]:
         """Subscribe to agent events. Returns unsubscribe function.
@@ -1755,8 +1762,8 @@ class AgentSession:
         Returns whether it moved anything — false in the ordinary case, where the
         extension held no lock.
         """
-        entries = self._turn_cursor().entries()
-        request = request_at(entries, self._turn_cursor().leaf)
+        entries = self.acting_cursor.entries()
+        request = request_at(entries, self.acting_cursor.leaf)
         if request is None or not request.lock or request.extension != path:
             return False
         # The REQUEST's parent, not the cursor's: the cursor may be a provenance node above it.
@@ -1765,7 +1772,7 @@ class AgentSession:
             None,
         )
         await self._record_config()
-        self._turn_cursor().move(str(parent) if parent is not None else None)
+        self.acting_cursor.move(str(parent) if parent is not None else None)
         return True
 
     async def enable_extension(self, path: str) -> ExtensionActionResult:
@@ -1849,18 +1856,18 @@ class AgentSession:
         would be a second source of truth that silently drifts. That default is now
         ``None``: no ceiling, until a caller states one.
         """
-        frame = self._turn_cursor().frame
+        frame = self.acting_cursor.frame
         max_turns = self._max_turns if frame is None else frame.max_turns
         return {} if max_turns is None else {"max_turns": max_turns}
 
     def _turn_model(self) -> Model:
         """The model the running turn calls: its cursor frame's, else the session's."""
-        frame = self._turn_cursor().frame
+        frame = self.acting_cursor.frame
         return self._model if frame is None or frame.model is None else frame.model
 
     def _turn_system_prompt(self) -> str:
         """The prompt the running turn runs under: its cursor frame's, else the session's."""
-        frame = self._turn_cursor().frame
+        frame = self.acting_cursor.frame
         if frame is None or frame.system_prompt is None:
             return self._system_prompt
         return frame.system_prompt
@@ -1868,7 +1875,7 @@ class AgentSession:
     def _turn_tools(self) -> list[AgentTool]:
         """The tools the running turn offers: the session's, narrowed by its cursor's frame."""
         tools = self._build_turn_tools()
-        frame = self._turn_cursor().frame
+        frame = self.acting_cursor.frame
         if frame is None:
             return tools
         allowed = set(frame.tools)
@@ -1880,7 +1887,7 @@ class AgentSession:
         A cursor whose frame turns hooks off gets a runner with no registrations,
         which is every hook point answering "no handlers" (docs/CURSORS.md §6).
         """
-        frame = self._turn_cursor().frame
+        frame = self.acting_cursor.frame
         return (
             self._quiet_runner if frame is not None and not frame.hooks else self._extension_runner
         )
@@ -2209,7 +2216,7 @@ class AgentSession:
         whatever emitted it. The four submission fields stay unset for a turn
         no submission drove (``continue_conversation()``), rather than fabricated.
         """
-        cursor = self._turn_cursor()
+        cursor = self.acting_cursor
         update: dict[str, Any] = {"cursor_id": cursor.id}
         sub = cursor.submission
         if sub is not None:
@@ -2326,7 +2333,7 @@ class AgentSession:
             dispatched = dispatch_builtin(
                 invocation.name,
                 invocation.args,
-                leaf=self._turn_cursor().leaf,
+                leaf=self.acting_cursor.leaf,
                 vocabulary=vocabulary,
             )
             if isinstance(dispatched, Ready) and invocation.origin == "extension":
@@ -2929,7 +2936,7 @@ class AgentSession:
                 "was told to use would return a confident wrong answer."
             )
         cursor = await self.open_cursor(
-            at, owner=self._turn_cursor() if owner is None else owner, label=label or prompt[:60]
+            at, owner=self.acting_cursor if owner is None else owner, label=label or prompt[:60]
         )
         cursor.frame = TurnFrame(
             tools=tuple(tools),
@@ -3319,15 +3326,15 @@ class AgentSession:
             **self._turn_cap(),
         )
 
-        writer = _CursorWriter(self._turn_cursor(), persist)
+        writer = _CursorWriter(self.acting_cursor, persist)
         loop = AgentLoop(
             config=config,
             emit=self._emit_stamped,
             tools=self._turn_tools(),
             model=model,
-            abort_signal=self._turn_cursor().abort_signal,
+            abort_signal=self.acting_cursor.abort_signal,
             hook_dispatcher=hooks,
-            steer_queue=self._turn_cursor().steer_queue,
+            steer_queue=self.acting_cursor.steer_queue,
             mid_turn_compactor=self._compact_mid_turn,
             writer=writer,
         )
@@ -3337,19 +3344,19 @@ class AgentSession:
             await self._record_config()
         for message in [*pre_user_messages, user_msg, *queued, *post_user_messages]:
             await writer.append(message)
-        self._turn_cursor().turn_writer = writer
+        self.acting_cursor.turn_writer = writer
 
         # Cleared BEFORE loop.run, because loop.run is what emits agent_end.
-        self._turn_cursor().persistence_settled.clear()
+        self.acting_cursor.persistence_settled.clear()
         try:
             await loop.run(
                 prompts=[*pre_user_messages, user_msg, *queued, *post_user_messages],
                 context=context_messages,
             )
         finally:
-            self._turn_cursor().turn_writer = None
-            self._turn_cursor().in_flight_context = None
-            self._turn_cursor().persistence_settled.set()
+            self.acting_cursor.turn_writer = None
+            self.acting_cursor.in_flight_context = None
+            self.acting_cursor.persistence_settled.set()
 
         return writer.messages
 
@@ -3374,8 +3381,8 @@ class AgentSession:
         await self._maybe_auto_compact()
         await self._drain_deferred_ops()
 
-        while self._turn_cursor().follow_up_queue:
-            follow_up = self._turn_cursor().follow_up_queue.pop(0)
+        while self.acting_cursor.follow_up_queue:
+            follow_up = self.acting_cursor.follow_up_queue.pop(0)
             follow_up_messages = await self._run_one_turn(follow_up, None, None)
             turn_messages.extend(follow_up_messages)
             await self._maybe_auto_compact()
@@ -3416,7 +3423,7 @@ class AgentSession:
         )
         for raw in injected:
             node = self._custom_message_node(raw, hook="user_turn_end")
-            await self._turn_cursor().append_custom_message(
+            await self.acting_cursor.append_custom_message(
                 node, custom_type=str(node["customType"])
             )
             turn_messages.append(node)
@@ -3618,7 +3625,7 @@ class AgentSession:
         were spent and no text was produced, so a start with no end would leave
         every renderer holding an open box forever.
         """
-        path_entries = self._turn_cursor().tree().context_entries()
+        path_entries = self.acting_cursor.tree().context_entries()
         if not any(e.get("type") in ("message", "customMessage") for e in path_entries):
             return None
         preparation = prepare_compaction(path_entries, self._compaction_settings)
@@ -3640,7 +3647,7 @@ class AgentSession:
         self._usage_valid_after = self._timestamp()
         covered = _covered_span(path_entries, result.first_kept_entry_id)
         await self._record_config()
-        await self._turn_cursor().append_compaction(
+        await self.acting_cursor.append_compaction(
             summary=result.summary,
             first_kept_id=result.first_kept_entry_id,
             tokens_before=result.tokens_before,
@@ -3648,7 +3655,7 @@ class AgentSession:
             summary_usage=result.usage,
             covered_entries=len(covered),
             covered_tokens=estimate_span_tokens(covered),
-            config_id=config_entry_at(self._turn_cursor().entries(), self._turn_cursor().leaf),
+            config_id=config_entry_at(self.acting_cursor.entries(), self.acting_cursor.leaf),
         )
         return result
 
@@ -3711,7 +3718,7 @@ class AgentSession:
         tokenizer or the character classes produced it, and whether the
         chat-template framing is inside it.
         """
-        in_flight = self._turn_cursor().in_flight_context
+        in_flight = self.acting_cursor.in_flight_context
         if messages is not None:
             path = messages
         elif in_flight is not None:
@@ -3751,12 +3758,12 @@ class AgentSession:
         if context_window <= 0:
             return None
 
-        writer = self._turn_cursor().turn_writer
+        writer = self.acting_cursor.turn_writer
         if writer is None:
             return None
 
         path = self.messages if writer.persist else [*self.messages, *writer.messages]
-        self._turn_cursor().in_flight_context = path
+        self.acting_cursor.in_flight_context = path
         estimate = self.context_estimate(path)
         if not must_compact(estimate.tokens, context_window, self._compaction_settings):
             return None
@@ -3772,7 +3779,7 @@ class AgentSession:
         finally:
             await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
         compacted = list(self.messages)
-        self._turn_cursor().in_flight_context = compacted
+        self.acting_cursor.in_flight_context = compacted
         return compacted
 
     async def _maybe_auto_compact(self) -> None:
@@ -3840,11 +3847,11 @@ class AgentSession:
         additively (decision 5).
         """
         if deliver_as == "followUp":
-            self._turn_cursor().follow_up_queue.append(content)
+            self.acting_cursor.follow_up_queue.append(content)
         elif deliver_as == "nextTurn":
-            self._turn_cursor().next_turn_queue.append(content)
+            self.acting_cursor.next_turn_queue.append(content)
         elif deliver_as == "steer":
-            self._turn_cursor().steer_queue.append(self._queued_content_to_user(content))
+            self.acting_cursor.steer_queue.append(self._queued_content_to_user(content))
         else:
             raise ValueError(
                 "_queue_message: deliver_as must be 'followUp', 'nextTurn' or "
@@ -3853,15 +3860,13 @@ class AgentSession:
 
     def _defer_compact(self, custom_instructions: str | None = None) -> None:
         """Record a deferred compaction intent (drained at prompt()'s tail, S20)."""
-        self._turn_cursor().deferred_ops.append(
+        self.acting_cursor.deferred_ops.append(
             {"kind": "compact", "custom_instructions": custom_instructions}
         )
 
     def _defer_fork(self, entry_id: str | None = None, mode: str = "in_place") -> None:
         """Record a deferred fork intent (drained at prompt()'s tail, S20)."""
-        self._turn_cursor().deferred_ops.append(
-            {"kind": "fork", "entry_id": entry_id, "mode": mode}
-        )
+        self.acting_cursor.deferred_ops.append({"kind": "fork", "entry_id": entry_id, "mode": mode})
 
     async def _drain_deferred_ops(self) -> None:
         """Apply the recorded deferred compact/fork intents exactly once.
@@ -3872,10 +3877,10 @@ class AgentSession:
         the immediate paths (``compact`` / ``ctx.fork``); Fail-Early on an unknown
         kind rather than silently dropping it.
         """
-        if not self._turn_cursor().deferred_ops:
+        if not self.acting_cursor.deferred_ops:
             return
-        ops = self._turn_cursor().deferred_ops
-        self._turn_cursor().deferred_ops = []
+        ops = self.acting_cursor.deferred_ops
+        self.acting_cursor.deferred_ops = []
         ctx = self._extension_api.context
         for op in ops:
             kind = op["kind"]
@@ -3911,7 +3916,7 @@ class AgentSession:
     def abort(self, cursor: Cursor | None = None) -> None:
         """Abort ``cursor``'s turn, every cursor it owns, and every still-running forked branch.
 
-        ``cursor`` defaults to the one the caller acts on (:meth:`_turn_cursor`).
+        ``cursor`` defaults to the one the caller acts on (:attr:`acting_cursor`).
         Owned cursors are aborted first, deepest first, so a sub-agent stops before
         the turn that spawned it (docs/CURSORS.md §6). Each loses its queued steers:
         the turn they were aimed at is gone.
@@ -3936,7 +3941,7 @@ class AgentSession:
         never about, arriving from a source the aborting user cannot see. They are
         drained at session shutdown instead (:meth:`emit_session_shutdown`).
         """
-        target = self._turn_cursor() if cursor is None else self._registered(cursor)
+        target = self.acting_cursor if cursor is None else self._registered(cursor)
         for owned in reversed(self._owned_by(target)):
             owned.abort_signal.abort()
             owned.steer_queue.clear()
@@ -4090,7 +4095,7 @@ class AgentSession:
             timestamp=self._timestamp(),
         )
         await self._record_config()
-        entry_id = await self._turn_cursor().append_custom_message(
+        entry_id = await self.acting_cursor.append_custom_message(
             node, custom_type=str(message["customType"])
         )
         self._announce_append("custom_message", entry_id=entry_id, message=node)
@@ -4150,7 +4155,7 @@ class AgentSession:
         if not isinstance(data, dict):
             raise ValueError(f"append_entry: data must be a dict, got {type(data).__name__}")
         await self._record_config()
-        return await self._turn_cursor().append_custom_entry(custom_type, data)
+        return await self.acting_cursor.append_custom_entry(custom_type, data)
 
     @property
     def pending_request(self) -> ExtensionRequest | None:
@@ -4160,7 +4165,7 @@ class AgentSession:
         draw, and :meth:`submit` reads it to decide whether to refuse, so the
         thing a user is looking at and the thing that refused them are one entry.
         """
-        return request_at(self._turn_cursor().entries(), self._turn_cursor().leaf)
+        return request_at(self.acting_cursor.entries(), self.acting_cursor.leaf)
 
     async def answer_request(
         self, request_id: str, action: str, values: dict[str, Any] | None = None
@@ -4191,7 +4196,7 @@ class AgentSession:
                 rejects. Fail-Early: nothing is coerced and no partial answer is
                 persisted.
         """
-        request = find_request(self._turn_cursor().entries(), request_id)
+        request = find_request(self.acting_cursor.entries(), request_id)
         if request is None:
             raise ValueError(f"answer_request: no extension request with id {request_id!r}")
         if request.ask is None:

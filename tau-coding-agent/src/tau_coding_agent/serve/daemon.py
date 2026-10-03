@@ -963,7 +963,7 @@ class Daemon:
     async def _perform(self, client: Client, host: SessionHost, request: p.Perform) -> Any:
         """Run a :data:`~protocol.PERFORMABLE` backend operation for a client, at its cursor.
 
-        The backend acts on ``AgentSession._turn_cursor()``, which is
+        The backend acts on ``AgentSession.acting_cursor``, which is
         :data:`~tau_agent_core.cursor.TURN_CURSOR` while it is set.
         """
         if request.method not in p.PERFORMABLE:

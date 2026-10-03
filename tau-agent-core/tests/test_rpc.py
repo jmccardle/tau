@@ -100,6 +100,9 @@ def _session(**overrides: Any) -> MagicMock:
     session.messages = []
     session.session_log = MagicMock()
     session.cursor.leaf = "leaf-1"
+    session.acting_cursor = session.cursor
+    session.cursor.session_id = "sess-1"
+    session.cursor.is_streaming = False
     session.is_addressable = True
     session.tools = []
     session.subscribe.return_value = MagicMock()
@@ -944,7 +947,7 @@ def test_the_transport_does_not_know_what_an_agent_end_is():
 
 
 async def test_get_state_aggregates_the_session(handler, session):
-    session.is_streaming = True
+    session.acting_cursor.is_streaming = True
     session.messages = [{"role": "user"}, {"role": "assistant"}]
     session.get_usage.return_value = {"input_tokens": 3}
 
@@ -953,7 +956,7 @@ async def test_get_state_aggregates_the_session(handler, session):
     (response,) = await _drain(handler)
     assert response["result"] == {
         "session_id": "sess-1",
-        "status": "idle",
+        "status": "running",
         "is_streaming": True,
         "model": {"id": "gpt-4o", "provider": "openai", "context_window": 8192},
         "usage": {"input_tokens": 3},

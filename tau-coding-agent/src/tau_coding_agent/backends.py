@@ -1818,7 +1818,7 @@ class TauBackend(Backend):
         The acting cursor is the head's, or :data:`~tau_agent_core.cursor.TURN_CURSOR`'s
         when a caller set one; the tree edits below take it the same way.
         """
-        cursor = self.agent_session._turn_cursor()
+        cursor = self.agent_session.acting_cursor
         if target_id == cursor.leaf or not summarize:
             return tree_ops.navigate(cursor, target_id)
         async with self.agent_session.watch_side_completion(
@@ -1846,9 +1846,7 @@ class TauBackend(Backend):
             ValueError: an unknown anchor or resume point, a resume point that is
                 not on the anchor's path, or a span that would hide nothing.
         """
-        return await tree_ops.elide_span(
-            self.agent_session._turn_cursor(), anchor_id, first_kept_id
-        )
+        return await tree_ops.elide_span(self.agent_session.acting_cursor, anchor_id, first_kept_id)
 
     async def commit_branch(self, ids: Sequence[str], *, drop_context: bool) -> list[dict]:
         """Build a branch out of the marked messages and continue on it.
@@ -1869,7 +1867,7 @@ class TauBackend(Backend):
                 turn-complete; checked before the first append.
         """
         return await tree_ops.commit_branch(
-            self.agent_session._turn_cursor(), ids, drop_context=drop_context
+            self.agent_session.acting_cursor, ids, drop_context=drop_context
         )
 
     async def paste_subtree(self, source_id: str, target_id: str) -> list[str]:
@@ -1885,7 +1883,7 @@ class TauBackend(Backend):
                 inside the source's own subtree, or a copied tool result whose call is
                 on neither the target's path nor the copied run.
         """
-        return await tree_ops.paste_subtree(self.agent_session._turn_cursor(), source_id, target_id)
+        return await tree_ops.paste_subtree(self.agent_session.acting_cursor, source_id, target_id)
 
     async def rollback_turn(self, text: str) -> SubmissionResult:
         """Abort the in-flight turn, un-path what it produced, and run ``text`` instead.
@@ -1935,7 +1933,7 @@ class TauBackend(Backend):
                 multitask_strategy="rollback",
                 allow_user_input=True,
             ),
-            cursor=self.agent_session._turn_cursor(),
+            cursor=self.agent_session.acting_cursor,
         )
 
     async def submit_turn(

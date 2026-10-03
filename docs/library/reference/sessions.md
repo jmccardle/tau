@@ -50,7 +50,7 @@ abort(cursor: Cursor | None = None) -> None
 
 Abort ``cursor``'s turn, every cursor it owns, and every still-running forked branch.
 
-``cursor`` defaults to the one the caller acts on (:meth:`_turn_cursor`).
+``cursor`` defaults to the one the caller acts on (:attr:`acting_cursor`).
 Owned cursors are aborted first, deepest first, so a sub-agent stops before
 the turn that spawned it (docs/CURSORS.md §6). Each loses its queued steers:
 the turn they were aimed at is gone.
@@ -78,6 +78,17 @@ drained at session shutdown instead (:meth:`emit_session_shutdown`).
 **Parameters**
 
 - `cursor: Cursor | None = None` — *(no description)*
+
+### acting_cursor
+
+`tau_agent_core.agent_session.AgentSession.acting_cursor: Cursor`
+
+The cursor the code running now acts on.
+
+:data:`~tau_agent_core.cursor.TURN_CURSOR` when it is set to one of this
+session's cursors: inside a turn, its cursor, which a hook or tool running in
+it inherits; under ``tau serve``, the cursor a request names. Anywhere else
+:attr:`cursor`.
 
 ### answer_request
 

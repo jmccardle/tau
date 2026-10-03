@@ -745,12 +745,16 @@ def _reject_unsupported_multitask_strategy(params: dict[str, Any]) -> None:
         raise RPCError(INVALID_PARAMS, reason, data={"multitask_strategy": strategy})
 
 
-def _submission_from_params(params: dict[str, Any]) -> tuple[Submission, dict[str, Any] | None]:
+def submission_from_params(
+    params: dict[str, Any], cwd: str
+) -> tuple[Submission, dict[str, Any] | None]:
     """Build a `Submission` from wire params. Provenance is ALWAYS present on
     the constructed record — defaulted when the caller omits it (`prompt`'s
     contract), never simply absent — regardless of which verb called this;
     it is each verb's `params_schema.required` list, not this function, that
-    makes `submit` demand provenance on the wire (§10 decision 10).
+    makes `submit` demand provenance on the wire (§10 decision 10). `cwd` is
+    where `expand_attachments` resolves `@path` references; which strategies a
+    wire accepts is that wire's own check, made before this.
 
     Returns:
         `(submission, attachment_report)`. The report is `None` when the
@@ -758,12 +762,11 @@ def _submission_from_params(params: dict[str, Any]) -> tuple[Submission, dict[st
         `attachments` key is ABSENT in that case rather than an empty summary
         claiming an expansion ran and found nothing.
     """
-    _reject_unsupported_multitask_strategy(params)
     text: str = params["text"]
     images: list[dict[str, Any]] | None = params.get("images")
     report: dict[str, Any] | None = None
     if params.get("expand_attachments"):
-        text, images, report = attachment_expansion(text, images, Path.cwd())
+        text, images, report = attachment_expansion(text, images, Path(cwd))
 
     kwargs: dict[str, Any] = {
         "text": text,
@@ -872,7 +875,7 @@ def _accept_result(
     `_dispatched_result`, which raises `RPCError` for each with the reason
     that arm carries.
 
-    `attachments` is `_submission_from_params`'s report, set exactly when the
+    `attachments` is `submission_from_params`'s report, set exactly when the
     request asked for expansion. It rides the ACCEPTANCE and not a later event
     because expansion happened before admission: by the time an `agent_end`
     could carry it, the model has already read the blocks, and a host told
@@ -1040,7 +1043,8 @@ async def _submit_and_acknowledge(
 async def _handle_submit(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any] | None:
-    sub, attachments = _submission_from_params(params)
+    _reject_unsupported_multitask_strategy(params)
+    sub, attachments = submission_from_params(params, handler.session.cwd)
     return await _submit_and_acknowledge(handler, msg_id, "submit", sub, attachments)
 
 
@@ -1061,7 +1065,8 @@ async def _handle_submit(
 async def _handle_prompt(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any] | None:
-    sub, attachments = _submission_from_params(params)
+    _reject_unsupported_multitask_strategy(params)
+    sub, attachments = submission_from_params(params, handler.session.cwd)
     return await _submit_and_acknowledge(handler, msg_id, "prompt", sub, attachments)
 
 
@@ -1152,15 +1157,15 @@ async def _handle_get_state(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     session = handler.session
-    state = session.state
+    cursor = session.acting_cursor
     return {
-        "session_id": state.session_id,
-        "status": state.status,
-        "is_streaming": session.is_streaming,
+        "session_id": cursor.session_id,
+        "status": "running" if cursor.is_streaming else "idle",
+        "is_streaming": cursor.is_streaming,
         "model": session.get_model(),
         "usage": session.get_usage(),
         "message_count": len(session.messages),
-        "leaf": session.cursor.leaf,
+        "leaf": session.acting_cursor.leaf,
         "addressable": session.is_addressable,
     }
 
@@ -1509,8 +1514,9 @@ async def turn_safety_guard(
     ``test_rpc_tier_b_scaffolding.py``'s
     ``test_the_prose_enumerations_of_tier_b_name_every_verb``.
     """
+    lock = session.acting_cursor.turn_lock
     try:
-        await asyncio.wait_for(session.turn_lock.acquire(), timeout=timeout)
+        await asyncio.wait_for(lock.acquire(), timeout=timeout)
     except asyncio.TimeoutError:
         raise RPCError(
             TURN_STILL_RUNNING,
@@ -1520,7 +1526,7 @@ async def turn_safety_guard(
     try:
         yield
     finally:
-        session.turn_lock.release()
+        lock.release()
 
 
 def require_durable_session(session: "AgentSession", *, verb: str) -> None:
@@ -1973,7 +1979,7 @@ async def _handle_compact(
                             "is_error": False,
                             "error": None,
                             "cancelled": True,
-                            "leaf": session.cursor.leaf,
+                            "leaf": session.acting_cursor.leaf,
                         }
                     )
                     raise
@@ -1992,7 +1998,7 @@ async def _handle_compact(
                         "is_error": True,
                         "error": repr(exc),
                         "cancelled": False,
-                        "leaf": session.cursor.leaf,
+                        "leaf": session.acting_cursor.leaf,
                     }
                 )
                 return
@@ -2000,7 +2006,7 @@ async def _handle_compact(
                 {
                     "is_error": False,
                     "error": None,
-                    **_compaction_outcome(result, session.cursor.leaf),
+                    **_compaction_outcome(result, session.acting_cursor.leaf),
                 }
             )
         finally:
@@ -2077,7 +2083,7 @@ async def _handle_complete_path(
 ) -> dict[str, Any]:
     from tau_agent_core.projections import path_completion
 
-    return path_completion(params["text"], params["offset"], Path.cwd())
+    return path_completion(params["text"], params["offset"], Path(handler.session.cwd))
 
 
 ### end tier-b:complete_path
@@ -2452,7 +2458,7 @@ async def _handle_set_auto_compaction(
     session = handler.session
     async with turn_safety_guard(session):
         effective = session.set_auto_compaction(bool(params["enabled"]))
-        leaf = session.cursor.leaf
+        leaf = session.acting_cursor.leaf
     return {"enabled": effective, "leaf": leaf}
 
 
@@ -2549,8 +2555,8 @@ async def _handle_set_model(
             raise RPCError(
                 INVALID_PARAMS, _resolver_error_message(exc), data={"name": name}
             ) from exc
-        await session.cursor.append_config(model=name, backend=model["provider"])
-        return {"model": model, "leaf": session.cursor.leaf}
+        await session.acting_cursor.append_config(model=name, backend=model["provider"])
+        return {"model": model, "leaf": session.acting_cursor.leaf}
 
 
 ### end tier-b:set_model
@@ -2622,7 +2628,7 @@ async def _handle_set_session_name(
             await session.set_session_name(name)
     except ValueError as exc:
         raise RPCError(INVALID_PARAMS, str(exc), data={"name": name}) from exc
-    return {"name": name, "leaf": session.cursor.leaf}
+    return {"name": name, "leaf": session.acting_cursor.leaf}
 
 
 @command(
@@ -3064,7 +3070,7 @@ COMPLETE_MESSAGE_ID_RESULT_SCHEMA: dict[str, Any] = result_schema_for("complete_
 async def _handle_complete_message_id(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    tree = handler.session.cursor.tree()
+    tree = handler.session.acting_cursor.tree()
     try:
         found = tree.complete_message_id(
             scope=params.get("scope", "in_session"),
@@ -3133,8 +3139,8 @@ async def _handle_get_tree(
 ) -> dict[str, Any]:
     from tau_agent_core.projections import browse_rows
 
-    nodes = browse_rows(handler.session.cursor.tree())
-    return {"nodes": nodes, "leaf": handler.session.cursor.leaf, "count": len(nodes)}
+    nodes = browse_rows(handler.session.acting_cursor.tree())
+    return {"nodes": nodes, "leaf": handler.session.acting_cursor.leaf, "count": len(nodes)}
 
 
 ### end tier-c:get_tree
@@ -3183,7 +3189,7 @@ GET_ENTRY_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_entry")
 async def _handle_get_entry(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    tree = handler.session.cursor.tree()
+    tree = handler.session.acting_cursor.tree()
     entry_id = params["entry_id"]
     try:
         entry = tree.entry(entry_id)
@@ -3311,7 +3317,7 @@ async def _handle_answer_request(
     return {
         "handled": result.handled,
         "output": result.output,
-        "leaf": handler.session.cursor.leaf,
+        "leaf": handler.session.acting_cursor.leaf,
     }
 
 
@@ -3476,8 +3482,8 @@ async def _handle_navigate(
     from tau_agent_core import tree_ops
 
     async with tree_mutation_guard(handler, verb="navigate", appends=False) as s:
-        messages = tree_ops.navigate(s.cursor, params["target_id"])
-        return {"messages": messages, "leaf": s.cursor.leaf}
+        messages = tree_ops.navigate(s.acting_cursor, params["target_id"])
+        return {"messages": messages, "leaf": s.acting_cursor.leaf}
 
 
 ### end tier-c:navigate
@@ -3534,7 +3540,7 @@ async def _handle_summarize_and_navigate(
             params["target_id"],
             custom_instructions=params.get("custom_instructions"),
         )
-        return {"messages": messages, "leaf": s.cursor.leaf}
+        return {"messages": messages, "leaf": s.acting_cursor.leaf}
 
 
 ### end tier-c:summarize_and_navigate
@@ -3588,8 +3594,10 @@ async def _handle_elide_span(
     from tau_agent_core import tree_ops
 
     async with tree_mutation_guard(handler, verb="elide_span", appends=True) as s:
-        messages = await tree_ops.elide_span(s.cursor, params["anchor_id"], params["first_kept_id"])
-        return {"messages": messages, "leaf": s.cursor.leaf}
+        messages = await tree_ops.elide_span(
+            s.acting_cursor, params["anchor_id"], params["first_kept_id"]
+        )
+        return {"messages": messages, "leaf": s.acting_cursor.leaf}
 
 
 ### end tier-c:elide_span
@@ -3647,9 +3655,9 @@ async def _handle_commit_branch(
         appends=True,
     ) as s:
         messages = await tree_ops.commit_branch(
-            s.cursor, params["ids"], drop_context=params["drop_context"]
+            s.acting_cursor, params["ids"], drop_context=params["drop_context"]
         )
-        return {"messages": messages, "leaf": s.cursor.leaf}
+        return {"messages": messages, "leaf": s.acting_cursor.leaf}
 
 
 ### end tier-c:commit_branch
@@ -3694,8 +3702,10 @@ async def _handle_paste_subtree(
     from tau_agent_core import tree_ops
 
     async with tree_mutation_guard(handler, verb="paste_subtree", appends=True) as s:
-        minted = await tree_ops.paste_subtree(s.cursor, params["source_id"], params["target_id"])
-        return {"minted_ids": minted, "leaf": s.cursor.leaf}
+        minted = await tree_ops.paste_subtree(
+            s.acting_cursor, params["source_id"], params["target_id"]
+        )
+        return {"minted_ids": minted, "leaf": s.acting_cursor.leaf}
 
 
 ### end tier-c:paste_subtree
@@ -3731,7 +3741,7 @@ def _extension_action_result(
         "path": outcome.path,
         "ok": outcome.ok,
         "message": outcome.message,
-        "leaf": session.cursor.leaf,
+        "leaf": session.acting_cursor.leaf,
     }
 
 

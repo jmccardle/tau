@@ -914,7 +914,7 @@ class ExtensionContext:
         (docs/CURSORS.md §7). Without one, the signal this context was built with.
         """
         if self._session is not None:
-            return self._session._turn_cursor().abort_signal
+            return self._session.acting_cursor.abort_signal
         return self._signal
 
     @property
@@ -1142,7 +1142,7 @@ class ExtensionContext:
         is "where am I": a cursor is not durable, so it cannot be recovered from
         :meth:`entries` (docs/CURSORS.md §4, §7).
         """
-        return self._require_session()._turn_cursor()
+        return self._require_session().acting_cursor
 
     def entries(self) -> list[dict[str, Any]]:
         """The bound session log's raw, append-only entries (all kinds).
@@ -1489,7 +1489,7 @@ async def apply_session_name(session: Any, name: str) -> None:
     """
     if not name:
         raise ValueError("set_session_name: name must be a non-empty string")
-    await session._turn_cursor().append("session_info", name=name)
+    await session.acting_cursor.append("session_info", name=name)
 
 
 @agent_facing(topic="extensions")
