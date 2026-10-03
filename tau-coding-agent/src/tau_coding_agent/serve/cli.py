@@ -26,6 +26,7 @@ from websockets.sync.client import connect as sync_connect, unix_connect as sync
 from tau_coding_agent.config import TAU_DIR
 from tau_coding_agent.serve import protocol as p
 from tau_coding_agent.serve.client import Address, ServeClient, ServeError, parse_address
+from tau_coding_agent.serve.http import build_process_request
 
 LOG_FILE = "serve.log"
 """The background daemon's log, under ``~/.tau``."""
@@ -96,6 +97,7 @@ async def serve(address: Address, config: dict[str, Any]) -> int:
 
     catalog = build_session_catalog(config, None, None, persist=True)
     daemon = Daemon(config, catalog)
+    process_request = build_process_request(config.get("serve") or {}, daemon.log)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -104,9 +106,17 @@ async def serve(address: Address, config: dict[str, Any]) -> int:
         except (NotImplementedError, RuntimeError):
             signal.signal(signum, lambda *_: loop.call_soon_threadsafe(stop.set))
     if address.path is not None:
-        server = await unix_serve(daemon.handle, address.path, max_size=None)
+        server = await unix_serve(
+            daemon.handle, address.path, max_size=None, process_request=process_request
+        )
     else:
-        server = await ws_serve(daemon.handle, address.host, address.port, max_size=None)
+        server = await ws_serve(
+            daemon.handle,
+            address.host,
+            address.port,
+            max_size=None,
+            process_request=process_request,
+        )
     auth = "token required" if daemon.token else "no token"
     daemon.log(f"tau serve listening on {address} ({auth}, pid {os.getpid()})")
     try:
