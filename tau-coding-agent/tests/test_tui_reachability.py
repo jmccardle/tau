@@ -106,12 +106,13 @@ def test_an_unreachable_mutation_gives_a_real_reason(mutation: str):
 
 STYLESHEET = Path(dialogs.__file__).with_name("tau.tcss")
 
-STYLED_ID_CAP = 35
-"""Distinct `#id` selectors the stylesheet may name. Measured 2026-09-04.
+STYLED_ID_CAP = 36
+"""Distinct `#id` selectors the stylesheet may name. Measured 2026-09-04; 36 from 2026-10-03.
 
 An id names one mounted widget, so an id rule is a proper noun and a vocabulary
 of proper nouns is the one thing a style guide cannot constrain. This was 53 when
 the four dialog roles were restated once per modal; the shell took it to 35.
+``#compare-dialog`` made it 36: the shell's sizing rule needs one id per dialog.
 Anything per-modal, per-message or per-stream takes a class.
 """
 

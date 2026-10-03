@@ -617,6 +617,26 @@ class RemoteBackend(Backend):
             data={"model": {"id": answer["model"], "name": name}},
         )
 
+    async def end_compare(self, comparison_id: str, keep: str | None) -> str | None:
+        """End a daemon comparison, as ``TauBackend.end_compare`` does in-process.
+
+        Raises:
+            KeyError: the daemon has no such comparison (another client ended it).
+            RuntimeError: the kept turn or the head is still running.
+        """
+        try:
+            answer = await self._remote.request(
+                p.EndCompare(session_id=self._session_id, comparison_id=comparison_id, keep=keep)
+            )
+        except ServeError as exc:
+            if exc.code == "not_found":
+                raise KeyError(str(exc)) from exc
+            if exc.code == "busy":
+                raise RuntimeError(str(exc)) from exc
+            raise
+        leaf = answer["leaf"]
+        return str(leaf) if leaf is not None else None
+
     async def compact(self, custom_instructions: str | None = None) -> Any:
         return await self._perform("compact", custom_instructions=custom_instructions)
 

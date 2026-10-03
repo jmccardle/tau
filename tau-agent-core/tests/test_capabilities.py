@@ -47,6 +47,7 @@ class TestTheProjection:
             "enable_extension",
             "disable_extension",
             "reload_extension",
+            "compare",
         ]
 
     def test_frontend_commands_is_the_projection(self):
@@ -199,8 +200,11 @@ class TestWhatTheRecordsCarry:
     def test_cardinality_defaults_to_one(self):
         assert Argument("x", "text", "some text").cardinality == "one"
 
-    def test_every_capability_is_on_the_wire(self):
-        """As of 0.9.8 there is no capability a host cannot address by name.
+    def test_only_compare_is_off_the_wire(self):
+        """As of 0.9.8 every capability had an RPC verb; ``compare`` (0.12.0) is the exception.
+
+        ``compare`` opens cursors and RPC drives one; its wire is ``tau serve``'s
+        ``compare`` request (docs/TAU-SERVE.md §8).
 
         `on_wire` still means what it said — a statement about the wire, not about
         the capability, since every one of these is callable in-process either way
@@ -212,7 +216,7 @@ class TestWhatTheRecordsCarry:
         than a default.
         """
         off_wire = sorted(c.name for c in CAPABILITIES.values() if not c.on_wire)
-        assert off_wire == [], (
+        assert off_wire == ["compare"], (
             f"{off_wire} are declared capabilities with no RPC verb. That is "
             "allowed — say so here, with why — but it is not the default."
         )

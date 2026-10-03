@@ -286,6 +286,14 @@ Vertical.tau-dialog-buttons Button { width: 100%; margin: 0; }
 
 #tree-browser-tree:focus { border: solid $tau-accent; }
 
+/* === Compare columns (TAU-SERVE.md §8) === */
+
+#compare-dialog { width: 100%; height: 100%; padding: 0 1; }
+.compare-columns { height: 1fr; }
+.compare-column { width: 1fr; height: 100%; padding: 0 1; border: solid $tau-border; }
+.compare-column.compare-finished { border: solid $tau-role-assistant; }
+.compare-body { height: auto; color: $tau-text; }
+
 /* === Tree browser zones (TREE-BROWSER-AS-EDITOR.md §3) === */
 
 ZoneTree > .tree--zone-path { color: $tau-zone-path; }

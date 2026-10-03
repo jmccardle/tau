@@ -8,7 +8,7 @@
 
 - **Protocol version:** `0.1`
 - **Default port:** `8256`
-- **Counts:** 16 requests, 9 event kinds. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 17 requests, 9 event kinds. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12).
 
 ## Framing
@@ -174,14 +174,33 @@ Re-read a session's extension surface, after an extension was enabled or reloade
 
 Open one cursor per model at ``leaf`` and send each the same text (docs/TAU-SERVE.md §8).
 
-Answered at once with the opened cursors; the turns run on.
+Answered at once with ``{comparison_id, cursors: [{cursor_id, model}], message}``;
+the turns run on. Each turn's ``submission_start`` carries the comparison in
+``submission.correlation["compare"]`` as ``{id, models, index, cursor_id}``, so
+every attached client can draw the columns. An unknown model fails before
+anything is opened.
 
 | Field | Type | Required |
 |---|---|---|
 | `session_id` | string | yes |
-| `leaf` | string \| null | yes |
 | `models` | list of string | yes |
 | `text` | string | yes |
+| `leaf` | string \| null | no |
+
+### `end_compare`
+
+End a comparison: the head cursor moves onto ``keep``'s leaf, and every compare cursor closes.
+
+Turns still running on the others are aborted first; every branch stays in
+the tree. ``keep`` ``None`` keeps none and leaves the head where it is. Fails
+with ``busy`` while the kept turn or the head's turn is running, changing
+nothing. Answered with ``{"leaf": <the head's leaf>}``.
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | string | yes |
+| `comparison_id` | string | yes |
+| `keep` | string \| null | yes |
 
 ## Responses
 

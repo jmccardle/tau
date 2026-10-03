@@ -2141,6 +2141,73 @@ is how it is written on disk.
 - `first_kept_id: str | None` — The entry the context resumes at — everything before it on the path is folded away.
 - `tokens_before: int | None` — The context size the compaction was measured against.
 
+## Comparison
+<!-- agent: yes -->
+
+```python
+class Comparison(id: str, session: AgentSession, leaf: str | None, models: tuple[str, ...], cursors: tuple[Cursor, ...], turns: tuple[asyncio.Task[SubmissionResult], ...])
+```
+
+`tau_agent_core.compare.Comparison`
+
+One prompt running on N cursors that share a leaf, until one is kept.
+
+**Constructor parameters**
+
+- `id: str` — Names the comparison on the wire and in each turn's correlation.
+- `session: AgentSession` — The session whose head cursor owns every compare cursor.
+- `leaf: str | None` — The entry all the cursors started from.
+- `models: tuple[str, ...]` — The model names, in column order; one may repeat.
+- `cursors: tuple[Cursor, ...]` — One per model, in the same order, labelled with its model name.
+- `turns: tuple[asyncio.Task[SubmissionResult], ...]` — Each cursor's running ``submit``, in the same order.
+
+### cursor
+
+```python
+cursor(cursor_id: str) -> Cursor
+```
+
+`tau_agent_core.compare.Comparison.cursor`
+
+The compare cursor ``cursor_id`` names.
+
+**Parameters**
+
+- `cursor_id: str` — *(no description)*
+
+**Raises**
+
+- `KeyError` — it is not one of this comparison's.
+
+### end
+
+```python
+async end(keep: str | None) -> str | None
+```
+
+`tau_agent_core.compare.Comparison.end`
+
+Move the head onto ``keep``'s leaf, and close every compare cursor.
+
+A turn still running on a cursor that was not kept is aborted (or, not yet
+admitted, cancelled) and awaited first: picking a winner is the decision
+that the others are not wanted.
+Their branches stay in the tree, interrupted ones marked incomplete.
+``keep`` ``None`` keeps none and leaves the head where it is.
+
+**Parameters**
+
+- `keep: str | None` — *(no description)*
+
+**Returns**
+
+The head cursor's leaf afterwards.
+
+**Raises**
+
+- `KeyError` — ``keep`` names no cursor of this comparison.
+- `RuntimeError` — the kept cursor's turn has not finished, or the head is running a turn; nothing was aborted or closed.
+
 ## ConversationSession
 <!-- agent: yes -->
 
@@ -5355,6 +5422,62 @@ what callers already see rather than re-sorting on a new principle.
 **Returns**
 
 A fresh dict of command name to one-line description. Fresh rather than shared, because it goes to callers that hold it.
+
+## split_compare_args
+<!-- agent: yes -->
+
+```python
+split_compare_args(raw: str) -> dict[str, Any]
+```
+
+`tau_agent_core.compare.split_compare_args`
+
+Bind ``/compare``'s typed line: model names, then ``--``, then the prompt.
+
+``/compare a b -- why is the sky blue`` binds both arguments. Without ``--``
+every word is a model name and the prompt is left unbound, so a head asks for
+it as the flow's next step.
+
+**Parameters**
+
+- `raw: str` — *(no description)*
+
+**Returns**
+
+``{"models": [...], "text": ...}``, with only the parts that were typed.
+
+**Raises**
+
+- `ValueError` — ``--`` with no model before it, or with nothing after it.
+
+## start_comparison
+<!-- agent: yes -->
+
+```python
+async start_comparison(session: AgentSession, leaf: str | None, models: list[str], text: str, *, allow_user_input: bool = True) -> Comparison
+```
+
+`tau_agent_core.compare.start_comparison`
+
+Open one cursor per model at ``leaf`` and send each ``text``, all at once.
+
+Each cursor is owned by the head cursor (so aborting the head aborts them),
+labelled with its model name, and runs under a :class:`TurnFrame` with that
+model, every session tool and hooks on. The turns run as background tasks;
+this returns as soon as they are started.
+
+**Parameters**
+
+- `session: AgentSession` — The session to compare in; its model resolver turns names into models.
+- `leaf: str | None` — The entry every cursor starts from, or ``None`` before the root.
+- `models: list[str]` — Configured model names, one column each.
+- `text: str` — The prompt every cursor receives, sent as a prompt and never as a command.
+- `allow_user_input: bool = True` — Whether a hook in these turns may ask the user a question.
+
+**Raises**
+
+- `ValueError` — no models, no text, no model resolver, or ``leaf`` names no entry. Nothing was opened.
+- `KeyError` — a model name the resolver does not know. Nothing was opened.
 
 ## summarize_and_navigate
 <!-- agent: yes -->

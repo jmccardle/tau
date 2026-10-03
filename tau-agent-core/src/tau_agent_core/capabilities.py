@@ -1385,6 +1385,22 @@ _PASTE_SUBTREE_RETURNS: dict[str, Any] = {
     "required": ["minted_ids", "cursor"],
 }
 
+_COMPARE_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "comparison_id": {
+            "type": "string",
+            "description": "Names the comparison; ending it (keeping one) takes this id.",
+        },
+        "cursors": {
+            "type": "array",
+            "description": "One {cursor_id, model} per model, in column order.",
+        },
+        "message": {"type": "string", "description": "The line a head shows for it."},
+    },
+    "required": ["comparison_id", "cursors", "message"],
+}
+
 _EXTENSION_ACTION_RETURNS: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1781,6 +1797,16 @@ CAPABILITIES: dict[str, Capability] = {
             ),
             returns=_PASTE_SUBTREE_RETURNS,
         ),
+        Capability(
+            "compare",
+            "mutation",
+            "Send one prompt to several models at once, each on its own cursor from the head's leaf.",
+            arguments=(
+                Argument("models", "model_name", "The models to compare.", cardinality="many"),
+                Argument("text", "text", "The prompt every model receives."),
+            ),
+            returns=_COMPARE_RETURNS,
+        ),
     )
 }
 
@@ -1845,6 +1871,15 @@ FLOWS: tuple[Flow, ...] = (
         description="re-import an extension from disk and re-register it",
         mutation="reload_extension",
         arguments=(Argument("path", "extension_name", "Which extension."),),
+    ),
+    Flow(
+        name="compare",
+        description="send one prompt to several models side by side, then keep one answer",
+        mutation="compare",
+        arguments=(
+            Argument("models", "model_name", "The models to compare.", cardinality="many"),
+            Argument("text", "text", "The prompt every model receives."),
+        ),
     ),
 )
 

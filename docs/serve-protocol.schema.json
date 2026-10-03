@@ -244,7 +244,6 @@
       },
       "required": [
         "session_id",
-        "leaf",
         "models",
         "text",
         "type"
@@ -367,6 +366,39 @@
       },
       "required": [
         "session_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "EndCompare": {
+      "description": "End a comparison: the head cursor moves onto ``keep``'s leaf, and every compare cursor closes.",
+      "properties": {
+        "comparison_id": {
+          "type": "string"
+        },
+        "keep": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "end_compare"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "comparison_id",
+        "keep",
         "type"
       ],
       "type": "object"
@@ -1113,6 +1145,24 @@
         "allOf": [
           {
             "$ref": "#/$defs/Compare"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/EndCompare"
           },
           {
             "properties": {

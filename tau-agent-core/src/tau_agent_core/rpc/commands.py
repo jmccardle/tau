@@ -869,6 +869,12 @@ def _dispatched_result(
             f"the verb the flow ends in."
         )
         name = dispatched.flow
+    elif isinstance(dispatched, Ready) and dispatched.mutation not in COMMAND_TABLE:
+        detail = (
+            f"/{dispatched.flow} performs {dispatched.mutation!r}, which RPC does not "
+            "offer; `tau serve` does (docs/TAU-SERVE.md §8)."
+        )
+        name = dispatched.flow
     elif isinstance(dispatched, Ready):
         detail = (
             f"/{dispatched.flow} is ready to perform {dispatched.mutation!r}, which this "

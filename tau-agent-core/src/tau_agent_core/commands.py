@@ -79,6 +79,7 @@ from tau_agent_core.capabilities import (
     Vocabulary,
     slash_vocabulary,
 )
+from tau_agent_core.compare import split_compare_args
 from tau_agent_core.flows import (
     Dispatched,
     DomainValue,
@@ -313,6 +314,9 @@ def dispatch_builtin(
     carries no argument string — a head left holding that sugar would have had the
     target silently dropped.
 
+    ``/compare`` is the one flow whose line binds two arguments, split by
+    :func:`~tau_agent_core.compare.split_compare_args` (``models -- prompt``).
+
     Args:
         name: The command word, without the leading ``/``.
         args: Everything the reader typed after it.
@@ -343,6 +347,9 @@ def dispatch_builtin(
                 "than opening the listing and discarding what was typed."
             )
         name, args = flow, target.strip()
+
+    if name == "compare" and vocabulary.flow("compare") is not None:
+        return next_step(name, split_compare_args(args), cursor=cursor, vocabulary=vocabulary)
 
     if name in vocabulary.views:
         if args.strip():

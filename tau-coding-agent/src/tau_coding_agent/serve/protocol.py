@@ -243,14 +243,39 @@ class Describe:
 class Compare:
     """Open one cursor per model at ``leaf`` and send each the same text (docs/TAU-SERVE.md §8).
 
-    Answered at once with the opened cursors; the turns run on.
+    Answered at once with ``{comparison_id, cursors: [{cursor_id, model}], message}``;
+    the turns run on. Each turn's ``submission_start`` carries the comparison in
+    ``submission.correlation["compare"]`` as ``{id, models, index, cursor_id}``, so
+    every attached client can draw the columns. An unknown model fails before
+    anything is opened.
+
+    Attributes:
+        models: Model names from the daemon's config, one cursor each; one may repeat.
+        text: The prompt every cursor receives, never expanded as a command.
+        leaf: The entry the cursors start from; ``None`` is the head cursor's leaf.
     """
 
     session_id: str
-    leaf: str | None
     models: list[str]
     text: str
+    leaf: str | None = None
     type: Literal["compare"] = "compare"
+
+
+@dataclass
+class EndCompare:
+    """End a comparison: the head cursor moves onto ``keep``'s leaf, and every compare cursor closes.
+
+    Turns still running on the others are aborted first; every branch stays in
+    the tree. ``keep`` ``None`` keeps none and leaves the head where it is. Fails
+    with ``busy`` while the kept turn or the head's turn is running, changing
+    nothing. Answered with ``{"leaf": <the head's leaf>}``.
+    """
+
+    session_id: str
+    comparison_id: str
+    keep: str | None
+    type: Literal["end_compare"] = "end_compare"
 
 
 REQUESTS: tuple[type, ...] = (
@@ -270,6 +295,7 @@ REQUESTS: tuple[type, ...] = (
     Perform,
     Describe,
     Compare,
+    EndCompare,
 )
 """Every request a client may send, by its ``type``."""
 

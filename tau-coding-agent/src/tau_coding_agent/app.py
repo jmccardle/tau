@@ -32,6 +32,7 @@ from tau_coding_agent.backends import (
 from tau_coding_agent.tagline import pick_tagline
 from tau_coding_agent.headless import resolve_extensions_config
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
+from tau_agent_core.compare import COMPARE_KEY
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import config_at
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
@@ -107,6 +108,7 @@ from tau_coding_agent.chat_widgets import (
     ENTER_KEY_CONFIG_KEY,
 )
 from tau_coding_agent import modals, editor_widgets, extension_ui, transcript, tree_browser
+from tau_coding_agent.compare_view import CompareScreen
 
 if TYPE_CHECKING:
     from tau_coding_agent.serve.remote import RemoteConnection
@@ -215,6 +217,8 @@ class TauApp(App):
         self._render_router: Optional[RenderRouter] = None
         # One open side-completion box per purpose; see _render_side_completion.
         self._side_box: dict[str, MessageBox] = {}
+        self._compare_screens: dict[str, CompareScreen] = {}
+        self._compare_streams: dict[str, tuple[str, int]] = {}
         self._pending_confirm: dict[str, Timer] = {}
         self._activity: Optional[str] = None
         self._sidebar_open: bool = False
@@ -1467,6 +1471,9 @@ class TauApp(App):
         make :data:`FRONTEND_COMMANDS` a list of things that may or may not work
         depending on where you typed them.
         """
+        if isinstance(dispatched, Performed) and dispatched.mutation == "compare":
+            self.notify(dispatched.summary())
+            return
         if isinstance(dispatched, Performed):
             self._render_command_output(
                 ExtensionCommandResult(handled=True, output=dispatched.data.get("output"))
@@ -1574,7 +1581,12 @@ class TauApp(App):
             return
         bound = dict(step.bound)
         for name, value in answers.items():
-            bound[name] = options[name][value] if name in options else value
+            if name not in options:
+                bound[name] = value
+            elif isinstance(value, list):
+                bound[name] = [options[name][label] for label in value]
+            else:
+                bound[name] = options[name][value]
         outcome = next_step(step.flow, bound, cursor=step.cursor, vocabulary=self._vocabulary())
         if isinstance(outcome, Ready):
             await self._perform_ready(outcome)
@@ -2152,6 +2164,8 @@ class TauApp(App):
         if kind in ("side_start", "side_delta", "side_end"):
             await self._render_side_completion(display, kind, event)
             return
+        if self._route_compare(event):
+            return
         stream = event.get("stream") or DEFAULT_STREAM
         if kind == "stream_start":
             label = self._stream_label(event.get("source"), event.get("submitter"))
@@ -2188,6 +2202,68 @@ class TauApp(App):
         if kind == "tool_call":
             self._flush_pending_steer(at_tool_call=True)
         await display.handle_stream_event(event)
+
+    def _route_compare(self, event: dict) -> bool:
+        """Send a comparison's render event to its columns; whether it was one (TAU-SERVE.md §8).
+
+        A stream whose submission carries the ``compare`` correlation opens (or
+        joins) a :class:`CompareScreen`, whichever client started the comparison.
+        """
+        stream = str(event.get("stream") or "")
+        if event.get("kind") == "stream_start":
+            tag = (event.get("correlation") or {}).get(COMPARE_KEY)
+            if not tag:
+                return False
+            comparison_id = str(tag["id"])
+            screen = self._compare_screens.get(comparison_id)
+            if screen is None:
+                screen = CompareScreen(comparison_id, list(tag["models"]), self._end_compare)
+                self._compare_screens[comparison_id] = screen
+
+                def closed(_: str | None) -> None:
+                    self._compare_screens.pop(comparison_id, None)
+
+                self.push_screen(screen, callback=closed)
+            index = int(tag["index"])
+            screen.bind_cursor(index, str(tag["cursor_id"]))
+            self._compare_streams[stream] = (comparison_id, index)
+            screen.feed(index, event)
+            return True
+        routed = self._compare_streams.get(stream)
+        if routed is None:
+            return False
+        if event.get("kind") == "stream_end":
+            del self._compare_streams[stream]
+        screen = self._compare_screens.get(routed[0])
+        if screen is not None:
+            screen.feed(routed[1], event)
+        return True
+
+    async def _end_compare(self, comparison_id: str, keep: str | None) -> bool:
+        """End a comparison through the backend and redraw at the head's new leaf.
+
+        Returns:
+            Whether the comparison is over, so its screen can close: ``False`` when
+            the core refused (the kept turn or the head still running).
+        """
+        end_compare = getattr(self.current_backend, "end_compare", None)
+        if end_compare is None:
+            self.notify("This backend cannot end a comparison", severity="error")
+            return False
+        try:
+            await end_compare(comparison_id, keep)
+        except KeyError as exc:
+            self.notify(f"{exc.args[0] if exc.args else exc}; it was ended elsewhere")
+            return True
+        except RuntimeError as exc:
+            self.notify(str(exc), severity="warning")
+            return False
+        if keep is not None and self._cursor is not None:
+            self.messages = self._cursor.context()
+            await self._reload_transcript()
+            self._refresh_subtitle()
+            self.notify("Kept that answer; continue from here")
+        return True
 
     async def _render_side_completion(
         self, display: "transcript.ChatDisplay", kind: str, event: dict

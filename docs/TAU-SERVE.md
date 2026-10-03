@@ -1,7 +1,7 @@
 # τ serves its trees: the 0.12.0 plan
 
-Plan and cost record (2026-10-02). M0–M3 built 2026-10-03; M4–M6 not
-written. This record continues
+Plan and cost record (2026-10-02). M0–M3 and M5 built 2026-10-03; M4 and M6
+not written here. This record continues
 `docs/CURSORS.md` and replaces two of the records its §11 named: durable writes
 (§4 here) and the web head (§6–§7 here). It plans one development pass, which
 ends when the scenario in §2 runs.
@@ -404,6 +404,61 @@ one.
   arguments are a leaf and a list of config overrides.
 - **Layout.** The TUI gets a split transcript with one column per cursor. That
   is new layout work, and the cost I am least sure of in this record.
+
+### 8.1 Built note (M5)
+
+- **The core is `tau_agent_core/compare.py`.** `start_comparison(session, leaf,
+  models, text)` resolves every name first (an unknown one raises before any
+  cursor opens), then opens one cursor per model, owned by the head and labelled
+  with the model name, each with a `TurnFrame` of that model, every session tool
+  and hooks on, and submits the text to all of them as background tasks.
+  `Comparison.end(keep)` moves the head onto the kept cursor's leaf and closes
+  every compare cursor. `TauBackend.compare` / `end_compare` hold the open
+  comparisons, so the daemon and the in-process TUI call the same two methods.
+- **`/compare` is a core flow**, `compare(models, text)`, so no head sends it to
+  the model as prose. `/compare a b -- prompt` binds both arguments
+  (`split_compare_args`); without `--` every word is a model and the prompt is
+  asked for as the flow's next step, and a bare `/compare` asks for both in one
+  form (a multiselect of models). The capability is off the RPC wire, the one
+  such capability, and the RPC head says so when given the line; the REPL refuses
+  it, having no columns to draw.
+- **Keeping one while others run aborts them.** Picking a winner is the decision
+  that the rest are unwanted, so `end` aborts every compare turn still running
+  (cancels one not yet admitted), awaits them, then closes. It refuses, changing
+  nothing, while the *kept* turn or the head's turn is still running. `keep`
+  `None` (Esc in the TUI) keeps none and leaves the head where it was. Every
+  branch stays in the tree either way.
+- **The kept cursor closes too.** The head is now at its leaf, so a second
+  cursor there would be clutter. The head continues under its own model, not
+  the kept one: the branch's config entry names the compared model, and the
+  head's next turn records its own config after it.
+- **Columns are drawn from the turns, not from who asked.** Each compare turn's
+  `Submission.correlation["compare"]` is `{id, models, index, cursor_id}`, which
+  the render router already carries onto `stream_start`. The TUI routes any
+  stream with it to a `CompareScreen` (`compare_view.py`): a full-screen dialog
+  of N bordered columns fed by deltas, digits keep, Esc keeps none. So a second
+  TUI attached to the same daemon session gets the columns too. No `ChatDisplay`
+  change was needed; the layout cost §8 feared was one screen of 160 lines.
+- **Protocol.** `Compare {session_id, models, text, leaf=None}` (`leaf` moved
+  last and became optional; `None` is the head's leaf) answers
+  `{comparison_id, cursors: [{cursor_id, model}], message}`. New request
+  `EndCompare {session_id, comparison_id, keep}` answers `{leaf}`, or `busy`,
+  or `not_found`. A typed `/compare ...` through `submit` comes back as a
+  `Performed` with the same data. `PROTOCOL_VERSION` stays `0.1`: the change
+  adds a request and reshapes one that only ever answered an error.
+- Fixed on the way: the daemon's "entry left incomplete" log line was
+  session-wide, so the first of two concurrent turns to end reported the other's
+  still-streaming message. Open entries are now keyed by the writing cursor.
+
+Measured: `test_serve_compare.py` (four cases over a real socket),
+`test_compare_tui.py` (in-process keep, Esc with a turn still running, and
+`--connect`). Live, against a stub OpenAI-compatible server and a `tau serve -d`
+process: a `--connect` TUI ran `/compare fake-a fake-b -- compare me`, both
+columns streamed at once, a second, plain client saw both `submission_start`s
+with the comparison, and pressing `2` left the head on the fake-b answer with
+both compare cursors closed and all three assistant entries in the file. Not
+measured: a real model, tool calls inside a compare column, or a web client
+(M4).
 
 ## 9. Order
 

@@ -37,6 +37,7 @@ from tau_agent_core.prompt_cache import (
     completion_cache,
     prompt_tokens,
 )
+from tau_agent_core.compare import Comparison, start_comparison
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.sdk import (
@@ -1286,6 +1287,9 @@ class TauBackend(Backend):
     chat/stream_chat interfaces. ``config["cwd"]`` is the directory the tools run
     in and the system prompt names; absent, it is the process cwd. ``tau serve``
     sets it per session (docs/TAU-SERVE.md §3).
+
+    Attributes:
+        comparisons: The open comparisons (:meth:`compare`), by id, until ended.
     """
 
     def __init__(self, config: dict[str, Any]):
@@ -1346,6 +1350,7 @@ class TauBackend(Backend):
             max_turns=max_turns,
             cwd=cwd,
         )
+        self.comparisons: dict[str, Comparison] = {}
 
     def bind_cursor(self, cursor: Cursor) -> None:
         """Attach the AgentSession to the head's cursor, so its turns extend that position.
@@ -1608,6 +1613,56 @@ class TauBackend(Backend):
         await self.agent_session.cursor.append_config(
             model=name, backend=self.config.get("backend", "")
         )
+
+    async def compare(self, models: list[str], text: str, at: str | None = None) -> Performed:
+        """Send ``text`` to each of ``models`` on its own cursor (docs/TAU-SERVE.md §8).
+
+        Args:
+            models: Configured model names, one column each.
+            text: The prompt every model receives.
+            at: The entry the cursors start from; ``None`` is the head cursor's leaf.
+
+        Returns:
+            A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
+            ``{comparison_id, cursors: [{cursor_id, model}], message}``.
+
+        Raises:
+            KeyError: an unknown model name; nothing was opened.
+            ValueError: no models, no text, or ``at`` names no entry.
+        """
+        session = self.agent_session
+        leaf = session.cursor.leaf if at is None else at
+        comparison = await start_comparison(session, leaf, list(models), text)
+        self.comparisons[comparison.id] = comparison
+        return session.performed(
+            "compare",
+            {
+                "comparison_id": comparison.id,
+                "cursors": [
+                    {"cursor_id": c.id, "model": m}
+                    for c, m in zip(comparison.cursors, comparison.models)
+                ],
+                "message": f"Comparing {', '.join(comparison.models)}",
+            },
+            flow="compare",
+        )
+
+    async def end_compare(self, comparison_id: str, keep: str | None) -> str | None:
+        """End a comparison, moving the head onto ``keep``'s leaf (see ``Comparison.end``).
+
+        Returns:
+            The head cursor's leaf afterwards.
+
+        Raises:
+            KeyError: no open comparison ``comparison_id``, or ``keep`` is not one of its cursors.
+            RuntimeError: the kept turn or the head is still running; nothing changed.
+        """
+        comparison = self.comparisons.get(comparison_id)
+        if comparison is None:
+            raise KeyError(f"no open comparison {comparison_id!r}")
+        leaf = await comparison.end(keep)
+        del self.comparisons[comparison_id]
+        return leaf
 
     async def set_session_name(self, name: str) -> Performed:
         """Give the live session a display name, persisted to its log.

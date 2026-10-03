@@ -191,7 +191,8 @@ class SessionHost:
         self._cursors_seen: list[dict[str, Any]] = []
         self._tool_started: dict[str, float] = {}
         self._turn_tokens: dict[str, int] = {}
-        self._open_entries: dict[str, str] = {}
+        self._open_entries: dict[str, tuple[str, str | None]] = {}
+        self._submission_cursor: dict[str, str | None] = {}
 
     async def start(self, cwd: str) -> None:
         """Bind the session's cursor, wire every event source, then load extensions."""
@@ -326,7 +327,11 @@ class SessionHost:
 
     def _on_write(self, kind: str, entry: dict[str, Any]) -> None:
         if kind == "entry_open":
-            self._open_entries[entry["id"]] = entry.get("type", "?")
+            cursor = TURN_CURSOR.get()
+            self._open_entries[entry["id"]] = (
+                entry.get("type", "?"),
+                cursor.id if cursor is not None else None,
+            )
         elif kind == "entry_final":
             self._open_entries.pop(entry["id"], None)
         self.publish(kind, {"entry": entry})
@@ -364,6 +369,7 @@ class SessionHost:
                     if cursor is not None and cursor.owner is not None
                     else None,
                 }
+                self._submission_cursor[submission.submission_id] = data["cursor_id"]
                 preview = " ".join(str(payload.get("text", "")).split())[:60]
                 model = self.cursor_model(cursor) if cursor is not None else "?"
                 self.daemon.log(
@@ -379,9 +385,11 @@ class SessionHost:
                 self.daemon.log(
                     f"{self.tag} turn {submission.submission_id[:8]} ended: {tokens} tokens"
                 )
-                for entry_id, kind in self._open_entries.items():
-                    self.daemon.log(f"{self.tag} {kind} entry {entry_id} left incomplete")
-                self._open_entries.clear()
+                ended = self._submission_cursor.pop(submission.submission_id, None)
+                for entry_id, (kind, cursor_id) in list(self._open_entries.items()):
+                    if cursor_id == ended:
+                        self.daemon.log(f"{self.tag} {kind} entry {entry_id} left incomplete")
+                        del self._open_entries[entry_id]
             else:
                 data = dict(payload)
             self.publish(
@@ -659,6 +667,8 @@ class Daemon:
             return p.to_wire(host.surface())
         if isinstance(request, p.Compare):
             return await self._compare(host, request)
+        if isinstance(request, p.EndCompare):
+            return await self._end_compare(host, request)
         raise RequestError("bad_request", f"unhandled request {type(request).__name__}")
 
     async def _list_sessions(self) -> dict[str, Any]:
@@ -745,6 +755,10 @@ class Daemon:
                 "bad_request",
                 f"/{ready.flow} switches sessions; under --connect, pick the session instead",
             )
+        if ready.mutation == "compare":
+            return await self._start_compare(
+                host, list(ready.arguments["models"]), str(ready.arguments["text"]), None
+            )
         if ready.flow in host.agent_session.vocabulary.extension_flows:
             bound = " ".join(str(value) for value in ready.arguments.values())
             outcome = await host.backend.run_extension_command(ready.flow, bound)
@@ -807,7 +821,53 @@ class Daemon:
         return value_to_wire(result)
 
     async def _compare(self, host: SessionHost, request: p.Compare) -> dict[str, Any]:
-        raise RequestError("bad_request", "compare is not built yet (docs/TAU-SERVE.md §8, M5)")
+        performed = await self._start_compare(host, request.models, request.text, request.leaf)
+        return dict(performed.data)
+
+    async def _start_compare(
+        self, host: SessionHost, models: list[str], text: str, leaf: str | None
+    ) -> Performed:
+        """Open a comparison on ``host`` (docs/TAU-SERVE.md §8) and log it.
+
+        Raises:
+            RequestError: an unknown model, an empty list or prompt, or a leaf
+                that names no entry; nothing was opened.
+        """
+        try:
+            performed: Performed = await host.backend.compare(models, text, at=leaf)
+        except KeyError as exc:
+            raise RequestError("not_found", str(exc.args[0] if exc.args else exc)) from exc
+        except ValueError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+        comparison = host.backend.comparisons[performed.data["comparison_id"]]
+        self.log(
+            f"{host.tag} compare {comparison.id} at {comparison.leaf}: "
+            + ", ".join(f"{c.id} {m}" for c, m in zip(comparison.cursors, comparison.models))
+        )
+        for cursor, turn in zip(comparison.cursors, comparison.turns):
+            turn.add_done_callback(self._compare_turn_done(host, cursor.id))
+        return performed
+
+    def _compare_turn_done(self, host: SessionHost, cursor_id: str) -> Callable[..., None]:
+        def done(turn: asyncio.Task[Any]) -> None:
+            if turn.cancelled():
+                self.log(f"{host.tag} cursor {cursor_id} compare turn cancelled")
+            elif turn.exception() is not None:
+                self.log(f"{host.tag} cursor {cursor_id} compare turn failed: {turn.exception()!r}")
+
+        return done
+
+    async def _end_compare(self, host: SessionHost, request: p.EndCompare) -> dict[str, Any]:
+        try:
+            leaf = await host.backend.end_compare(request.comparison_id, request.keep)
+        except KeyError as exc:
+            raise RequestError("not_found", str(exc.args[0] if exc.args else exc)) from exc
+        except RuntimeError as exc:
+            raise RequestError("busy", str(exc)) from exc
+        kept = f"kept {request.keep}" if request.keep is not None else "kept none"
+        self.log(f"{host.tag} compare {request.comparison_id} ended, {kept}; head at {leaf}")
+        host.publish("cursors", {"cursors": host.cursor_states()})
+        return {"leaf": leaf}
 
     async def shutdown(self) -> None:
         """Fire ``session_shutdown`` on every loaded session."""

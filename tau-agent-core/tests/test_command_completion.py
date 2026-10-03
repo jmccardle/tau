@@ -83,7 +83,7 @@ class TestWhatItOffers:
     def test_no_backend_still_offers_the_built_ins(self):
         """τ's own vocabulary needs no extensions loaded, which is what lets the
         popup work on the first frame."""
-        assert names("/comp", {}) == ["compact"]
+        assert names("/comp", {}) == ["compact", "compare"]
 
 
 class TestTheUnknownSlashWarning:

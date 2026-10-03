@@ -2294,6 +2294,10 @@ class ReplLoop:
         if ready.mutation == "switch_session":
             await self._swap(self._runtime.switch_session(ready.arguments["session_id"]), "resume")
             return
+        if ready.mutation == "compare":
+            raise UnsupportedCommandError(
+                "/compare needs columns to show its streams in; use the TUI, or tau serve"
+            )
         if ready.flow in self._vocabulary().extension_flows:
             bound = " ".join(str(value) for value in ready.arguments.values())
             await self._run_extension_command(ready.flow, bound)
