@@ -528,7 +528,26 @@ def _run_export_session(ref: str, path: str, config: dict) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for the ``tau`` console script."""
+    """Entry point for the ``tau`` console script.
+
+    ``tau serve ...`` is a subcommand with its own parser (docs/TAU-SERVE.md §6).
+    The word was never a valid bare ``tau`` argument: a message without ``-p``
+    is refused below, so claiming it takes nothing from anyone.
+    """
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == ["serve"]:
+        try:
+            from tau_coding_agent.serve.cli import run_serve
+        except ModuleNotFoundError as exc:
+            if exc.name != "websockets":
+                raise
+            print(
+                "tau serve needs the 'serve' extra (websockets is missing): "
+                "pip install 'ffwf-tau-coding-agent[serve]'",
+                file=sys.stderr,
+            )
+            return 2
+        return run_serve(raw[1:])
     args = parse_cli_args(argv)
 
     if args.verbose:

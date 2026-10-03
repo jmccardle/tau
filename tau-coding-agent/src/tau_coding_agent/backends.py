@@ -1283,7 +1283,9 @@ class TauBackend(Backend):
     """tau-agent-core backend adapter.
 
     Wraps tau-agent-core's AgentSession to provide TauApp-compatible
-    chat/stream_chat interfaces.
+    chat/stream_chat interfaces. ``config["cwd"]`` is the directory the tools run
+    in and the system prompt names; absent, it is the process cwd. ``tau serve``
+    sets it per session (docs/TAU-SERVE.md §3).
     """
 
     def __init__(self, config: dict[str, Any]):
@@ -1300,6 +1302,7 @@ class TauBackend(Backend):
         self._model = model
         self._api_key = api_key
 
+        cwd = config.get("cwd")
         tool_names = resolve_tool_names(config)
         if tool_names:
             tools = _resolve_tools(
@@ -1307,6 +1310,7 @@ class TauBackend(Backend):
                 {"read": {"max_image_dimension": config["max_image_dimension"]}}
                 if "max_image_dimension" in config
                 else None,
+                cwd=cwd,
             )
         else:
             tools = []
@@ -1318,6 +1322,7 @@ class TauBackend(Backend):
                 custom_prompt or BASE_SYSTEM_PROMPT, list(append_sections)
             )
         self.system_prompt = _build_system_prompt(
+            cwd=cwd,
             tools=tools,
             custom_prompt=custom_prompt,
             no_context_files=bool(config.get("no_context_files", False)),
@@ -1339,6 +1344,7 @@ class TauBackend(Backend):
             bus_available=bool(config.get("bus_available", False)),
             no_tools=no_tools,
             max_turns=max_turns,
+            cwd=cwd,
         )
 
     def bind_cursor(self, cursor: Cursor) -> None:

@@ -1,0 +1,995 @@
+{
+  "$defs": {
+    "Abort": {
+      "description": "Abort the turn running on a cursor, and the cursors it owns.",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "abort"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Answer": {
+      "description": "Answer an extension's form (a ``request`` event); the first answer wins.",
+      "properties": {
+        "request_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "answer"
+          ]
+        },
+        "value": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "request_id",
+        "value",
+        "type"
+      ],
+      "type": "object"
+    },
+    "AnswerRequest": {
+      "description": "Answer an extension request written in the tree (docs/EXTENSION-LOCKS.md \u00a73).",
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "cursor_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "answer_request"
+          ]
+        },
+        "values": {
+          "additionalProperties": {},
+          "type": "object"
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id",
+        "request_id",
+        "action",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Attach": {
+      "description": "Start receiving a session's events, loading it in the daemon if needed.",
+      "properties": {
+        "epoch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "since": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "attach"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Attached": {
+      "description": "The answer to :class:`Attach`.",
+      "properties": {
+        "commands": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "cursors": {
+          "items": {
+            "$ref": "#/$defs/CursorState"
+          },
+          "type": "array"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "entries": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": {},
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "head_cursor_id": {
+          "type": "string"
+        },
+        "models": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "entries",
+        "cursors",
+        "head_cursor_id",
+        "cwd",
+        "models",
+        "commands"
+      ],
+      "type": "object"
+    },
+    "CloseCursor": {
+      "description": "Close a cursor this session opened; its branch stays in the tree.",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "close_cursor"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Compare": {
+      "description": "Open one cursor per model at ``leaf`` and send each the same text (docs/TAU-SERVE.md \u00a78).",
+      "properties": {
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "models": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "compare"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "leaf",
+        "models",
+        "text",
+        "type"
+      ],
+      "type": "object"
+    },
+    "CreateSession": {
+      "description": "Create a session in ``cwd``, a path on the daemon's machine.",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "create_session"
+          ]
+        }
+      },
+      "required": [
+        "cwd",
+        "type"
+      ],
+      "type": "object"
+    },
+    "CursorState": {
+      "description": "A live cursor as clients see it; sent whenever one opens, moves, closes or changes busy.",
+      "properties": {
+        "busy": {
+          "type": "boolean"
+        },
+        "cursor_id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "owner_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "cursor_id",
+        "leaf",
+        "label",
+        "owner_id",
+        "busy",
+        "model"
+      ],
+      "type": "object"
+    },
+    "Detach": {
+      "description": "Stop receiving a session's events. The session keeps running.",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "detach"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Error": {
+      "description": "Why a request failed. ``code`` is stable; ``message`` is for a human.",
+      "properties": {
+        "code": {
+          "enum": [
+            "bad_request",
+            "unauthorized",
+            "protocol_mismatch",
+            "not_found",
+            "busy",
+            "failed"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "Event": {
+      "description": "A push for an attached session, numbered per session within an ``epoch``.",
+      "properties": {
+        "data": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "entry_open",
+            "entry_final",
+            "entry_append",
+            "agent_event",
+            "channel",
+            "cursors",
+            "request",
+            "request_closed",
+            "ui"
+          ]
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "event"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Hello": {
+      "description": "The first request on every connection; nothing else is served before it.",
+      "properties": {
+        "client": {
+          "type": "string"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "enum": [
+            "hello"
+          ]
+        }
+      },
+      "required": [
+        "protocol",
+        "client",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ListSessions": {
+      "description": "Every session in the daemon's store, across every cwd, newest first.",
+      "properties": {
+        "type": {
+          "enum": [
+            "list_sessions"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "MoveCursor": {
+      "description": "Move a cursor to ``leaf``. Writes nothing.",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "move_cursor"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id",
+        "leaf",
+        "type"
+      ],
+      "type": "object"
+    },
+    "OpenCursor": {
+      "description": "Open a cursor at ``leaf`` (an entry id, or ``None`` before the root).",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "open_cursor"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "leaf",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Response": {
+      "description": "The one answer to a request, matched by ``id``.",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "integer"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "result": {},
+        "type": {
+          "enum": [
+            "response"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "ok",
+        "type"
+      ],
+      "type": "object"
+    },
+    "SessionRow": {
+      "description": "One line of :class:`ListSessions`' answer.",
+      "properties": {
+        "cwd": {
+          "type": "string"
+        },
+        "first_message": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "loaded": {
+          "type": "boolean"
+        },
+        "message_count": {
+          "type": "integer"
+        },
+        "modified": {
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "cwd",
+        "name",
+        "modified",
+        "message_count",
+        "first_message",
+        "loaded"
+      ],
+      "type": "object"
+    },
+    "SetModel": {
+      "description": "Switch the model a cursor's next turn runs, by a name from the daemon's config.",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "set_model"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id",
+        "model",
+        "type"
+      ],
+      "type": "object"
+    },
+    "Submit": {
+      "description": "Send text to a cursor: a prompt, or a ``/command`` when ``expand_commands``.",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "expand_commands": {
+          "type": "boolean"
+        },
+        "multitask_strategy": {
+          "enum": [
+            "enqueue",
+            "reject",
+            "steer",
+            "follow_up"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "submit"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id",
+        "text",
+        "type"
+      ],
+      "type": "object"
+    },
+    "SubmitResult": {
+      "description": "How a submission ended; a refusal is an answer, not an error.",
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "submission_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted",
+        "submission_id"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "ClientFrame": {
+    "oneOf": [
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/Hello"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/ListSessions"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/CreateSession"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/Attach"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/Detach"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/Submit"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/Abort"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/OpenCursor"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/CloseCursor"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/MoveCursor"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/SetModel"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/Answer"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/AnswerRequest"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/Compare"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      }
+    ]
+  },
+  "ServerFrame": {
+    "oneOf": [
+      {
+        "$ref": "#/$defs/Response"
+      },
+      {
+        "$ref": "#/$defs/Event"
+      }
+    ]
+  },
+  "title": "tau serve protocol 0.1"
+}

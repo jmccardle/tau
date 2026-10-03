@@ -1,6 +1,6 @@
 # τ serves its trees: the 0.12.0 plan
 
-Plan and cost record (2026-10-02). M0 and M1 built 2026-10-03; M2–M6 not
+Plan and cost record (2026-10-02). M0–M2 built 2026-10-03; M3–M6 not
 written. This record continues
 `docs/CURSORS.md` and replaces two of the records its §11 named: durable writes
 (§4 here) and the web head (§6–§7 here). It plans one development pass, which
@@ -181,6 +181,25 @@ way `scripts/generate_rpc_protocol_doc.py` already works for RPC. Every count in
 the docs is generated, which closes defect 5 for the new protocol. The RPC
 counts are corrected by hand in the same pass.
 
+Built note (M2):
+
+- The protocol is `tau_coding_agent/serve/protocol.py`: one dataclass per
+  request and record. `docs/SERVE-PROTOCOL.md` and
+  `docs/serve-protocol.schema.json` are generated from it
+  (`scripts/generate_serve_protocol.py`), and `test_serve.py` fails when either
+  is stale. Its "Counts" line is the only place the numbers are written.
+- **Replay comes from memory, not the log.** Each loaded session keeps its last
+  50,000 events (`REPLAY_BOUND`). A client whose `since` is older, or whose
+  `epoch` is from another daemon run, gets a snapshot. A daemon restart is
+  always a new epoch, so after one every client takes a snapshot.
+- A client is dropped when 20,000 frames are queued for it (`QUEUE_BOUND`),
+  with close code 4000, and resumes by `since`.
+- Writes are observed by wrapping the log instance's own `append_at` and
+  `finalize` (`daemon.watch_writes`), so every writer is seen and the store's
+  class is unchanged for `fork`'s `isinstance` checks.
+- The client applies an `attach` answer inside its reader, before the next
+  frame, so no event that follows the answer can miss the replica.
+
 **`cursor` means a cursor.** The new protocol names entry ids `leaf` and
 `entry_id` from its first version. The RPC rename (ROADMAP, "RPC says `cursor`
 where it means an entry id") follows it before the release.
@@ -229,7 +248,42 @@ supports one (`unix_serve`), so I expect `--listen unix:` to be a single branch
 in argument parsing (`inferred`). It ships only if it is that small. On Windows
 the option is missing, and TCP behaves the same on every platform.
 
-### 6.4 What runs in the daemon
+### 6.4 Built note (M2)
+
+- **Default listen address: `127.0.0.1:8256`.** Loopback, so a build box is
+  reached through `ssh -L 8256:localhost:8256 buildbox` unless its config says
+  otherwise. Config keys, all optional:
+
+  ```json
+  "serve": {"listen": "0.0.0.0:8256", "token": "<secret>"}
+  ```
+
+  A token can be made with `openssl rand -hex 32`, or
+  `head -c 32 /dev/urandom | base64`. The client sends `$TAUD_TOKEN`.
+- `--listen unix:/path` shipped: `websockets` serves and dials a unix socket
+  with the same handler, so it cost one branch in each direction. On a platform
+  without unix sockets the address is refused when parsed.
+- `-d` runs `python -m tau_coding_agent.cli serve` detached (a new session on
+  POSIX, `DETACHED_PROCESS` on Windows), appends its output to
+  `~/.tau/serve.log`, and returns when a WebSocket handshake succeeds. If the
+  child exits first, `-d` prints the new part of the log and fails.
+- `tau serve --tail [SESSION] [--connect ADDR]` attaches and prints one line per
+  event, leaving out deltas, and reconnects across a daemon restart.
+- `TauBackend` now takes `config["cwd"]`, so a served session's tools, system
+  prompt and context files use the session's directory, not the daemon's.
+- Fixed on the way: `AgentSession.cursor`'s setter kept every replaced head
+  cursor in `cursors`. The first daemon listed the backend's scratch cursor
+  beside the real one. A replaced head on another tree is now retired.
+
+Measured run, with a stub OpenAI-compatible server streaming at 0.15 s a word:
+a turn was started from a client, `kill -9` was sent to the daemon 2 s in, and
+the daemon was restarted. The reopened session held the user message, an
+assistant entry with `"status": "incomplete"`, and a head cursor on the user
+message. The restarted daemon logged `message entry da76943b left incomplete`,
+and a `--tail` client that was attached through the kill reconnected and kept
+printing.
+
+### 6.5 What runs in the daemon
 
 Sessions, cursors, the agent loop, tools, extensions, compaction and the store
 all run in the daemon. The daemon loads a session when a client first attaches

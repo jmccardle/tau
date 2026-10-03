@@ -734,12 +734,17 @@ class AgentSession:
     def cursor(self) -> Cursor:
         """The position this session's turns extend. Read position from here, never the log.
 
-        Settable: a head that owns its cursor attaches this session to it.
+        Settable: a head that owns its cursor attaches this session to it. A head
+        cursor replaced by one on another tree is retired, unless a turn still
+        holds it; it would otherwise stay in :attr:`cursors` for good.
         """
         return self._cursor
 
     @cursor.setter
     def cursor(self, cursor: Cursor) -> None:
+        old = self._cursor
+        if old is not cursor and old.log is not cursor.log and not old.busy:
+            self._cursors.pop(old.id, None)
         self._cursor = cursor
         self._cursors[cursor.id] = cursor
 
