@@ -14,7 +14,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any, get_args, get_type_hints
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from schema_check import SchemaError, validate
@@ -533,6 +533,33 @@ async def test_dash_d_finds_a_running_daemon_and_starts_none(daemon, capsys):
     validate(printed, SCHEMA["$defs"]["ServeStarted"], SCHEMA, strict=True)
     assert printed["started"] is False and printed["pid"] == os.getpid()
     assert printed["address"] == str(daemon.address)
+
+
+async def test_dash_d_that_loses_the_bind_reports_the_winner(daemon, capsys):
+    """Several ``-d`` at once: each passes the first probe, one binds, the rest exit.
+
+    A loser reports the daemon that won, ``started: false``, rather than failing.
+    """
+    real_probe = serve_cli.hello_probe
+    calls = {"n": 0}
+
+    def probe(address, token):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real_probe(address, token)
+
+    lost = MagicMock()
+    lost.poll.return_value = 1
+    lost.pid = -1
+    argv = ["-d", "--json", "--listen", str(daemon.address)]
+    with (
+        patch.object(serve_cli, "hello_probe", side_effect=probe),
+        patch.object(serve_cli.subprocess, "Popen", return_value=lost),
+    ):
+        code = await asyncio.to_thread(serve_cli.run_serve, argv)
+
+    assert code == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["started"] is False and printed["pid"] == os.getpid()
 
 
 def test_web_root_flag_overrides_the_config_and_a_file_is_refused(tmp_path, capsys, monkeypatch):

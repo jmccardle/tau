@@ -221,6 +221,10 @@ def start_background(
     deadline = time.monotonic() + READY_TIMEOUT_S
     while time.monotonic() < deadline:
         if child.poll() is not None:
+            winner = _await_other_daemon(address, token)
+            if winner is not None:
+                _report(address, int(winner["pid"]), False, log_path, json_output)
+                return 0
             print(
                 f"tau serve: the daemon exited ({child.returncode}); {log_path}:", file=sys.stderr
             )
@@ -240,6 +244,30 @@ def start_background(
         file=sys.stderr,
     )
     return 1
+
+
+RACE_GRACE_S = 3.0
+"""How long ``-d`` keeps probing after its child exits, for a daemon that won the bind."""
+
+
+def _await_other_daemon(address: Address, token: str | None) -> dict[str, Any] | None:
+    """The hello of a daemon that bound ``address`` first, or ``None`` if none answers.
+
+    Several ``tau serve -d`` started at once all pass the first probe; one child
+    binds and the others exit on the bind error. A loser that then finds the
+    winner answering reports it, which is what it would have said had it started
+    a moment later (docs/TAU-SERVE.md §7.2). The winner binds before it answers,
+    so the probe is repeated for :data:`RACE_GRACE_S`.
+    """
+    deadline = time.monotonic() + RACE_GRACE_S
+    while True:
+        try:
+            answered = hello_probe(address, token)
+        except RuntimeError:
+            return None
+        if answered is not None or time.monotonic() >= deadline:
+            return answered
+        time.sleep(0.1)
 
 
 def _report(address: Address, pid: int, started: bool, log_path: Path, json_output: bool) -> None:
