@@ -85,7 +85,7 @@ async def _call_for_response(handler: RPCHandler, method: str, params: dict) -> 
 
 async def test_lists_the_working_directory_for_a_bare_at(handler, workspace) -> None:
     """`@` with an empty prefix is how the whole directory becomes browsable."""
-    result = (await _call(handler, "complete_path", {"text": "look at @", "cursor": 9}))["result"]
+    result = (await _call(handler, "complete_path", {"text": "look at @", "offset": 9}))["result"]
     names = {m["name"] for m in result["completion"]["matches"]}
     assert names == {"notes.txt", "nouns.md", "other.py", "sub/"}
 
@@ -93,12 +93,12 @@ async def test_lists_the_working_directory_for_a_bare_at(handler, workspace) -> 
 async def test_hidden_entries_need_a_dot_prefix(handler, workspace) -> None:
     """`.hidden` is absent above and present here — the shell rule, not a filter
     that would make the file unreachable."""
-    result = (await _call(handler, "complete_path", {"text": "@.", "cursor": 2}))["result"]
+    result = (await _call(handler, "complete_path", {"text": "@.", "offset": 2}))["result"]
     assert [m["name"] for m in result["completion"]["matches"]] == [".hidden"]
 
 
 async def test_prefix_narrows_and_directories_are_marked(handler, workspace) -> None:
-    result = (await _call(handler, "complete_path", {"text": "@no", "cursor": 3}))["result"]
+    result = (await _call(handler, "complete_path", {"text": "@no", "offset": 3}))["result"]
     matches = result["completion"]["matches"]
     assert {m["name"] for m in matches} == {"notes.txt", "nouns.md"}
     assert all(m["is_dir"] is False for m in matches)
@@ -110,7 +110,7 @@ async def test_span_covers_the_whole_token_not_just_what_precedes_the_cursor(
     """A host replaces `start:end`. With the cursor mid-token, a span ending at
     the cursor would leave the tail behind and produce `@notes.txtes.txt`."""
     text = "see @notes.txt please"
-    result = (await _call(handler, "complete_path", {"text": text, "cursor": 7}))["result"]
+    result = (await _call(handler, "complete_path", {"text": text, "offset": 7}))["result"]
     completion = result["completion"]
     assert text[completion["start"] : completion["end"]] == "@notes.txt"
 
@@ -118,12 +118,12 @@ async def test_span_covers_the_whole_token_not_just_what_precedes_the_cursor(
 async def test_a_cursor_outside_any_reference_is_null(handler, workspace) -> None:
     """`null` means "show no popup" — distinct from a completion with no
     matches, which means "this names no file"."""
-    result = (await _call(handler, "complete_path", {"text": "plain words", "cursor": 5}))["result"]
+    result = (await _call(handler, "complete_path", {"text": "plain words", "offset": 5}))["result"]
     assert result["completion"] is None
 
 
 async def test_a_token_naming_nothing_is_an_empty_match_list_not_null(handler, workspace) -> None:
-    result = (await _call(handler, "complete_path", {"text": "@zzz", "cursor": 4}))["result"]
+    result = (await _call(handler, "complete_path", {"text": "@zzz", "offset": 4}))["result"]
     assert result["completion"] is not None
     assert result["completion"]["matches"] == []
     assert result["completion"]["total"] == 0
@@ -140,7 +140,7 @@ async def test_total_is_the_true_count_so_a_bounded_list_says_so(
         (tmp_path / f"f{i:03d}.txt").write_text("x", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    result = (await _call(handler, "complete_path", {"text": "@f", "cursor": 2}))["result"]
+    result = (await _call(handler, "complete_path", {"text": "@f", "offset": 2}))["result"]
     assert len(result["completion"]["matches"]) == _COMPLETION_LIMIT
     assert result["completion"]["total"] == _COMPLETION_LIMIT + 7
 
@@ -246,7 +246,7 @@ async def test_a_path_the_popup_offers_is_a_path_the_expansion_resolves(handler,
     completion cannot offer a file the expansion would then call unresolved —
     which is exactly what a host listing its OWN filesystem would do under
     Remote SSH."""
-    listing = (await _call(handler, "complete_path", {"text": "@", "cursor": 1}))["result"]
+    listing = (await _call(handler, "complete_path", {"text": "@", "offset": 1}))["result"]
     offered = [m["name"] for m in listing["completion"]["matches"] if not m["is_dir"]]
 
     for name in offered:

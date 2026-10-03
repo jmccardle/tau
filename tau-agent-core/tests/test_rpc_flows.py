@@ -73,8 +73,8 @@ class TestNextStepOnTheWire:
         assert domain["enumerator"] == "list_managed_extensions"
 
     async def test_the_cursor_is_echoed_back_for_the_host_to_hand_on(self, handler):
-        got = await _call(handler, "next_step", {"flow": "resume", "cursor": "e7"})
-        assert got["result"]["step"]["cursor"] == "e7"
+        got = await _call(handler, "next_step", {"flow": "resume", "leaf": "e7"})
+        assert got["result"]["step"]["leaf"] == "e7"
 
     async def test_an_unknown_flow_is_an_error_not_an_empty_answer(self, handler):
         got = await _call(handler, "next_step", {"flow": "tree"})
@@ -84,7 +84,7 @@ class TestNextStepOnTheWire:
     async def test_it_is_a_read_and_carries_no_cursor_key(self, handler):
         """E5 rule 2: a read never carries `cursor`, and absence is never a signal."""
         got = await _call(handler, "next_step", {"flow": "compact"})
-        assert "cursor" not in got["result"]
+        assert "leaf" not in got["result"]
 
 
 class TestEnumerateDomainOnTheWire:
@@ -128,7 +128,7 @@ class TestEnumerateDomainOnTheWire:
 
     async def test_it_is_a_read_and_carries_no_cursor_key(self, handler):
         got = await _call(handler, "enumerate_domain", {"domain": "text"})
-        assert "cursor" not in got["result"]
+        assert "leaf" not in got["result"]
 
 
 class TestTheTableRows:
@@ -143,4 +143,4 @@ class TestTheTableRows:
     def test_neither_schema_declares_a_cursor(self, verb):
         """The E5 read rule, asserted rather than only written in the notes."""
         entry = commands.COMMAND_TABLE[verb]
-        assert "cursor" not in entry.result_schema["properties"]
+        assert "leaf" not in entry.result_schema["properties"]

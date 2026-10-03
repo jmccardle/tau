@@ -188,8 +188,8 @@ async def test_the_cursor_is_named_once_in_the_nodes_and_once_beside_them(
     """The session cursor's leaf, even when it is not the newest entry."""
     handler.session.cursor.move(entries["called"])
     result = (await _call(handler, "get_tree"))["result"]
-    assert result["cursor"] == entries["called"]
-    flagged = [node["entry_id"] for node in result["nodes"] if node["is_cursor"]]
+    assert result["leaf"] == entries["called"]
+    flagged = [node["entry_id"] for node in result["nodes"] if node["is_leaf"]]
     assert flagged == [entries["called"]]
 
 
@@ -248,7 +248,7 @@ async def test_a_session_with_no_conversation_answers_its_one_bookkeeping_row(
     assert result["count"] == 1
     assert result["nodes"][0]["kind"] == "customEntry"
     assert result["nodes"][0]["parent_id"] is None
-    assert result["cursor"] == result["nodes"][0]["entry_id"]
+    assert result["leaf"] == result["nodes"][0]["entry_id"]
 
 
 async def test_the_read_answers_while_a_turn_is_running(handler: RPCHandler) -> None:

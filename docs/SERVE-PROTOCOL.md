@@ -6,7 +6,7 @@
 >
 > Design of record: `docs/TAU-SERVE.md` §5–§7.
 
-- **Protocol version:** `0.4`
+- **Protocol version:** `0.5`
 - **Default port:** `8256`
 - **Counts:** 23 requests, 9 event kinds, 140 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
@@ -280,7 +280,7 @@ The values legal for a domain right now (RPC `enumerate_domain`).
 |---|---|---|---|
 | `session_id` | string | yes |  |
 | `domain` | string | yes | A domain name, as a step's `domain.name` gives it. |
-| `scope` | `"in_session"` \| `"ancestors_of_cursor"` \| `"descendants_of_cursor"` \| null | no | For `message_id`: which entries are candidates; `None` is `in_session`. |
+| `scope` | `"in_session"` \| `"ancestors_of_leaf"` \| `"descendants_of_leaf"` \| null | no | For `message_id`: which entries are candidates; `None` is `in_session`. |
 | `leaf` | string \| null | no | The entry a scoped `message_id` is relative to; `None` is the head cursor's leaf. |
 | `query` | string | no | A prefix of the value, or a substring of the label; empty matches all. |
 | `limit` | integer | no | The most values answered. |
@@ -410,7 +410,7 @@ One argument a flow needs before it can run.
 | `description` | string | yes | The prompt a head shows for it. |
 | `cardinality` | `"one"` \| `"many"` | no | `"one"` for a single value, `"many"` for a list. |
 | `required` | boolean | no | Whether the flow can run without it. An optional argument is offered as a step and may be skipped. |
-| `scope` | `"in_session"` \| `"ancestors_of_cursor"` \| `"descendants_of_cursor"` \| null | no | For the `message_id` domain, which entries are candidates — one of `ConversationTree.complete_message_id`'s scopes. `None` everywhere else. |
+| `scope` | `"in_session"` \| `"ancestors_of_leaf"` \| `"descendants_of_leaf"` \| null | no | For the `message_id` domain, which entries are candidates — one of `ConversationTree.complete_message_id`'s scopes. `None` everywhere else. |
 
 ### Ask
 
@@ -936,7 +936,7 @@ One argument a flow still needs, and everything required to ask for it.
 | `flow` | string | yes | The flow's name. |
 | `argument` | [Argument](#argument) | yes | The argument being asked for. |
 | `domain` | [Domain](#domain) | yes | That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up. |
-| `cursor` | string \| null | yes | The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`. |
+| `leaf` | string \| null | yes | The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`. |
 | `bound` | object | yes | The arguments already bound, so a head redrawing a form has them. |
 
 ### FlowStepArm
@@ -949,7 +949,7 @@ One argument a flow still needs, and everything required to ask for it.
 | `flow` | string | yes | The flow's name. |
 | `argument` | [Argument](#argument) | yes | The argument being asked for. |
 | `domain` | [Domain](#domain) | yes | That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up. |
-| `cursor` | string \| null | yes | The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`. |
+| `leaf` | string \| null | yes | The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`. |
 | `bound` | object | yes | The arguments already bound, so a head redrawing a form has them. |
 
 ### ForeignEntry
@@ -1181,7 +1181,7 @@ What a capability produced. The past tense of `Ready`.
 | `flow` | string \| null | yes | The flow that named the mutation, when a flow did. `None` when a caller performed the capability directly. |
 | `mutation` | string | yes | The capability that ran. |
 | `data` | object | yes | What it returned, keyed as its `returns` declares. JSON-able. |
-| `cursor` | string \| null | no | The session-log cursor after the call, or `None` for a session with no log. It is the promoted copy of `data["cursor"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it. |
+| `leaf` | string \| null | no | The acting cursor's leaf after the call, or `None` for a session with no log. It is the promoted copy of `data["leaf"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it. |
 
 ### PerformedAnswer
 
@@ -1202,7 +1202,7 @@ What a capability produced. The past tense of `Ready`.
 | `flow` | string \| null | yes | The flow that named the mutation, when a flow did. `None` when a caller performed the capability directly. |
 | `mutation` | string | yes | The capability that ran. |
 | `data` | object | yes | What it returned, keyed as its `returns` declares. JSON-able. |
-| `cursor` | string \| null | no | The session-log cursor after the call, or `None` for a session with no log. It is the promoted copy of `data["cursor"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it. |
+| `leaf` | string \| null | no | The acting cursor's leaf after the call, or `None` for a session with no log. It is the promoted copy of `data["leaf"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it. |
 
 ### Ready
 
@@ -1536,7 +1536,7 @@ The answer to `GetTree`.
 
 ### TreeRow
 
-One `GetTree` row: RPC `get_tree`'s node, with `is_cursor` named `is_leaf`.
+One `GetTree` row: RPC `get_tree`'s node.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -1689,4 +1689,4 @@ The wire projection of ``AgentEvent`` (D3) — REMOTE-CONTROL.md's designed shap
 | `cache_notice` | string \| null | no | One sentence saying this turn's prompt cache should have been read and was not, on agent_end. Null is the normal case and says nothing was observed: the cache was read, the server accounts for no cache, the prompt is under the minimum cacheable prefix, or a read earlier in this session already proved caching is on. A host renders it as a warning; see docs/PROMPT-CACHING.md §7 for the three gates. None for all other event types. |
 | `purpose` | `"compaction"` \| `"branch_summary"` \| null | no | Which side completion a side_completion_* event reports: 'compaction' or 'branch_summary'. Side work spends tokens and produces text outside any turn, so it stamps no submission_id and a host keys on this instead. The summary TEXT and what it cost are deliberately not on the wire — both land in the session log as a compaction or branch_summary entry, which get_entry serves with tokens_before, covered_tokens and summary_usage attached. Pushing unbounded content through an event is what WireEvent exists to avoid. None for all other event types. See docs/STREAMING-SIDE-WORK.md. |
 | `reason` | `"manual"` \| `"threshold"` \| `"navigate"` \| null | no | What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. None for all other event types. |
-| `cursor` | string \| null | no | The session log's resulting cursor, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |
+| `leaf` | string \| null | no | The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |

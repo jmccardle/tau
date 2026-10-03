@@ -298,7 +298,7 @@ class AgentSessionRuntime:
             :data:`DEFAULT_SWAP_TIMEOUT_S` of ``abort()`` (Finding 1 — see
             the module docstring's H4 section); otherwise
             ``{"cancelled": False, "session": <the new ConversationSession>,
-            "session_id": str, "cursor": str | None, "store": str}``.
+            "session_id": str, "cursor_id": str, "leaf": str | None, "store": str}``.
         """
 
         def _build() -> ConversationSession:
@@ -432,6 +432,6 @@ class AgentSessionRuntime:
             "session": new_log,
             "session_id": new_log.id,
             "cursor_id": session.cursor.id,
-            "cursor": session.cursor.leaf,
+            "leaf": session.cursor.leaf,
             "store": self._store,
         }

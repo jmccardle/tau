@@ -47,7 +47,7 @@ from tau_llm.types import (
     UserMessage,
 )
 
-PROTOCOL_VERSION = "0.4"
+PROTOCOL_VERSION = "0.5"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256
@@ -411,7 +411,7 @@ class EnumerateDomain:
 
     session_id: str
     domain: str
-    scope: Literal["in_session", "ancestors_of_cursor", "descendants_of_cursor"] | None = None
+    scope: Literal["in_session", "ancestors_of_leaf", "descendants_of_leaf"] | None = None
     leaf: str | None = None
     query: str = ""
     limit: int = 50
@@ -885,7 +885,7 @@ class ModelRecord:
 
 @dataclass
 class TreeRow:
-    """One :class:`GetTree` row: RPC ``get_tree``'s node, with ``is_cursor`` named ``is_leaf``.
+    """One :class:`GetTree` row: RPC ``get_tree``'s node.
 
     Attributes:
         kind: The entry's ``type``.

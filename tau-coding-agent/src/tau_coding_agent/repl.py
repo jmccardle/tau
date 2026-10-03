@@ -2213,7 +2213,7 @@ class ReplLoop:
                 session=self._agent_session,
                 runtime=self._runtime,
                 scope=argument.scope,
-                cursor=step.cursor,
+                leaf=step.leaf,
                 vocabulary=vocabulary,
             )
             by_label = {value.label: value.value for value in found.values}
@@ -2262,7 +2262,7 @@ class ReplLoop:
         bound = dict(step.bound)
         for name, value in answers.items():
             bound[name] = _translate(options.get(name), value)
-        outcome = next_step(step.flow, bound, cursor=step.cursor, vocabulary=vocabulary)
+        outcome = next_step(step.flow, bound, leaf=step.leaf, vocabulary=vocabulary)
         if isinstance(outcome, Ready):
             await self._perform_ready(outcome)
             return

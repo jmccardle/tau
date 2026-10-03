@@ -199,7 +199,7 @@ NOT_EXPOSED: dict[str, str] = {
     ),
     "cursor": (
         "The Cursor object this session extends (docs/CURSORS.md). Its leaf is "
-        "on the wire as every mutator's `cursor` field (E5) and get_state's; "
+        "on the wire as every mutator's `leaf` field (E5) and get_state's; "
         "the object itself is a runtime handle with no wire form until cursors "
         "are addressable by id, which is the web head's record."
     ),

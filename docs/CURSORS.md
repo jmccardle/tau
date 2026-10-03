@@ -333,7 +333,7 @@ still pass does not make it one less.
 | `BranchResult.lane` | the result's `cursor_id` | |
 | "primary cursor", "primary leaf" | "the head's cursor" | "primary bus", theme tokens and "primary output" stay |
 | `agent_spec`, `agent_spec_in_force` | `config` entries, `config_at(entries, leaf)` | legacy kind still read, §5 |
-| RPC `lane: "primary"` | `cursor_id` on the session tuple and on `WireEvent` | protocol 1.7 → 1.8. **Built:** the wire keeps `cursor` as an entry id (`get_state.cursor`, `navigate`'s result, `complete_message_id`'s `cursor` and scopes, `is_cursor`). On the wire it names the RPC session's cursor's position. Renaming it would break tau-code for no change in meaning, so the wire rename was postponed |
+| RPC `lane: "primary"` | `cursor_id` on the session tuple and on `WireEvent` | protocol 1.7 → 1.8. **Built:** the wire keeps `cursor` as an entry id (`get_state.cursor`, `navigate`'s result, `complete_message_id`'s `cursor` and scopes, `is_cursor`). On the wire it names the RPC session's cursor's position. Renaming it would break tau-code for no change in meaning, so the wire rename was postponed. **Renamed** to `leaf` in RPC 2.0 (`TAU-SERVE.md` §7.4) |
 
 "Branch" keeps one meaning: the shape of the tree, as in "a branch of the
 conversation". It does not name an object.

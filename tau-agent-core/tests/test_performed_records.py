@@ -36,20 +36,20 @@ def session() -> AgentSession:
 
 def test_two_cursors_that_disagree_are_refused() -> None:
     with pytest.raises(ValueError, match="Two answers to 'where is the tip'"):
-        Performed(flow=None, mutation="set_model", data={"cursor": "a"}, cursor="b")
+        Performed(flow=None, mutation="set_model", data={"leaf": "a"}, leaf="b")
 
 
 def test_a_capability_that_carries_no_cursor_is_fine() -> None:
     """`data` without a cursor and `cursor=None` agree; nothing is invented."""
     performed = Performed(flow=None, mutation="abort", data={"status": "aborted"})
-    assert performed.cursor is None
+    assert performed.leaf is None
 
 
 def test_summary_prefers_the_line_the_capability_already_wrote() -> None:
     performed = Performed(
         flow="disable_extension",
         mutation="disable_extension",
-        data={"ok": True, "message": "disabled my_ext.py", "cursor": None},
+        data={"ok": True, "message": "disabled my_ext.py", "leaf": None},
     )
     assert performed.summary() == "disabled my_ext.py"
 
@@ -57,13 +57,13 @@ def test_summary_prefers_the_line_the_capability_already_wrote() -> None:
 def test_summary_names_the_fields_when_there_is_no_message() -> None:
     """What a reader used to get here was `set_auto_compaction: True`."""
     performed = Performed(
-        flow="autocompact", mutation="set_auto_compaction", data={"enabled": False, "cursor": None}
+        flow="autocompact", mutation="set_auto_compaction", data={"enabled": False, "leaf": None}
     )
     assert performed.summary() == "set_auto_compaction: enabled=False"
 
 
 def test_summary_of_a_mutation_that_returned_only_a_cursor_still_names_itself() -> None:
-    assert Performed(flow=None, mutation="fork", data={"cursor": None}).summary() == "fork"
+    assert Performed(flow=None, mutation="fork", data={"leaf": None}).summary() == "fork"
 
 
 def test_a_view_must_say_one_of_the_two_things() -> None:
@@ -86,7 +86,7 @@ def test_performed_refuses_a_read(session: AgentSession) -> None:
 
 def test_performed_refuses_a_cursor_the_caller_supplied(session: AgentSession) -> None:
     with pytest.raises(ValueError, match="two writers of one field"):
-        session.performed("set_model", {"model": {}, "cursor": "x"})
+        session.performed("set_model", {"model": {}, "leaf": "x"})
 
 
 def test_performed_adds_the_cursor_exactly_where_returns_declares_one(
@@ -94,12 +94,12 @@ def test_performed_adds_the_cursor_exactly_where_returns_declares_one(
 ) -> None:
     """Whether a completion carries a cursor is read off the registry, not decided here."""
     carried = session.performed("set_model", {"model": {"id": "m"}})
-    assert carried.data["cursor"] == session.cursor.leaf
-    assert carried.cursor == carried.data["cursor"]
+    assert carried.data["leaf"] == session.cursor.leaf
+    assert carried.leaf == carried.data["leaf"]
 
     uncarried = session.performed("abort", {"status": "aborted", "compaction_id": None})
-    assert "cursor" not in uncarried.data
-    assert uncarried.cursor is None
+    assert "leaf" not in uncarried.data
+    assert uncarried.leaf is None
 
 
 def test_performed_records_the_flow_that_named_the_mutation(session: AgentSession) -> None:

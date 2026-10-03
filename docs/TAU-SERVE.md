@@ -565,6 +565,26 @@ operating system. It is not deprecated. It gets the `cursor` rename before
 0.12.0. It gets a revision after `--connect` has been used enough to show what
 driving τ remotely needs, and that revision is not in this pass.
 
+Built note (RPC 2.0, serve 0.5), 2026-10-03. Serve's 0.2 rename to `leaf` was
+incomplete: `FlowStep.cursor`, `Performed.cursor` and `WireEvent.cursor` still
+meant an entry id. All three are core types that both protocols serialize, so
+finishing serve's rename was the RPC rename. One meaning per name now holds on
+both wires:
+
+| Was | Is | Where |
+|---|---|---|
+| `cursor` (an entry id) | `leaf` | every mutator's result (E5), `get_state`, `get_tree`, the session tuple, `compaction_end`, `WireEvent`, `FlowStep`, `Performed`, the `next_step` / `enumerate_domain` / `complete_message_id` parameter |
+| `cursor` (a caret) | `offset` | `complete_path`'s parameter, as serve already named it |
+| `is_cursor` | `is_leaf` | `get_tree` rows and `BrowseNode`; RPC no longer renames the core's key |
+| `ancestors_of_cursor`, `descendants_of_cursor` | `ancestors_of_leaf`, `descendants_of_leaf` | `MessageIdScope` |
+
+`cursor` on either wire now means only a writer, and `cursor_id` names one.
+RPC's `PROTOCOL_VERSION` is `2.0`, because a rename breaks what is on the wire,
+and serve's is `0.5`. The pass also found `app.py`'s
+`action_run_session_flow` reading `getattr(log, "cursor", None)`: `SessionLog`
+has had no `cursor` attribute since `CURSORS.md`, so the read was always
+`None`. It now reads the head cursor's leaf.
+
 ## 8. The demo: comparing cursors from one leaf
 
 From any leaf, the user starts N cursors. Each one first writes a `config` entry
@@ -664,7 +684,7 @@ CURSORS step 2. These sizes are estimates (`assumed`). Nothing has been measured
 
 ## 10. Before the release
 
-- The `cursor` → leaf/entry-id rename on the RPC wire (ROADMAP, Open work).
+- ~~The `cursor` → leaf/entry-id rename on the RPC wire~~ — built, RPC 2.0 (§7.4).
 - Correct the verb counts in ROADMAP and in tau-code's ARCHITECTURE.md (defect 5,
   closed by M0).
 - Amend `HEADS-AND-MULTIPLEXER.md` §5 and `REMOTE-CONTROL.md`, both of which

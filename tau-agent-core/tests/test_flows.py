@@ -79,7 +79,7 @@ class TestNextStep:
 
     def test_the_cursor_is_echoed_onto_the_step(self):
         step = next_step("resume", {}, "entry-42")
-        assert isinstance(step, FlowStep) and step.cursor == "entry-42"
+        assert isinstance(step, FlowStep) and step.leaf == "entry-42"
 
     def test_it_mutates_nothing_the_caller_passed(self):
         bound: dict[str, Any] = {}
@@ -181,7 +181,7 @@ class TestEnumerateDomain:
     def test_a_message_id_scope_is_honoured(self):
         session = _Session(cursor=_Cursor(_entries(), "e2"))
         found = enumerate_domain(
-            "message_id", session=session, scope="descendants_of_cursor", cursor="e1"
+            "message_id", session=session, scope="descendants_of_leaf", leaf="e1"
         )
         assert [v.value for v in found.values] == ["e2"]
 

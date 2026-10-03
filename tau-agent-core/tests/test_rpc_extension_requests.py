@@ -176,8 +176,8 @@ async def test_answering_appends_the_response_and_releases_the_lock(
         {"request_id": entry_id, "action": "Approve", "values": {"ticket": "OPS-1"}},
     )
     result = answer["result"]
-    assert result["cursor"] == handler.session.cursor.leaf
-    assert result["cursor"] != entry_id
+    assert result["leaf"] == handler.session.cursor.leaf
+    assert result["leaf"] != entry_id
     responses = [e for e in log.entries() if e.get("customType") == RESPONSE_ENTRY_TYPE]
     assert len(responses) == 1
     assert responses[0]["data"]["values"] == {"ticket": "OPS-1"}
@@ -206,7 +206,7 @@ async def test_an_absent_extension_warns_and_still_releases(handler: RPCHandler)
 async def test_an_ask_with_no_fields_takes_no_values(handler: RPCHandler) -> None:
     entry_id = await _raise(handler, ask=NO_FIELDS_ASK)
     answer = await _call(handler, "answer_request", {"request_id": entry_id, "action": "Yes"})
-    assert answer["result"]["cursor"] is not None
+    assert answer["result"]["leaf"] is not None
 
 
 @pytest.mark.parametrize(

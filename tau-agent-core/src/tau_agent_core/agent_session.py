@@ -1019,39 +1019,39 @@ class AgentSession:
             mutation: The capability that ran, a key of
                 :data:`~tau_agent_core.capabilities.CAPABILITIES`.
             data: What it returned, keyed as its ``returns`` declares, without the
-                cursor — this adds that.
+                leaf — this adds that.
             flow: The flow that named the mutation, when one did.
 
         Returns:
             A :class:`~tau_agent_core.flows.Performed` carrying ``data`` plus the
-            resulting cursor.
+            resulting leaf.
 
         Raises:
             KeyError: No capability has that name.
             ValueError: The named capability is a read, or the caller already put a
-                ``cursor`` in ``data``. Both are Fail-Early: a read reporting a
-                cursor is E5 rule 2 broken, and a hand-supplied cursor is a second
+                ``leaf`` in ``data``. Both are Fail-Early: a read reporting a
+                leaf is E5 rule 2 broken, and a hand-supplied leaf is a second
                 answer to the question this method exists to answer.
         """
         declared = CAPABILITIES[mutation]
         if declared.kind != "mutation":
             raise ValueError(
                 f"performed({mutation!r}) names a read. E5 rule 2: a read never carries "
-                "a cursor, so there is no completion here to stamp."
+                "a leaf, so there is no completion here to stamp."
             )
-        if "cursor" in data:
+        if "leaf" in data:
             raise ValueError(
-                f"performed({mutation!r}) was handed a cursor in `data`. This method is "
+                f"performed({mutation!r}) was handed a leaf in `data`. This method is "
                 "what puts it there, and two writers of one field is the drift it removes."
             )
-        cursor = self._turn_cursor().leaf
+        leaf = self._turn_cursor().leaf
         returns = declared.returns or {}
-        carries = "cursor" in returns.get("properties", {})
+        carries = "leaf" in returns.get("properties", {})
         return Performed(
             flow=flow,
             mutation=mutation,
-            data={**data, "cursor": cursor} if carries else dict(data),
-            cursor=cursor if carries else None,
+            data={**data, "leaf": leaf} if carries else dict(data),
+            leaf=leaf if carries else None,
         )
 
     @agent_facing(topic="sessions")
@@ -2326,7 +2326,7 @@ class AgentSession:
             dispatched = dispatch_builtin(
                 invocation.name,
                 invocation.args,
-                cursor=self._turn_cursor().leaf,
+                leaf=self._turn_cursor().leaf,
                 vocabulary=vocabulary,
             )
             if isinstance(dispatched, Ready) and invocation.origin == "extension":

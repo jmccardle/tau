@@ -249,9 +249,9 @@ class WireEvent(BaseModel):
         "learns whether the work was requested or imposed. None for all other "
         "event types.",
     )
-    cursor: str | None = Field(
+    leaf: str | None = Field(
         default=None,
-        description="The session log's resulting cursor, on agent_end (E5/F3). "
+        description="The emitting cursor's resulting leaf, on agent_end (E5/F3). "
         "Filled in by rpc/transport.py's writer immediately before this line "
         "is serialized — not by rpc/wire_events.py at event-projection time — "
         "because persistence happens strictly AFTER agent_end fires; reading "

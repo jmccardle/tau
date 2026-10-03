@@ -139,14 +139,14 @@ def command_vocabulary(session: Any) -> list[dict[str, Any]]:
 
 
 def flow_next_step(
-    flow: str, bound: dict[str, Any] | None, cursor: str | None, vocabulary: Vocabulary
+    flow: str, bound: dict[str, Any] | None, leaf: str | None, vocabulary: Vocabulary
 ) -> dict[str, Any]:
     """:func:`~tau_agent_core.flows.next_step` as ``{status, step, ready}``.
 
     Raises:
         UnknownFlowError: no flow has that name.
     """
-    outcome = next_step(flow, bound, cursor, vocabulary=vocabulary)
+    outcome = next_step(flow, bound, leaf, vocabulary=vocabulary)
     if isinstance(outcome, Ready):
         return {"status": "ready", "ready": asdict(outcome), "step": None}
     return {"status": "step", "step": asdict(outcome), "ready": None}
@@ -158,7 +158,7 @@ def domain_listing(
     session: Any,
     runtime: Any,
     scope: MessageIdScope | None,
-    cursor: str | None,
+    leaf: str | None,
     query: str,
     limit: int,
 ) -> dict[str, Any]:
@@ -176,7 +176,7 @@ def domain_listing(
         session=session,
         runtime=runtime,
         scope=scope,
-        cursor=cursor,
+        leaf=leaf,
         query=query,
         limit=limit,
         vocabulary=session.vocabulary,
@@ -223,7 +223,7 @@ def browse_rows(tree: ConversationTree) -> list[dict[str, Any]]:
             "kind": node.kind,
             "role": node.role,
             "preview": node.preview,
-            "is_leaf": node.is_cursor,
+            "is_leaf": node.is_leaf,
             "timestamp": node.timestamp,
             "first_kept_id": node.first_kept_id,
             "from_id": node.from_id,

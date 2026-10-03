@@ -163,8 +163,8 @@
             {
               "enum": [
                 "in_session",
-                "ancestors_of_cursor",
-                "descendants_of_cursor"
+                "ancestors_of_leaf",
+                "descendants_of_leaf"
               ]
             },
             {
@@ -1740,8 +1740,8 @@
             {
               "enum": [
                 "in_session",
-                "ancestors_of_cursor",
-                "descendants_of_cursor"
+                "ancestors_of_leaf",
+                "descendants_of_leaf"
               ]
             },
             {
@@ -2067,7 +2067,15 @@
           "description": "The arguments already bound, so a head redrawing a form has them.",
           "type": "object"
         },
-        "cursor": {
+        "domain": {
+          "$ref": "#/$defs/Domain",
+          "description": "That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up."
+        },
+        "flow": {
+          "description": "The flow's name.",
+          "type": "string"
+        },
+        "leaf": {
           "anyOf": [
             {
               "type": "string"
@@ -2077,21 +2085,13 @@
             }
           ],
           "description": "The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`."
-        },
-        "domain": {
-          "$ref": "#/$defs/Domain",
-          "description": "That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up."
-        },
-        "flow": {
-          "description": "The flow's name.",
-          "type": "string"
         }
       },
       "required": [
         "flow",
         "argument",
         "domain",
-        "cursor",
+        "leaf",
         "bound"
       ],
       "type": "object"
@@ -2111,7 +2111,15 @@
           "description": "The arguments already bound, so a head redrawing a form has them.",
           "type": "object"
         },
-        "cursor": {
+        "domain": {
+          "$ref": "#/$defs/Domain",
+          "description": "That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up."
+        },
+        "flow": {
+          "description": "The flow's name.",
+          "type": "string"
+        },
+        "leaf": {
           "anyOf": [
             {
               "type": "string"
@@ -2121,14 +2129,6 @@
             }
           ],
           "description": "The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`."
-        },
-        "domain": {
-          "$ref": "#/$defs/Domain",
-          "description": "That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up."
-        },
-        "flow": {
-          "description": "The flow's name.",
-          "type": "string"
         }
       },
       "required": [
@@ -2136,7 +2136,7 @@
         "flow",
         "argument",
         "domain",
-        "cursor",
+        "leaf",
         "bound"
       ],
       "type": "object"
@@ -3018,17 +3018,6 @@
     "Performed": {
       "description": "What a capability produced. The past tense of `Ready`.",
       "properties": {
-        "cursor": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The session-log cursor after the call, or `None` for a session with no log. It is the promoted copy of `data[\"cursor\"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it."
-        },
         "data": {
           "additionalProperties": {},
           "description": "What it returned, keyed as its `returns` declares. JSON-able.",
@@ -3044,6 +3033,17 @@
             }
           ],
           "description": "The flow that named the mutation, when a flow did. `None` when a caller performed the capability directly."
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The acting cursor's leaf after the call, or `None` for a session with no log. It is the promoted copy of `data[\"leaf\"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it."
         },
         "mutation": {
           "description": "The capability that ran.",
@@ -3079,17 +3079,6 @@
         "arm": {
           "const": "Performed"
         },
-        "cursor": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The session-log cursor after the call, or `None` for a session with no log. It is the promoted copy of `data[\"cursor\"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it."
-        },
         "data": {
           "additionalProperties": {},
           "description": "What it returned, keyed as its `returns` declares. JSON-able.",
@@ -3105,6 +3094,17 @@
             }
           ],
           "description": "The flow that named the mutation, when a flow did. `None` when a caller performed the capability directly."
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The acting cursor's leaf after the call, or `None` for a session with no log. It is the promoted copy of `data[\"leaf\"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it."
         },
         "mutation": {
           "description": "The capability that ran.",
@@ -4193,7 +4193,7 @@
       "type": "object"
     },
     "TreeRow": {
-      "description": "One `GetTree` row: RPC `get_tree`'s node, with `is_cursor` named `is_leaf`.",
+      "description": "One `GetTree` row: RPC `get_tree`'s node.",
       "properties": {
         "copyable": {
           "description": "Whether `paste_subtree` can take this entry as its source.",
@@ -4666,18 +4666,6 @@
           "default": null,
           "description": "The submission's free-form origin detail (E4). None alongside submission_id \u2014 an empty dict would claim a submission with no correlation data, which is a different statement."
         },
-        "cursor": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The session log's resulting cursor, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized \u2014 not by rpc/wire_events.py at event-projection time \u2014 because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types."
-        },
         "cursor_id": {
           "anyOf": [
             {
@@ -4750,6 +4738,18 @@
           "default": false,
           "description": "Whether this event represents an error.",
           "type": "boolean"
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized \u2014 not by rpc/wire_events.py at event-projection time \u2014 because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types."
         },
         "message_count": {
           "anyOf": [
@@ -5663,8 +5663,8 @@
               {
                 "enum": [
                   "in_session",
-                  "ancestors_of_cursor",
-                  "descendants_of_cursor"
+                  "ancestors_of_leaf",
+                  "descendants_of_leaf"
                 ]
               },
               {
@@ -5860,7 +5860,7 @@
     ]
   },
   "description": "The tau serve WebSocket protocol (docs/SERVE-PROTOCOL.md). Request records are closed (`additionalProperties: false`), because the daemon refuses an unknown field. Everything the daemon sends is open: a client must ignore a field it does not know, so a minor version may add one. Each request $def names its answer in `x-result`, and `Results` maps every request `type` to it; `Event`'s `x-data` maps every `kind` to its data.",
-  "title": "tau serve protocol 0.4",
+  "title": "tau serve protocol 0.5",
   "x-default-port": 8256,
-  "x-protocol-version": "0.4"
+  "x-protocol-version": "0.5"
 }

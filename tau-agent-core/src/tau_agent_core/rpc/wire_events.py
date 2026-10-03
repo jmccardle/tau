@@ -162,7 +162,7 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
     ``tool_results``, ``messages``) is exactly the set ``WireEvent`` excludes
     (E1/E2/G3) — see ``rpc_event_schema.py``'s field-by-field comment.
 
-    ``cursor`` is ALSO not set here, deliberately, and for a different reason
+    ``leaf`` is ALSO not set here, deliberately, and for a different reason
     than the exclusions above: it is not a projection of any ``AgentEvent``
     field at all (E5/F3, phase-2 review B1). This function runs synchronously
     inside ``AgentLoop._emit_agent_end``, strictly BEFORE
@@ -170,7 +170,7 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
     leaf here would capture the PRE-persistence tip, the exact
     stale-tip bug B1 fixes. ``rpc/transport.py``'s writer
     (``_write_stdout`` → ``RPCHandler.prepare_outbound``, composed onto
-    ``RPCHandler``) fills ``cursor`` in immediately before serializing an
+    ``RPCHandler``) fills ``leaf`` in immediately before serializing an
     ``agent_end`` line instead — see that function for why that is late
     enough.
     """

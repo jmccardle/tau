@@ -84,7 +84,7 @@ async def test_set_session_name_persists_and_returns_name_and_cursor(handler: RP
     response = await _dispatch(handler, "set_session_name", {"name": "My Session"})
     assert "error" not in response
     assert response["result"]["name"] == "My Session"
-    cursor = response["result"]["cursor"]
+    cursor = response["result"]["leaf"]
     assert cursor == handler.session.cursor.leaf
     (entry,) = [e for e in handler.session.session_log.entries() if e["id"] == cursor]
     assert entry["type"] == "session_info"
@@ -95,8 +95,8 @@ async def test_set_session_name_cursor_advances_on_a_second_call(handler: RPCHan
     """E5: the cursor returned is the session cursor's leaf after THIS write."""
     first = await _dispatch(handler, "set_session_name", {"name": "one"})
     second = await _dispatch(handler, "set_session_name", {"name": "two"})
-    assert first["result"]["cursor"] != second["result"]["cursor"]
-    assert second["result"]["cursor"] == handler.session.cursor.leaf
+    assert first["result"]["leaf"] != second["result"]["leaf"]
+    assert second["result"]["leaf"] == handler.session.cursor.leaf
 
 
 # ── set_session_name: refusals ──────────────────────────────────────────
@@ -172,7 +172,7 @@ async def test_get_session_name_result_carries_no_cursor(handler: RPCHandler) ->
     """docs/RPC-TIER-B.md B5: 'the read does not' carry a cursor, unlike the
     write."""
     response = await _dispatch(handler, "get_session_name", {})
-    assert "cursor" not in response["result"]
+    assert "leaf" not in response["result"]
 
 
 async def test_get_session_name_reads_an_in_memory_log_too(

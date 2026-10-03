@@ -164,7 +164,7 @@ def test_every_new_mutation_carries_the_cursor(verb: str) -> None:
     """
     schema = commands.COMMAND_TABLE[verb].result_schema
     assert schema is not None
-    assert "cursor" in schema["required"]
+    assert "leaf" in schema["required"]
 
 
 @pytest.mark.parametrize("verb", NEW_READS)
@@ -172,7 +172,7 @@ def test_no_new_read_carries_a_cursor(verb: str) -> None:
     """E5 rule 2. A host that wants the tip calls get_state."""
     schema = commands.COMMAND_TABLE[verb].result_schema
     assert schema is not None
-    assert "cursor" not in schema["properties"]
+    assert "leaf" not in schema["properties"]
 
 
 def test_d7_is_answered_by_who_appends_and_nothing_else() -> None:
@@ -227,7 +227,7 @@ async def test_navigate_moves_the_cursor_and_returns_the_new_context(
 
     response = await _call(handler, "navigate", {"target_id": entries[0]})
 
-    assert response["result"]["cursor"] == entries[0]
+    assert response["result"]["leaf"] == entries[0]
     assert handler.session.cursor.leaf == entries[0]
     assert [m["content"][0]["text"] for m in response["result"]["messages"]] == ["one"]
     assert log.entries() == before
@@ -282,7 +282,7 @@ async def test_navigate_runs_on_an_unpersisted_session(ephemeral_handler: RPCHan
 
     response = await _call(ephemeral_handler, "navigate", {"target_id": first})
 
-    assert response["result"]["cursor"] == first
+    assert response["result"]["leaf"] == first
     assert cursor.leaf == first
 
 
@@ -306,7 +306,7 @@ async def test_paste_subtree_returns_minted_ids_and_leaves_the_cursor_alone(
 
     minted = response["result"]["minted_ids"]
     assert len(minted) == 2  # the assistant message and the user message under it
-    assert response["result"]["cursor"] == before
+    assert response["result"]["leaf"] == before
     assert handler.session.cursor.leaf == before
     assert {e["id"] for e in log.entries()} >= set(minted)
 
@@ -425,7 +425,7 @@ async def test_complete_message_id_refuses_a_cursor_naming_no_entry(handler: RPC
     response = await _call(
         handler,
         "complete_message_id",
-        {"scope": "ancestors_of_cursor", "cursor": "no-such-entry"},
+        {"scope": "ancestors_of_leaf", "leaf": "no-such-entry"},
     )
 
     assert response["error"]["code"] == dialect.INVALID_PARAMS
@@ -516,7 +516,7 @@ async def test_the_write_applies_and_the_read_sees_it(configured_handler: RPCHan
     )
     assert written["result"]["action"] == "configure"
     assert written["result"]["ok"] is True
-    assert "cursor" in written["result"]
+    assert "leaf" in written["result"]
 
     read_back = await _call(configured_handler, "get_extension_config", {"path": "budget"})
     assert read_back["result"]["values"] == {"ceiling": 7.5}

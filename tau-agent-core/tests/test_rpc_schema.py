@@ -129,4 +129,4 @@ class TestTheProseStaysHandWritten:
 
     def test_an_override_may_add_a_keyword_the_registry_has_no_field_for(self):
         schema = COMMAND_TABLE["complete_path"].params_schema
-        assert schema["properties"]["cursor"]["minimum"] == 0
+        assert schema["properties"]["offset"]["minimum"] == 0

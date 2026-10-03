@@ -89,7 +89,7 @@ class FlowStep:
         argument: The argument being asked for.
         domain: That argument's :class:`~tau_agent_core.capabilities.Domain`, resolved
             here so a head need not look it up.
-        cursor: The entry a scoped ``message_id`` argument is relative to, carried
+        leaf: The entry a scoped ``message_id`` argument is relative to, carried
             through from the :func:`next_step` call so the head hands it straight back
             to :func:`enumerate_domain`.
         bound: The arguments already bound, so a head redrawing a form has them.
@@ -98,7 +98,7 @@ class FlowStep:
     flow: str
     argument: Argument
     domain: Domain
-    cursor: str | None
+    leaf: str | None
     bound: dict[str, Any]
 
 
@@ -147,8 +147,8 @@ class Performed:
             caller performed the capability directly.
         mutation: The capability that ran.
         data: What it returned, keyed as its ``returns`` declares. JSON-able.
-        cursor: The session-log cursor after the call, or ``None`` for a session
-            with no log. It is the promoted copy of ``data["cursor"]`` wherever the
+        leaf: The acting cursor's leaf after the call, or ``None`` for a session
+            with no log. It is the promoted copy of ``data["leaf"]`` wherever the
             capability declares one, so a head reads the same field for every
             mutation instead of knowing which ones carry it.
     """
@@ -156,14 +156,14 @@ class Performed:
     flow: str | None
     mutation: str
     data: dict[str, Any]
-    cursor: str | None = None
+    leaf: str | None = None
 
     def __post_init__(self) -> None:
-        inner = self.data.get("cursor", self.cursor)
-        if inner != self.cursor:
+        inner = self.data.get("leaf", self.leaf)
+        if inner != self.leaf:
             raise ValueError(
-                f"Performed({self.mutation!r}) carries cursor={self.cursor!r} beside "
-                f"data['cursor']={inner!r}. Two answers to 'where is the tip' is the "
+                f"Performed({self.mutation!r}) carries leaf={self.leaf!r} beside "
+                f"data['leaf']={inner!r}. Two answers to 'where is the tip' is the "
                 "drift the promoted field exists to remove."
             )
 
@@ -176,17 +176,17 @@ class Performed:
 
         A capability whose ``returns`` declares ``message`` has already written the
         line — the three extension actions do — and it is used verbatim. Otherwise
-        the fields are named with their values, ``cursor`` excluded because it moves
+        the fields are named with their values, ``leaf`` excluded because it moves
         on nearly every mutation and says nothing to a reader.
 
         Returns:
-            The line, never empty: a mutation that returned only a cursor still
+            The line, never empty: a mutation that returned only a leaf still
             names itself.
         """
         message = self.data.get("message")
         if isinstance(message, str) and message:
             return message
-        shown = [f"{key}={value!r}" for key, value in self.data.items() if key != "cursor"]
+        shown = [f"{key}={value!r}" for key, value in self.data.items() if key != "leaf"]
         return f"{self.mutation}: {', '.join(shown)}" if shown else self.mutation
 
 
@@ -280,7 +280,7 @@ def _flow(name: str, vocabulary: Vocabulary = BUILTIN) -> Flow:
 def next_step(
     flow: str,
     bound: dict[str, Any] | None = None,
-    cursor: str | None = None,
+    leaf: str | None = None,
     vocabulary: Vocabulary = BUILTIN,
 ) -> FlowStep | Ready:
     """The next argument ``flow`` needs, or the mutation it is ready to perform.
@@ -298,12 +298,12 @@ def next_step(
         flow: The flow's name.
         bound: The arguments bound so far. ``None`` and ``{}`` are the same thing:
             the flow's first step.
-        cursor: The entry a ``message_id`` argument's scope is relative to. Required
+        leaf: The entry a ``message_id`` argument's scope is relative to. Required
             of the caller rather than read off a session, for the reason
             ``resolve_command`` takes ``extension_commands`` as a parameter: it keeps
             this callable from a head that is peeking, a runtime that is deciding,
             and a test with neither. A caller stepping a sub-agent's flow passes THAT
-            agent's cursor.
+            agent's leaf.
         vocabulary: The registry to look the flow up in. A session's own
             (``AgentSession.vocabulary``) also carries the flows its extensions
             declared; the default is τ's alone.
@@ -324,7 +324,7 @@ def next_step(
                 flow=declared.name,
                 argument=argument,
                 domain=vocabulary.domains[argument.domain],
-                cursor=cursor,
+                leaf=leaf,
                 bound=have,
             )
 
@@ -622,11 +622,11 @@ def _extension_values(session: Any) -> list[DomainValue]:
     ]
 
 
-def _message_values(session: Any, scope: str | None, cursor: str | None, query: str, limit: int):
+def _message_values(session: Any, scope: str | None, leaf: str | None, query: str, limit: int):
     tree = session.cursor.tree()
     found = tree.complete_message_id(
         scope=scope or "in_session",  # type: ignore[arg-type]
-        cursor=cursor,
+        leaf=leaf,
         query=query,
         limit=limit,
     )
@@ -640,7 +640,7 @@ def enumerate_domain(
     session: Any = None,
     runtime: Any = None,
     scope: MessageIdScope | None = None,
-    cursor: str | None = None,
+    leaf: str | None = None,
     query: str = "",
     limit: int = _ENUMERATION_LIMIT,
     vocabulary: Vocabulary = BUILTIN,
@@ -673,7 +673,7 @@ def enumerate_domain(
             directory instead of the runtime's answers a different question than the
             one that was asked, so its absence raises rather than falling back.
         scope: For ``message_id``, which entries are candidates.
-        cursor: For a scoped ``message_id``, the entry the scope is relative to.
+        leaf: For a scoped ``message_id``, the entry the scope is relative to.
         query: Filter text. Honoured by the domains whose readers take one; a domain
             with a small fixed set ignores it.
         limit: How many values to return at most.
@@ -715,7 +715,7 @@ def enumerate_domain(
         return obj
 
     if domain == "message_id":
-        values, total = _message_values(_require(session, "session"), scope, cursor, query, limit)
+        values, total = _message_values(_require(session, "session"), scope, leaf, query, limit)
         return DomainValues(domain=domain, values=tuple(values), total=total)
 
     if domain == "path":

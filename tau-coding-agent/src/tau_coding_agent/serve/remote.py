@@ -416,7 +416,7 @@ def flow_step_from_wire(fields: dict[str, Any]) -> FlowStep:
         flow=fields["flow"],
         argument=Argument(**argument),
         domain=Domain(**domain),
-        cursor=fields["cursor"],
+        leaf=fields["leaf"],
         bound=dict(fields["bound"]),
     )
 
@@ -646,11 +646,11 @@ class RemoteBackend(Backend):
         return value_from_wire(answer)
 
     async def next_step(
-        self, flow: str, bound: dict[str, Any] | None, cursor: str | None
+        self, flow: str, bound: dict[str, Any] | None, leaf: str | None
     ) -> FlowStep | Ready:
         """The daemon's ``next_step`` for ``flow``, which knows the session's extension flows."""
         answer = await self._remote.request(
-            p.NextStep(session_id=self._session_id, flow=flow, bound=bound, leaf=cursor)
+            p.NextStep(session_id=self._session_id, flow=flow, bound=bound, leaf=leaf)
         )
         if answer["status"] == "ready":
             return Ready(**answer["ready"])
@@ -661,7 +661,7 @@ class RemoteBackend(Backend):
         domain: str,
         *,
         scope: str | None = None,
-        cursor: str | None = None,
+        leaf: str | None = None,
         query: str = "",
         limit: int = 50,
     ) -> DomainValues:
@@ -671,7 +671,7 @@ class RemoteBackend(Backend):
                 session_id=self._session_id,
                 domain=domain,
                 scope=scope,  # type: ignore[arg-type]
-                leaf=cursor,
+                leaf=leaf,
                 query=query,
                 limit=limit,
             )

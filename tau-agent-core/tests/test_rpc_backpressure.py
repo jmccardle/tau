@@ -344,7 +344,7 @@ async def test_agent_end_cursor_stays_correct_under_genuine_backpressure():
     ]
     post_turn_cursor = session.cursor.leaf
     assert post_turn_cursor != pre_turn_cursor
-    assert agent_end["params"]["cursor"] == post_turn_cursor
+    assert agent_end["params"]["leaf"] == post_turn_cursor
 
 
 # ── abort reachability under a stalled loop ──────────────────────────────────

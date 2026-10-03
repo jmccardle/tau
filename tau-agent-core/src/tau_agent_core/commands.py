@@ -298,7 +298,7 @@ def dispatch_builtin(
     name: str,
     args: str,
     *,
-    cursor: str | None = None,
+    leaf: str | None = None,
     vocabulary: Vocabulary = BUILTIN,
 ) -> Dispatched:
     """Which arm a BUILT-IN command is, decided without running anything.
@@ -320,7 +320,7 @@ def dispatch_builtin(
     Args:
         name: The command word, without the leading ``/``.
         args: Everything the reader typed after it.
-        cursor: The entry a scoped ``message_id`` argument would be relative to,
+        leaf: The entry a scoped ``message_id`` argument would be relative to,
             threaded through to the :class:`~tau_agent_core.flows.FlowStep`.
         vocabulary: The registry to resolve ``name`` in. A session's own
             (:attr:`~tau_agent_core.agent_session.AgentSession.vocabulary`) also
@@ -349,7 +349,7 @@ def dispatch_builtin(
         name, args = flow, target.strip()
 
     if name == "compare" and vocabulary.flow("compare") is not None:
-        return next_step(name, split_compare_args(args), cursor=cursor, vocabulary=vocabulary)
+        return next_step(name, split_compare_args(args), leaf=leaf, vocabulary=vocabulary)
 
     if name in vocabulary.views:
         if args.strip():
@@ -367,7 +367,7 @@ def dispatch_builtin(
             ),
         )
     return next_step(
-        name, bind_command_args(name, args, vocabulary), cursor=cursor, vocabulary=vocabulary
+        name, bind_command_args(name, args, vocabulary), leaf=leaf, vocabulary=vocabulary
     )
 
 

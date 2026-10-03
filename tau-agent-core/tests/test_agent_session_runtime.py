@@ -549,7 +549,7 @@ async def test_switch_session_loads_a_different_session(
     assert result["cancelled"] is False
     assert session.session_log is other
     assert result["session_id"] == other.id
-    assert result["cursor"] == over_there == session.cursor.leaf
+    assert result["leaf"] == over_there == session.cursor.leaf
 
 
 async def test_switch_session_bad_ref_raises_and_touches_nothing(session: AgentSession, runtime):

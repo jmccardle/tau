@@ -540,7 +540,7 @@ async def test_prompt_dual_completion_concurrency_and_cursor(fake_home, fake_sta
         await _send(proc, {"jsonrpc": "2.0", "id": 3, "method": "abort"})
         abort_resp, _skipped = await _recv_response(proc, 3, timeout=5.0)
         assert abort_resp["result"]["status"] == "aborted"
-        assert "cursor" not in abort_resp["result"]
+        assert "leaf" not in abort_resp["result"]
 
         # the one point the mutation has genuinely happened, and E5/F3 are
         # satisfied HERE: agent_end carries the resulting cursor.
@@ -552,13 +552,13 @@ async def test_prompt_dual_completion_concurrency_and_cursor(fake_home, fake_sta
                 agent_end = item
                 break
         assert agent_end is not None, "turn never reached agent_end"
-        assert agent_end["params"].get("cursor")
+        assert agent_end["params"].get("leaf")
 
         # earlier) tip -- no host may cache "the tip" and no response may
         # invent one either.
         await _send(proc, {"jsonrpc": "2.0", "id": 4, "method": "get_state"})
         state_resp = await _recv(proc, timeout=5.0)
-        assert state_resp["result"]["cursor"] == agent_end["params"]["cursor"]
+        assert state_resp["result"]["leaf"] == agent_end["params"]["leaf"]
 
         # calls to interrupt, so the single already-started LLM call still
         # completes -- exactly the reviewer's own trace).
@@ -681,9 +681,9 @@ async def test_new_session_resets_state_and_returns_the_addressable_tuple(fake_h
         # "no entries at all".
         assert result["session"]["store"] == "file"
         assert isinstance(result["session"]["cursor_id"], str)
-        assert isinstance(result["session"]["cursor"], str)
+        assert isinstance(result["session"]["leaf"], str)
         # E5: the resulting cursor, also at top level, matches.
-        assert result["cursor"] == result["session"]["cursor"]
+        assert result["leaf"] == result["session"]["leaf"]
 
         await _send(proc, {"jsonrpc": "2.0", "id": 4, "method": "get_messages"})
         after, _ = await _recv_response(proc, 4)
@@ -1308,7 +1308,7 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
         set_name, _ = await _recv_response(proc, 4)
         _check("set_session_name", set_name["result"])
         assert set_name["result"]["name"] == "b7-conformance"
-        assert set_name["result"]["cursor"]
+        assert set_name["result"]["leaf"]
 
         await _send(proc, {"jsonrpc": "2.0", "id": 5, "method": "get_session_name"})
         name1, _ = await _recv_response(proc, 5)
@@ -1359,7 +1359,7 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
         assert end["params"]["request_id"] == 9
         assert end["params"]["is_error"] is False
         assert end["params"]["performed"] is False  # nothing to compact yet
-        assert end["params"]["cursor"]
+        assert end["params"]["leaf"]
 
         await _send(
             proc,
@@ -1367,7 +1367,7 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
         )
         switched, _ = await _recv_response(proc, 10)
         _check("set_model", switched["result"])
-        assert switched["result"]["cursor"]
+        assert switched["result"]["leaf"]
     finally:
         await _shutdown(proc)
 
@@ -1429,7 +1429,7 @@ async def test_the_startup_session_itself_survives_with_both_entries(fake_home_t
         )
         named, _ = await _recv_response(proc, 2)
         assert named["result"]["name"] == "my-important-session"
-        assert named["result"]["cursor"]
+        assert named["result"]["leaf"]
 
         await _send(
             proc,
@@ -1437,7 +1437,7 @@ async def test_the_startup_session_itself_survives_with_both_entries(fake_home_t
         )
         switched, _ = await _recv_response(proc, 3)
         assert switched["result"]["model"]["id"] == "fake-model-alt"
-        assert switched["result"]["cursor"]
+        assert switched["result"]["leaf"]
 
         # The session was never forked/switched/replaced: what those two
         # verbs wrote to is still the one the process started on.
@@ -1553,7 +1553,7 @@ async def test_an_unpersisted_session_refuses_the_durability_promising_verbs(fak
         # Present, not necessarily non-null: E5 rule 3 requires the KEY on
         # every mutator completion, and on this session it is the live
         # in-memory tip, whatever that happens to be.
-        assert "cursor" in auto["result"]
+        assert "leaf" in auto["result"]
     finally:
         await _shutdown(proc)
 

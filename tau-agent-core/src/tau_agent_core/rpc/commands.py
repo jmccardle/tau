@@ -34,7 +34,7 @@ differentiator `prompt` is defined in terms of (§10 decision 10), plus the flow
 loop's two reads, `next_step` and `enumerate_domain`. Those two are what let a
 host drive a gesture it has no table for: τ's extensions are unknown to the
 executing system, so it cannot enumerate valid actions from anything it ships
-with. Both are READS and therefore carry no `cursor` (the E5 rule below).
+with. Both are READS and therefore carry no `leaf` (the E5 rule below).
 
 Tier C also carries the eleven verbs that put the SESSION TREE and the
 EXTENSION SYSTEM on the wire (`since="0.9.8"`). Five tree mutations —
@@ -80,14 +80,15 @@ enumerations below are pinned instead — see the bottom of this block.
 
 E5 (docs/REMOTE-CONTROL.md §4[4], line 267) is stated unconditionally:
 "Every response to a mutating command returns the resulting cursor." The
+wire has called that value `leaf` since 2.0 (docs/CURSORS.md). The
 tier first shipped TWO readings of it — `compact` returned the tip even
 when it changed nothing ("the unchanged current tip"), while
 `set_auto_compaction`, equally mutating and equally guarded by D-1,
-returned no `cursor` key at all and neither its schema nor its notes said
+returned no `leaf` key at all and neither its schema nor its notes said
 why (finding 5 of the Tier B review). This is the settled rule, written
 here rather than re-derived per verb:
 
-  1. A MUTATING verb's COMPLETION always carries `cursor`, `required` in
+  1. A MUTATING verb's COMPLETION always carries `leaf`, `required` in
      the schema that describes it and present on every success — INCLUDING
      when the call advanced nothing: a set that changed no value, a
      compaction that found nothing to compact, a verb that appends no log
@@ -97,9 +98,9 @@ here rather than re-derived per verb:
      `compact`, whose response is only an acknowledgement (C3/D-5).
   2. A READ never carries one. `get_last_assistant_text`, `get_models`,
      `get_session_name`, `get_session_stats` and `list_sessions` have no
-     `cursor` field; a host that wants the tip without mutating calls
+     `leaf` field; a host that wants the tip without mutating calls
      `get_state`.
-  3. Absence is never a signal. Omitting `cursor` to mean "nothing moved"
+  3. Absence is never a signal. Omitting `leaf` to mean "nothing moved"
      would make a host infer the tip from a missing key, which is exactly
      the inference F3 (§7.2, "no host may cache 'the tip'") exists to
      forbid — and it costs that host a round trip to learn what the
@@ -107,7 +108,7 @@ here rather than re-derived per verb:
 
 `abort` (and `submit`/`prompt`) are NOT counterexamples, and the exception
 they carve is about TIME, not about no-ops: those verbs return before the
-mutation they ask for has happened, so any cursor taken at signal time
+mutation they ask for has happened, so any leaf taken at signal time
 would be the PRE-mutation tip — see `abort`'s own notes, which record the
 phase-2 trace that measured the difference. Rule 1 applies wherever the
 mutation is already complete when the completion is built, which is every
@@ -127,8 +128,8 @@ whichever verb it happened to try first.
 Finding 6 of the Tier B review measured three different answers on ONE
 `new_session {"persist": false}` session: `set_model` and
 `set_session_name` refused (-32603 "this session is unpersisted"),
-`set_auto_compaction` returned a cursor, and `compact` ran to completion
-and reported a cursor for a `compaction` entry that dies with the process.
+`set_auto_compaction` returned a leaf, and `compact` ran to completion
+and reported a leaf for a `compaction` entry that dies with the process.
 No verb's notes said which of those was the rule.
 
 The rule, and it is mechanical — a host can apply it without knowing any
@@ -143,8 +144,8 @@ verb's intent:
      `get_last_assistant_text`, `get_models`, `get_session_name`,
      `get_session_stats`, `list_sessions`, and `set_auto_compaction` — the
      last of which is why this rule is worth writing down, being a MUTATOR
-     (D-1-guarded, E5-cursor-carrying) whose whole product is an in-memory
-     field on `CompactionSettings`. Its `cursor` is the live tip reported
+     (D-1-guarded, E5-leaf-carrying) whose whole product is an in-memory
+     field on `CompactionSettings`. Its `leaf` is the live tip reported
      as a READ (E5 rule 1 still requires it on a mutator's completion), not
      a claim that this call wrote anything.
      No verb COUNT appears above, for the reason the "E5 in Tier B" block
@@ -1072,13 +1073,13 @@ async def _handle_prompt(
         "AgentSession.abort() (agent_session.py:3244) — synchronous, idempotent, "
         "and a SIGNAL only: it requests the in-flight turn stop, and returns "
         "immediately, before that turn has unwound or persisted anything. "
-        "Phase-2 review B1: this response therefore does NOT carry a cursor — "
+        "Phase-2 review B1: this response therefore does NOT carry a leaf — "
         "one taken here would be the PRE-abort tip, exactly the stale-tip "
         "failure E5/F3 exist to prevent, and the reviewer's own trace caught it "
-        "(a 2s-gated turn aborted at 0.5s: this call's cursor and the cursor "
+        "(a 2s-gated turn aborted at 0.5s: this call's leaf and the leaf "
         "AFTER the turn actually finished differed). E5 for `abort` (and for "
         "`submit`/`prompt`, which share this trait) is satisfied instead by "
-        "`WireEvent.cursor` on the `agent_end` that follows — the one point "
+        "`WireEvent.leaf` on the `agent_end` that follows — the one point "
         "the mutation has genuinely happened — never by a value guessed at "
         "signal time. "
         "WHAT IT REACHES (finding 5, Tier B review): the in-flight turn, and "
@@ -1119,7 +1120,7 @@ async def _handle_abort(
     notes=(
         "An aggregate over AgentSession.state (session_id/status), is_streaming, "
         "get_model(), get_usage(), messages, and cursor.leaf (F3: a host "
-        "may not cache 'the tip', so cursor rides on every state read). τ has no "
+        "may not cache 'the tip', so leaf rides on every state read). τ has no "
         "equivalent of pi's thinkingLevel/steeringMode/followUpMode/"
         "sessionFile/pendingMessageCount — none of those exist as AgentSession "
         "state today, so they are omitted rather than fabricated. Two of pi's "
@@ -1142,7 +1143,7 @@ async def _handle_abort(
         "belongs on the state read rather than a verb of its own because a "
         "host already calls this one, and because it can change under the "
         "connection's feet (a switch_session onto an ephemeral session) "
-        "exactly as `model` and `cursor` can."
+        "exactly as `model` and `leaf` can."
     ),
     params_schema=params_schema_for("get_state"),
     result_schema=GET_STATE_RESULT_SCHEMA,
@@ -1159,7 +1160,7 @@ async def _handle_get_state(
         "model": session.get_model(),
         "usage": session.get_usage(),
         "message_count": len(session.messages),
-        "cursor": session.cursor.leaf,
+        "leaf": session.cursor.leaf,
         "addressable": session.is_addressable,
     }
 
@@ -1285,7 +1286,7 @@ def _require_runtime(handler: "RPCHandler") -> Any:
 
 def _lifecycle_result(outcome: dict[str, Any]) -> dict[str, Any]:
     """`AgentSessionRuntime`'s `{cancelled, session, session_id, cursor_id,
-    cursor, store}` -> the wire shape `SESSION_LIFECYCLE_RESULT_SCHEMA` describes.
+    cursor_id, leaf, store}` -> the wire shape `SESSION_LIFECYCLE_RESULT_SCHEMA` describes.
 
     Finding 1 (phase-3 review): a `blocked` outcome (the in-flight turn did
     not stop within the runtime's bounded wait — `AgentSessionRuntime
@@ -1310,10 +1311,10 @@ def _lifecycle_result(outcome: dict[str, Any]) -> dict[str, Any]:
             "store": outcome["store"],
             "session_id": outcome["session_id"],
             "cursor_id": outcome["cursor_id"],
-            "cursor": outcome["cursor"],
+            "leaf": outcome["leaf"],
             "addressable": session_log_is_addressable(outcome["session"]),
         },
-        "cursor": outcome["cursor"],
+        "leaf": outcome["leaf"],
     }
 
 
@@ -1346,7 +1347,7 @@ NEW_SESSION_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
                 "conversation that outlives nothing — the result then reports "
                 "`session.addressable: false` (finding 7), no list_sessions row "
                 "exists for its id, switch_session refuses it, and those three "
-                "verbs REFUSE (SESSION_NOT_PERSISTED) rather than return a cursor "
+                "verbs REFUSE (SESSION_NOT_PERSISTED) rather than return a leaf "
                 "for a write that never landed. Which verbs those are is not a "
                 "list to memorise: D-7 (commands.py 'DURABILITY in Tier B') is "
                 "'the verb that appends refuses', and the rest — including "
@@ -1376,8 +1377,8 @@ NEW_SESSION_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
         "means exactly 'list_sessions returns this id'. {cancelled} is H2's "
         "veto contract: a session_before_switch extension hook may refuse, "
         "and a host must treat that as a hard failure rather than a silent "
-        "no-op. E5: the result carries the resulting cursor — always the "
-        "fresh log's cursor here, never a value from before this call ran. "
+        "no-op. E5: the result carries the resulting leaf — always the "
+        "fresh log's leaf here, never a value from before this call ran. "
         "TURN_STILL_RUNNING (Finding 1): an in-flight turn that did not stop "
         "within the bounded wait after abort() — nothing was touched; retry, "
         "or wait for agent_end first."
@@ -1433,7 +1434,7 @@ async def _handle_fork(
         "connection onto it. Same {cancelled} veto contract as new_session "
         "(H2); an unresolvable session_id raises INVALID_PARAMS instead — a "
         "bad id is a caller mistake the schema cannot catch syntactically, "
-        "not a veto. E5: the result carries the LOADED session's cursor. "
+        "not a veto. E5: the result carries the LOADED session's leaf. "
         "Same TURN_STILL_RUNNING failure mode as new_session (Finding 1) — "
         "checked after resolution, so a bad id still fails INVALID_PARAMS "
         "even with an in-flight turn."
@@ -1536,7 +1537,7 @@ def require_durable_session(session: "AgentSession", *, verb: str) -> None:
     ``set_session_name`` (``session_info``), and ``compact`` (the
     ``compaction`` entry — added by finding 6 of the Tier B review, which
     measured that verb running to completion on an unpersisted session and
-    reporting a cursor for an entry that dies with the process, while the
+    reporting a leaf for an entry that dies with the process, while the
     other two refused). A verb that appends nothing does not call this, and
     ``set_auto_compaction`` is the case that makes the line worth drawing:
     it mutates, and it is guarded by D-1, but its whole product is an
@@ -1549,7 +1550,7 @@ def require_durable_session(session: "AgentSession", *, verb: str) -> None:
 
     **Raise, not report.** The alternative — succeed and say
     ``{"durable": false}`` in the result — is rejected: a host asked for a
-    thing this session cannot do, the result schemas' ``cursor`` is
+    thing this session cannot do, the result schemas' ``leaf`` is
     documented as the tip AFTER the write (E5), and Fail-Early's whole
     argument is that a caller finding out later is worse than a caller
     finding out now. Nothing is mutated before this check runs, so the
@@ -1589,7 +1590,7 @@ def require_durable_session(session: "AgentSession", *, verb: str) -> None:
             SESSION_NOT_PERSISTED,
             f"{verb}: the bound session log ({type(log).__name__}) declares no durable "
             f"location (none of {', '.join(DURABLE_LOCATION_ATTRS)}) — this verb will "
-            "not return a cursor for a write it cannot promise survives the process",
+            "not return a leaf for a write it cannot promise survives the process",
         )
     if all(value is None for value in declared.values()):
         empty = ", ".join(sorted(declared))
@@ -1654,7 +1655,7 @@ COMPACTION_END_PARAMS_SCHEMA: dict[str, Any] = {
                 "(finding 5, Tier B review). Nothing was written — the "
                 "summary is generated before the entry is appended — so "
                 "`performed` is ABSENT, exactly as it is when is_error is "
-                "true, and `cursor` is the unchanged tip. False on every "
+                "true, and `leaf` is the unchanged tip. False on every "
                 "other outcome rather than omitted: absence is not this "
                 "tier's way of saying anything (E5 rule 3). A compaction "
                 "cancelled by SHUTDOWN never reaches this notification at "
@@ -1716,7 +1717,7 @@ COMPACTION_END_PARAMS_SCHEMA: dict[str, Any] = {
                 "from tokens_saved, which is what compaction bought."
             ),
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "cursor.leaf once the compaction finished (E5/F3): the "
@@ -1725,16 +1726,16 @@ COMPACTION_END_PARAMS_SCHEMA: dict[str, Any] = {
             ),
         },
     },
-    "required": ["compaction_id", "request_id", "is_error", "cancelled", "cursor"],
+    "required": ["compaction_id", "request_id", "is_error", "cancelled", "leaf"],
 }
 
 _assert_supported_schema(COMPACTION_END_PARAMS_SCHEMA, f"{COMPACTION_END_METHOD} (notification)")
 
 
-def _compaction_outcome(result: "CompactionResult | None", cursor: str | None) -> dict[str, Any]:
+def _compaction_outcome(result: "CompactionResult | None", leaf: str | None) -> dict[str, Any]:
     """The `CompactionResult | None` half of a `compaction_end` payload."""
     if result is None:
-        return {"cancelled": False, "performed": False, "cursor": cursor}
+        return {"cancelled": False, "performed": False, "leaf": leaf}
     details = result.details
     return {
         "cancelled": False,
@@ -1747,7 +1748,7 @@ def _compaction_outcome(result: "CompactionResult | None", cursor: str | None) -
         "read_files": details.read_files if details is not None else [],
         "modified_files": details.modified_files if details is not None else [],
         "usage": result.usage,
-        "cursor": cursor,
+        "leaf": leaf,
     }
 
 
@@ -1760,7 +1761,7 @@ def _compaction_outcome(result: "CompactionResult | None", cursor: str | None) -
         "response only acknowledges that a compaction was admitted and is "
         "running ({accepted, compaction_id}); the outcome arrives later as a "
         "`compaction_end` NOTIFICATION whose REQUIRED keys are compaction_id "
-        "+ request_id (correlation), is_error, cancelled and cursor (E5) — "
+        "+ request_id (correlation), is_error, cancelled and leaf (E5) — "
         "`cancelled` is on EVERY one of them, false on the ordinary paths, "
         "and it is what distinguishes 'a host aborted this' from 'this "
         "failed' and from 'this found nothing'. Optional beside those: error, "
@@ -1790,7 +1791,7 @@ def _compaction_outcome(result: "CompactionResult | None", cursor: str | None) -
         "is_error is true, performed is ABSENT rather than false (a "
         "compaction that raised did not 'find nothing to compact'). "
         "E5, answered the one way the whole tier answers it (see commands.py "
-        "'E5 in Tier B'): `cursor` rides the COMPLETION — the compaction_end "
+        "'E5 in Tier B'): `leaf` rides the COMPLETION — the compaction_end "
         "notification, where the mutation has genuinely happened — never the "
         "acknowledgement, which is built before it has; and it is present on "
         "ALL THREE outcomes, the post-compaction tip when performed and the "
@@ -1827,7 +1828,7 @@ def _compaction_outcome(result: "CompactionResult | None", cursor: str | None) -
         "ABORT (finding 5, Tier B review): a host's `abort` now cancels an "
         "in-flight compaction, where it used to answer 'aborted' while the "
         "tree was rewritten anyway. The compaction_end that follows carries "
-        "cancelled=true, no `performed`, and the unchanged cursor; nothing "
+        "cancelled=true, no `performed`, and the unchanged leaf; nothing "
         "was written, because the summary is generated before the entry is "
         "appended. abort's own response names the compaction_id, so the two "
         "correlate. "
@@ -1972,7 +1973,7 @@ async def _handle_compact(
                             "is_error": False,
                             "error": None,
                             "cancelled": True,
-                            "cursor": session.cursor.leaf,
+                            "leaf": session.cursor.leaf,
                         }
                     )
                     raise
@@ -1991,7 +1992,7 @@ async def _handle_compact(
                         "is_error": True,
                         "error": repr(exc),
                         "cancelled": False,
-                        "cursor": session.cursor.leaf,
+                        "leaf": session.cursor.leaf,
                     }
                 )
                 return
@@ -2020,13 +2021,13 @@ COMPLETE_PATH_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
     "complete_path",
     overrides={
         "text": {"description": "The editor's contents as typed, NOT just the @word."},
-        "cursor": {
+        "offset": {
             "minimum": 0,
             "description": (
-                "The cursor's character offset into `text`. Which @reference is "
+                "The caret's character offset into `text`. Which @reference is "
                 "being completed is decided from this, so a host that sends the "
-                "@word alone with cursor 0 gets `completion: null` rather than a "
-                "listing — the cursor is not optional and is not defaulted."
+                "@word alone with offset 0 gets `completion: null` rather than a "
+                "listing — the offset is not optional and is not defaulted."
             ),
         },
     },
@@ -2056,7 +2057,7 @@ COMPLETE_PATH_RESULT_SCHEMA: dict[str, Any] = result_schema_for("complete_path")
         "the prefix itself starts with a dot), not two that drift. "
         "Read-only and pure apart from reading directory entries: no D-1 "
         "turn_safety_guard (it mutates nothing, so it answers mid-turn), no "
-        "`cursor` (E5 binds mutators), no require_durable_session (D-7: it "
+        "`leaf` (E5 binds mutators), no require_durable_session (D-7: it "
         "appends nothing, and it answers the same under --no-session). "
         "G3, 'nothing unbounded is pushed': `matches` is bounded by "
         "attachments._COMPLETION_LIMIT and `total` reports the true count, so a "
@@ -2076,7 +2077,7 @@ async def _handle_complete_path(
 ) -> dict[str, Any]:
     from tau_agent_core.projections import path_completion
 
-    return path_completion(params["text"], params["cursor"], Path.cwd())
+    return path_completion(params["text"], params["offset"], Path.cwd())
 
 
 ### end tier-b:complete_path
@@ -2105,7 +2106,7 @@ GET_LAST_ASSISTANT_TEXT_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_l
         "no text (a pure tool-call turn) — pi does not distinguish these "
         "either (docs/rpc.md only documents the first case); a host that "
         "needs to tell them apart must additionally call get_messages. "
-        "No `cursor`: E5 binds mutators, and this is a read (commands.py "
+        "No `leaf`: E5 binds mutators, and this is a read (commands.py "
         "'E5 in Tier B', rule 2 — a host that wants the tip calls get_state). "
         "D-7 (commands.py 'DURABILITY in Tier B', rule 2): appends nothing, "
         "so no require_durable_session — this answers the same on a "
@@ -2147,7 +2148,7 @@ _MODEL_CATALOG_ATTR = MODEL_CATALOG_ATTR
         "install, not a second reading of the config. "
         "Read-only: no D-1 turn_safety_guard (nothing here mutates session "
         "state; a turn may be in flight and this still answers) and no "
-        "`cursor` (E5 binds mutators — commands.py 'E5 in Tier B', rule 2; a "
+        "`leaf` (E5 binds mutators — commands.py 'E5 in Tier B', rule 2; a "
         "host that wants the tip calls get_state), and no "
         "require_durable_session (D-7, commands.py 'DURABILITY in Tier B', "
         "rule 2: it appends nothing, so it answers the same on an "
@@ -2201,7 +2202,7 @@ GET_SESSION_STATS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session
     tier="B",
     since="tier-b",
     notes=(
-        "D-3: get_state already returns usage/message_count/cursor, so this "
+        "D-3: get_state already returns usage/message_count/leaf, so this "
         "is not a re-shaping of that — it is the verb a host reads to decide "
         "WHETHER and WHEN to compact. Returns: estimate_context_tokens("
         "session.messages) (compaction.py) as `context`; the model's "
@@ -2220,7 +2221,7 @@ GET_SESSION_STATS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session
         "comes back is the session's LIVE effective setting read at call "
         "time. The verb itself changes nothing. Read-only: no "
         "turn_safety_guard (D-1 — only the MUTATING Tier B verbs take "
-        "it) and no `cursor` (E5 binds mutators — commands.py 'E5 in Tier B', "
+        "it) and no `leaf` (E5 binds mutators — commands.py 'E5 in Tier B', "
         "rule 2; a host that wants the tip calls get_state). "
         "Refuses nothing: no params, and no precondition beyond a "
         "constructed session — including no require_durable_session (D-7, "
@@ -2329,7 +2330,7 @@ def _listed_session(info: "SessionInfo") -> dict[str, Any]:
         "startup session is always one of these rows, so `get_state`'s "
         "session_id finds it and its ref names the base. "
         "Read-only: no D-1 turn_safety_guard (nothing here mutates session "
-        "state; a turn may be in flight and this still answers), no `cursor` "
+        "state; a turn may be in flight and this still answers), no `leaf` "
         "(E5 binds mutators — commands.py 'E5 in Tier B', rule 2; a host "
         "that wants the tip calls get_state), and no "
         "require_durable_session (D-7, commands.py 'DURABILITY in Tier B', "
@@ -2399,7 +2400,7 @@ SET_AUTO_COMPACTION_RESULT_SCHEMA: dict[str, Any] = result_schema_for("set_auto_
         "turn's own read of the same settings object; TURN_STILL_RUNNING on "
         "a bounded timeout, same as set_model/compact/set_session_name. "
         "E5, answered the one way the whole tier answers it (see commands.py "
-        "'E5 in Tier B'): this response carries `cursor`, and for this verb "
+        "'E5 in Tier B'): this response carries `leaf`, and for this verb "
         "it is ALWAYS the unchanged tip — the mutation is an in-memory "
         "CompactionSettings field, not a log entry. It is returned rather "
         "than omitted because a missing key is not a way to say 'nothing "
@@ -2409,7 +2410,7 @@ SET_AUTO_COMPACTION_RESULT_SCHEMA: dict[str, Any] = result_schema_for("set_auto_
         "'DURABILITY in Tier B', rule 2): this verb appends NOTHING, so it "
         "takes no require_durable_session and answers on an unpersisted "
         "session — where compact/set_model/set_session_name all refuse "
-        "(rule 1), because those three do append. Read the `cursor` above "
+        "(rule 1), because those three do append. Read the `leaf` above "
         "accordingly: on any session it is the live tip, never a claim that "
         "this call wrote something. "
         "No policy guard (§1.2): CompactionPolicy is constructed in exactly "
@@ -2426,7 +2427,7 @@ SET_AUTO_COMPACTION_RESULT_SCHEMA: dict[str, Any] = result_schema_for("set_auto_
         "that pair carries NO `submission_id`. A host correlating events to "
         "the `submission_id` a prior `submit`/`prompt` returned will see an "
         "ORPHAN agent_start/agent_end it cannot attribute to any request it "
-        "made. The `agent_end` DOES carry a `cursor` (the handler stamps "
+        "made. The `agent_end` DOES carry a `leaf` (the handler stamps "
         "every outbound `agent_end` at DEQUEUE, in `prepare_outbound` / "
         "`_stamp_agent_end_cursor`, regardless of provenance), so a host "
         "obeying F3 (never cache 'the tip') stays correct across a "
@@ -2451,8 +2452,8 @@ async def _handle_set_auto_compaction(
     session = handler.session
     async with turn_safety_guard(session):
         effective = session.set_auto_compaction(bool(params["enabled"]))
-        cursor = session.cursor.leaf
-    return {"enabled": effective, "cursor": cursor}
+        leaf = session.cursor.leaf
+    return {"enabled": effective, "leaf": leaf}
 
 
 ### end tier-b:set_auto_compaction
@@ -2487,9 +2488,9 @@ _resolver_error_message = resolver_error_message
         "D-2: switches the active model by NAME (AgentSession.set_model, "
         "agent_session.py:785 — effective on the NEXT turn, never mid-"
         "stream) and, unlike the bare session method, PERSISTS the switch: "
-        "appends a config entry naming the model and returns the resulting cursor (E5, "
+        "appends a config entry naming the model and returns the resulting leaf (E5, "
         "answered the one way the whole tier answers it — see commands.py "
-        "'E5 in Tier B': every Tier B mutator's completion carries `cursor`, "
+        "'E5 in Tier B': every Tier B mutator's completion carries `leaf`, "
         "present even when the call moved nothing; only the tier's reads omit "
         "it. Here the append always moves it, so it is that entry's own id). "
         "D-1: guarded by turn_safety_guard, so this refuses with "
@@ -2507,7 +2508,7 @@ _resolver_error_message = resolver_error_message
         "_resolver_error_message. An UNPERSISTED session (new_session "
         "{persist:false}) is "
         "refused too, before anything is touched — require_durable_session, "
-        "Blocker 2 of the Tier B review — because a cursor returned for an "
+        "Blocker 2 of the Tier B review — because a leaf returned for an "
         "append that lands only in memory is a durability promise this verb "
         "cannot keep; SESSION_NOT_PERSISTED, which is also what a log declaring "
         "no durable location at all gets (the SDK's InMemorySessionLog). That "
@@ -2515,7 +2516,7 @@ _resolver_error_message = resolver_error_message
         "commands.py's 'DURABILITY in Tier B' block: a verb that APPENDS "
         "refuses an unpersisted session — this one, set_session_name, and "
         "(since finding 6) compact, which used to run there and report a "
-        "cursor for an entry that died with the process. The "
+        "leaf for an entry that died with the process. The "
         "check runs BEFORE session.set_model(name), so a refusal leaves the "
         "in-process model unswitched: this verb never reports 'maybe "
         "switched, definitely not persisted'. The config entry is "
@@ -2526,7 +2527,7 @@ _resolver_error_message = resolver_error_message
         "user's ~/.tau/sessions — one 0-message session per spawn would "
         "otherwise take over `tau -c` for whoever is working in the same "
         "directory. Most systems clear the temp dir on reboot, so this "
-        "cursor's durability is bounded by MACHINE UPTIME, not forever: a "
+        "leaf's durability is bounded by MACHINE UPTIME, not forever: a "
         "replay can find the entry for the life of the session, and a host "
         "that needs more must be started with --session-dir DIR (accepted "
         "under --mode rpc precisely so a host can choose, including "
@@ -2549,7 +2550,7 @@ async def _handle_set_model(
                 INVALID_PARAMS, _resolver_error_message(exc), data={"name": name}
             ) from exc
         await session.cursor.append_config(model=name, backend=model["provider"])
-        return {"model": model, "cursor": session.cursor.leaf}
+        return {"model": model, "leaf": session.cursor.leaf}
 
 
 ### end tier-b:set_model
@@ -2580,14 +2581,14 @@ GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session_
         "asks a different question — not 'does the log have the appender' "
         "(every real session does) but 'will the entry outlive this "
         "process': an unpersisted session (new_session {persist:false}) is "
-        "refused rather than handed a cursor for a rename nobody will ever "
+        "refused rather than handed a leaf for a rename nobody will ever "
         "read back. That is D-7 rule 1, which commands.py's 'DURABILITY in "
         "Tier B' block now states once for the whole tier — this verb "
         "appends, so it refuses; `compact` appends too and, since finding 6, "
         "gives the same answer instead of a third one. E5, answered the one "
         "way the whole tier answers it (see "
         "commands.py 'E5 in Tier B'): this response carries the resulting "
-        "`cursor`, as every Tier B mutator's completion does, present even "
+        "`leaf`, as every Tier B mutator's completion does, present even "
         "when the call moved nothing — here the append always moves it. "
         "An empty name is INVALID_PARAMS (validate_params has no "
         "minLength — see the params schema's own note); an unpersisted "
@@ -2604,7 +2605,7 @@ GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session_
         "user's TUI picker unless the host was started with --session-dir "
         "(accepted under --mode rpc precisely so a host can choose, "
         "including --session-dir ~/.tau/sessions). Most systems clear the "
-        "temp dir on reboot, so this cursor's durability is bounded by "
+        "temp dir on reboot, so this leaf's durability is bounded by "
         "MACHINE UPTIME, not forever."
     ),
     params_schema=SET_SESSION_NAME_PARAMS_SCHEMA,
@@ -2621,7 +2622,7 @@ async def _handle_set_session_name(
             await session.set_session_name(name)
     except ValueError as exc:
         raise RPCError(INVALID_PARAMS, str(exc), data={"name": name}) from exc
-    return {"name": name, "cursor": session.cursor.leaf}
+    return {"name": name, "leaf": session.cursor.leaf}
 
 
 @command(
@@ -2630,7 +2631,7 @@ async def _handle_set_session_name(
     since="tier-b",
     notes=(
         "Read-only (docs/RPC-TIER-B.md B5: 'the read does not' take D-1's "
-        "guard or carry a cursor). Calls AgentSession.get_session_name, "
+        "guard or carry a leaf). Calls AgentSession.get_session_name, "
         "which is extension_types.read_session_name — the SAME body "
         "ExtensionAPI.get_session_name calls. A session "
         "log with no durable name to read (e.g. the SDK's "
@@ -2639,7 +2640,7 @@ async def _handle_set_session_name(
         "and never earns SESSION_NOT_PERSISTED — a log that cannot even be "
         "asked is a store wired wrong. Never set is NOT that case: it "
         "returns {name: null}, same as read_session_name's own None. "
-        "No `cursor`: E5 binds mutators, and this is a read (commands.py "
+        "No `leaf`: E5 binds mutators, and this is a read (commands.py "
         "'E5 in Tier B', rule 2 — a host that wants the tip calls get_state). "
         "No require_durable_session either (D-7, commands.py 'DURABILITY in "
         "Tier B', rule 2): it appends nothing, so it reads a name back on an "
@@ -2678,12 +2679,12 @@ NEXT_STEP_PARAMS_SCHEMA: dict[str, Any] = {
                 "the first call."
             ),
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "The entry a scoped `message_id` argument is relative to. A "
                 "parameter rather than the live tip, so a host stepping a "
-                "sub-agent's flow scopes to THAT agent's cursor. It is echoed "
+                "sub-agent's flow scopes to THAT agent's leaf. It is echoed "
                 "back on the step so the host hands it straight to "
                 "`enumerate_domain`."
             ),
@@ -2709,7 +2710,7 @@ NEXT_STEP_RESULT_SCHEMA: dict[str, Any] = {
         "step": {
             "type": ["object", "null"],
             "description": (
-                "{flow, argument, domain, cursor, bound}. `argument` is "
+                "{flow, argument, domain, leaf, bound}. `argument` is "
                 "{name, domain, description, cardinality, required, scope}; "
                 "`domain` is the resolved domain record "
                 "{name, description, free, values, enumerator}, included so a "
@@ -2750,7 +2751,7 @@ NEXT_STEP_RESULT_SCHEMA: dict[str, Any] = {
         "extensions are unknown to the host: a host cannot enumerate valid "
         "actions it has no table for. "
         "PURE and a READ: it performs nothing, reads no session, and therefore "
-        "carries no `cursor` (E5 rule 2). No D-1 turn_safety_guard — it mutates "
+        "carries no `leaf` (E5 rule 2). No D-1 turn_safety_guard — it mutates "
         "nothing, so it answers mid-turn — and no require_durable_session, since "
         "it appends nothing and answers the same under --no-session. "
         "Partial arguments ARE the dry run: a flow invoked with nothing bound "
@@ -2768,7 +2769,7 @@ async def _handle_next_step(
 
     try:
         return flow_next_step(
-            params["flow"], params.get("bound"), params.get("cursor"), handler.session.vocabulary
+            params["flow"], params.get("bound"), params.get("leaf"), handler.session.vocabulary
         )
     except UnknownFlowError as exc:
         raise RuntimeError(str(exc)) from exc
@@ -2790,12 +2791,12 @@ ENUMERATE_DOMAIN_PARAMS_SCHEMA: dict[str, Any] = {
         },
         "scope": {
             "type": ["string", "null"],
-            "enum": ["in_session", "ancestors_of_cursor", "descendants_of_cursor", None],
+            "enum": ["in_session", "ancestors_of_leaf", "descendants_of_leaf", None],
             "description": (
                 "For `message_id` only: which entries are candidates. Defaults to `in_session`."
             ),
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "For a scoped `message_id`: the entry the scope is relative to. "
@@ -2870,7 +2871,7 @@ ENUMERATE_DOMAIN_RESULT_SCHEMA: dict[str, Any] = {
         "attachments.complete_attachment (the same `complete_path` wraps); "
         "`message_id` -> ConversationTree.complete_message_id; `extension_name` "
         "-> AgentSession.list_managed_extensions. "
-        "A READ: no `cursor` (E5 rule 2), no D-1 turn_safety_guard, no "
+        "A READ: no `leaf` (E5 rule 2), no D-1 turn_safety_guard, no "
         "require_durable_session. "
         "Fail-Early on a missing dependency: a domain whose reader needs a "
         "runtime this process does not have RAISES rather than answering with an "
@@ -2889,7 +2890,7 @@ async def _handle_enumerate_domain(
         session=handler.session,
         runtime=handler._runtime,
         scope=params.get("scope"),
-        cursor=params.get("cursor"),
+        leaf=params.get("leaf"),
         query=params.get("query", ""),
         limit=params.get("limit", 50),
     )
@@ -3005,15 +3006,15 @@ COMPLETE_MESSAGE_ID_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
         "scope": {
             "description": (
                 "Which entries are candidates. 'in_session' is every entry in the "
-                "log; 'ancestors_of_cursor' is the parent chain from the root to "
-                "`cursor` inclusive; 'descendants_of_cursor' is the subtree below "
-                "it, excluding `cursor` itself. Omitted means 'in_session'."
+                "log; 'ancestors_of_leaf' is the parent chain from the root to "
+                "`leaf` inclusive; 'descendants_of_leaf' is the subtree below "
+                "it, excluding `leaf` itself. Omitted means 'in_session'."
             ),
         },
-        "cursor": {
+        "leaf": {
             "description": (
                 "The entry the two scoped variants are relative to. Omitted uses "
-                "the session's own cursor (get_state's `cursor`). An id that names "
+                "the session cursor's leaf (get_state's `leaf`). An id that names "
                 "no entry is INVALID_PARAMS, never an empty match list."
             ),
         },
@@ -3049,10 +3050,10 @@ COMPLETE_MESSAGE_ID_RESULT_SCHEMA: dict[str, Any] = result_schema_for("complete_
         "(entry_id/preview rather than value/label): a host walking a FLOW's "
         "argument list reaches it through enumerate_domain without knowing which "
         "capability enumerates that domain, and a host calling the capability by "
-        "name calls this. Read-only: no D-1 turn_safety_guard, no `cursor` in the "
+        "name calls this. Read-only: no D-1 turn_safety_guard, no `leaf` in the "
         "result (E5 rule 2 — a host that wants the tip calls get_state), and no "
         "require_durable_session (D-7 rule 2: it appends nothing). Refuses: a "
-        "`cursor` naming no entry, under a scope that needs one, is a CALLER error "
+        "`leaf` naming no entry, under a scope that needs one, is a CALLER error "
         "and comes back as INVALID_PARAMS — the same classification set_model "
         "gives an unknown model name. Fail-Early, because the alternative is an "
         "empty match list that reads as 'the scope held nothing'."
@@ -3067,7 +3068,7 @@ async def _handle_complete_message_id(
     try:
         found = tree.complete_message_id(
             scope=params.get("scope", "in_session"),
-            cursor=params.get("cursor"),
+            leaf=params.get("leaf"),
             query=params.get("query", ""),
             limit=params.get("limit", 50),
         )
@@ -3115,8 +3116,8 @@ GET_TREE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_tree")
         "the shape IS the answer, and a bounded shape is a different tree. `count` "
         "is there so a host can say it read a whole one. Read-only: no D-1 "
         "turn_safety_guard (it mutates nothing, so it answers mid-turn — a browser "
-        "opened while a turn streams shows the tree as it stands), no `cursor` in "
-        "the E5 sense (the `cursor` key here is the tip this READ observed, not a "
+        "opened while a turn streams shows the tree as it stands), no `leaf` in "
+        "the E5 sense (the `leaf` key here is the tip this READ observed, not a "
         "mutation's product), and no require_durable_session (D-7 rule 2: it "
         "appends nothing, and an unpersisted session has a tree like any other). "
         "The `/tree` VIEW command still carries `unavailable_because` rather than "
@@ -3132,11 +3133,8 @@ async def _handle_get_tree(
 ) -> dict[str, Any]:
     from tau_agent_core.projections import browse_rows
 
-    nodes = [
-        {("is_cursor" if key == "is_leaf" else key): value for key, value in row.items()}
-        for row in browse_rows(handler.session.cursor.tree())
-    ]
-    return {"nodes": nodes, "cursor": handler.session.cursor.leaf, "count": len(nodes)}
+    nodes = browse_rows(handler.session.cursor.tree())
+    return {"nodes": nodes, "leaf": handler.session.cursor.leaf, "count": len(nodes)}
 
 
 ### end tier-c:get_tree
@@ -3176,7 +3174,7 @@ GET_ENTRY_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_entry")
         "keep in step with get_messages'. Bounded by the caller: one id, one entry, "
         "and a host that wants ten asks ten times — the alternative, an ids array, "
         "buys nothing over stdio and invites a host to pull a whole tree's bodies "
-        "in one line. Read-only: no D-1 turn_safety_guard, no E5 cursor (rule 2), "
+        "in one line. Read-only: no D-1 turn_safety_guard, no E5 leaf (rule 2), "
         "no require_durable_session (D-7 rule 2)."
     ),
     params_schema=GET_ENTRY_PARAMS_SCHEMA,
@@ -3215,7 +3213,7 @@ GET_PENDING_REQUEST_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_pendi
         "move: after a turn ends, after a command, on a resume, on a session "
         "switch. Null is the ordinary answer and is not a failure. Read-only: no "
         "D-1 turn_safety_guard (a request raised by a tool_call hook is exactly "
-        "the case a host wants to see mid-turn), no E5 cursor (rule 2), no "
+        "the case a host wants to see mid-turn), no E5 leaf (rule 2), no "
         "require_durable_session (D-7 rule 2)."
     ),
     params_schema=params_schema_for("get_pending_request"),
@@ -3313,7 +3311,7 @@ async def _handle_answer_request(
     return {
         "handled": result.handled,
         "output": result.output,
-        "cursor": handler.session.cursor.leaf,
+        "leaf": handler.session.cursor.leaf,
     }
 
 
@@ -3334,7 +3332,7 @@ LIST_MANAGED_EXTENSIONS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("list_
         "host's attention: enumerate_domain has only value/label to work with, so "
         "it renders enabled-ness INTO the label ('path (disabled)'), and this verb "
         "hands back the boolean. A host deciding whether to offer enable or "
-        "disable wants this one. Read-only: no turn_safety_guard, no `cursor` (E5 "
+        "disable wants this one. Read-only: no turn_safety_guard, no `leaf` (E5 "
         "rule 2), no require_durable_session (D-7 rule 2). Answers only about "
         "MANAGED file extensions — a file that failed to import is not here, "
         "because it can never be a legal extension_name; get_extension_state is "
@@ -3370,7 +3368,7 @@ GET_EXTENSION_STATE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_exten
         "as anything but a blind form. Whether each extension is currently ENABLED "
         "is the separate read list_managed_extensions; a host that wants both "
         "composes them, which is the division AgentSession.get_extension_state's "
-        "own docstring states. Read-only: no turn_safety_guard, no `cursor` (E5 "
+        "own docstring states. Read-only: no turn_safety_guard, no `leaf` (E5 "
         "rule 2), no require_durable_session (D-7 rule 2 — extension state is "
         "runtime state and is never appended to the session log, so this answers "
         "the same on a persisted and an unpersisted session)."
@@ -3429,7 +3427,7 @@ _TREE_MUTATION_NOTES = (
     "D-7 rule 1: a verb that APPENDS refuses an unpersisted session "
     "(SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies "
     "with the process leaves a host holding a conversation it can never load "
-    "again. E5 rule 1: the completion carries the resulting `cursor`. "
+    "again. E5 rule 1: the completion carries the resulting `leaf`. "
     "Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id "
     "above all — comes back as INVALID_PARAMS, checked before the first append, "
     "so a refusal leaves the log byte-identical. WHERE the entries land and for "
@@ -3479,7 +3477,7 @@ async def _handle_navigate(
 
     async with tree_mutation_guard(handler, verb="navigate", appends=False) as s:
         messages = tree_ops.navigate(s.cursor, params["target_id"])
-        return {"messages": messages, "cursor": s.cursor.leaf}
+        return {"messages": messages, "leaf": s.cursor.leaf}
 
 
 ### end tier-c:navigate
@@ -3536,7 +3534,7 @@ async def _handle_summarize_and_navigate(
             params["target_id"],
             custom_instructions=params.get("custom_instructions"),
         )
-        return {"messages": messages, "cursor": s.cursor.leaf}
+        return {"messages": messages, "leaf": s.cursor.leaf}
 
 
 ### end tier-c:summarize_and_navigate
@@ -3591,7 +3589,7 @@ async def _handle_elide_span(
 
     async with tree_mutation_guard(handler, verb="elide_span", appends=True) as s:
         messages = await tree_ops.elide_span(s.cursor, params["anchor_id"], params["first_kept_id"])
-        return {"messages": messages, "cursor": s.cursor.leaf}
+        return {"messages": messages, "leaf": s.cursor.leaf}
 
 
 ### end tier-c:elide_span
@@ -3651,7 +3649,7 @@ async def _handle_commit_branch(
         messages = await tree_ops.commit_branch(
             s.cursor, params["ids"], drop_context=params["drop_context"]
         )
-        return {"messages": messages, "cursor": s.cursor.leaf}
+        return {"messages": messages, "leaf": s.cursor.leaf}
 
 
 ### end tier-c:commit_branch
@@ -3697,7 +3695,7 @@ async def _handle_paste_subtree(
 
     async with tree_mutation_guard(handler, verb="paste_subtree", appends=True) as s:
         minted = await tree_ops.paste_subtree(s.cursor, params["source_id"], params["target_id"])
-        return {"minted_ids": minted, "cursor": s.cursor.leaf}
+        return {"minted_ids": minted, "leaf": s.cursor.leaf}
 
 
 ### end tier-c:paste_subtree
@@ -3713,7 +3711,7 @@ _EXTENSION_MUTATION_NOTES = (
     "require_durable_session; extension state is runtime state and is never written "
     "to the session log, which is also why it does not survive a respawn and a host "
     "that wants an extension loaded at startup passes it on the command line. E5 "
-    "rule 1: the completion carries `cursor` anyway. `path` accepts a full managed "
+    "rule 1: the completion carries `leaf` anyway. `path` accepts a full managed "
     "path or a unique file stem (AgentSession.resolve_extension_target); an "
     "ambiguous stem resolves to nothing and comes back as ok=false, never a guess."
 )
@@ -3722,7 +3720,7 @@ _EXTENSION_MUTATION_NOTES = (
 def _extension_action_result(
     outcome: "ExtensionActionResult", session: "AgentSession"
 ) -> dict[str, Any]:
-    """One :class:`ExtensionActionResult` plus the E5 cursor, as the three verbs report it.
+    """One :class:`ExtensionActionResult` plus the E5 leaf, as the three verbs report it.
 
     Written once because all three actions return the same record and E5 rule 1
     applies to all three identically; three copies of this projection is how the
@@ -3733,7 +3731,7 @@ def _extension_action_result(
         "path": outcome.path,
         "ok": outcome.ok,
         "message": outcome.message,
-        "cursor": session.cursor.leaf,
+        "leaf": session.cursor.leaf,
     }
 
 
@@ -3860,7 +3858,7 @@ async def _handle_reload_extension(
         "ui.form takes, and `values` is the live slice api.config returns for it. "
         "A null `schema` is the honest answer for an extension that declares none "
         "— a host renders no settings screen rather than an empty one. Read: no "
-        "cursor (E5 rule 2), no turn guard. Fail-Early: an unresolvable `path` "
+        "leaf (E5 rule 2), no turn guard. Fail-Early: an unresolvable `path` "
         "RAISES here rather than returning a null row, because unlike the "
         "enable/disable/reload verbs there is no ok=false channel on a read."
     ),

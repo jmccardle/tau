@@ -267,18 +267,18 @@ def test_e5_is_answered_one_way_across_tier_b() -> None:
             COMPACTION_END_PARAMS_SCHEMA if name == "compact" else COMMAND_TABLE[name].result_schema
         )
         assert completion is not None
-        assert "cursor" in completion["properties"], f"{name}'s completion declares no cursor (E5)"
-        assert "cursor" in completion["required"], (
+        assert "leaf" in completion["properties"], f"{name}'s completion declares no cursor (E5)"
+        assert "leaf" in completion["required"], (
             f"{name}'s completion makes cursor optional — absence is not this "
             "tier's way of saying 'nothing moved' (E5 rule 3)"
         )
 
-    assert "cursor" not in COMPACT_RESULT_SCHEMA["properties"]
+    assert "leaf" not in COMPACT_RESULT_SCHEMA["properties"]
 
     for name in sorted(_TIER_B_READS):
         schema = COMMAND_TABLE[name].result_schema
         assert schema is not None
-        assert "cursor" not in schema["properties"], (
+        assert "leaf" not in schema["properties"], (
             f"{name} is a read and must not carry a cursor (E5 rule 2) — "
             "a host that wants the tip calls get_state"
         )

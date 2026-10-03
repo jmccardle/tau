@@ -594,7 +594,7 @@ class RPCHandler:
         self._stamp_agent_end_cursor(item)
 
     def _stamp_agent_end_cursor(self, item: dict[str, Any]) -> None:
-        """Stamp the CAPTURED log's current cursor onto an outbound `agent_end`
+        """Stamp the CAPTURED cursor's current leaf onto an outbound `agent_end`
         (E5/F3).
 
         WHY THE CURSOR *VALUE* IS READ AT DEQUEUE TIME rather than when the
@@ -658,7 +658,7 @@ class RPCHandler:
             return
         params = item.get("params")
         if isinstance(params, dict) and params.get("type") == "agent_end":
-            params["cursor"] = cursor.leaf
+            params["leaf"] = cursor.leaf
 
     async def run(self) -> None:
         """Run the RPC server until stdin closes or a shutdown signal fires.

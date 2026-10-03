@@ -321,7 +321,7 @@ async def test_run_reads_a_request_writes_a_response_and_stops_at_eof(handler, m
                 "model": {"id": "gpt-4o", "provider": "openai", "context_window": 8192},
                 "usage": None,
                 "message_count": 0,
-                "cursor": "leaf-1",
+                "leaf": "leaf-1",
                 "addressable": True,
                 "method": "get_state",
             },
@@ -894,7 +894,7 @@ async def test_abort_delegates_and_is_idempotent(handler, session):
 
     responses = await _drain(handler)
     assert [r["result"]["status"] for r in responses] == ["aborted", "aborted"]
-    assert all("cursor" not in r["result"] for r in responses)
+    assert all("leaf" not in r["result"] for r in responses)
     assert session.abort.call_count == 2
 
     assert all(r["result"]["compaction_id"] is None for r in responses)
@@ -918,12 +918,12 @@ def test_prepare_outbound_stamps_the_cursor_only_onto_agent_end(handler, session
         "_cursor": captured,
     }
     handler.prepare_outbound(agent_end_item)
-    assert agent_end_item["params"]["cursor"] == "post-turn-leaf"
+    assert agent_end_item["params"]["leaf"] == "post-turn-leaf"
     assert "_cursor" not in agent_end_item  # popped, never serialized
 
     turn_start_item = {"jsonrpc": "2.0", "method": "event", "params": {"type": "turn_start"}}
     handler.prepare_outbound(turn_start_item)
-    assert "cursor" not in turn_start_item["params"]
+    assert "leaf" not in turn_start_item["params"]
 
     response_item = {"jsonrpc": "2.0", "id": 1, "result": {"status": "aborted"}}
     handler.prepare_outbound(response_item)  # must not raise
@@ -958,7 +958,7 @@ async def test_get_state_aggregates_the_session(handler, session):
         "model": {"id": "gpt-4o", "provider": "openai", "context_window": 8192},
         "usage": {"input_tokens": 3},
         "message_count": 2,
-        "cursor": "leaf-1",
+        "leaf": "leaf-1",
         "addressable": True,
         "method": "get_state",
     }
@@ -1538,7 +1538,7 @@ async def test_agent_end_wire_event_carries_the_post_persistence_cursor(real_han
     ]
     post_turn_cursor = real_session.cursor.leaf
     assert post_turn_cursor != pre_turn_cursor
-    assert agent_end["params"]["cursor"] == post_turn_cursor
+    assert agent_end["params"]["leaf"] == post_turn_cursor
 
 
 #: One append's suspension, modelling a JMFTS POST. See _SuspendingLog.
@@ -1621,7 +1621,7 @@ async def test_agent_end_cursor_is_still_post_persistence_when_appends_suspend()
     ]
     post_turn_cursor = session.cursor.leaf
     assert post_turn_cursor != pre_turn_cursor
-    assert agent_end["params"]["cursor"] == post_turn_cursor
+    assert agent_end["params"]["leaf"] == post_turn_cursor
 
 
 async def test_agent_end_cursor_survives_a_session_log_swap_before_dequeue(
@@ -1657,7 +1657,7 @@ async def test_agent_end_cursor_survives_a_session_log_swap_before_dequeue(
 
     real_handler.prepare_outbound(agent_end_item)
 
-    assert agent_end_item["params"]["cursor"] == old_leaf
+    assert agent_end_item["params"]["leaf"] == old_leaf
 
 
 async def test_get_messages_reflects_the_turn_only_after_it_runs(real_handler):

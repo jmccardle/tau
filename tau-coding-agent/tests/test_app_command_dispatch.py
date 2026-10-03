@@ -60,7 +60,7 @@ def _performed(mutation: str, data: dict) -> Performed:
     double that returns None or a bare value is refused — which is the check these
     tests are standing in front of.
     """
-    return Performed(flow=None, mutation=mutation, data={**data, "cursor": None}, cursor=None)
+    return Performed(flow=None, mutation=mutation, data={**data, "leaf": None}, leaf=None)
 
 
 def _submit(app, text: str):

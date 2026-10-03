@@ -129,7 +129,7 @@ async def test_set_model_switches_persists_and_returns_the_cursor(handler, sessi
         "provider": "anthropic",
         "context_window": 8192,
     }
-    cursor = response["result"]["cursor"]
+    cursor = response["result"]["leaf"]
     assert cursor == session.cursor.leaf
     (entry,) = [e for e in session.session_log.entries() if e["id"] == cursor]
     assert entry["customType"] == "config"

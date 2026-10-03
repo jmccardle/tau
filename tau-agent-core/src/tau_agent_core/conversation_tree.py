@@ -48,7 +48,7 @@ from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, read_request
 from tau_agent_core.session_log import is_incomplete
 from tau_llm.docs import agent_facing
 
-MessageIdScope = Literal["in_session", "ancestors_of_cursor", "descendants_of_cursor"]
+MessageIdScope = Literal["in_session", "ancestors_of_leaf", "descendants_of_leaf"]
 
 _COMPLETION_LIMIT = 50
 
@@ -424,8 +424,7 @@ class BrowseNode:
         role: ``user`` / ``assistant`` / ``toolResult`` / ``system`` on a message
             entry, ``None`` on every bookkeeping kind.
         preview: The entry's first line, cut nowhere — the caller elides to width.
-        is_cursor: Whether this entry is the tree's leaf — the wire's name for the
-            head cursor's position.
+        is_leaf: Whether this entry is the tree's leaf.
         timestamp: Epoch milliseconds, or ``None`` when no clock applies. This is
             the key children are sorted by, so a caller re-sorting gets this order.
         first_kept_id: On a splice anchor (``compaction`` / ``elide``), the oldest
@@ -452,7 +451,7 @@ class BrowseNode:
     kind: str
     role: str | None
     preview: str
-    is_cursor: bool
+    is_leaf: bool
     timestamp: int | None
     first_kept_id: str | None
     from_id: str | None
@@ -746,7 +745,7 @@ class ConversationTree:
     def complete_message_id(
         self,
         scope: MessageIdScope = "in_session",
-        cursor: str | None = None,
+        leaf: str | None = None,
         query: str = "",
         limit: int = _COMPLETION_LIMIT,
     ) -> MessageIdCompletion:
@@ -776,12 +775,12 @@ class ConversationTree:
 
         Args:
             scope: Which entries are candidates. ``"in_session"`` is every entry;
-                ``"ancestors_of_cursor"`` is the parent chain from the root to
-                ``cursor`` inclusive; ``"descendants_of_cursor"`` is the subtree
-                below it, excluding ``cursor`` itself.
-            cursor: The entry the two scoped variants are relative to (the wire's
-                name for a leaf id). ``None`` uses this tree's leaf. Passed rather than always read, so a caller
-                enumerating for a sub-agent can scope to THAT agent's cursor.
+                ``"ancestors_of_leaf"`` is the parent chain from the root to
+                ``leaf`` inclusive; ``"descendants_of_leaf"`` is the subtree
+                below it, excluding ``leaf`` itself.
+            leaf: The entry the two scoped variants are relative to. ``None`` uses
+                this tree's leaf. Passed rather than always read, so a caller
+                enumerating for a sub-agent can scope to THAT agent's leaf.
             query: The typed text. ``""`` matches everything in scope.
             limit: How many matches to return at most.
 
@@ -790,7 +789,7 @@ class ConversationTree:
             first), and the true count before the limit was applied.
 
         Raises:
-            KeyError: ``cursor`` — or this tree's leaf, when ``cursor`` is None —
+            KeyError: ``leaf`` — or this tree's leaf, when ``leaf`` is None —
                 names no entry, and the scope is one that needs it. Fail-Early: a
                 scope relative to a node that does not exist would otherwise return
                 an empty list, which reads as "nothing matched".
@@ -798,10 +797,10 @@ class ConversationTree:
         if scope == "in_session":
             candidates = [e["id"] for e in self._entries]
         else:
-            anchor = self._leaf if cursor is None else cursor
+            anchor = self._leaf if leaf is None else leaf
             if anchor is None or anchor not in self._by_id:
                 raise KeyError(f"cannot scope {scope!r} to unknown entry {anchor!r}")
-            if scope == "ancestors_of_cursor":
+            if scope == "ancestors_of_leaf":
                 candidates = [e["id"] for e in self.path(anchor)]
             else:
                 candidates = self.descendants_of(anchor)
@@ -921,7 +920,7 @@ class ConversationTree:
             kind=node.kind,
             role=node.role,
             preview=node.preview,
-            is_cursor=node.is_leaf,
+            is_leaf=node.is_leaf,
             timestamp=int(timestamp) if isinstance(timestamp, (int, float)) else None,
             first_kept_id=str(first_kept) if first_kept is not None else None,
             from_id=str(from_id) if from_id is not None else None,

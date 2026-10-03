@@ -1554,7 +1554,7 @@ class TauApp(App):
                 session=getattr(self.current_backend, "agent_session", None),
                 runtime=self._session_runtime,
                 scope=argument.scope,
-                cursor=step.cursor,
+                leaf=step.leaf,
                 vocabulary=vocabulary,
             )
             by_label = {value.label: value.value for value in found.values}
@@ -1615,7 +1615,7 @@ class TauApp(App):
                 bound[name] = [options[name][label] for label in value]
             else:
                 bound[name] = options[name][value]
-        outcome = next_step(step.flow, bound, cursor=step.cursor, vocabulary=self._vocabulary())
+        outcome = next_step(step.flow, bound, leaf=step.leaf, vocabulary=self._vocabulary())
         if isinstance(outcome, Ready):
             await self._perform_ready(outcome)
             return
@@ -1652,7 +1652,7 @@ class TauApp(App):
             try:
                 if step.domain.field_kind == "select":
                     found = await backend.enumerate_domain(
-                        step.domain.name, scope=step.argument.scope, cursor=step.cursor
+                        step.domain.name, scope=step.argument.scope, leaf=step.leaf
                     )
                     labels = {value.label: value.value for value in found.values}
                     if len(labels) != len(found.values):
@@ -1670,7 +1670,7 @@ class TauApp(App):
             value = answers[step.argument.name]
             bound = {**step.bound, step.argument.name: labels[value] if labels else value}
             try:
-                outcome = await backend.next_step(step.flow, bound, step.cursor)
+                outcome = await backend.next_step(step.flow, bound, step.leaf)
             except ServeError as exc:
                 self.notify(f"/{step.flow}: {exc}", severity="error")
                 return
@@ -2837,8 +2837,8 @@ class TauApp(App):
             self.notify(str(exc), severity="error")
             return
         session = getattr(self.current_backend, "agent_session", None)
-        log = getattr(session, "session_log", None)
-        outcome = next_step(flow, bound, cursor=getattr(log, "cursor", None), vocabulary=vocabulary)
+        leaf = session.cursor.leaf if session is not None else None
+        outcome = next_step(flow, bound, leaf=leaf, vocabulary=vocabulary)
         if isinstance(outcome, Ready):
             await self._perform_ready(outcome)
             return

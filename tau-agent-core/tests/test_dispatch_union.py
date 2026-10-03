@@ -103,6 +103,6 @@ def test_whitespace_after_a_view_is_not_an_argument() -> None:
 
 
 def test_a_scoped_cursor_rides_the_step_to_the_head() -> None:
-    step = dispatch_builtin("resume", "", cursor="entry-7")
+    step = dispatch_builtin("resume", "", leaf="entry-7")
     assert isinstance(step, FlowStep)
-    assert step.cursor == "entry-7"
+    assert step.leaf == "entry-7"

@@ -552,8 +552,8 @@ async def test_an_unpersisted_tuple_still_reports_its_store_and_cursor(
     assert result["session"]["addressable"] is False
     assert result["session"]["store"] == "file"
     assert result["session"]["cursor_id"] == handler.session.cursor.id
-    assert "cursor" in result
-    assert result["cursor"] == result["session"]["cursor"]
+    assert "leaf" in result
+    assert result["leaf"] == result["session"]["leaf"]
 
 
 async def test_fork_and_switch_session_report_addressable_too(
@@ -650,8 +650,8 @@ def test_session_log_is_addressable_asks_the_same_question_d7_asks(
 
 async def test_carries_no_cursor(handler: RPCHandler) -> None:
     """E5 rule 2 (commands.py "E5 in Tier B"): a read never carries one."""
-    assert "cursor" not in commands.COMMAND_TABLE["list_sessions"].result_schema["properties"]
-    assert "cursor" not in (await _call(handler))["result"]
+    assert "leaf" not in commands.COMMAND_TABLE["list_sessions"].result_schema["properties"]
+    assert "leaf" not in (await _call(handler))["result"]
 
 
 async def test_answers_while_a_turn_holds_the_turn_lock(

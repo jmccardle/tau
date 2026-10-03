@@ -362,7 +362,7 @@ async def test_compact_on_empty_session_reports_performed_false(
     cursor_before = empty_session.cursor.leaf
     _ack, end = await _compact(empty_handler)
     assert end["performed"] is False
-    assert end["cursor"] == cursor_before
+    assert end["leaf"] == cursor_before
     assert end["is_error"] is False
     assert end["error"] is None
     # No CompactionResult field leaks into the false shape.
@@ -373,7 +373,7 @@ async def test_compact_on_empty_session_reports_performed_false(
         "error",
         "cancelled",
         "performed",
-        "cursor",
+        "leaf",
     }
 
 
@@ -411,7 +411,7 @@ async def test_compact_under_the_shipped_settings_reports_performed_false(
     assert end["is_error"] is False, end["error"]
     assert end["performed"] is False
     assert "tokens_saved" not in end
-    assert end["cursor"] == cursor_before
+    assert end["leaf"] == cursor_before
     assert session.session_log.entries() == entries_before
 
 
@@ -439,8 +439,8 @@ async def test_compact_performed_true_reports_full_result_and_new_cursor(
     assert end["read_files"] == []
     assert end["modified_files"] == []
     assert isinstance(end["usage"], dict)
-    assert end["cursor"] != cursor_before
-    assert end["cursor"] == session.cursor.leaf
+    assert end["leaf"] != cursor_before
+    assert end["leaf"] == session.cursor.leaf
     # The mutation actually landed on the session (not just reported).
     assert any(
         "[[Compaction summary:" in m["content"][0]["text"]
@@ -472,7 +472,7 @@ async def test_compact_that_raises_reports_is_error_and_omits_performed(
     assert end["is_error"] is True
     assert "summarizer said no" in end["error"]
     assert "performed" not in end
-    assert end["cursor"] == empty_session.cursor.leaf
+    assert end["leaf"] == empty_session.cursor.leaf
     # The single-flight slot is released even on the failure path.
     assert empty_handler.compaction_in_flight is None
 
@@ -757,7 +757,7 @@ async def test_compact_and_set_auto_compaction_disagree_on_purpose(
 
     result = await commands._handle_set_auto_compaction(empty_handler, 2, {"enabled": True})
     assert result["enabled"] is True
-    assert result["cursor"] == empty_session.cursor.leaf
+    assert result["leaf"] == empty_session.cursor.leaf
 
 
 # ── finding 5: abort reaches an in-flight compaction ───────────────────────
@@ -812,7 +812,7 @@ async def test_abort_cancels_an_in_flight_compaction_and_says_which(
     assert params["is_error"] is False
     assert params["error"] is None
     assert "performed" not in params
-    assert params["cursor"] == empty_session.cursor.leaf
+    assert params["leaf"] == empty_session.cursor.leaf
     assert empty_handler.compaction_in_flight is None
     assert not empty_session.turn_lock.locked()
 
@@ -1036,7 +1036,7 @@ async def test_a_reaped_compaction_emits_no_compaction_end(
     """D-5: a compaction cancelled by shutdown emits NO `compaction_end`.
 
     Finding 4 (Tier B review), mutation V1: inserting
-    `_complete({"is_error": True, "error": "cancelled", "cursor": None})` as
+    `_complete({"is_error": True, "error": "cancelled", "leaf": None})` as
     the first statement of `_drive`'s `except asyncio.CancelledError` arm —
     i.e. emitting the notification D-5 says must never be emitted — survived
     the whole suite. `test_a_running_compaction_is_reaped_by_shutdown` above
@@ -1367,7 +1367,7 @@ async def test_the_writer_does_not_exit_with_items_still_queued(
         {
             "jsonrpc": "2.0",
             "method": commands.COMPACTION_END_METHOD,
-            "params": {"compaction_id": "c", "request_id": 1, "is_error": False, "cursor": None},
+            "params": {"compaction_id": "c", "request_id": 1, "is_error": False, "leaf": None},
         }
     )
 

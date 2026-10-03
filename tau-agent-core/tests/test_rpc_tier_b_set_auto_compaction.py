@@ -198,7 +198,7 @@ async def test_set_auto_compaction_enables_and_returns_the_effective_state(
     (response,) = [item for item in await _drain(real_handler) if item.get("id") == 1]
     assert response["result"] == {
         "enabled": True,
-        "cursor": tip,
+        "leaf": tip,
         "method": "set_auto_compaction",
     }
     assert real_session._compaction_settings.enabled is True
@@ -219,7 +219,7 @@ async def test_set_auto_compaction_disables_and_is_idempotent(
             }
         )
     responses = {item["id"]: item for item in await _drain(real_handler)}
-    expected = {"enabled": False, "cursor": tip, "method": "set_auto_compaction"}
+    expected = {"enabled": False, "leaf": tip, "method": "set_auto_compaction"}
     assert responses[1]["result"] == expected
     assert responses[2]["result"] == expected
     assert real_session._compaction_settings.enabled is False
@@ -250,7 +250,7 @@ async def test_set_auto_compaction_returns_the_live_tip_although_it_moves_nothin
     )
 
     (response,) = [item for item in await _drain(real_handler) if item.get("id") == 1]
-    assert response["result"]["cursor"] == tip
+    assert response["result"]["leaf"] == tip
     assert real_session.cursor.leaf == tip
     assert len(real_session.session_log.entries()) == entries_before
 
@@ -381,7 +381,7 @@ async def test_enabling_over_the_wire_makes_a_real_turn_actually_compact(
     (enable_response,) = [item for item in await _drain(real_handler) if item.get("id") == 1]
     assert enable_response["result"] == {
         "enabled": True,
-        "cursor": pre_turn_cursor,
+        "leaf": pre_turn_cursor,
         "method": "set_auto_compaction",
     }
 
@@ -423,6 +423,6 @@ async def test_enabling_over_the_wire_makes_a_real_turn_actually_compact(
     real_handler.prepare_outbound(turn_end)
     real_handler.prepare_outbound(orphan_end)
 
-    assert orphan_end["params"]["cursor"] is not None
-    assert orphan_end["params"]["cursor"] == cursor.leaf
-    assert orphan_end["params"]["cursor"] != pre_turn_cursor
+    assert orphan_end["params"]["leaf"] is not None
+    assert orphan_end["params"]["leaf"] == cursor.leaf
+    assert orphan_end["params"]["leaf"] != pre_turn_cursor

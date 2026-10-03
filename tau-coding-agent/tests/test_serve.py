@@ -502,7 +502,7 @@ async def test_perform_acts_at_the_named_cursor_not_the_head(served, tmp_path):
     info = replica.entries[-1]
     assert info["type"] == "session_info" and info["parentId"] == user
     assert replica.cursors[side]["leaf"] == info["id"]
-    assert named["kind"] == "Performed" and named["fields"]["cursor"] == info["id"]
+    assert named["kind"] == "Performed" and named["fields"]["leaf"] == info["id"]
     with pytest.raises(ServeError, match="bad_request"):
         await client.request(
             p.Perform(session_id=session_id, cursor_id=head, method="set_model", arguments={})

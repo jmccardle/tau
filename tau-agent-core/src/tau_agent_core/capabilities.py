@@ -214,7 +214,7 @@ class Capability:
             is that verb's name, because hosts depend on it.
         kind: ``"read"`` returns data and changes nothing; ``"mutation"`` changes
             state. The distinction is the one the RPC layer's E5 rule already
-            enforces — a mutation's completion carries a cursor, a read never does.
+            enforces — a mutation's completion carries a leaf, a read never does.
         description: What it does, in one line.
         on_wire: Whether ``rpc.COMMAND_TABLE`` exposes it today. ``False`` is a
             statement about the wire, not about the capability: it is callable
@@ -350,7 +350,7 @@ DOMAINS: dict[str, Domain] = {
     "message_id_scope": Domain(
         "message_id_scope",
         "Which entries a message_id enumeration considers.",
-        values=("in_session", "ancestors_of_cursor", "descendants_of_cursor"),
+        values=("in_session", "ancestors_of_leaf", "descendants_of_leaf"),
         field_kind="select",
     ),
 }
@@ -434,7 +434,7 @@ _ABORT_RETURNS: dict[str, Any] = {
                 "so a host knows to expect a compaction_end carrying "
                 "cancelled: true for that id. Whether the compaction actually "
                 "stopped is reported THERE and not here — same signal-vs-"
-                "outcome split that keeps `cursor` off this response."
+                "outcome split that keeps `leaf` off this response."
             ),
         },
     },
@@ -460,7 +460,7 @@ _GET_STATE_RETURNS: dict[str, Any] = {
             "description": "AgentSession.get_usage() — null before the first completion.",
         },
         "message_count": {"type": "integer", "description": "len(AgentSession.messages)."},
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": "cursor.leaf (F3: no host may cache 'the tip').",
         },
@@ -486,7 +486,7 @@ _GET_STATE_RETURNS: dict[str, Any] = {
         "model",
         "usage",
         "message_count",
-        "cursor",
+        "leaf",
         "addressable",
     ],
 }
@@ -660,7 +660,7 @@ _SESSION_LIFECYCLE_RETURNS: dict[str, Any] = {
             "type": "boolean",
             "description": (
                 "True if a session_before_switch extension hook vetoed (H2). When "
-                "true, `session`/`cursor` are absent — nothing was touched. An "
+                "true, `session`/`leaf` are absent — nothing was touched. An "
                 "in-flight turn that did not stop in time is a DIFFERENT outcome "
                 "and never reaches this shape — see TURN_STILL_RUNNING."
             ),
@@ -668,7 +668,7 @@ _SESSION_LIFECYCLE_RETURNS: dict[str, Any] = {
         "session": {
             "type": "object",
             "description": (
-                "F2's session tuple: {store, session_id, cursor_id, cursor, "
+                "F2's session tuple: {store, session_id, cursor_id, leaf, "
                 "addressable}. `cursor_id` names the cursor this connection "
                 "now drives (docs/CURSORS.md), which every forwarded event's "
                 "`cursor_id` matches. Present only when cancelled is "
@@ -685,11 +685,11 @@ _SESSION_LIFECYCLE_RETURNS: dict[str, Any] = {
                 "addressable is false, nothing was written to that store."
             ),
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "The resulting cursor.leaf, duplicated at top level "
-                "(E5/F3 — every mutating response returns the resulting cursor). "
+                "(E5/F3 — every mutating response returns the resulting leaf). "
                 "Present only when cancelled is false."
             ),
         },
@@ -726,7 +726,7 @@ _COMPLETE_PATH_RETURNS: dict[str, Any] = {
         "completion": {
             "type": ["object", "null"],
             "description": (
-                "`null` when the cursor is not inside an @reference at all — "
+                "`null` when `offset` is not inside an @reference at all — "
                 "the host shows no popup. Otherwise "
                 "{start, end, token, matches, total}: `start`/`end` are the "
                 "character span of the whole @word, so a host replaces that "
@@ -917,7 +917,7 @@ _SET_AUTO_COMPACTION_RETURNS: dict[str, Any] = {
                 "settings rather than echoed from the request."
             ),
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "cursor.leaf after this call (E5, rule 1 of 'E5 in "
@@ -930,7 +930,7 @@ _SET_AUTO_COMPACTION_RETURNS: dict[str, Any] = {
             ),
         },
     },
-    "required": ["enabled", "cursor"],
+    "required": ["enabled", "leaf"],
 }
 
 _SET_MODEL_RETURNS: dict[str, Any] = {
@@ -940,7 +940,7 @@ _SET_MODEL_RETURNS: dict[str, Any] = {
             "type": "object",
             "description": "AgentSession.get_model() after the switch: {id, provider, context_window}.",
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "cursor.leaf immediately after the model_change entry "
@@ -949,7 +949,7 @@ _SET_MODEL_RETURNS: dict[str, Any] = {
             ),
         },
     },
-    "required": ["model", "cursor"],
+    "required": ["model", "leaf"],
 }
 
 _SET_SESSION_NAME_RETURNS: dict[str, Any] = {
@@ -959,15 +959,15 @@ _SET_SESSION_NAME_RETURNS: dict[str, Any] = {
             "type": "string",
             "description": "The name just persisted (echoes params.name).",
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "The resulting cursor.leaf (E5/F3 — every mutating "
-                "response returns the resulting cursor)."
+                "response returns the resulting leaf)."
             ),
         },
     },
-    "required": ["name", "cursor"],
+    "required": ["name", "leaf"],
 }
 
 _GET_SESSION_NAME_RETURNS: dict[str, Any] = {
@@ -1062,10 +1062,10 @@ _GET_TREE_RETURNS: dict[str, Any] = {
                             "own width. Empty for an entry carrying no text."
                         ),
                     },
-                    "is_cursor": {
+                    "is_leaf": {
                         "type": "boolean",
                         "description": (
-                            "Whether this entry is the session's cursor — where the "
+                            "Whether this entry is the head cursor's leaf — where the "
                             "next submission lands. Exactly one node carries true, or "
                             "none on a session whose cursor names no entry."
                         ),
@@ -1152,7 +1152,7 @@ _GET_TREE_RETURNS: dict[str, Any] = {
                     "kind",
                     "role",
                     "preview",
-                    "is_cursor",
+                    "is_leaf",
                     "timestamp",
                     "first_kept_id",
                     "from_id",
@@ -1164,13 +1164,13 @@ _GET_TREE_RETURNS: dict[str, Any] = {
                 ],
             },
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "cursor.leaf at the moment of the read, duplicated out of "
                 "`nodes` so a host finds it without scanning. Null on a session whose "
                 "cursor names no entry, which is also the one case in which no node "
-                "carries is_cursor: true."
+                "carries is_leaf: true."
             ),
         },
         "count": {
@@ -1183,7 +1183,7 @@ _GET_TREE_RETURNS: dict[str, Any] = {
             ),
         },
     },
-    "required": ["nodes", "cursor", "count"],
+    "required": ["nodes", "leaf", "count"],
 }
 
 _GET_PENDING_REQUEST_RETURNS: dict[str, Any] = {
@@ -1226,7 +1226,7 @@ _ANSWER_REQUEST_RETURNS: dict[str, Any] = {
             "type": ["string", "null"],
             "description": "What the dispatched command produced, or null.",
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "cursor.leaf after the response was appended (E5 rule 1). "
@@ -1236,7 +1236,7 @@ _ANSWER_REQUEST_RETURNS: dict[str, Any] = {
             ),
         },
     },
-    "required": ["handled", "output", "cursor"],
+    "required": ["handled", "output", "leaf"],
 }
 
 _GET_ENTRY_RETURNS: dict[str, Any] = {
@@ -1352,12 +1352,12 @@ _TREE_CONTEXT_RETURNS: dict[str, Any] = {
                 "the old one in between."
             ),
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": "cursor.leaf after the mutation (E5 rule 1).",
         },
     },
-    "required": ["messages", "cursor"],
+    "required": ["messages", "leaf"],
 }
 
 _PASTE_SUBTREE_RETURNS: dict[str, Any] = {
@@ -1373,7 +1373,7 @@ _PASTE_SUBTREE_RETURNS: dict[str, Any] = {
                 "someone navigates onto the copy."
             ),
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "cursor.leaf after the paste — E5 rule 1, and here it is "
@@ -1382,7 +1382,7 @@ _PASTE_SUBTREE_RETURNS: dict[str, Any] = {
             ),
         },
     },
-    "required": ["minted_ids", "cursor"],
+    "required": ["minted_ids", "leaf"],
 }
 
 _COMPARE_RETURNS: dict[str, Any] = {
@@ -1432,7 +1432,7 @@ _EXTENSION_ACTION_RETURNS: dict[str, Any] = {
             "type": "string",
             "description": "The human-readable line, the same one the TUI listing shows.",
         },
-        "cursor": {
+        "leaf": {
             "type": ["string", "null"],
             "description": (
                 "cursor.leaf — E5 rule 1 on a mutator whose whole product "
@@ -1442,7 +1442,7 @@ _EXTENSION_ACTION_RETURNS: dict[str, Any] = {
             ),
         },
     },
-    "required": ["action", "path", "ok", "message", "cursor"],
+    "required": ["action", "path", "ok", "message", "leaf"],
 }
 
 
@@ -1453,7 +1453,7 @@ CAPABILITIES: dict[str, Capability] = {
             "get_state",
             "read",
             "What is running: session id, status, whether a turn is streaming, the "
-            "model, the last usage, the message count and the cursor.",
+            "model, the last usage, the message count and the leaf.",
             on_wire=True,
             returns=_GET_STATE_RETURNS,
         ),
@@ -1522,7 +1522,7 @@ CAPABILITIES: dict[str, Capability] = {
             on_wire=True,
             arguments=(
                 Argument("text", "text", "The line being completed."),
-                Argument("cursor", "integer", "The caret's offset into that line."),
+                Argument("offset", "integer", "The caret's offset into that line."),
             ),
             returns=_COMPLETE_PATH_RETURNS,
         ),
@@ -1539,7 +1539,7 @@ CAPABILITIES: dict[str, Capability] = {
                     required=False,
                 ),
                 Argument(
-                    "cursor",
+                    "leaf",
                     "message_id",
                     "The entry a scoped enumeration is relative to.",
                     required=False,

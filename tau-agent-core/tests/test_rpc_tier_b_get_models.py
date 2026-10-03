@@ -238,8 +238,8 @@ async def test_the_active_model_is_not_flagged_and_needs_no_config_entry(session
 
 async def test_carries_no_cursor(handler: RPCHandler) -> None:
     """E5 rule 2 (commands.py "E5 in Tier B"): a read never carries one."""
-    assert "cursor" not in commands.COMMAND_TABLE["get_models"].result_schema["properties"]
-    assert "cursor" not in (await _call(handler))["result"]
+    assert "leaf" not in commands.COMMAND_TABLE["get_models"].result_schema["properties"]
+    assert "leaf" not in (await _call(handler))["result"]
 
 
 async def test_answers_while_a_turn_holds_the_turn_lock(session, handler) -> None:

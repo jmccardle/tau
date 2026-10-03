@@ -767,7 +767,7 @@ class Daemon:
                     session=session,
                     runtime=SessionScope(self.catalog, host.cwd),
                     scope=request.scope,
-                    cursor=request.leaf,
+                    leaf=request.leaf,
                     query=request.query,
                     limit=request.limit,
                 )

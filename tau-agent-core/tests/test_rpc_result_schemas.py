@@ -74,8 +74,8 @@ def test_every_capability_backed_verb_publishes_its_capabilitys_returns() -> Non
 def test_result_schema_for_hands_back_a_copy() -> None:
     """Three capabilities share one declaration, so a caller must not reach it."""
     first = result_schema_for("navigate")
-    first["properties"]["cursor"]["description"] = "clobbered"
-    assert result_schema_for("navigate")["properties"]["cursor"]["description"] != "clobbered"
+    first["properties"]["leaf"]["description"] = "clobbered"
+    assert result_schema_for("navigate")["properties"]["leaf"]["description"] != "clobbered"
     assert CAPABILITIES["elide_span"].returns is CAPABILITIES["navigate"].returns
 
 

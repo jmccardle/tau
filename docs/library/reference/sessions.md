@@ -796,17 +796,17 @@ site. Three copies of that decision is how the Tier B review's findings 5 and
 **Parameters**
 
 - `mutation: str` — The capability that ran, a key of :data:`~tau_agent_core.capabilities.CAPABILITIES`.
-- `data: dict[str, Any]` — What it returned, keyed as its ``returns`` declares, without the cursor — this adds that.
+- `data: dict[str, Any]` — What it returned, keyed as its ``returns`` declares, without the leaf — this adds that.
 - `flow: str | None = None` — The flow that named the mutation, when one did.
 
 **Returns**
 
-class:`~tau_agent_core.flows.Performed` carrying ``data`` plus the resulting cursor.
+class:`~tau_agent_core.flows.Performed` carrying ``data`` plus the resulting leaf.
 
 **Raises**
 
 - `KeyError` — No capability has that name.
-- `ValueError` — The named capability is a read, or the caller already put a ``cursor`` in ``data``. Both are Fail-Early: a read reporting a cursor is E5 rule 2 broken, and a hand-supplied cursor is a second answer to the question this method exists to answer.
+- `ValueError` — The named capability is a read, or the caller already put a ``leaf`` in ``data``. Both are Fail-Early: a read reporting a leaf is E5 rule 2 broken, and a hand-supplied leaf is a second answer to the question this method exists to answer.
 
 ### persistence_settled
 
@@ -1964,7 +1964,7 @@ Last update timestamp (ms since epoch)
 <!-- agent: yes -->
 
 ```python
-class BrowseNode(entry_id: str, parent_id: str | None, kind: str, role: str | None, preview: str, is_cursor: bool, timestamp: int | None, first_kept_id: str | None, from_id: str | None, is_system: bool, tool_call_ids: tuple[str, ...], tool_call_id: str | None, copyable: bool, estimated_tokens: int)
+class BrowseNode(entry_id: str, parent_id: str | None, kind: str, role: str | None, preview: str, is_leaf: bool, timestamp: int | None, first_kept_id: str | None, from_id: str | None, is_system: bool, tool_call_ids: tuple[str, ...], tool_call_id: str | None, copyable: bool, estimated_tokens: int)
 ```
 
 `tau_agent_core.conversation_tree.BrowseNode`
@@ -1990,7 +1990,7 @@ A body is fetched per node, the way the TUI's detail pane calls
 - `kind: str` — The entry's ``type`` — ``message``, ``compaction``, ``elide``, ``branch_summary``, ``navigate``, ``customEntry`` and the rest.
 - `role: str | None` — ``user`` / ``assistant`` / ``toolResult`` / ``system`` on a message entry, ``None`` on every bookkeeping kind.
 - `preview: str` — The entry's first line, cut nowhere — the caller elides to width.
-- `is_cursor: bool` — Whether this entry is the tree's leaf — the wire's name for the head cursor's position.
+- `is_leaf: bool` — Whether this entry is the tree's leaf.
 - `timestamp: int | None` — Epoch milliseconds, or ``None`` when no clock applies. This is the key children are sorted by, so a caller re-sorting gets this order.
 - `first_kept_id: str | None` — On a splice anchor (``compaction`` / ``elide``), the oldest entry the fold keeps. ``None`` on every other kind, and on an anchor that names none. The fold's whole boundary, so a head computes the folded span rather than guessing at it.
 - `from_id: str | None` — On a ``branch_summary``, the head of the branch it summarizes.
@@ -2014,7 +2014,7 @@ One read, or one mutation. The unit every head can address by name.
 **Constructor parameters**
 
 - `name: str` — The capability's name. Where a capability is already an RPC verb, this is that verb's name, because hosts depend on it.
-- `kind: CapabilityKind` — ``"read"`` returns data and changes nothing; ``"mutation"`` changes state. The distinction is the one the RPC layer's E5 rule already enforces — a mutation's completion carries a cursor, a read never does.
+- `kind: CapabilityKind` — ``"read"`` returns data and changes nothing; ``"mutation"`` changes state. The distinction is the one the RPC layer's E5 rule already enforces — a mutation's completion carries a leaf, a read never does.
 - `description: str` — What it does, in one line.
 - `on_wire: bool = False` — Whether ``rpc.COMMAND_TABLE`` exposes it today. ``False`` is a statement about the wire, not about the capability: it is callable in-process either way.
 - `arguments: tuple[Argument, ...] | None = ()` — What it takes, said once for every caller — the wire schema, the flow that ends in it and the head that performs it all read this tuple. ``()`` means it takes nothing. ``None`` means its parameters cannot be written in this vocabulary and the hand-written wire schema is their only statement; ``submit`` is the case, carrying images and a correlation object that no :class:`Domain` describes. ``None`` is not a default: a capability says which of the three it is.
@@ -2338,7 +2338,7 @@ The child ids sorted by timestamp, the same order :meth:`tree` puts them in. An 
 ### complete_message_id
 
 ```python
-complete_message_id(scope: MessageIdScope = 'in_session', cursor: str | None = None, query: str = '', limit: int = _COMPLETION_LIMIT) -> MessageIdCompletion
+complete_message_id(scope: MessageIdScope = 'in_session', leaf: str | None = None, query: str = '', limit: int = _COMPLETION_LIMIT) -> MessageIdCompletion
 ```
 
 `tau_agent_core.conversation_tree.ConversationTree.complete_message_id`
@@ -2369,8 +2369,8 @@ a prefix of the answer rather than silently shown one (the G3 rule
 
 **Parameters**
 
-- `scope: MessageIdScope = 'in_session'` — Which entries are candidates. ``"in_session"`` is every entry; ``"ancestors_of_cursor"`` is the parent chain from the root to ``cursor`` inclusive; ``"descendants_of_cursor"`` is the subtree below it, excluding ``cursor`` itself.
-- `cursor: str | None = None` — The entry the two scoped variants are relative to (the wire's name for a leaf id). ``None`` uses this tree's leaf. Passed rather than always read, so a caller enumerating for a sub-agent can scope to THAT agent's cursor.
+- `scope: MessageIdScope = 'in_session'` — Which entries are candidates. ``"in_session"`` is every entry; ``"ancestors_of_leaf"`` is the parent chain from the root to ``leaf`` inclusive; ``"descendants_of_leaf"`` is the subtree below it, excluding ``leaf`` itself.
+- `leaf: str | None = None` — The entry the two scoped variants are relative to. ``None`` uses this tree's leaf. Passed rather than always read, so a caller enumerating for a sub-agent can scope to THAT agent's leaf.
 - `query: str = ''` — The typed text. ``""`` matches everything in scope.
 - `limit: int = _COMPLETION_LIMIT` — How many matches to return at most.
 
@@ -2380,7 +2380,7 @@ class:`MessageIdCompletion`: the matches in tree order (root-most first), and th
 
 **Raises**
 
-- `KeyError` — ``cursor`` — or this tree's leaf, when ``cursor`` is None — names no entry, and the scope is one that needs it. Fail-Early: a scope relative to a node that does not exist would otherwise return an empty list, which reads as "nothing matched".
+- `KeyError` — ``leaf`` — or this tree's leaf, when ``leaf`` is None — names no entry, and the scope is one that needs it. Fail-Early: a scope relative to a node that does not exist would otherwise return an empty list, which reads as "nothing matched".
 
 ### contains
 
@@ -3251,7 +3251,7 @@ flows is a view, and it composes them in head code.
 <!-- agent: yes -->
 
 ```python
-class FlowStep(flow: str, argument: Argument, domain: Domain, cursor: str | None, bound: dict[str, Any])
+class FlowStep(flow: str, argument: Argument, domain: Domain, leaf: str | None, bound: dict[str, Any])
 ```
 
 `tau_agent_core.flows.FlowStep`
@@ -3267,7 +3267,7 @@ values come from, and :func:`enumerate_domain` computes them.
 - `flow: str` — The flow's name.
 - `argument: Argument` — The argument being asked for.
 - `domain: Domain` — That argument's :class:`~tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up.
-- `cursor: str | None` — The entry a scoped ``message_id`` argument is relative to, carried through from the :func:`next_step` call so the head hands it straight back to :func:`enumerate_domain`.
+- `leaf: str | None` — The entry a scoped ``message_id`` argument is relative to, carried through from the :func:`next_step` call so the head hands it straight back to :func:`enumerate_domain`.
 - `bound: dict[str, Any]` — The arguments already bound, so a head redrawing a form has them.
 
 ## ForkResult
@@ -3503,7 +3503,7 @@ A subtree copy worked out against the tree, before anything is written.
 <!-- agent: yes -->
 
 ```python
-class Performed(flow: str | None, mutation: str, data: dict[str, Any], cursor: str | None = None)
+class Performed(flow: str | None, mutation: str, data: dict[str, Any], leaf: str | None = None)
 ```
 
 `tau_agent_core.flows.Performed`
@@ -3527,7 +3527,7 @@ it on every call, the way nothing re-validates a params dict in process, and
 - `flow: str | None` — The flow that named the mutation, when a flow did. ``None`` when a caller performed the capability directly.
 - `mutation: str` — The capability that ran.
 - `data: dict[str, Any]` — What it returned, keyed as its ``returns`` declares. JSON-able.
-- `cursor: str | None = None` — The session-log cursor after the call, or ``None`` for a session with no log. It is the promoted copy of ``data["cursor"]`` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it.
+- `leaf: str | None = None` — The acting cursor's leaf after the call, or ``None`` for a session with no log. It is the promoted copy of ``data["leaf"]`` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it.
 
 ### summary
 
@@ -3545,12 +3545,12 @@ want the same sentence, and the alternative is each inventing its own.
 
 A capability whose ``returns`` declares ``message`` has already written the
 line — the three extension actions do — and it is used verbatim. Otherwise
-the fields are named with their values, ``cursor`` excluded because it moves
+the fields are named with their values, ``leaf`` excluded because it moves
 on nearly every mutation and says nothing to a reader.
 
 **Returns**
 
-The line, never empty: a mutation that returned only a cursor still names itself.
+The line, never empty: a mutation that returned only a leaf still names itself.
 
 ## Ready
 <!-- agent: yes -->
@@ -4883,7 +4883,7 @@ The messages those entries contribute, in order. Entry kinds that carry no messa
 <!-- agent: yes -->
 
 ```python
-enumerate_domain(domain: str, *, session: Any = None, runtime: Any = None, scope: MessageIdScope | None = None, cursor: str | None = None, query: str = '', limit: int = _ENUMERATION_LIMIT, vocabulary: Vocabulary = BUILTIN) -> DomainValues
+enumerate_domain(domain: str, *, session: Any = None, runtime: Any = None, scope: MessageIdScope | None = None, leaf: str | None = None, query: str = '', limit: int = _ENUMERATION_LIMIT, vocabulary: Vocabulary = BUILTIN) -> DomainValues
 ```
 
 `tau_agent_core.flows.enumerate_domain`
@@ -4911,7 +4911,7 @@ extension already holds its own context.
 - `session: Any = None` — The :class:`~tau_agent_core.agent_session.AgentSession` to read models, extensions and the session tree from.
 - `runtime: Any = None` — The :class:`~tau_agent_core.agent_session_runtime.AgentSessionRuntime` to read the session catalog and the working directory from. Separate from ``session`` because both live there, not on the session. ``path`` needs it as much as ``session_id`` does: completing against the process's own directory instead of the runtime's answers a different question than the one that was asked, so its absence raises rather than falling back.
 - `scope: MessageIdScope | None = None` — For ``message_id``, which entries are candidates.
-- `cursor: str | None = None` — For a scoped ``message_id``, the entry the scope is relative to.
+- `leaf: str | None = None` — For a scoped ``message_id``, the entry the scope is relative to.
 - `query: str = ''` — Filter text. Honoured by the domains whose readers take one; a domain with a small fixed set ignores it.
 - `limit: int = _ENUMERATION_LIMIT` — How many values to return at most.
 - `vocabulary: Vocabulary = BUILTIN` — The registry to look ``domain`` up in, and whose ``enumerators`` answer for a domain an extension declared.
@@ -5103,7 +5103,7 @@ The flat message list a head swaps into its transcript.
 <!-- agent: yes -->
 
 ```python
-next_step(flow: str, bound: dict[str, Any] | None = None, cursor: str | None = None, vocabulary: Vocabulary = BUILTIN) -> FlowStep | Ready
+next_step(flow: str, bound: dict[str, Any] | None = None, leaf: str | None = None, vocabulary: Vocabulary = BUILTIN) -> FlowStep | Ready
 ```
 
 `tau_agent_core.flows.next_step`
@@ -5123,7 +5123,7 @@ command with only optional flags does.
 
 - `flow: str` — The flow's name.
 - `bound: dict[str, Any] | None = None` — The arguments bound so far. ``None`` and ``{}`` are the same thing: the flow's first step.
-- `cursor: str | None = None` — The entry a ``message_id`` argument's scope is relative to. Required of the caller rather than read off a session, for the reason ``resolve_command`` takes ``extension_commands`` as a parameter: it keeps this callable from a head that is peeking, a runtime that is deciding, and a test with neither. A caller stepping a sub-agent's flow passes THAT agent's cursor.
+- `leaf: str | None = None` — The entry a ``message_id`` argument's scope is relative to. Required of the caller rather than read off a session, for the reason ``resolve_command`` takes ``extension_commands`` as a parameter: it keeps this callable from a head that is peeking, a runtime that is deciding, and a test with neither. A caller stepping a sub-agent's flow passes THAT agent's leaf.
 - `vocabulary: Vocabulary = BUILTIN` — The registry to look the flow up in. A session's own (``AgentSession.vocabulary``) also carries the flows its extensions declared; the default is τ's alone.
 
 **Returns**

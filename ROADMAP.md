@@ -501,18 +501,9 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   field substitution and is a different mechanism.
 - **Tier 11 M4/M5** — `registerProvider`, package manager. Deliberately
   deferred (see "Shipped" above), not stalled.
-- **RPC says `cursor` where it means an entry id** (found 2026-10-02, required
-  before 0.12.0). Since `docs/CURSORS.md`, a cursor is a writer and the entry id
-  it extends from is its leaf. The wire still uses the old meaning:
-  `get_state.cursor`, the `cursor` on every mutating verb's result (rule E5 in
-  `rpc/commands.py`), `WireEvent.cursor`, `complete_message_id`'s `cursor`
-  parameter and `TreeNode.is_cursor`. `rpc/commands.py` has 126 occurrences of the
-  word, `rpc/handler.py` has 22, and 29 are the `"cursor"` key literal. Ten tau-code
-  `ui`/`protocol` source files read it. The wire also has `cursor_id` (1.8), which
-  names a real cursor, so one message can carry both meanings. The rename is a
-  protocol bump plus a matching tau-code release. CURSORS.md §9 postponed it, and
-  it is cleanup, not urgent. RPC stays a first-class head: the stdio way to run an
-  exclusive agent without importing τ.
+- **RPC says `cursor` where it means an entry id** — **done 2026-10-03, RPC
+  2.0 / serve 0.5** (`docs/TAU-SERVE.md` §7.4). The entry id is `leaf`, the caret
+  is `offset`, `is_cursor` is `is_leaf`. tau-code needs the matching update.
 
 ---
 

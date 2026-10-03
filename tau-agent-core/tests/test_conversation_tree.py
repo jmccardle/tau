@@ -592,19 +592,19 @@ class TestCompleteMessageId:
         assert found.matches[3].preview == "path A"
 
     def test_ancestors_scope_is_the_parent_chain_root_first(self) -> None:
-        found = ConversationTree(_branched(), leaf="e05").complete_message_id("ancestors_of_cursor")
+        found = ConversationTree(_branched(), leaf="e05").complete_message_id("ancestors_of_leaf")
         assert [m.entry_id for m in found.matches] == ["e01", "e02", "e03", "e04", "e05"]
 
     def test_descendants_scope_excludes_the_anchor_and_spans_both_forks(self) -> None:
         found = ConversationTree(_branched(), leaf="e05").complete_message_id(
-            "descendants_of_cursor", "e03"
+            "descendants_of_leaf", "e03"
         )
         assert [m.entry_id for m in found.matches] == ["e04", "e06", "e05", "e07"]
 
     def test_a_passed_cursor_beats_the_trees_own(self) -> None:
         """A caller enumerating for a sub-agent scopes to THAT agent's cursor."""
         tree = ConversationTree(_branched(), leaf="e05")
-        theirs = tree.complete_message_id("ancestors_of_cursor", "e07")
+        theirs = tree.complete_message_id("ancestors_of_leaf", "e07")
         assert [m.entry_id for m in theirs.matches] == ["e01", "e02", "e03", "e06", "e07"]
 
     def test_the_query_completes_an_id_by_prefix(self) -> None:
@@ -628,7 +628,7 @@ class TestCompleteMessageId:
         """Fail-Early: an empty list here would read as 'nothing matched'."""
         tree = ConversationTree(_linear(), leaf="e05")
         with pytest.raises(KeyError, match="cannot scope"):
-            tree.complete_message_id("ancestors_of_cursor", "nope")
+            tree.complete_message_id("ancestors_of_leaf", "nope")
 
     def test_in_session_needs_no_cursor_at_all(self) -> None:
         assert ConversationTree(_linear(), leaf=None).complete_message_id().total == 5
@@ -747,7 +747,7 @@ class TestBrowse:
 
     def test_exactly_the_cursor_is_flagged(self) -> None:
         nodes = ConversationTree(_branched(), leaf="e05").browse()
-        assert [n.entry_id for n in nodes if n.is_cursor] == ["e05"]
+        assert [n.entry_id for n in nodes if n.is_leaf] == ["e05"]
 
     def test_an_orphan_is_a_root_here_too(self) -> None:
         """browse() walks tree(), so a broken parent chain does not lose entries."""

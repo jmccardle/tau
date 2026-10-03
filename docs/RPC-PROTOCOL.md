@@ -16,7 +16,7 @@
 
 ## Version negotiation
 
-- **Protocol version:** `1.8`
+- **Protocol version:** `2.0`
 - **Dialect:** `jsonrpc-2.0`
 - **Counts:** 40 live verbs, 7 declined verbs, 13 event types. Cite this line; never copy the numbers into hand-written prose.
 
@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 137,505 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 137,277 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -50,7 +50,7 @@ One entry per non-declined `COMMAND_TABLE` row, grouped by tier. `since` names t
 
 #### `abort`
 
-*Since 2A.* AgentSession.abort() (agent_session.py:3244) — synchronous, idempotent, and a SIGNAL only: it requests the in-flight turn stop, and returns immediately, before that turn has unwound or persisted anything. Phase-2 review B1: this response therefore does NOT carry a cursor — one taken here would be the PRE-abort tip, exactly the stale-tip failure E5/F3 exist to prevent, and the reviewer's own trace caught it (a 2s-gated turn aborted at 0.5s: this call's cursor and the cursor AFTER the turn actually finished differed). E5 for `abort` (and for `submit`/`prompt`, which share this trait) is satisfied instead by `WireEvent.cursor` on the `agent_end` that follows — the one point the mutation has genuinely happened — never by a value guessed at signal time. WHAT IT REACHES (finding 5, Tier B review): the in-flight turn, and — since that finding — an in-flight `compact`. It did not before, and said otherwise: a measured trace answered {status: aborted} at +0.00s and delivered compaction_end {performed: true} at +20.01s, because AgentSession.compact consults no abort flag anywhere. The compaction's background task is now cancelled here, and this response names it in `compaction_id` (null when none was running) so a host knows which compaction_end to expect. That notification carries `cancelled: true` and no `performed` — a compaction stopped part-way neither performed nor found nothing to do, and nothing was written (Fail Early: the summary is generated before the entry is appended). D-5's 'a cancelled compaction emits no compaction_end' is unchanged for the case it was written about — a SHUTDOWN reap, where there is no host left to correlate anything and the report goes to stderr (T4); a host that asked for the cancellation is the opposite case and is told on the wire. What abort still does NOT reach: an auto-compaction (`_maybe_auto_compact`), which runs inside AgentSession with no RPC task to cancel — see set_auto_compaction's notes, which state the same boundary from the other side.
+*Since 2A.* AgentSession.abort() (agent_session.py:3244) — synchronous, idempotent, and a SIGNAL only: it requests the in-flight turn stop, and returns immediately, before that turn has unwound or persisted anything. Phase-2 review B1: this response therefore does NOT carry a leaf — one taken here would be the PRE-abort tip, exactly the stale-tip failure E5/F3 exist to prevent, and the reviewer's own trace caught it (a 2s-gated turn aborted at 0.5s: this call's leaf and the leaf AFTER the turn actually finished differed). E5 for `abort` (and for `submit`/`prompt`, which share this trait) is satisfied instead by `WireEvent.leaf` on the `agent_end` that follows — the one point the mutation has genuinely happened — never by a value guessed at signal time. WHAT IT REACHES (finding 5, Tier B review): the in-flight turn, and — since that finding — an in-flight `compact`. It did not before, and said otherwise: a measured trace answered {status: aborted} at +0.00s and delivered compaction_end {performed: true} at +20.01s, because AgentSession.compact consults no abort flag anywhere. The compaction's background task is now cancelled here, and this response names it in `compaction_id` (null when none was running) so a host knows which compaction_end to expect. That notification carries `cancelled: true` and no `performed` — a compaction stopped part-way neither performed nor found nothing to do, and nothing was written (Fail Early: the summary is generated before the entry is appended). D-5's 'a cancelled compaction emits no compaction_end' is unchanged for the case it was written about — a SHUTDOWN reap, where there is no host left to correlate anything and the report goes to stderr (T4); a host that asked for the cancellation is the opposite case and is told on the wire. What abort still does NOT reach: an auto-compaction (`_maybe_auto_compact`), which runs inside AgentSession with no RPC task to cancel — see set_auto_compaction's notes, which state the same boundary from the other side.
 
 **Params schema:**
 
@@ -69,7 +69,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "compaction_id": {
-      "description": "The compaction this abort's signal was delivered to, or null when none was in flight (finding 5, Tier B review). Present so a host knows to expect a compaction_end carrying cancelled: true for that id. Whether the compaction actually stopped is reported THERE and not here \u2014 same signal-vs-outcome split that keeps `cursor` off this response.",
+      "description": "The compaction this abort's signal was delivered to, or null when none was in flight (finding 5, Tier B review). Present so a host knows to expect a compaction_end carrying cancelled: true for that id. Whether the compaction actually stopped is reported THERE and not here \u2014 same signal-vs-outcome split that keeps `leaf` off this response.",
       "type": [
         "string",
         "null"
@@ -112,18 +112,18 @@ what rides on top of this on every response):
 {
   "properties": {
     "cancelled": {
-      "description": "True if a session_before_switch extension hook vetoed (H2). When true, `session`/`cursor` are absent \u2014 nothing was touched. An in-flight turn that did not stop in time is a DIFFERENT outcome and never reaches this shape \u2014 see TURN_STILL_RUNNING.",
+      "description": "True if a session_before_switch extension hook vetoed (H2). When true, `session`/`leaf` are absent \u2014 nothing was touched. An in-flight turn that did not stop in time is a DIFFERENT outcome and never reaches this shape \u2014 see TURN_STILL_RUNNING.",
       "type": "boolean"
     },
-    "cursor": {
-      "description": "The resulting cursor.leaf, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting cursor). Present only when cancelled is false.",
+    "leaf": {
+      "description": "The resulting cursor.leaf, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting leaf). Present only when cancelled is false.",
       "type": [
         "string",
         "null"
       ]
     },
     "session": {
-      "description": "F2's session tuple: {store, session_id, cursor_id, cursor, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
+      "description": "F2's session tuple: {store, session_id, cursor_id, leaf, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
       "type": "object"
     }
   },
@@ -334,7 +334,7 @@ what rides on top of this on every response):
 
 #### `get_state`
 
-*Since 2A.* An aggregate over AgentSession.state (session_id/status), is_streaming, get_model(), get_usage(), messages, and cursor.leaf (F3: a host may not cache 'the tip', so cursor rides on every state read). τ has no equivalent of pi's thinkingLevel/steeringMode/followUpMode/sessionFile/pendingMessageCount — none of those exist as AgentSession state today, so they are omitted rather than fabricated. Two of pi's state fields DID gain a τ equivalent in Tier B, and are absent from THIS verb as duplication rather than as absence: pi's sessionName is get_session_name (B5 — read off the session log via extension_types.read_session_name; still not an AgentSession property, which is why it is not folded in here), and pi's autoCompactionEnabled is get_session_stats' compaction_settings.enabled (D-3), the field set_auto_compaction (D-4) writes. This verb answers 'what is running'; get_session_stats' own notes state that division of labour. `addressable` is the one field here that is not about the turn: it answers whether the CURRENT session is persisted, which stopped being a constant when --mode rpc began honoring --no-session. Before that the startup session was always persisted, new_session/fork/switch_session reported addressable on the sessions THEY produced, and a host that never called one of those three had no verb to ask — so the only way to learn an unpersisted session was to trip -32004 on set_model. It belongs on the state read rather than a verb of its own because a host already calls this one, and because it can change under the connection's feet (a switch_session onto an ephemeral session) exactly as `model` and `cursor` can.
+*Since 2A.* An aggregate over AgentSession.state (session_id/status), is_streaming, get_model(), get_usage(), messages, and cursor.leaf (F3: a host may not cache 'the tip', so leaf rides on every state read). τ has no equivalent of pi's thinkingLevel/steeringMode/followUpMode/sessionFile/pendingMessageCount — none of those exist as AgentSession state today, so they are omitted rather than fabricated. Two of pi's state fields DID gain a τ equivalent in Tier B, and are absent from THIS verb as duplication rather than as absence: pi's sessionName is get_session_name (B5 — read off the session log via extension_types.read_session_name; still not an AgentSession property, which is why it is not folded in here), and pi's autoCompactionEnabled is get_session_stats' compaction_settings.enabled (D-3), the field set_auto_compaction (D-4) writes. This verb answers 'what is running'; get_session_stats' own notes state that division of labour. `addressable` is the one field here that is not about the turn: it answers whether the CURRENT session is persisted, which stopped being a constant when --mode rpc began honoring --no-session. Before that the startup session was always persisted, new_session/fork/switch_session reported addressable on the sessions THEY produced, and a host that never called one of those three had no verb to ask — so the only way to learn an unpersisted session was to trip -32004 on set_model. It belongs on the state read rather than a verb of its own because a host already calls this one, and because it can change under the connection's feet (a switch_session onto an ephemeral session) exactly as `model` and `leaf` can.
 
 **Params schema:**
 
@@ -356,16 +356,16 @@ what rides on top of this on every response):
       "description": "Whether the CURRENT session is persisted: true if list_sessions returns it and switch_session can reach it later. The same predicate new_session/fork/switch_session publish on their session tuple, asked about the session this connection is on right now. False means the appending verbs (set_model, set_session_name, compact \u2014 D-7) will refuse with -32004 SESSION_NOT_PERSISTED, and nothing this connection does is written to the store. Reachable without a respawn: new_session {\"persist\": true} moves onto a persisted session.",
       "type": "boolean"
     },
-    "cursor": {
+    "is_streaming": {
+      "description": "AgentSession.is_streaming.",
+      "type": "boolean"
+    },
+    "leaf": {
       "description": "cursor.leaf (F3: no host may cache 'the tip').",
       "type": [
         "string",
         "null"
       ]
-    },
-    "is_streaming": {
-      "description": "AgentSession.is_streaming.",
-      "type": "boolean"
     },
     "message_count": {
       "description": "len(AgentSession.messages).",
@@ -402,7 +402,7 @@ what rides on top of this on every response):
     "model",
     "usage",
     "message_count",
-    "cursor",
+    "leaf",
     "addressable"
   ],
   "type": "object"
@@ -465,7 +465,7 @@ what rides on top of this on every response):
 
 #### `new_session`
 
-*Since phase-3.* H1 (REMOTE-CONTROL.md §4[6]): starts a fresh conversation on the SAME AgentSession (model/tools/extensions/provider stay warm — H3). `persist` defaults to true (Blocker 2, Tier B review): the fresh session is written to the configured store, so it is addressable by switch_session and durable for the verbs that append to it (set_model/set_session_name/compact — D-7). Pass false for an in-memory conversation — those three verbs then refuse on it rather than promising a durable write, and the session tuple says so on the wire: `addressable: false` (finding 7 of the same review, which measured this verb returning an 'addressable tuple' for a session switch_session answered -32602 for). Addressable means exactly 'list_sessions returns this id'. {cancelled} is H2's veto contract: a session_before_switch extension hook may refuse, and a host must treat that as a hard failure rather than a silent no-op. E5: the result carries the resulting cursor — always the fresh log's cursor here, never a value from before this call ran. TURN_STILL_RUNNING (Finding 1): an in-flight turn that did not stop within the bounded wait after abort() — nothing was touched; retry, or wait for agent_end first.
+*Since phase-3.* H1 (REMOTE-CONTROL.md §4[6]): starts a fresh conversation on the SAME AgentSession (model/tools/extensions/provider stay warm — H3). `persist` defaults to true (Blocker 2, Tier B review): the fresh session is written to the configured store, so it is addressable by switch_session and durable for the verbs that append to it (set_model/set_session_name/compact — D-7). Pass false for an in-memory conversation — those three verbs then refuse on it rather than promising a durable write, and the session tuple says so on the wire: `addressable: false` (finding 7 of the same review, which measured this verb returning an 'addressable tuple' for a session switch_session answered -32602 for). Addressable means exactly 'list_sessions returns this id'. {cancelled} is H2's veto contract: a session_before_switch extension hook may refuse, and a host must treat that as a hard failure rather than a silent no-op. E5: the result carries the resulting leaf — always the fresh log's leaf here, never a value from before this call ran. TURN_STILL_RUNNING (Finding 1): an in-flight turn that did not stop within the bounded wait after abort() — nothing was touched; retry, or wait for agent_end first.
 
 **Params schema:**
 
@@ -474,7 +474,7 @@ what rides on top of this on every response):
   "additionalProperties": false,
   "properties": {
     "persist": {
-      "description": "Whether the new session is written to the configured store. Omitted defaults to TRUE: addressable by switch_session, listed by list_sessions, and able to keep what set_model/set_session_name/compact append to it. false gives an in-memory conversation that outlives nothing \u2014 the result then reports `session.addressable: false` (finding 7), no list_sessions row exists for its id, switch_session refuses it, and those three verbs REFUSE (SESSION_NOT_PERSISTED) rather than return a cursor for a write that never landed. Which verbs those are is not a list to memorise: D-7 (commands.py 'DURABILITY in Tier B') is 'the verb that appends refuses', and the rest \u2014 including set_auto_compaction \u2014 answer normally.",
+      "description": "Whether the new session is written to the configured store. Omitted defaults to TRUE: addressable by switch_session, listed by list_sessions, and able to keep what set_model/set_session_name/compact append to it. false gives an in-memory conversation that outlives nothing \u2014 the result then reports `session.addressable: false` (finding 7), no list_sessions row exists for its id, switch_session refuses it, and those three verbs REFUSE (SESSION_NOT_PERSISTED) rather than return a leaf for a write that never landed. Which verbs those are is not a list to memorise: D-7 (commands.py 'DURABILITY in Tier B') is 'the verb that appends refuses', and the rest \u2014 including set_auto_compaction \u2014 answer normally.",
       "type": "boolean"
     }
   },
@@ -489,18 +489,18 @@ what rides on top of this on every response):
 {
   "properties": {
     "cancelled": {
-      "description": "True if a session_before_switch extension hook vetoed (H2). When true, `session`/`cursor` are absent \u2014 nothing was touched. An in-flight turn that did not stop in time is a DIFFERENT outcome and never reaches this shape \u2014 see TURN_STILL_RUNNING.",
+      "description": "True if a session_before_switch extension hook vetoed (H2). When true, `session`/`leaf` are absent \u2014 nothing was touched. An in-flight turn that did not stop in time is a DIFFERENT outcome and never reaches this shape \u2014 see TURN_STILL_RUNNING.",
       "type": "boolean"
     },
-    "cursor": {
-      "description": "The resulting cursor.leaf, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting cursor). Present only when cancelled is false.",
+    "leaf": {
+      "description": "The resulting cursor.leaf, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting leaf). Present only when cancelled is false.",
       "type": [
         "string",
         "null"
       ]
     },
     "session": {
-      "description": "F2's session tuple: {store, session_id, cursor_id, cursor, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
+      "description": "F2's session tuple: {store, session_id, cursor_id, leaf, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
       "type": "object"
     }
   },
@@ -644,7 +644,7 @@ what rides on top of this on every response):
 
 #### `switch_session`
 
-*Since phase-3.* H1: loads a different, already-addressable session (resolved by id or unique id prefix — SWITCH_SESSION_PARAMS_SCHEMA; list_sessions is where those ids come from, finding 8, and its rows are exactly what this verb resolves against) and moves this connection onto it. Same {cancelled} veto contract as new_session (H2); an unresolvable session_id raises INVALID_PARAMS instead — a bad id is a caller mistake the schema cannot catch syntactically, not a veto. E5: the result carries the LOADED session's cursor. Same TURN_STILL_RUNNING failure mode as new_session (Finding 1) — checked after resolution, so a bad id still fails INVALID_PARAMS even with an in-flight turn.
+*Since phase-3.* H1: loads a different, already-addressable session (resolved by id or unique id prefix — SWITCH_SESSION_PARAMS_SCHEMA; list_sessions is where those ids come from, finding 8, and its rows are exactly what this verb resolves against) and moves this connection onto it. Same {cancelled} veto contract as new_session (H2); an unresolvable session_id raises INVALID_PARAMS instead — a bad id is a caller mistake the schema cannot catch syntactically, not a veto. E5: the result carries the LOADED session's leaf. Same TURN_STILL_RUNNING failure mode as new_session (Finding 1) — checked after resolution, so a bad id still fails INVALID_PARAMS even with an in-flight turn.
 
 **Params schema:**
 
@@ -671,18 +671,18 @@ what rides on top of this on every response):
 {
   "properties": {
     "cancelled": {
-      "description": "True if a session_before_switch extension hook vetoed (H2). When true, `session`/`cursor` are absent \u2014 nothing was touched. An in-flight turn that did not stop in time is a DIFFERENT outcome and never reaches this shape \u2014 see TURN_STILL_RUNNING.",
+      "description": "True if a session_before_switch extension hook vetoed (H2). When true, `session`/`leaf` are absent \u2014 nothing was touched. An in-flight turn that did not stop in time is a DIFFERENT outcome and never reaches this shape \u2014 see TURN_STILL_RUNNING.",
       "type": "boolean"
     },
-    "cursor": {
-      "description": "The resulting cursor.leaf, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting cursor). Present only when cancelled is false.",
+    "leaf": {
+      "description": "The resulting cursor.leaf, duplicated at top level (E5/F3 \u2014 every mutating response returns the resulting leaf). Present only when cancelled is false.",
       "type": [
         "string",
         "null"
       ]
     },
     "session": {
-      "description": "F2's session tuple: {store, session_id, cursor_id, cursor, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
+      "description": "F2's session tuple: {store, session_id, cursor_id, leaf, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
       "type": "object"
     }
   },
@@ -697,7 +697,7 @@ what rides on top of this on every response):
 
 #### `compact`
 
-*Since tier-b.* Dual completion (C3), the same shape submit/prompt use: THIS response only acknowledges that a compaction was admitted and is running ({accepted, compaction_id}); the outcome arrives later as a `compaction_end` NOTIFICATION whose REQUIRED keys are compaction_id + request_id (correlation), is_error, cancelled and cursor (E5) — `cancelled` is on EVERY one of them, false on the ordinary paths, and it is what distinguishes 'a host aborted this' from 'this failed' and from 'this found nothing'. Optional beside those: error, performed, and the full CompactionResult (summary/first_kept_entry_id/tokens_before/tokens_saved/compacted_entry_ids/usage, plus CompactionDetails' read_files/modified_files). COMPACTION_END_PARAMS_SCHEMA is the authority and a test pins this sentence against it, because the first version of this list was written before `cancelled` existed and silently stayed wrong for a round (round-3 finding 3 of the Tier B review) — a second implementor building a parser from it would have omitted a required field. Blocker 1 (Tier B review) is why: summarization is an unbounded provider call, and running it inline on the dispatch path stopped transport._read_stdin from PARSING the next line — measured at 20s, with `abort` itself unanswerable for the duration, which is exactly the availability property REMOTE-CONTROL.md §4[1] refuses to trade ('a host whose whole problem is that τ is producing faster than it can read is precisely the host that needs to abort'). performed=false reports AgentSession.compact() returning None (§1 ground truth) as a real outcome, not an error — an empty conversation, one already ending in a compaction summary, or a cut that would remove no message from the context at all, which under the shipped keep_recent_tokens (20000) is what any smaller conversation gets, so it is this verb's ordinary default-settings answer rather than an edge case; when is_error is true, performed is ABSENT rather than false (a compaction that raised did not 'find nothing to compact'). E5, answered the one way the whole tier answers it (see commands.py 'E5 in Tier B'): `cursor` rides the COMPLETION — the compaction_end notification, where the mutation has genuinely happened — never the acknowledgement, which is built before it has; and it is present on ALL THREE outcomes, the post-compaction tip when performed and the unchanged tip when performed=false or is_error, because absence is not this tier's way of saying 'nothing moved'. custom_instructions, when given, is threaded unchanged to AgentSession.compact. Refusals, all three on THIS response. Two are TURN_STILL_RUNNING (D-1's vocabulary for 'no, a thing is running'): a turn that did not release turn_lock within DEFAULT_SWAP_TIMEOUT_S (the guard is taken in the background task and HELD across the whole compact() call, so a submit() using 'enqueue'/'rollback' cannot interleave with it), and a second compact while one is already in flight — refused immediately, without waiting out the guard, since a compaction holds that lock for as long as the provider takes. The third is D-7 (see commands.py 'DURABILITY in Tier B'): this verb appends a `compaction` entry, so an UNPERSISTED session — the product of new_session {"persist": false} — is refused outright (require_durable_session -> SESSION_NOT_PERSISTED), checked before the single-flight slot is taken and before the provider is paid, and the same answer set_model and set_session_name give. Stated cost, not hidden: compaction is unavailable on an unpersisted session; the fix is to move onto a persisted one. WHERE the entry lands, and for how long (unit S, added at this review's integration — the other two appending verbs said it and this one did not): a --mode rpc process defaults to storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's ~/.tau/sessions. Most systems clear the temp dir on reboot, so the durability D-7 refuses to promise without is itself bounded by MACHINE UPTIME rather than forever — including the compaction entry and the rewritten tree behind it. A host that needs more must be started with --session-dir DIR (accepted under --mode rpc precisely so a host can choose, including --session-dir ~/.tau/sessions). ABORT (finding 5, Tier B review): a host's `abort` now cancels an in-flight compaction, where it used to answer 'aborted' while the tree was rewritten anyway. The compaction_end that follows carries cancelled=true, no `performed`, and the unchanged cursor; nothing was written, because the summary is generated before the entry is appended. abort's own response names the compaction_id, so the two correlate. Shutdown (D-5, as corrected by finding 3 of the Tier B review, and distinct from the abort above — nobody asked for this one): a compaction still running when the host disconnects is reaped by run()'s teardown, and it reports its outcome EXACTLY ONE of three ways, never none of them. If it finishes while the writer is still alive — which now includes the whole grace period run() gives background tasks, because that reap was moved ahead of the stdout drain — the ordinary compaction_end is delivered. If it finishes after the writer is genuinely gone (broken pipe, or SIGTERM cancelling the writer outright), the full outcome goes to stderr (T4), because a notification nobody can read is not a completion. If it is cancelled before finishing, nothing was written and that too is said on stderr. The hole this closes was real and measured: a compaction completing inside the reap's grace window used to be enqueued onto a queue whose writer had already exited — rc 0, empty stderr, no compaction_end, and a compaction entry durably in the session log for the next process to find unannounced. Discoverability gap, stated not hidden: get_capabilities publishes a params_schema and a result_schema per verb and the event half of the capability document is generated from AgentEvent, so there is no slot in it for a server->client notification's payload. compaction_end's field list is therefore documented here and in commands.COMPACTION_END_PARAMS_SCHEMA (import-time-checked by _assert_supported_schema, like every table schema) rather than published over the wire; widening the capability document to carry notification schemas is a real gap this unit deliberately did not take on. Known gaps, stated not hidden (not fixed by this unit): AgentSession.compact() itself does not acquire turn_lock — the guard closes the race for THIS call only, and any OTHER direct caller (e.g. a future TUI path) remains unprotected; that is AgentSession's debt. compact()'s own agent_start/agent_end bracket (agent_session.py:3119,3123) is emitted via self._events.emit directly, not _emit_stamped, so — same orphan-provenance shape D-4 documents for _maybe_auto_compact — a host correlating events to submission_id sees that pair unstamped; correlate on compaction_end instead. And finding 3 (Tier B review) is only narrowed, not closed: this verb's ACKNOWLEDGEMENT still waits out the D-1 guard on the dispatch path, so a compact sent while a TURN is running still costs the reader up to DEFAULT_SWAP_TIMEOUT_S — bounded, unlike the unbounded case above, and the same bound set_model/set_auto_compaction/set_session_name each pay.
+*Since tier-b.* Dual completion (C3), the same shape submit/prompt use: THIS response only acknowledges that a compaction was admitted and is running ({accepted, compaction_id}); the outcome arrives later as a `compaction_end` NOTIFICATION whose REQUIRED keys are compaction_id + request_id (correlation), is_error, cancelled and leaf (E5) — `cancelled` is on EVERY one of them, false on the ordinary paths, and it is what distinguishes 'a host aborted this' from 'this failed' and from 'this found nothing'. Optional beside those: error, performed, and the full CompactionResult (summary/first_kept_entry_id/tokens_before/tokens_saved/compacted_entry_ids/usage, plus CompactionDetails' read_files/modified_files). COMPACTION_END_PARAMS_SCHEMA is the authority and a test pins this sentence against it, because the first version of this list was written before `cancelled` existed and silently stayed wrong for a round (round-3 finding 3 of the Tier B review) — a second implementor building a parser from it would have omitted a required field. Blocker 1 (Tier B review) is why: summarization is an unbounded provider call, and running it inline on the dispatch path stopped transport._read_stdin from PARSING the next line — measured at 20s, with `abort` itself unanswerable for the duration, which is exactly the availability property REMOTE-CONTROL.md §4[1] refuses to trade ('a host whose whole problem is that τ is producing faster than it can read is precisely the host that needs to abort'). performed=false reports AgentSession.compact() returning None (§1 ground truth) as a real outcome, not an error — an empty conversation, one already ending in a compaction summary, or a cut that would remove no message from the context at all, which under the shipped keep_recent_tokens (20000) is what any smaller conversation gets, so it is this verb's ordinary default-settings answer rather than an edge case; when is_error is true, performed is ABSENT rather than false (a compaction that raised did not 'find nothing to compact'). E5, answered the one way the whole tier answers it (see commands.py 'E5 in Tier B'): `leaf` rides the COMPLETION — the compaction_end notification, where the mutation has genuinely happened — never the acknowledgement, which is built before it has; and it is present on ALL THREE outcomes, the post-compaction tip when performed and the unchanged tip when performed=false or is_error, because absence is not this tier's way of saying 'nothing moved'. custom_instructions, when given, is threaded unchanged to AgentSession.compact. Refusals, all three on THIS response. Two are TURN_STILL_RUNNING (D-1's vocabulary for 'no, a thing is running'): a turn that did not release turn_lock within DEFAULT_SWAP_TIMEOUT_S (the guard is taken in the background task and HELD across the whole compact() call, so a submit() using 'enqueue'/'rollback' cannot interleave with it), and a second compact while one is already in flight — refused immediately, without waiting out the guard, since a compaction holds that lock for as long as the provider takes. The third is D-7 (see commands.py 'DURABILITY in Tier B'): this verb appends a `compaction` entry, so an UNPERSISTED session — the product of new_session {"persist": false} — is refused outright (require_durable_session -> SESSION_NOT_PERSISTED), checked before the single-flight slot is taken and before the provider is paid, and the same answer set_model and set_session_name give. Stated cost, not hidden: compaction is unavailable on an unpersisted session; the fix is to move onto a persisted one. WHERE the entry lands, and for how long (unit S, added at this review's integration — the other two appending verbs said it and this one did not): a --mode rpc process defaults to storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's ~/.tau/sessions. Most systems clear the temp dir on reboot, so the durability D-7 refuses to promise without is itself bounded by MACHINE UPTIME rather than forever — including the compaction entry and the rewritten tree behind it. A host that needs more must be started with --session-dir DIR (accepted under --mode rpc precisely so a host can choose, including --session-dir ~/.tau/sessions). ABORT (finding 5, Tier B review): a host's `abort` now cancels an in-flight compaction, where it used to answer 'aborted' while the tree was rewritten anyway. The compaction_end that follows carries cancelled=true, no `performed`, and the unchanged leaf; nothing was written, because the summary is generated before the entry is appended. abort's own response names the compaction_id, so the two correlate. Shutdown (D-5, as corrected by finding 3 of the Tier B review, and distinct from the abort above — nobody asked for this one): a compaction still running when the host disconnects is reaped by run()'s teardown, and it reports its outcome EXACTLY ONE of three ways, never none of them. If it finishes while the writer is still alive — which now includes the whole grace period run() gives background tasks, because that reap was moved ahead of the stdout drain — the ordinary compaction_end is delivered. If it finishes after the writer is genuinely gone (broken pipe, or SIGTERM cancelling the writer outright), the full outcome goes to stderr (T4), because a notification nobody can read is not a completion. If it is cancelled before finishing, nothing was written and that too is said on stderr. The hole this closes was real and measured: a compaction completing inside the reap's grace window used to be enqueued onto a queue whose writer had already exited — rc 0, empty stderr, no compaction_end, and a compaction entry durably in the session log for the next process to find unannounced. Discoverability gap, stated not hidden: get_capabilities publishes a params_schema and a result_schema per verb and the event half of the capability document is generated from AgentEvent, so there is no slot in it for a server->client notification's payload. compaction_end's field list is therefore documented here and in commands.COMPACTION_END_PARAMS_SCHEMA (import-time-checked by _assert_supported_schema, like every table schema) rather than published over the wire; widening the capability document to carry notification schemas is a real gap this unit deliberately did not take on. Known gaps, stated not hidden (not fixed by this unit): AgentSession.compact() itself does not acquire turn_lock — the guard closes the race for THIS call only, and any OTHER direct caller (e.g. a future TUI path) remains unprotected; that is AgentSession's debt. compact()'s own agent_start/agent_end bracket (agent_session.py:3119,3123) is emitted via self._events.emit directly, not _emit_stamped, so — same orphan-provenance shape D-4 documents for _maybe_auto_compact — a host correlating events to submission_id sees that pair unstamped; correlate on compaction_end instead. And finding 3 (Tier B review) is only narrowed, not closed: this verb's ACKNOWLEDGEMENT still waits out the D-1 guard on the dispatch path, so a compact sent while a TURN is running still costs the reader up to DEFAULT_SWAP_TIMEOUT_S — bounded, unlike the unbounded case above, and the same bound set_model/set_auto_compaction/set_session_name each pay.
 
 **Params schema:**
 
@@ -739,7 +739,7 @@ what rides on top of this on every response):
 
 #### `complete_path`
 
-*Since 1.4.* The @file half of what a chat editor needs to be usable, and the counterpart of `get_commands` for the slash half. A host cannot compute this for itself: a browser has no filesystem at all, and even a host that does have one (a VS Code extension) would be listing ITS filesystem, which under Remote SSH or a devcontainer is the wrong machine. This answers from the process working directory — the same directory the agent's own tools resolve against and the same one `submit {expand_attachments: true}` reads, so the listing, the expansion and the tools cannot disagree about which file @notes.txt names. A thin wrapper over `attachments.complete_attachment`, which the TUI's own editor calls: one implementation of the matching rules (case-sensitive prefix on the last path segment, hidden entries only once the prefix itself starts with a dot), not two that drift. Read-only and pure apart from reading directory entries: no D-1 turn_safety_guard (it mutates nothing, so it answers mid-turn), no `cursor` (E5 binds mutators), no require_durable_session (D-7: it appends nothing, and it answers the same under --no-session). G3, 'nothing unbounded is pushed': `matches` is bounded by attachments._COMPLETION_LIMIT and `total` reports the true count, so a host is told when it is seeing a prefix of the answer instead of silently shown one. SCOPE, stated not hidden: an absolute or ../ token lists outside the working directory, exactly as it does in the TUI. That is not a new hole — this same connection can run `bash` through the agent — but a host serving this to a browser on a shared network is publishing a directory lister to whoever holds the token, and should know it.
+*Since 1.4.* The @file half of what a chat editor needs to be usable, and the counterpart of `get_commands` for the slash half. A host cannot compute this for itself: a browser has no filesystem at all, and even a host that does have one (a VS Code extension) would be listing ITS filesystem, which under Remote SSH or a devcontainer is the wrong machine. This answers from the process working directory — the same directory the agent's own tools resolve against and the same one `submit {expand_attachments: true}` reads, so the listing, the expansion and the tools cannot disagree about which file @notes.txt names. A thin wrapper over `attachments.complete_attachment`, which the TUI's own editor calls: one implementation of the matching rules (case-sensitive prefix on the last path segment, hidden entries only once the prefix itself starts with a dot), not two that drift. Read-only and pure apart from reading directory entries: no D-1 turn_safety_guard (it mutates nothing, so it answers mid-turn), no `leaf` (E5 binds mutators), no require_durable_session (D-7: it appends nothing, and it answers the same under --no-session). G3, 'nothing unbounded is pushed': `matches` is bounded by attachments._COMPLETION_LIMIT and `total` reports the true count, so a host is told when it is seeing a prefix of the answer instead of silently shown one. SCOPE, stated not hidden: an absolute or ../ token lists outside the working directory, exactly as it does in the TUI. That is not a new hole — this same connection can run `bash` through the agent — but a host serving this to a browser on a shared network is publishing a directory lister to whoever holds the token, and should know it.
 
 **Params schema:**
 
@@ -747,8 +747,8 @@ what rides on top of this on every response):
 {
   "additionalProperties": false,
   "properties": {
-    "cursor": {
-      "description": "The cursor's character offset into `text`. Which @reference is being completed is decided from this, so a host that sends the @word alone with cursor 0 gets `completion: null` rather than a listing \u2014 the cursor is not optional and is not defaulted.",
+    "offset": {
+      "description": "The caret's character offset into `text`. Which @reference is being completed is decided from this, so a host that sends the @word alone with offset 0 gets `completion: null` rather than a listing \u2014 the offset is not optional and is not defaulted.",
       "minimum": 0,
       "type": "integer"
     },
@@ -759,7 +759,7 @@ what rides on top of this on every response):
   },
   "required": [
     "text",
-    "cursor"
+    "offset"
   ],
   "type": "object"
 }
@@ -772,7 +772,7 @@ what rides on top of this on every response):
 {
   "properties": {
     "completion": {
-      "description": "`null` when the cursor is not inside an @reference at all \u2014 the host shows no popup. Otherwise {start, end, token, matches, total}: `start`/`end` are the character span of the whole @word, so a host replaces that span rather than guessing where the token began; `matches` is a list of {name, detail, is_dir}, `name` being the text that goes AFTER the @ (directories end in '/'); `total` is how many entries matched before the list was bounded, so a host can say '12 of 340' instead of implying it showed everything. An EMPTY `matches` with a non-null completion is the 'this names no file' warning, not an absence of information.",
+      "description": "`null` when `offset` is not inside an @reference at all \u2014 the host shows no popup. Otherwise {start, end, token, matches, total}: `start`/`end` are the character span of the whole @word, so a host replaces that span rather than guessing where the token began; `matches` is a list of {name, detail, is_dir}, `name` being the text that goes AFTER the @ (directories end in '/'); `total` is how many entries matched before the list was bounded, so a host can say '12 of 340' instead of implying it showed everything. An EMPTY `matches` with a non-null completion is the 'this names no file' warning, not an absence of information.",
       "type": [
         "object",
         "null"
@@ -788,7 +788,7 @@ what rides on top of this on every response):
 
 #### `get_last_assistant_text`
 
-*Since tier-b.* AgentSession.get_last_assistant_text(), projected. The derivation used to live HERE, in the wire layer (docs/RPC-TIER-B.md §1: 'No method. Trivially derived') — which meant a head that was not this one had to re-derive it and could reach a different answer; it is now one core call and this verb is its projection. Read-only, no D-1 turn_safety_guard (nothing here mutates session state). 'text' is the last qualifying assistant message's 'text'-type content blocks concatenated and trimmed — thinking and toolCall blocks are skipped, never concatenated in; an assistant message that is itself stop_reason='aborted' with empty content is skipped as though it never happened, so an aborted-before-anything turn does not hide the last real answer. Returns {"text": null} both when no assistant message exists yet AND when the last one has no text (a pure tool-call turn) — pi does not distinguish these either (docs/rpc.md only documents the first case); a host that needs to tell them apart must additionally call get_messages. No `cursor`: E5 binds mutators, and this is a read (commands.py 'E5 in Tier B', rule 2 — a host that wants the tip calls get_state). D-7 (commands.py 'DURABILITY in Tier B', rule 2): appends nothing, so no require_durable_session — this answers the same on a persisted and an unpersisted session.
+*Since tier-b.* AgentSession.get_last_assistant_text(), projected. The derivation used to live HERE, in the wire layer (docs/RPC-TIER-B.md §1: 'No method. Trivially derived') — which meant a head that was not this one had to re-derive it and could reach a different answer; it is now one core call and this verb is its projection. Read-only, no D-1 turn_safety_guard (nothing here mutates session state). 'text' is the last qualifying assistant message's 'text'-type content blocks concatenated and trimmed — thinking and toolCall blocks are skipped, never concatenated in; an assistant message that is itself stop_reason='aborted' with empty content is skipped as though it never happened, so an aborted-before-anything turn does not hide the last real answer. Returns {"text": null} both when no assistant message exists yet AND when the last one has no text (a pure tool-call turn) — pi does not distinguish these either (docs/rpc.md only documents the first case); a host that needs to tell them apart must additionally call get_messages. No `leaf`: E5 binds mutators, and this is a read (commands.py 'E5 in Tier B', rule 2 — a host that wants the tip calls get_state). D-7 (commands.py 'DURABILITY in Tier B', rule 2): appends nothing, so no require_durable_session — this answers the same on a persisted and an unpersisted session.
 
 **Params schema:**
 
@@ -823,7 +823,7 @@ what rides on top of this on every response):
 
 #### `get_models`
 
-*Since tier-b.* Finding 7 of the Tier B review: set_model takes a config model NAME (a key in ~/.tau/config.json's 'models' map) and nothing on this table enumerated them, so a host could only learn a valid name by reading the child's config file out of band — which defeats G1 ('a second implementation should be possible from this document plus the generated reference'). Returns `models`: every name the session's bound resolver knows, sorted, each with the SAME {id, provider, context_window} projection get_state publishes for the active model. Each entry's `model` is produced by RESOLVING that name through the bound resolver — the component set_model itself calls (AgentSession.set_model -> set_model_resolver) — so what this verb advertises is what a set_model on that name would actually install, not a second reading of the config. Read-only: no D-1 turn_safety_guard (nothing here mutates session state; a turn may be in flight and this still answers) and no `cursor` (E5 binds mutators — commands.py 'E5 in Tier B', rule 2; a host that wants the tip calls get_state), and no require_durable_session (D-7, commands.py 'DURABILITY in Tier B', rule 2: it appends nothing, so it answers the same on an unpersisted session — even though the set_model it exists to serve would then refuse there). Refuses, rather than reporting an empty catalogue, when the session has NO resolver bound at all, or a resolver that cannot enumerate (RuntimeError -> INTERNAL_ERROR): 'this child has no configured models' and 'nobody can answer that here' are different facts, and an empty list for the second is the silent-fallback shape Fail-Early forbids — a host would read it as 'set_model has no valid argument' and stop. A config entry that does not BUILD (e.g. an invalid `reasoning_replay`, backends.build_model_from_config's own ValueError) fails this verb naming that entry, rather than dropping it: a silently shorter list is a list a host would trust. KNOWN GAPS, stated not hidden. (1) The ACTIVE model need not appear here, and this verb does not flag which entry is active: a startup `--model provider/id` is an ad-hoc model with no config key (headless.resolve_model_config), so set_model cannot switch back to it either, and two config names may alias one model id — guessing 'active' by matching get_state's id would be a fabrication where the aliases differ. A host reads get_state for what is running and this for what it may ask for. (2) `context_window` is whatever the resolver returns; today backends.build_model_from_config assigns every config entry the same 128000, including the one get_state reports, so a host must not read a difference into these numbers that the child does not currently make. (3) Nothing here is a capability probe: a name resolving does not mean the endpoint is reachable or the api key is right — set_model's own notes record that a cross-provider switch surfaces a provider auth error on the next turn.
+*Since tier-b.* Finding 7 of the Tier B review: set_model takes a config model NAME (a key in ~/.tau/config.json's 'models' map) and nothing on this table enumerated them, so a host could only learn a valid name by reading the child's config file out of band — which defeats G1 ('a second implementation should be possible from this document plus the generated reference'). Returns `models`: every name the session's bound resolver knows, sorted, each with the SAME {id, provider, context_window} projection get_state publishes for the active model. Each entry's `model` is produced by RESOLVING that name through the bound resolver — the component set_model itself calls (AgentSession.set_model -> set_model_resolver) — so what this verb advertises is what a set_model on that name would actually install, not a second reading of the config. Read-only: no D-1 turn_safety_guard (nothing here mutates session state; a turn may be in flight and this still answers) and no `leaf` (E5 binds mutators — commands.py 'E5 in Tier B', rule 2; a host that wants the tip calls get_state), and no require_durable_session (D-7, commands.py 'DURABILITY in Tier B', rule 2: it appends nothing, so it answers the same on an unpersisted session — even though the set_model it exists to serve would then refuse there). Refuses, rather than reporting an empty catalogue, when the session has NO resolver bound at all, or a resolver that cannot enumerate (RuntimeError -> INTERNAL_ERROR): 'this child has no configured models' and 'nobody can answer that here' are different facts, and an empty list for the second is the silent-fallback shape Fail-Early forbids — a host would read it as 'set_model has no valid argument' and stop. A config entry that does not BUILD (e.g. an invalid `reasoning_replay`, backends.build_model_from_config's own ValueError) fails this verb naming that entry, rather than dropping it: a silently shorter list is a list a host would trust. KNOWN GAPS, stated not hidden. (1) The ACTIVE model need not appear here, and this verb does not flag which entry is active: a startup `--model provider/id` is an ad-hoc model with no config key (headless.resolve_model_config), so set_model cannot switch back to it either, and two config names may alias one model id — guessing 'active' by matching get_state's id would be a fabrication where the aliases differ. A host reads get_state for what is running and this for what it may ask for. (2) `context_window` is whatever the resolver returns; today backends.build_model_from_config assigns every config entry the same 128000, including the one get_state reports, so a host must not read a difference into these numbers that the child does not currently make. (3) Nothing here is a capability probe: a name resolving does not mean the endpoint is reachable or the api key is right — set_model's own notes record that a cross-provider switch surfaces a provider auth error on the next turn.
 
 **Params schema:**
 
@@ -855,7 +855,7 @@ what rides on top of this on every response):
 
 #### `get_session_name`
 
-*Since tier-b.* Read-only (docs/RPC-TIER-B.md B5: 'the read does not' take D-1's guard or carry a cursor). Calls AgentSession.get_session_name, which is extension_types.read_session_name — the SAME body ExtensionAPI.get_session_name calls. A session log with no durable name to read (e.g. the SDK's InMemorySessionLog) raises RuntimeError, uncaught here, surfacing as INTERNAL_ERROR: this is a READ, so it never takes D-7's guard and never earns SESSION_NOT_PERSISTED — a log that cannot even be asked is a store wired wrong. Never set is NOT that case: it returns {name: null}, same as read_session_name's own None. No `cursor`: E5 binds mutators, and this is a read (commands.py 'E5 in Tier B', rule 2 — a host that wants the tip calls get_state). No require_durable_session either (D-7, commands.py 'DURABILITY in Tier B', rule 2): it appends nothing, so it reads a name back on an unpersisted session even though set_session_name refuses to write one there.
+*Since tier-b.* Read-only (docs/RPC-TIER-B.md B5: 'the read does not' take D-1's guard or carry a leaf). Calls AgentSession.get_session_name, which is extension_types.read_session_name — the SAME body ExtensionAPI.get_session_name calls. A session log with no durable name to read (e.g. the SDK's InMemorySessionLog) raises RuntimeError, uncaught here, surfacing as INTERNAL_ERROR: this is a READ, so it never takes D-7's guard and never earns SESSION_NOT_PERSISTED — a log that cannot even be asked is a store wired wrong. Never set is NOT that case: it returns {name: null}, same as read_session_name's own None. No `leaf`: E5 binds mutators, and this is a read (commands.py 'E5 in Tier B', rule 2 — a host that wants the tip calls get_state). No require_durable_session either (D-7, commands.py 'DURABILITY in Tier B', rule 2): it appends nothing, so it reads a name back on an unpersisted session even though set_session_name refuses to write one there.
 
 **Params schema:**
 
@@ -890,7 +890,7 @@ what rides on top of this on every response):
 
 #### `get_session_stats`
 
-*Since tier-b.* D-3: get_state already returns usage/message_count/cursor, so this is not a re-shaping of that — it is the verb a host reads to decide WHETHER and WHEN to compact. Returns: estimate_context_tokens(session.messages) (compaction.py) as `context`; the model's context_window and the resulting context_headroom; the EFFECTIVE CompactionSettings as `compaction_settings` (enabled/reserve_tokens/keep_recent_tokens — read from AgentSession.compaction_settings, which returns a copy); the newest compaction log entry as `last_compaction` (null if none — an honest absence); and get_usage() as `usage`, for cost. An RPC session is CONSTRUCTED with compaction_settings=CompactionSettings(enabled=False) (backends.py:885), so a host that has not changed it reads compaction_settings.enabled=false here — that is how it discovers auto-compaction is off (§1.1). That is a starting value, not a constant this verb may promise: set_auto_compaction (D-4) shipped in this same tier and flips exactly this field, so what comes back is the session's LIVE effective setting read at call time. The verb itself changes nothing. Read-only: no turn_safety_guard (D-1 — only the MUTATING Tier B verbs take it) and no `cursor` (E5 binds mutators — commands.py 'E5 in Tier B', rule 2; a host that wants the tip calls get_state). Refuses nothing: no params, and no precondition beyond a constructed session — including no require_durable_session (D-7, commands.py 'DURABILITY in Tier B', rule 2: it appends nothing). That matters here specifically: this is the verb a host reads to decide whether to compact, and on an unpersisted session it still answers while `compact` itself refuses (D-7 rule 1). The composition is AgentSession.get_session_stats(), one core call, and this verb is its projection: it used to be assembled here, in the wire layer, which left every other head to assemble its own. Known gap: `last_compaction` is a scan of the log's own append order, not the ConversationTree active path — see AgentSession.get_last_compaction's docstring.
+*Since tier-b.* D-3: get_state already returns usage/message_count/leaf, so this is not a re-shaping of that — it is the verb a host reads to decide WHETHER and WHEN to compact. Returns: estimate_context_tokens(session.messages) (compaction.py) as `context`; the model's context_window and the resulting context_headroom; the EFFECTIVE CompactionSettings as `compaction_settings` (enabled/reserve_tokens/keep_recent_tokens — read from AgentSession.compaction_settings, which returns a copy); the newest compaction log entry as `last_compaction` (null if none — an honest absence); and get_usage() as `usage`, for cost. An RPC session is CONSTRUCTED with compaction_settings=CompactionSettings(enabled=False) (backends.py:885), so a host that has not changed it reads compaction_settings.enabled=false here — that is how it discovers auto-compaction is off (§1.1). That is a starting value, not a constant this verb may promise: set_auto_compaction (D-4) shipped in this same tier and flips exactly this field, so what comes back is the session's LIVE effective setting read at call time. The verb itself changes nothing. Read-only: no turn_safety_guard (D-1 — only the MUTATING Tier B verbs take it) and no `leaf` (E5 binds mutators — commands.py 'E5 in Tier B', rule 2; a host that wants the tip calls get_state). Refuses nothing: no params, and no precondition beyond a constructed session — including no require_durable_session (D-7, commands.py 'DURABILITY in Tier B', rule 2: it appends nothing). That matters here specifically: this is the verb a host reads to decide whether to compact, and on an unpersisted session it still answers while `compact` itself refuses (D-7 rule 1). The composition is AgentSession.get_session_stats(), one core call, and this verb is its projection: it used to be assembled here, in the wire layer, which left every other head to assemble its own. Known gap: `last_compaction` is a scan of the log's own append order, not the ConversationTree active path — see AgentSession.get_last_compaction's docstring.
 
 **Params schema:**
 
@@ -953,7 +953,7 @@ what rides on top of this on every response):
 
 #### `list_sessions`
 
-*Since tier-b.* Finding 8 of the Tier B review: switch_session takes a session id (exact, or a unique prefix) and nothing on this table produced one, so a host could only reach a session it had created in this process — the same G1 hole get_models closed for set_model's config NAME, and, being absent from `declined` too, a C1 violation rather than a deferral. Returns `sessions`: every session this connection can switch to, newest-modified first, and `scope`: {store, cwd}, which says WHICH universe that is. The listing and switch_session's resolution are the SAME set by construction, not by agreement — both are SessionCatalog.list(cwd) for this process's cwd (resolve_ref is built on it), so an id this verb returns is an id that verb accepts, and a session it omits is one switch_session refuses with -32602. That is also this tier's definition of `addressable` on new_session/fork/switch_session's session tuple: addressable means listed here. Scope, stated because unit S (D-6/H1b) made it a real question: --mode rpc's DEFAULT session base is <tmp>/.tau-<uid>/sessions while the TUI's and --print's is ~/.tau/sessions, so a host and the human at the terminal are normally looking at DIFFERENT lists (--session-dir DIR, accepted under --mode rpc, is how a host joins the user's). Each row's `ref` — the store's own handle, the file store's absolute path — is what tells them apart; an RPC child's own startup session is always one of these rows, so `get_state`'s session_id finds it and its ref names the base. Read-only: no D-1 turn_safety_guard (nothing here mutates session state; a turn may be in flight and this still answers), no `cursor` (E5 binds mutators — commands.py 'E5 in Tier B', rule 2; a host that wants the tip calls get_state), and no require_durable_session (D-7, commands.py 'DURABILITY in Tier B', rule 2: it appends nothing, so it answers the same on an unpersisted session — where the answer is precisely that the current session is NOT among the rows). KNOWN GAPS, stated not hidden. (1) It does not flag which row is the session this connection is on, for the reason get_models does not flag the active model: the host already has that from get_state's `session_id`, and here the comparison is exact rather than a guess. (2) No `cwd` parameter, and no way to widen the scope to every directory: switch_session resolves against THIS cwd only, so a wider list would advertise ids it would then refuse. (3) A row is metadata, never a promise that loading succeeds — `error` non-null says the entries could not be read, and switch_session on that id will raise the store's real reason rather than silently loading an empty conversation.
+*Since tier-b.* Finding 8 of the Tier B review: switch_session takes a session id (exact, or a unique prefix) and nothing on this table produced one, so a host could only reach a session it had created in this process — the same G1 hole get_models closed for set_model's config NAME, and, being absent from `declined` too, a C1 violation rather than a deferral. Returns `sessions`: every session this connection can switch to, newest-modified first, and `scope`: {store, cwd}, which says WHICH universe that is. The listing and switch_session's resolution are the SAME set by construction, not by agreement — both are SessionCatalog.list(cwd) for this process's cwd (resolve_ref is built on it), so an id this verb returns is an id that verb accepts, and a session it omits is one switch_session refuses with -32602. That is also this tier's definition of `addressable` on new_session/fork/switch_session's session tuple: addressable means listed here. Scope, stated because unit S (D-6/H1b) made it a real question: --mode rpc's DEFAULT session base is <tmp>/.tau-<uid>/sessions while the TUI's and --print's is ~/.tau/sessions, so a host and the human at the terminal are normally looking at DIFFERENT lists (--session-dir DIR, accepted under --mode rpc, is how a host joins the user's). Each row's `ref` — the store's own handle, the file store's absolute path — is what tells them apart; an RPC child's own startup session is always one of these rows, so `get_state`'s session_id finds it and its ref names the base. Read-only: no D-1 turn_safety_guard (nothing here mutates session state; a turn may be in flight and this still answers), no `leaf` (E5 binds mutators — commands.py 'E5 in Tier B', rule 2; a host that wants the tip calls get_state), and no require_durable_session (D-7, commands.py 'DURABILITY in Tier B', rule 2: it appends nothing, so it answers the same on an unpersisted session — where the answer is precisely that the current session is NOT among the rows). KNOWN GAPS, stated not hidden. (1) It does not flag which row is the session this connection is on, for the reason get_models does not flag the active model: the host already has that from get_state's `session_id`, and here the comparison is exact rather than a guess. (2) No `cwd` parameter, and no way to widen the scope to every directory: switch_session resolves against THIS cwd only, so a wider list would advertise ids it would then refuse. (3) A row is metadata, never a promise that loading succeeds — `error` non-null says the entries could not be read, and switch_session on that id will raise the store's real reason rather than silently loading an empty conversation.
 
 **Params schema:**
 
@@ -990,7 +990,7 @@ what rides on top of this on every response):
 
 #### `set_auto_compaction`
 
-*Since tier-b.* D-4: a plain, idempotent setter — `AgentSession.set_auto_compaction`, which this verb calls rather than writing the field itself. It used to write `session._compaction_settings.enabled` directly, on the ground that no accessor existed (§1's ground truth) and that `get_tools` set the precedent with `session._tools`. Both reaches are gone: the method exists, the TUI and the CLI can call it too, and this verb is no longer the only door onto it. D-1: takes turn_safety_guard before mutating, so this never races a turn's own read of the same settings object; TURN_STILL_RUNNING on a bounded timeout, same as set_model/compact/set_session_name. E5, answered the one way the whole tier answers it (see commands.py 'E5 in Tier B'): this response carries `cursor`, and for this verb it is ALWAYS the unchanged tip — the mutation is an in-memory CompactionSettings field, not a log entry. It is returned rather than omitted because a missing key is not a way to say 'nothing moved': that would be the tip-inference F3 forbids, and it would make one tier answer E5 two ways. D-7, the same one-way answer for durability (commands.py 'DURABILITY in Tier B', rule 2): this verb appends NOTHING, so it takes no require_durable_session and answers on an unpersisted session — where compact/set_model/set_session_name all refuse (rule 1), because those three do append. Read the `cursor` above accordingly: on any session it is the live tip, never a claim that this call wrote something. No policy guard (§1.2): CompactionPolicy is constructed in exactly one place, sdk.py:865, which rpc_mode.py never goes through — no RPC session ever carries one for this verb to protect. Why a host has to ask at all: rpc_mode.py -> backends.create_backend -> TauBackend constructs its session with CompactionSettings(enabled=False) (backends.py:885, §1.1) and nothing else in RPC mode flips it. KNOWN GAP, stated not hidden (D-4): enabling this can cause `_maybe_auto_compact` (agent_session.py:3286-3291) to fire on the NEXT turn, and that method emits its own `agent_start`/`agent_end` pair through `self._events.emit` directly, not `_emit_stamped` — so that pair carries NO `submission_id`. A host correlating events to the `submission_id` a prior `submit`/`prompt` returned will see an ORPHAN agent_start/agent_end it cannot attribute to any request it made. The `agent_end` DOES carry a `cursor` (the handler stamps every outbound `agent_end` at DEQUEUE, in `prepare_outbound` / `_stamp_agent_end_cursor`, regardless of provenance), so a host obeying F3 (never cache 'the tip') stays correct across a compaction it did not explicitly ask for, even though it cannot explain WHY its context just shrank from submission_id alone. SECOND KNOWN GAP, the other face of D-7 rule 2: enabling this on an UNPERSISTED session arms a mechanism that then appends `compaction` entries to a log that dies with the process — from inside `_maybe_auto_compact`, a code path with no RPC verb on it and so nothing for rule 1 to guard. Same class as the AgentSession-internal gap compact's notes record about turn_lock: this tier guards the wire, not AgentSession. An auto-compaction is also NOT reachable by `abort` for the same reason — there is no background task the RPC layer owns to cancel (finding 5).
+*Since tier-b.* D-4: a plain, idempotent setter — `AgentSession.set_auto_compaction`, which this verb calls rather than writing the field itself. It used to write `session._compaction_settings.enabled` directly, on the ground that no accessor existed (§1's ground truth) and that `get_tools` set the precedent with `session._tools`. Both reaches are gone: the method exists, the TUI and the CLI can call it too, and this verb is no longer the only door onto it. D-1: takes turn_safety_guard before mutating, so this never races a turn's own read of the same settings object; TURN_STILL_RUNNING on a bounded timeout, same as set_model/compact/set_session_name. E5, answered the one way the whole tier answers it (see commands.py 'E5 in Tier B'): this response carries `leaf`, and for this verb it is ALWAYS the unchanged tip — the mutation is an in-memory CompactionSettings field, not a log entry. It is returned rather than omitted because a missing key is not a way to say 'nothing moved': that would be the tip-inference F3 forbids, and it would make one tier answer E5 two ways. D-7, the same one-way answer for durability (commands.py 'DURABILITY in Tier B', rule 2): this verb appends NOTHING, so it takes no require_durable_session and answers on an unpersisted session — where compact/set_model/set_session_name all refuse (rule 1), because those three do append. Read the `leaf` above accordingly: on any session it is the live tip, never a claim that this call wrote something. No policy guard (§1.2): CompactionPolicy is constructed in exactly one place, sdk.py:865, which rpc_mode.py never goes through — no RPC session ever carries one for this verb to protect. Why a host has to ask at all: rpc_mode.py -> backends.create_backend -> TauBackend constructs its session with CompactionSettings(enabled=False) (backends.py:885, §1.1) and nothing else in RPC mode flips it. KNOWN GAP, stated not hidden (D-4): enabling this can cause `_maybe_auto_compact` (agent_session.py:3286-3291) to fire on the NEXT turn, and that method emits its own `agent_start`/`agent_end` pair through `self._events.emit` directly, not `_emit_stamped` — so that pair carries NO `submission_id`. A host correlating events to the `submission_id` a prior `submit`/`prompt` returned will see an ORPHAN agent_start/agent_end it cannot attribute to any request it made. The `agent_end` DOES carry a `leaf` (the handler stamps every outbound `agent_end` at DEQUEUE, in `prepare_outbound` / `_stamp_agent_end_cursor`, regardless of provenance), so a host obeying F3 (never cache 'the tip') stays correct across a compaction it did not explicitly ask for, even though it cannot explain WHY its context just shrank from submission_id alone. SECOND KNOWN GAP, the other face of D-7 rule 2: enabling this on an UNPERSISTED session arms a mechanism that then appends `compaction` entries to a log that dies with the process — from inside `_maybe_auto_compact`, a code path with no RPC verb on it and so nothing for rule 1 to guard. Same class as the AgentSession-internal gap compact's notes record about turn_lock: this tier guards the wire, not AgentSession. An auto-compaction is also NOT reachable by `abort` for the same reason — there is no background task the RPC layer owns to cancel (finding 5).
 
 **Params schema:**
 
@@ -1016,21 +1016,21 @@ what rides on top of this on every response):
 ```json
 {
   "properties": {
-    "cursor": {
+    "enabled": {
+      "description": "The effective state after this call (D-4: 'a plain, idempotent setter ... returns the effective state') \u2014 what AgentSession.set_auto_compaction returns, read back off the settings rather than echoed from the request.",
+      "type": "boolean"
+    },
+    "leaf": {
       "description": "cursor.leaf after this call (E5, rule 1 of 'E5 in Tier B' above). ALWAYS the unchanged tip: this verb mutates an in-memory CompactionSettings and appends no log entry, so there is nothing here that could move it. Returned rather than omitted because absence is not a signal (rule 3) \u2014 a host reads the same field from every mutator and never has to infer the tip from a missing key (F3).",
       "type": [
         "string",
         "null"
       ]
-    },
-    "enabled": {
-      "description": "The effective state after this call (D-4: 'a plain, idempotent setter ... returns the effective state') \u2014 what AgentSession.set_auto_compaction returns, read back off the settings rather than echoed from the request.",
-      "type": "boolean"
     }
   },
   "required": [
     "enabled",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -1038,7 +1038,7 @@ what rides on top of this on every response):
 
 #### `set_model`
 
-*Since tier-b.* D-2: switches the active model by NAME (AgentSession.set_model, agent_session.py:785 — effective on the NEXT turn, never mid-stream) and, unlike the bare session method, PERSISTS the switch: appends a config entry naming the model and returns the resulting cursor (E5, answered the one way the whole tier answers it — see commands.py 'E5 in Tier B': every Tier B mutator's completion carries `cursor`, present even when the call moved nothing; only the tier's reads omit it. Here the append always moves it, so it is that entry's own id). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than racing an in-flight turn's own AgentLoop, which reads self._model when it rebuilds each turn. Refuses: an unknown `name` is a CALLER error, not a runtime failure — the bound resolver's KeyError/ValueError (both are AgentSession.set_model's own documented shapes for 'no such name') is converted to INVALID_PARAMS, the same classification switch_session already gives an unresolvable session_id: a value the schema cannot check syntactically, refused before anything is touched. The resolver's own message (it is the component that knows which names exist) reaches the host verbatim, unwrapped from KeyError.__str__'s repr quotes rather than paraphrased — see _resolver_error_message. An UNPERSISTED session (new_session {persist:false}) is refused too, before anything is touched — require_durable_session, Blocker 2 of the Tier B review — because a cursor returned for an append that lands only in memory is a durability promise this verb cannot keep; SESSION_NOT_PERSISTED, which is also what a log declaring no durable location at all gets (the SDK's InMemorySessionLog). That refusal is D-7 rule 1, stated once for the whole tier in commands.py's 'DURABILITY in Tier B' block: a verb that APPENDS refuses an unpersisted session — this one, set_session_name, and (since finding 6) compact, which used to run there and report a cursor for an entry that died with the process. The check runs BEFORE session.set_model(name), so a refusal leaves the in-process model unswitched: this verb never reports 'maybe switched, definitely not persisted'. The config entry is appended at the session's cursor, as the TUI's own switch does. WHERE the entry lands, and for how long (unit S): a --mode rpc process defaults to storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's ~/.tau/sessions — one 0-message session per spawn would otherwise take over `tau -c` for whoever is working in the same directory. Most systems clear the temp dir on reboot, so this cursor's durability is bounded by MACHINE UPTIME, not forever: a replay can find the entry for the life of the session, and a host that needs more must be started with --session-dir DIR (accepted under --mode rpc precisely so a host can choose, including --session-dir ~/.tau/sessions).
+*Since tier-b.* D-2: switches the active model by NAME (AgentSession.set_model, agent_session.py:785 — effective on the NEXT turn, never mid-stream) and, unlike the bare session method, PERSISTS the switch: appends a config entry naming the model and returns the resulting leaf (E5, answered the one way the whole tier answers it — see commands.py 'E5 in Tier B': every Tier B mutator's completion carries `leaf`, present even when the call moved nothing; only the tier's reads omit it. Here the append always moves it, so it is that entry's own id). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than racing an in-flight turn's own AgentLoop, which reads self._model when it rebuilds each turn. Refuses: an unknown `name` is a CALLER error, not a runtime failure — the bound resolver's KeyError/ValueError (both are AgentSession.set_model's own documented shapes for 'no such name') is converted to INVALID_PARAMS, the same classification switch_session already gives an unresolvable session_id: a value the schema cannot check syntactically, refused before anything is touched. The resolver's own message (it is the component that knows which names exist) reaches the host verbatim, unwrapped from KeyError.__str__'s repr quotes rather than paraphrased — see _resolver_error_message. An UNPERSISTED session (new_session {persist:false}) is refused too, before anything is touched — require_durable_session, Blocker 2 of the Tier B review — because a leaf returned for an append that lands only in memory is a durability promise this verb cannot keep; SESSION_NOT_PERSISTED, which is also what a log declaring no durable location at all gets (the SDK's InMemorySessionLog). That refusal is D-7 rule 1, stated once for the whole tier in commands.py's 'DURABILITY in Tier B' block: a verb that APPENDS refuses an unpersisted session — this one, set_session_name, and (since finding 6) compact, which used to run there and report a leaf for an entry that died with the process. The check runs BEFORE session.set_model(name), so a refusal leaves the in-process model unswitched: this verb never reports 'maybe switched, definitely not persisted'. The config entry is appended at the session's cursor, as the TUI's own switch does. WHERE the entry lands, and for how long (unit S): a --mode rpc process defaults to storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's ~/.tau/sessions — one 0-message session per spawn would otherwise take over `tau -c` for whoever is working in the same directory. Most systems clear the temp dir on reboot, so this leaf's durability is bounded by MACHINE UPTIME, not forever: a replay can find the entry for the life of the session, and a host that needs more must be started with --session-dir DIR (accepted under --mode rpc precisely so a host can choose, including --session-dir ~/.tau/sessions).
 
 **Params schema:**
 
@@ -1064,7 +1064,7 @@ what rides on top of this on every response):
 ```json
 {
   "properties": {
-    "cursor": {
+    "leaf": {
       "description": "cursor.leaf immediately after the model_change entry this call appended (E5) \u2014 that entry's own id, since the append is the last write this handler makes.",
       "type": [
         "string",
@@ -1078,7 +1078,7 @@ what rides on top of this on every response):
   },
   "required": [
     "model",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -1086,7 +1086,7 @@ what rides on top of this on every response):
 
 #### `set_session_name`
 
-*Since tier-b.* D-1 (mutating): takes turn_safety_guard before writing. Calls AgentSession.set_session_name, which is extension_types.apply_session_name — the SAME body ExtensionAPI.set_session_name calls (docs/RPC-TIER-B.md B5: 'do not reinvent it and do not copy-paste it'). It takes require_durable_session first (Blocker 2, Tier B review), which asks a different question — not 'does the log have the appender' (every real session does) but 'will the entry outlive this process': an unpersisted session (new_session {persist:false}) is refused rather than handed a cursor for a rename nobody will ever read back. That is D-7 rule 1, which commands.py's 'DURABILITY in Tier B' block now states once for the whole tier — this verb appends, so it refuses; `compact` appends too and, since finding 6, gives the same answer instead of a third one. E5, answered the one way the whole tier answers it (see commands.py 'E5 in Tier B'): this response carries the resulting `cursor`, as every Tier B mutator's completion does, present even when the call moved nothing — here the append always moves it. An empty name is INVALID_PARAMS (validate_params has no minLength — see the params schema's own note); an unpersisted session, or a log declaring no durable location (e.g. the SDK's InMemorySessionLog), is SESSION_NOT_PERSISTED — round-3 finding 4 of the Tier B review moved it off INTERNAL_ERROR, which the generated reference defines as 'the handler raised something it did not raise on purpose' and which this refusal is the opposite of. Nothing is mutated before the check. WHERE the rename lands, and for how long (unit S): a --mode rpc process defaults to storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's ~/.tau/sessions — so a name set here does not show up in that user's TUI picker unless the host was started with --session-dir (accepted under --mode rpc precisely so a host can choose, including --session-dir ~/.tau/sessions). Most systems clear the temp dir on reboot, so this cursor's durability is bounded by MACHINE UPTIME, not forever.
+*Since tier-b.* D-1 (mutating): takes turn_safety_guard before writing. Calls AgentSession.set_session_name, which is extension_types.apply_session_name — the SAME body ExtensionAPI.set_session_name calls (docs/RPC-TIER-B.md B5: 'do not reinvent it and do not copy-paste it'). It takes require_durable_session first (Blocker 2, Tier B review), which asks a different question — not 'does the log have the appender' (every real session does) but 'will the entry outlive this process': an unpersisted session (new_session {persist:false}) is refused rather than handed a leaf for a rename nobody will ever read back. That is D-7 rule 1, which commands.py's 'DURABILITY in Tier B' block now states once for the whole tier — this verb appends, so it refuses; `compact` appends too and, since finding 6, gives the same answer instead of a third one. E5, answered the one way the whole tier answers it (see commands.py 'E5 in Tier B'): this response carries the resulting `leaf`, as every Tier B mutator's completion does, present even when the call moved nothing — here the append always moves it. An empty name is INVALID_PARAMS (validate_params has no minLength — see the params schema's own note); an unpersisted session, or a log declaring no durable location (e.g. the SDK's InMemorySessionLog), is SESSION_NOT_PERSISTED — round-3 finding 4 of the Tier B review moved it off INTERNAL_ERROR, which the generated reference defines as 'the handler raised something it did not raise on purpose' and which this refusal is the opposite of. Nothing is mutated before the check. WHERE the rename lands, and for how long (unit S): a --mode rpc process defaults to storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's ~/.tau/sessions — so a name set here does not show up in that user's TUI picker unless the host was started with --session-dir (accepted under --mode rpc precisely so a host can choose, including --session-dir ~/.tau/sessions). Most systems clear the temp dir on reboot, so this leaf's durability is bounded by MACHINE UPTIME, not forever.
 
 **Params schema:**
 
@@ -1112,8 +1112,8 @@ what rides on top of this on every response):
 ```json
 {
   "properties": {
-    "cursor": {
-      "description": "The resulting cursor.leaf (E5/F3 \u2014 every mutating response returns the resulting cursor).",
+    "leaf": {
+      "description": "The resulting cursor.leaf (E5/F3 \u2014 every mutating response returns the resulting leaf).",
       "type": [
         "string",
         "null"
@@ -1126,7 +1126,7 @@ what rides on top of this on every response):
   },
   "required": [
     "name",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -1171,16 +1171,16 @@ what rides on top of this on every response):
 ```json
 {
   "properties": {
-    "cursor": {
+    "handled": {
+      "description": "Whether the extension that raised the request was loaded and ran its action. FALSE still means the response was appended and the lock released \u2014 a lock whose owner cannot answer must not become a session nobody can continue \u2014 so a host reports it as a warning and carries on, rather than as a failure to retry.",
+      "type": "boolean"
+    },
+    "leaf": {
       "description": "cursor.leaf after the response was appended (E5 rule 1). The append is what RELEASES the lock \u2014 appending moves the cursor and a lock is read at the cursor \u2014 so this value is the evidence the session is answerable again.",
       "type": [
         "string",
         "null"
       ]
-    },
-    "handled": {
-      "description": "Whether the extension that raised the request was loaded and ran its action. FALSE still means the response was appended and the lock released \u2014 a lock whose owner cannot answer must not become a session nobody can continue \u2014 so a host reports it as a warning and carries on, rather than as a failure to retry.",
-      "type": "boolean"
     },
     "output": {
       "description": "What the dispatched command produced, or null.",
@@ -1193,7 +1193,7 @@ what rides on top of this on every response):
   "required": [
     "handled",
     "output",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -1201,7 +1201,7 @@ what rides on top of this on every response):
 
 #### `commit_branch`
 
-*Since 0.9.8.* tau_agent_core.tree_ops.commit_branch, projected. Builds a branch out of a set of marked entries and continues on it (docs/TREE-BROWSER-AS-EDITOR.md §6). The copies are minted with append_at, which does NOT move the cursor, and the cursor moves onto the last minted entry afterwards — so the commit is atomic from the cursor's point of view and a mint that fails partway leaves orphans hanging off the attach point rather than a half-moved conversation. Refuses, all INVALID_PARAMS and all before the first append: an empty selection, an unknown id, an entry no branch can carry, or a selection composing a path that is not turn-complete. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
+*Since 0.9.8.* tau_agent_core.tree_ops.commit_branch, projected. Builds a branch out of a set of marked entries and continues on it (docs/TREE-BROWSER-AS-EDITOR.md §6). The copies are minted with append_at, which does NOT move the cursor, and the cursor moves onto the last minted entry afterwards — so the commit is atomic from the cursor's point of view and a mint that fails partway leaves orphans hanging off the attach point rather than a half-moved conversation. Refuses, all INVALID_PARAMS and all before the first append: an empty selection, an unknown id, an entry no branch can carry, or a selection composing a path that is not turn-complete. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `leaf`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
 
 **Params schema:**
 
@@ -1232,7 +1232,7 @@ what rides on top of this on every response):
 ```json
 {
   "properties": {
-    "cursor": {
+    "leaf": {
       "description": "cursor.leaf after the mutation (E5 rule 1).",
       "type": [
         "string",
@@ -1246,7 +1246,7 @@ what rides on top of this on every response):
   },
   "required": [
     "messages",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -1254,7 +1254,7 @@ what rides on top of this on every response):
 
 #### `complete_message_id`
 
-*Since 0.9.8.* The message_id domain's enumerator, addressed by its own capability name. ConversationTree.complete_message_id over the session's live entries and cursor. Until this verb, every capability taking an entry id was callable over the wire only by a host that had been handed an id by something else — the hole get_models closed for set_model and list_sessions for switch_session. Overlaps enumerate_domain {"domain": "message_id"} deliberately and returns the same data under its own field names (entry_id/preview rather than value/label): a host walking a FLOW's argument list reaches it through enumerate_domain without knowing which capability enumerates that domain, and a host calling the capability by name calls this. Read-only: no D-1 turn_safety_guard, no `cursor` in the result (E5 rule 2 — a host that wants the tip calls get_state), and no require_durable_session (D-7 rule 2: it appends nothing). Refuses: a `cursor` naming no entry, under a scope that needs one, is a CALLER error and comes back as INVALID_PARAMS — the same classification set_model gives an unknown model name. Fail-Early, because the alternative is an empty match list that reads as 'the scope held nothing'.
+*Since 0.9.8.* The message_id domain's enumerator, addressed by its own capability name. ConversationTree.complete_message_id over the session's live entries and cursor. Until this verb, every capability taking an entry id was callable over the wire only by a host that had been handed an id by something else — the hole get_models closed for set_model and list_sessions for switch_session. Overlaps enumerate_domain {"domain": "message_id"} deliberately and returns the same data under its own field names (entry_id/preview rather than value/label): a host walking a FLOW's argument list reaches it through enumerate_domain without knowing which capability enumerates that domain, and a host calling the capability by name calls this. Read-only: no D-1 turn_safety_guard, no `leaf` in the result (E5 rule 2 — a host that wants the tip calls get_state), and no require_durable_session (D-7 rule 2: it appends nothing). Refuses: a `leaf` naming no entry, under a scope that needs one, is a CALLER error and comes back as INVALID_PARAMS — the same classification set_model gives an unknown model name. Fail-Early, because the alternative is an empty match list that reads as 'the scope held nothing'.
 
 **Params schema:**
 
@@ -1262,8 +1262,8 @@ what rides on top of this on every response):
 {
   "additionalProperties": false,
   "properties": {
-    "cursor": {
-      "description": "The entry the two scoped variants are relative to. Omitted uses the session's own cursor (get_state's `cursor`). An id that names no entry is INVALID_PARAMS, never an empty match list.",
+    "leaf": {
+      "description": "The entry the two scoped variants are relative to. Omitted uses the session cursor's leaf (get_state's `leaf`). An id that names no entry is INVALID_PARAMS, never an empty match list.",
       "type": "string"
     },
     "limit": {
@@ -1276,11 +1276,11 @@ what rides on top of this on every response):
       "type": "string"
     },
     "scope": {
-      "description": "Which entries are candidates. 'in_session' is every entry in the log; 'ancestors_of_cursor' is the parent chain from the root to `cursor` inclusive; 'descendants_of_cursor' is the subtree below it, excluding `cursor` itself. Omitted means 'in_session'.",
+      "description": "Which entries are candidates. 'in_session' is every entry in the log; 'ancestors_of_leaf' is the parent chain from the root to `leaf` inclusive; 'descendants_of_leaf' is the subtree below it, excluding `leaf` itself. Omitted means 'in_session'.",
       "enum": [
         "in_session",
-        "ancestors_of_cursor",
-        "descendants_of_cursor"
+        "ancestors_of_leaf",
+        "descendants_of_leaf"
       ],
       "type": "string"
     }
@@ -1314,7 +1314,7 @@ what rides on top of this on every response):
 
 #### `disable_extension`
 
-*Since 0.9.8.* AgentSession.disable_extension(), projected. Fires the extension's own session_shutdown with reason 'disable' FIRST — the teardown seam, so a watcher or exit-commit runs cleanly — then removes its runner bucket and unwinds the tools, commands and shortcuts it registered. The LoadedExtension record is KEPT, which is what lets enable_extension bring it back without re-reading the file. ok=false for an unknown target or one that is already disabled. D-1: guarded by turn_safety_guard. An extension's hooks fire inside the turn, and its tools are resolved from the registry this action rewrites, so running it mid-turn would change the tool table under a loop that had already read it — TURN_STILL_RUNNING rather than that race. D-7 rule 2: appends NOTHING, so no require_durable_session; extension state is runtime state and is never written to the session log, which is also why it does not survive a respawn and a host that wants an extension loaded at startup passes it on the command line. E5 rule 1: the completion carries `cursor` anyway. `path` accepts a full managed path or a unique file stem (AgentSession.resolve_extension_target); an ambiguous stem resolves to nothing and comes back as ok=false, never a guess.
+*Since 0.9.8.* AgentSession.disable_extension(), projected. Fires the extension's own session_shutdown with reason 'disable' FIRST — the teardown seam, so a watcher or exit-commit runs cleanly — then removes its runner bucket and unwinds the tools, commands and shortcuts it registered. The LoadedExtension record is KEPT, which is what lets enable_extension bring it back without re-reading the file. ok=false for an unknown target or one that is already disabled. D-1: guarded by turn_safety_guard. An extension's hooks fire inside the turn, and its tools are resolved from the registry this action rewrites, so running it mid-turn would change the tool table under a loop that had already read it — TURN_STILL_RUNNING rather than that race. D-7 rule 2: appends NOTHING, so no require_durable_session; extension state is runtime state and is never written to the session log, which is also why it does not survive a respawn and a host that wants an extension loaded at startup passes it on the command line. E5 rule 1: the completion carries `leaf` anyway. `path` accepts a full managed path or a unique file stem (AgentSession.resolve_extension_target); an ambiguous stem resolves to nothing and comes back as ok=false, never a guess.
 
 **Params schema:**
 
@@ -1350,7 +1350,7 @@ what rides on top of this on every response):
       ],
       "type": "string"
     },
-    "cursor": {
+    "leaf": {
       "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
       "type": [
         "string",
@@ -1375,7 +1375,7 @@ what rides on top of this on every response):
     "path",
     "ok",
     "message",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -1383,7 +1383,7 @@ what rides on top of this on every response):
 
 #### `elide_span`
 
-*Since 0.9.8.* tau_agent_core.tree_ops.elide_span, projected. Folds a span out of the active context — the summary-less generalization of the compaction anchor. Synchronous and free: no summary, therefore no model call. Nothing is erased; every entry the fold now skips is still in the log and still browsable. Two refusals beyond the ordinary unknown-id one, both INVALID_PARAMS and both checked before the first append: a first_kept_id that is not on the anchor's path (the fold's forward scan would never find it and would emit the anchor and nothing else), and a span that would hide nothing (a persisted node that changes nothing about the context it was created to change is indistinguishable to a user from a successful fold). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
+*Since 0.9.8.* tau_agent_core.tree_ops.elide_span, projected. Folds a span out of the active context — the summary-less generalization of the compaction anchor. Synchronous and free: no summary, therefore no model call. Nothing is erased; every entry the fold now skips is still in the log and still browsable. Two refusals beyond the ordinary unknown-id one, both INVALID_PARAMS and both checked before the first append: a first_kept_id that is not on the anchor's path (the fold's forward scan would never find it and would emit the anchor and nothing else), and a span that would hide nothing (a persisted node that changes nothing about the context it was created to change is indistinguishable to a user from a successful fold). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `leaf`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
 
 **Params schema:**
 
@@ -1414,7 +1414,7 @@ what rides on top of this on every response):
 ```json
 {
   "properties": {
-    "cursor": {
+    "leaf": {
       "description": "cursor.leaf after the mutation (E5 rule 1).",
       "type": [
         "string",
@@ -1428,7 +1428,7 @@ what rides on top of this on every response):
   },
   "required": [
     "messages",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -1436,7 +1436,7 @@ what rides on top of this on every response):
 
 #### `enable_extension`
 
-*Since 0.9.8.* AgentSession.enable_extension(), projected. Re-binds a DISABLED extension by re-invoking the stored register(api) — the same entry point the loader called — against a fresh runner bucket, then fires session_start with reason 'enable' so a watcher re-installs. It does not re-read the file; reload_extension is the verb that does. ok=false for an unknown target or one that is already enabled. D-1: guarded by turn_safety_guard. An extension's hooks fire inside the turn, and its tools are resolved from the registry this action rewrites, so running it mid-turn would change the tool table under a loop that had already read it — TURN_STILL_RUNNING rather than that race. D-7 rule 2: appends NOTHING, so no require_durable_session; extension state is runtime state and is never written to the session log, which is also why it does not survive a respawn and a host that wants an extension loaded at startup passes it on the command line. E5 rule 1: the completion carries `cursor` anyway. `path` accepts a full managed path or a unique file stem (AgentSession.resolve_extension_target); an ambiguous stem resolves to nothing and comes back as ok=false, never a guess.
+*Since 0.9.8.* AgentSession.enable_extension(), projected. Re-binds a DISABLED extension by re-invoking the stored register(api) — the same entry point the loader called — against a fresh runner bucket, then fires session_start with reason 'enable' so a watcher re-installs. It does not re-read the file; reload_extension is the verb that does. ok=false for an unknown target or one that is already enabled. D-1: guarded by turn_safety_guard. An extension's hooks fire inside the turn, and its tools are resolved from the registry this action rewrites, so running it mid-turn would change the tool table under a loop that had already read it — TURN_STILL_RUNNING rather than that race. D-7 rule 2: appends NOTHING, so no require_durable_session; extension state is runtime state and is never written to the session log, which is also why it does not survive a respawn and a host that wants an extension loaded at startup passes it on the command line. E5 rule 1: the completion carries `leaf` anyway. `path` accepts a full managed path or a unique file stem (AgentSession.resolve_extension_target); an ambiguous stem resolves to nothing and comes back as ok=false, never a guess.
 
 **Params schema:**
 
@@ -1472,7 +1472,7 @@ what rides on top of this on every response):
       ],
       "type": "string"
     },
-    "cursor": {
+    "leaf": {
       "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
       "type": [
         "string",
@@ -1497,7 +1497,7 @@ what rides on top of this on every response):
     "path",
     "ok",
     "message",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -1505,7 +1505,7 @@ what rides on top of this on every response):
 
 #### `enumerate_domain`
 
-*Since 0.9.8.* The other half of the flow loop. A flow argument carries a DOMAIN — a named type in τ's object model — rather than a list of strings, and this is what turns one into the values that are legal right now, each with a label a person can read. The rule it states once was previously rediscovered twice by hand: `get_models` was added because `set_model`'s config NAME was unconstructible from the wire (finding 7), and `list_sessions` because `switch_session`'s id was (finding 8). A mutation with a bounded parameter is uncallable without an enumerating read. It dispatches to those same readers rather than reimplementing them, so a listing here and the corresponding verb cannot disagree about what exists. `model_name` -> the bound model resolver's catalogue (the same one `get_models` reads); `session_id` -> the runtime's SessionCatalog (the same `list_sessions` publishes); `path` -> attachments.complete_attachment (the same `complete_path` wraps); `message_id` -> ConversationTree.complete_message_id; `extension_name` -> AgentSession.list_managed_extensions. A READ: no `cursor` (E5 rule 2), no D-1 turn_safety_guard, no require_durable_session. Fail-Early on a missing dependency: a domain whose reader needs a runtime this process does not have RAISES rather than answering with an empty list, which a host would read as 'there are none'.
+*Since 0.9.8.* The other half of the flow loop. A flow argument carries a DOMAIN — a named type in τ's object model — rather than a list of strings, and this is what turns one into the values that are legal right now, each with a label a person can read. The rule it states once was previously rediscovered twice by hand: `get_models` was added because `set_model`'s config NAME was unconstructible from the wire (finding 7), and `list_sessions` because `switch_session`'s id was (finding 8). A mutation with a bounded parameter is uncallable without an enumerating read. It dispatches to those same readers rather than reimplementing them, so a listing here and the corresponding verb cannot disagree about what exists. `model_name` -> the bound model resolver's catalogue (the same one `get_models` reads); `session_id` -> the runtime's SessionCatalog (the same `list_sessions` publishes); `path` -> attachments.complete_attachment (the same `complete_path` wraps); `message_id` -> ConversationTree.complete_message_id; `extension_name` -> AgentSession.list_managed_extensions. A READ: no `leaf` (E5 rule 2), no D-1 turn_safety_guard, no require_durable_session. Fail-Early on a missing dependency: a domain whose reader needs a runtime this process does not have RAISES rather than answering with an empty list, which a host would read as 'there are none'.
 
 **Params schema:**
 
@@ -1513,16 +1513,16 @@ what rides on top of this on every response):
 {
   "additionalProperties": false,
   "properties": {
-    "cursor": {
+    "domain": {
+      "description": "The domain's name, as a `next_step` step reported it. A domain that is `free` returns no values and total 0 \u2014 that is the answer, not a failure.",
+      "type": "string"
+    },
+    "leaf": {
       "description": "For a scoped `message_id`: the entry the scope is relative to. Null uses the live tip. An id that names no entry is an error, not an empty listing.",
       "type": [
         "string",
         "null"
       ]
-    },
-    "domain": {
-      "description": "The domain's name, as a `next_step` step reported it. A domain that is `free` returns no values and total 0 \u2014 that is the answer, not a failure.",
-      "type": "string"
     },
     "limit": {
       "description": "How many values to return at most. Defaults to 50.",
@@ -1537,8 +1537,8 @@ what rides on top of this on every response):
       "description": "For `message_id` only: which entries are candidates. Defaults to `in_session`.",
       "enum": [
         "in_session",
-        "ancestors_of_cursor",
-        "descendants_of_cursor",
+        "ancestors_of_leaf",
+        "descendants_of_leaf",
         null
       ],
       "type": [
@@ -1584,7 +1584,7 @@ what rides on top of this on every response):
 
 #### `get_entry`
 
-*Since 0.10.1.* ConversationTree.entry(entry_id) — one node's full body, which is what a detail pane beside a tree draws and the reason get_tree carries a one-line `preview` per row instead of a message. The pair is the same one the TUI's own browser makes: `tree()` for the rows, `entry` for the node it is showing (tree_browser.py's `_resolve_entry`). get_messages does not serve this — it answers for the ACTIVE PATH, and the node a reader has moved the browser's cursor onto is very often not on it. The entry is handed over RAW, in its stored camelCase shape, rather than projected: the caller is rendering one node, and a projection would be a second message shape to keep in step with get_messages'. Bounded by the caller: one id, one entry, and a host that wants ten asks ten times — the alternative, an ids array, buys nothing over stdio and invites a host to pull a whole tree's bodies in one line. Read-only: no D-1 turn_safety_guard, no E5 cursor (rule 2), no require_durable_session (D-7 rule 2).
+*Since 0.10.1.* ConversationTree.entry(entry_id) — one node's full body, which is what a detail pane beside a tree draws and the reason get_tree carries a one-line `preview` per row instead of a message. The pair is the same one the TUI's own browser makes: `tree()` for the rows, `entry` for the node it is showing (tree_browser.py's `_resolve_entry`). get_messages does not serve this — it answers for the ACTIVE PATH, and the node a reader has moved the browser's cursor onto is very often not on it. The entry is handed over RAW, in its stored camelCase shape, rather than projected: the caller is rendering one node, and a projection would be a second message shape to keep in step with get_messages'. Bounded by the caller: one id, one entry, and a host that wants ten asks ten times — the alternative, an ids array, buys nothing over stdio and invites a host to pull a whole tree's bodies in one line. Read-only: no D-1 turn_safety_guard, no E5 leaf (rule 2), no require_durable_session (D-7 rule 2).
 
 **Params schema:**
 
@@ -1624,7 +1624,7 @@ what rides on top of this on every response):
 
 #### `get_extension_config`
 
-*Since 0.9.8.* AgentSession.get_extension_config(), projected. The read a settings screen is built from: `schema` is the extension's own CONFIG_SCHEMA module attribute, validated at load into the {title, fields} shape ui.form takes, and `values` is the live slice api.config returns for it. A null `schema` is the honest answer for an extension that declares none — a host renders no settings screen rather than an empty one. Read: no cursor (E5 rule 2), no turn guard. Fail-Early: an unresolvable `path` RAISES here rather than returning a null row, because unlike the enable/disable/reload verbs there is no ok=false channel on a read.
+*Since 0.9.8.* AgentSession.get_extension_config(), projected. The read a settings screen is built from: `schema` is the extension's own CONFIG_SCHEMA module attribute, validated at load into the {title, fields} shape ui.form takes, and `values` is the live slice api.config returns for it. A null `schema` is the honest answer for an extension that declares none — a host renders no settings screen rather than an empty one. Read: no leaf (E5 rule 2), no turn guard. Fail-Early: an unresolvable `path` RAISES here rather than returning a null row, because unlike the enable/disable/reload verbs there is no ok=false channel on a read.
 
 **Params schema:**
 
@@ -1674,7 +1674,7 @@ what rides on top of this on every response):
 
 #### `get_extension_state`
 
-*Since 0.9.8.* AgentSession.get_extension_state(), projected through sdk.summarize_extensions — the read the /extensions listing is built from, and the read a head needs before it can offer enable/disable/reload as anything but a blind form. Whether each extension is currently ENABLED is the separate read list_managed_extensions; a host that wants both composes them, which is the division AgentSession.get_extension_state's own docstring states. Read-only: no turn_safety_guard, no `cursor` (E5 rule 2), no require_durable_session (D-7 rule 2 — extension state is runtime state and is never appended to the session log, so this answers the same on a persisted and an unpersisted session).
+*Since 0.9.8.* AgentSession.get_extension_state(), projected through sdk.summarize_extensions — the read the /extensions listing is built from, and the read a head needs before it can offer enable/disable/reload as anything but a blind form. Whether each extension is currently ENABLED is the separate read list_managed_extensions; a host that wants both composes them, which is the division AgentSession.get_extension_state's own docstring states. Read-only: no turn_safety_guard, no `leaf` (E5 rule 2), no require_durable_session (D-7 rule 2 — extension state is runtime state and is never appended to the session log, so this answers the same on a persisted and an unpersisted session).
 
 **Params schema:**
 
@@ -1711,7 +1711,7 @@ what rides on top of this on every response):
 
 #### `get_pending_request`
 
-*Since 0.10.1.* AgentSession.pending_request, projected. 0.10.0 replaced ui.confirm / ui.select / ui.input with one persisted `extension_request` entry and said every head renders all four of its states — and the state was reachable over THIS wire only as `SUBMISSION_REJECTED` data, which means an RPC host learned about a lock by being refused by it and could not see one that had not refused it yet. A head polls this at every cursor move: after a turn ends, after a command, on a resume, on a session switch. Null is the ordinary answer and is not a failure. Read-only: no D-1 turn_safety_guard (a request raised by a tool_call hook is exactly the case a host wants to see mid-turn), no E5 cursor (rule 2), no require_durable_session (D-7 rule 2).
+*Since 0.10.1.* AgentSession.pending_request, projected. 0.10.0 replaced ui.confirm / ui.select / ui.input with one persisted `extension_request` entry and said every head renders all four of its states — and the state was reachable over THIS wire only as `SUBMISSION_REJECTED` data, which means an RPC host learned about a lock by being refused by it and could not see one that had not refused it yet. A head polls this at every cursor move: after a turn ends, after a command, on a resume, on a session switch. Null is the ordinary answer and is not a failure. Read-only: no D-1 turn_safety_guard (a request raised by a tool_call hook is exactly the case a host wants to see mid-turn), no E5 leaf (rule 2), no require_durable_session (D-7 rule 2).
 
 **Params schema:**
 
@@ -1746,7 +1746,7 @@ what rides on top of this on every response):
 
 #### `get_tree`
 
-*Since 0.10.1.* ConversationTree.browse() over the session's live entries and cursor — the shape half of the tree, and the read the five tree MUTATIONS were uncallable without. docs/VSCODE-HEAD.md §6 measured that gap and named this verb as what closes it: 0.9.8 put navigate, elide_span, commit_branch, paste_subtree and summarize_and_navigate on the wire, and complete_message_id returns a flat list of (entry_id, preview) pairs with no parent links — a picker, not a browser. A host could edit a tree it had no way to draw. Every node carries the facts a browser COLOURS a row with as well as the ones it draws it from, because each of them is read out of the raw entry and no other verb hands a raw entry over: `first_kept_id` is the fold's boundary, `tool_call_ids`/`tool_call_id` the pairing a mark expands over, `copyable` the paste source rule, `from_id` the branch-summary pair. Without them an out-of-process head would recompute each from a second reading of the log's shape, which is the drift the capability registry exists to make impossible. FLAT with `parent_id`, not nested: a five-hundred-message linear conversation nests five hundred deep, and json.dumps has a recursion limit where a tree does not. UNBOUNDED, deliberately, and this is the one place G3 is argued rather than applied: G3 forbids pushing something unbounded, and this is a PULL — the shape IS the answer, and a bounded shape is a different tree. `count` is there so a host can say it read a whole one. Read-only: no D-1 turn_safety_guard (it mutates nothing, so it answers mid-turn — a browser opened while a turn streams shows the tree as it stands), no `cursor` in the E5 sense (the `cursor` key here is the tip this READ observed, not a mutation's product), and no require_durable_session (D-7 rule 2: it appends nothing, and an unpersisted session has a tree like any other). The `/tree` VIEW command still carries `unavailable_because` rather than state: resolve_command is pure and holds no session, so a head opens the view from THIS read — which is what that sentence has said since 0.9.8 and what it can now mean.
+*Since 0.10.1.* ConversationTree.browse() over the session's live entries and cursor — the shape half of the tree, and the read the five tree MUTATIONS were uncallable without. docs/VSCODE-HEAD.md §6 measured that gap and named this verb as what closes it: 0.9.8 put navigate, elide_span, commit_branch, paste_subtree and summarize_and_navigate on the wire, and complete_message_id returns a flat list of (entry_id, preview) pairs with no parent links — a picker, not a browser. A host could edit a tree it had no way to draw. Every node carries the facts a browser COLOURS a row with as well as the ones it draws it from, because each of them is read out of the raw entry and no other verb hands a raw entry over: `first_kept_id` is the fold's boundary, `tool_call_ids`/`tool_call_id` the pairing a mark expands over, `copyable` the paste source rule, `from_id` the branch-summary pair. Without them an out-of-process head would recompute each from a second reading of the log's shape, which is the drift the capability registry exists to make impossible. FLAT with `parent_id`, not nested: a five-hundred-message linear conversation nests five hundred deep, and json.dumps has a recursion limit where a tree does not. UNBOUNDED, deliberately, and this is the one place G3 is argued rather than applied: G3 forbids pushing something unbounded, and this is a PULL — the shape IS the answer, and a bounded shape is a different tree. `count` is there so a host can say it read a whole one. Read-only: no D-1 turn_safety_guard (it mutates nothing, so it answers mid-turn — a browser opened while a turn streams shows the tree as it stands), no `leaf` in the E5 sense (the `leaf` key here is the tip this READ observed, not a mutation's product), and no require_durable_session (D-7 rule 2: it appends nothing, and an unpersisted session has a tree like any other). The `/tree` VIEW command still carries `unavailable_because` rather than state: resolve_command is pure and holds no session, so a head opens the view from THIS read — which is what that sentence has said since 0.9.8 and what it can now mean.
 
 **Params schema:**
 
@@ -1768,8 +1768,8 @@ what rides on top of this on every response):
       "description": "len(nodes). Present so a host can check it read a whole tree rather than a truncated one: this read is UNBOUNDED by design \u2014 the shape IS the answer and a bounded shape is a different tree \u2014 which is why it is a pull and is never pushed (G3).",
       "type": "integer"
     },
-    "cursor": {
-      "description": "cursor.leaf at the moment of the read, duplicated out of `nodes` so a host finds it without scanning. Null on a session whose cursor names no entry, which is also the one case in which no node carries is_cursor: true.",
+    "leaf": {
+      "description": "cursor.leaf at the moment of the read, duplicated out of `nodes` so a host finds it without scanning. Null on a session whose cursor names no entry, which is also the one case in which no node carries is_leaf: true.",
       "type": [
         "string",
         "null"
@@ -1805,8 +1805,8 @@ what rides on top of this on every response):
               "null"
             ]
           },
-          "is_cursor": {
-            "description": "Whether this entry is the session's cursor \u2014 where the next submission lands. Exactly one node carries true, or none on a session whose cursor names no entry.",
+          "is_leaf": {
+            "description": "Whether this entry is the head cursor's leaf \u2014 where the next submission lands. Exactly one node carries true, or none on a session whose cursor names no entry.",
             "type": "boolean"
           },
           "is_system": {
@@ -1863,7 +1863,7 @@ what rides on top of this on every response):
           "kind",
           "role",
           "preview",
-          "is_cursor",
+          "is_leaf",
           "timestamp",
           "first_kept_id",
           "from_id",
@@ -1880,7 +1880,7 @@ what rides on top of this on every response):
   },
   "required": [
     "nodes",
-    "cursor",
+    "leaf",
     "count"
   ],
   "type": "object"
@@ -1889,7 +1889,7 @@ what rides on top of this on every response):
 
 #### `list_managed_extensions`
 
-*Since 0.9.8.* The extension_name domain's enumerator, addressed by its own capability name: AgentSession.list_managed_extensions(), projected. Overlaps enumerate_domain {"domain": "extension_name"} the way complete_message_id overlaps its own domain — with one difference worth a host's attention: enumerate_domain has only value/label to work with, so it renders enabled-ness INTO the label ('path (disabled)'), and this verb hands back the boolean. A host deciding whether to offer enable or disable wants this one. Read-only: no turn_safety_guard, no `cursor` (E5 rule 2), no require_durable_session (D-7 rule 2). Answers only about MANAGED file extensions — a file that failed to import is not here, because it can never be a legal extension_name; get_extension_state is the read that shows it.
+*Since 0.9.8.* The extension_name domain's enumerator, addressed by its own capability name: AgentSession.list_managed_extensions(), projected. Overlaps enumerate_domain {"domain": "extension_name"} the way complete_message_id overlaps its own domain — with one difference worth a host's attention: enumerate_domain has only value/label to work with, so it renders enabled-ness INTO the label ('path (disabled)'), and this verb hands back the boolean. A host deciding whether to offer enable or disable wants this one. Read-only: no turn_safety_guard, no `leaf` (E5 rule 2), no require_durable_session (D-7 rule 2). Answers only about MANAGED file extensions — a file that failed to import is not here, because it can never be a legal extension_name; get_extension_state is the read that shows it.
 
 **Params schema:**
 
@@ -1921,7 +1921,7 @@ what rides on top of this on every response):
 
 #### `navigate`
 
-*Since 0.9.8.* tau_agent_core.tree_ops.navigate, projected. Moves the session cursor to an entry and hands back the context that produces. Writes nothing, so it works on an unpersisted session and the position does not survive the process: a reopened session continues from its newest entry (docs/CURSORS.md §4). Until this verb τ's differentiating feature — a session tree a caller can move around in — was reachable only from inside the Textual head (docs/VSCODE-HEAD.md §6). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
+*Since 0.9.8.* tau_agent_core.tree_ops.navigate, projected. Moves the session cursor to an entry and hands back the context that produces. Writes nothing, so it works on an unpersisted session and the position does not survive the process: a reopened session continues from its newest entry (docs/CURSORS.md §4). Until this verb τ's differentiating feature — a session tree a caller can move around in — was reachable only from inside the Textual head (docs/VSCODE-HEAD.md §6). D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `leaf`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
 
 **Params schema:**
 
@@ -1947,7 +1947,7 @@ what rides on top of this on every response):
 ```json
 {
   "properties": {
-    "cursor": {
+    "leaf": {
       "description": "cursor.leaf after the mutation (E5 rule 1).",
       "type": [
         "string",
@@ -1961,7 +1961,7 @@ what rides on top of this on every response):
   },
   "required": [
     "messages",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -1969,7 +1969,7 @@ what rides on top of this on every response):
 
 #### `next_step`
 
-*Since 0.9.8.* Half of the flow loop, and the reason a host can offer a gesture it has never heard of. A flow is an ordered argument list ending in one mutation; this returns either the next argument or the mutation, and a host renders whatever it gets. The same call drives a modal wizard, a tab-completion popup and a shell — the difference between them is the presenter, not the protocol. It has to be on the wire rather than computed host-side because τ's extensions are unknown to the host: a host cannot enumerate valid actions it has no table for. PURE and a READ: it performs nothing, reads no session, and therefore carries no `cursor` (E5 rule 2). No D-1 turn_safety_guard — it mutates nothing, so it answers mid-turn — and no require_durable_session, since it appends nothing and answers the same under --no-session. Partial arguments ARE the dry run: a flow invoked with nothing bound reports its first step and changes nothing, which is why there is no `-y` and no confirmation verb.
+*Since 0.9.8.* Half of the flow loop, and the reason a host can offer a gesture it has never heard of. A flow is an ordered argument list ending in one mutation; this returns either the next argument or the mutation, and a host renders whatever it gets. The same call drives a modal wizard, a tab-completion popup and a shell — the difference between them is the presenter, not the protocol. It has to be on the wire rather than computed host-side because τ's extensions are unknown to the host: a host cannot enumerate valid actions it has no table for. PURE and a READ: it performs nothing, reads no session, and therefore carries no `leaf` (E5 rule 2). No D-1 turn_safety_guard — it mutates nothing, so it answers mid-turn — and no require_durable_session, since it appends nothing and answers the same under --no-session. Partial arguments ARE the dry run: a flow invoked with nothing bound reports its first step and changes nothing, which is why there is no `-y` and no confirmation verb.
 
 **Params schema:**
 
@@ -1981,16 +1981,16 @@ what rides on top of this on every response):
       "description": "The arguments bound so far, keyed by argument name. Omit it, or send {}, for the flow's first step. Only REQUIRED arguments block, so a flow whose arguments are all optional is `ready` on the first call.",
       "type": "object"
     },
-    "cursor": {
-      "description": "The entry a scoped `message_id` argument is relative to. A parameter rather than the live tip, so a host stepping a sub-agent's flow scopes to THAT agent's cursor. It is echoed back on the step so the host hands it straight to `enumerate_domain`.",
+    "flow": {
+      "description": "The flow's name \u2014 one of the `name`s `get_commands` lists. An unknown name is an error, not an empty answer: a host that believes a flow exists must be told it does not.",
+      "type": "string"
+    },
+    "leaf": {
+      "description": "The entry a scoped `message_id` argument is relative to. A parameter rather than the live tip, so a host stepping a sub-agent's flow scopes to THAT agent's leaf. It is echoed back on the step so the host hands it straight to `enumerate_domain`.",
       "type": [
         "string",
         "null"
       ]
-    },
-    "flow": {
-      "description": "The flow's name \u2014 one of the `name`s `get_commands` lists. An unknown name is an error, not an empty answer: a host that believes a flow exists must be told it does not.",
-      "type": "string"
     }
   },
   "required": [
@@ -2022,7 +2022,7 @@ what rides on top of this on every response):
       "type": "string"
     },
     "step": {
-      "description": "{flow, argument, domain, cursor, bound}. `argument` is {name, domain, description, cardinality, required, scope}; `domain` is the resolved domain record {name, description, free, values, enumerator}, included so a host can render the field without a second call \u2014 `values` is non-null for a small fixed set, and `enumerator` non-null means call `enumerate_domain` for the live set.",
+      "description": "{flow, argument, domain, leaf, bound}. `argument` is {name, domain, description, cardinality, required, scope}; `domain` is the resolved domain record {name, description, free, values, enumerator}, included so a host can render the field without a second call \u2014 `values` is non-null for a small fixed set, and `enumerator` non-null means call `enumerate_domain` for the live set.",
       "type": [
         "object",
         "null"
@@ -2038,7 +2038,7 @@ what rides on top of this on every response):
 
 #### `paste_subtree`
 
-*Since 0.9.8.* tau_agent_core.tree_ops.paste_subtree, projected (docs/TREE-BROWSER-AS-EDITOR.md §7). Every copied entry is a new entry carrying `copiedFrom`, minted with append_at, parents before children, with a source-to-new id map re-hanging each child under its copied parent — so the copy keeps the original's shape including its forks. The one tree mutation whose result is NOT a message list: the cursor never moves, so what the model sees changes only when someone navigates onto the copy. Refuses: an unknown id, a source whose kind cannot be copied, a target inside the source's own subtree, or a copied tool result whose call is on neither the target's path nor the copied run. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
+*Since 0.9.8.* tau_agent_core.tree_ops.paste_subtree, projected (docs/TREE-BROWSER-AS-EDITOR.md §7). Every copied entry is a new entry carrying `copiedFrom`, minted with append_at, parents before children, with a source-to-new id map re-hanging each child under its copied parent — so the copy keeps the original's shape including its forks. The one tree mutation whose result is NOT a message list: the cursor never moves, so what the model sees changes only when someone navigates onto the copy. Refuses: an unknown id, a source whose kind cannot be copied, a target inside the source's own subtree, or a copied tool result whose call is on neither the target's path nor the copied run. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `leaf`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
 
 **Params schema:**
 
@@ -2069,7 +2069,7 @@ what rides on top of this on every response):
 ```json
 {
   "properties": {
-    "cursor": {
+    "leaf": {
       "description": "cursor.leaf after the paste \u2014 E5 rule 1, and here it is the UNCHANGED tip, present because absence is never a signal (rule 3), not because anything moved.",
       "type": [
         "string",
@@ -2083,7 +2083,7 @@ what rides on top of this on every response):
   },
   "required": [
     "minted_ids",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -2091,7 +2091,7 @@ what rides on top of this on every response):
 
 #### `reload_extension`
 
-*Since 0.9.8.* AgentSession.reload_extension(), projected. Tears the current instance down, RE-IMPORTS the file from disk as a new module object — so edits on disk take effect — and re-registers it against a fresh bucket. The one verb of the three that can hit a hard failure: a file that no longer imports RAISES out of the action and reaches the host as INTERNAL_ERROR, with the extension left torn down. That is Fail-Early and deliberate — an ok=false there would report a no-op for a session whose extension is now gone. Same argument shape as enable/disable, different risk, which is why it is a third verb and not a mode of one of them. D-1: guarded by turn_safety_guard. An extension's hooks fire inside the turn, and its tools are resolved from the registry this action rewrites, so running it mid-turn would change the tool table under a loop that had already read it — TURN_STILL_RUNNING rather than that race. D-7 rule 2: appends NOTHING, so no require_durable_session; extension state is runtime state and is never written to the session log, which is also why it does not survive a respawn and a host that wants an extension loaded at startup passes it on the command line. E5 rule 1: the completion carries `cursor` anyway. `path` accepts a full managed path or a unique file stem (AgentSession.resolve_extension_target); an ambiguous stem resolves to nothing and comes back as ok=false, never a guess.
+*Since 0.9.8.* AgentSession.reload_extension(), projected. Tears the current instance down, RE-IMPORTS the file from disk as a new module object — so edits on disk take effect — and re-registers it against a fresh bucket. The one verb of the three that can hit a hard failure: a file that no longer imports RAISES out of the action and reaches the host as INTERNAL_ERROR, with the extension left torn down. That is Fail-Early and deliberate — an ok=false there would report a no-op for a session whose extension is now gone. Same argument shape as enable/disable, different risk, which is why it is a third verb and not a mode of one of them. D-1: guarded by turn_safety_guard. An extension's hooks fire inside the turn, and its tools are resolved from the registry this action rewrites, so running it mid-turn would change the tool table under a loop that had already read it — TURN_STILL_RUNNING rather than that race. D-7 rule 2: appends NOTHING, so no require_durable_session; extension state is runtime state and is never written to the session log, which is also why it does not survive a respawn and a host that wants an extension loaded at startup passes it on the command line. E5 rule 1: the completion carries `leaf` anyway. `path` accepts a full managed path or a unique file stem (AgentSession.resolve_extension_target); an ambiguous stem resolves to nothing and comes back as ok=false, never a guess.
 
 **Params schema:**
 
@@ -2127,7 +2127,7 @@ what rides on top of this on every response):
       ],
       "type": "string"
     },
-    "cursor": {
+    "leaf": {
       "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
       "type": [
         "string",
@@ -2152,7 +2152,7 @@ what rides on top of this on every response):
     "path",
     "ok",
     "message",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -2160,7 +2160,7 @@ what rides on top of this on every response):
 
 #### `set_extension_config`
 
-*Since 0.9.8.* AgentSession.set_extension_config(), projected. Replaces the slice wholesale — not a merge — after checking every value against the declared schema, then reloads the extension, because api.config is captured when the extension's API is bound and a slice written without a reload would be read by nobody. An undeclared key, a missing declared field, or a value whose type does not match its field's kind reaches the host as INVALID_PARAMS; so does an extension that declares no schema, since there is then no contract to check against. `values` is why this row's params are hand-written: its keys are whatever THIS extension declared, which is not sayable in the Argument vocabulary — the same reason `submit` carries arguments=None. Applies for this session only: the core does not own ~/.tau/config.json, so persisting is head-local. D-1: guarded by turn_safety_guard. An extension's hooks fire inside the turn, and its tools are resolved from the registry this action rewrites, so running it mid-turn would change the tool table under a loop that had already read it — TURN_STILL_RUNNING rather than that race. D-7 rule 2: appends NOTHING, so no require_durable_session; extension state is runtime state and is never written to the session log, which is also why it does not survive a respawn and a host that wants an extension loaded at startup passes it on the command line. E5 rule 1: the completion carries `cursor` anyway. `path` accepts a full managed path or a unique file stem (AgentSession.resolve_extension_target); an ambiguous stem resolves to nothing and comes back as ok=false, never a guess.
+*Since 0.9.8.* AgentSession.set_extension_config(), projected. Replaces the slice wholesale — not a merge — after checking every value against the declared schema, then reloads the extension, because api.config is captured when the extension's API is bound and a slice written without a reload would be read by nobody. An undeclared key, a missing declared field, or a value whose type does not match its field's kind reaches the host as INVALID_PARAMS; so does an extension that declares no schema, since there is then no contract to check against. `values` is why this row's params are hand-written: its keys are whatever THIS extension declared, which is not sayable in the Argument vocabulary — the same reason `submit` carries arguments=None. Applies for this session only: the core does not own ~/.tau/config.json, so persisting is head-local. D-1: guarded by turn_safety_guard. An extension's hooks fire inside the turn, and its tools are resolved from the registry this action rewrites, so running it mid-turn would change the tool table under a loop that had already read it — TURN_STILL_RUNNING rather than that race. D-7 rule 2: appends NOTHING, so no require_durable_session; extension state is runtime state and is never written to the session log, which is also why it does not survive a respawn and a host that wants an extension loaded at startup passes it on the command line. E5 rule 1: the completion carries `leaf` anyway. `path` accepts a full managed path or a unique file stem (AgentSession.resolve_extension_target); an ambiguous stem resolves to nothing and comes back as ok=false, never a guess.
 
 **Params schema:**
 
@@ -2200,7 +2200,7 @@ what rides on top of this on every response):
       ],
       "type": "string"
     },
-    "cursor": {
+    "leaf": {
       "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
       "type": [
         "string",
@@ -2225,7 +2225,7 @@ what rides on top of this on every response):
     "path",
     "ok",
     "message",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -2367,7 +2367,7 @@ what rides on top of this on every response):
 
 #### `summarize_and_navigate`
 
-*Since 0.9.8.* AgentSession.summarize_and_navigate(), projected. The summarizing arm of navigate, and a SEPARATE verb rather than a flag on it for the reason the core splits them: this one makes a completion call, so it costs tokens and takes wall time that `navigate` does not. A host offering both should say so in what it offers. The summarizer's tokens are banked to the session's side ledger (AgentSession.record_side_usage) and are NOT itemised in this response — stated, not hidden: there is no verb on this wire that reports side_usage, so a host tracking spend sees them only in aggregate. A summarizer that returns nothing usable RAISES (session_manager.summarize_branch) and reaches the host as INTERNAL_ERROR — it is a runtime failure, not a bad argument, and it is never fabricated into an empty summary. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `cursor`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
+*Since 0.9.8.* AgentSession.summarize_and_navigate(), projected. The summarizing arm of navigate, and a SEPARATE verb rather than a flag on it for the reason the core splits them: this one makes a completion call, so it costs tokens and takes wall time that `navigate` does not. A host offering both should say so in what it offers. The summarizer's tokens are banked to the session's side ledger (AgentSession.record_side_usage) and are NOT itemised in this response — stated, not hidden: there is no verb on this wire that reports side_usage, so a host tracking spend sees them only in aggregate. A summarizer that returns nothing usable RAISES (session_manager.summarize_branch) and reaches the host as INTERNAL_ERROR — it is a runtime failure, not a bad argument, and it is never fabricated into an empty summary. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `leaf`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
 
 **Params schema:**
 
@@ -2397,7 +2397,7 @@ what rides on top of this on every response):
 ```json
 {
   "properties": {
-    "cursor": {
+    "leaf": {
       "description": "cursor.leaf after the mutation (E5 rule 1).",
       "type": [
         "string",
@@ -2411,7 +2411,7 @@ what rides on top of this on every response):
   },
   "required": [
     "messages",
-    "cursor"
+    "leaf"
   ],
   "type": "object"
 }
@@ -2479,7 +2479,7 @@ Every `type: "event"` notification carries a `WireEvent` payload (generated from
 | `cache_notice` | string \| `null` | One sentence saying this turn's prompt cache should have been read and was not, on agent_end. Null is the normal case and says nothing was observed: the cache was read, the server accounts for no cache, the prompt is under the minimum cacheable prefix, or a read earlier in this session already proved caching is on. A host renders it as a warning; see docs/PROMPT-CACHING.md §7 for the three gates. None for all other event types. |
 | `purpose` | `compaction` \| `branch_summary` \| `null` | Which side completion a side_completion_* event reports: 'compaction' or 'branch_summary'. Side work spends tokens and produces text outside any turn, so it stamps no submission_id and a host keys on this instead. The summary TEXT and what it cost are deliberately not on the wire — both land in the session log as a compaction or branch_summary entry, which get_entry serves with tokens_before, covered_tokens and summary_usage attached. Pushing unbounded content through an event is what WireEvent exists to avoid. None for all other event types. See docs/STREAMING-SIDE-WORK.md. |
 | `reason` | `manual` \| `threshold` \| `navigate` \| `null` | What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. None for all other event types. |
-| `cursor` | string \| `null` | The session log's resulting cursor, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |
+| `leaf` | string \| `null` | The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |
 
 ## Error codes
 

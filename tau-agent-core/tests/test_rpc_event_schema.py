@@ -40,7 +40,7 @@ DOCUMENTED_DERIVED_FIELDS = {
     "block_type",
     "replace",
     "message_count",
-    "cursor",
+    "leaf",
     "cache_notice",
     "stop_reason",
     "dropped_tool_calls",
