@@ -158,6 +158,29 @@ async def test_a_turn_reaches_the_file_and_every_client_replica(served, tmp_path
     await two.close()
 
 
+async def test_a_cursor_reads_idle_again_once_its_turn_ends(served, tmp_path):
+    """Answered at admission, a submit's own re-send of the cursors comes mid-turn;
+    the turn's end has to send them again, or every client shows it running."""
+    client = await served.client()
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
+    replica = await client.attach(session_id)
+    head = replica.head_cursor_id
+
+    async def slow(model: Any, context: Any, options: Any = None) -> _Stream:
+        await asyncio.sleep(0.2)
+        return await _fake_stream(model, context, options)
+
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=slow):
+        await client.submit_and_wait(session_id, head, "one", source="rpc", submitter="test")
+        await _until(lambda: replica.cursors[head]["busy"] is False, timeout=2.0)
+        await client.request(p.Compare(session_id=session_id, models=["fake", "other"], text="x"))
+        await _until(
+            lambda: len(replica.cursors) == 3 and any(c["busy"] for c in replica.cursors.values())
+        )
+        await _until(lambda: not any(c["busy"] for c in replica.cursors.values()), timeout=2.0)
+    await client.close()
+
+
 async def test_listing_spans_every_cwd(served, tmp_path):
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()

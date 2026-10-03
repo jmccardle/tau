@@ -309,9 +309,14 @@ class SessionHost:
         self._tasks: set[asyncio.Task[Any]] = set()
 
     def track(self, task: asyncio.Task[Any]) -> None:
-        """Hold a background task (a turn, a compaction) until it finishes."""
+        """Hold a background task (a turn, a compaction) until it finishes, then sync the cursors.
+
+        Its request was answered before it ended, so the cursors that request's
+        answer synced still show it busy.
+        """
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(lambda _: self.sync_cursors())
 
     async def start(self, cwd: str) -> None:
         """Bind the session's cursor, wire every event source, then load extensions."""
@@ -1100,6 +1105,7 @@ class Daemon:
 
     def _compare_turn_done(self, host: SessionHost, cursor_id: str) -> Callable[..., None]:
         def done(turn: asyncio.Task[Any]) -> None:
+            host.sync_cursors()
             if turn.cancelled():
                 self.log(f"{host.tag} cursor {cursor_id} compare turn cancelled")
             elif turn.exception() is not None:
