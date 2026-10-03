@@ -935,9 +935,10 @@ class AgentSession:
         ``Model``; τ exposes only the three fields an extension needs to route,
         price, or gauge a context window — keeping the extension API decoupled from
         the full model schema). Read at call time, so it reflects a prior
-        :meth:`set_model`.
+        :meth:`set_model`. It is the acting cursor's model: its frame's, else the
+        session's.
         """
-        model = self._model
+        model = self._turn_model()
         return {
             "id": model.id,
             "provider": model.provider,
@@ -1079,7 +1080,11 @@ class AgentSession:
         await apply_session_name(self, name)
 
     def set_model(self, name: str) -> dict[str, Any]:
-        """Switch the active model by NAME, effective on the NEXT turn (S45).
+        """Switch the acting cursor's model by NAME, effective on its NEXT turn (S45).
+
+        At the head cursor this is the session's model. At any other cursor it is
+        that cursor's :class:`~tau_agent_core.cursor.TurnFrame` model; a cursor with
+        no frame gets one that changes nothing else (every tool, hooks on).
 
         Mirrors pi's ``setModel`` (agent-session.ts:1444), adapted to τ: pi takes a
         resolved ``Model`` object; τ takes a config model NAME and resolves it
@@ -1119,6 +1124,11 @@ class AgentSession:
                 f"set_model({name!r}): resolver returned {type(model).__name__}, "
                 "expected a tau_llm.types.Model"
             )
+        cursor = self.acting_cursor
+        if cursor is not self._cursor:
+            frame = cursor.frame or TurnFrame(tools=tuple(t.name for t in self._tools), hooks=True)
+            cursor.frame = replace(frame, model=model)
+            return self.get_model()
         if self._compaction_policy is not None:
             self._compaction_policy.bind_to(model)
         self._model = model

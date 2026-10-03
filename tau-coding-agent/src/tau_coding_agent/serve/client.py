@@ -13,6 +13,7 @@ import asyncio
 import itertools
 import json
 import os
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -131,11 +132,17 @@ class Replica:
 
 
 class ServeError(Exception):
-    """A request the daemon refused; ``code`` is the protocol's error code."""
+    """A request the daemon refused; ``code`` is the protocol's error code.
 
-    def __init__(self, code: str, message: str) -> None:
+    Attributes:
+        data: The error's ``data``: RPC's ``error.data`` for an RPC verb's refusal.
+    """
+
+    def __init__(self, code: str, message: str, data: dict[str, Any] | None = None) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
+        self.reason = message
+        self.data = data
 
 
 class ServeClient:
@@ -153,6 +160,7 @@ class ServeClient:
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._attaching: set[int] = set()
         self.replicas: dict[str, Replica] = {}
+        self._ends: dict[str, asyncio.Future[None]] = {}
         self._reader: asyncio.Task[None] | None = None
         self.closed = asyncio.Event()
         self.close_reason: str | None = None
@@ -206,6 +214,40 @@ class ServeClient:
         await self._ws.send(json.dumps({"id": request_id, **p.to_wire(message)}))
         return await future
 
+    async def submit_and_wait(
+        self,
+        session_id: str,
+        cursor_id: str,
+        text: str,
+        *,
+        source: str,
+        submitter: str,
+        **params: Any,
+    ) -> dict[str, Any]:
+        """``submit`` at a cursor, answered once the turn it admitted has ended.
+
+        The daemon answers at admission, as RPC does; this waits for the
+        ``submission_end`` event with the submission's id when a turn was
+        admitted. The session must be attached, or that event never arrives.
+
+        Raises:
+            ServeError: the daemon refused, ``submission_rejected`` included.
+        """
+        submission_id = params.pop("submission_id", None) or uuid.uuid4().hex
+        ended = self._ends[submission_id] = asyncio.get_running_loop().create_future()
+        fields = {"text": text, "source": source, "submitter": submitter, **params}
+        try:
+            answer: dict[str, Any] = await self.request(
+                p.RpcCall(
+                    "submit", session_id, cursor_id, {**fields, "submission_id": submission_id}
+                )
+            )
+            if answer["admitted"]:
+                await ended
+        finally:
+            self._ends.pop(submission_id, None)
+        return answer
+
     async def attach(self, session_id: str) -> Replica:
         """Attach to a session, resuming from a replica already held when the daemon allows."""
         held = self.replicas.get(session_id)
@@ -230,6 +272,7 @@ class ServeClient:
                         if frame["seq"] <= replica.seq:
                             continue
                         replica.apply(frame)
+                    self._note_end(frame)
                     if self._on_event is not None:
                         result = self._on_event(frame)
                         if asyncio.iscoroutine(result):
@@ -248,6 +291,14 @@ class ServeClient:
                     future.set_exception(ConnectionError(f"connection closed: {self.close_reason}"))
             self._pending.clear()
 
+    def _note_end(self, frame: dict[str, Any]) -> None:
+        """Resolve :meth:`submit_and_wait`'s wait on a ``submission_end`` event."""
+        data = frame["data"]
+        if frame["kind"] == "channel" and data["name"] == "submission_end":
+            ended = self._ends.get(data["payload"]["submission"]["submission_id"])
+            if ended is not None and not ended.done():
+                ended.set_result(None)
+
     def _resolve(self, frame: dict[str, Any]) -> None:
         future = self._pending.pop(frame["id"], None)
         attaching = frame["id"] in self._attaching
@@ -263,7 +314,7 @@ class ServeClient:
             future.set_result(frame.get("result"))
         else:
             error = frame.get("error") or {}
-            future.set_exception(ServeError(error.get("code", "failed"), error.get("message", "")))
+            future.set_exception(ServeError(error["code"], error["message"], error.get("data")))
 
     async def close(self) -> None:
         """Close the connection and wait for the reader to finish."""

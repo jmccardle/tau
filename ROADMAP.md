@@ -504,6 +504,13 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
 - **RPC says `cursor` where it means an entry id** — **done 2026-10-03, RPC
   2.0 / serve 0.5** (`docs/TAU-SERVE.md` §7.4). The entry id is `leaf`, the caret
   is `offset`, `is_cursor` is `is_leaf`. tau-code needs the matching update.
+- **RPC's result schemas describe a message by some of its fields** (found
+  2026-10-03). `get_messages`, `navigate` and the other context-returning verbs
+  declare `role`/`content` and leave out `api`, `provider`, `model`,
+  `stop_reason` and the rest, so a client that generates types from them, as
+  tau-code does from the serve schema, gets an incomplete message. Serve 0.6
+  embeds these schemas verbatim, so `test_serve_schema.py` validates those
+  answers without `strict` until RPC declares the whole message.
 
 ---
 

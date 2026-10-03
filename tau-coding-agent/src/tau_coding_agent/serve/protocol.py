@@ -33,12 +33,11 @@ from typing import (
     is_typeddict,
 )
 
-from tau_agent_core.agent_session import ExtensionCommandResult
-from tau_agent_core.compaction import CompactionResult
 from tau_agent_core.extension_locks import ExtensionRequest as ExtensionRequestRecord
 from tau_agent_core.flows import FlowStep, Performed, Ready, View
+from tau_agent_core.rpc import commands as rpc
 from tau_agent_core.rpc_event_schema import WireEvent
-from tau_agent_core.submission import MultitaskStrategy, SubmissionResult, SubmissionSource
+from tau_agent_core.submission import MultitaskStrategy, SubmissionSource
 from tau_llm.types import (
     AssistantMessage,
     ImageContent,
@@ -47,7 +46,7 @@ from tau_llm.types import (
     UserMessage,
 )
 
-PROTOCOL_VERSION = "0.5"
+PROTOCOL_VERSION = "0.6"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256
@@ -96,6 +95,19 @@ class Pattern:
     regex: str
 
 
+@dataclass(frozen=True, eq=False)
+class Given:
+    """Marks a value whose JSON Schema is written out whole, as RPC's command table holds it.
+
+    Attributes:
+        name: The ``$defs`` key.
+        schema: The schema, used as is.
+    """
+
+    name: str
+    schema: dict[str, Any]
+
+
 # ─── Requests ────────────────────────────────────────────────────────────
 
 
@@ -118,14 +130,18 @@ class Hello:
 
 @dataclass
 class ListSessions:
-    """Every session in the daemon's store, across every cwd, newest first."""
+    """Every session in the daemon's store, across every cwd, newest first (RPC ``list_sessions``)."""
 
     type: Literal["list_sessions"] = "list_sessions"
 
 
 @dataclass
-class CreateSession:
-    """Create a session in ``cwd``, a path on the daemon's machine.
+class NewSession:
+    """Create a session in ``cwd``, a path on the daemon's machine, and load it (RPC ``new_session``).
+
+    A connection has no current session to replace, so nothing moves: attach to
+    the answer's ``session.session_id`` to drive it. RPC's ``persist`` is absent,
+    because every daemon session is stored.
 
     Attributes:
         cwd: The directory its tools run in; the create fails if it does not exist.
@@ -136,7 +152,24 @@ class CreateSession:
     cwd: str
     model: str | None = None
     name: str | None = None
-    type: Literal["create_session"] = "create_session"
+    type: Literal["new_session"] = "new_session"
+
+
+@dataclass
+class Fork:
+    """Copy the path to a cursor's leaf into a new session in the same cwd, and load it (RPC ``fork``).
+
+    The source is unchanged and the client stays attached to it. Refused with
+    ``busy`` when the copy would carry an entry a turn is still writing.
+
+    Attributes:
+        at: The entry to fork at instead of the cursor's leaf.
+    """
+
+    session_id: str
+    cursor_id: str
+    at: str | None = None
+    type: Literal["fork"] = "fork"
 
 
 @dataclass
@@ -161,43 +194,6 @@ class Detach:
 
     session_id: str
     type: Literal["detach"] = "detach"
-
-
-@dataclass
-class Submit:
-    """Send text to a cursor: a prompt, or a ``/command`` when ``expand_commands``.
-
-    Answered when the submission ends. The ``submission_start`` channel event
-    carries what ``expand_attachments`` did, at acceptance.
-
-    Attributes:
-        multitask_strategy: What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md).
-        submission_id: The id the events of this submission carry; the daemon
-            mints one when ``None``. A client that renders its own streams sends it.
-        images: Image content blocks to send with the text.
-        expand_attachments: Resolve ``@path`` references in ``text`` against the
-            session's cwd on the daemon's machine, as the TUI's editor does
-            (docs/FILE-ATTACHMENTS.md §2).
-    """
-
-    session_id: str
-    cursor_id: str
-    text: str
-    multitask_strategy: MultitaskStrategy = "enqueue"
-    expand_commands: bool = True
-    submission_id: str | None = None
-    images: list[dict[str, Any]] | None = None
-    expand_attachments: bool = False
-    type: Literal["submit"] = "submit"
-
-
-@dataclass
-class Abort:
-    """Abort the turn running on a cursor, and the cursors it owns."""
-
-    session_id: str
-    cursor_id: str
-    type: Literal["abort"] = "abort"
 
 
 @dataclass
@@ -231,16 +227,6 @@ class MoveCursor:
 
 
 @dataclass
-class SetModel:
-    """Switch the model a cursor's next turn runs, by a name from the daemon's config."""
-
-    session_id: str
-    cursor_id: str
-    model: str
-    type: Literal["set_model"] = "set_model"
-
-
-@dataclass
 class Answer:
     """Answer an extension's form (a ``request`` event); the first answer wins.
 
@@ -252,64 +238,6 @@ class Answer:
     request_id: str
     value: dict[str, Any] | None
     type: Literal["answer"] = "answer"
-
-
-@dataclass
-class AnswerRequest:
-    """Answer an extension request written in the tree (docs/EXTENSION-LOCKS.md §3).
-
-    Attributes:
-        request_id: The request entry's id.
-        action: The label of the pressed action.
-        values: The filled fields, keyed by name.
-    """
-
-    session_id: str
-    cursor_id: str
-    request_id: str
-    action: str
-    values: dict[str, Any] = field(default_factory=dict)
-    type: Literal["answer_request"] = "answer_request"
-
-
-@dataclass
-class Perform:
-    """Call one of the session backend's operations, acting at ``cursor_id``.
-
-    The TUI's commands reach the backend by method name; under ``--connect`` that
-    backend is the daemon's.
-
-    Attributes:
-        cursor_id: The cursor the operation acts on: the tree edits move and
-            append at it, and ``rollback_turn`` runs its turn there.
-        method: One of :data:`PERFORMABLE`.
-        arguments: Its keyword arguments.
-    """
-
-    session_id: str
-    cursor_id: str
-    method: str
-    arguments: dict[str, Any] = field(default_factory=dict)
-    type: Literal["perform"] = "perform"
-
-
-PERFORMABLE = (
-    "compact",
-    "set_auto_compaction",
-    "set_session_name",
-    "enable_extension",
-    "disable_extension",
-    "reload_extension",
-    "run_extension_command",
-    "answer_request",
-    "navigate_tree",
-    "elide_span",
-    "commit_branch",
-    "paste_subtree",
-    "rollback_turn",
-    "list_managed_extensions",
-)
-"""The backend operations :class:`Perform` may name; anything else is refused."""
 
 
 @dataclass
@@ -375,117 +303,98 @@ class EndCompare:
     type: Literal["end_compare"] = "end_compare"
 
 
-@dataclass
-class NextStep:
-    """The next argument a flow needs, or the mutation it is ready for (RPC ``next_step``).
-
-    Attributes:
-        flow: A command ``name`` whose ``flow`` is true in the :class:`Surface`.
-        bound: The arguments bound so far; ``None`` or ``{}`` is the first step.
-        leaf: The entry a scoped ``message_id`` argument is relative to, echoed back
-            as the step's ``cursor`` for :class:`EnumerateDomain`.
-    """
-
-    session_id: str
-    flow: str
-    bound: dict[str, Any] | None = None
-    leaf: str | None = None
-    type: Literal["next_step"] = "next_step"
-
-
-@dataclass
-class EnumerateDomain:
-    """The values legal for a domain right now (RPC ``enumerate_domain``).
-
-    ``path`` and ``session_id`` are read in the session's cwd.
-
-    Attributes:
-        domain: A domain name, as a step's ``domain.name`` gives it.
-        scope: For ``message_id``: which entries are candidates; ``None`` is
-            ``in_session``.
-        leaf: The entry a scoped ``message_id`` is relative to; ``None`` is the
-            head cursor's leaf.
-        query: A prefix of the value, or a substring of the label; empty matches all.
-        limit: The most values answered.
-    """
-
-    session_id: str
-    domain: str
-    scope: Literal["in_session", "ancestors_of_leaf", "descendants_of_leaf"] | None = None
-    leaf: str | None = None
-    query: str = ""
-    limit: int = 50
-    type: Literal["enumerate_domain"] = "enumerate_domain"
-
-
-@dataclass
-class CompletePath:
-    """Complete the ``@path`` at ``offset`` in ``text`` against the session's cwd (RPC ``complete_path``).
-
-    The paths are on the daemon's machine.
-
-    Attributes:
-        offset: The caret's character offset in ``text``.
-    """
-
-    session_id: str
-    text: str
-    offset: int
-    type: Literal["complete_path"] = "complete_path"
-
-
-@dataclass
-class GetTree:
-    """Every entry of a session's tree as a browser row, seen from one cursor."""
-
-    session_id: str
-    cursor_id: str
-    type: Literal["get_tree"] = "get_tree"
-
-
-@dataclass
-class ForkSession:
-    """Copy a session into a new one in the same cwd.
-
-    The source is unchanged and the client stays attached to it; it attaches to
-    the new session to continue there.
-
-    Attributes:
-        at: The entry to fork at, copying only the path to it; ``None`` copies the
-            whole tree.
-    """
-
-    session_id: str
-    at: str | None
-    type: Literal["fork_session"] = "fork_session"
-
-
 REQUESTS: tuple[type, ...] = (
     Hello,
     ListSessions,
-    CreateSession,
+    NewSession,
+    Fork,
     Attach,
     Detach,
-    Submit,
-    Abort,
     OpenCursor,
     CloseCursor,
     MoveCursor,
-    SetModel,
     Answer,
-    AnswerRequest,
-    Perform,
     PerformReady,
     Describe,
     Compare,
     EndCompare,
-    NextStep,
-    EnumerateDomain,
-    CompletePath,
-    GetTree,
-    ForkSession,
 )
-"""Every request a client may send, by its ``type``."""
+"""Every request defined here, by its ``type``; :data:`RPC_VERBS` are the rest."""
+
+
+@dataclass
+class RpcCall:
+    """A request RPC answers too: its verb, at one cursor of one session (docs/TAU-SERVE.md §5, 0.6).
+
+    Sent as ``{"type": verb, "session_id", "cursor_id", **params}``; ``params``
+    are RPC's own and are checked against its ``params_schema``.
+    """
+
+    verb: str
+    session_id: str
+    cursor_id: str
+    params: dict[str, Any]
+
+
+RPC_RUN: tuple[str, ...] = (
+    "abort",
+    "compact",
+    "get_state",
+    "get_messages",
+    "get_commands",
+    "get_tools",
+    "get_models",
+    "get_session_name",
+    "get_session_stats",
+    "get_last_assistant_text",
+    "set_model",
+    "set_auto_compaction",
+    "set_session_name",
+    "complete_path",
+    "next_step",
+    "enumerate_domain",
+    "complete_message_id",
+    "get_tree",
+    "get_entry",
+    "get_pending_request",
+    "answer_request",
+    "list_managed_extensions",
+    "get_extension_state",
+    "get_extension_config",
+    "set_extension_config",
+    "enable_extension",
+    "disable_extension",
+    "reload_extension",
+    "navigate",
+    "summarize_and_navigate",
+    "elide_span",
+    "commit_branch",
+    "paste_subtree",
+)
+"""RPC verbs the daemon runs through RPC's own handler, bound to the named cursor.
+
+``compact``'s outcome is the ``compaction_end`` event, as it is RPC's notification;
+``abort`` reaches the cursor's turn, the cursors it owns, and its compaction.
+"""
+
+RPC_OWN: dict[str, str] = {
+    "submit": (
+        "Answered at admission, as over stdio, and its turn ends with a "
+        '`submission_end` channel event. `multitask_strategy: "fork"` is accepted. '
+        "A command answers success with `dispatched`, the arm it resolved to, where "
+        "stdio refuses a step or a ready flow: the daemon performs a ready flow "
+        "itself, except `fork` and `switch_session`, which come back for the client."
+    ),
+    "prompt": "`submit` with RPC's provenance defaults.",
+}
+"""RPC verbs the daemon answers itself, with RPC's params and result shape, and how each differs.
+
+Their answer adds ``admitted`` and ``dispatched`` to RPC's.
+"""
+
+RPC_VERBS: tuple[str, ...] = (*RPC_OWN, *RPC_RUN)
+"""Every RPC verb a client may send here. ``get_capabilities`` is ``hello`` and the
+schema; ``switch_session`` is ``attach``; the rest of RPC's table is declined there too."""
 
 
 # ─── Shapes the daemon forwards: specs, messages, entries ────────────────
@@ -599,12 +508,16 @@ Message = Annotated[
 
 
 class _EntryBase(TypedDict):
-    """Every finished entry's common fields; ``status`` is absent once an entry is finished."""
+    """Every finished entry's common fields; ``status`` is absent once an entry is finished.
+
+    ``copiedFrom`` is set on an entry ``paste_subtree`` minted: the id it copies.
+    """
 
     id: str
     parentId: str | None
     timestamp: str
     status: NotRequired[Never]
+    copiedFrom: NotRequired[str]
 
 
 class MessageEntry(_EntryBase):
@@ -762,15 +675,55 @@ class Correlation(TypedDict):
 
 @dataclass
 class SessionRow:
-    """One line of :class:`ListSessions`' answer."""
+    """One line of :class:`ListSessions`' answer: RPC's row, plus where and whether it is loaded.
 
-    id: str
-    cwd: str
+    Attributes:
+        ref: The store's own handle for the session.
+        title: A bounded display label; message text appears nowhere else here.
+        created: ISO-8601.
+        modified: ISO-8601.
+        parent: The session this one was forked from, or ``None``.
+        error: Why its entries could not be read, or ``None``; such a row stays listed.
+        cwd: The directory its tools run in.
+        loaded: Whether the daemon holds it now.
+    """
+
+    session_id: str
+    ref: str
     name: str | None
-    modified: str
+    title: str
     message_count: int
-    first_message: str
+    created: str
+    modified: str
+    parent: str | None
+    error: str | None
+    cwd: str
     loaded: bool
+
+
+@dataclass
+class SessionScope:
+    """What universe a listing is: the daemon's store, and ``cwd`` ``None`` for every directory."""
+
+    store: str
+    cwd: str | None
+
+
+@dataclass
+class SessionTuple:
+    """A loaded session, as RPC's session tuple names it.
+
+    Attributes:
+        cursor_id: Its head cursor.
+        leaf: The head cursor's leaf.
+        addressable: Whether another request can name it; always true here.
+    """
+
+    store: str
+    session_id: str
+    cursor_id: str
+    leaf: str | None
+    addressable: bool
 
 
 @dataclass
@@ -884,41 +837,6 @@ class ModelRecord:
 
 
 @dataclass
-class TreeRow:
-    """One :class:`GetTree` row: RPC ``get_tree``'s node.
-
-    Attributes:
-        kind: The entry's ``type``.
-        role: The message role; ``None`` on a bookkeeping entry.
-        preview: The entry's first line.
-        is_leaf: Whether this entry is the cursor's leaf.
-        timestamp: Epoch milliseconds, or ``None``.
-        first_kept_id: On a ``compaction`` or ``elide``, the oldest entry kept.
-        from_id: On a ``branch_summary``, the branch head it summarizes.
-        is_system: Whether this is the system prompt.
-        tool_call_ids: The tool call ids an assistant message declares.
-        tool_call_id: The call a tool result answers.
-        copyable: Whether ``paste_subtree`` can take this entry as its source.
-        estimated_tokens: An estimate of the entry's tokens, 0 when it holds no message.
-    """
-
-    entry_id: str
-    parent_id: str | None
-    kind: str
-    role: str | None
-    preview: str
-    is_leaf: bool
-    timestamp: int | None
-    first_kept_id: str | None
-    from_id: str | None
-    is_system: bool
-    tool_call_ids: list[str]
-    tool_call_id: str | None
-    copyable: bool
-    estimated_tokens: int
-
-
-@dataclass
 class RequestEventData:
     """An extension form open now: the ``request`` event's data, and one of :class:`Attached`'s ``requests``.
 
@@ -957,7 +875,7 @@ class HelloResult:
         pid: The daemon's process id.
         version: τ's package version, as ``tau --version`` prints it.
         cwd: The daemon's working directory at start, absolute; a default for
-            :class:`CreateSession`.
+            :class:`NewSession`.
     """
 
     protocol: str
@@ -969,16 +887,24 @@ class HelloResult:
 
 @dataclass
 class SessionList:
-    """The answer to :class:`ListSessions`."""
+    """The answer to :class:`ListSessions`, RPC's shape."""
 
     sessions: list[SessionRow]
+    scope: SessionScope
 
 
 @dataclass
-class SessionCreated:
-    """The answer to :class:`CreateSession`."""
+class SessionOpened:
+    """The answer to :class:`NewSession` and :class:`Fork`, RPC's lifecycle shape.
 
-    session_id: str
+    Attributes:
+        cancelled: Always false: no session is switched away from, so no hook can veto.
+        leaf: The new session's head leaf, duplicated out of ``session``.
+    """
+
+    cancelled: bool
+    session: SessionTuple
+    leaf: str | None
 
 
 @dataclass
@@ -1011,102 +937,10 @@ class Attached:
 
 
 @dataclass
-class SubmitResult:
-    """The answer to :class:`Submit`: how the submission ended. A refusal is an answer, not an error.
-
-    Attributes:
-        command: When the text was a command, what it resolved to. The daemon
-            performs a ``Ready`` itself, except ``fork`` and ``switch_session``.
-    """
-
-    accepted: bool
-    submission_id: str
-    reason: str | None = None
-    command: Annotated[dict[str, Any], Shape(DispatchedCommand)] | None = None
-
-
-@dataclass
 class CursorOpened:
     """The answer to :class:`OpenCursor`."""
 
     cursor_id: str
-
-
-@dataclass
-class ModelSet:
-    """The answer to :class:`SetModel`.
-
-    Attributes:
-        model: The model id the cursor's next turn calls.
-    """
-
-    model: str
-
-
-@dataclass
-class RequestAnswered:
-    """The answer to :class:`AnswerRequest`.
-
-    Attributes:
-        handled: Whether the action's command ran.
-        output: What the command returned, as text, or ``None``.
-    """
-
-    handled: bool
-    output: str | None
-
-
-@dataclass
-class PerformedAnswer:
-    """A :class:`Perform` whose operation returned a ``Performed``."""
-
-    fields: Annotated[dict[str, Any], Shape(Performed)]
-    kind: Literal["Performed"] = "Performed"
-
-
-@dataclass
-class ExtensionCommandAnswer:
-    """A :class:`Perform` whose operation returned an ``ExtensionCommandResult``."""
-
-    fields: Annotated[dict[str, Any], Shape(ExtensionCommandResult)]
-    kind: Literal["ExtensionCommandResult"] = "ExtensionCommandResult"
-
-
-@dataclass
-class SubmissionAnswer:
-    """A :class:`Perform` whose operation returned a ``SubmissionResult`` (``rollback_turn``)."""
-
-    fields: Annotated[dict[str, Any], Shape(SubmissionResult)]
-    kind: Literal["SubmissionResult"] = "SubmissionResult"
-
-
-@dataclass
-class CompactionAnswer:
-    """A :class:`Perform` whose operation returned a ``CompactionResult`` (``compact``)."""
-
-    fields: Annotated[dict[str, Any], Shape(CompactionResult)]
-    kind: Literal["CompactionResult"] = "CompactionResult"
-
-
-@dataclass
-class ValueAnswer:
-    """A :class:`Perform` whose operation returned a plain value.
-
-    Attributes:
-        value: ``navigate_tree``, ``elide_span`` and ``commit_branch`` return the
-            context's messages; ``paste_subtree`` the minted ids;
-            ``list_managed_extensions`` ``[path, enabled]`` pairs; ``compact``
-            ``null`` when there was nothing to compact.
-    """
-
-    value: Any
-    kind: Literal["value"] = "value"
-
-
-PerformResult = Annotated[
-    PerformedAnswer | ExtensionCommandAnswer | SubmissionAnswer | CompactionAnswer | ValueAnswer,
-    Named("PerformResult", "The answer to `perform`, told apart by `kind`."),
-]
 
 
 @dataclass
@@ -1141,121 +975,38 @@ class CompareEnded:
     leaf: str | None
 
 
-@dataclass
-class NextStepResult:
-    """The answer to :class:`NextStep`: exactly one of ``step`` and ``ready`` is set, as ``status`` says."""
-
-    status: Literal["step", "ready"]
-    step: Annotated[dict[str, Any], Shape(FlowStep)] | None
-    ready: Annotated[dict[str, Any], Shape(Ready)] | None
-
-
-@dataclass
-class DomainChoice:
-    """One legal value: ``value`` is what is bound, ``label`` what is shown."""
-
-    value: str
-    label: str
-
-
-@dataclass
-class DomainListing:
-    """The answer to :class:`EnumerateDomain`.
-
-    Attributes:
-        total: How many values match, counting past ``limit``.
-    """
-
-    domain: str
-    values: list[DomainChoice]
-    total: int
-
-
-@dataclass
-class PathMatch:
-    """One path an ``@`` token can complete to."""
-
-    name: str
-    detail: str
-    is_dir: bool
-
-
-@dataclass
-class AttachmentCompletion:
-    """The ``@`` token at the caret and what it completes to.
-
-    Attributes:
-        start: The token's first character offset in the text.
-        end: The offset after its last.
-        total: How many paths match, counting past the bound on ``matches``.
-    """
-
-    start: int
-    end: int
-    token: str
-    matches: list[PathMatch]
-    total: int
-
-
-@dataclass
-class CompletePathResult:
-    """The answer to :class:`CompletePath`; ``completion`` is ``None`` outside an ``@`` token."""
-
-    completion: AttachmentCompletion | None
-
-
-@dataclass
-class TreeResult:
-    """The answer to :class:`GetTree`.
-
-    Attributes:
-        leaf: The cursor's leaf: the one row whose ``is_leaf`` is true.
-        count: How many rows.
-    """
-
-    nodes: list[TreeRow]
-    leaf: str | None
-    count: int
-
-
-@dataclass
-class SessionForked:
-    """The answer to :class:`ForkSession`."""
-
-    session_id: str
-
-
 RESULTS: dict[type, Any] = {
     Hello: HelloResult,
     ListSessions: SessionList,
-    CreateSession: SessionCreated,
+    NewSession: SessionOpened,
+    Fork: SessionOpened,
     Attach: Attached,
     Detach: None,
-    Submit: SubmitResult,
-    Abort: None,
     OpenCursor: CursorOpened,
     CloseCursor: None,
     MoveCursor: None,
-    SetModel: ModelSet,
     Answer: None,
-    AnswerRequest: RequestAnswered,
-    Perform: PerformResult,
     PerformReady: DispatchedCommand,
     Describe: Surface,
     Compare: CompareStarted,
     EndCompare: CompareEnded,
-    NextStep: NextStepResult,
-    EnumerateDomain: DomainListing,
-    CompletePath: CompletePathResult,
-    GetTree: TreeResult,
-    ForkSession: SessionForked,
 }
 """What each request is answered with; ``None`` is a ``null`` result."""
 
 
 @dataclass
 class Error:
-    """Why a request failed. ``code`` is stable; ``message`` is for a human."""
+    """Why a request failed. ``code`` is stable; ``message`` is for a human.
+
+    An RPC verb's refusal keeps its meaning: ``submission_rejected``,
+    ``command_not_supported`` and ``session_not_persisted`` are RPC's codes of
+    those names, ``busy`` is ``TURN_STILL_RUNNING``, ``bad_request`` is
+    ``INVALID_PARAMS``.
+
+    Attributes:
+        data: RPC's ``error.data`` for an RPC verb's refusal (a submission's
+            ``lock``, the offending ``name``), else ``None``.
+    """
 
     code: Literal[
         "bad_request",
@@ -1264,8 +1015,12 @@ class Error:
         "not_found",
         "busy",
         "failed",
+        "submission_rejected",
+        "command_not_supported",
+        "session_not_persisted",
     ]
     message: str
+    data: dict[str, Any] | None = None
 
 
 @dataclass
@@ -1464,6 +1219,9 @@ EVENT_DATA: dict[str, Any] = {
     "request": RequestEventData,
     "request_closed": RequestClosedEventData,
     "ui": UiEventData,
+    "compaction_end": Annotated[
+        dict[str, Any], Given("CompactionEnd", rpc.COMPACTION_END_PARAMS_SCHEMA)
+    ],
 }
 """What each event kind carries in ``data``.
 
@@ -1472,6 +1230,10 @@ EVENT_DATA: dict[str, Any] = {
 carries a delta, never the whole message. Unbounded fields (a tool's arguments
 and result, a message's content and usage) are left out; the entry events carry
 them. It changes no state.
+
+``compaction_end`` is RPC's notification of that name, for a ``compact`` this
+session was asked for, and changes no state either: the compaction entry's own
+``entry_append`` does.
 """
 
 EVENT_KINDS = tuple(EVENT_DATA)
@@ -1495,6 +1257,7 @@ class Event:
         "request",
         "request_closed",
         "ui",
+        "compaction_end",
     ]
     data: dict[str, Any] = field(default_factory=dict)
     type: Literal["event"] = "event"
@@ -1523,7 +1286,14 @@ class ServeStarted:
 
 
 def to_wire(message: Any) -> dict[str, Any]:
-    """A protocol dataclass as the JSON object it is sent as."""
+    """A protocol dataclass as the JSON object it is sent as; an :class:`RpcCall` flat."""
+    if isinstance(message, RpcCall):
+        return {
+            "type": message.verb,
+            "session_id": message.session_id,
+            "cursor_id": message.cursor_id,
+            **message.params,
+        }
     return dataclasses.asdict(message)
 
 
@@ -1557,27 +1327,14 @@ def command_to_wire(command: Any) -> dict[str, Any] | None:
     raise TypeError(f"{type(command).__name__} is not an arm of DispatchedCommand")
 
 
-def perform_answer(value: Any) -> Any:
-    """What a :data:`PERFORMABLE` operation returned, as its :data:`PerformResult` member.
-
-    Raises:
-        TypeError: a record the union does not declare.
-    """
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        for member in _members(PerformResult):
-            hints = get_type_hints(member, include_extras=True)
-            if "fields" in hints and type(value) is hints["fields"].__metadata__[0].hint:
-                return member(fields=json_safe(dataclasses.asdict(value)))
-        raise TypeError(f"a perform answered {type(value).__name__}, which PerformResult lacks")
-    return ValueAnswer(value=json_safe(value))
-
-
 def result_to_wire(request: Any, result: Any) -> Any:
     """``result`` as the JSON its request is answered with, checked against :data:`RESULTS`.
 
     Raises:
         TypeError: ``result`` is not what :data:`RESULTS` declares for ``request``.
     """
+    if isinstance(request, RpcCall):
+        return json_safe(result)
     declared = RESULTS[type(request)]
     if declared is None:
         if result is not None:
@@ -1611,6 +1368,8 @@ def parse_request(raw: dict[str, Any]) -> tuple[int, Any]:
     if not isinstance(request_id, int) or isinstance(request_id, bool):
         raise ValueError("a request needs an integer 'id'")
     kind = raw.get("type")
+    if kind in RPC_VERBS:
+        return request_id, _rpc_call(str(kind), {k: v for k, v in raw.items() if k != "id"})
     for cls in REQUESTS:
         if _type_tag(cls) == kind:
             fields = {k: v for k, v in raw.items() if k != "id"}
@@ -1619,6 +1378,18 @@ def parse_request(raw: dict[str, Any]) -> tuple[int, Any]:
             except TypeError as exc:
                 raise ValueError(f"{kind}: {exc}") from None
     raise ValueError(f"unknown request type {kind!r}")
+
+
+def _rpc_call(verb: str, fields: dict[str, Any]) -> RpcCall:
+    """An RPC verb's frame as an :class:`RpcCall`, its params checked by RPC's own schema."""
+    params = {k: v for k, v in fields.items() if k not in ("type", "session_id", "cursor_id")}
+    for name in ("session_id", "cursor_id"):
+        if not isinstance(fields.get(name), str):
+            raise ValueError(f"{verb}: {name!r} must be a string")
+    violation = rpc.validate_params(rpc.COMMAND_TABLE[verb].params_schema, params)
+    if violation is not None:
+        raise ValueError(f"{verb}: {violation}")
+    return RpcCall(verb, fields["session_id"], fields["cursor_id"], params)
 
 
 def _build(cls: type, fields: dict[str, Any], where: str) -> Any:
@@ -1831,6 +1602,8 @@ class _Schema:
             return self.of(marker.hint)
         if isinstance(marker, Pattern):
             return {"type": "string", "pattern": marker.regex}
+        if isinstance(marker, Given):
+            return self._define(marker.name, marker.name, lambda: dict(marker.schema))
         if isinstance(marker, Named):
             return self._define(
                 marker.name,
@@ -1926,6 +1699,48 @@ SCHEMA_DESCRIPTION = (
 """The schema's top-level ``description``."""
 
 
+def _rpc_request(verb: str) -> dict[str, Any]:
+    """An RPC verb's request: RPC's params, plus the session and the cursor it acts at."""
+    params = rpc.COMMAND_TABLE[verb].params_schema
+    how = RPC_OWN.get(verb, "The daemon runs RPC's own handler at `cursor_id`.")
+    return {
+        "type": "object",
+        "properties": {
+            "type": {"const": verb},
+            "session_id": {"type": "string"},
+            "cursor_id": {"type": "string", "description": "The cursor the verb acts at."},
+            **params.get("properties", {}),
+        },
+        "required": ["type", "session_id", "cursor_id", *params.get("required", [])],
+        "additionalProperties": False,
+        "description": f"RPC `{verb}` (docs/RPC-PROTOCOL.md) at one cursor. {how}",
+    }
+
+
+def _rpc_result(s: _Schema, verb: str) -> dict[str, Any]:
+    """An RPC verb's answer: RPC's result schema; ``submit`` and ``prompt`` add ``dispatched``."""
+    declared = rpc.COMMAND_TABLE[verb].result_schema
+    if declared is None:
+        raise TypeError(f"RPC {verb!r} declares no result schema")
+    result = dict(declared)
+    if verb in ("submit", "prompt"):
+        result["properties"] = {
+            **result["properties"],
+            "admitted": {
+                "type": "boolean",
+                "description": "Whether a turn was admitted for this submission, so a "
+                "`submission_end` channel event with its id will follow. False for a "
+                "steer delivered into another turn, and for a command.",
+            },
+            "dispatched": {
+                "anyOf": [s.of(DispatchedCommand), {"type": "null"}],
+                "description": "What a command resolved to, after the daemon performed it; "
+                "`null` for a prompt.",
+            },
+        }
+    return result
+
+
 def json_schema() -> dict[str, Any]:
     """The whole protocol as one JSON Schema document.
 
@@ -1950,6 +1765,20 @@ def json_schema() -> dict[str, Any]:
                 "required": ["id", *definition["required"]],
                 "additionalProperties": False,
                 "description": f"A `{tag}` request with its id.",
+            }
+        )
+    for verb in RPC_VERBS:
+        definition = _rpc_request(verb)
+        name = _camel(verb)
+        result = s.of(Annotated[dict[str, Any], Given(f"{name}Result", _rpc_result(s, verb))])
+        s.defs[name] = {**definition, "x-result": result}
+        results[verb] = result
+        frames.append(
+            {
+                **definition,
+                "properties": {"id": {"type": "integer"}, **definition["properties"]},
+                "required": ["id", *definition["required"]],
+                "description": f"A `{verb}` request with its id.",
             }
         )
     s.of(Response)

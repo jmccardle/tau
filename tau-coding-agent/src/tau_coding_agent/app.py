@@ -671,12 +671,12 @@ class TauApp(App):
         assert self._remote is not None
         try:
             created = await self._remote.request(
-                wire.CreateSession(cwd=self._session_cwd(), model=model)
+                wire.NewSession(cwd=self._session_cwd(), model=model)
             )
         except ServeError as exc:
             self.notify(f"Cannot start a session on the daemon: {exc}", severity="error")
             return
-        await self._remote_open(created["session_id"])
+        await self._remote_open(created["session"]["session_id"])
         self.notify("Started a new chat on the daemon")
 
     async def _remote_fork(self) -> None:

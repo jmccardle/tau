@@ -2,9 +2,10 @@
   "$defs": {
     "Abort": {
       "additionalProperties": false,
-      "description": "Abort the turn running on a cursor, and the cursors it owns.",
+      "description": "RPC `abort` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
       "properties": {
         "cursor_id": {
+          "description": "The cursor the verb acts at.",
           "type": "string"
         },
         "session_id": {
@@ -15,14 +16,37 @@
         }
       },
       "required": [
+        "type",
         "session_id",
-        "cursor_id",
-        "type"
+        "cursor_id"
       ],
       "type": "object",
       "x-result": {
-        "type": "null"
+        "$ref": "#/$defs/AbortResult"
       }
+    },
+    "AbortResult": {
+      "properties": {
+        "compaction_id": {
+          "description": "The compaction this abort's signal was delivered to, or null when none was in flight (finding 5, Tier B review). Present so a host knows to expect a compaction_end carrying cancelled: true for that id. Whether the compaction actually stopped is reported THERE and not here \u2014 same signal-vs-outcome split that keeps `leaf` off this response.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Always 'aborted'.",
+          "enum": [
+            "aborted"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "compaction_id"
+      ],
+      "type": "object"
     },
     "AgentEventEvent": {
       "description": "A `agent_event` event.",
@@ -95,17 +119,18 @@
     },
     "AnswerRequest": {
       "additionalProperties": false,
-      "description": "Answer an extension request written in the tree (docs/EXTENSION-LOCKS.md \u00a73).",
+      "description": "RPC `answer_request` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
       "properties": {
         "action": {
-          "description": "The label of the pressed action.",
+          "description": "The pressed action's `label` \u2014 one of the labels in the ask's `actions`. The label, not the command it names: the label is what a person chose and what the ask's own table is keyed by.",
           "type": "string"
         },
         "cursor_id": {
+          "description": "The cursor the verb acts at.",
           "type": "string"
         },
         "request_id": {
-          "description": "The request entry's id.",
+          "description": "The request's `entry_id`, as get_pending_request reported it or as a SUBMISSION_REJECTED refusal carried it.",
           "type": "string"
         },
         "session_id": {
@@ -115,22 +140,49 @@
           "const": "answer_request"
         },
         "values": {
-          "additionalProperties": {},
-          "description": "The filled fields, keyed by name.",
+          "description": "The filled fields, keyed by field name. Omitted is the empty dict, which is what an ask declaring no fields takes. Checked against the ask's declared fields before anything is appended: nothing is coerced and no partial answer is persisted.",
           "type": "object"
         }
       },
       "required": [
+        "type",
         "session_id",
         "cursor_id",
         "request_id",
-        "action",
-        "type"
+        "action"
       ],
       "type": "object",
       "x-result": {
-        "$ref": "#/$defs/RequestAnswered"
+        "$ref": "#/$defs/AnswerRequestResult"
       }
+    },
+    "AnswerRequestResult": {
+      "properties": {
+        "handled": {
+          "description": "Whether the extension that raised the request was loaded and ran its action. FALSE still means the response was appended and the lock released \u2014 a lock whose owner cannot answer must not become a session nobody can continue \u2014 so a host reports it as a warning and carries on, rather than as a failure to retry.",
+          "type": "boolean"
+        },
+        "leaf": {
+          "description": "cursor.leaf after the response was appended (E5 rule 1). The append is what RELEASES the lock \u2014 appending moves the cursor and a lock is read at the cursor \u2014 so this value is the evidence the session is answerable again.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output": {
+          "description": "What the dispatched command produced, or null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "handled",
+        "output",
+        "leaf"
+      ],
+      "type": "object"
     },
     "Argument": {
       "description": "One argument a flow needs before it can run.",
@@ -440,40 +492,6 @@
       ],
       "type": "object"
     },
-    "AttachmentCompletion": {
-      "description": "The `@` token at the caret and what it completes to.",
-      "properties": {
-        "end": {
-          "description": "The offset after its last.",
-          "type": "integer"
-        },
-        "matches": {
-          "items": {
-            "$ref": "#/$defs/PathMatch"
-          },
-          "type": "array"
-        },
-        "start": {
-          "description": "The token's first character offset in the text.",
-          "type": "integer"
-        },
-        "token": {
-          "type": "string"
-        },
-        "total": {
-          "description": "How many paths match, counting past the bound on `matches`.",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "start",
-        "end",
-        "token",
-        "matches",
-        "total"
-      ],
-      "type": "object"
-    },
     "AttachmentReport": {
       "description": "What `Submit.expand_attachments` did.",
       "properties": {
@@ -511,6 +529,9 @@
     "BranchSummaryEntry": {
       "description": "A summary of the branch left at `fromId`, in the path where it was appended.",
       "properties": {
+        "copiedFrom": {
+          "type": "string"
+        },
         "fromId": {
           "anyOf": [
             {
@@ -659,39 +680,218 @@
       ],
       "type": "object"
     },
-    "CompactionAnswer": {
-      "description": "A `Perform` whose operation returned a `CompactionResult` (`compact`).",
+    "CommitBranch": {
+      "additionalProperties": false,
+      "description": "RPC `commit_branch` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
       "properties": {
-        "fields": {
-          "$ref": "#/$defs/CompactionResult"
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
         },
-        "kind": {
-          "const": "CompactionResult"
+        "drop_context": {
+          "description": "Whether the branch keeps ONLY the selection. true appends an elide resuming at the root-most mark, so the context becomes the system prompt plus the branch; false leaves everything above the attach point in context.",
+          "type": "boolean"
+        },
+        "ids": {
+          "description": "The marked entry ids, in any order \u2014 tree_surgery puts them into tree order. The longest run that is already an ancestor chain is kept in place; the rest are minted as copies parented under it, so nothing is re-parented and nothing is erased.",
+          "type": "array"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "commit_branch"
         }
       },
       "required": [
-        "fields",
-        "kind"
+        "type",
+        "session_id",
+        "cursor_id",
+        "ids",
+        "drop_context"
       ],
-      "type": "object"
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/CommitBranchResult"
+      }
     },
-    "CompactionDetails": {
-      "description": "File-operation details stored alongside a compaction (pi: CompactionDetails).",
+    "CommitBranchResult": {
       "properties": {
-        "modified_files": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
+        "leaf": {
+          "description": "cursor.leaf after the mutation (E5 rule 1).",
+          "type": [
+            "string",
+            "null"
+          ]
         },
-        "read_files": {
-          "items": {
-            "type": "string"
-          },
+        "messages": {
+          "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
           "type": "array"
         }
       },
-      "required": [],
+      "required": [
+        "messages",
+        "leaf"
+      ],
+      "type": "object"
+    },
+    "Compact": {
+      "additionalProperties": false,
+      "description": "RPC `compact` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "custom_instructions": {
+          "description": "Optional extra focus for the generated summary, threaded unchanged to AgentSession.compact(custom_instructions=...).",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "compact"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/CompactResult"
+      }
+    },
+    "CompactResult": {
+      "properties": {
+        "accepted": {
+          "description": "Always true \u2014 the compaction was admitted and is now running in the background. A refusal is an error response instead (TURN_STILL_RUNNING), never accepted: false.",
+          "type": "boolean"
+        },
+        "compaction_id": {
+          "description": "Correlates this acknowledgement to the compaction_end notification that reports the outcome. Server-generated; a host does not supply it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted",
+        "compaction_id"
+      ],
+      "type": "object"
+    },
+    "CompactionEnd": {
+      "properties": {
+        "cancelled": {
+          "description": "True when a host's `abort` stopped this compaction part-way (finding 5, Tier B review). Nothing was written \u2014 the summary is generated before the entry is appended \u2014 so `performed` is ABSENT, exactly as it is when is_error is true, and `leaf` is the unchanged tip. False on every other outcome rather than omitted: absence is not this tier's way of saying anything (E5 rule 3). A compaction cancelled by SHUTDOWN never reaches this notification at all \u2014 that one reports on stderr (D-5, T4).",
+          "type": "boolean"
+        },
+        "compacted_entry_ids": {
+          "description": "Session-log entry ids folded into the summary.",
+          "type": "array"
+        },
+        "compaction_id": {
+          "description": "The id the compact acknowledgement returned (correlation).",
+          "type": "string"
+        },
+        "error": {
+          "description": "The exception's repr when is_error, else null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "first_kept_entry_id": {
+          "description": "Session-log entry id of the first entry kept verbatim after the cut.",
+          "type": "string"
+        },
+        "is_error": {
+          "description": "True when AgentSession.compact() raised (e.g. CompactionError \u2014 summary generation failed and, Fail-Early, nothing was written). `error` carries the detail and `performed` is absent.",
+          "type": "boolean"
+        },
+        "leaf": {
+          "description": "cursor.leaf once the compaction finished (E5/F3): the post-compaction tip when performed is true, else the unchanged tip.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modified_files": {
+          "description": "CompactionDetails.modified_files ([] when details is None).",
+          "type": "array"
+        },
+        "performed": {
+          "description": "False when AgentSession.compact() returned None \u2014 a real outcome (nothing to compact), not an error, and the expected answer under the shipped keep_recent_tokens for any conversation smaller than it, because the cut then removes nothing. Absent entirely when is_error or cancelled is true. Every CompactionResult field below is absent unless this is true.",
+          "type": "boolean"
+        },
+        "read_files": {
+          "description": "CompactionDetails.read_files ([] when details is None).",
+          "type": "array"
+        },
+        "request_id": {
+          "description": "The JSON-RPC id of the compact request that started this compaction \u2014 null when that request was a notification (no id), which is the one case compaction_id is the only correlation handle.",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "summary": {
+          "description": "CompactionResult.summary \u2014 the generated text.",
+          "type": "string"
+        },
+        "tokens_before": {
+          "description": "Estimated context tokens before this compaction.",
+          "type": "integer"
+        },
+        "tokens_saved": {
+          "description": "Estimated context tokens this compaction removed: the summarized prefix, less the summary that replaces it. NOT tokens_before less the summary \u2014 tokens_before includes the recent context the cut keeps. May be negative when the summary is larger than the prefix it replaced; that is reported rather than clamped to 0.",
+          "type": "integer"
+        },
+        "usage": {
+          "description": "What GENERATING this summary cost (CompactionResult.usage) \u2014 routinely the priciest single call in a session; distinct from tokens_saved, which is what compaction bought.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "compaction_id",
+        "request_id",
+        "is_error",
+        "cancelled",
+        "leaf"
+      ],
+      "type": "object"
+    },
+    "CompactionEndEvent": {
+      "description": "A `compaction_end` event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/CompactionEnd"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "compaction_end"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "event"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type",
+        "data"
+      ],
       "type": "object"
     },
     "CompactionEntry": {
@@ -706,6 +906,9 @@
               "type": "null"
             }
           ]
+        },
+        "copiedFrom": {
+          "type": "string"
         },
         "coveredEntries": {
           "type": "integer"
@@ -760,51 +963,6 @@
         "summary",
         "firstKeptId",
         "tokensBefore"
-      ],
-      "type": "object"
-    },
-    "CompactionResult": {
-      "description": "Generated compaction data ready to persist (pi: CompactionResult).",
-      "properties": {
-        "compacted_entry_ids": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "details": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CompactionDetails"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "first_kept_entry_id": {
-          "type": "string"
-        },
-        "summary": {
-          "type": "string"
-        },
-        "tokens_before": {
-          "type": "integer"
-        },
-        "tokens_saved": {
-          "type": "integer"
-        },
-        "usage": {
-          "additionalProperties": {
-            "type": "integer"
-          },
-          "type": "object"
-        }
-      },
-      "required": [
-        "summary",
-        "first_kept_entry_id",
-        "tokens_before"
       ],
       "type": "object"
     },
@@ -939,18 +1097,88 @@
       ],
       "type": "object"
     },
+    "CompleteMessageId": {
+      "additionalProperties": false,
+      "description": "RPC `complete_message_id` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "leaf": {
+          "description": "The entry the two scoped variants are relative to. Omitted uses the session cursor's leaf (get_state's `leaf`). An id that names no entry is INVALID_PARAMS, never an empty match list.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "How many matches to return at most. Omitted means 50.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "query": {
+          "description": "Filter text. Matches a case-sensitive PREFIX of an entry id, or a case-insensitive SUBSTRING of its preview \u2014 completion and search in one field. Omitted or empty matches everything in scope.",
+          "type": "string"
+        },
+        "scope": {
+          "description": "Which entries are candidates. 'in_session' is every entry in the log; 'ancestors_of_leaf' is the parent chain from the root to `leaf` inclusive; 'descendants_of_leaf' is the subtree below it, excluding `leaf` itself. Omitted means 'in_session'.",
+          "enum": [
+            "in_session",
+            "ancestors_of_leaf",
+            "descendants_of_leaf"
+          ],
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "complete_message_id"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/CompleteMessageIdResult"
+      }
+    },
+    "CompleteMessageIdResult": {
+      "properties": {
+        "matches": {
+          "description": "The candidates in tree order (root-most first), as [{entry_id, preview}]: `entry_id` is the value every message_id argument takes, and `preview` is the entry's first line \u2014 the row the tree browser draws. Bounded by `limit`.",
+          "type": "array"
+        },
+        "total": {
+          "description": "How many entries matched BEFORE `limit` was applied, so a host is told it is seeing a prefix rather than shown one silently (G3, the rule complete_path already follows).",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "matches",
+        "total"
+      ],
+      "type": "object"
+    },
     "CompletePath": {
       "additionalProperties": false,
-      "description": "Complete the `@path` at `offset` in `text` against the session's cwd (RPC `complete_path`).",
+      "description": "RPC `complete_path` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
       "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
         "offset": {
-          "description": "The caret's character offset in `text`.",
+          "description": "The caret's character offset into `text`. Which @reference is being completed is decided from this, so a host that sends the @word alone with offset 0 gets `completion: null` rather than a listing \u2014 the offset is not optional and is not defaulted.",
+          "minimum": 0,
           "type": "integer"
         },
         "session_id": {
           "type": "string"
         },
         "text": {
+          "description": "The editor's contents as typed, NOT just the @word.",
           "type": "string"
         },
         "type": {
@@ -958,10 +1186,11 @@
         }
       },
       "required": [
+        "type",
         "session_id",
+        "cursor_id",
         "text",
-        "offset",
-        "type"
+        "offset"
       ],
       "type": "object",
       "x-result": {
@@ -969,16 +1198,12 @@
       }
     },
     "CompletePathResult": {
-      "description": "The answer to `CompletePath`; `completion` is `None` outside an `@` token.",
       "properties": {
         "completion": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/AttachmentCompletion"
-            },
-            {
-              "type": "null"
-            }
+          "description": "`null` when `offset` is not inside an @reference at all \u2014 the host shows no popup. Otherwise {start, end, token, matches, total}: `start`/`end` are the character span of the whole @word, so a host replaces that span rather than guessing where the token began; `matches` is a list of {name, detail, is_dir}, `name` being the text that goes AFTER the @ (directories end in '/'); `total` is how many entries matched before the list was bounded, so a host can say '12 of 340' instead of implying it showed everything. An EMPTY `matches` with a non-null completion is the 'this names no file' warning, not an absence of information.",
+          "type": [
+            "object",
+            "null"
           ]
         }
       },
@@ -997,49 +1222,6 @@
       },
       "required": [],
       "type": "object"
-    },
-    "CreateSession": {
-      "additionalProperties": false,
-      "description": "Create a session in `cwd`, a path on the daemon's machine.",
-      "properties": {
-        "cwd": {
-          "description": "The directory its tools run in; the create fails if it does not exist.",
-          "type": "string"
-        },
-        "model": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "A model name from the daemon's config, or `None` for its default."
-        },
-        "name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "A session name, or `None`."
-        },
-        "type": {
-          "const": "create_session"
-        }
-      },
-      "required": [
-        "cwd",
-        "type"
-      ],
-      "type": "object",
-      "x-result": {
-        "$ref": "#/$defs/SessionCreated"
-      }
     },
     "CursorOpened": {
       "description": "The answer to `OpenCursor`.",
@@ -1161,6 +1343,9 @@
     "CustomEntryEntry": {
       "description": "Durable data the model never sees.",
       "properties": {
+        "copiedFrom": {
+          "type": "string"
+        },
         "customType": {
           "type": "string"
         },
@@ -1218,6 +1403,9 @@
     "CustomMessageEntry": {
       "description": "An extension's message, which reaches the model unless `visibleToModel` is false.",
       "properties": {
+        "copiedFrom": {
+          "type": "string"
+        },
         "customType": {
           "type": "string"
         },
@@ -1352,6 +1540,77 @@
         "type": "null"
       }
     },
+    "DisableExtension": {
+      "additionalProperties": false,
+      "description": "RPC `disable_extension` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The managed extension to disable \u2014 a `path` from list_managed_extensions, or a unique file stem.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "disable_extension"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "path"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/DisableExtensionResult"
+      }
+    },
+    "DisableExtensionResult": {
+      "properties": {
+        "action": {
+          "description": "Which action ran \u2014 echoes the verb.",
+          "enum": [
+            "enable",
+            "disable",
+            "reload",
+            "configure"
+          ],
+          "type": "string"
+        },
+        "leaf": {
+          "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "The human-readable line, the same one the TUI listing shows.",
+          "type": "string"
+        },
+        "ok": {
+          "description": "Whether the action changed anything. false is a reportable no-op, never an error: an unknown target, an already-enabled extension, an already-disabled one. A hard failure \u2014 a file that no longer imports, which only reload can hit \u2014 RAISES instead and reaches the host as INTERNAL_ERROR, with the extension left torn down.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "The managed path the action resolved to. NOT always what was sent: `path` accepts a file stem as well as a full path, and this is the full path it matched. On a failed resolution it is the unresolved string, so a host can quote back what it asked for.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "path",
+        "ok",
+        "message",
+        "leaf"
+      ],
+      "type": "object"
+    },
     "DispatchedCommand": {
       "description": "What a command resolved to, told apart by `arm`: `Performed` (it ran), `FlowStep` (an argument is missing), `Ready` (a `fork` or `switch_session` for the client to perform) or `View` (a surface only a head opens).",
       "oneOf": [
@@ -1420,46 +1679,6 @@
       ],
       "type": "object"
     },
-    "DomainChoice": {
-      "description": "One legal value: `value` is what is bound, `label` what is shown.",
-      "properties": {
-        "label": {
-          "type": "string"
-        },
-        "value": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "value",
-        "label"
-      ],
-      "type": "object"
-    },
-    "DomainListing": {
-      "description": "The answer to `EnumerateDomain`.",
-      "properties": {
-        "domain": {
-          "type": "string"
-        },
-        "total": {
-          "description": "How many values match, counting past `limit`.",
-          "type": "integer"
-        },
-        "values": {
-          "items": {
-            "$ref": "#/$defs/DomainChoice"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "domain",
-        "values",
-        "total"
-      ],
-      "type": "object"
-    },
     "ElideEntry": {
       "description": "A splice anchor with no summary: the path before `firstKeptId` leaves the context.",
       "properties": {
@@ -1472,6 +1691,9 @@
               "type": "null"
             }
           ]
+        },
+        "copiedFrom": {
+          "type": "string"
         },
         "coveredEntries": {
           "type": "integer"
@@ -1509,6 +1731,132 @@
         "timestamp",
         "type",
         "firstKeptId"
+      ],
+      "type": "object"
+    },
+    "ElideSpan": {
+      "additionalProperties": false,
+      "description": "RPC `elide_span` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "anchor_id": {
+          "description": "The entry the fold jumps FROM. The elide entry is appended as its child, so the anchor becomes the end of the kept region and the new tip.",
+          "type": "string"
+        },
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "first_kept_id": {
+          "description": "The entry the fold resumes at \u2014 the anchor itself or one of its ANCESTORS, never a descendant. Everything on the path before it is the elided span. A resume point the fold's scan cannot reach would empty the context silently, which is why the wrong direction is refused rather than tolerated.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "elide_span"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "anchor_id",
+        "first_kept_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/ElideSpanResult"
+      }
+    },
+    "ElideSpanResult": {
+      "properties": {
+        "leaf": {
+          "description": "cursor.leaf after the mutation (E5 rule 1).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messages": {
+          "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+          "type": "array"
+        }
+      },
+      "required": [
+        "messages",
+        "leaf"
+      ],
+      "type": "object"
+    },
+    "EnableExtension": {
+      "additionalProperties": false,
+      "description": "RPC `enable_extension` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The managed extension to enable \u2014 a `path` from list_managed_extensions, or a unique file stem.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "enable_extension"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "path"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/EnableExtensionResult"
+      }
+    },
+    "EnableExtensionResult": {
+      "properties": {
+        "action": {
+          "description": "Which action ran \u2014 echoes the verb.",
+          "enum": [
+            "enable",
+            "disable",
+            "reload",
+            "configure"
+          ],
+          "type": "string"
+        },
+        "leaf": {
+          "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "The human-readable line, the same one the TUI listing shows.",
+          "type": "string"
+        },
+        "ok": {
+          "description": "Whether the action changed anything. false is a reportable no-op, never an error: an unknown target, an already-enabled extension, an already-disabled one. A hard failure \u2014 a file that no longer imports, which only reload can hit \u2014 RAISES instead and reaches the host as INTERNAL_ERROR, with the extension left torn down.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "The managed path the action resolved to. NOT always what was sent: `path` accepts a file stem as well as a full path, and this is the full path it matched. On a failed resolution it is the unresolved string, so a host can quote back what it asked for.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "path",
+        "ok",
+        "message",
+        "leaf"
       ],
       "type": "object"
     },
@@ -1710,45 +2058,44 @@
     },
     "EnumerateDomain": {
       "additionalProperties": false,
-      "description": "The values legal for a domain right now (RPC `enumerate_domain`).",
+      "description": "RPC `enumerate_domain` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
       "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
         "domain": {
-          "description": "A domain name, as a step's `domain.name` gives it.",
+          "description": "The domain's name, as a `next_step` step reported it. A domain that is `free` returns no values and total 0 \u2014 that is the answer, not a failure.",
           "type": "string"
         },
         "leaf": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The entry a scoped `message_id` is relative to; `None` is the head cursor's leaf."
+          "description": "For a scoped `message_id`: the entry the scope is relative to. Null uses the live tip. An id that names no entry is an error, not an empty listing.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "limit": {
-          "description": "The most values answered.",
+          "description": "How many values to return at most. Defaults to 50.",
+          "minimum": 1,
           "type": "integer"
         },
         "query": {
-          "description": "A prefix of the value, or a substring of the label; empty matches all.",
+          "description": "Filter text. A value matches on a case-sensitive PREFIX of the value itself, or a case-insensitive SUBSTRING of its label \u2014 completion and search, because an id and its text are looked for differently. Empty matches everything in scope.",
           "type": "string"
         },
         "scope": {
-          "anyOf": [
-            {
-              "enum": [
-                "in_session",
-                "ancestors_of_leaf",
-                "descendants_of_leaf"
-              ]
-            },
-            {
-              "type": "null"
-            }
+          "description": "For `message_id` only: which entries are candidates. Defaults to `in_session`.",
+          "enum": [
+            "in_session",
+            "ancestors_of_leaf",
+            "descendants_of_leaf",
+            null
           ],
-          "description": "For `message_id`: which entries are candidates; `None` is `in_session`."
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "session_id": {
           "type": "string"
@@ -1758,14 +2105,37 @@
         }
       },
       "required": [
+        "type",
         "session_id",
-        "domain",
-        "type"
+        "cursor_id",
+        "domain"
       ],
       "type": "object",
       "x-result": {
-        "$ref": "#/$defs/DomainListing"
+        "$ref": "#/$defs/EnumerateDomainResult"
       }
+    },
+    "EnumerateDomainResult": {
+      "properties": {
+        "domain": {
+          "description": "The domain that was enumerated.",
+          "type": "string"
+        },
+        "total": {
+          "description": "How many values matched before `limit` was applied, so a host says '12 of 340' instead of implying it showed everything (G3). An empty `values` with a non-zero `total` cannot happen; an empty one with total 0 means the domain genuinely has none.",
+          "type": "integer"
+        },
+        "values": {
+          "description": "A list of {value, label}. `value` is what a host binds into `next_step`'s `bound`; `label` is what it shows. They are equal for a domain whose values already read as text.",
+          "type": "array"
+        }
+      },
+      "required": [
+        "domain",
+        "values",
+        "total"
+      ],
+      "type": "object"
     },
     "Error": {
       "description": "Why a request failed. `code` is stable; `message` is for a human.",
@@ -1777,8 +2147,23 @@
             "protocol_mismatch",
             "not_found",
             "busy",
-            "failed"
+            "failed",
+            "submission_rejected",
+            "command_not_supported",
+            "session_not_persisted"
           ]
+        },
+        "data": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "RPC's `error.data` for an RPC verb's refusal (a submission's `lock`, the offending `name`), else `None`."
         },
         "message": {
           "type": "string"
@@ -1819,6 +2204,9 @@
         },
         {
           "$ref": "#/$defs/UiEvent"
+        },
+        {
+          "$ref": "#/$defs/CompactionEndEvent"
         }
       ],
       "x-data": {
@@ -1827,6 +2215,9 @@
         },
         "channel": {
           "$ref": "#/$defs/ChannelEventData"
+        },
+        "compaction_end": {
+          "$ref": "#/$defs/CompactionEnd"
         },
         "cursors": {
           "$ref": "#/$defs/CursorsEventData"
@@ -1850,42 +2241,6 @@
           "$ref": "#/$defs/UiEventData"
         }
       }
-    },
-    "ExtensionCommandAnswer": {
-      "description": "A `Perform` whose operation returned an `ExtensionCommandResult`.",
-      "properties": {
-        "fields": {
-          "$ref": "#/$defs/ExtensionCommandResult"
-        },
-        "kind": {
-          "const": "ExtensionCommandResult"
-        }
-      },
-      "required": [
-        "fields",
-        "kind"
-      ],
-      "type": "object"
-    },
-    "ExtensionCommandResult": {
-      "description": "Outcome of `AgentSession.run_extension_command` (E7 \u00a73 / S46).",
-      "properties": {
-        "handled": {
-          "type": "boolean"
-        },
-        "output": {
-          "anyOf": [
-            {},
-            {
-              "type": "null"
-            }
-          ]
-        }
-      },
-      "required": [
-        "handled"
-      ],
-      "type": "object"
     },
     "ExtensionInfo": {
       "description": "One loaded extension and what it registered, as RPC `get_extension_state` lists it.",
@@ -2002,100 +2357,6 @@
       ],
       "type": "object"
     },
-    "ExtensionRequestRecord": {
-      "description": "One reserved `customEntry`, read back off the tree.",
-      "properties": {
-        "ask": {
-          "anyOf": [
-            {
-              "additionalProperties": {},
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The validated ask spec a head renders, or `None`."
-        },
-        "entry_id": {
-          "description": "The tree entry's own id.",
-          "type": "string"
-        },
-        "extension": {
-          "description": "The appending extension's path, stored rather than looked up (\u00a74) \u2014 the case this exists for is a reload where that extension never loaded.",
-          "type": "string"
-        },
-        "lock": {
-          "description": "Whether a submission at this cursor is refused.",
-          "type": "boolean"
-        },
-        "release": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "A command name that clears the lock, or `None`. Advisory \u2014 commands are exempt from the lock by placement (\u00a75), not by name."
-        },
-        "sentence": {
-          "description": "The extension's own one line. Distinct from `label`, which is \u03c4's framing of it.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "entry_id",
-        "extension",
-        "sentence",
-        "lock",
-        "ask",
-        "release"
-      ],
-      "type": "object"
-    },
-    "FlowStep": {
-      "description": "One argument a flow still needs, and everything required to ask for it.",
-      "properties": {
-        "argument": {
-          "$ref": "#/$defs/Argument",
-          "description": "The argument being asked for."
-        },
-        "bound": {
-          "additionalProperties": {},
-          "description": "The arguments already bound, so a head redrawing a form has them.",
-          "type": "object"
-        },
-        "domain": {
-          "$ref": "#/$defs/Domain",
-          "description": "That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up."
-        },
-        "flow": {
-          "description": "The flow's name.",
-          "type": "string"
-        },
-        "leaf": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`."
-        }
-      },
-      "required": [
-        "flow",
-        "argument",
-        "domain",
-        "leaf",
-        "bound"
-      ],
-      "type": "object"
-    },
     "FlowStepArm": {
       "description": "One argument a flow still needs, and everything required to ask for it.",
       "properties": {
@@ -2145,6 +2406,9 @@
       "additionalProperties": true,
       "description": "A document another system's store put in the tree, typed `system:kind` (`jmfts:document`).",
       "properties": {
+        "copiedFrom": {
+          "type": "string"
+        },
         "id": {
           "type": "string"
         },
@@ -2175,9 +2439,9 @@
       ],
       "type": "object"
     },
-    "ForkSession": {
+    "Fork": {
       "additionalProperties": false,
-      "description": "Copy a session into a new one in the same cwd.",
+      "description": "Copy the path to a cursor's leaf into a new session in the same cwd, and load it (RPC `fork`).",
       "properties": {
         "at": {
           "anyOf": [
@@ -2188,23 +2452,26 @@
               "type": "null"
             }
           ],
-          "description": "The entry to fork at, copying only the path to it; `None` copies the whole tree."
+          "description": "The entry to fork at instead of the cursor's leaf."
+        },
+        "cursor_id": {
+          "type": "string"
         },
         "session_id": {
           "type": "string"
         },
         "type": {
-          "const": "fork_session"
+          "const": "fork"
         }
       },
       "required": [
         "session_id",
-        "at",
+        "cursor_id",
         "type"
       ],
       "type": "object",
       "x-result": {
-        "$ref": "#/$defs/SessionForked"
+        "$ref": "#/$defs/SessionOpened"
       }
     },
     "FormField": {
@@ -2257,11 +2524,655 @@
       ],
       "type": "object"
     },
-    "GetTree": {
+    "GetCommands": {
       "additionalProperties": false,
-      "description": "Every entry of a session's tree as a browser row, seen from one cursor.",
+      "description": "RPC `get_commands` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
       "properties": {
         "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_commands"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetCommandsResult"
+      }
+    },
+    "GetCommandsResult": {
+      "properties": {
+        "commands": {
+          "description": "Every slash command that resolves right now, built-ins first. A `name` has no leading '/' \u2014 submit it as ordinary text with expand_commands=true, not as an RPC method.",
+          "items": {
+            "properties": {
+              "description": {
+                "description": "The one line a completion list or a palette shows.",
+                "type": "string"
+              },
+              "flow": {
+                "description": "Whether this command DECLARES what it takes. True means `next_step` will step it and `enumerate_domain` will list its argument's values, so a host can build a form or a completion list for it; false means the command takes one opaque line and there is nothing to ask about. Every built-in flow is true and the two view commands are false; an extension command is true only if it used `register_flow` (docs/EXTENSION-FLOWS.md).",
+                "type": "boolean"
+              },
+              "hidden": {
+                "description": "True for a private-registry name \u2014 `ext:<extension>.<command>`, which every extension command always has and which nothing can take from it (docs/EXTENSION-NAMESPACE.md). It resolves exactly like any other name; it is marked because offering both halves of the same command in one completion list is noise. Show these only once the reader has typed `ext:`. False for every name a reader would type unprompted.",
+                "type": "boolean"
+              },
+              "name": {
+                "description": "The command word, with no leading '/'.",
+                "type": "string"
+              },
+              "origin": {
+                "description": "Where the NAME came from: 'builtin' is \u03c4's own vocabulary, 'extension' is one a loaded extension registered. Built-ins resolve first, so an extension cannot shadow one. It does NOT say who runs the command \u2014 that is which arm the dispatch returns.",
+                "enum": [
+                  "builtin",
+                  "extension"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "description",
+              "origin",
+              "flow",
+              "hidden"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "commands"
+      ],
+      "type": "object"
+    },
+    "GetEntry": {
+      "additionalProperties": false,
+      "description": "RPC `get_entry` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "entry_id": {
+          "description": "The entry to read \u2014 an `entry_id` from get_tree or complete_message_id. An id naming no entry is INVALID_PARAMS, never a null entry.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_entry"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "entry_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetEntryResult"
+      }
+    },
+    "GetEntryResult": {
+      "properties": {
+        "entry": {
+          "description": "The raw session-log entry, as stored: camelCase `parentId` / `firstKeptId` / `fromId`, a `type`, and whatever payload that type carries \u2014 a `message` for the message kinds, a `summary` for a compaction or a branch_summary. Handed over whole rather than projected, because the caller is a detail pane rendering ONE node and a projection would be a second message shape to keep in step with get_messages'. One node per call: get_tree carries a one-line preview per row precisely so a browser does not pull bodies it is not showing.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "entry"
+      ],
+      "type": "object"
+    },
+    "GetExtensionConfig": {
+      "additionalProperties": false,
+      "description": "RPC `get_extension_config` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The managed extension to read \u2014 a `path` from list_managed_extensions, or a unique file stem.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_extension_config"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "path"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetExtensionConfigResult"
+      }
+    },
+    "GetExtensionConfigResult": {
+      "properties": {
+        "path": {
+          "description": "The managed path the token resolved to, not the token sent.",
+          "type": "string"
+        },
+        "schema": {
+          "description": "The extension's CONFIG_SCHEMA, normalized at load into {title, fields} \u2014 the same spec shape ui.form takes, so a head that can render a form can render a settings screen with no new widget. null for an extension that declares none, which is the answer that tells a head to offer no screen rather than an empty one.",
+          "type": "object"
+        },
+        "values": {
+          "description": "The live slice api.config returns for this extension, keyed by file stem: config.json's extensions.<stem> with --ext-config overrides applied, plus any set_extension_config since. {} for an unconfigured extension \u2014 never the schema's defaults, which the extension itself supplies.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "path",
+        "schema",
+        "values"
+      ],
+      "type": "object"
+    },
+    "GetExtensionState": {
+      "additionalProperties": false,
+      "description": "RPC `get_extension_state` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_extension_state"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetExtensionStateResult"
+      }
+    },
+    "GetExtensionStateResult": {
+      "properties": {
+        "errors": {
+          "description": "Every discovered file that FAILED to load, as [{path, error}]. Kept from the last load_extensions call, because a failed import leaves nothing to recompute from. This is the half that makes this a read of its own rather than list_managed_extensions with more fields: a file that cannot import can never be a legal extension_name, and is exactly what a listing must show.",
+          "type": "array"
+        },
+        "extensions": {
+          "description": "Every loaded extension and what it registered, as [{name, path, tools, commands, shortcuts, hooks, content_hash, subjects}] \u2014 sdk.summarize_extensions of the live registry, which is the same projection the TUI's /extensions listing draws. Read LIVE, not from the load-time snapshot, so a reload_extension is reflected here.",
+          "type": "array"
+        }
+      },
+      "required": [
+        "extensions",
+        "errors"
+      ],
+      "type": "object"
+    },
+    "GetLastAssistantText": {
+      "additionalProperties": false,
+      "description": "RPC `get_last_assistant_text` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_last_assistant_text"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetLastAssistantTextResult"
+      }
+    },
+    "GetLastAssistantTextResult": {
+      "properties": {
+        "text": {
+          "description": "The last assistant message's concatenated 'text' content blocks, trimmed. null if no qualifying assistant message exists YET, or if one exists but it has no text (e.g. a pure tool-call turn) \u2014 the two cases are DELIBERATELY indistinguishable on the wire, matching pi's own `getLastAssistantText(): string | undefined` (pi agent-session.ts:3092) and its RPC verb (rpc-mode.ts:609-612, docs/rpc.md: 'Returns {\"text\": null} if no assistant messages exist' \u2014 silent on the second null-producing case, because on the wire there is only one representable 'nothing' and pi does not either).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "GetMessages": {
+      "additionalProperties": false,
+      "description": "RPC `get_messages` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_messages"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetMessagesResult"
+      }
+    },
+    "GetMessagesResult": {
+      "properties": {
+        "messages": {
+          "description": "AgentSession.messages \u2014 the terminal, flat message array (E2's pull side).",
+          "items": {
+            "properties": {
+              "content": {
+                "description": "A plain string on a system message; elsewhere a list of content blocks, each carrying its own `type` \u2014 text, image, thinking or toolCall.",
+                "type": [
+                  "string",
+                  "array"
+                ]
+              },
+              "role": {
+                "description": "'system', 'user', 'assistant' or 'toolResult'. An extension-injected node carries 'custom' and the loop remaps it to 'user' before a provider sees it.",
+                "type": "string"
+              },
+              "timestamp": {
+                "description": "Epoch MILLISECONDS at the moment the message happened: a user message's send, a toolResult's collection, an assistant message's end (or its cancellation, for a partial). null means no clock applies \u2014 a synthetic message an extension built, or a system message. Never 0; a session written before \u03c4 fixed this carries 0 on disk and every store maps it to null on load, so a host never sees one (docs/MESSAGE-TIMESTAMPS.md). Consecutive timestamps are what let a host compute per-call latency and whether a prompt cache entry had expired, and they read identically live and after a reload.",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "usage": {
+                "description": "Present on assistant messages: the ONE completion that produced this message, as {input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_reported, total_tokens, extra}. Per-completion, never cumulative \u2014 each prompt already contains every earlier one, so summing total_tokens over a conversation counts turn 1 once per turn. cache_reported false means the server accounts for no prompt cache, so its cache_read_tokens of 0 is silence and not a miss; cache_read_tokens at 0 WITH cache_reported true is the signal described in docs/PROMPT-CACHING.md \u00a77.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "role",
+              "content"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "messages"
+      ],
+      "type": "object"
+    },
+    "GetModels": {
+      "additionalProperties": false,
+      "description": "RPC `get_models` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_models"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetModelsResult"
+      }
+    },
+    "GetModelsResult": {
+      "properties": {
+        "models": {
+          "description": "Every config model NAME this child can switch to, sorted, as [{name, model}]: `name` is the exact string set_model's `name` param takes, and `model` is the SAME projection get_state publishes for the active model \u2014 {id, provider, context_window} \u2014 obtained by resolving `name` through the session's bound model resolver, i.e. by asking the one component set_model itself would ask. Empty only when the child's config declares no models; a resolver that cannot be enumerated is an INTERNAL_ERROR, never an empty list.",
+          "type": "array"
+        }
+      },
+      "required": [
+        "models"
+      ],
+      "type": "object"
+    },
+    "GetPendingRequest": {
+      "additionalProperties": false,
+      "description": "RPC `get_pending_request` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_pending_request"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetPendingRequestResult"
+      }
+    },
+    "GetPendingRequestResult": {
+      "properties": {
+        "request": {
+          "description": "The extension request AT THE CURSOR, or null when there is none. The cursor only, never an ancestry walk: the thing a user is looking at and the thing that refused their submission are one entry. {entry_id, extension, extension_name, sentence, label, lock, ask, release} \u2014 `label` is \u03c4's own framing of the four states over `lock` and `ask`, `sentence` is the extension's own line, `ask` is a validated `ui.form` spec ({title, fields, actions}) or null, and `release` names a command that clears the lock (advisory: commands are exempt from a lock by placement, not by name). A host renders all four states; three of them draw something and the fourth is this verb answering null.",
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "type": "object"
+    },
+    "GetSessionName": {
+      "additionalProperties": false,
+      "description": "RPC `get_session_name` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_session_name"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetSessionNameResult"
+      }
+    },
+    "GetSessionNameResult": {
+      "properties": {
+        "name": {
+          "description": "The session's durable display name, or null if never set (extension_types.read_session_name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "GetSessionStats": {
+      "additionalProperties": false,
+      "description": "RPC `get_session_stats` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_session_stats"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetSessionStatsResult"
+      }
+    },
+    "GetSessionStatsResult": {
+      "properties": {
+        "compaction_settings": {
+          "description": "The session's EFFECTIVE CompactionSettings \u2014 {enabled, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. An RPC session is CONSTRUCTED with enabled=False (backends.py:885) \u2014 that is how a host discovers auto-compaction is off (\u00a71.1) \u2014 and set_auto_compaction (D-4, shipped in this same tier) is the one thing that changes it, so this reports the session's LIVE effective setting at call time, never a constant.",
+          "type": "object"
+        },
+        "context": {
+          "description": "estimate_context_tokens(session.messages) (compaction.py) projected as {tokens, usage_tokens, trailing_tokens, last_usage_index}: tokens is the total estimate the compaction threshold is checked against; usage_tokens is the anchored provider-reported count up to the last assistant Usage, trailing_tokens the heuristic estimate for messages after it, last_usage_index that message's index (null if no assistant Usage exists yet, in which case tokens==trailing_tokens and the whole list was heuristically estimated).",
+          "type": "object"
+        },
+        "context_headroom": {
+          "description": "context_window - context.tokens. Can be negative: an honest over-budget number, never clamped to zero.",
+          "type": "integer"
+        },
+        "context_window": {
+          "description": "The active model's context_window (get_model()).",
+          "type": "integer"
+        },
+        "last_compaction": {
+          "description": "{id, timestamp, summary, first_kept_id, tokens_before} for the most recent type=='compaction' entry in session_log.entries(), or null if this session has never compacted \u2014 an honest absence, never a fabricated entry.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "usage": {
+          "description": "AgentSession.get_usage() \u2014 null before the first completion.",
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "context",
+        "context_window",
+        "context_headroom",
+        "compaction_settings",
+        "last_compaction",
+        "usage"
+      ],
+      "type": "object"
+    },
+    "GetState": {
+      "additionalProperties": false,
+      "description": "RPC `get_state` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_state"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetStateResult"
+      }
+    },
+    "GetStateResult": {
+      "properties": {
+        "addressable": {
+          "description": "Whether the CURRENT session is persisted: true if list_sessions returns it and switch_session can reach it later. The same predicate new_session/fork/switch_session publish on their session tuple, asked about the session this connection is on right now. False means the appending verbs (set_model, set_session_name, compact \u2014 D-7) will refuse with -32004 SESSION_NOT_PERSISTED, and nothing this connection does is written to the store. Reachable without a respawn: new_session {\"persist\": true} moves onto a persisted session.",
+          "type": "boolean"
+        },
+        "is_streaming": {
+          "description": "AgentSession.is_streaming.",
+          "type": "boolean"
+        },
+        "leaf": {
+          "description": "cursor.leaf (F3: no host may cache 'the tip').",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message_count": {
+          "description": "len(AgentSession.messages).",
+          "type": "integer"
+        },
+        "model": {
+          "description": "AgentSession.get_model(): {id, provider, context_window}.",
+          "type": "object"
+        },
+        "session_id": {
+          "description": "AgentSession.state.session_id.",
+          "type": "string"
+        },
+        "status": {
+          "description": "AgentSession.state.status.",
+          "enum": [
+            "idle",
+            "running"
+          ],
+          "type": "string"
+        },
+        "usage": {
+          "description": "AgentSession.get_usage() \u2014 null before the first completion.",
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "status",
+        "is_streaming",
+        "model",
+        "usage",
+        "message_count",
+        "leaf",
+        "addressable"
+      ],
+      "type": "object"
+    },
+    "GetTools": {
+      "additionalProperties": false,
+      "description": "RPC `get_tools` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "get_tools"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetToolsResult"
+      }
+    },
+    "GetToolsResult": {
+      "properties": {
+        "tools": {
+          "description": "This session's bound AgentTool set, in binding order.",
+          "items": {
+            "properties": {
+              "description": {
+                "description": "What the model is told the tool does.",
+                "type": "string"
+              },
+              "name": {
+                "description": "The tool's name, as a tool call addresses it.",
+                "type": "string"
+              },
+              "parameters": {
+                "description": "The tool's own JSON Schema, passed to the provider unchanged \u2014 this table's supported-keyword rule does not govern it.",
+                "type": "object"
+              }
+            },
+            "required": [
+              "name",
+              "description",
+              "parameters"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "tools"
+      ],
+      "type": "object"
+    },
+    "GetTree": {
+      "additionalProperties": false,
+      "description": "RPC `get_tree` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
           "type": "string"
         },
         "session_id": {
@@ -2272,14 +3183,137 @@
         }
       },
       "required": [
+        "type",
         "session_id",
-        "cursor_id",
-        "type"
+        "cursor_id"
       ],
       "type": "object",
       "x-result": {
-        "$ref": "#/$defs/TreeResult"
+        "$ref": "#/$defs/GetTreeResult"
       }
+    },
+    "GetTreeResult": {
+      "properties": {
+        "count": {
+          "description": "len(nodes). Present so a host can check it read a whole tree rather than a truncated one: this read is UNBOUNDED by design \u2014 the shape IS the answer and a bounded shape is a different tree \u2014 which is why it is a pull and is never pushed (G3).",
+          "type": "integer"
+        },
+        "leaf": {
+          "description": "cursor.leaf at the moment of the read, duplicated out of `nodes` so a host finds it without scanning. Null on a session whose cursor names no entry, which is also the one case in which no node carries is_leaf: true.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nodes": {
+          "description": "Every entry in the log, in the order a browser draws them \u2014 preorder over the parent/child tree, roots in load order, children oldest first. FLAT, with `parent_id` carrying the shape: a nested projection of a long linear conversation is one nesting level per message, which is a serializer's recursion limit rather than a tree anyone wanted. Nothing is filtered out \u2014 which rows a browser declines to draw (a `navigate` with one child) is the reader's rule, not the log's.",
+          "items": {
+            "properties": {
+              "copyable": {
+                "description": "Whether paste_subtree will take this entry as a source root \u2014 conversation_tree.COPYABLE_KINDS, reported per node so a host greys the illegal source rather than holding a second copy of the tuple.",
+                "type": "boolean"
+              },
+              "entry_id": {
+                "description": "The entry's id \u2014 the value every `message_id` argument takes (navigate, elide_span, commit_branch, paste_subtree, summarize_and_navigate).",
+                "type": "string"
+              },
+              "estimated_tokens": {
+                "description": "compaction.estimate_tokens over this entry's message, 0 for an entry carrying none. An ESTIMATE \u2014 a 4-chars-per-token heuristic \u2014 and the only token figure available for an arbitrary set of entries, because the one measured figure in a session is usage.input_tokens on a finished assistant message and that measures one request. A host totalling these says 'estimate' beside the number, as the TUI's browser does.",
+                "type": "integer"
+              },
+              "first_kept_id": {
+                "description": "On a splice anchor ('compaction' or 'elide'), the oldest entry the fold keeps; null on every other kind. This is the fold's whole boundary: the entries a host paints as folded are the ones on the cursor's ancestor chain that sit before this id, with a system message carried across (docs/SYSTEM-PROMPT-IN-THE-FOLD.md). Sent because a host holding only the shape would have to guess at it.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "from_id": {
+                "description": "On a 'branch_summary', the head of the branch it summarizes \u2014 the pair a browser draws as a summary and the line it is about. Display metadata, never a splice boundary. Null on every other kind.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "is_leaf": {
+                "description": "Whether this entry is the head cursor's leaf \u2014 where the next submission lands. Exactly one node carries true, or none on a session whose cursor names no entry.",
+                "type": "boolean"
+              },
+              "is_system": {
+                "description": "Whether this entry is the system prompt. A fold carries it across rather than dropping it, so a host computing the folded span excludes it.",
+                "type": "boolean"
+              },
+              "kind": {
+                "description": "The entry's type: 'message', 'customMessage', 'compaction', 'elide', 'branch_summary', 'navigate', 'customEntry', 'model_change'. Not a closed enum \u2014 a kind added later reaches a host as a row it can draw and does not recognise, rather than as a gap.",
+                "type": "string"
+              },
+              "parent_id": {
+                "description": "The entry this one hangs from; null for a root.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "preview": {
+                "description": "The entry's first line, uncut \u2014 a host elides it to its own width. Empty for an entry carrying no text.",
+                "type": "string"
+              },
+              "role": {
+                "description": "'user', 'assistant', 'toolResult' or 'system' on a message entry; null on every bookkeeping kind.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "timestamp": {
+                "description": "Epoch milliseconds, or null when no clock applies (docs/MESSAGE-TIMESTAMPS.md). This is the key children are sorted by, so re-sorting on it reproduces `nodes`.",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "tool_call_id": {
+                "description": "The call a 'toolResult' answers; null elsewhere.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tool_call_ids": {
+                "description": "The toolCall block ids an assistant message declares; empty on every other entry. With `tool_call_id` this is the whole of the pairing rule a mark expands over: to every provider a call and its result are one unit, and a branch carrying one without the other is a prefix the API rejects (docs/TREE-EDITOR-MANUAL.md \u00a76).",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "entry_id",
+              "parent_id",
+              "kind",
+              "role",
+              "preview",
+              "is_leaf",
+              "timestamp",
+              "first_kept_id",
+              "from_id",
+              "is_system",
+              "tool_call_ids",
+              "tool_call_id",
+              "copyable",
+              "estimated_tokens"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "nodes",
+        "leaf",
+        "count"
+      ],
+      "type": "object"
     },
     "Hello": {
       "additionalProperties": false,
@@ -2326,7 +3360,7 @@
           "type": "string"
         },
         "cwd": {
-          "description": "The daemon's working directory at start, absolute; a default for `CreateSession`.",
+          "description": "The daemon's working directory at start, absolute; a default for `NewSession`.",
           "type": "string"
         },
         "pid": {
@@ -2409,9 +3443,46 @@
       ],
       "type": "object"
     },
+    "ListManagedExtensions": {
+      "additionalProperties": false,
+      "description": "RPC `list_managed_extensions` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "list_managed_extensions"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/ListManagedExtensionsResult"
+      }
+    },
+    "ListManagedExtensionsResult": {
+      "properties": {
+        "extensions": {
+          "description": "Every file extension under management, in load order, as [{path, enabled}]. `path` is the exact string every extension_name argument takes (enable_extension, disable_extension, reload_extension); `enabled` is false exactly when the extension is loaded but its bucket has been removed from the runner, so its hooks, tools and slash commands are not offered.",
+          "type": "array"
+        }
+      },
+      "required": [
+        "extensions"
+      ],
+      "type": "object"
+    },
     "ListSessions": {
       "additionalProperties": false,
-      "description": "Every session in the daemon's store, across every cwd, newest first.",
+      "description": "Every session in the daemon's store, across every cwd, newest first (RPC `list_sessions`).",
       "properties": {
         "type": {
           "const": "list_sessions"
@@ -2448,6 +3519,9 @@
     "MessageEntry": {
       "description": "A message on the conversation path.",
       "properties": {
+        "copiedFrom": {
+          "type": "string"
+        },
         "id": {
           "type": "string"
         },
@@ -2493,6 +3567,9 @@
               "type": "null"
             }
           ]
+        },
+        "copiedFrom": {
+          "type": "string"
         },
         "id": {
           "type": "string"
@@ -2546,19 +3623,6 @@
       },
       "required": [
         "name",
-        "model"
-      ],
-      "type": "object"
-    },
-    "ModelSet": {
-      "description": "The answer to `SetModel`.",
-      "properties": {
-        "model": {
-          "description": "The model id the cursor's next turn calls.",
-          "type": "string"
-        }
-      },
-      "required": [
         "model"
       ],
       "type": "object"
@@ -2618,9 +3682,42 @@
         "type": "null"
       }
     },
+    "Navigate": {
+      "additionalProperties": false,
+      "description": "RPC `navigate` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "target_id": {
+          "description": "The entry to move the cursor onto \u2014 an `entry_id` from complete_message_id. The abandoned branch drops out of context via the parentId walk but stays on disk and stays browsable; nothing is erased.",
+          "type": "string"
+        },
+        "type": {
+          "const": "navigate"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "target_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/NavigateResult"
+      }
+    },
     "NavigateEntry": {
       "description": "Legacy: a recorded move to `targetId`, written before cursors (docs/CURSORS.md \u00a71.1).",
       "properties": {
+        "copiedFrom": {
+          "type": "string"
+        },
         "id": {
           "type": "string"
         },
@@ -2661,27 +3758,35 @@
       ],
       "type": "object"
     },
-    "NextStep": {
-      "additionalProperties": false,
-      "description": "The next argument a flow needs, or the mutation it is ready for (RPC `next_step`).",
+    "NavigateResult": {
       "properties": {
-        "bound": {
-          "anyOf": [
-            {
-              "additionalProperties": {},
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The arguments bound so far; `None` or `{}` is the first step."
+        "leaf": {
+          "description": "cursor.leaf after the mutation (E5 rule 1).",
+          "type": [
+            "string",
+            "null"
+          ]
         },
-        "flow": {
-          "description": "A command `name` whose `flow` is true in the `Surface`.",
+        "messages": {
+          "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+          "type": "array"
+        }
+      },
+      "required": [
+        "messages",
+        "leaf"
+      ],
+      "type": "object"
+    },
+    "NewSession": {
+      "additionalProperties": false,
+      "description": "Create a session in `cwd`, a path on the daemon's machine, and load it (RPC `new_session`).",
+      "properties": {
+        "cwd": {
+          "description": "The directory its tools run in; the create fails if it does not exist.",
           "type": "string"
         },
-        "leaf": {
+        "model": {
           "anyOf": [
             {
               "type": "string"
@@ -2690,7 +3795,54 @@
               "type": "null"
             }
           ],
-          "description": "The entry a scoped `message_id` argument is relative to, echoed back as the step's `cursor` for `EnumerateDomain`."
+          "description": "A model name from the daemon's config, or `None` for its default."
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A session name, or `None`."
+        },
+        "type": {
+          "const": "new_session"
+        }
+      },
+      "required": [
+        "cwd",
+        "type"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/SessionOpened"
+      }
+    },
+    "NextStep": {
+      "additionalProperties": false,
+      "description": "RPC `next_step` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "bound": {
+          "description": "The arguments bound so far, keyed by argument name. Omit it, or send {}, for the flow's first step. Only REQUIRED arguments block, so a flow whose arguments are all optional is `ready` on the first call.",
+          "type": "object"
+        },
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "flow": {
+          "description": "The flow's name \u2014 one of the `name`s `get_commands` lists. An unknown name is an error, not an empty answer: a host that believes a flow exists must be told it does not.",
+          "type": "string"
+        },
+        "leaf": {
+          "description": "The entry a scoped `message_id` argument is relative to. A parameter rather than the live tip, so a host stepping a sub-agent's flow scopes to THAT agent's leaf. It is echoed back on the step so the host hands it straight to `enumerate_domain`.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "session_id": {
           "type": "string"
@@ -2700,9 +3852,10 @@
         }
       },
       "required": [
+        "type",
         "session_id",
-        "flow",
-        "type"
+        "cursor_id",
+        "flow"
       ],
       "type": "object",
       "x-result": {
@@ -2710,39 +3863,32 @@
       }
     },
     "NextStepResult": {
-      "description": "The answer to `NextStep`: exactly one of `step` and `ready` is set, as `status` says.",
       "properties": {
         "ready": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Ready"
-            },
-            {
-              "type": "null"
-            }
+          "description": "{flow, mutation, arguments}. `mutation` is the capability to perform \u2014 the named flow's, always, so a host that already knows which flow it stepped can dispatch before this returns. `arguments` is what to perform it with, keyed by the mutation's own parameter names. This is a commitment: \u03c4 does not ask a second time, and a host that wants a confirmation renders one from this.",
+          "type": [
+            "object",
+            "null"
           ]
         },
         "status": {
+          "description": "`step` \u2014 one required argument is still unbound and `step` describes it. `ready` \u2014 every required argument is bound and `ready` names the mutation to perform and what to perform it with. The two are mutually exclusive and exactly one is present.",
           "enum": [
             "step",
             "ready"
-          ]
+          ],
+          "type": "string"
         },
         "step": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FlowStep"
-            },
-            {
-              "type": "null"
-            }
+          "description": "{flow, argument, domain, leaf, bound}. `argument` is {name, domain, description, cardinality, required, scope}; `domain` is the resolved domain record {name, description, free, values, enumerator}, included so a host can render the field without a second call \u2014 `values` is non-null for a small fixed set, and `enumerator` non-null means call `enumerate_domain` for the live set.",
+          "type": [
+            "object",
+            "null"
           ]
         }
       },
       "required": [
-        "status",
-        "step",
-        "ready"
+        "status"
       ],
       "type": "object"
     },
@@ -2911,60 +4057,60 @@
       ],
       "type": "object"
     },
-    "PathMatch": {
-      "description": "One path an `@` token can complete to.",
-      "properties": {
-        "detail": {
-          "type": "string"
-        },
-        "is_dir": {
-          "type": "boolean"
-        },
-        "name": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "detail",
-        "is_dir"
-      ],
-      "type": "object"
-    },
-    "Perform": {
+    "PasteSubtree": {
       "additionalProperties": false,
-      "description": "Call one of the session backend's operations, acting at `cursor_id`.",
+      "description": "RPC `paste_subtree` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
       "properties": {
-        "arguments": {
-          "additionalProperties": {},
-          "description": "Its keyword arguments.",
-          "type": "object"
-        },
         "cursor_id": {
-          "description": "The cursor the operation acts on: the tree edits move and append at it, and `rollback_turn` runs its turn there.",
-          "type": "string"
-        },
-        "method": {
-          "description": "One of `PERFORMABLE`.",
+          "description": "The cursor the verb acts at.",
           "type": "string"
         },
         "session_id": {
           "type": "string"
         },
+        "source_id": {
+          "description": "The copied node \u2014 the root of the subtree.",
+          "type": "string"
+        },
+        "target_id": {
+          "description": "The entry the copy hangs from. May not be inside the source's own subtree.",
+          "type": "string"
+        },
         "type": {
-          "const": "perform"
+          "const": "paste_subtree"
         }
       },
       "required": [
+        "type",
         "session_id",
         "cursor_id",
-        "method",
-        "type"
+        "source_id",
+        "target_id"
       ],
       "type": "object",
       "x-result": {
-        "$ref": "#/$defs/PerformResult"
+        "$ref": "#/$defs/PasteSubtreeResult"
       }
+    },
+    "PasteSubtreeResult": {
+      "properties": {
+        "leaf": {
+          "description": "cursor.leaf after the paste \u2014 E5 rule 1, and here it is the UNCHANGED tip, present because absence is never a signal (rule 3), not because anything moved.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "minted_ids": {
+          "description": "The ids minted, in the order they were appended. The first is the copy of `source_id` itself. Ids rather than messages because a paste edits the TREE and never moves the leaf: the current context is unchanged, so there is nothing to re-render until someone navigates onto the copy.",
+          "type": "array"
+        }
+      },
+      "required": [
+        "minted_ids",
+        "leaf"
+      ],
+      "type": "object"
     },
     "PerformReady": {
       "additionalProperties": false,
@@ -2994,84 +4140,6 @@
       "x-result": {
         "$ref": "#/$defs/DispatchedCommand"
       }
-    },
-    "PerformResult": {
-      "description": "The answer to `perform`, told apart by `kind`.",
-      "oneOf": [
-        {
-          "$ref": "#/$defs/PerformedAnswer"
-        },
-        {
-          "$ref": "#/$defs/ExtensionCommandAnswer"
-        },
-        {
-          "$ref": "#/$defs/SubmissionAnswer"
-        },
-        {
-          "$ref": "#/$defs/CompactionAnswer"
-        },
-        {
-          "$ref": "#/$defs/ValueAnswer"
-        }
-      ]
-    },
-    "Performed": {
-      "description": "What a capability produced. The past tense of `Ready`.",
-      "properties": {
-        "data": {
-          "additionalProperties": {},
-          "description": "What it returned, keyed as its `returns` declares. JSON-able.",
-          "type": "object"
-        },
-        "flow": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The flow that named the mutation, when a flow did. `None` when a caller performed the capability directly."
-        },
-        "leaf": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The acting cursor's leaf after the call, or `None` for a session with no log. It is the promoted copy of `data[\"leaf\"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it."
-        },
-        "mutation": {
-          "description": "The capability that ran.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "flow",
-        "mutation",
-        "data"
-      ],
-      "type": "object"
-    },
-    "PerformedAnswer": {
-      "description": "A `Perform` whose operation returned a `Performed`.",
-      "properties": {
-        "fields": {
-          "$ref": "#/$defs/Performed"
-        },
-        "kind": {
-          "const": "Performed"
-        }
-      },
-      "required": [
-        "fields",
-        "kind"
-      ],
-      "type": "object"
     },
     "PerformedArm": {
       "description": "What a capability produced. The past tense of `Ready`.",
@@ -3116,6 +4184,154 @@
         "flow",
         "mutation",
         "data"
+      ],
+      "type": "object"
+    },
+    "Prompt": {
+      "additionalProperties": false,
+      "description": "RPC `prompt` (docs/RPC-PROTOCOL.md) at one cursor. `submit` with RPC's provenance defaults.",
+      "properties": {
+        "allow_user_input": {
+          "description": "Whether this submission's turn may open a blocking dialog.",
+          "type": "boolean"
+        },
+        "correlation": {
+          "description": "Free-form origin detail (bus subject, cron id, HTTP request id).",
+          "type": "object"
+        },
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "depth": {
+          "description": "Self-submission depth floor; submit() may raise it further.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "expand_attachments": {
+          "description": "Whether `@file` references in `text` are resolved into <attachment>/<reference> blocks before the Submission is built, the way the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72). Defaults to False, which sends `@notes.txt` to the model as those eleven literal characters. NOT a Submission field: expansion happens HERE, so what is persisted and what the model saw are the same string. Attached images are appended to `images`. Files are read at this moment, not when the host composed the text. See the `attachments` key on the result for what expansion did.",
+          "type": "boolean"
+        },
+        "expand_commands": {
+          "description": "Whether a leading '/' is command-dispatched. Defaults to False.",
+          "type": "boolean"
+        },
+        "images": {
+          "description": "Optional list of image content blocks.",
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "multitask_strategy": {
+          "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
+          "enum": [
+            "reject",
+            "enqueue",
+            "steer",
+            "rollback",
+            "fork"
+          ],
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "silent": {
+          "description": "Folds into store_history=False; NOT otherwise implemented \u2014 AgentSession.submit() raises NotImplementedError if True.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "Who originated this submission (Submission.source).",
+          "enum": [
+            "interactive",
+            "rpc",
+            "extension",
+            "bus",
+            "timer",
+            "webhook",
+            "voice",
+            "agent"
+          ],
+          "type": "string"
+        },
+        "store_history": {
+          "description": "Whether this turn is persisted to the session log. Defaults to True.",
+          "type": "boolean"
+        },
+        "submission_id": {
+          "description": "Caller-assigned correlation id for this submission (uuid4 recommended).",
+          "type": "string"
+        },
+        "submitter": {
+          "description": "WHO submitted \u2014 an extension name, 'human', a channel id.",
+          "type": "string"
+        },
+        "text": {
+          "description": "The prompt text.",
+          "type": "string"
+        },
+        "type": {
+          "const": "prompt"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "text"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/PromptResult"
+      }
+    },
+    "PromptResult": {
+      "properties": {
+        "accepted": {
+          "description": "Always true here \u2014 a rejected submission is an RPCError, not this shape.",
+          "type": "boolean"
+        },
+        "admitted": {
+          "description": "Whether a turn was admitted for this submission, so a `submission_end` channel event with its id will follow. False for a steer delivered into another turn, and for a command.",
+          "type": "boolean"
+        },
+        "attachments": {
+          "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one.",
+          "type": "object"
+        },
+        "command": {
+          "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} \u2014 `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead.",
+          "type": "object"
+        },
+        "dispatched": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DispatchedCommand"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What a command resolved to, after the daemon performed it; `null` for a prompt."
+        },
+        "rejection_reason": {
+          "description": "Always null on this success shape; a real rejection is SUBMISSION_REJECTED instead.",
+          "type": "null"
+        },
+        "submission_id": {
+          "description": "Echoes the request's submission_id (caller-supplied, or a minted uuid4 for prompt).",
+          "type": "string"
+        },
+        "view": {
+          "description": "Present ONLY when this submission resolved to a VIEW command \u2014 /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. \u03c4 projects no view state yet (docs/VSCODE-HEAD.md \u00a76), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "accepted",
+        "submission_id",
+        "rejection_reason"
       ],
       "type": "object"
     },
@@ -3172,28 +4388,74 @@
       ],
       "type": "object"
     },
-    "RequestAnswered": {
-      "description": "The answer to `AnswerRequest`.",
+    "ReloadExtension": {
+      "additionalProperties": false,
+      "description": "RPC `reload_extension` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
       "properties": {
-        "handled": {
-          "description": "Whether the action's command ran.",
-          "type": "boolean"
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
         },
-        "output": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "What the command returned, as text, or `None`."
+        "path": {
+          "description": "The managed extension to re-import \u2014 a `path` from list_managed_extensions, or a unique file stem.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "reload_extension"
         }
       },
       "required": [
-        "handled",
-        "output"
+        "type",
+        "session_id",
+        "cursor_id",
+        "path"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/ReloadExtensionResult"
+      }
+    },
+    "ReloadExtensionResult": {
+      "properties": {
+        "action": {
+          "description": "Which action ran \u2014 echoes the verb.",
+          "enum": [
+            "enable",
+            "disable",
+            "reload",
+            "configure"
+          ],
+          "type": "string"
+        },
+        "leaf": {
+          "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "The human-readable line, the same one the TUI listing shows.",
+          "type": "string"
+        },
+        "ok": {
+          "description": "Whether the action changed anything. false is a reportable no-op, never an error: an unknown target, an already-enabled extension, an already-disabled one. A hard failure \u2014 a file that no longer imports, which only reload can hit \u2014 RAISES instead and reaches the host as INTERNAL_ERROR, with the extension left torn down.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "The managed path the action resolved to. NOT always what was sent: `path` accepts a file stem as well as a full path, and this is the full path it matched. On a failed resolution it is the unresolved string, so a host can quote back what it asked for.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "path",
+        "ok",
+        "message",
+        "leaf"
       ],
       "type": "object"
     },
@@ -3351,33 +4613,12 @@
       ],
       "type": "object"
     },
-    "SessionCreated": {
-      "description": "The answer to `CreateSession`.",
-      "properties": {
-        "session_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "session_id"
-      ],
-      "type": "object"
-    },
-    "SessionForked": {
-      "description": "The answer to `ForkSession`.",
-      "properties": {
-        "session_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "session_id"
-      ],
-      "type": "object"
-    },
     "SessionInfoEntry": {
       "description": "The session's display name from here on; the model never sees it.",
       "properties": {
+        "copiedFrom": {
+          "type": "string"
+        },
         "id": {
           "type": "string"
         },
@@ -3412,8 +4653,11 @@
       "type": "object"
     },
     "SessionList": {
-      "description": "The answer to `ListSessions`.",
+      "description": "The answer to `ListSessions`, RPC's shape.",
       "properties": {
+        "scope": {
+          "$ref": "#/$defs/SessionScope"
+        },
         "sessions": {
           "items": {
             "$ref": "#/$defs/SessionRow"
@@ -3422,29 +4666,71 @@
         }
       },
       "required": [
-        "sessions"
+        "sessions",
+        "scope"
+      ],
+      "type": "object"
+    },
+    "SessionOpened": {
+      "description": "The answer to `NewSession` and `Fork`, RPC's lifecycle shape.",
+      "properties": {
+        "cancelled": {
+          "description": "Always false: no session is switched away from, so no hook can veto.",
+          "type": "boolean"
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new session's head leaf, duplicated out of `session`."
+        },
+        "session": {
+          "$ref": "#/$defs/SessionTuple"
+        }
+      },
+      "required": [
+        "cancelled",
+        "session",
+        "leaf"
       ],
       "type": "object"
     },
     "SessionRow": {
-      "description": "One line of `ListSessions`' answer.",
+      "description": "One line of `ListSessions`' answer: RPC's row, plus where and whether it is loaded.",
       "properties": {
+        "created": {
+          "description": "ISO-8601.",
+          "type": "string"
+        },
         "cwd": {
+          "description": "The directory its tools run in.",
           "type": "string"
         },
-        "first_message": {
-          "type": "string"
-        },
-        "id": {
-          "type": "string"
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why its entries could not be read, or `None`; such a row stays listed."
         },
         "loaded": {
+          "description": "Whether the daemon holds it now.",
           "type": "boolean"
         },
         "message_count": {
           "type": "integer"
         },
         "modified": {
+          "description": "ISO-8601.",
           "type": "string"
         },
         "name": {
@@ -3456,27 +4742,242 @@
               "type": "null"
             }
           ]
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The session this one was forked from, or `None`."
+        },
+        "ref": {
+          "description": "The store's own handle for the session.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "title": {
+          "description": "A bounded display label; message text appears nowhere else here.",
+          "type": "string"
         }
       },
       "required": [
-        "id",
-        "cwd",
+        "session_id",
+        "ref",
         "name",
-        "modified",
+        "title",
         "message_count",
-        "first_message",
+        "created",
+        "modified",
+        "parent",
+        "error",
+        "cwd",
         "loaded"
+      ],
+      "type": "object"
+    },
+    "SessionScope": {
+      "description": "What universe a listing is: the daemon's store, and `cwd` `None` for every directory.",
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "store": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "store",
+        "cwd"
+      ],
+      "type": "object"
+    },
+    "SessionTuple": {
+      "description": "A loaded session, as RPC's session tuple names it.",
+      "properties": {
+        "addressable": {
+          "description": "Whether another request can name it; always true here.",
+          "type": "boolean"
+        },
+        "cursor_id": {
+          "description": "Its head cursor.",
+          "type": "string"
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The head cursor's leaf."
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "store": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "store",
+        "session_id",
+        "cursor_id",
+        "leaf",
+        "addressable"
+      ],
+      "type": "object"
+    },
+    "SetAutoCompaction": {
+      "additionalProperties": false,
+      "description": "RPC `set_auto_compaction` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "enabled": {
+          "description": "Desired auto-compaction state. RPC sessions are constructed with CompactionSettings(enabled=False) (backends.py:885, RPC-TIER-B.md \u00a71.1), so a host that wants it on says so here; AgentSession.set_auto_compaction is the same setter in process.",
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "set_auto_compaction"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "enabled"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/SetAutoCompactionResult"
+      }
+    },
+    "SetAutoCompactionResult": {
+      "properties": {
+        "enabled": {
+          "description": "The effective state after this call (D-4: 'a plain, idempotent setter ... returns the effective state') \u2014 what AgentSession.set_auto_compaction returns, read back off the settings rather than echoed from the request.",
+          "type": "boolean"
+        },
+        "leaf": {
+          "description": "cursor.leaf after this call (E5, rule 1 of 'E5 in Tier B' above). ALWAYS the unchanged tip: this verb mutates an in-memory CompactionSettings and appends no log entry, so there is nothing here that could move it. Returned rather than omitted because absence is not a signal (rule 3) \u2014 a host reads the same field from every mutator and never has to infer the tip from a missing key (F3).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "enabled",
+        "leaf"
+      ],
+      "type": "object"
+    },
+    "SetExtensionConfig": {
+      "additionalProperties": false,
+      "description": "RPC `set_extension_config` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The managed extension to configure \u2014 a `path` from list_managed_extensions, or a unique file stem.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "set_extension_config"
+        },
+        "values": {
+          "description": "The complete new slice, keyed by the field names get_extension_config's `schema` declares. Every declared field must be present: missing is not empty, and nothing is filled in for you.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "path",
+        "values"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/SetExtensionConfigResult"
+      }
+    },
+    "SetExtensionConfigResult": {
+      "properties": {
+        "action": {
+          "description": "Which action ran \u2014 echoes the verb.",
+          "enum": [
+            "enable",
+            "disable",
+            "reload",
+            "configure"
+          ],
+          "type": "string"
+        },
+        "leaf": {
+          "description": "cursor.leaf \u2014 E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "description": "The human-readable line, the same one the TUI listing shows.",
+          "type": "string"
+        },
+        "ok": {
+          "description": "Whether the action changed anything. false is a reportable no-op, never an error: an unknown target, an already-enabled extension, an already-disabled one. A hard failure \u2014 a file that no longer imports, which only reload can hit \u2014 RAISES instead and reaches the host as INTERNAL_ERROR, with the extension left torn down.",
+          "type": "boolean"
+        },
+        "path": {
+          "description": "The managed path the action resolved to. NOT always what was sent: `path` accepts a file stem as well as a full path, and this is the full path it matched. On a failed resolution it is the unresolved string, so a host can quote back what it asked for.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "path",
+        "ok",
+        "message",
+        "leaf"
       ],
       "type": "object"
     },
     "SetModel": {
       "additionalProperties": false,
-      "description": "Switch the model a cursor's next turn runs, by a name from the daemon's config.",
+      "description": "RPC `set_model` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
       "properties": {
         "cursor_id": {
+          "description": "The cursor the verb acts at.",
           "type": "string"
         },
-        "model": {
+        "name": {
+          "description": "A config model NAME (a key in ~/.tau/config.json's 'models' map), resolved through AgentSession's bound model resolver (set_model_resolver) \u2014 the same name --model NAME accepts headlessly. NOT a model id; a config key may alias one.",
           "type": "string"
         },
         "session_id": {
@@ -3487,29 +4988,83 @@
         }
       },
       "required": [
+        "type",
         "session_id",
         "cursor_id",
-        "model",
-        "type"
+        "name"
       ],
       "type": "object",
       "x-result": {
-        "$ref": "#/$defs/ModelSet"
+        "$ref": "#/$defs/SetModelResult"
       }
     },
-    "SubmissionAnswer": {
-      "description": "A `Perform` whose operation returned a `SubmissionResult` (`rollback_turn`).",
+    "SetModelResult": {
       "properties": {
-        "fields": {
-          "$ref": "#/$defs/SubmissionResult"
+        "leaf": {
+          "description": "cursor.leaf immediately after the model_change entry this call appended (E5) \u2014 that entry's own id, since the append is the last write this handler makes.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
-        "kind": {
-          "const": "SubmissionResult"
+        "model": {
+          "description": "AgentSession.get_model() after the switch: {id, provider, context_window}.",
+          "type": "object"
         }
       },
       "required": [
-        "fields",
-        "kind"
+        "model",
+        "leaf"
+      ],
+      "type": "object"
+    },
+    "SetSessionName": {
+      "additionalProperties": false,
+      "description": "RPC `set_session_name` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The session's new durable display name. Must be non-empty.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "set_session_name"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "name"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/SetSessionNameResult"
+      }
+    },
+    "SetSessionNameResult": {
+      "properties": {
+        "leaf": {
+          "description": "The resulting cursor.leaf (E5/F3 \u2014 every mutating response returns the resulting leaf).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The name just persisted (echoes params.name).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "leaf"
       ],
       "type": "object"
     },
@@ -3638,68 +5193,6 @@
       ],
       "type": "object"
     },
-    "SubmissionResult": {
-      "description": "The outcome of a `Submission` \u2014 LSP's `ApplyWorkspaceEditResult` shape: a refusal is a **result**, not an exception (decision-adjacent to the spec's \"Five mechanisms\" point 5).",
-      "properties": {
-        "accepted": {
-          "type": "boolean"
-        },
-        "command": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/FlowStep"
-            },
-            {
-              "$ref": "#/$defs/Ready"
-            },
-            {
-              "$ref": "#/$defs/Performed"
-            },
-            {
-              "$ref": "#/$defs/View"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "lock": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ExtensionRequestRecord"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "messages": {
-          "items": {
-            "additionalProperties": {},
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "rejection_reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "submission_id": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "accepted",
-        "submission_id"
-      ],
-      "type": "object"
-    },
     "SubmissionStartChannel": {
       "description": "The `submission_start` channel.",
       "properties": {
@@ -3785,58 +5278,86 @@
     },
     "Submit": {
       "additionalProperties": false,
-      "description": "Send text to a cursor: a prompt, or a `/command` when `expand_commands`.",
+      "description": "RPC `submit` (docs/RPC-PROTOCOL.md) at one cursor. Answered at admission, as over stdio, and its turn ends with a `submission_end` channel event. `multitask_strategy: \"fork\"` is accepted. A command answers success with `dispatched`, the arm it resolved to, where stdio refuses a step or a ready flow: the daemon performs a ready flow itself, except `fork` and `switch_session`, which come back for the client.",
       "properties": {
+        "allow_user_input": {
+          "description": "Whether this submission's turn may open a blocking dialog.",
+          "type": "boolean"
+        },
+        "correlation": {
+          "description": "Free-form origin detail (bus subject, cron id, HTTP request id).",
+          "type": "object"
+        },
         "cursor_id": {
+          "description": "The cursor the verb acts at.",
           "type": "string"
         },
+        "depth": {
+          "description": "Self-submission depth floor; submit() may raise it further.",
+          "minimum": 0,
+          "type": "integer"
+        },
         "expand_attachments": {
-          "description": "Resolve `@path` references in `text` against the session's cwd on the daemon's machine, as the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72).",
+          "description": "Whether `@file` references in `text` are resolved into <attachment>/<reference> blocks before the Submission is built, the way the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72). Defaults to False, which sends `@notes.txt` to the model as those eleven literal characters. NOT a Submission field: expansion happens HERE, so what is persisted and what the model saw are the same string. Attached images are appended to `images`. Files are read at this moment, not when the host composed the text. See the `attachments` key on the result for what expansion did.",
           "type": "boolean"
         },
         "expand_commands": {
+          "description": "Whether a leading '/' is command-dispatched. Defaults to False.",
           "type": "boolean"
         },
         "images": {
-          "anyOf": [
-            {
-              "items": {
-                "additionalProperties": {},
-                "type": "object"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Image content blocks to send with the text."
+          "description": "Optional list of image content blocks.",
+          "type": [
+            "array",
+            "null"
+          ]
         },
         "multitask_strategy": {
-          "description": "What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md).",
+          "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
           "enum": [
             "reject",
             "enqueue",
             "steer",
             "rollback",
             "fork"
-          ]
+          ],
+          "type": "string"
         },
         "session_id": {
           "type": "string"
         },
-        "submission_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
+        "silent": {
+          "description": "Folds into store_history=False; NOT otherwise implemented \u2014 AgentSession.submit() raises NotImplementedError if True.",
+          "type": "boolean"
+        },
+        "source": {
+          "description": "Who originated this submission (Submission.source).",
+          "enum": [
+            "interactive",
+            "rpc",
+            "extension",
+            "bus",
+            "timer",
+            "webhook",
+            "voice",
+            "agent"
           ],
-          "description": "The id the events of this submission carry; the daemon mints one when `None`. A client that renders its own streams sends it."
+          "type": "string"
+        },
+        "store_history": {
+          "description": "Whether this turn is persisted to the session log. Defaults to True.",
+          "type": "boolean"
+        },
+        "submission_id": {
+          "description": "Caller-assigned correlation id for this submission (uuid4 recommended).",
+          "type": "string"
+        },
+        "submitter": {
+          "description": "WHO submitted \u2014 an extension name, 'human', a channel id.",
+          "type": "string"
         },
         "text": {
+          "description": "The prompt text.",
           "type": "string"
         },
         "type": {
@@ -3844,10 +5365,13 @@
         }
       },
       "required": [
+        "type",
         "session_id",
         "cursor_id",
         "text",
-        "type"
+        "source",
+        "submitter",
+        "submission_id"
       ],
       "type": "object",
       "x-result": {
@@ -3855,12 +5379,24 @@
       }
     },
     "SubmitResult": {
-      "description": "The answer to `Submit`: how the submission ended. A refusal is an answer, not an error.",
       "properties": {
         "accepted": {
+          "description": "Always true here \u2014 a rejected submission is an RPCError, not this shape.",
           "type": "boolean"
         },
+        "admitted": {
+          "description": "Whether a turn was admitted for this submission, so a `submission_end` channel event with its id will follow. False for a steer delivered into another turn, and for a command.",
+          "type": "boolean"
+        },
+        "attachments": {
+          "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one.",
+          "type": "object"
+        },
         "command": {
+          "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} \u2014 `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead.",
+          "type": "object"
+        },
+        "dispatched": {
           "anyOf": [
             {
               "$ref": "#/$defs/DispatchedCommand"
@@ -3869,25 +5405,79 @@
               "type": "null"
             }
           ],
-          "description": "When the text was a command, what it resolved to. The daemon performs a `Ready` itself, except `fork` and `switch_session`."
+          "description": "What a command resolved to, after the daemon performed it; `null` for a prompt."
         },
-        "reason": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
+        "rejection_reason": {
+          "description": "Always null on this success shape; a real rejection is SUBMISSION_REJECTED instead.",
+          "type": "null"
         },
         "submission_id": {
+          "description": "Echoes the request's submission_id (caller-supplied, or a minted uuid4 for prompt).",
           "type": "string"
+        },
+        "view": {
+          "description": "Present ONLY when this submission resolved to a VIEW command \u2014 /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. \u03c4 projects no view state yet (docs/VSCODE-HEAD.md \u00a76), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host.",
+          "type": "object"
         }
       },
       "required": [
         "accepted",
-        "submission_id"
+        "submission_id",
+        "rejection_reason"
+      ],
+      "type": "object"
+    },
+    "SummarizeAndNavigate": {
+      "additionalProperties": false,
+      "description": "RPC `summarize_and_navigate` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "custom_instructions": {
+          "description": "Extra guidance for the summarizer's SYSTEM prompt. Omitted runs the default summarizer prompt.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "target_id": {
+          "description": "The branch point. The subtree BELOW it is what gets summarized, and the branch_summary entry is parented at it.",
+          "type": "string"
+        },
+        "type": {
+          "const": "summarize_and_navigate"
+        }
+      },
+      "required": [
+        "type",
+        "session_id",
+        "cursor_id",
+        "target_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/SummarizeAndNavigateResult"
+      }
+    },
+    "SummarizeAndNavigateResult": {
+      "properties": {
+        "leaf": {
+          "description": "cursor.leaf after the mutation (E5 rule 1).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messages": {
+          "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+          "type": "array"
+        }
+      },
+      "required": [
+        "messages",
+        "leaf"
       ],
       "type": "object"
     },
@@ -3998,6 +5588,9 @@
     "ThinkingChangeEntry": {
       "description": "Legacy: the reasoning level from here on, before config entries.",
       "properties": {
+        "copiedFrom": {
+          "type": "string"
+        },
         "id": {
           "type": "string"
         },
@@ -4157,159 +5750,6 @@
         "content",
         "timestamp",
         "role"
-      ],
-      "type": "object"
-    },
-    "TreeResult": {
-      "description": "The answer to `GetTree`.",
-      "properties": {
-        "count": {
-          "description": "How many rows.",
-          "type": "integer"
-        },
-        "leaf": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The cursor's leaf: the one row whose `is_leaf` is true."
-        },
-        "nodes": {
-          "items": {
-            "$ref": "#/$defs/TreeRow"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "nodes",
-        "leaf",
-        "count"
-      ],
-      "type": "object"
-    },
-    "TreeRow": {
-      "description": "One `GetTree` row: RPC `get_tree`'s node.",
-      "properties": {
-        "copyable": {
-          "description": "Whether `paste_subtree` can take this entry as its source.",
-          "type": "boolean"
-        },
-        "entry_id": {
-          "type": "string"
-        },
-        "estimated_tokens": {
-          "description": "An estimate of the entry's tokens, 0 when it holds no message.",
-          "type": "integer"
-        },
-        "first_kept_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "On a `compaction` or `elide`, the oldest entry kept."
-        },
-        "from_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "On a `branch_summary`, the branch head it summarizes."
-        },
-        "is_leaf": {
-          "description": "Whether this entry is the cursor's leaf.",
-          "type": "boolean"
-        },
-        "is_system": {
-          "description": "Whether this is the system prompt.",
-          "type": "boolean"
-        },
-        "kind": {
-          "description": "The entry's `type`.",
-          "type": "string"
-        },
-        "parent_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "preview": {
-          "description": "The entry's first line.",
-          "type": "string"
-        },
-        "role": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The message role; `None` on a bookkeeping entry."
-        },
-        "timestamp": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Epoch milliseconds, or `None`."
-        },
-        "tool_call_id": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The call a tool result answers."
-        },
-        "tool_call_ids": {
-          "description": "The tool call ids an assistant message declares.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "entry_id",
-        "parent_id",
-        "kind",
-        "role",
-        "preview",
-        "is_leaf",
-        "timestamp",
-        "first_kept_id",
-        "from_id",
-        "is_system",
-        "tool_call_ids",
-        "tool_call_id",
-        "copyable",
-        "estimated_tokens"
       ],
       "type": "object"
     },
@@ -4510,58 +5950,6 @@
         "content",
         "timestamp",
         "role"
-      ],
-      "type": "object"
-    },
-    "ValueAnswer": {
-      "description": "A `Perform` whose operation returned a plain value.",
-      "properties": {
-        "kind": {
-          "const": "value"
-        },
-        "value": {
-          "description": "`navigate_tree`, `elide_span` and `commit_branch` return the context's messages; `paste_subtree` the minted ids; `list_managed_extensions` `[path, enabled]` pairs; `compact` `null` when there was nothing to compact."
-        }
-      },
-      "required": [
-        "value",
-        "kind"
-      ],
-      "type": "object"
-    },
-    "View": {
-      "description": "A named surface only a head can open.",
-      "properties": {
-        "name": {
-          "description": "The view's name, a key of `tau_agent_core.capabilities.VIEW_COMMANDS`.",
-          "type": "string"
-        },
-        "state": {
-          "anyOf": [
-            {
-              "additionalProperties": {},
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "What a head draws the view from. `None` everywhere today \u2014 no capability projects the session tree yet (docs/VSCODE-HEAD.md \u00a76), and this is the spot that payload lands in when one does, with no change to the union."
-        },
-        "unavailable_because": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "Why no `state` rides with this, in a sentence a head can print. A head that has its own view of that name ignores it and opens it; a head that has none prints it and does nothing else. Not a fallback: it is the same idiom the RPC table's seven `declined_because` entries already use."
-        }
-      },
-      "required": [
-        "name"
       ],
       "type": "object"
     },
@@ -4994,7 +6382,7 @@
       },
       {
         "additionalProperties": false,
-        "description": "A `create_session` request with its id.",
+        "description": "A `new_session` request with its id.",
         "properties": {
           "cwd": {
             "description": "The directory its tools run in; the create fails if it does not exist.",
@@ -5026,12 +6414,48 @@
             "description": "A session name, or `None`."
           },
           "type": {
-            "const": "create_session"
+            "const": "new_session"
           }
         },
         "required": [
           "id",
           "cwd",
+          "type"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `fork` request with its id.",
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The entry to fork at instead of the cursor's leaf."
+          },
+          "cursor_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "fork"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "cursor_id",
           "type"
         ],
         "type": "object"
@@ -5097,103 +6521,6 @@
         "required": [
           "id",
           "session_id",
-          "type"
-        ],
-        "type": "object"
-      },
-      {
-        "additionalProperties": false,
-        "description": "A `submit` request with its id.",
-        "properties": {
-          "cursor_id": {
-            "type": "string"
-          },
-          "expand_attachments": {
-            "description": "Resolve `@path` references in `text` against the session's cwd on the daemon's machine, as the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72).",
-            "type": "boolean"
-          },
-          "expand_commands": {
-            "type": "boolean"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "images": {
-            "anyOf": [
-              {
-                "items": {
-                  "additionalProperties": {},
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Image content blocks to send with the text."
-          },
-          "multitask_strategy": {
-            "description": "What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md).",
-            "enum": [
-              "reject",
-              "enqueue",
-              "steer",
-              "rollback",
-              "fork"
-            ]
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "submission_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The id the events of this submission carry; the daemon mints one when `None`. A client that renders its own streams sends it."
-          },
-          "text": {
-            "type": "string"
-          },
-          "type": {
-            "const": "submit"
-          }
-        },
-        "required": [
-          "id",
-          "session_id",
-          "cursor_id",
-          "text",
-          "type"
-        ],
-        "type": "object"
-      },
-      {
-        "additionalProperties": false,
-        "description": "A `abort` request with its id.",
-        "properties": {
-          "cursor_id": {
-            "type": "string"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
-            "const": "abort"
-          }
-        },
-        "required": [
-          "id",
-          "session_id",
-          "cursor_id",
           "type"
         ],
         "type": "object"
@@ -5306,35 +6633,6 @@
       },
       {
         "additionalProperties": false,
-        "description": "A `set_model` request with its id.",
-        "properties": {
-          "cursor_id": {
-            "type": "string"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "model": {
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
-            "const": "set_model"
-          }
-        },
-        "required": [
-          "id",
-          "session_id",
-          "cursor_id",
-          "model",
-          "type"
-        ],
-        "type": "object"
-      },
-      {
-        "additionalProperties": false,
         "description": "A `answer` request with its id.",
         "properties": {
           "id": {
@@ -5367,82 +6665,6 @@
           "session_id",
           "request_id",
           "value",
-          "type"
-        ],
-        "type": "object"
-      },
-      {
-        "additionalProperties": false,
-        "description": "A `answer_request` request with its id.",
-        "properties": {
-          "action": {
-            "description": "The label of the pressed action.",
-            "type": "string"
-          },
-          "cursor_id": {
-            "type": "string"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "request_id": {
-            "description": "The request entry's id.",
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
-            "const": "answer_request"
-          },
-          "values": {
-            "additionalProperties": {},
-            "description": "The filled fields, keyed by name.",
-            "type": "object"
-          }
-        },
-        "required": [
-          "id",
-          "session_id",
-          "cursor_id",
-          "request_id",
-          "action",
-          "type"
-        ],
-        "type": "object"
-      },
-      {
-        "additionalProperties": false,
-        "description": "A `perform` request with its id.",
-        "properties": {
-          "arguments": {
-            "additionalProperties": {},
-            "description": "Its keyword arguments.",
-            "type": "object"
-          },
-          "cursor_id": {
-            "description": "The cursor the operation acts on: the tree edits move and append at it, and `rollback_turn` runs its turn there.",
-            "type": "string"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "method": {
-            "description": "One of `PERFORMABLE`.",
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
-            "const": "perform"
-          }
-        },
-        "required": [
-          "id",
-          "session_id",
-          "cursor_id",
-          "method",
           "type"
         ],
         "type": "object"
@@ -5581,37 +6803,626 @@
       },
       {
         "additionalProperties": false,
+        "description": "A `submit` request with its id.",
+        "properties": {
+          "allow_user_input": {
+            "description": "Whether this submission's turn may open a blocking dialog.",
+            "type": "boolean"
+          },
+          "correlation": {
+            "description": "Free-form origin detail (bus subject, cron id, HTTP request id).",
+            "type": "object"
+          },
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "depth": {
+            "description": "Self-submission depth floor; submit() may raise it further.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expand_attachments": {
+            "description": "Whether `@file` references in `text` are resolved into <attachment>/<reference> blocks before the Submission is built, the way the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72). Defaults to False, which sends `@notes.txt` to the model as those eleven literal characters. NOT a Submission field: expansion happens HERE, so what is persisted and what the model saw are the same string. Attached images are appended to `images`. Files are read at this moment, not when the host composed the text. See the `attachments` key on the result for what expansion did.",
+            "type": "boolean"
+          },
+          "expand_commands": {
+            "description": "Whether a leading '/' is command-dispatched. Defaults to False.",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "images": {
+            "description": "Optional list of image content blocks.",
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "multitask_strategy": {
+            "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
+            "enum": [
+              "reject",
+              "enqueue",
+              "steer",
+              "rollback",
+              "fork"
+            ],
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "silent": {
+            "description": "Folds into store_history=False; NOT otherwise implemented \u2014 AgentSession.submit() raises NotImplementedError if True.",
+            "type": "boolean"
+          },
+          "source": {
+            "description": "Who originated this submission (Submission.source).",
+            "enum": [
+              "interactive",
+              "rpc",
+              "extension",
+              "bus",
+              "timer",
+              "webhook",
+              "voice",
+              "agent"
+            ],
+            "type": "string"
+          },
+          "store_history": {
+            "description": "Whether this turn is persisted to the session log. Defaults to True.",
+            "type": "boolean"
+          },
+          "submission_id": {
+            "description": "Caller-assigned correlation id for this submission (uuid4 recommended).",
+            "type": "string"
+          },
+          "submitter": {
+            "description": "WHO submitted \u2014 an extension name, 'human', a channel id.",
+            "type": "string"
+          },
+          "text": {
+            "description": "The prompt text.",
+            "type": "string"
+          },
+          "type": {
+            "const": "submit"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "text",
+          "source",
+          "submitter",
+          "submission_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `prompt` request with its id.",
+        "properties": {
+          "allow_user_input": {
+            "description": "Whether this submission's turn may open a blocking dialog.",
+            "type": "boolean"
+          },
+          "correlation": {
+            "description": "Free-form origin detail (bus subject, cron id, HTTP request id).",
+            "type": "object"
+          },
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "depth": {
+            "description": "Self-submission depth floor; submit() may raise it further.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expand_attachments": {
+            "description": "Whether `@file` references in `text` are resolved into <attachment>/<reference> blocks before the Submission is built, the way the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72). Defaults to False, which sends `@notes.txt` to the model as those eleven literal characters. NOT a Submission field: expansion happens HERE, so what is persisted and what the model saw are the same string. Attached images are appended to `images`. Files are read at this moment, not when the host composed the text. See the `attachments` key on the result for what expansion did.",
+            "type": "boolean"
+          },
+          "expand_commands": {
+            "description": "Whether a leading '/' is command-dispatched. Defaults to False.",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "images": {
+            "description": "Optional list of image content blocks.",
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "multitask_strategy": {
+            "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
+            "enum": [
+              "reject",
+              "enqueue",
+              "steer",
+              "rollback",
+              "fork"
+            ],
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "silent": {
+            "description": "Folds into store_history=False; NOT otherwise implemented \u2014 AgentSession.submit() raises NotImplementedError if True.",
+            "type": "boolean"
+          },
+          "source": {
+            "description": "Who originated this submission (Submission.source).",
+            "enum": [
+              "interactive",
+              "rpc",
+              "extension",
+              "bus",
+              "timer",
+              "webhook",
+              "voice",
+              "agent"
+            ],
+            "type": "string"
+          },
+          "store_history": {
+            "description": "Whether this turn is persisted to the session log. Defaults to True.",
+            "type": "boolean"
+          },
+          "submission_id": {
+            "description": "Caller-assigned correlation id for this submission (uuid4 recommended).",
+            "type": "string"
+          },
+          "submitter": {
+            "description": "WHO submitted \u2014 an extension name, 'human', a channel id.",
+            "type": "string"
+          },
+          "text": {
+            "description": "The prompt text.",
+            "type": "string"
+          },
+          "type": {
+            "const": "prompt"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "text"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `abort` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "abort"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `compact` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "custom_instructions": {
+            "description": "Optional extra focus for the generated summary, threaded unchanged to AgentSession.compact(custom_instructions=...).",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "compact"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_state` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_state"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_messages` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_messages"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_commands` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_commands"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_tools` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_tools"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_models` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_models"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_session_name` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_session_name"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_session_stats` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_session_stats"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_last_assistant_text` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_last_assistant_text"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `set_model` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "description": "A config model NAME (a key in ~/.tau/config.json's 'models' map), resolved through AgentSession's bound model resolver (set_model_resolver) \u2014 the same name --model NAME accepts headlessly. NOT a model id; a config key may alias one.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "set_model"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "name"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `set_auto_compaction` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "enabled": {
+            "description": "Desired auto-compaction state. RPC sessions are constructed with CompactionSettings(enabled=False) (backends.py:885, RPC-TIER-B.md \u00a71.1), so a host that wants it on says so here; AgentSession.set_auto_compaction is the same setter in process.",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "set_auto_compaction"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "enabled"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `set_session_name` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "description": "The session's new durable display name. Must be non-empty.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "set_session_name"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "name"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `complete_path` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "offset": {
+            "description": "The caret's character offset into `text`. Which @reference is being completed is decided from this, so a host that sends the @word alone with offset 0 gets `completion: null` rather than a listing \u2014 the offset is not optional and is not defaulted.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "description": "The editor's contents as typed, NOT just the @word.",
+            "type": "string"
+          },
+          "type": {
+            "const": "complete_path"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "text",
+          "offset"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
         "description": "A `next_step` request with its id.",
         "properties": {
           "bound": {
-            "anyOf": [
-              {
-                "additionalProperties": {},
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The arguments bound so far; `None` or `{}` is the first step."
+            "description": "The arguments bound so far, keyed by argument name. Omit it, or send {}, for the flow's first step. Only REQUIRED arguments block, so a flow whose arguments are all optional is `ready` on the first call.",
+            "type": "object"
+          },
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
           },
           "flow": {
-            "description": "A command `name` whose `flow` is true in the `Surface`.",
+            "description": "The flow's name \u2014 one of the `name`s `get_commands` lists. An unknown name is an error, not an empty answer: a host that believes a flow exists must be told it does not.",
             "type": "string"
           },
           "id": {
             "type": "integer"
           },
           "leaf": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The entry a scoped `message_id` argument is relative to, echoed back as the step's `cursor` for `EnumerateDomain`."
+            "description": "The entry a scoped `message_id` argument is relative to. A parameter rather than the live tip, so a host stepping a sub-agent's flow scopes to THAT agent's leaf. It is echoed back on the step so the host hands it straight to `enumerate_domain`.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "session_id": {
             "type": "string"
@@ -5622,9 +7433,10 @@
         },
         "required": [
           "id",
+          "type",
           "session_id",
-          "flow",
-          "type"
+          "cursor_id",
+          "flow"
         ],
         "type": "object"
       },
@@ -5632,46 +7444,45 @@
         "additionalProperties": false,
         "description": "A `enumerate_domain` request with its id.",
         "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
           "domain": {
-            "description": "A domain name, as a step's `domain.name` gives it.",
+            "description": "The domain's name, as a `next_step` step reported it. A domain that is `free` returns no values and total 0 \u2014 that is the answer, not a failure.",
             "type": "string"
           },
           "id": {
             "type": "integer"
           },
           "leaf": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The entry a scoped `message_id` is relative to; `None` is the head cursor's leaf."
+            "description": "For a scoped `message_id`: the entry the scope is relative to. Null uses the live tip. An id that names no entry is an error, not an empty listing.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "limit": {
-            "description": "The most values answered.",
+            "description": "How many values to return at most. Defaults to 50.",
+            "minimum": 1,
             "type": "integer"
           },
           "query": {
-            "description": "A prefix of the value, or a substring of the label; empty matches all.",
+            "description": "Filter text. A value matches on a case-sensitive PREFIX of the value itself, or a case-insensitive SUBSTRING of its label \u2014 completion and search, because an id and its text are looked for differently. Empty matches everything in scope.",
             "type": "string"
           },
           "scope": {
-            "anyOf": [
-              {
-                "enum": [
-                  "in_session",
-                  "ancestors_of_leaf",
-                  "descendants_of_leaf"
-                ]
-              },
-              {
-                "type": "null"
-              }
+            "description": "For `message_id` only: which entries are candidates. Defaults to `in_session`.",
+            "enum": [
+              "in_session",
+              "ancestors_of_leaf",
+              "descendants_of_leaf",
+              null
             ],
-            "description": "For `message_id`: which entries are candidates; `None` is `in_session`."
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "session_id": {
             "type": "string"
@@ -5682,39 +7493,58 @@
         },
         "required": [
           "id",
+          "type",
           "session_id",
-          "domain",
-          "type"
+          "cursor_id",
+          "domain"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `complete_path` request with its id.",
+        "description": "A `complete_message_id` request with its id.",
         "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
           "id": {
             "type": "integer"
           },
-          "offset": {
-            "description": "The caret's character offset in `text`.",
+          "leaf": {
+            "description": "The entry the two scoped variants are relative to. Omitted uses the session cursor's leaf (get_state's `leaf`). An id that names no entry is INVALID_PARAMS, never an empty match list.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "How many matches to return at most. Omitted means 50.",
+            "minimum": 1,
             "type": "integer"
+          },
+          "query": {
+            "description": "Filter text. Matches a case-sensitive PREFIX of an entry id, or a case-insensitive SUBSTRING of its preview \u2014 completion and search in one field. Omitted or empty matches everything in scope.",
+            "type": "string"
+          },
+          "scope": {
+            "description": "Which entries are candidates. 'in_session' is every entry in the log; 'ancestors_of_leaf' is the parent chain from the root to `leaf` inclusive; 'descendants_of_leaf' is the subtree below it, excluding `leaf` itself. Omitted means 'in_session'.",
+            "enum": [
+              "in_session",
+              "ancestors_of_leaf",
+              "descendants_of_leaf"
+            ],
+            "type": "string"
           },
           "session_id": {
             "type": "string"
           },
-          "text": {
-            "type": "string"
-          },
           "type": {
-            "const": "complete_path"
+            "const": "complete_message_id"
           }
         },
         "required": [
           "id",
+          "type",
           "session_id",
-          "text",
-          "offset",
-          "type"
+          "cursor_id"
         ],
         "type": "object"
       },
@@ -5723,6 +7553,7 @@
         "description": "A `get_tree` request with its id.",
         "properties": {
           "cursor_id": {
+            "description": "The cursor the verb acts at.",
             "type": "string"
           },
           "id": {
@@ -5737,26 +7568,23 @@
         },
         "required": [
           "id",
+          "type",
           "session_id",
-          "cursor_id",
-          "type"
+          "cursor_id"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `fork_session` request with its id.",
+        "description": "A `get_entry` request with its id.",
         "properties": {
-          "at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The entry to fork at, copying only the path to it; `None` copies the whole tree."
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "entry_id": {
+            "description": "The entry to read \u2014 an `entry_id` from get_tree or complete_message_id. An id naming no entry is INVALID_PARAMS, never a null entry.",
+            "type": "string"
           },
           "id": {
             "type": "integer"
@@ -5765,14 +7593,467 @@
             "type": "string"
           },
           "type": {
-            "const": "fork_session"
+            "const": "get_entry"
           }
         },
         "required": [
           "id",
+          "type",
           "session_id",
-          "at",
-          "type"
+          "cursor_id",
+          "entry_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_pending_request` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_pending_request"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `answer_request` request with its id.",
+        "properties": {
+          "action": {
+            "description": "The pressed action's `label` \u2014 one of the labels in the ask's `actions`. The label, not the command it names: the label is what a person chose and what the ask's own table is keyed by.",
+            "type": "string"
+          },
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "request_id": {
+            "description": "The request's `entry_id`, as get_pending_request reported it or as a SUBMISSION_REJECTED refusal carried it.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "answer_request"
+          },
+          "values": {
+            "description": "The filled fields, keyed by field name. Omitted is the empty dict, which is what an ask declaring no fields takes. Checked against the ask's declared fields before anything is appended: nothing is coerced and no partial answer is persisted.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "request_id",
+          "action"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `list_managed_extensions` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "list_managed_extensions"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_extension_state` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_extension_state"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `get_extension_config` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "path": {
+            "description": "The managed extension to read \u2014 a `path` from list_managed_extensions, or a unique file stem.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_extension_config"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "path"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `set_extension_config` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "path": {
+            "description": "The managed extension to configure \u2014 a `path` from list_managed_extensions, or a unique file stem.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "set_extension_config"
+          },
+          "values": {
+            "description": "The complete new slice, keyed by the field names get_extension_config's `schema` declares. Every declared field must be present: missing is not empty, and nothing is filled in for you.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "path",
+          "values"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `enable_extension` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "path": {
+            "description": "The managed extension to enable \u2014 a `path` from list_managed_extensions, or a unique file stem.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "enable_extension"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "path"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `disable_extension` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "path": {
+            "description": "The managed extension to disable \u2014 a `path` from list_managed_extensions, or a unique file stem.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "disable_extension"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "path"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `reload_extension` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "path": {
+            "description": "The managed extension to re-import \u2014 a `path` from list_managed_extensions, or a unique file stem.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "reload_extension"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "path"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `navigate` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "description": "The entry to move the cursor onto \u2014 an `entry_id` from complete_message_id. The abandoned branch drops out of context via the parentId walk but stays on disk and stays browsable; nothing is erased.",
+            "type": "string"
+          },
+          "type": {
+            "const": "navigate"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "target_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `summarize_and_navigate` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "custom_instructions": {
+            "description": "Extra guidance for the summarizer's SYSTEM prompt. Omitted runs the default summarizer prompt.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "target_id": {
+            "description": "The branch point. The subtree BELOW it is what gets summarized, and the branch_summary entry is parented at it.",
+            "type": "string"
+          },
+          "type": {
+            "const": "summarize_and_navigate"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "target_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `elide_span` request with its id.",
+        "properties": {
+          "anchor_id": {
+            "description": "The entry the fold jumps FROM. The elide entry is appended as its child, so the anchor becomes the end of the kept region and the new tip.",
+            "type": "string"
+          },
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "first_kept_id": {
+            "description": "The entry the fold resumes at \u2014 the anchor itself or one of its ANCESTORS, never a descendant. Everything on the path before it is the elided span. A resume point the fold's scan cannot reach would empty the context silently, which is why the wrong direction is refused rather than tolerated.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "elide_span"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "anchor_id",
+          "first_kept_id"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `commit_branch` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "drop_context": {
+            "description": "Whether the branch keeps ONLY the selection. true appends an elide resuming at the root-most mark, so the context becomes the system prompt plus the branch; false leaves everything above the attach point in context.",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "ids": {
+            "description": "The marked entry ids, in any order \u2014 tree_surgery puts them into tree order. The longest run that is already an ancestor chain is kept in place; the rest are minted as copies parented under it, so nothing is re-parented and nothing is erased.",
+            "type": "array"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "commit_branch"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "ids",
+          "drop_context"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `paste_subtree` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "description": "The cursor the verb acts at.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "source_id": {
+            "description": "The copied node \u2014 the root of the subtree.",
+            "type": "string"
+          },
+          "target_id": {
+            "description": "The entry the copy hangs from. May not be inside the source's own subtree.",
+            "type": "string"
+          },
+          "type": {
+            "const": "paste_subtree"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "session_id",
+          "cursor_id",
+          "source_id",
+          "target_id"
         ],
         "type": "object"
       }
@@ -5780,13 +8061,13 @@
   },
   "Results": {
     "abort": {
-      "type": "null"
+      "$ref": "#/$defs/AbortResult"
     },
     "answer": {
       "type": "null"
     },
     "answer_request": {
-      "$ref": "#/$defs/RequestAnswered"
+      "$ref": "#/$defs/AnswerRequestResult"
     },
     "attach": {
       "$ref": "#/$defs/Attached"
@@ -5794,14 +8075,20 @@
     "close_cursor": {
       "type": "null"
     },
+    "commit_branch": {
+      "$ref": "#/$defs/CommitBranchResult"
+    },
+    "compact": {
+      "$ref": "#/$defs/CompactResult"
+    },
     "compare": {
       "$ref": "#/$defs/CompareStarted"
     },
+    "complete_message_id": {
+      "$ref": "#/$defs/CompleteMessageIdResult"
+    },
     "complete_path": {
       "$ref": "#/$defs/CompletePathResult"
-    },
-    "create_session": {
-      "$ref": "#/$defs/SessionCreated"
     },
     "describe": {
       "$ref": "#/$defs/Surface"
@@ -5809,20 +8096,68 @@
     "detach": {
       "type": "null"
     },
+    "disable_extension": {
+      "$ref": "#/$defs/DisableExtensionResult"
+    },
+    "elide_span": {
+      "$ref": "#/$defs/ElideSpanResult"
+    },
+    "enable_extension": {
+      "$ref": "#/$defs/EnableExtensionResult"
+    },
     "end_compare": {
       "$ref": "#/$defs/CompareEnded"
     },
     "enumerate_domain": {
-      "$ref": "#/$defs/DomainListing"
+      "$ref": "#/$defs/EnumerateDomainResult"
     },
-    "fork_session": {
-      "$ref": "#/$defs/SessionForked"
+    "fork": {
+      "$ref": "#/$defs/SessionOpened"
+    },
+    "get_commands": {
+      "$ref": "#/$defs/GetCommandsResult"
+    },
+    "get_entry": {
+      "$ref": "#/$defs/GetEntryResult"
+    },
+    "get_extension_config": {
+      "$ref": "#/$defs/GetExtensionConfigResult"
+    },
+    "get_extension_state": {
+      "$ref": "#/$defs/GetExtensionStateResult"
+    },
+    "get_last_assistant_text": {
+      "$ref": "#/$defs/GetLastAssistantTextResult"
+    },
+    "get_messages": {
+      "$ref": "#/$defs/GetMessagesResult"
+    },
+    "get_models": {
+      "$ref": "#/$defs/GetModelsResult"
+    },
+    "get_pending_request": {
+      "$ref": "#/$defs/GetPendingRequestResult"
+    },
+    "get_session_name": {
+      "$ref": "#/$defs/GetSessionNameResult"
+    },
+    "get_session_stats": {
+      "$ref": "#/$defs/GetSessionStatsResult"
+    },
+    "get_state": {
+      "$ref": "#/$defs/GetStateResult"
+    },
+    "get_tools": {
+      "$ref": "#/$defs/GetToolsResult"
     },
     "get_tree": {
-      "$ref": "#/$defs/TreeResult"
+      "$ref": "#/$defs/GetTreeResult"
     },
     "hello": {
       "$ref": "#/$defs/HelloResult"
+    },
+    "list_managed_extensions": {
+      "$ref": "#/$defs/ListManagedExtensionsResult"
     },
     "list_sessions": {
       "$ref": "#/$defs/SessionList"
@@ -5830,23 +8165,47 @@
     "move_cursor": {
       "type": "null"
     },
+    "navigate": {
+      "$ref": "#/$defs/NavigateResult"
+    },
+    "new_session": {
+      "$ref": "#/$defs/SessionOpened"
+    },
     "next_step": {
       "$ref": "#/$defs/NextStepResult"
     },
     "open_cursor": {
       "$ref": "#/$defs/CursorOpened"
     },
-    "perform": {
-      "$ref": "#/$defs/PerformResult"
+    "paste_subtree": {
+      "$ref": "#/$defs/PasteSubtreeResult"
     },
     "perform_ready": {
       "$ref": "#/$defs/DispatchedCommand"
     },
+    "prompt": {
+      "$ref": "#/$defs/PromptResult"
+    },
+    "reload_extension": {
+      "$ref": "#/$defs/ReloadExtensionResult"
+    },
+    "set_auto_compaction": {
+      "$ref": "#/$defs/SetAutoCompactionResult"
+    },
+    "set_extension_config": {
+      "$ref": "#/$defs/SetExtensionConfigResult"
+    },
     "set_model": {
-      "$ref": "#/$defs/ModelSet"
+      "$ref": "#/$defs/SetModelResult"
+    },
+    "set_session_name": {
+      "$ref": "#/$defs/SetSessionNameResult"
     },
     "submit": {
       "$ref": "#/$defs/SubmitResult"
+    },
+    "summarize_and_navigate": {
+      "$ref": "#/$defs/SummarizeAndNavigateResult"
     }
   },
   "ServerFrame": {
@@ -5860,7 +8219,7 @@
     ]
   },
   "description": "The tau serve WebSocket protocol (docs/SERVE-PROTOCOL.md). Request records are closed (`additionalProperties: false`), because the daemon refuses an unknown field. Everything the daemon sends is open: a client must ignore a field it does not know, so a minor version may add one. Each request $def names its answer in `x-result`, and `Results` maps every request `type` to it; `Event`'s `x-data` maps every `kind` to its data.",
-  "title": "tau serve protocol 0.5",
+  "title": "tau serve protocol 0.6",
   "x-default-port": 8256,
-  "x-protocol-version": "0.5"
+  "x-protocol-version": "0.6"
 }

@@ -16,33 +16,30 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, TextIO, cast
 
 from tau_agent_core.conversation_tree import ConversationTree
 from websockets.exceptions import ConnectionClosedError
 
-from tau_agent_core.cursor import TURN_CURSOR, Cursor, TurnFrame
+from tau_agent_core.cursor import TURN_CURSOR, Cursor
 from tau_agent_core.extension_locks import request_at
 from tau_agent_core.extension_types import form_headless_value, validate_form_spec
-from tau_agent_core.flows import Performed, Ready, UnknownFlowError
+from tau_agent_core.flows import Performed, Ready, View
 from tau_agent_core.projections import (
-    attachment_expansion,
-    browse_rows,
     command_vocabulary,
-    domain_listing,
     extension_state,
-    flow_next_step,
     model_catalog,
-    path_completion,
     request_payload,
 )
+from tau_agent_core.capabilities import CAPABILITIES
+from tau_agent_core.rpc import commands as rpc
+from tau_agent_core.rpc import dialect
 from tau_agent_core.rpc.wire_events import WireEventProjector
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.session_log import SessionLog, is_incomplete
-from tau_agent_core.submission import Submission
 
 from tau_coding_agent import __version__
+from tau_coding_agent.store_factory import resolve_backend_name
 from tau_coding_agent.serve import protocol as p
 
 QUEUE_BOUND = 20_000
@@ -58,16 +55,32 @@ SWITCHING = ("fork", "switch_session")
 """Mutations that move a client onto another session; a ``submit`` answers them as ``Ready``.
 
 The daemon cannot move a client, so the client performs them: ``fork`` by
-:class:`~protocol.ForkSession` then ``attach``, ``switch_session`` by ``attach``.
+:class:`~protocol.Fork` then ``attach``, ``switch_session`` by ``attach``.
 """
 
 
 class RequestError(Exception):
     """A request that fails with a protocol :class:`~tau_coding_agent.serve.protocol.Error`."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, data: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.data = data
+
+
+RPC_CODES: dict[int, str] = {
+    dialect.INVALID_PARAMS: "bad_request",
+    dialect.METHOD_NOT_FOUND: "not_found",
+    dialect.INTERNAL_ERROR: "failed",
+    rpc.SUBMISSION_REJECTED: "submission_rejected",
+    rpc.COMMAND_NOT_SUPPORTED: "command_not_supported",
+    rpc.TURN_STILL_RUNNING: "busy",
+    rpc.SESSION_NOT_PERSISTED: "session_not_persisted",
+}
+"""Each code an RPC handler raises, as the serve :class:`~protocol.Error` code that means it."""
+
+ANSWERED = object()
+"""What a dispatch returns when it already pushed its own response, as an admitted ``submit`` does."""
 
 
 def watch_writes(log: SessionLog, listener: Callable[[str, dict[str, Any]], None]) -> None:
@@ -109,6 +122,86 @@ class SessionScope:
 
     catalog: SessionCatalog
     cwd: str
+
+
+@dataclasses.dataclass
+class RpcState:
+    """What RPC keeps per connection and the daemon keeps per cursor: the compaction in flight."""
+
+    compaction_in_flight: str | None = None
+    aborter: Callable[[], None] | None = None
+
+
+class _Outbox:
+    """RPC's output queue, for one request: an answer goes to its client, a notification to the session."""
+
+    def __init__(self, host: SessionHost, client: Client) -> None:
+        self._host = host
+        self._client = client
+
+    def put_nowait(self, frame: dict[str, Any]) -> None:
+        """Send one JSON-RPC frame a handler queued, as the serve frame that means it.
+
+        Raises:
+            TypeError: a frame serve has no form for.
+        """
+        if "result" in frame:
+            result = {k: v for k, v in frame["result"].items() if k != "method"}
+            self._client.push(Daemon._ok(frame["id"], p.json_safe(result)))
+        elif frame.get("method") == rpc.COMPACTION_END_METHOD:
+            self._host.publish("compaction_end", p.json_safe(frame["params"]))
+        else:
+            raise TypeError(f"no serve frame for an RPC frame {frame!r}")
+
+
+class RpcContext:
+    """What RPC's handlers read off an ``RPCHandler``, for one request at one cursor (TAU-SERVE.md §5, 0.6).
+
+    The handler's state, the compaction in flight, belongs to the cursor and
+    outlives the request, so it lives in the host's :class:`RpcState`.
+    """
+
+    output_is_deliverable = True
+
+    def __init__(self, host: SessionHost, client: Client, state: RpcState) -> None:
+        self.session = host.agent_session
+        self.runtime = SessionScope(host.daemon.catalog, host.cwd)
+        self._runtime = self.runtime
+        self._output_queue = _Outbox(host, client)
+        self._host = host
+        self._state = state
+
+    @property
+    def compaction_in_flight(self) -> str | None:
+        """The cursor's running compaction, or ``None``."""
+        return self._state.compaction_in_flight
+
+    @compaction_in_flight.setter
+    def compaction_in_flight(self, compaction_id: str | None) -> None:
+        self._state.compaction_in_flight = compaction_id
+
+    def bind_compaction_aborter(self, cancel: Callable[[], None]) -> None:
+        """``RPCHandler.bind_compaction_aborter``, for this cursor."""
+        self._state.aborter = cancel
+
+    def abort_compaction(self) -> str | None:
+        """``RPCHandler.abort_compaction``, for this cursor."""
+        cancel = self._state.aborter
+        if cancel is None:
+            return None
+        compaction_id = self._state.compaction_in_flight
+        self._state.aborter = None
+        cancel()
+        return compaction_id
+
+    def release_compaction(self) -> None:
+        """``RPCHandler.release_compaction``, for this cursor."""
+        self._state.compaction_in_flight = None
+        self._state.aborter = None
+
+    def track_background_task(self, task: asyncio.Task[Any]) -> None:
+        """Hold ``task`` on the host until it finishes."""
+        self._host.track(task)
 
 
 class Client:
@@ -212,6 +305,13 @@ class SessionHost:
         self._submission_cursor: dict[str, str | None] = {}
         self._requests: dict[str, p.ExtensionRequest | None] = {}
         self.attachment_reports: dict[str, dict[str, Any]] = {}
+        self.rpc_states: collections.defaultdict[str, RpcState] = collections.defaultdict(RpcState)
+        self._tasks: set[asyncio.Task[Any]] = set()
+
+    def track(self, task: asyncio.Task[Any]) -> None:
+        """Hold a background task (a turn, a compaction) until it finishes."""
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def start(self, cwd: str) -> None:
         """Bind the session's cursor, wire every event source, then load extensions."""
@@ -252,10 +352,12 @@ class SessionHost:
         raise RequestError("not_found", f"{self.tag} has no cursor {cursor_id!r}")
 
     def cursor_model(self, cursor: Cursor) -> str:
-        """The model id ``cursor``'s next turn calls."""
-        if cursor.frame is not None and cursor.frame.model is not None:
-            return str(cursor.frame.model.id)
-        return str(self.agent_session.get_model()["id"])
+        """The model id ``cursor``'s next turn calls, read with ``cursor`` bound as the acting one."""
+        token = TURN_CURSOR.set(cursor)
+        try:
+            return str(self.agent_session.get_model()["id"])
+        finally:
+            TURN_CURSOR.reset(token)
 
     def cursor_states(self) -> list[p.CursorState]:
         """Every live cursor, oldest first."""
@@ -503,6 +605,7 @@ class Daemon:
         self._out = out if out is not None else sys.stdout
         self._numbers = 0
         self.cwd = os.getcwd()
+        self.store = resolve_backend_name(config, None)
 
     def log(self, line: str) -> None:
         """One foreground log line, timestamped (docs/TAU-SERVE.md §6.1)."""
@@ -608,22 +711,26 @@ class Daemon:
         return p.to_wire(p.Response(id=request_id, ok=True, result=result))
 
     @staticmethod
-    def _error(request_id: int, code: str, message: str) -> dict[str, Any]:
-        return p.to_wire(
-            p.Response(id=request_id, ok=False, error=p.Error(code=code, message=message))  # type: ignore[arg-type]
-        )
+    def _error(
+        request_id: int, code: str, message: str, data: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        error = p.Error(code=code, message=message, data=p.json_safe(data))  # type: ignore[arg-type]
+        return p.to_wire(p.Response(id=request_id, ok=False, error=error))
 
     async def _serve(self, client: Client, request_id: int, request: Any) -> None:
         try:
             if isinstance(request, p.Attach):
                 await self._attach(client, request_id, request)
                 return
-            result = p.result_to_wire(request, await self._dispatch(client, request))
+            answer = await self._dispatch(client, request_id, request)
             host = self.hosts.get(getattr(request, "session_id", ""))
             if host is not None:
                 host.sync_cursors()
+            if answer is ANSWERED:
+                return
+            result = p.result_to_wire(request, answer)
         except RequestError as exc:
-            client.push(self._error(request_id, exc.code, str(exc)))
+            client.push(self._error(request_id, exc.code, str(exc), exc.data))
         except Exception as exc:
             self.log(f"client {client.id} request {type(request).__name__} failed: {exc!r}")
             client.push(self._error(request_id, "failed", f"{type(exc).__name__}: {exc}"))
@@ -683,22 +790,21 @@ class Daemon:
         await host.start(cwd)
         return host
 
-    async def _dispatch(self, client: Client, request: Any) -> Any:
+    async def _dispatch(self, client: Client, request_id: int, request: Any) -> Any:
         if isinstance(request, p.ListSessions):
             return await self._list_sessions()
-        if isinstance(request, p.CreateSession):
-            return await self._create_session(request)
+        if isinstance(request, p.NewSession):
+            return await self._new_session(request)
         if isinstance(request, p.Hello):
             raise RequestError("bad_request", "already said hello")
         host = await self.load(request.session_id)
         session = host.agent_session
+        if isinstance(request, p.RpcCall):
+            return await self._rpc(client, request_id, host, request)
+        if isinstance(request, p.Fork):
+            return await self._fork(host, request)
         if isinstance(request, p.Detach):
             host.detach(client)
-            return None
-        if isinstance(request, p.Submit):
-            return await self._submit(host, request)
-        if isinstance(request, p.Abort):
-            session.abort(host.cursor(request.cursor_id))
             return None
         if isinstance(request, p.OpenCursor):
             owner = host.cursor(request.owner_id) if request.owner_id else None
@@ -725,24 +831,9 @@ class Daemon:
                 raise RequestError("not_found", str(exc)) from exc
             host.publish_cursors()
             return None
-        if isinstance(request, p.SetModel):
-            return await self._set_model(host, request)
         if isinstance(request, p.Answer):
             host.ui.answer(request.request_id, request.value)
             return None
-        if isinstance(request, p.AnswerRequest):
-            token = TURN_CURSOR.set(host.cursor(request.cursor_id))
-            try:
-                outcome = await session.answer_request(
-                    request.request_id, request.action, request.values
-                )
-            except ValueError as exc:
-                raise RequestError("bad_request", str(exc)) from exc
-            finally:
-                TURN_CURSOR.reset(token)
-            return p.RequestAnswered(handled=outcome.handled, output=outcome.output_text())
-        if isinstance(request, p.Perform):
-            return await self._perform(client, host, request)
         if isinstance(request, p.PerformReady):
             return await self._perform_ready_request(host, request)
         if isinstance(request, p.Describe):
@@ -751,67 +842,59 @@ class Daemon:
             return await self._compare(host, request)
         if isinstance(request, p.EndCompare):
             return await self._end_compare(host, request)
-        if isinstance(request, p.NextStep):
-            try:
-                return p.NextStepResult(
-                    **flow_next_step(request.flow, request.bound, request.leaf, session.vocabulary)
-                )
-            except UnknownFlowError as exc:
-                raise RequestError("not_found", str(exc.args[0])) from exc
-        if isinstance(request, p.EnumerateDomain):
-            if request.domain not in session.vocabulary.domains:
-                raise RequestError("not_found", f"no domain {request.domain!r}")
-            try:
-                listing = domain_listing(
-                    request.domain,
-                    session=session,
-                    runtime=SessionScope(self.catalog, host.cwd),
-                    scope=request.scope,
-                    leaf=request.leaf,
-                    query=request.query,
-                    limit=request.limit,
-                )
-                return p.DomainListing(
-                    domain=listing["domain"],
-                    values=[p.DomainChoice(**v) for v in listing["values"]],
-                    total=listing["total"],
-                )
-            except KeyError as exc:
-                raise RequestError("not_found", str(exc.args[0])) from exc
-            except ValueError as exc:
-                raise RequestError("bad_request", str(exc)) from exc
-        if isinstance(request, p.CompletePath):
-            found = path_completion(request.text, request.offset, Path(host.cwd))["completion"]
-            if found is None:
-                return p.CompletePathResult(None)
-            matches = [p.PathMatch(**m) for m in found.pop("matches")]
-            return p.CompletePathResult(p.AttachmentCompletion(matches=matches, **found))
-        if isinstance(request, p.GetTree):
-            cursor = host.cursor(request.cursor_id)
-            nodes = [p.TreeRow(**row) for row in browse_rows(cursor.tree())]
-            return p.TreeResult(nodes=nodes, leaf=cursor.leaf, count=len(nodes))
-        if isinstance(request, p.ForkSession):
-            return self._fork_session(host, request.at)
         raise RequestError("bad_request", f"unhandled request {type(request).__name__}")
+
+    async def _rpc(
+        self, client: Client, request_id: int, host: SessionHost, call: p.RpcCall
+    ) -> Any:
+        """Answer an RPC verb at its cursor: ``submit`` and ``prompt`` here, the rest by RPC's handler.
+
+        A handler that queued its own answer (``compact``) returns ``None``, and so
+        does this, as :data:`ANSWERED`.
+
+        Raises:
+            RequestError: the handler refused, under the code that means its RPC code.
+        """
+        cursor = host.cursor(call.cursor_id)
+        if call.verb in p.RPC_OWN:
+            return await self._submit(client, request_id, host, cursor, call)
+        capability = CAPABILITIES.get(call.verb)
+        if capability is not None and capability.kind == "mutation":
+            self.log(f"{host.tag} client {client.id} {call.verb} at cursor {cursor.id}")
+        handler = rpc.COMMAND_TABLE[call.verb].handler
+        if handler is None:
+            raise RequestError("not_found", f"RPC declines {call.verb!r}")
+        context = RpcContext(host, client, host.rpc_states[cursor.id])
+        token = TURN_CURSOR.set(cursor)
+        try:
+            result = await handler(cast(Any, context), request_id, dict(call.params))
+        except rpc.RPCError as exc:
+            raise RequestError(RPC_CODES[exc.code], exc.message, exc.data) from exc
+        finally:
+            TURN_CURSOR.reset(token)
+        return ANSWERED if result is None else result
 
     async def _list_sessions(self) -> p.SessionList:
         infos = await asyncio.to_thread(self.catalog.list, None)
         rows = [
-            p.SessionRow(
-                id=info.id,
-                cwd=info.cwd,
-                name=info.name,
-                modified=info.modified.isoformat(),
-                message_count=info.message_count,
-                first_message=info.first_message,
-                loaded=info.id in self.hosts,
-            )
+            p.SessionRow(**rpc.listed_session(info), cwd=info.cwd, loaded=info.id in self.hosts)
             for info in infos
-            if info.error is None
         ]
-        return p.SessionList(rows)
+        return p.SessionList(sessions=rows, scope=p.SessionScope(store=self.store, cwd=None))
 
-    async def _create_session(self, request: p.CreateSession) -> p.SessionCreated:
+    def _opened(self, host: SessionHost) -> p.SessionOpened:
+        """RPC's lifecycle answer for a session the daemon now holds."""
+        head = host.agent_session.cursor
+        session = p.SessionTuple(
+            store=self.store,
+            session_id=host.session_id,
+            cursor_id=head.id,
+            leaf=head.leaf,
+            addressable=True,
+        )
+        return p.SessionOpened(cancelled=False, session=session, leaf=head.leaf)
+
+    async def _new_session(self, request: p.NewSession) -> p.SessionOpened:
         from tau_coding_agent.backends import create_backend
         from tau_coding_agent.cli import CLIArgs
         from tau_coding_agent.headless import resolve_model_config
@@ -832,42 +915,76 @@ class Daemon:
             name=request.name,
         )
         self.log(f"session {log.id[:8]} created in {cwd}")
-        return p.SessionCreated(log.id)
+        return self._opened(await self.load(log.id))
 
-    async def _submit(self, host: SessionHost, request: p.Submit) -> p.SubmitResult:
-        cursor = host.cursor(request.cursor_id)
-        text, images = request.text, request.images
-        submission_id = request.submission_id or uuid.uuid4().hex
-        if request.expand_attachments:
-            text, images, report = attachment_expansion(text, images, Path(host.cwd))
-            host.attachment_reports[submission_id] = report
-        submission = Submission(
-            text=text,
-            images=images,
-            source="interactive",
-            submitter="human",
-            submission_id=submission_id,
-            multitask_strategy=request.multitask_strategy,
-            expand_commands=request.expand_commands,
-            allow_user_input=True,
-        )
-        try:
-            result = await host.agent_session.submit(submission, cursor=cursor)
-        finally:
-            host.attachment_reports.pop(submission_id, None)
-        command = result.command
+    async def _submit(
+        self, client: Client, request_id: int, host: SessionHost, cursor: Cursor, call: p.RpcCall
+    ) -> Any:
+        """``submit`` or ``prompt`` at ``cursor``: RPC's params and answer, with ``dispatched``.
+
+        Answered at admission, pushed from the admission callback itself so it
+        precedes the turn's first event (``rpc.commands._submit_and_acknowledge``
+        measures why). A submission resolved without a turn is answered when it
+        resolves; a ready flow is performed here first, unless it is
+        :data:`SWITCHING`.
+
+        Raises:
+            RequestError: ``submission_rejected``, with RPC's data.
+        """
+        session = host.agent_session
+        sub, attachments = rpc.submission_from_params(call.params, host.cwd)
+        if attachments is not None:
+            host.attachment_reports[sub.submission_id] = attachments
+        admitted: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+
+        def on_admitted() -> None:
+            if admitted.done():
+                return
+            accepted = rpc.accept_result(sub.submission_id, attachments=attachments)
+            answer = {**accepted, "admitted": True, "dispatched": None}
+            client.push(self._ok(request_id, p.json_safe(answer)))
+            admitted.set_result(None)
+
+        async def drive() -> None:
+            try:
+                result = await session.submit(sub, cursor=cursor, on_admitted=on_admitted)
+            except Exception as exc:
+                if not admitted.done():
+                    admitted.set_exception(exc)
+                else:
+                    self.log(f"{host.tag} submission {sub.submission_id[:8]} failed: {exc!r}")
+                return
+            finally:
+                host.attachment_reports.pop(sub.submission_id, None)
+            if not admitted.done():
+                admitted.set_result(result)
+
+        host.track(asyncio.create_task(drive()))
+        outcome = await admitted
+        if outcome is None:
+            return ANSWERED
+        if not outcome.accepted:
+            raise RequestError(
+                "submission_rejected",
+                outcome.rejection_reason or "submission rejected",
+                rpc.rejection_data(outcome),
+            )
+        command = outcome.command
         if isinstance(command, Ready) and command.mutation not in SWITCHING:
             token = TURN_CURSOR.set(cursor)
             try:
                 command = await self._perform_ready(host, cursor, command)
             finally:
                 TURN_CURSOR.reset(token)
-        return p.SubmitResult(
-            accepted=result.accepted,
-            submission_id=result.submission_id,
-            reason=result.rejection_reason,
-            command=p.command_to_wire(command),
+        performed = command if isinstance(command, Performed) else None
+        result = rpc.accept_result(
+            sub.submission_id,
+            command=performed,
+            command_name=performed.mutation if performed is not None else None,
+            view=command if isinstance(command, View) else None,
+            attachments=attachments,
         )
+        return {**result, "admitted": False, "dispatched": p.command_to_wire(command)}
 
     async def _perform_ready_request(self, host: SessionHost, request: p.PerformReady) -> Any:
         """Perform a client's ``Ready`` at its cursor; a :data:`SWITCHING` one comes back as is.
@@ -901,18 +1018,6 @@ class Daemon:
         Raises:
             RequestError: a mutation the backend lacks, or one that answers no ``Performed``.
         """
-        if ready.mutation == "set_model" and cursor is not host.agent_session.cursor:
-            answer = await self._set_model(
-                host,
-                p.SetModel(
-                    session_id=host.session_id, cursor_id=cursor.id, model=ready.arguments["name"]
-                ),
-            )
-            return Performed(
-                flow=ready.flow,
-                mutation="set_model",
-                data={"model": {"id": answer.model, "name": ready.arguments["name"]}},
-            )
         if ready.mutation == "compare":
             return await self._start_compare(
                 host, list(ready.arguments["models"]), str(ready.arguments["text"]), None
@@ -939,59 +1044,14 @@ class Daemon:
             )
         return result
 
-    async def _set_model(self, host: SessionHost, request: p.SetModel) -> p.ModelSet:
-        cursor = host.cursor(request.cursor_id)
-        session = host.agent_session
-        if cursor is session.cursor:
-            await host.backend.set_model(request.model)
-        else:
-            resolver = session.model_resolver
-            if resolver is None:
-                raise RequestError("failed", "the session has no model resolver")
-            tools = tuple(t.name for t in session.tools)
-            frame = cursor.frame
-            cursor.frame = TurnFrame(
-                tools=frame.tools if frame is not None else tools,
-                model=resolver(request.model),
-                system_prompt=frame.system_prompt if frame is not None else None,
-                max_turns=frame.max_turns if frame is not None else None,
-                hooks=frame.hooks if frame is not None else True,
-            )
-        host.publish_cursors()
-        return p.ModelSet(host.cursor_model(cursor))
-
-    async def _perform(self, client: Client, host: SessionHost, request: p.Perform) -> Any:
-        """Run a :data:`~protocol.PERFORMABLE` backend operation for a client, at its cursor.
-
-        The backend acts on ``AgentSession.acting_cursor``, which is
-        :data:`~tau_agent_core.cursor.TURN_CURSOR` while it is set.
-        """
-        if request.method not in p.PERFORMABLE:
-            raise RequestError("bad_request", f"{request.method!r} is not performable")
-        method = getattr(host.backend, request.method, None)
-        if method is None:
-            raise RequestError("not_found", f"the session backend has no {request.method!r}")
-        cursor = host.cursor(request.cursor_id)
-        self.log(f"{host.tag} client {client.id} performs {request.method} at cursor {cursor.id}")
-        token = TURN_CURSOR.set(cursor)
-        try:
-            result = method(**request.arguments)
-            if asyncio.iscoroutine(result):
-                result = await result
-        except (ValueError, KeyError, TypeError) as exc:
-            raise RequestError("bad_request", f"{request.method}: {exc}") from exc
-        finally:
-            TURN_CURSOR.reset(token)
-        host.sync_cursors()
-        return p.perform_answer(result)
-
-    def _fork_session(self, host: SessionHost, at: str | None) -> p.SessionForked:
-        """Copy ``host``'s session, whole or up to ``at``, into a new one in its cwd.
+    async def _fork(self, host: SessionHost, request: p.Fork) -> p.SessionOpened:
+        """Copy the path to ``request.at``, or to the cursor's leaf, into a new session in its cwd.
 
         Raises:
             RequestError: ``at`` names no entry, or the copy would carry an entry a
                 turn is still writing.
         """
+        at = request.at if request.at is not None else host.cursor(request.cursor_id).leaf
         entries = host.log.entries()
         if at is not None and not any(e["id"] == at for e in entries):
             raise RequestError("not_found", f"{host.tag} has no entry {at!r}")
@@ -1003,7 +1063,7 @@ class Daemon:
             )
         forked = self.catalog.fork(host.log, host.cwd, at=at)
         self.log(f"{host.tag} forked into session {forked.id[:8]}" + (f" at {at}" if at else ""))
-        return p.SessionForked(forked.id)
+        return self._opened(await self.load(forked.id))
 
     async def _compare(self, host: SessionHost, request: p.Compare) -> p.CompareStarted:
         performed = await self._start_compare(host, request.models, request.text, request.leaf)

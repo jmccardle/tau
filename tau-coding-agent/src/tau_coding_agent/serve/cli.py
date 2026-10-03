@@ -395,7 +395,7 @@ async def tail(address: Address, session: str | None) -> int:
             if not rows:
                 print("tau serve --tail: the daemon has no sessions", file=sys.stderr)
                 return 1
-            session = rows[0]["id"]
+            session = rows[0]["session_id"]
         replica = await client.attach(session)
         print(
             f"attached to {replica.session_id[:8]} in {replica.cwd}: "

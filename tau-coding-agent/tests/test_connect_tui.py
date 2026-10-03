@@ -134,10 +134,10 @@ async def test_a_second_client_sees_the_tui_turn_and_the_tui_resumes_any_session
     other = await ServeClient.connect(address, client="other")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    created = await other.request(p.CreateSession(cwd=str(elsewhere), name="from-other"))
+    created = (await other.request(p.NewSession(cwd=str(elsewhere), name="from-other")))["session"]
     replica = await other.attach(created["session_id"])
-    await other.request(
-        p.Submit(session_id=replica.session_id, cursor_id=replica.head_cursor_id, text="first")
+    await other.submit_and_wait(
+        replica.session_id, replica.head_cursor_id, "first", source="rpc", submitter="test"
     )
 
     remote = RemoteConnection(address, cwd=str(tmp_path))
@@ -281,7 +281,7 @@ async def test_a_streamed_turn_under_connect_renders_as_the_daemons_own_bus_does
     served, address = daemon
     (tmp_path / "notes.txt").write_text("notes\n")
     other = await ServeClient.connect(address, client="other")
-    created = await other.request(p.CreateSession(cwd=str(tmp_path)))
+    created = (await other.request(p.NewSession(cwd=str(tmp_path))))["session"]
     session_id = created["session_id"]
     await other.attach(session_id)
     local: list[dict[str, Any]] = []

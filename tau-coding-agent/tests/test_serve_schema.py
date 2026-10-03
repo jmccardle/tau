@@ -31,6 +31,8 @@ from tau_coding_agent.serve import protocol as p
 SCHEMA = p.json_schema()
 
 _GATE = """
+CONFIG_SCHEMA = {"title": "Gate", "fields": [{"name": "voice", "kind": "text"}]}
+
 ASK = {
     "title": "Voice",
     "text": "Pick one before continuing.",
@@ -110,6 +112,30 @@ class Recorder:
         assert response["ok"], response["error"]
         return response["result"]
 
+    async def rpc(self, verb: str, session_id: str, cursor_id: str, **params: Any) -> Any:
+        """An RPC verb at a cursor; its result."""
+        return await self.request(p.RpcCall(verb, session_id, cursor_id, params))
+
+    async def submit(
+        self, session_id: str, cursor_id: str, text: str, verb: str = "submit", **params: Any
+    ) -> Any:
+        """``submit`` (or ``prompt``) with provenance; waits for the turn it admitted to end."""
+        self._ids_submitted = getattr(self, "_ids_submitted", 0) + 1
+        submission_id = f"sub-{self._ids_submitted}"
+        fields = {"text": text, "submission_id": submission_id, **params}
+        if verb == "submit":
+            fields = {"source": "rpc", "submitter": "schema", **fields}
+        answer = await self.rpc(verb, session_id, cursor_id, **fields)
+        if answer["admitted"]:
+            await _until(
+                lambda: any(
+                    s["submission"]["submission_id"] == submission_id
+                    for s in self.channel("submission_end")
+                ),
+                timeout=10,
+            )
+        return answer
+
     async def refused(self, message: Any) -> str:
         """Send a request the daemon must refuse, and return the error code."""
         response = await self.frame(p.to_wire(message))
@@ -130,7 +156,11 @@ class Recorder:
         await asyncio.gather(self._reader, return_exceptions=True)
 
     def check(self) -> set[str]:
-        """Validate every frame both ways; return the result and event types covered."""
+        """Validate every frame both ways; return the result and event types covered.
+
+        An answer from RPC's own handler is checked against RPC's result schema
+        without ``strict``: those schemas describe a message by some of its fields.
+        """
         covered = set()
         for frame in self.sent:
             validate(frame, SCHEMA["ClientFrame"], SCHEMA)
@@ -140,7 +170,8 @@ class Recorder:
                 covered.add(f"event:{frame['kind']}")
         for kind, response in self.answers:
             if response["ok"]:
-                validate(response["result"], SCHEMA["Results"][kind], SCHEMA, strict=True)
+                strict = kind not in p.RPC_RUN
+                validate(response["result"], SCHEMA["Results"][kind], SCHEMA, strict=strict)
                 covered.add(f"result:{kind}")
         return covered
 
@@ -154,6 +185,7 @@ async def daemon(tmp_path, monkeypatch):
     with (
         patch("tau_agent_core.agent_loop.stream_simple", side_effect=_fake_stream),
         patch("tau_agent_core.compaction.complete_simple", side_effect=_summary),
+        patch("tau_llm.client.complete_simple", side_effect=_summary),
     ):
         server, served = await _serve(tmp_path, _CONFIG)
         yield served
@@ -167,94 +199,97 @@ async def test_every_frame_a_session_produces_validates_against_the_schema(daemo
     project.mkdir()
     (project / "notes.txt").write_text("THE NOTES BODY\n")
     client = await Recorder.open(daemon.address)
-    assert await client.request(p.ListSessions()) == {"sessions": []}
-    session_id = (await client.request(p.CreateSession(cwd=str(project))))["session_id"]
-    attached = await client.request(p.Attach(session_id=session_id))
+    assert (await client.request(p.ListSessions()))["sessions"] == []
+    sid = (await client.request(p.NewSession(cwd=str(project))))["session"]["session_id"]
+    attached = await client.request(p.Attach(session_id=sid))
     head = attached["head_cursor_id"]
-    host = daemon.daemon.hosts[session_id]
+    host = daemon.daemon.hosts[sid]
 
-    await client.request(p.Submit(session_id=session_id, cursor_id=head, text="hello"))
-    await client.request(
-        p.Submit(
-            session_id=session_id,
-            cursor_id=head,
-            text="read @notes.txt and @missing.txt",
-            expand_attachments=True,
-        )
-    )
+    await client.submit(sid, head, "hello")
+    await client.submit(sid, head, "again", verb="prompt")
+    await client.submit(sid, head, "read @notes.txt and @missing.txt", expand_attachments=True)
     for command in ("/model", "/tree", "/name named", "/fork", "/note"):
-        await client.request(p.Submit(session_id=session_id, cursor_id=head, text=command))
+        await client.submit(sid, head, command, expand_commands=True)
 
-    step = await client.request(p.NextStep(session_id=session_id, flow="model"))
-    await client.request(p.EnumerateDomain(session_id=session_id, domain="model_name"))
-    ready = (
-        await client.request(
-            p.NextStep(session_id=session_id, flow="model", bound={"name": "other"})
-        )
-    )["ready"]
+    step = await client.rpc("next_step", sid, head, flow="model")
+    await client.rpc("enumerate_domain", sid, head, domain="model_name")
+    ready = (await client.rpc("next_step", sid, head, flow="model", bound={"name": "other"}))[
+        "ready"
+    ]
     assert step["status"] == "step"
     performed = await client.request(
-        p.PerformReady(session_id=session_id, cursor_id=head, ready=p.Ready(**ready))
+        p.PerformReady(session_id=sid, cursor_id=head, ready=p.Ready(**ready))
     )
     assert performed["arm"] == "Performed" and performed["mutation"] == "set_model"
     await _until(lambda: host.cursor_states()[0].model == "other-model")
 
-    side = (await client.request(p.OpenCursor(session_id=session_id, leaf=None, label="s")))[
-        "cursor_id"
-    ]
-    await client.request(p.SetModel(session_id=session_id, cursor_id=side, model="fake"))
-    await client.request(p.MoveCursor(session_id=session_id, cursor_id=side, leaf=None))
-    await client.request(p.Abort(session_id=session_id, cursor_id=side))
-    await client.request(p.CloseCursor(session_id=session_id, cursor_id=side))
-    await client.request(p.Describe(session_id=session_id))
-    await client.request(p.CompletePath(session_id=session_id, text="@no", offset=3))
-    await client.request(p.CompletePath(session_id=session_id, text="plain", offset=5))
-    tree = await client.request(p.GetTree(session_id=session_id, cursor_id=head))
-    kinds = set()
-    user = next(n["entry_id"] for n in tree["nodes"] if n["role"] == "user")
-    for method, arguments in (
-        ("set_session_name", {"name": "renamed"}),
-        ("list_managed_extensions", {}),
-        ("run_extension_command", {"name": "no-such-command"}),
-        ("rollback_turn", {"text": "again"}),
-        ("navigate_tree", {"target_id": user}),
-        ("compact", {"custom_instructions": "short"}),
+    side = (await client.request(p.OpenCursor(session_id=sid, leaf=None, label="s")))["cursor_id"]
+    await client.rpc("set_model", sid, side, name="fake")
+    await client.request(p.MoveCursor(session_id=sid, cursor_id=side, leaf=None))
+    await client.rpc("abort", sid, side)
+    await client.request(p.CloseCursor(session_id=sid, cursor_id=side))
+    await client.request(p.Describe(session_id=sid))
+    for verb in (
+        "get_state",
+        "get_messages",
+        "get_commands",
+        "get_tools",
+        "get_models",
+        "get_session_name",
+        "get_session_stats",
+        "get_last_assistant_text",
+        "get_pending_request",
+        "list_managed_extensions",
+        "get_extension_state",
     ):
-        answer = await client.request(
-            p.Perform(session_id=session_id, cursor_id=head, method=method, arguments=arguments)
-        )
-        kinds.add(answer["kind"])
-    assert kinds == {
-        "Performed",
-        "value",
-        "ExtensionCommandResult",
-        "SubmissionResult",
-        "CompactionResult",
-    }
-    await client.request(p.ForkSession(session_id=session_id, at=None))
-
-    compare = await client.request(
-        p.Compare(session_id=session_id, models=["fake", "other"], text="both")
+        await client.rpc(verb, sid, head)
+    await client.rpc("complete_path", sid, head, text="@no", offset=3)
+    await client.rpc("complete_path", sid, head, text="plain", offset=5)
+    await client.rpc("complete_message_id", sid, head, query="")
+    tree = await client.rpc("get_tree", sid, head)
+    path = [n["entry_id"] for n in tree["nodes"] if n["role"] in ("user", "assistant")]
+    user = next(n["entry_id"] for n in tree["nodes"] if n["role"] == "user")
+    await client.rpc("get_entry", sid, head, entry_id=user)
+    gate = next(path for path, _ in host.agent_session.list_managed_extensions())
+    await client.rpc("get_extension_config", sid, head, path=gate)
+    await client.rpc("set_extension_config", sid, head, path=gate, values={"voice": "alto"})
+    await client.rpc("disable_extension", sid, head, path=gate)
+    await client.rpc("enable_extension", sid, head, path=gate)
+    await client.rpc("reload_extension", sid, head, path=gate)
+    await client.rpc("set_session_name", sid, head, name="renamed")
+    await client.rpc("set_auto_compaction", sid, head, enabled=True)
+    await client.rpc("paste_subtree", sid, head, source_id=path[1], target_id=path[0])
+    await client.rpc("commit_branch", sid, head, ids=[path[0]], drop_context=False)
+    await client.rpc("navigate", sid, head, target_id=path[-1])
+    await client.rpc("elide_span", sid, head, anchor_id=path[-1], first_kept_id=path[-2])
+    await client.rpc("summarize_and_navigate", sid, head, target_id=user)
+    await client.submit(sid, head, "again", multitask_strategy="rollback")
+    compacting = await client.rpc("compact", sid, head, custom_instructions="short")
+    await _until(lambda: bool(client.events("compaction_end")))
+    assert (
+        client.events("compaction_end")[0]["data"]["compaction_id"] == (compacting["compaction_id"])
     )
+    await client.request(p.Fork(session_id=sid, cursor_id=head))
+
+    compare = await client.request(p.Compare(session_id=sid, models=["fake", "other"], text="both"))
     await _until(lambda: not any(c.busy for c in host.cursor_states()))
     await client.request(
         p.EndCompare(
-            session_id=session_id,
+            session_id=sid,
             comparison_id=compare["comparison_id"],
             keep=compare["cursors"][0]["cursor_id"],
         )
     )
-    await client.request(p.Submit(session_id=session_id, cursor_id=head, text="/arm"))
+    await client.submit(sid, head, "/arm", expand_commands=True)
     locked = host.cursor_states()[0].request
     assert locked is not None and locked.lock
-    await client.request(
-        p.AnswerRequest(
-            session_id=session_id,
-            cursor_id=head,
-            request_id=locked.entry_id,
-            action="Use it",
-            values={"voice": "alto"},
-        )
+    await client.rpc(
+        "answer_request",
+        sid,
+        head,
+        request_id=locked.entry_id,
+        action="Use it",
+        values={"voice": "alto"},
     )
     asking = asyncio.create_task(
         host.ui.form({"title": "t", "fields": [{"name": "n", "kind": "text"}]})
@@ -262,7 +297,7 @@ async def test_every_frame_a_session_produces_validates_against_the_schema(daemo
     await _until(lambda: bool(client.events("request")))
     await client.request(
         p.Answer(
-            session_id=session_id,
+            session_id=sid,
             request_id=client.events("request")[0]["data"]["request_id"],
             value={"n": "x"},
         )
@@ -271,11 +306,12 @@ async def test_every_frame_a_session_produces_validates_against_the_schema(daemo
     host.ui.notify("hi")
     host.ui.set_status("k", "text")
     host.ui.panel("k", {"title": "P", "body": {"kind": "list", "items": ["a"]}, "actions": []})
-    await client.request(p.Detach(session_id=session_id))
+    await client.request(p.Detach(session_id=sid))
     await client.close()
 
     covered = client.check()
     answered = {f"result:{p._type_tag(cls)}" for cls in p.REQUESTS}
+    answered |= {f"result:{verb}" for verb in p.RPC_VERBS}
     events = {f"event:{kind}" for kind in p.EVENT_KINDS}
     assert answered | events <= covered, sorted((answered | events) - covered)
     names = {e["data"]["name"] for e in client.events("channel")}
@@ -297,18 +333,13 @@ async def test_expanded_attachments_reach_the_model_and_the_report_rides_on_subm
     project.mkdir()
     (project / "notes.txt").write_text("THE NOTES BODY\n")
     client = await Recorder.open(daemon.address)
-    session_id = (await client.request(p.CreateSession(cwd=str(project))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(project))))["session"]["session_id"]
     head = (await client.request(p.Attach(session_id=session_id)))["head_cursor_id"]
 
-    await client.request(
-        p.Submit(
-            session_id=session_id,
-            cursor_id=head,
-            text="read @notes.txt and @missing.txt",
-            expand_attachments=True,
-        )
+    await client.submit(
+        session_id, head, "read @notes.txt and @missing.txt", expand_attachments=True
     )
-    await client.request(p.Submit(session_id=session_id, cursor_id=head, text="plain"))
+    await client.submit(session_id, head, "plain")
 
     expanded, plain = client.channel("submission_start")
     assert expanded["attachments"] == {
@@ -330,23 +361,22 @@ async def test_expanded_attachments_reach_the_model_and_the_report_rides_on_subm
 
 async def test_a_lock_shows_on_the_cursor_and_clears_when_answered(daemon, tmp_path):
     client = await Recorder.open(daemon.address)
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     head = (await client.request(p.Attach(session_id=session_id)))["head_cursor_id"]
 
-    await client.request(p.Submit(session_id=session_id, cursor_id=head, text="/arm"))
+    await client.submit(session_id, head, "/arm", expand_commands=True)
 
     states = client.events("cursors")[-1]["data"]["cursors"]
     request = next(s for s in states if s["cursor_id"] == head)["request"]
     assert request["lock"] is True and request["label"] == "Extension gate requires a response"
     assert request["ask"]["actions"] == [{"label": "Use it", "command": "gate-release"}]
-    answered = await client.request(
-        p.AnswerRequest(
-            session_id=session_id,
-            cursor_id=head,
-            request_id=request["entry_id"],
-            action="Use it",
-            values={"voice": "alto"},
-        )
+    answered = await client.rpc(
+        "answer_request",
+        session_id,
+        head,
+        request_id=request["entry_id"],
+        action="Use it",
+        values={"voice": "alto"},
     )
     assert answered["handled"] is True
     states = client.events("cursors")[-1]["data"]["cursors"]
@@ -357,7 +387,7 @@ async def test_a_lock_shows_on_the_cursor_and_clears_when_answered(daemon, tmp_p
 
 async def test_a_client_attaching_while_a_form_is_open_sees_it_and_can_answer_it(daemon, tmp_path):
     first = await Recorder.open(daemon.address)
-    session_id = (await first.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await first.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     await first.request(p.Attach(session_id=session_id))
     host = daemon.daemon.hosts[session_id]
     spec = {"title": "pick", "fields": [{"name": "n", "kind": "text", "default": "d"}]}
@@ -382,9 +412,9 @@ async def test_a_client_attaching_while_a_form_is_open_sees_it_and_can_answer_it
 
 async def test_perform_ready_checks_the_mutation_and_hands_a_fork_back(daemon, tmp_path):
     client = await Recorder.open(daemon.address)
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     head = (await client.request(p.Attach(session_id=session_id)))["head_cursor_id"]
-    await client.request(p.Submit(session_id=session_id, cursor_id=head, text="hi"))
+    await client.submit(session_id, head, "hi")
 
     fork = p.Ready(flow="fork", mutation="fork", arguments={})
     answer = await client.request(p.PerformReady(session_id=session_id, cursor_id=head, ready=fork))
@@ -429,8 +459,14 @@ async def test_the_hello_names_the_daemon(daemon):
             "session_id": "s",
             "cursor_id": "c",
             "text": "t",
+            "source": "rpc",
+            "submitter": "x",
+            "submission_id": "i",
             "expand_attachment": True,
         },
+        {"type": "submit", "session_id": "s", "cursor_id": "c", "text": "t"},
+        {"type": "get_state", "session_id": "s"},
+        {"type": "set_model", "session_id": "s", "cursor_id": "c", "model": "m"},
         {"type": "hello", "protocol": "0", "client": "x", "extra": 1},
         {"type": "perform_ready", "session_id": "s", "cursor_id": "c", "ready": {"flow": "f"}},
         {
@@ -457,8 +493,14 @@ def test_the_schema_and_parse_request_refuse_the_same_bad_frames(frame):
             "session_id": "s",
             "cursor_id": "c",
             "text": "t",
+            "source": "rpc",
+            "submitter": "x",
+            "submission_id": "i",
             "expand_attachments": True,
         },
+        {"type": "prompt", "session_id": "s", "cursor_id": "c", "text": "t"},
+        {"type": "get_state", "session_id": "s", "cursor_id": "c"},
+        {"type": "set_model", "session_id": "s", "cursor_id": "c", "name": "m"},
         {
             "type": "perform_ready",
             "session_id": "s",
@@ -507,7 +549,10 @@ def test_every_request_names_its_result_and_every_kind_its_data():
         tag = p._type_tag(cls)
         assert defs[cls.__name__]["x-result"] == SCHEMA["Results"][tag]
         assert defs[cls.__name__]["additionalProperties"] is False
-    assert set(SCHEMA["Results"]) == {p._type_tag(cls) for cls in p.REQUESTS}
+    for verb in p.RPC_VERBS:
+        assert defs[p._camel(verb)]["x-result"] == SCHEMA["Results"][verb]
+        assert defs[p._camel(verb)]["additionalProperties"] is False
+    assert set(SCHEMA["Results"]) == {p._type_tag(cls) for cls in p.REQUESTS} | set(p.RPC_VERBS)
     assert set(p.RESULTS) == set(p.REQUESTS)
     assert list(defs["Event"]["x-data"]) == list(p.EVENT_KINDS)
     assert set(p.EVENT_KINDS) == set(get_args(get_type_hints(p.Event)["kind"]))
@@ -618,10 +663,10 @@ def _chunked(chunks: int):
 
 async def _long_reply(daemon: Any, tmp_path: Path, chunks: int) -> tuple[Recorder, Any]:
     client = await Recorder.open(daemon.address)
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     head = (await client.request(p.Attach(session_id=session_id)))["head_cursor_id"]
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_chunked(chunks)):
-        await client.request(p.Submit(session_id=session_id, cursor_id=head, text="go"))
+        await client.submit(session_id, head, "go")
         await _until(lambda: bool(client.channel("submission_end")), timeout=30)
     await client.close()
     return client, daemon.daemon.hosts[session_id]

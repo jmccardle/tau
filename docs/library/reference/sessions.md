@@ -582,7 +582,8 @@ A small, stable projection of the loop's ``Model`` (pi returns the whole
 ``Model``; τ exposes only the three fields an extension needs to route,
 price, or gauge a context window — keeping the extension API decoupled from
 the full model schema). Read at call time, so it reflects a prior
-:meth:`set_model`.
+:meth:`set_model`. It is the acting cursor's model: its frame's, else the
+session's.
 
 ### get_qualified_commands
 
@@ -1185,7 +1186,11 @@ set_model(name: str) -> dict[str, Any]
 
 `tau_agent_core.agent_session.AgentSession.set_model`
 
-Switch the active model by NAME, effective on the NEXT turn (S45).
+Switch the acting cursor's model by NAME, effective on its NEXT turn (S45).
+
+At the head cursor this is the session's model. At any other cursor it is
+that cursor's :class:`~tau_agent_core.cursor.TurnFrame` model; a cursor with
+no frame gets one that changes nothing else (every tool, hooks on).
 
 Mirrors pi's ``setModel`` (agent-session.ts:1444), adapted to τ: pi takes a
 resolved ``Model`` object; τ takes a config model NAME and resolves it

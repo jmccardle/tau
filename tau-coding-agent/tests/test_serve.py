@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from websockets.asyncio.server import serve as ws_serve
 
+from tau_agent_core.cursor import TURN_CURSOR
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, TextContent, Usage
 
@@ -130,13 +131,14 @@ async def test_a_turn_reaches_the_file_and_every_client_replica(served, tmp_path
     seen: list[dict[str, Any]] = []
     one = await served.client(on_event=seen.append)
     two = await served.client()
-    created = await one.request(p.CreateSession(cwd=str(tmp_path)))
+    created = (await one.request(p.NewSession(cwd=str(tmp_path))))["session"]
     session_id = created["session_id"]
+    assert created["cursor_id"] and created["store"] == "file"
     replica_one = await one.attach(session_id)
     replica_two = await two.attach(session_id)
 
-    result = await one.request(
-        p.Submit(session_id=session_id, cursor_id=replica_one.head_cursor_id, text="hello")
+    result = await one.submit_and_wait(
+        session_id, replica_one.head_cursor_id, "hello", source="rpc", submitter="test"
     )
 
     assert result["accepted"] is True
@@ -161,24 +163,27 @@ async def test_listing_spans_every_cwd(served, tmp_path):
     (tmp_path / "b").mkdir()
     client = await served.client()
     for cwd in ("a", "b"):
-        await client.request(p.CreateSession(cwd=str(tmp_path / cwd), name=cwd))
-    rows = (await client.request(p.ListSessions()))["sessions"]
+        await client.request(p.NewSession(cwd=str(tmp_path / cwd), name=cwd))
+    listing = await client.request(p.ListSessions())
+    rows = listing["sessions"]
     assert {row["cwd"] for row in rows} == {str(tmp_path / "a"), str(tmp_path / "b")}
+    assert {row["title"] for row in rows} == {"a", "b"}
+    assert listing["scope"] == {"store": "file", "cwd": None}
     with pytest.raises(ServeError, match="not_found"):
-        await client.request(p.CreateSession(cwd=str(tmp_path / "missing")))
+        await client.request(p.NewSession(cwd=str(tmp_path / "missing")))
     await client.close()
 
 
 async def test_a_reconnect_replays_what_it_missed(served, tmp_path):
     first = await served.client()
-    session_id = (await first.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await first.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     held = await first.attach(session_id)
     await first.close()
 
     driver = await served.client()
     replica = await driver.attach(session_id)
-    await driver.request(
-        p.Submit(session_id=session_id, cursor_id=replica.head_cursor_id, text="x")
+    await driver.submit_and_wait(
+        session_id, replica.head_cursor_id, "x", source="rpc", submitter="test"
     )
 
     again = await served.client()
@@ -206,17 +211,17 @@ async def test_a_token_is_required_only_when_configured(tmp_path, provider, exte
 
 async def test_two_cursors_stream_at_once_to_one_client(served, tmp_path):
     client = await served.client()
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     replica = await client.attach(session_id)
     head = replica.head_cursor_id
     other = (await client.request(p.OpenCursor(session_id=session_id, leaf=None, label="side")))[
         "cursor_id"
     ]
-    await client.request(p.SetModel(session_id=session_id, cursor_id=other, model="other"))
+    await client.request(p.RpcCall("set_model", session_id, other, {"name": "other"}))
 
     await asyncio.gather(
-        client.request(p.Submit(session_id=session_id, cursor_id=head, text="a")),
-        client.request(p.Submit(session_id=session_id, cursor_id=other, text="b")),
+        client.submit_and_wait(session_id, head, "a", source="rpc", submitter="test"),
+        client.submit_and_wait(session_id, other, "b", source="rpc", submitter="test"),
     )
 
     await _until(lambda: replica.seq == served.daemon.hosts[session_id].seq)
@@ -236,7 +241,7 @@ async def test_a_form_goes_to_clients_and_the_first_answer_wins(served, tmp_path
     client = await served.client(
         on_event=lambda e: requests.append(e) if e["kind"] == "request" else None
     )
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     await client.attach(session_id)
     host = served.daemon.hosts[session_id]
     spec = {"title": "pick", "fields": [{"name": "n", "kind": "text", "default": "d"}]}
@@ -256,7 +261,7 @@ async def test_a_form_goes_to_clients_and_the_first_answer_wins(served, tmp_path
 
 async def test_a_client_that_falls_behind_is_dropped(served, tmp_path, monkeypatch):
     client = await served.client()
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     await client.attach(session_id)
     host = served.daemon.hosts[session_id]
 
@@ -287,6 +292,8 @@ def test_the_schema_names_every_request_and_the_checked_in_copy_is_current():
     schema = p.json_schema()
     for cls in p.REQUESTS:
         assert cls.__name__ in schema["$defs"]
+    for verb in p.RPC_VERBS:
+        assert schema["Results"][verb] == {"$ref": f"#/$defs/{p._camel(verb)}Result"}
     from tau_coding_agent.serve.protocol_doc import render_markdown, render_schema
 
     root = Path(__file__).resolve().parents[2]
@@ -295,10 +302,10 @@ def test_the_schema_names_every_request_and_the_checked_in_copy_is_current():
 
 
 async def _session_with_a_turn(client: ServeClient, cwd: Path, text: str = "hello"):
-    session_id = (await client.request(p.CreateSession(cwd=str(cwd))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(cwd))))["session"]["session_id"]
     replica = await client.attach(session_id)
-    await client.request(
-        p.Submit(session_id=session_id, cursor_id=replica.head_cursor_id, text=text)
+    await client.submit_and_wait(
+        session_id, replica.head_cursor_id, text, source="rpc", submitter="test"
     )
     return session_id, replica
 
@@ -319,7 +326,7 @@ async def test_the_attach_answer_carries_the_whole_vocabulary_models_and_load_er
         "lambda args, ctx: None})\n"
     )
     client = await served.client()
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     replica = await client.attach(session_id)
 
     commands = {c["name"]: c for c in replica.surface["commands"]}
@@ -349,33 +356,37 @@ async def test_the_attach_answer_carries_the_whole_vocabulary_models_and_load_er
     await client.close()
 
 
+async def _rpc(client: ServeClient, verb: str, session_id: str, cursor_id: str, **params: Any):
+    return await client.request(p.RpcCall(verb, session_id, cursor_id, params))
+
+
 async def test_next_step_and_enumerate_domain_answer_as_rpc_does(served, tmp_path):
     client = await served.client()
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
-    await client.attach(session_id)
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
+    head = (await client.attach(session_id)).head_cursor_id
 
-    step = await client.request(p.NextStep(session_id=session_id, flow="model"))
+    step = await _rpc(client, "next_step", session_id, head, flow="model")
     assert step["status"] == "step" and step["ready"] is None
     assert step["step"]["argument"]["name"] == "name"
     assert step["step"]["domain"]["name"] == "model_name"
-    values = await client.request(p.EnumerateDomain(session_id=session_id, domain="model_name"))
+    values = await _rpc(client, "enumerate_domain", session_id, head, domain="model_name")
     assert values == {
         "domain": "model_name",
         "values": [{"value": "fake", "label": "fake"}, {"value": "other", "label": "other"}],
         "total": 2,
     }
-    ready = await client.request(
-        p.NextStep(session_id=session_id, flow="model", bound={"name": "other"})
-    )
+    ready = await _rpc(client, "next_step", session_id, head, flow="model", bound={"name": "other"})
     assert ready["ready"] == {
         "flow": "model",
         "mutation": "set_model",
         "arguments": {"name": "other"},
     }
-    with pytest.raises(ServeError, match="not_found"):
-        await client.request(p.NextStep(session_id=session_id, flow="no-such-flow"))
-    with pytest.raises(ServeError, match="not_found"):
-        await client.request(p.EnumerateDomain(session_id=session_id, domain="no-such-domain"))
+    with pytest.raises(ServeError, match="bad_request"):
+        await _rpc(client, "next_step", session_id, head, flow="no-such-flow")
+    with pytest.raises(ServeError, match="bad_request"):
+        await _rpc(client, "enumerate_domain", session_id, head, domain="no-such-domain")
+    with pytest.raises(ServeError, match="bad_request"):
+        await _rpc(client, "next_step", session_id, head, flw="model")
     await client.close()
 
 
@@ -385,18 +396,43 @@ async def test_a_command_missing_its_argument_answers_its_flow_step(served, tmp_
     from tau_coding_agent.serve.remote import submission_result_from_wire
 
     client = await served.client()
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     replica = await client.attach(session_id)
 
-    answer = await client.request(
-        p.Submit(session_id=session_id, cursor_id=replica.head_cursor_id, text="/model")
+    answer = await client.submit_and_wait(
+        session_id,
+        replica.head_cursor_id,
+        "/model",
+        source="rpc",
+        submitter="test",
+        expand_commands=True,
     )
 
-    assert answer["command"]["arm"] == "FlowStep"
-    step = submission_result_from_wire(answer, "x").command
+    assert answer["admitted"] is False and answer["dispatched"]["arm"] == "FlowStep"
+    step = submission_result_from_wire(answer).command
     assert isinstance(step, FlowStep)
     assert (step.flow, step.argument.name, step.domain.name) == ("model", "name", "model_name")
     assert step.domain.field_kind == "select"
+    await client.close()
+
+
+async def test_submit_requires_rpcs_provenance_and_records_it(served, tmp_path):
+    client = await served.client()
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
+    replica = await client.attach(session_id)
+    with pytest.raises(ServeError, match="bad_request"):
+        await _rpc(client, "submit", session_id, replica.head_cursor_id, text="x")
+
+    starts: list[dict[str, Any]] = []
+    watcher = await served.client(on_event=starts.append)
+    await watcher.attach(session_id)
+    await client.submit_and_wait(
+        session_id, replica.head_cursor_id, "hi", source="bus", submitter="sensor-7"
+    )
+    await _until(lambda: any(e["kind"] == "channel" for e in starts))
+    submission = next(e for e in starts if e["kind"] == "channel")["data"]["payload"]["submission"]
+    assert (submission["source"], submission["submitter"]) == ("bus", "sensor-7")
+    await watcher.close()
     await client.close()
 
 
@@ -405,12 +441,13 @@ async def test_complete_path_reads_the_sessions_cwd_not_the_daemons(served, tmp_
     project.mkdir()
     (project / "notes.txt").write_text("x")
     client = await served.client()
-    session_id = (await client.request(p.CreateSession(cwd=str(project))))["session_id"]
+    created = (await client.request(p.NewSession(cwd=str(project))))["session"]
+    session_id, head = created["session_id"], created["cursor_id"]
 
-    found = await client.request(p.CompletePath(session_id=session_id, text="see @no", offset=7))
+    found = await _rpc(client, "complete_path", session_id, head, text="see @no", offset=7)
     assert found["completion"]["token"] == "no"
     assert [m["name"] for m in found["completion"]["matches"]] == ["notes.txt"]
-    nothing = await client.request(p.CompletePath(session_id=session_id, text="plain", offset=5))
+    nothing = await _rpc(client, "complete_path", session_id, head, text="plain", offset=5)
     assert nothing == {"completion": None}
     await client.close()
 
@@ -421,37 +458,39 @@ async def test_get_tree_is_read_at_the_named_cursor(served, tmp_path):
     user = _user_entry(replica.entries)
     side = (await client.request(p.OpenCursor(session_id=session_id, leaf=user)))["cursor_id"]
 
-    tree = await client.request(p.GetTree(session_id=session_id, cursor_id=side))
-    head = await client.request(p.GetTree(session_id=session_id, cursor_id=replica.head_cursor_id))
+    tree = await _rpc(client, "get_tree", session_id, side)
+    head = await _rpc(client, "get_tree", session_id, replica.head_cursor_id)
 
     assert tree["leaf"] == user and tree["count"] == len(tree["nodes"]) == len(replica.entries)
     assert [n["entry_id"] for n in tree["nodes"] if n["is_leaf"]] == [user]
     assert head["leaf"] != user
-    assert set(tree["nodes"][0]) == set(p.TreeRow.__dataclass_fields__)
     await client.close()
 
 
-async def test_fork_session_copies_into_a_new_session_and_leaves_the_source(served, tmp_path):
+async def test_fork_copies_the_path_to_a_cursor_and_leaves_the_source(served, tmp_path):
     client = await served.client()
     session_id, replica = await _session_with_a_turn(client, tmp_path)
+    head = replica.head_cursor_id
     user = _user_entry(replica.entries)
     before = [e["id"] for e in replica.entries]
 
-    whole = (await client.request(p.ForkSession(session_id=session_id, at=None)))["session_id"]
-    at_user = (await client.request(p.ForkSession(session_id=session_id, at=user)))["session_id"]
+    at_head = await client.request(p.Fork(session_id=session_id, cursor_id=head))
+    at_user = await client.request(p.Fork(session_id=session_id, cursor_id=head, at=user))
 
-    assert len({session_id, whole, at_user}) == 3
+    assert at_head["cancelled"] is False
+    whole, cut_id = at_head["session"]["session_id"], at_user["session"]["session_id"]
+    assert len({session_id, whole, cut_id}) == 3
     copy = await client.attach(whole)
     assert [e["id"] for e in copy.entries] == before
     assert copy.cwd == replica.cwd
-    cut = await client.attach(at_user)
-    assert cut.entries[-1]["id"] == user
+    cut = await client.attach(cut_id)
+    assert cut.entries[-1]["id"] == user == at_user["leaf"]
     assert len(cut.entries) < len(before)
     assert [e["id"] for e in replica.entries] == before, "the source is unchanged"
     with pytest.raises(ServeError, match="not_found"):
-        await client.request(p.ForkSession(session_id=session_id, at="no-such-entry"))
+        await client.request(p.Fork(session_id=session_id, cursor_id=head, at="no-such-entry"))
     rows = (await client.request(p.ListSessions()))["sessions"]
-    assert {whole, at_user} <= {row["id"] for row in rows}
+    assert {whole, cut_id} <= {row["session_id"] for row in rows}
     await client.close()
 
 
@@ -459,11 +498,16 @@ async def test_a_fork_command_answers_ready_for_the_client_to_perform(served, tm
     client = await served.client()
     session_id, replica = await _session_with_a_turn(client, tmp_path)
 
-    answer = await client.request(
-        p.Submit(session_id=session_id, cursor_id=replica.head_cursor_id, text="/fork")
+    answer = await client.submit_and_wait(
+        session_id,
+        replica.head_cursor_id,
+        "/fork",
+        source="rpc",
+        submitter="test",
+        expand_commands=True,
     )
 
-    assert answer["command"] == {
+    assert answer["dispatched"] == {
         "arm": "Ready",
         "flow": "fork",
         "mutation": "fork",
@@ -472,7 +516,7 @@ async def test_a_fork_command_answers_ready_for_the_client_to_perform(served, tm
     await client.close()
 
 
-async def test_perform_acts_at_the_named_cursor_not_the_head(served, tmp_path):
+async def test_an_rpc_verb_acts_at_the_named_cursor_not_the_head(served, tmp_path):
     client = await served.client()
     session_id, replica = await _session_with_a_turn(client, tmp_path)
     head = replica.head_cursor_id
@@ -480,33 +524,45 @@ async def test_perform_acts_at_the_named_cursor_not_the_head(served, tmp_path):
     user = _user_entry(replica.entries)
     side = (await client.request(p.OpenCursor(session_id=session_id, leaf=head_leaf)))["cursor_id"]
 
-    await client.request(
-        p.Perform(
-            session_id=session_id,
-            cursor_id=side,
-            method="navigate_tree",
-            arguments={"target_id": user},
-        )
-    )
-    named = await client.request(
-        p.Perform(
-            session_id=session_id,
-            cursor_id=side,
-            method="set_session_name",
-            arguments={"name": "from the side"},
-        )
-    )
+    await _rpc(client, "navigate", session_id, side, target_id=user)
+    named = await _rpc(client, "set_session_name", session_id, side, name="from the side")
+    model = await _rpc(client, "set_model", session_id, side, name="other")
+    state = await _rpc(client, "get_state", session_id, head)
 
     await _until(lambda: replica.seq == served.daemon.hosts[session_id].seq)
     assert replica.cursors[head]["leaf"] == head_leaf, "the head did not move"
-    info = replica.entries[-1]
-    assert info["type"] == "session_info" and info["parentId"] == user
-    assert replica.cursors[side]["leaf"] == info["id"]
-    assert named["kind"] == "Performed" and named["fields"]["leaf"] == info["id"]
+    info = next(e for e in replica.entries if e["type"] == "session_info")
+    assert info["parentId"] == user and named["leaf"] == info["id"]
+    assert replica.cursors[side]["model"] == "other-model"
+    assert replica.cursors[head]["model"] == "fake-model", "the head keeps its own model"
+    host = served.daemon.hosts[session_id]
+    token = TURN_CURSOR.set(host.cursor(side))
+    try:
+        assert host.cursor_model(host.cursor(head)) == "fake-model", "even inside the side's turn"
+    finally:
+        TURN_CURSOR.reset(token)
+    assert model["model"]["id"] == "other-model"
+    assert state["model"]["id"] == "fake-model" and state["leaf"] == head_leaf
     with pytest.raises(ServeError, match="bad_request"):
-        await client.request(
-            p.Perform(session_id=session_id, cursor_id=head, method="set_model", arguments={})
-        )
+        await _rpc(client, "set_model", session_id, head)
+    await client.close()
+
+
+async def test_compact_answers_at_once_and_its_end_is_an_event(served, tmp_path):
+    ends: list[dict[str, Any]] = []
+    client = await served.client(
+        on_event=lambda e: ends.append(e["data"]) if e["kind"] == "compaction_end" else None
+    )
+    session_id, replica = await _session_with_a_turn(client, tmp_path)
+
+    started = await _rpc(client, "compact", session_id, replica.head_cursor_id)
+    aborted = await _rpc(client, "abort", session_id, replica.head_cursor_id)
+
+    assert started["accepted"] is True
+    assert aborted["status"] == "aborted"
+    await _until(lambda: bool(ends))
+    assert ends[0]["compaction_id"] == started["compaction_id"]
+    assert ends[0]["is_error"] is False
     await client.close()
 
 
@@ -517,16 +573,14 @@ async def test_a_busy_cursor_enqueues_a_second_prompt_with_the_cores_own_strateg
     that ``AgentSession.submit`` has no branch for, so every such prompt failed.
     """
     client = await served.client()
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     replica = await client.attach(session_id)
     head = replica.head_cursor_id
 
     first, second = await asyncio.gather(
-        client.request(p.Submit(session_id=session_id, cursor_id=head, text="one")),
-        client.request(
-            p.Submit(
-                session_id=session_id, cursor_id=head, text="two", multitask_strategy="enqueue"
-            )
+        client.submit_and_wait(session_id, head, "one", source="rpc", submitter="test"),
+        client.submit_and_wait(
+            session_id, head, "two", source="rpc", submitter="test", multitask_strategy="enqueue"
         ),
     )
 
@@ -546,6 +600,9 @@ async def test_a_busy_cursor_enqueues_a_second_prompt_with_the_cores_own_strateg
                 "session_id": session_id,
                 "cursor_id": head,
                 "text": "x",
+                "source": "rpc",
+                "submitter": "test",
+                "submission_id": "s",
                 "multitask_strategy": "follow_up",
             }
         )

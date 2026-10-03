@@ -1670,14 +1670,14 @@ class TauBackend(Backend):
 
         Returns:
             A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
-            ``{model, cursor}``, as ``set_model``'s ``returns`` declares.
+            ``{model, leaf}``, as ``set_model``'s ``returns`` declares.
         """
         model = self.agent_session.set_model(name)
         await self.record_model_change(name)
         return self.agent_session.performed("set_model", {"model": model})
 
     async def record_model_change(self, name: str) -> None:
-        """Append "this session now runs on *name*" at the cursor, switching nothing.
+        """Append "this session now runs on *name*" at the acting cursor, switching nothing.
 
         Callable on its own because a resume can start on a model the stored
         session does not name (``tau --mode repl --continue --model other``): the
@@ -1687,7 +1687,7 @@ class TauBackend(Backend):
         Args:
             name: The config model name.
         """
-        await self.agent_session.cursor.append_config(
+        await self.agent_session.acting_cursor.append_config(
             model=name, backend=self.config.get("backend", "")
         )
 

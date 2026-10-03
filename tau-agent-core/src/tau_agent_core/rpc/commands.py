@@ -815,14 +815,14 @@ def _dispatched_result(
     reason attached.
     """
     if isinstance(dispatched, Performed):
-        return _accept_result(
+        return accept_result(
             sub.submission_id,
             command=dispatched,
             command_name=dispatched.mutation,
             attachments=attachments,
         )
     if isinstance(dispatched, View):
-        return _accept_result(sub.submission_id, view=dispatched, attachments=attachments)
+        return accept_result(sub.submission_id, view=dispatched, attachments=attachments)
     if isinstance(dispatched, FlowStep):
         detail = (
             f"/{dispatched.flow} still needs {dispatched.argument.name!r}. Bind it with "
@@ -852,7 +852,7 @@ def _dispatched_result(
     )
 
 
-def _accept_result(
+def accept_result(
     submission_id: str,
     *,
     command: Performed | None = None,
@@ -901,6 +901,25 @@ def _accept_result(
             "output": command.data.get("output"),
         }
     return result
+
+
+def rejection_data(outcome: "SubmissionResult") -> dict[str, Any]:
+    """A refused submission's ``SUBMISSION_REJECTED`` data: its id, and the lock that refused it.
+
+    The lock is the one refusal a host can act on rather than only report
+    (EXTENSION-LOCKS §10).
+    """
+    data: dict[str, Any] = {"submission_id": outcome.submission_id}
+    if outcome.lock is not None:
+        data["lock"] = {
+            "entry_id": outcome.lock.entry_id,
+            "extension": outcome.lock.extension,
+            "sentence": outcome.lock.sentence,
+            "label": outcome.lock.label,
+            "release": outcome.lock.release,
+            "ask": outcome.lock.ask,
+        }
+    return data
 
 
 async def _submit_and_acknowledge(
@@ -975,7 +994,7 @@ async def _submit_and_acknowledge(
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {
-                    **_accept_result(sub.submission_id, attachments=attachments),
+                    **accept_result(sub.submission_id, attachments=attachments),
                     "method": method,
                 },
             }
@@ -1006,25 +1025,14 @@ async def _submit_and_acknowledge(
         return None
 
     if not outcome.accepted:
-        data: dict[str, Any] = {"submission_id": sub.submission_id}
-        if outcome.lock is not None:
-            # The one refusal a host can act on rather than only report (EXTENSION-LOCKS §10).
-            data["lock"] = {
-                "entry_id": outcome.lock.entry_id,
-                "extension": outcome.lock.extension,
-                "sentence": outcome.lock.sentence,
-                "label": outcome.lock.label,
-                "release": outcome.lock.release,
-                "ask": outcome.lock.ask,
-            }
         raise RPCError(
             SUBMISSION_REJECTED,
             outcome.rejection_reason or "submission rejected",
-            data=data,
+            data=rejection_data(outcome),
         )
     if outcome.command is not None:
         return _dispatched_result(sub, outcome.command, attachments)
-    return _accept_result(sub.submission_id, attachments=attachments)
+    return accept_result(sub.submission_id, attachments=attachments)
 
 
 @command(
@@ -2282,7 +2290,7 @@ async def _handle_get_session_stats(
 LIST_SESSIONS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("list_sessions")
 
 
-def _listed_session(info: "SessionInfo") -> dict[str, Any]:
+def listed_session(info: "SessionInfo") -> dict[str, Any]:
     """One `SessionInfo` -> one wire row (`LIST_SESSIONS_RESULT_SCHEMA`).
 
     A deliberate PROJECTION, not a `dataclasses.asdict`: `first_message` and
@@ -2365,7 +2373,7 @@ async def _handle_list_sessions(
     catalog: SessionCatalog = runtime.catalog
     cwd: str = runtime.cwd
     return {
-        "sessions": [_listed_session(info) for info in catalog.list(cwd)],
+        "sessions": [listed_session(info) for info in catalog.list(cwd)],
         "scope": {"store": runtime.store, "cwd": cwd},
     }
 
@@ -2778,7 +2786,7 @@ async def _handle_next_step(
             params["flow"], params.get("bound"), params.get("leaf"), handler.session.vocabulary
         )
     except UnknownFlowError as exc:
-        raise RuntimeError(str(exc)) from exc
+        raise RPCError(INVALID_PARAMS, str(exc.args[0]), data={"flow": params["flow"]}) from exc
 
 
 ### end tier-c:next_step
@@ -2891,15 +2899,22 @@ async def _handle_enumerate_domain(
 ) -> dict[str, Any]:
     from tau_agent_core.projections import domain_listing
 
-    return domain_listing(
-        params["domain"],
-        session=handler.session,
-        runtime=handler._runtime,
-        scope=params.get("scope"),
-        leaf=params.get("leaf"),
-        query=params.get("query", ""),
-        limit=params.get("limit", 50),
-    )
+    if params["domain"] not in handler.session.vocabulary.domains:
+        raise RPCError(
+            INVALID_PARAMS, f"no domain {params['domain']!r}", data={"domain": params["domain"]}
+        )
+    try:
+        return domain_listing(
+            params["domain"],
+            session=handler.session,
+            runtime=handler._runtime,
+            scope=params.get("scope"),
+            leaf=params.get("leaf"),
+            query=params.get("query", ""),
+            limit=params.get("limit", 50),
+        )
+    except KeyError as exc:
+        raise RPCError(INVALID_PARAMS, str(exc.args[0]), data=dict(params)) from exc
 
 
 ### end tier-c:enumerate_domain

@@ -358,6 +358,65 @@ live view reads (`block_type`, `replace`, `stop_reason`, `dropped_tool_calls`,
   every `message_update` about 700 B. `test_serve_schema.py` checks that the
   size per frame stays flat and the total stays linear.
 
+Built note (protocol 0.6), 2026-10-03: **serve is RPC plus addressing.** A
+comparison of the two tables found the same behaviour under different names
+(`set_model {model}` against RPC's `{name}`, `fork_session`, `create_session`,
+`navigate_tree`), fourteen operations behind one untyped `perform {method,
+arguments}`, six string error codes where RPC has `SUBMISSION_REJECTED`,
+`TURN_STILL_RUNNING`, `SESSION_NOT_PERSISTED` and `COMMAND_NOT_SUPPORTED`, and a
+daemon that wrote every WebSocket submission as `source: "interactive",
+submitter: "human"`. Only the event stream matched, since 0.4. The rule now:
+
+- **A request RPC answers is answered here under its name, with its params and
+  its result shape, plus `session_id` and `cursor_id`.** `RpcCall` carries one;
+  `parse_request` checks its params with RPC's own `validate_params`, and the
+  schema embeds RPC's `params_schema` and `result_schema` as the verb's `$defs`.
+  `RPC_RUN` (33 verbs, `compact` and `abort` among them) run through
+  `COMMAND_TABLE[verb].handler` itself, inside `TURN_CURSOR.set(cursor)`, with a
+  `daemon.RpcContext` standing in for `RPCHandler`: its output queue sends an
+  answer to the asking client and `compaction_end` to the session as an event,
+  and the compaction in flight is kept per cursor. So the daemon has no second
+  implementation of those verbs to drift.
+- **That needed RPC's handlers to act at a cursor.** They read
+  `AgentSession.acting_cursor` (was the private `_turn_cursor()`), which is the
+  head over stdio. `set_model` at a non-head cursor sets that cursor's frame
+  model, which the daemon had special-cased; it is in the core now.
+  `complete_path` and `expand_attachments` resolve against `AgentSession.cwd`.
+- **`submit` and `prompt` are the daemon's own** (`RPC_OWN`): RPC's params, and
+  `source`/`submitter`/`submission_id` required on `submit` as RPC requires
+  them. They differ from stdio where serve can do more. `multitask_strategy:
+  "fork"` is accepted. A command answers success with `dispatched`, its arm,
+  where stdio refuses a step or a ready flow, and the daemon performs a ready
+  flow itself. The answer comes at admission, as RPC's does, plus `admitted`,
+  which says a `submission_end` will follow; 0.5 answered when the turn ended.
+  The TUI's `RemoteBackend.submit_turn` and `ServeClient.submit_and_wait` wait
+  for that event, so a head still sees a turn end where it did.
+- **Same name, serve's shape where a connection holds no session.**
+  `list_sessions` answers RPC's rows plus `cwd` and `loaded`, every directory
+  (`scope.cwd` null), unreadable rows listed with their `error`.
+  `new_session {cwd, model?, name?}` and `fork {session_id, cursor_id, at?}`
+  load the new session and answer RPC's lifecycle shape; nothing is switched,
+  so the client attaches. `fork` copies the path to the cursor's leaf, as RPC's
+  does; 0.5's copy of the whole tree is gone.
+- **Errors keep RPC's meaning**: `submission_rejected` (with the lock in
+  `data`), `command_not_supported`, `session_not_persisted`, and `busy` for
+  `TURN_STILL_RUNNING`.
+- **Serve's own requests are the ones RPC cannot express**: `hello`, `attach`,
+  `detach`, the three cursor requests, `answer`, `describe`, `perform_ready`,
+  `compare`, `end_compare`. `get_capabilities` is `hello` plus the schema;
+  `switch_session` is `attach`.
+
+Two defects surfaced on the way. RPC answered an unknown flow or domain with
+`INTERNAL_ERROR`, because `next_step` re-raised it as a `RuntimeError`; both are
+`INVALID_PARAMS` now. And no entry shape declared `copiedFrom`, the field
+`paste_subtree` writes, which the schema test found the first time it drove
+every verb against a real daemon. `test_serve_schema.py` now answers every
+request and every RPC verb, and validates each answer. It validates the
+answers of `RPC_RUN` verbs without `strict`, because RPC's result schemas
+describe a message by some of its fields; declaring all of them is RPC's
+follow-up. Under `--connect` the picker searches a session's bounded `title`,
+since the listing no longer carries `first_message`.
+
 ## 6. `tau serve`
 
 ```

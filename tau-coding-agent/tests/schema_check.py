@@ -74,8 +74,10 @@ def _errors(value: Any, schema: Any, root: dict[str, Any], path: str, strict: bo
         for part in schema["$ref"].removeprefix("#/").split("/"):
             target = target[part]
         errors += _errors(value, target, root, path, strict)
-    if "type" in schema and not _TYPES[schema["type"]](value):
-        return errors + [f"{path}: {value!r:.80} is not {schema['type']}"]
+    types = schema.get("type")
+    allowed = [types] if isinstance(types, str) else types
+    if allowed is not None and not any(_TYPES[name](value) for name in allowed):
+        return errors + [f"{path}: {value!r:.80} is not {types}"]
     if "const" in schema and not _same(value, schema["const"]):
         errors.append(f"{path}: {value!r:.80} is not {schema['const']!r}")
     if "enum" in schema and not any(_same(value, v) for v in schema["enum"]):

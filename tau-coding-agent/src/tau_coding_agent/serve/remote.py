@@ -20,6 +20,7 @@ import asyncio
 import copy
 import ipaddress
 import threading
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from types import SimpleNamespace
@@ -355,25 +356,29 @@ class RemoteCatalog(SessionCatalog):
         self._remote = remote
 
     def list(self, cwd: str | None = None) -> list[SessionInfo]:
-        """Every daemon session, or those in ``cwd``; blocks, so call it from a worker thread."""
+        """Every daemon session, or those in ``cwd``; blocks, so call it from a worker thread.
+
+        The listing carries a bounded ``title``, never message text, so ``first_message``
+        holds the title and a picker searches that.
+        """
         rows = self._remote.request_blocking(p.ListSessions())["sessions"]
         infos = []
         for row in rows:
             if cwd is not None and row["cwd"] != cwd:
                 continue
-            modified = datetime.fromisoformat(row["modified"])
             infos.append(
                 SessionInfo(
-                    ref=row["id"],
-                    id=row["id"],
+                    ref=row["session_id"],
+                    id=row["session_id"],
                     cwd=row["cwd"],
                     name=row["name"],
-                    created=modified,
-                    modified=modified,
+                    created=datetime.fromisoformat(row["created"]),
+                    modified=datetime.fromisoformat(row["modified"]),
                     message_count=row["message_count"],
-                    first_message=row["first_message"],
+                    first_message=row["title"],
                     last_message="",
-                    parent=None,
+                    parent=row["parent"],
+                    error=row["error"],
                 )
             )
         return infos
@@ -396,13 +401,58 @@ class RemoteCatalog(SessionCatalog):
         raise self._refuse("forking a session")
 
 
-def submission_result_from_wire(result: dict[str, Any], submission_id: str) -> SubmissionResult:
-    """A :class:`~protocol.SubmitResult` as the core's ``SubmissionResult``."""
+def submission_result_from_wire(result: dict[str, Any]) -> SubmissionResult:
+    """An accepted ``submit`` answer as the core's ``SubmissionResult``."""
     return SubmissionResult(
-        accepted=result["accepted"],
-        submission_id=result.get("submission_id") or submission_id,
-        rejection_reason=result.get("reason"),
-        command=dispatched_from_wire(result.get("command")),
+        accepted=True,
+        submission_id=result["submission_id"],
+        command=dispatched_from_wire(result["dispatched"]),
+    )
+
+
+def rejection_from_wire(error: ServeError, submission_id: str) -> SubmissionResult:
+    """A ``submission_rejected`` refusal as the core's ``SubmissionResult``, its lock included."""
+    data = error.data or {}
+    lock = data.get("lock")
+    return SubmissionResult(
+        accepted=False,
+        submission_id=data.get("submission_id", submission_id),
+        rejection_reason=error.reason,
+        lock=ExtensionRequest(
+            entry_id=lock["entry_id"],
+            extension=lock["extension"],
+            sentence=lock["sentence"],
+            lock=True,
+            ask=lock["ask"],
+            release=lock["release"],
+        )
+        if lock is not None
+        else None,
+    )
+
+
+def compaction_from_wire(end: dict[str, Any]) -> CompactionResult | None:
+    """A ``compaction_end`` payload as ``backend.compact`` returns it locally.
+
+    Raises:
+        RuntimeError: the compaction failed or was cancelled, as it raises locally.
+    """
+    if end["is_error"]:
+        raise RuntimeError(end["error"])
+    if end["cancelled"]:
+        raise RuntimeError(f"compaction {end['compaction_id']} was cancelled")
+    if not end["performed"]:
+        return None
+    return CompactionResult(
+        summary=end["summary"],
+        first_kept_entry_id=end["first_kept_entry_id"],
+        tokens_before=end["tokens_before"],
+        details=CompactionDetails(
+            read_files=list(end["read_files"]), modified_files=list(end["modified_files"])
+        ),
+        compacted_entry_ids=list(end["compacted_entry_ids"]),
+        tokens_saved=end["tokens_saved"],
+        usage=dict(end["usage"]),
     )
 
 
@@ -445,30 +495,6 @@ def dispatched_from_wire(command: dict[str, Any] | None) -> Any:
     if arm == "Ready":
         return Ready(**fields)
     raise RemoteUnsupportedError(f"the daemon answered a command with {arm!r}")
-
-
-def value_from_wire(answer: dict[str, Any]) -> Any:
-    """A :class:`~protocol.Perform` answer as the value the local backend would return."""
-    kind = answer["kind"]
-    if kind == "value":
-        return answer["value"]
-    fields = answer["fields"]
-    if kind == "Performed":
-        return Performed(**fields)
-    if kind == "ExtensionCommandResult":
-        return ExtensionCommandResult(**fields)
-    if kind == "SubmissionResult":
-        fields = dict(fields)
-        fields["command"] = None
-        if fields["lock"] is not None:
-            fields["lock"] = ExtensionRequest(**fields["lock"])
-        return SubmissionResult(**fields)
-    if kind == "CompactionResult":
-        fields = dict(fields)
-        if fields["details"] is not None:
-            fields["details"] = CompactionDetails(**fields["details"])
-        return CompactionResult(**fields)
-    raise RemoteUnsupportedError(f"the daemon answered with a {kind!r} this head cannot read")
 
 
 class WireJoin:
@@ -613,7 +639,11 @@ class RemoteBackend(Backend):
         self._remote = remote
         self._session_id = session_id
         self._delegate: Any = None
-        self._ui_unsub = remote.listen(session_id, self._on_ui_event)
+        self._ends: dict[str, asyncio.Future[None]] = {}
+        self._compacting = 0
+        self._compaction_ends: dict[str, dict[str, Any]] = {}
+        self._compaction_waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._ui_unsub = remote.listen(session_id, self._on_event)
 
     @property
     def replica(self) -> Replica:
@@ -634,24 +664,23 @@ class RemoteBackend(Backend):
     def _head(self) -> str:
         return self.replica.head_cursor_id
 
-    async def _perform(self, method: str, **arguments: Any) -> Any:
-        answer = await self._remote.request(
-            p.Perform(
-                session_id=self._session_id,
-                cursor_id=self._head(),
-                method=method,
-                arguments=arguments,
-            )
+    async def _rpc(self, verb: str, **params: Any) -> dict[str, Any]:
+        """RPC ``verb`` at the head cursor; ``None`` params are left out, as RPC's defaults."""
+        given = {k: v for k, v in params.items() if v is not None}
+        answer: dict[str, Any] = await self._remote.request(
+            p.RpcCall(verb, self._session_id, self._head(), given)
         )
-        return value_from_wire(answer)
+        return answer
+
+    def _performed(self, mutation: str, answer: dict[str, Any]) -> Performed:
+        """An RPC mutator's answer as the ``Performed`` the local backend returns for it."""
+        return Performed(flow=None, mutation=mutation, data=answer, leaf=answer.get("leaf"))
 
     async def next_step(
         self, flow: str, bound: dict[str, Any] | None, leaf: str | None
     ) -> FlowStep | Ready:
         """The daemon's ``next_step`` for ``flow``, which knows the session's extension flows."""
-        answer = await self._remote.request(
-            p.NextStep(session_id=self._session_id, flow=flow, bound=bound, leaf=leaf)
-        )
+        answer = await self._rpc("next_step", flow=flow, bound=bound, leaf=leaf)
         if answer["status"] == "ready":
             return Ready(**answer["ready"])
         return flow_step_from_wire(answer["step"])
@@ -666,15 +695,8 @@ class RemoteBackend(Backend):
         limit: int = 50,
     ) -> DomainValues:
         """The daemon's values for ``domain``, read against the session's own objects."""
-        answer = await self._remote.request(
-            p.EnumerateDomain(
-                session_id=self._session_id,
-                domain=domain,
-                scope=scope,  # type: ignore[arg-type]
-                leaf=leaf,
-                query=query,
-                limit=limit,
-            )
+        answer = await self._rpc(
+            "enumerate_domain", domain=domain, scope=scope, leaf=leaf, query=query, limit=limit
         )
         return DomainValues(
             domain=answer["domain"],
@@ -684,8 +706,10 @@ class RemoteBackend(Backend):
 
     async def fork(self, at: str | None) -> str:
         """Fork the session on the daemon, at entry ``at`` or whole; returns the new session's id."""
-        answer = await self._remote.request(p.ForkSession(session_id=self._session_id, at=at))
-        return str(answer["session_id"])
+        answer = await self._remote.request(
+            p.Fork(session_id=self._session_id, cursor_id=self._head(), at=at)
+        )
+        return str(answer["session"]["session_id"])
 
     def is_extension_flow(self, name: str) -> bool:
         """Whether ``name`` is a flow an extension of the daemon's session declared."""
@@ -720,19 +744,38 @@ class RemoteBackend(Backend):
     async def submit_turn(
         self, submission: Submission, context: list[dict] | None
     ) -> SubmissionResult:
-        """Send the submission to the head cursor; ``context`` is the daemon's, so it is unused."""
-        result = await self._remote.request(
-            p.Submit(
-                session_id=self._session_id,
-                cursor_id=self._head(),
+        """Submit at the head cursor and return when its turn ends, as the local backend does.
+
+        ``context`` is the daemon's, so it is unused. An admitted turn ends with its
+        ``submission_end`` channel event; anything else is over when answered.
+        """
+        sid = submission.submission_id
+        ended = self._ends[sid] = asyncio.get_running_loop().create_future()
+        try:
+            answer = await self._rpc(
+                "submit",
                 text=submission.text,
+                images=submission.images,
+                source=submission.source,
+                submitter=submission.submitter,
+                submission_id=sid,
                 multitask_strategy=submission.multitask_strategy,
                 expand_commands=submission.expand_commands,
-                submission_id=submission.submission_id,
-                images=submission.images,
+                allow_user_input=submission.allow_user_input,
+                store_history=submission.store_history,
+                silent=submission.silent,
+                correlation=submission.correlation or None,
+                depth=submission.depth,
             )
-        )
-        return submission_result_from_wire(result, submission.submission_id)
+            if answer["admitted"]:
+                await ended
+        except ServeError as exc:
+            if exc.code != "submission_rejected":
+                raise
+            return rejection_from_wire(exc, sid)
+        finally:
+            self._ends.pop(sid, None)
+        return submission_result_from_wire(answer)
 
     async def submit_command(self, submission: Submission) -> SubmissionResult:
         return await self.submit_turn(submission, None)
@@ -747,9 +790,7 @@ class RemoteBackend(Backend):
         return router
 
     def abort(self) -> None:
-        asyncio.get_running_loop().create_task(
-            self._remote.request(p.Abort(session_id=self._session_id, cursor_id=self._head()))
-        )
+        asyncio.get_running_loop().create_task(self._rpc("abort"))
 
     async def load_extensions(self, *_: Any, **__: Any) -> LoadExtensionsResult:
         """Nothing to load here: the daemon loaded the session's extensions itself."""
@@ -759,11 +800,21 @@ class RemoteBackend(Backend):
         """Show the session's extension notices and forms through ``delegate``."""
         self._delegate = delegate
 
-    async def _on_ui_event(self, frame: dict[str, Any]) -> None:
+    async def _on_event(self, frame: dict[str, Any]) -> None:
+        data = frame["data"]
+        if frame["kind"] == "channel" and data["name"] == "submission_end":
+            ended = self._ends.get(data["payload"]["submission"]["submission_id"])
+            if ended is not None and not ended.done():
+                ended.set_result(None)
+        elif frame["kind"] == "compaction_end":
+            waiter = self._compaction_waiters.pop(data["compaction_id"], None)
+            if waiter is not None:
+                waiter.set_result(data)
+            elif self._compacting:
+                self._compaction_ends[data["compaction_id"]] = data
         delegate = self._delegate
         if delegate is None:
             return
-        data = frame["data"]
         if frame["kind"] == "ui":
             if data["op"] == "notify":
                 delegate.notify(data["message"], data.get("level", "info"))
@@ -809,14 +860,7 @@ class RemoteBackend(Backend):
         self.replica.surface = dict(surface)
 
     async def set_model(self, name: str) -> Performed:
-        answer = await self._remote.request(
-            p.SetModel(session_id=self._session_id, cursor_id=self._head(), model=name)
-        )
-        return Performed(
-            flow="model",
-            mutation="set_model",
-            data={"model": {"id": answer["model"], "name": name}},
-        )
+        return self._performed("set_model", await self._rpc("set_model", name=name))
 
     async def end_compare(self, comparison_id: str, keep: str | None) -> str | None:
         """End a daemon comparison, as ``TauBackend.end_compare`` does in-process.
@@ -838,71 +882,133 @@ class RemoteBackend(Backend):
         leaf = answer["leaf"]
         return str(leaf) if leaf is not None else None
 
-    async def compact(self, custom_instructions: str | None = None) -> Any:
-        return await self._perform("compact", custom_instructions=custom_instructions)
+    async def compact(self, custom_instructions: str | None = None) -> CompactionResult | None:
+        """Compact at the head cursor and return its outcome, read off ``compaction_end``.
+
+        The event can arrive before the answer is read, so ends seen while a
+        compaction is pending are kept until claimed.
+
+        Raises:
+            RuntimeError: the compaction failed or was cancelled.
+        """
+        self._compacting += 1
+        try:
+            answer = await self._rpc("compact", custom_instructions=custom_instructions)
+            compaction_id = answer["compaction_id"]
+            end = self._compaction_ends.pop(compaction_id, None)
+            if end is None:
+                waiter = asyncio.get_running_loop().create_future()
+                self._compaction_waiters[compaction_id] = waiter
+                end = await waiter
+        finally:
+            self._compacting -= 1
+            if not self._compacting:
+                self._compaction_ends.clear()
+        return compaction_from_wire(end)
 
     async def set_auto_compaction(self, enabled: bool) -> Performed:
-        result: Performed = await self._perform("set_auto_compaction", enabled=enabled)
-        return result
+        answer = await self._rpc("set_auto_compaction", enabled=enabled)
+        return self._performed("set_auto_compaction", answer)
 
     async def set_session_name(self, name: str) -> Performed:
-        result: Performed = await self._perform("set_session_name", name=name)
-        return result
+        return self._performed("set_session_name", await self._rpc("set_session_name", name=name))
 
     async def enable_extension(self, path: str) -> Performed:
-        result: Performed = await self._perform("enable_extension", path=path)
+        answer = await self._rpc("enable_extension", path=path)
         await self._refresh_surface()
-        return result
+        return self._performed("enable_extension", answer)
 
     async def disable_extension(self, path: str) -> Performed:
-        result: Performed = await self._perform("disable_extension", path=path)
+        answer = await self._rpc("disable_extension", path=path)
         await self._refresh_surface()
-        return result
+        return self._performed("disable_extension", answer)
 
     async def reload_extension(self, path: str) -> Performed:
-        result: Performed = await self._perform("reload_extension", path=path)
+        answer = await self._rpc("reload_extension", path=path)
         await self._refresh_surface()
-        return result
+        return self._performed("reload_extension", answer)
 
     async def run_extension_command(self, name: str, args: str = "") -> ExtensionCommandResult:
-        result: ExtensionCommandResult = await self._perform(
-            "run_extension_command", name=name, args=args
+        """Run an extension command by submitting its slash line, as a typed one runs.
+
+        A name the session's surface does not list is not sent: submitted, it
+        would reach the model as prose.
+        """
+        known = {c["name"] for c in self.replica.surface["commands"] if c["origin"] == "extension"}
+        if name not in known:
+            return ExtensionCommandResult(handled=False)
+        line = f"/{name} {args}".rstrip()
+        result = await self.submit_turn(
+            Submission(
+                text=line,
+                source="interactive",
+                submitter="human",
+                submission_id=uuid.uuid4().hex,
+                multitask_strategy="reject",
+                expand_commands=True,
+            ),
+            None,
         )
-        return result
+        if not result.accepted:
+            raise RuntimeError(result.rejection_reason or f"/{name} was refused")
+        if not isinstance(result.command, Performed):
+            raise RemoteUnsupportedError(f"/{name} resolved to {type(result.command).__name__}")
+        return ExtensionCommandResult(handled=True, output=result.command.data.get("output"))
 
     async def answer_request(
         self, request_id: str, action: str, values: dict[str, Any] | None = None
     ) -> ExtensionCommandResult:
-        result: ExtensionCommandResult = await self._perform(
+        answer = await self._rpc(
             "answer_request", request_id=request_id, action=action, values=values
         )
-        return result
+        return ExtensionCommandResult(handled=answer["handled"], output=answer["output"])
 
-    async def navigate_tree(self, target_id: str | None, **options: Any) -> list[dict]:
-        result: list[dict] = await self._perform("navigate_tree", target_id=target_id, **options)
-        return result
+    async def navigate_tree(
+        self,
+        target_id: str,
+        *,
+        summarize: bool = False,
+        custom_instructions: str | None = None,
+    ) -> list[dict]:
+        if summarize:
+            answer = await self._rpc(
+                "summarize_and_navigate",
+                target_id=target_id,
+                custom_instructions=custom_instructions,
+            )
+        else:
+            answer = await self._rpc("navigate", target_id=target_id)
+        messages: list[dict] = answer["messages"]
+        return messages
 
     async def elide_span(self, anchor_id: str, first_kept_id: str) -> list[dict]:
-        result: list[dict] = await self._perform(
-            "elide_span", anchor_id=anchor_id, first_kept_id=first_kept_id
-        )
-        return result
+        answer = await self._rpc("elide_span", anchor_id=anchor_id, first_kept_id=first_kept_id)
+        messages: list[dict] = answer["messages"]
+        return messages
 
     async def commit_branch(self, ids: list[str], *, drop_context: bool) -> list[dict]:
-        result: list[dict] = await self._perform(
-            "commit_branch", ids=list(ids), drop_context=drop_context
-        )
-        return result
+        answer = await self._rpc("commit_branch", ids=list(ids), drop_context=drop_context)
+        messages: list[dict] = answer["messages"]
+        return messages
 
     async def paste_subtree(self, source_id: str, target_id: str) -> list[str]:
-        result: list[str] = await self._perform(
-            "paste_subtree", source_id=source_id, target_id=target_id
-        )
-        return result
+        answer = await self._rpc("paste_subtree", source_id=source_id, target_id=target_id)
+        minted: list[str] = answer["minted_ids"]
+        return minted
 
     async def rollback_turn(self, text: str) -> SubmissionResult:
-        result: SubmissionResult = await self._perform("rollback_turn", text=text)
-        return result
+        """Roll the head cursor's last turn back and send ``text``, as ``TauBackend.rollback_turn``."""
+        return await self.submit_turn(
+            Submission(
+                text=text,
+                source="interactive",
+                submitter="human",
+                submission_id=uuid.uuid4().hex,
+                multitask_strategy="rollback",
+                allow_user_input=True,
+            ),
+            None,
+        )
 
     def close(self) -> None:
         """Stop listening for this session's UI events."""

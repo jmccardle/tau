@@ -109,7 +109,8 @@ def render_markdown() -> str:
     w(f"- **Protocol version:** `{p.PROTOCOL_VERSION}`")
     w(f"- **Default port:** `{p.DEFAULT_PORT}`")
     w(
-        f"- **Counts:** {len(p.REQUESTS)} requests, {len(p.EVENT_KINDS)} event kinds, "
+        f"- **Counts:** {len(p.REQUESTS) + len(p.RPC_VERBS)} requests "
+        f"({len(p.RPC_VERBS)} of them RPC verbs), {len(p.EVENT_KINDS)} event kinds, "
         f"{len(defs)} schema definitions. Cite this line; never copy the numbers into "
         "hand-written prose."
     )
@@ -150,6 +151,23 @@ def render_markdown() -> str:
         w("")
         w(f"**Answered with:** {_type_text(schema['Results'][tag])}.")
     w("")
+    w("## RPC verbs")
+    w("")
+    w(_doc(p.RpcCall))
+    w("")
+    w(
+        "Each takes RPC's params as documented in `docs/RPC-PROTOCOL.md`, plus "
+        "`session_id` and `cursor_id`, and answers RPC's result."
+    )
+    for verb in p.RPC_VERBS:
+        name = p._camel(verb)
+        w("")
+        w(f"### `{verb}`")
+        w("")
+        w(_cell(defs[name]["description"]))
+        w("")
+        w(f"**Answered with:** {_type_text(schema['Results'][verb])}.")
+    w("")
     w("## Responses")
     w("")
     w(_doc(p.Response))
@@ -184,7 +202,7 @@ def render_markdown() -> str:
     w("## Definitions")
     w("")
     w("Every `$defs` entry the requests above do not already show, by name.")
-    shown = {cls.__name__ for cls in p.REQUESTS}
+    shown = {cls.__name__ for cls in p.REQUESTS} | {p._camel(v) for v in p.RPC_VERBS}
     for name in sorted(defs):
         if name in shown:
             continue

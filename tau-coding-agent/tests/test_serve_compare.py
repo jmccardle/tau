@@ -113,10 +113,10 @@ async def served(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 async def _session(client: ServeClient, tmp_path: Path, first: str = "first"):
-    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     replica = await client.attach(session_id)
-    await client.request(
-        p.Submit(session_id=session_id, cursor_id=replica.head_cursor_id, text=first)
+    await client.submit_and_wait(
+        session_id, replica.head_cursor_id, first, source="rpc", submitter="test"
     )
     return session_id, replica
 
@@ -205,15 +205,16 @@ async def test_a_typed_compare_command_runs_a_comparison(served, tmp_path):
     client = await ServeClient.connect(address, client="test")
     session_id, replica = await _session(client, tmp_path)
 
-    result = await client.request(
-        p.Submit(
-            session_id=session_id,
-            cursor_id=replica.head_cursor_id,
-            text="/compare a b -- from a command",
-        )
+    result = await client.submit_and_wait(
+        session_id,
+        replica.head_cursor_id,
+        "/compare a b -- from a command",
+        source="rpc",
+        submitter="test",
+        expand_commands=True,
     )
 
-    command = result["command"]
+    command = result["dispatched"]
     assert command["arm"] == "Performed" and command["mutation"] == "compare"
     comparison = daemon.hosts[session_id].backend.comparisons[command["data"]["comparison_id"]]
     results = await asyncio.gather(*comparison.turns)
