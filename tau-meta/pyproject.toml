@@ -43,6 +43,11 @@ dependencies = [
     "ffwf-tau-llm[anthropic,google]==0.11.0",
 ]
 
+# `ffwf-tau[serve]` adds the daemon (`tau serve`, `tau --connect`), which needs
+# websockets; the base install stays a program that works on its own.
+[project.optional-dependencies]
+serve = ["ffwf-tau-coding-agent[tui,serve]==0.11.0"]
+
 # The PUBLIC repository only. This tree has a second, private git remote whose
 # history is unfiltered; its hostname must never reach this file or a README,
 # because both are uploaded verbatim (pyproject.toml ships inside the sdist).

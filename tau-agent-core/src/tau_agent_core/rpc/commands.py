@@ -206,7 +206,12 @@ from uuid import uuid4
 
 from tau_agent_core.agent_session_runtime import DEFAULT_SWAP_TIMEOUT_S
 from tau_agent_core.flows import Dispatched, FlowStep, Performed, Ready, View
-from tau_agent_core.projections import MODEL_CATALOG_ATTR, resolver_error_message
+from tau_agent_core.projections import (
+    MODEL_CATALOG_ATTR,
+    attachment_expansion,
+    request_payload,
+    resolver_error_message,
+)
 from tau_agent_core.rpc import capabilities
 from tau_agent_core.rpc.schema import params_schema_for, result_schema_for
 from tau_agent_core.session_log import (
@@ -739,54 +744,6 @@ def _reject_unsupported_multitask_strategy(params: dict[str, Any]) -> None:
         raise RPCError(INVALID_PARAMS, reason, data={"multitask_strategy": strategy})
 
 
-def _expanded_text_and_images(
-    params: dict[str, Any],
-) -> tuple[str, list[dict[str, Any]] | None, dict[str, Any]]:
-    """Resolve `@file` references in `params["text"]`, the way the TUI's editor does.
-
-    The RPC counterpart of `TauApp._expand_attachments` (app.py), and
-    deliberately the same two calls in the same order: `scan_attachments` to
-    decide what each `@word` IS, then `render_attachments` to read the files
-    at THIS moment. docs/FILE-ATTACHMENTS.md §2 puts expansion in the frontend
-    because the core decides and the frontend performs — over this wire τ IS
-    the frontend, which is the whole reason a head cannot do this for itself
-    without re-implementing the block vocabulary in another language.
-
-    Returns:
-        `(text, images, report)`. `images` is `None` for "none", which is what
-        `Submission` expects. `report` is the result's `attachments` key.
-    """
-    from tau_agent_core.attachments import (
-        SENDABLE_KINDS,
-        render_attachments,
-        scan_attachments,
-    )
-
-    text: str = params["text"]
-    attachments = scan_attachments(text, cwd=Path.cwd())
-    unresolved = [a.token for a in attachments if a.kind == "unresolved"]
-    sendable = [a for a in attachments if a.kind in SENDABLE_KINDS]
-
-    if not sendable:
-        return text, None, {"expanded": 0, "images": 0, "unresolved": unresolved, "failures": []}
-
-    rendered = render_attachments(attachments)
-    images = list(rendered.images) or None
-    incoming = params.get("images")
-    if incoming:
-        images = list(incoming) + list(rendered.images)
-    return (
-        rendered.prefix + text,
-        images,
-        {
-            "expanded": len(sendable),
-            "images": len(rendered.images),
-            "unresolved": unresolved,
-            "failures": list(rendered.failures),
-        },
-    )
-
-
 def _submission_from_params(params: dict[str, Any]) -> tuple[Submission, dict[str, Any] | None]:
     """Build a `Submission` from wire params. Provenance is ALWAYS present on
     the constructed record — defaulted when the caller omits it (`prompt`'s
@@ -805,7 +762,7 @@ def _submission_from_params(params: dict[str, Any]) -> tuple[Submission, dict[st
     images: list[dict[str, Any]] | None = params.get("images")
     report: dict[str, Any] | None = None
     if params.get("expand_attachments"):
-        text, images, report = _expanded_text_and_images(params)
+        text, images, report = attachment_expansion(text, images, Path.cwd())
 
     kwargs: dict[str, Any] = {
         "text": text,
@@ -3244,25 +3201,6 @@ async def _handle_get_entry(
 GET_PENDING_REQUEST_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_pending_request")
 
 
-def _request_payload(request: Any) -> dict[str, Any]:
-    """One :class:`ExtensionRequest`, projected onto the wire.
-
-    `label` and `extension_name` are properties rather than fields, and both are
-    sent: a host recomputing τ's four-state framing line from `lock` and `ask`
-    would be a second copy of the one table `docs/EXTENSION-LOCKS.md` §9 owns.
-    """
-    return {
-        "entry_id": request.entry_id,
-        "extension": request.extension,
-        "extension_name": request.extension_name,
-        "sentence": request.sentence,
-        "label": request.label,
-        "lock": request.lock,
-        "ask": request.ask,
-        "release": request.release,
-    }
-
-
 @command(
     "get_pending_request",
     tier="C",
@@ -3287,7 +3225,7 @@ async def _handle_get_pending_request(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     request = handler.session.pending_request
-    return {"request": None if request is None else _request_payload(request)}
+    return {"request": None if request is None else request_payload(request)}
 
 
 ### end tier-c:get_pending_request

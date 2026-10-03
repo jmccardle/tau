@@ -21,9 +21,11 @@ from typing import Any, TextIO, cast
 
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.cursor import TURN_CURSOR, Cursor, TurnFrame
+from tau_agent_core.extension_locks import request_at
 from tau_agent_core.extension_types import form_headless_value, validate_form_spec
 from tau_agent_core.flows import Performed, Ready, UnknownFlowError
 from tau_agent_core.projections import (
+    attachment_expansion,
     browse_rows,
     command_vocabulary,
     domain_listing,
@@ -31,11 +33,13 @@ from tau_agent_core.projections import (
     flow_next_step,
     model_catalog,
     path_completion,
+    request_payload,
 )
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.session_log import SessionLog, is_incomplete
 from tau_agent_core.submission import Submission
 
+from tau_coding_agent import __version__
 from tau_coding_agent.serve import protocol as p
 
 QUEUE_BOUND = 20_000
@@ -96,27 +100,6 @@ def watch_writes(log: SessionLog, listener: Callable[[str, dict[str, Any]], None
     log.finalize = watched_finalize  # type: ignore[method-assign]
 
 
-def _json_safe(value: Any) -> Any:
-    """``value`` with everything JSON cannot hold turned into its ``str``."""
-    return json.loads(json.dumps(value, default=str))
-
-
-def dispatched_to_wire(command: Any) -> dict[str, Any] | None:
-    """A dispatched command arm as ``{"arm": name, ...fields}``, or ``None``."""
-    if command is None:
-        return None
-    is_record = dataclasses.is_dataclass(command) and not isinstance(command, type)
-    fields = dataclasses.asdict(command) if is_record else {}
-    return {"arm": type(command).__name__, **_json_safe(fields)}
-
-
-def value_to_wire(value: Any) -> dict[str, Any]:
-    """A :class:`~protocol.Perform` result: a record as ``{"kind": class, "fields"}``, else a value."""
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {"kind": type(value).__name__, "fields": _json_safe(dataclasses.asdict(value))}
-    return {"kind": "value", "value": _json_safe(value)}
-
-
 @dataclasses.dataclass(frozen=True)
 class SessionScope:
     """The ``runtime`` :func:`~tau_agent_core.flows.enumerate_domain` reads: a catalog and a cwd."""
@@ -165,7 +148,7 @@ class ServeUI:
 
     def __init__(self, host: SessionHost) -> None:
         self._host = host
-        self._forms: dict[str, asyncio.Future[dict[str, Any] | None]] = {}
+        self._forms: dict[str, tuple[asyncio.Future[dict[str, Any] | None], dict[str, Any]]] = {}
 
     async def form(self, spec: dict[str, Any]) -> dict[str, Any] | None:
         title, fields = validate_form_spec(spec)
@@ -174,29 +157,33 @@ class ServeUI:
             return {field["name"]: form_headless_value(field) for field in fields}
         request_id = uuid.uuid4().hex[:8]
         future: asyncio.Future[dict[str, Any] | None] = asyncio.get_running_loop().create_future()
-        self._forms[request_id] = future
-        self._host.publish("request", {"request_id": request_id, "spec": spec})
+        self._forms[request_id] = (future, spec)
+        self._host.publish("request", p.to_wire(p.RequestEventData(request_id, spec)))
         try:
             return await future
         finally:
             del self._forms[request_id]
-            self._host.publish("request_closed", {"request_id": request_id})
+            self._host.publish("request_closed", p.to_wire(p.RequestClosedEventData(request_id)))
+
+    def open_forms(self) -> list[p.RequestEventData]:
+        """Every form waiting for an answer, oldest first."""
+        return [p.RequestEventData(rid, spec) for rid, (_, spec) in self._forms.items()]
 
     def answer(self, request_id: str, value: dict[str, Any] | None) -> None:
         """Resolve a form; a second answer to the same form is refused."""
-        future = self._forms.get(request_id)
+        future, _ = self._forms.get(request_id, (None, None))
         if future is None or future.done():
             raise RequestError("not_found", f"no open form {request_id!r}")
         future.set_result(value)
 
     def notify(self, message: str, level: str = "info") -> None:
-        self._host.publish("ui", {"op": "notify", "message": message, "level": level})
+        self._host.publish("ui", p.to_wire(p.UiNotify(message=message, level=level)))
 
     def set_status(self, key: str, text: str | None) -> None:
-        self._host.publish("ui", {"op": "status", "key": key, "text": text})
+        self._host.publish("ui", p.to_wire(p.UiStatus(key=key, text=text)))
 
     def panel(self, key: str, spec: dict[str, Any] | None) -> None:
-        self._host.publish("ui", {"op": "panel", "key": key, "spec": spec})
+        self._host.publish("ui", p.to_wire(p.UiPanel(key=key, spec=spec)))
 
 
 class SessionHost:
@@ -214,11 +201,13 @@ class SessionHost:
         self.history: collections.deque[dict[str, Any]] = collections.deque(maxlen=REPLAY_BOUND)
         self.clients: set[Client] = set()
         self.ui = ServeUI(self)
-        self._cursors_seen: list[dict[str, Any]] = []
+        self._cursors_seen: list[p.CursorState] = []
         self._tool_started: dict[str, float] = {}
         self._turn_tokens: dict[str, int] = {}
         self._open_entries: dict[str, tuple[str, str | None]] = {}
         self._submission_cursor: dict[str, str | None] = {}
+        self._requests: dict[str, p.ExtensionRequest | None] = {}
+        self.attachment_reports: dict[str, dict[str, Any]] = {}
 
     async def start(self, cwd: str) -> None:
         """Bind the session's cursor, wire every event source, then load extensions."""
@@ -264,21 +253,38 @@ class SessionHost:
             return str(cursor.frame.model.id)
         return str(self.agent_session.get_model()["id"])
 
-    def cursor_states(self) -> list[dict[str, Any]]:
-        """Every live cursor as a :class:`~protocol.CursorState` dict, oldest first."""
-        return [
-            p.to_wire(
-                p.CursorState(
-                    cursor_id=c.id,
-                    leaf=c.leaf,
-                    label=c.label,
-                    owner_id=c.owner.id if c.owner is not None else None,
-                    busy=c.busy,
-                    model=self.cursor_model(c),
-                )
+    def cursor_states(self) -> list[p.CursorState]:
+        """Every live cursor, oldest first."""
+        cursors = list(self.agent_session.cursors)
+        states = [
+            p.CursorState(
+                cursor_id=c.id,
+                leaf=c.leaf,
+                label=c.label,
+                owner_id=c.owner.id if c.owner is not None else None,
+                busy=c.busy,
+                model=self.cursor_model(c),
+                request=self._request_at(c.leaf),
             )
-            for c in self.agent_session.cursors
+            for c in cursors
         ]
+        self._requests = {c.leaf: self._requests[c.leaf] for c in cursors if c.leaf is not None}
+        return states
+
+    def _request_at(self, leaf: str | None) -> p.ExtensionRequest | None:
+        """The extension request at ``leaf``, projected, read once per leaf.
+
+        An entry never changes once finished and a leaf is always finished, so
+        the answer at a leaf is fixed; this runs after every event.
+        """
+        if leaf is None:
+            return None
+        if leaf not in self._requests:
+            found = request_at(self.log.entries(), leaf)
+            self._requests[leaf] = (
+                None if found is None else p.ExtensionRequest(**request_payload(found))
+            )
+        return self._requests[leaf]
 
     def publish(self, kind: str, data: dict[str, Any]) -> None:
         """Number an event, keep it for replay, and push it to every attached client."""
@@ -301,12 +307,15 @@ class SessionHost:
 
     def sync_cursors(self) -> None:
         """Publish the cursor set if it changed since it was last published."""
-        states = self.cursor_states()
-        if states != self._cursors_seen:
-            self._cursors_seen = states
-            self.publish("cursors", {"cursors": states})
+        if self.cursor_states() != self._cursors_seen:
+            self.publish_cursors()
 
-    def attach(self, client: Client, epoch: str | None, since: int | None) -> dict[str, Any]:
+    def publish_cursors(self) -> None:
+        """Publish the whole cursor set now, and remember it as published."""
+        self._cursors_seen = self.cursor_states()
+        self.publish("cursors", p.to_wire(p.CursorsEventData(self._cursors_seen)))
+
+    def attach(self, client: Client, epoch: str | None, since: int | None) -> p.Attached:
         """Register ``client`` and return its :class:`~protocol.Attached`, queueing any replay.
 
         Synchronous on purpose: no event can be published between the snapshot
@@ -319,16 +328,17 @@ class SessionHost:
             epoch=self.epoch,
             seq=since if replay and since is not None else self.seq,
             entries=None if replay else self.log.entries(),
-            cursors=[p.CursorState(**c) for c in self.cursor_states()],
+            cursors=self.cursor_states(),
             head_cursor_id=self.agent_session.cursor.id,
             cwd=self.cwd,
             models=self.models(),
             surface=self.surface(),
+            requests=self.ui.open_forms(),
         )
         self.clients.add(client)
         client.attached.add(self.session_id)
         self.daemon.log(f"{self.tag} client {client.id} ({client.name}) attached")
-        return p.to_wire(attached)
+        return attached
 
     def surface(self) -> p.Surface:
         """The session's command vocabulary and extension state, read now."""
@@ -381,7 +391,7 @@ class SessionHost:
             )
         elif kind == "entry_final":
             self._open_entries.pop(entry["id"], None)
-        self.publish(kind, {"entry": entry})
+        self.publish(kind, p.to_wire(p.EntryEventData(entry=entry)))
 
     def _on_agent_event(self, event: Any) -> None:
         data = event.model_dump(mode="json")
@@ -404,30 +414,38 @@ class SessionHost:
 
     def _channel(self, name: str) -> Callable[..., None]:
         def handler(**payload: Any) -> None:
+            data: Any
             if name == "submission_start":
                 submission = payload["submission"]
                 cursor = payload.get("cursor")
-                data = {
-                    "submission": dataclasses.asdict(submission),
-                    "text": payload.get("text", ""),
-                    "images": payload.get("images"),
-                    "cursor_id": cursor.id if cursor is not None else None,
-                    "owner_id": cursor.owner.id
-                    if cursor is not None and cursor.owner is not None
-                    else None,
-                }
-                self._submission_cursor[submission.submission_id] = data["cursor_id"]
+                cursor_id = cursor.id if cursor is not None else None
+                report = self.attachment_reports.get(submission.submission_id)
+                data = p.SubmissionStartChannel(
+                    p.SubmissionStartPayload(
+                        submission=p.SubmissionInfo(**dataclasses.asdict(submission)),
+                        text=payload.get("text", ""),
+                        images=payload.get("images"),
+                        cursor_id=cursor_id,
+                        owner_id=cursor.owner.id
+                        if cursor is not None and cursor.owner is not None
+                        else None,
+                        attachments=p.AttachmentReport(**report) if report is not None else None,
+                    )
+                )
+                self._submission_cursor[submission.submission_id] = cursor_id
                 preview = " ".join(str(payload.get("text", "")).split())[:60]
                 model = self.cursor_model(cursor) if cursor is not None else "?"
                 self.daemon.log(
-                    f"{self.tag} cursor {data['cursor_id']} turn started ({model}): {preview!r}"
+                    f"{self.tag} cursor {cursor_id} turn started ({model}): {preview!r}"
                 )
             elif name == "submission_end":
                 submission = payload["submission"]
-                data = {
-                    "submission": dataclasses.asdict(submission),
-                    "side_usage": payload.get("side_usage"),
-                }
+                data = p.SubmissionEndChannel(
+                    p.SubmissionEndPayload(
+                        submission=p.SubmissionInfo(**dataclasses.asdict(submission)),
+                        side_usage=payload.get("side_usage"),
+                    )
+                )
                 tokens = self._turn_tokens.pop(submission.submission_id, 0)
                 self.daemon.log(
                     f"{self.tag} turn {submission.submission_id[:8]} ended: {tokens} tokens"
@@ -438,10 +456,8 @@ class SessionHost:
                         self.daemon.log(f"{self.tag} {kind} entry {entry_id} left incomplete")
                         del self._open_entries[entry_id]
             else:
-                data = dict(payload)
-            self.publish(
-                "channel", {"name": name, "payload": json.loads(json.dumps(data, default=str))}
-            )
+                data = p.CustomMessageChannel(p.CustomMessagePayload(**payload))
+            self.publish("channel", p.json_safe(p.to_wire(data)))
 
         return handler
 
@@ -450,13 +466,11 @@ class SessionHost:
         self.daemon.log(
             f"{self.tag} cursor {cursor.id} opened at {cursor.leaf} ({cursor.label!r}{owner})"
         )
-        self.publish("cursors", {"cursors": self.cursor_states()})
-        self._cursors_seen = self.cursor_states()
+        self.publish_cursors()
 
     def _on_cursor_close(self, *, cursor: Cursor) -> None:
         self.daemon.log(f"{self.tag} cursor {cursor.id} closed")
-        self.publish("cursors", {"cursors": self.cursor_states()})
-        self._cursors_seen = self.cursor_states()
+        self.publish_cursors()
 
 
 class Daemon:
@@ -484,6 +498,7 @@ class Daemon:
         self._loading: dict[str, asyncio.Lock] = {}
         self._out = out if out is not None else sys.stdout
         self._numbers = 0
+        self.cwd = os.getcwd()
 
     def log(self, line: str) -> None:
         """One foreground log line, timestamped (docs/TAU-SERVE.md §6.1)."""
@@ -570,7 +585,14 @@ class Daemon:
         client.name = hello.client
         self.clients.add(client)
         self.log(f"client {client.id} ({client.name}) connected")
-        client.push(self._ok(request_id, {"protocol": p.PROTOCOL_VERSION, "client_id": client.id}))
+        hello_result = p.HelloResult(
+            protocol=p.PROTOCOL_VERSION,
+            client_id=client.id,
+            pid=os.getpid(),
+            version=__version__,
+            cwd=self.cwd,
+        )
+        client.push(self._ok(request_id, p.to_wire(hello_result)))
         return True
 
     @staticmethod
@@ -588,7 +610,10 @@ class Daemon:
             if isinstance(request, p.Attach):
                 await self._attach(client, request_id, request)
                 return
-            result = await self._dispatch(client, request)
+            result = p.result_to_wire(request, await self._dispatch(client, request))
+            host = self.hosts.get(getattr(request, "session_id", ""))
+            if host is not None:
+                host.sync_cursors()
         except RequestError as exc:
             client.push(self._error(request_id, exc.code, str(exc)))
         except Exception as exc:
@@ -600,8 +625,8 @@ class Daemon:
     async def _attach(self, client: Client, request_id: int, request: p.Attach) -> None:
         host = await self.load(request.session_id)
         attached = host.attach(client, request.epoch, request.since)
-        client.push(self._ok(request_id, attached))
-        if attached["entries"] is None and request.since is not None:
+        client.push(self._ok(request_id, p.result_to_wire(request, attached)))
+        if attached.entries is None and request.since is not None:
             host.replay(client, request.since)
 
     async def load(self, ref: str) -> SessionHost:
@@ -673,7 +698,7 @@ class Daemon:
                 cursor = await session.open_cursor(request.leaf, owner=owner, label=request.label)
             except ValueError as exc:
                 raise RequestError("not_found", str(exc)) from exc
-            return {"cursor_id": cursor.id}
+            return p.CursorOpened(cursor.id)
         if isinstance(request, p.CloseCursor):
             try:
                 await session.close_cursor(host.cursor(request.cursor_id))
@@ -690,7 +715,7 @@ class Daemon:
                 cursor.move(request.leaf)
             except ValueError as exc:
                 raise RequestError("not_found", str(exc)) from exc
-            host.publish("cursors", {"cursors": host.cursor_states()})
+            host.publish_cursors()
             return None
         if isinstance(request, p.SetModel):
             return await self._set_model(host, request)
@@ -707,25 +732,29 @@ class Daemon:
                 raise RequestError("bad_request", str(exc)) from exc
             finally:
                 TURN_CURSOR.reset(token)
-            return {"handled": outcome.handled, "output": outcome.output_text()}
+            return p.RequestAnswered(handled=outcome.handled, output=outcome.output_text())
         if isinstance(request, p.Perform):
             return await self._perform(client, host, request)
+        if isinstance(request, p.PerformReady):
+            return await self._perform_ready_request(host, request)
         if isinstance(request, p.Describe):
-            return p.to_wire(host.surface())
+            return host.surface()
         if isinstance(request, p.Compare):
             return await self._compare(host, request)
         if isinstance(request, p.EndCompare):
             return await self._end_compare(host, request)
         if isinstance(request, p.NextStep):
             try:
-                return flow_next_step(request.flow, request.bound, request.leaf, session.vocabulary)
+                return p.NextStepResult(
+                    **flow_next_step(request.flow, request.bound, request.leaf, session.vocabulary)
+                )
             except UnknownFlowError as exc:
                 raise RequestError("not_found", str(exc.args[0])) from exc
         if isinstance(request, p.EnumerateDomain):
             if request.domain not in session.vocabulary.domains:
                 raise RequestError("not_found", f"no domain {request.domain!r}")
             try:
-                return domain_listing(
+                listing = domain_listing(
                     request.domain,
                     session=session,
                     runtime=SessionScope(self.catalog, host.cwd),
@@ -734,40 +763,47 @@ class Daemon:
                     query=request.query,
                     limit=request.limit,
                 )
+                return p.DomainListing(
+                    domain=listing["domain"],
+                    values=[p.DomainChoice(**v) for v in listing["values"]],
+                    total=listing["total"],
+                )
             except KeyError as exc:
                 raise RequestError("not_found", str(exc.args[0])) from exc
             except ValueError as exc:
                 raise RequestError("bad_request", str(exc)) from exc
         if isinstance(request, p.CompletePath):
-            return path_completion(request.text, request.offset, Path(host.cwd))
+            found = path_completion(request.text, request.offset, Path(host.cwd))["completion"]
+            if found is None:
+                return p.CompletePathResult(None)
+            matches = [p.PathMatch(**m) for m in found.pop("matches")]
+            return p.CompletePathResult(p.AttachmentCompletion(matches=matches, **found))
         if isinstance(request, p.GetTree):
             cursor = host.cursor(request.cursor_id)
-            nodes = browse_rows(cursor.tree())
-            return {"nodes": nodes, "leaf": cursor.leaf, "count": len(nodes)}
+            nodes = [p.TreeRow(**row) for row in browse_rows(cursor.tree())]
+            return p.TreeResult(nodes=nodes, leaf=cursor.leaf, count=len(nodes))
         if isinstance(request, p.ForkSession):
             return self._fork_session(host, request.at)
         raise RequestError("bad_request", f"unhandled request {type(request).__name__}")
 
-    async def _list_sessions(self) -> dict[str, Any]:
+    async def _list_sessions(self) -> p.SessionList:
         infos = await asyncio.to_thread(self.catalog.list, None)
         rows = [
-            p.to_wire(
-                p.SessionRow(
-                    id=info.id,
-                    cwd=info.cwd,
-                    name=info.name,
-                    modified=info.modified.isoformat(),
-                    message_count=info.message_count,
-                    first_message=info.first_message,
-                    loaded=info.id in self.hosts,
-                )
+            p.SessionRow(
+                id=info.id,
+                cwd=info.cwd,
+                name=info.name,
+                modified=info.modified.isoformat(),
+                message_count=info.message_count,
+                first_message=info.first_message,
+                loaded=info.id in self.hosts,
             )
             for info in infos
             if info.error is None
         ]
-        return {"sessions": rows}
+        return p.SessionList(rows)
 
-    async def _create_session(self, request: p.CreateSession) -> dict[str, Any]:
+    async def _create_session(self, request: p.CreateSession) -> p.SessionCreated:
         from tau_coding_agent.backends import create_backend
         from tau_coding_agent.cli import CLIArgs
         from tau_coding_agent.headless import resolve_model_config
@@ -788,24 +824,32 @@ class Daemon:
             name=request.name,
         )
         self.log(f"session {log.id[:8]} created in {cwd}")
-        return {"session_id": log.id}
+        return p.SessionCreated(log.id)
 
-    async def _submit(self, host: SessionHost, request: p.Submit) -> dict[str, Any]:
+    async def _submit(self, host: SessionHost, request: p.Submit) -> p.SubmitResult:
         cursor = host.cursor(request.cursor_id)
         strategy = (
             "followUp" if request.multitask_strategy == "follow_up" else request.multitask_strategy
         )
+        text, images = request.text, request.images
+        submission_id = request.submission_id or uuid.uuid4().hex
+        if request.expand_attachments:
+            text, images, report = attachment_expansion(text, images, Path(host.cwd))
+            host.attachment_reports[submission_id] = report
         submission = Submission(
-            text=request.text,
-            images=request.images,
+            text=text,
+            images=images,
             source="interactive",
             submitter="human",
-            submission_id=request.submission_id or uuid.uuid4().hex,
+            submission_id=submission_id,
             multitask_strategy=strategy,  # type: ignore[arg-type]
             expand_commands=request.expand_commands,
             allow_user_input=True,
         )
-        result = await host.agent_session.submit(submission, cursor=cursor)
+        try:
+            result = await host.agent_session.submit(submission, cursor=cursor)
+        finally:
+            host.attachment_reports.pop(submission_id, None)
         command = result.command
         if isinstance(command, Ready) and command.mutation not in SWITCHING:
             token = TURN_CURSOR.set(cursor)
@@ -813,14 +857,38 @@ class Daemon:
                 command = await self._perform_ready(host, cursor, command)
             finally:
                 TURN_CURSOR.reset(token)
-        return p.to_wire(
-            p.SubmitResult(
-                accepted=result.accepted,
-                submission_id=result.submission_id,
-                reason=result.rejection_reason,
-                command=dispatched_to_wire(command),
-            )
+        return p.SubmitResult(
+            accepted=result.accepted,
+            submission_id=result.submission_id,
+            reason=result.rejection_reason,
+            command=p.command_to_wire(command),
         )
+
+    async def _perform_ready_request(self, host: SessionHost, request: p.PerformReady) -> Any:
+        """Perform a client's ``Ready`` at its cursor; a :data:`SWITCHING` one comes back as is.
+
+        Raises:
+            RequestError: no such flow, or a mutation that is not the flow's.
+        """
+        cursor = host.cursor(request.cursor_id)
+        ready = request.ready
+        flow = host.agent_session.vocabulary.flow(ready.flow)
+        if flow is None:
+            raise RequestError("not_found", f"no flow {ready.flow!r}")
+        if flow.mutation != ready.mutation:
+            raise RequestError(
+                "bad_request",
+                f"/{ready.flow} performs {flow.mutation!r}, not {ready.mutation!r}",
+            )
+        if ready.mutation in SWITCHING:
+            return ready
+        token = TURN_CURSOR.set(cursor)
+        try:
+            performed = await self._perform_ready(host, cursor, ready)
+        finally:
+            TURN_CURSOR.reset(token)
+        host.sync_cursors()
+        return performed
 
     async def _perform_ready(self, host: SessionHost, cursor: Cursor, ready: Ready) -> Performed:
         """Perform a command whose arguments are all bound, at ``cursor``, as a local head would.
@@ -838,7 +906,7 @@ class Daemon:
             return Performed(
                 flow=ready.flow,
                 mutation="set_model",
-                data={"model": {"id": answer["model"], "name": ready.arguments["name"]}},
+                data={"model": {"id": answer.model, "name": ready.arguments["name"]}},
             )
         if ready.mutation == "compare":
             return await self._start_compare(
@@ -866,7 +934,7 @@ class Daemon:
             )
         return result
 
-    async def _set_model(self, host: SessionHost, request: p.SetModel) -> dict[str, Any]:
+    async def _set_model(self, host: SessionHost, request: p.SetModel) -> p.ModelSet:
         cursor = host.cursor(request.cursor_id)
         session = host.agent_session
         if cursor is session.cursor:
@@ -884,12 +952,10 @@ class Daemon:
                 max_turns=frame.max_turns if frame is not None else None,
                 hooks=frame.hooks if frame is not None else True,
             )
-        host.publish("cursors", {"cursors": host.cursor_states()})
-        return {"model": host.cursor_model(cursor)}
+        host.publish_cursors()
+        return p.ModelSet(host.cursor_model(cursor))
 
-    async def _perform(
-        self, client: Client, host: SessionHost, request: p.Perform
-    ) -> dict[str, Any]:
+    async def _perform(self, client: Client, host: SessionHost, request: p.Perform) -> Any:
         """Run a :data:`~protocol.PERFORMABLE` backend operation for a client, at its cursor.
 
         The backend acts on ``AgentSession._turn_cursor()``, which is
@@ -912,9 +978,9 @@ class Daemon:
         finally:
             TURN_CURSOR.reset(token)
         host.sync_cursors()
-        return value_to_wire(result)
+        return p.perform_answer(result)
 
-    def _fork_session(self, host: SessionHost, at: str | None) -> dict[str, Any]:
+    def _fork_session(self, host: SessionHost, at: str | None) -> p.SessionForked:
         """Copy ``host``'s session, whole or up to ``at``, into a new one in its cwd.
 
         Raises:
@@ -932,11 +998,16 @@ class Daemon:
             )
         forked = self.catalog.fork(host.log, host.cwd, at=at)
         self.log(f"{host.tag} forked into session {forked.id[:8]}" + (f" at {at}" if at else ""))
-        return {"session_id": forked.id}
+        return p.SessionForked(forked.id)
 
-    async def _compare(self, host: SessionHost, request: p.Compare) -> dict[str, Any]:
+    async def _compare(self, host: SessionHost, request: p.Compare) -> p.CompareStarted:
         performed = await self._start_compare(host, request.models, request.text, request.leaf)
-        return dict(performed.data)
+        data = performed.data
+        return p.CompareStarted(
+            comparison_id=data["comparison_id"],
+            cursors=[p.CompareCursor(**c) for c in data["cursors"]],
+            message=data["message"],
+        )
 
     async def _start_compare(
         self, host: SessionHost, models: list[str], text: str, leaf: str | None
@@ -971,7 +1042,7 @@ class Daemon:
 
         return done
 
-    async def _end_compare(self, host: SessionHost, request: p.EndCompare) -> dict[str, Any]:
+    async def _end_compare(self, host: SessionHost, request: p.EndCompare) -> p.CompareEnded:
         try:
             leaf = await host.backend.end_compare(request.comparison_id, request.keep)
         except KeyError as exc:
@@ -980,8 +1051,8 @@ class Daemon:
             raise RequestError("busy", str(exc)) from exc
         kept = f"kept {request.keep}" if request.keep is not None else "kept none"
         self.log(f"{host.tag} compare {request.comparison_id} ended, {kept}; head at {leaf}")
-        host.publish("cursors", {"cursors": host.cursor_states()})
-        return {"leaf": leaf}
+        host.publish_cursors()
+        return p.CompareEnded(leaf)
 
     async def shutdown(self) -> None:
         """Fire ``session_shutdown`` on every loaded session."""

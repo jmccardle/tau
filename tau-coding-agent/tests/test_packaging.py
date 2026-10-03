@@ -270,9 +270,11 @@ def test_the_metapackage_resolves_to_the_completionist_install_and_nothing_else(
         f"ffwf-tau-agent-core[images]=={version}",
         f"ffwf-tau-llm[anthropic,google]=={version}",
     ]
-    assert "optional-dependencies" not in project, (
-        "the metapackage grew an extra; an extra on a name that installs another "
-        "package's extra is two indirections to document and one to get wrong."
+    assert project["optional-dependencies"] == {
+        "serve": [f"ffwf-tau-coding-agent[tui,serve]=={version}"]
+    }, (
+        "the metapackage's extras changed; `serve` is the one it carries, because "
+        "the daemon needs websockets and the base install must not"
     )
 
 

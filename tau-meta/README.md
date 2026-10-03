@@ -8,6 +8,9 @@ pip install ffwf-tau
 tau
 ```
 
+`pip install 'ffwf-tau[serve]'` adds the daemon: `tau serve`, and `tau --connect`
+to drive it from another terminal or machine.
+
 This distribution contains no code. It depends on the other Tau distributions at
 the same version, with the extras that make the program complete on its own, so
 the two commands above install `tau` and start it.

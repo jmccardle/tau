@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from tau_agent_core.sdk import LoadExtensionsResult
 
 __all__ = [
+    "attachment_expansion",
     "browse_rows",
     "command_vocabulary",
     "domain_listing",
@@ -27,8 +28,66 @@ __all__ = [
     "flow_next_step",
     "model_catalog",
     "path_completion",
+    "request_payload",
     "resolver_error_message",
 ]
+
+
+def attachment_expansion(
+    text: str, images: list[dict[str, Any]] | None, cwd: Path
+) -> tuple[str, list[dict[str, Any]] | None, dict[str, Any]]:
+    """Resolve the ``@file`` references in ``text`` against ``cwd``, as the TUI's editor does.
+
+    ``scan_attachments`` decides what each ``@word`` is, then ``render_attachments``
+    reads the files now (docs/FILE-ATTACHMENTS.md §2).
+
+    Args:
+        text: The composed text.
+        images: Image blocks sent with it; attached images are appended to them.
+        cwd: The directory a relative ``@path`` resolves in.
+
+    Returns:
+        ``(text, images, report)``: the text with its attachment blocks prefixed,
+        the images (``None`` for none), and ``{expanded, images, unresolved,
+        failures}``.
+    """
+    from tau_agent_core.attachments import SENDABLE_KINDS, render_attachments, scan_attachments
+
+    attachments = scan_attachments(text, cwd=cwd)
+    unresolved = [a.token for a in attachments if a.kind == "unresolved"]
+    sendable = [a for a in attachments if a.kind in SENDABLE_KINDS]
+    if not sendable:
+        return text, images, {"expanded": 0, "images": 0, "unresolved": unresolved, "failures": []}
+    rendered = render_attachments(attachments)
+    combined = list(images or []) + list(rendered.images)
+    return (
+        rendered.prefix + text,
+        combined or None,
+        {
+            "expanded": len(sendable),
+            "images": len(rendered.images),
+            "unresolved": unresolved,
+            "failures": list(rendered.failures),
+        },
+    )
+
+
+def request_payload(request: Any) -> dict[str, Any]:
+    """One :class:`~tau_agent_core.extension_locks.ExtensionRequest` as a head is sent it.
+
+    ``label`` and ``extension_name`` are properties and both are sent, so no head
+    recomputes τ's framing line (docs/EXTENSION-LOCKS.md §9).
+    """
+    return {
+        "entry_id": request.entry_id,
+        "extension": request.extension,
+        "extension_name": request.extension_name,
+        "sentence": request.sentence,
+        "label": request.label,
+        "lock": request.lock,
+        "ask": request.ask,
+        "release": request.release,
+    }
 
 
 def command_vocabulary(session: Any) -> list[dict[str, Any]]:

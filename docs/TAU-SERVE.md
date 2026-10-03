@@ -255,6 +255,50 @@ Not built: the TUI's keystroke completions (`@path` and argument values) still
 run locally and synchronously under `--connect`. They are not round trips to the
 daemon.
 
+Built note (schema, 2026-10-03). The schema typed what a client sends and not
+what it receives; tau-code generates its types from it. `PROTOCOL_VERSION` is
+`0.3`, because a 0.3 client reads fields a 0.2 daemon does not send.
+
+- **Every answer is typed and linked.** `protocol.RESULTS` maps each request to
+  its result record, or `None` for a `null` answer. The schema writes it twice:
+  `x-result` on each request's `$def`, and the top-level `Results` map keyed by
+  `type`. The daemon builds the record and `protocol.result_to_wire` checks it
+  against `RESULTS` before sending, so the type and the bytes have one source.
+- **Every event's data is typed.** `protocol.EVENT_DATA` maps each kind to its
+  data. `Event` in the schema is a `oneOf` of one `<Kind>Event` per kind, with
+  `x-data` naming each kind's data. `agent_event` is `AgentEvent`'s own pydantic
+  schema, because the daemon sends the whole model and not RPC's `WireEvent`.
+- **Entries, messages and specs are TypedDicts.** The daemon forwards them as
+  dicts, so they are shapes, not records it builds: `Entry` (one shape per
+  entry `type`; an unfinished entry matches only `IncompleteEntry`), `Message`
+  (the `tau_llm` pydantic models, the system prompt, and `role: "custom"`),
+  `FormSpec`, `PanelSpec` and `Ask`.
+- **Requests are closed; everything sent is open.** The schema says so at its
+  top, and `docs/SERVE-PROTOCOL.md` says so too. `test_serve_schema.py` runs a
+  real session through every request and event kind, and validates each frame
+  with undeclared keys refused. `jsonschema` is not installed in the venv, so
+  `tests/schema_check.py` validates the keyword subset the schema uses, and
+  raises on any other keyword.
+- **Added on the wire.** `hello` answers `pid`, `version` and `cwd`.
+  `CursorState.request` is the extension request at the cursor's leaf, in the
+  shape of RPC `get_pending_request`, cached per leaf. `Attached.requests` lists
+  the forms open now. `submit` takes `expand_attachments`, which resolves `@path`
+  against the session's cwd. Its report rides on `submission_start` as
+  `attachments`. The new request `perform_ready` performs a `Ready` at a cursor.
+  The two derivations are shared with RPC in `projections.py`:
+  `attachment_expansion` and `request_payload`. Moving the attachment one fixed
+  an RPC defect. Expanding text that named no file used to drop the request's
+  own images.
+- **The daemon now publishes the cursor set after every request.** It used to
+  publish it only when the next event happened. So a lock that a command armed
+  never reached a client until something else happened.
+- `perform` of `compact` answers `CompactionResult`. `remote.value_from_wire`
+  could not read that answer, and now reads it.
+- **`tau serve` options.** `--schema` prints the schema from an installed τ.
+  `--web-root DIR` overrides `serve.web_root`. `-d` probes with a real hello and
+  starts no second daemon where one answers. It waits for a hello that carries
+  its child's pid. `-d --json` prints one `ServeStarted` object.
+
 ## 6. `tau serve`
 
 ```

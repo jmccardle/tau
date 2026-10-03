@@ -1,6 +1,7 @@
 {
   "$defs": {
     "Abort": {
+      "additionalProperties": false,
       "description": "Abort the turn running on a cursor, and the cursors it owns.",
       "properties": {
         "cursor_id": {
@@ -10,9 +11,7 @@
           "type": "string"
         },
         "type": {
-          "enum": [
-            "abort"
-          ]
+          "const": "abort"
         }
       },
       "required": [
@@ -20,10 +19,368 @@
         "cursor_id",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "AgentEvent": {
+      "description": "A single event from the agent loop.\n\nReference: SUBPHASE-0.0.md, \"5. Agent Events\" section.\nReference: docs/SUBMISSION-LIFECYCLE.md, \"Provenance on events\" (phase 2).\n\nAttributes:\n    type: Event type discriminator\n    timestamp: Milliseconds since epoch\n    message: Message data (agent_start/end, message_*)\n    turn_index: Turn number (turn_*)\n    tool_call_id: Tool call ID (tool_*)\n    tool_name: Tool name (tool_*)\n    args: Tool execution arguments (tool_execution_start)\n    result: Tool execution result (tool_execution_*)\n    details: A tool's structured facts about its own execution on\n        ``tool_execution_end`` \u2014 the path it read, the line range, the match\n        count, the diff. What ``result`` holds is what the MODEL reads; this\n        is what a head can render beside it. ``None`` when the tool declared\n        none, and on every other event type.\n    is_error: Whether this event represents an error\n    blocked: Whether a ``tool_execution_end`` is an extension VETO (S50) \u2014\n        distinct from a generic errored result, so a front-end can render\n        \"\u26d4 blocked by <ext>: <reason>\" rather than a plain error box.\n    blocked_by: The extension that vetoed the call (its runner path label),\n        paired with ``blocked`` on a ``tool_execution_end``; ``None`` otherwise.\n    tool_results: List of tool result messages (turn_end)\n    messages: List of messages produced (agent_end)\n    error: Why an ``agent_end`` closed, when the loop raised rather than\n        finishing (``\"RuntimeError: Connection refused\"``). ``None`` on a\n        normal close; always paired with ``is_error=True``.\n    end_reason: How an ``agent_end`` closed, as one of ``\"done\"``,\n        ``\"terminate\"``, ``\"aborted\"``, ``\"max_turns\"``,\n        ``\"repeat_tool_calls\"`` or ``\"error\"``. ``None`` on every other event\n        type. This distinguishes a loop that finished from one that was cut\n        short: before it, a run stopped by ``max_turns`` emitted the same\n        ``agent_end`` as one where the model simply had nothing more to say,\n        so a caller could not tell a truncated answer from a complete one.\n    cursor_id: The :class:`~tau_agent_core.cursor.Cursor` whose turn emitted\n        this event. Several cursors run turns on one session at once, so a\n        renderer routes by it (docs/CURSORS.md \u00a76). ``None`` outside a turn.\n    submission_id: The ``Submission`` that drove this turn, if any \u2014 Jupyter's\n        ``parent_header``. ``None`` for a turn not driven through ``submit()``\n        (e.g. ``continue_conversation()``, which predates the Submission\n        contract) \u2014 an honest \"no submission\", never a fabricated id.\n    source: The submission's origin (``\"interactive\"``, ``\"bus\"``, ``\"agent\"``,\n        \u2026) \u2014 pi's ``InputSource`` equivalent, so a renderer can decide *how* to\n        show a turn (Jupyter's rule: render every source, differently) without\n        the core knowing any renderer exists. ``None`` alongside\n        ``submission_id``.\n    submitter: WHO submitted \u2014 an extension name, ``\"human\"``, a channel id.\n        ``None`` alongside ``submission_id``.\n    correlation: The submission's free-form origin detail (bus subject, cron\n        id, HTTP request id), carried through unchanged so an embedded server\n        can fan out to the right stream. ``None`` alongside ``submission_id``\n        (an EMPTY dict would claim \"a submission with no correlation data\";\n        ``None`` says \"no submission stamped this event\" instead).\n    purpose: Which side completion a ``side_completion_*`` event reports \u2014\n        ``\"compaction\"`` or ``\"branch_summary\"``. ``None`` on every other\n        type. Side work belongs to no turn and stamps no ``submission_id``,\n        so this is what a renderer keys on instead.\n    reason: What asked for it \u2014 ``\"manual\"``, ``\"threshold\"`` or\n        ``\"navigate\"``. Set on all three ``side_completion_*`` events, so a\n        reader that joins late still learns whether the compaction it is\n        watching was requested or imposed. ``None`` on every other type.\n    delta: One text fragment of a side completion, on\n        ``side_completion_update``. ``None`` elsewhere.\n    text: The finished side-completion text, on ``side_completion_end``.\n        Sent whole as well as in fragments, because a subscriber that\n        attached late or dropped a delta must still be able to render the\n        result rather than a partial one. ``None`` elsewhere, and ``None``\n        on an end that failed \u2014 paired with ``is_error`` and ``error``.\n    usage: What a side completion SPENT, on ``side_completion_end``. This is\n        the only place those tokens are observable: the work runs outside the\n        agent loop, so no ``turn_end`` counts it (docs/STREAMING-SIDE-WORK.md).",
+      "properties": {
+        "args": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "blocked": {
+          "default": false,
+          "type": "boolean"
+        },
+        "blocked_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "correlation": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cursor_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "delta": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "details": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "end_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "done",
+                "terminate",
+                "aborted",
+                "max_turns",
+                "repeat_tool_calls",
+                "error"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "is_error": {
+          "default": false,
+          "type": "boolean"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "messages": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "purpose": {
+          "anyOf": [
+            {
+              "enum": [
+                "compaction",
+                "branch_summary"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "manual",
+                "threshold",
+                "navigate"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "result": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source": {
+          "anyOf": [
+            {
+              "enum": [
+                "interactive",
+                "rpc",
+                "extension",
+                "bus",
+                "timer",
+                "webhook",
+                "voice",
+                "agent"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "submission_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "submitter": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "timestamp": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "tool_results": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "turn_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "type": {
+          "enum": [
+            "agent_start",
+            "agent_end",
+            "turn_start",
+            "turn_end",
+            "message_start",
+            "message_update",
+            "message_end",
+            "tool_execution_start",
+            "tool_execution_update",
+            "tool_execution_end",
+            "side_completion_start",
+            "side_completion_update",
+            "side_completion_end"
+          ],
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "type",
+        "timestamp"
+      ],
+      "type": "object"
+    },
+    "AgentEventEvent": {
+      "description": "A `agent_event` event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/AgentEvent"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "agent_event"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "event"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type",
+        "data"
+      ],
       "type": "object"
     },
     "Answer": {
-      "description": "Answer an extension's form (a ``request`` event); the first answer wins.",
+      "additionalProperties": false,
+      "description": "Answer an extension's form (a `request` event); the first answer wins.",
       "properties": {
         "request_id": {
           "type": "string"
@@ -32,9 +389,7 @@
           "type": "string"
         },
         "type": {
-          "enum": [
-            "answer"
-          ]
+          "const": "answer"
         },
         "value": {
           "anyOf": [
@@ -45,7 +400,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The `{field: value}` answers, or `None` to cancel the form."
         }
       },
       "required": [
@@ -54,30 +410,35 @@
         "value",
         "type"
       ],
-      "type": "object"
+      "type": "object",
+      "x-result": {
+        "type": "null"
+      }
     },
     "AnswerRequest": {
+      "additionalProperties": false,
       "description": "Answer an extension request written in the tree (docs/EXTENSION-LOCKS.md \u00a73).",
       "properties": {
         "action": {
+          "description": "The label of the pressed action.",
           "type": "string"
         },
         "cursor_id": {
           "type": "string"
         },
         "request_id": {
+          "description": "The request entry's id.",
           "type": "string"
         },
         "session_id": {
           "type": "string"
         },
         "type": {
-          "enum": [
-            "answer_request"
-          ]
+          "const": "answer_request"
         },
         "values": {
           "additionalProperties": {},
+          "description": "The filled fields, keyed by name.",
           "type": "object"
         }
       },
@@ -88,9 +449,206 @@
         "action",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/RequestAnswered"
+      }
+    },
+    "Argument": {
+      "description": "One argument a flow needs before it can run.",
+      "properties": {
+        "cardinality": {
+          "description": "`\"one\"` for a single value, `\"many\"` for a list.",
+          "enum": [
+            "one",
+            "many"
+          ]
+        },
+        "description": {
+          "description": "The prompt a head shows for it.",
+          "type": "string"
+        },
+        "domain": {
+          "description": "The name of its `Domain`, a key of `DOMAINS`.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The argument's name, as the bound-argument mapping keys it.",
+          "type": "string"
+        },
+        "required": {
+          "description": "Whether the flow can run without it. An optional argument is offered as a step and may be skipped.",
+          "type": "boolean"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "enum": [
+                "in_session",
+                "ancestors_of_cursor",
+                "descendants_of_cursor"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For the `message_id` domain, which entries are candidates \u2014 one of `ConversationTree.complete_message_id`'s scopes. `None` everywhere else."
+        }
+      },
+      "required": [
+        "name",
+        "domain",
+        "description"
+      ],
+      "type": "object"
+    },
+    "Ask": {
+      "description": "What an extension request asks, normalized (`extension_types.validate_ask_spec`).",
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/AskAction"
+          },
+          "type": "array"
+        },
+        "body": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelBody"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FormField"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body",
+        "fields",
+        "actions"
+      ],
+      "type": "object"
+    },
+    "AskAction": {
+      "description": "An ask's button: it runs `command` with the request's id.",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "command"
+      ],
+      "type": "object"
+    },
+    "AssistantMessage": {
+      "description": "An assistant message from the LLM.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\n``timestamp`` is epoch milliseconds at the moment this message stopped being\nwritten \u2014 the completion's end, or the abort for a partial. ``None`` means no\nclock applies, which is the case for a synthetic message an extension built\n(docs/MESSAGE-TIMESTAMPS.md \u00a72). It is never 0: \u03c4 did not run in 1970, so a 0\nis legacy data and the session stores map it to ``None`` on load.",
+      "properties": {
+        "api": {
+          "type": "string"
+        },
+        "content": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TextContent"
+              },
+              {
+                "$ref": "#/$defs/ThinkingContent"
+              },
+              {
+                "$ref": "#/$defs/ToolCall"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "error_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "model": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "response_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "role": {
+          "const": "assistant",
+          "default": "assistant",
+          "type": "string"
+        },
+        "stop_reason": {
+          "enum": [
+            "stop",
+            "length",
+            "toolUse",
+            "error",
+            "aborted"
+          ],
+          "type": "string"
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "required": [
+        "content",
+        "api",
+        "provider",
+        "model",
+        "stop_reason",
+        "role"
+      ],
       "type": "object"
     },
     "Attach": {
+      "additionalProperties": false,
       "description": "Start receiving a session's events, loading it in the daemon if needed.",
       "properties": {
         "epoch": {
@@ -101,9 +659,11 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The `epoch` of an earlier attach, to resume rather than re-read."
         },
         "session_id": {
+          "description": "The session, or an unambiguous prefix of its id.",
           "type": "string"
         },
         "since": {
@@ -114,22 +674,24 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The last `seq` the client applied under that epoch."
         },
         "type": {
-          "enum": [
-            "attach"
-          ]
+          "const": "attach"
         }
       },
       "required": [
         "session_id",
         "type"
       ],
-      "type": "object"
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/Attached"
+      }
     },
     "Attached": {
-      "description": "The answer to :class:`Attach`.",
+      "description": "The answer to `Attach`.",
       "properties": {
         "cursors": {
           "items": {
@@ -144,8 +706,7 @@
           "anyOf": [
             {
               "items": {
-                "additionalProperties": {},
-                "type": "object"
+                "$ref": "#/$defs/Entry"
               },
               "type": "array"
             },
@@ -155,18 +716,29 @@
           ]
         },
         "epoch": {
+          "description": "Changes when the daemon restarts or reloads the session; a client holding another epoch must take a snapshot.",
           "type": "string"
         },
         "head_cursor_id": {
+          "description": "The cursor a client drives unless it opens its own.",
           "type": "string"
         },
         "models": {
+          "description": "Every model the daemon's config defines, for a picker.",
           "items": {
             "$ref": "#/$defs/ModelRecord"
           },
           "type": "array"
         },
+        "requests": {
+          "description": "The extension forms open now, which an `Answer` closes.",
+          "items": {
+            "$ref": "#/$defs/RequestEventData"
+          },
+          "type": "array"
+        },
         "seq": {
+          "description": "The newest event number folded into this answer.",
           "type": "integer"
         },
         "session_id": {
@@ -185,11 +757,174 @@
         "head_cursor_id",
         "cwd",
         "models",
-        "surface"
+        "surface",
+        "requests"
       ],
       "type": "object"
     },
+    "AttachmentCompletion": {
+      "description": "The `@` token at the caret and what it completes to.",
+      "properties": {
+        "end": {
+          "description": "The offset after its last.",
+          "type": "integer"
+        },
+        "matches": {
+          "items": {
+            "$ref": "#/$defs/PathMatch"
+          },
+          "type": "array"
+        },
+        "start": {
+          "description": "The token's first character offset in the text.",
+          "type": "integer"
+        },
+        "token": {
+          "type": "string"
+        },
+        "total": {
+          "description": "How many paths match, counting past the bound on `matches`.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "token",
+        "matches",
+        "total"
+      ],
+      "type": "object"
+    },
+    "AttachmentReport": {
+      "description": "What `Submit.expand_attachments` did.",
+      "properties": {
+        "expanded": {
+          "description": "How many `@` references were sent as attachments.",
+          "type": "integer"
+        },
+        "failures": {
+          "description": "One line per file that resolved and could not be read.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "images": {
+          "description": "How many of them were images.",
+          "type": "integer"
+        },
+        "unresolved": {
+          "description": "The `@` tokens that named no file, sent as written.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "expanded",
+        "images",
+        "unresolved",
+        "failures"
+      ],
+      "type": "object"
+    },
+    "BranchSummaryEntry": {
+      "description": "A summary of the branch left at `fromId`, in the path where it was appended.",
+      "properties": {
+        "fromId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": false,
+        "summary": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "const": "branch_summary"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type",
+        "summary",
+        "fromId"
+      ],
+      "type": "object"
+    },
+    "ChannelEvent": {
+      "description": "A `channel` event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/ChannelEventData"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "channel"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "event"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "ChannelEventData": {
+      "description": "A session bus channel, told apart by `name`. Changes no state.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/SubmissionStartChannel"
+        },
+        {
+          "$ref": "#/$defs/SubmissionEndChannel"
+        },
+        {
+          "$ref": "#/$defs/CustomMessageChannel"
+        }
+      ]
+    },
     "CloseCursor": {
+      "additionalProperties": false,
       "description": "Close a cursor this session opened; its branch stays in the tree.",
       "properties": {
         "cursor_id": {
@@ -199,9 +934,7 @@
           "type": "string"
         },
         "type": {
-          "enum": [
-            "close_cursor"
-          ]
+          "const": "close_cursor"
         }
       },
       "required": [
@@ -209,24 +942,30 @@
         "cursor_id",
         "type"
       ],
-      "type": "object"
+      "type": "object",
+      "x-result": {
+        "type": "null"
+      }
     },
     "CommandInfo": {
-      "description": "One slash command a session answers, as RPC ``get_commands`` lists it.",
+      "description": "One slash command a session answers, as RPC `get_commands` lists it.",
       "properties": {
         "description": {
           "type": "string"
         },
         "flow": {
+          "description": "Whether `NextStep` steps it.",
           "type": "boolean"
         },
         "hidden": {
+          "description": "A qualified extension name (`ext:pirate.speak`): it resolves, and a completion list leaves it out.",
           "type": "boolean"
         },
         "name": {
           "type": "string"
         },
         "origin": {
+          "description": "`builtin` for \u03c4's own, `extension` for one an extension registered.",
           "enum": [
             "builtin",
             "extension"
@@ -242,10 +981,45 @@
       ],
       "type": "object"
     },
-    "Compare": {
-      "description": "Open one cursor per model at ``leaf`` and send each the same text (docs/TAU-SERVE.md \u00a78).",
+    "CompactionAnswer": {
+      "description": "A `Perform` whose operation returned a `CompactionResult` (`compact`).",
       "properties": {
-        "leaf": {
+        "fields": {
+          "$ref": "#/$defs/CompactionResult"
+        },
+        "kind": {
+          "const": "CompactionResult"
+        }
+      },
+      "required": [
+        "fields",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "CompactionDetails": {
+      "description": "File-operation details stored alongside a compaction (pi: CompactionDetails).",
+      "properties": {
+        "modified_files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "read_files": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "CompactionEntry": {
+      "description": "A summary that replaces the path before `firstKeptId` in the context.",
+      "properties": {
+        "configId": {
           "anyOf": [
             {
               "type": "string"
@@ -255,7 +1029,124 @@
             }
           ]
         },
+        "coveredEntries": {
+          "type": "integer"
+        },
+        "coveredTokens": {
+          "type": "integer"
+        },
+        "firstKeptId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": false,
+        "summarizerModelId": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "summaryUsage": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "tokensBefore": {
+          "type": "integer"
+        },
+        "type": {
+          "const": "compaction"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type",
+        "summary",
+        "firstKeptId",
+        "tokensBefore"
+      ],
+      "type": "object"
+    },
+    "CompactionResult": {
+      "description": "Generated compaction data ready to persist (pi: CompactionResult).",
+      "properties": {
+        "compacted_entry_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompactionDetails"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "first_kept_entry_id": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "tokens_before": {
+          "type": "integer"
+        },
+        "tokens_saved": {
+          "type": "integer"
+        },
+        "usage": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "summary",
+        "first_kept_entry_id",
+        "tokens_before"
+      ],
+      "type": "object"
+    },
+    "Compare": {
+      "additionalProperties": false,
+      "description": "Open one cursor per model at `leaf` and send each the same text (docs/TAU-SERVE.md \u00a78).",
+      "properties": {
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The entry the cursors start from; `None` is the head cursor's leaf."
+        },
         "models": {
+          "description": "Model names from the daemon's config, one cursor each; one may repeat.",
           "items": {
             "type": "string"
           },
@@ -265,12 +1156,11 @@
           "type": "string"
         },
         "text": {
+          "description": "The prompt every cursor receives, never expanded as a command.",
           "type": "string"
         },
         "type": {
-          "enum": [
-            "compare"
-          ]
+          "const": "compare"
         }
       },
       "required": [
@@ -279,12 +1169,104 @@
         "text",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/CompareStarted"
+      }
+    },
+    "CompareCorrelation": {
+      "description": "A comparison turn's place in its comparison (`tau_agent_core.compare.COMPARE_KEY`).",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer"
+        },
+        "models": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "models",
+        "index",
+        "cursor_id"
+      ],
+      "type": "object"
+    },
+    "CompareCursor": {
+      "description": "One column of a comparison.",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor_id",
+        "model"
+      ],
+      "type": "object"
+    },
+    "CompareEnded": {
+      "description": "The answer to `EndCompare`.",
+      "properties": {
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The head cursor's leaf afterwards."
+        }
+      },
+      "required": [
+        "leaf"
+      ],
+      "type": "object"
+    },
+    "CompareStarted": {
+      "description": "The answer to `Compare`, sent before the turns end.",
+      "properties": {
+        "comparison_id": {
+          "type": "string"
+        },
+        "cursors": {
+          "items": {
+            "$ref": "#/$defs/CompareCursor"
+          },
+          "type": "array"
+        },
+        "message": {
+          "description": "One line naming the models, for a head to show.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "comparison_id",
+        "cursors",
+        "message"
+      ],
       "type": "object"
     },
     "CompletePath": {
-      "description": "Complete the ``@path`` at ``offset`` in ``text`` against the session's cwd.",
+      "additionalProperties": false,
+      "description": "Complete the `@path` at `offset` in `text` against the session's cwd (RPC `complete_path`).",
       "properties": {
         "offset": {
+          "description": "The caret's character offset in `text`.",
           "type": "integer"
         },
         "session_id": {
@@ -294,9 +1276,7 @@
           "type": "string"
         },
         "type": {
-          "enum": [
-            "complete_path"
-          ]
+          "const": "complete_path"
         }
       },
       "required": [
@@ -305,12 +1285,47 @@
         "offset",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/CompletePathResult"
+      }
+    },
+    "CompletePathResult": {
+      "description": "The answer to `CompletePath`; `completion` is `None` outside an `@` token.",
+      "properties": {
+        "completion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttachmentCompletion"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "completion"
+      ],
+      "type": "object"
+    },
+    "Correlation": {
+      "additionalProperties": true,
+      "description": "`Submission.correlation`: open, JSON-safe keys a submitter attached; `compare` is \u03c4's.",
+      "properties": {
+        "compare": {
+          "$ref": "#/$defs/CompareCorrelation"
+        }
+      },
+      "required": [],
       "type": "object"
     },
     "CreateSession": {
-      "description": "Create a session in ``cwd``, a path on the daemon's machine.",
+      "additionalProperties": false,
+      "description": "Create a session in `cwd`, a path on the daemon's machine.",
       "properties": {
         "cwd": {
+          "description": "The directory its tools run in; the create fails if it does not exist.",
           "type": "string"
         },
         "model": {
@@ -321,7 +1336,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "A model name from the daemon's config, or `None` for its default."
         },
         "name": {
           "anyOf": [
@@ -331,17 +1347,31 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "A session name, or `None`."
         },
         "type": {
-          "enum": [
-            "create_session"
-          ]
+          "const": "create_session"
         }
       },
       "required": [
         "cwd",
         "type"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/SessionCreated"
+      }
+    },
+    "CursorOpened": {
+      "description": "The answer to `OpenCursor`.",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cursor_id"
       ],
       "type": "object"
     },
@@ -379,6 +1409,17 @@
               "type": "null"
             }
           ]
+        },
+        "request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExtensionRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The extension request at its leaf, or `None`."
         }
       },
       "required": [
@@ -387,48 +1428,415 @@
         "label",
         "owner_id",
         "busy",
-        "model"
+        "model",
+        "request"
+      ],
+      "type": "object"
+    },
+    "CursorsEvent": {
+      "description": "A `cursors` event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/CursorsEventData"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "cursors"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "event"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "CursorsEventData": {
+      "description": "The whole cursor set after a change.",
+      "properties": {
+        "cursors": {
+          "items": {
+            "$ref": "#/$defs/CursorState"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "cursors"
+      ],
+      "type": "object"
+    },
+    "CustomEntryEntry": {
+      "description": "Durable data the model never sees.",
+      "properties": {
+        "customType": {
+          "type": "string"
+        },
+        "data": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": false,
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "const": "customEntry"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type",
+        "customType",
+        "data"
+      ],
+      "type": "object"
+    },
+    "CustomMessageChannel": {
+      "description": "The `custom_message` channel.",
+      "properties": {
+        "name": {
+          "const": "custom_message"
+        },
+        "payload": {
+          "$ref": "#/$defs/CustomMessagePayload"
+        }
+      },
+      "required": [
+        "payload",
+        "name"
+      ],
+      "type": "object"
+    },
+    "CustomMessageEntry": {
+      "description": "An extension's message, which reaches the model unless `visibleToModel` is false.",
+      "properties": {
+        "customType": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "$ref": "#/$defs/CustomRoleMessage"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": false,
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "const": "customMessage"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type",
+        "customType",
+        "message"
+      ],
+      "type": "object"
+    },
+    "CustomMessagePayload": {
+      "description": "An extension message appended outside a turn.",
+      "properties": {
+        "entry_id": {
+          "type": "string"
+        },
+        "message": {
+          "$ref": "#/$defs/CustomRoleMessage"
+        }
+      },
+      "required": [
+        "entry_id",
+        "message"
+      ],
+      "type": "object"
+    },
+    "CustomRoleMessage": {
+      "description": "An extension's message (`messages.create_custom_message`); the model sees it as `user`.",
+      "properties": {
+        "content": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TextContent"
+              },
+              {
+                "$ref": "#/$defs/ImageContent"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "customType": {
+          "type": "string"
+        },
+        "details": {},
+        "display": {
+          "type": "boolean"
+        },
+        "role": {
+          "const": "custom"
+        },
+        "timestamp": {
+          "type": "integer"
+        },
+        "visibleToModel": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "role",
+        "customType",
+        "content",
+        "display"
       ],
       "type": "object"
     },
     "Describe": {
+      "additionalProperties": false,
       "description": "Re-read a session's extension surface, after an extension was enabled or reloaded.",
       "properties": {
         "session_id": {
           "type": "string"
         },
         "type": {
-          "enum": [
-            "describe"
-          ]
+          "const": "describe"
         }
       },
       "required": [
         "session_id",
         "type"
       ],
-      "type": "object"
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/Surface"
+      }
     },
     "Detach": {
+      "additionalProperties": false,
       "description": "Stop receiving a session's events. The session keeps running.",
       "properties": {
         "session_id": {
           "type": "string"
         },
         "type": {
-          "enum": [
-            "detach"
-          ]
+          "const": "detach"
         }
       },
       "required": [
         "session_id",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "DispatchedCommand": {
+      "description": "What a command resolved to, told apart by `arm`: `Performed` (it ran), `FlowStep` (an argument is missing), `Ready` (a `fork` or `switch_session` for the client to perform) or `View` (a surface only a head opens).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/PerformedArm"
+        },
+        {
+          "$ref": "#/$defs/FlowStepArm"
+        },
+        {
+          "$ref": "#/$defs/ReadyArm"
+        },
+        {
+          "$ref": "#/$defs/ViewArm"
+        }
+      ]
+    },
+    "Domain": {
+      "description": "A named type in \u03c4's object model, and how its values are found.",
+      "properties": {
+        "description": {
+          "description": "What a value of this domain means, for a person reading a form.",
+          "type": "string"
+        },
+        "enumerator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The name of the `Capability` that computes the legal values, when they depend on live state."
+        },
+        "field_kind": {
+          "description": "Which of `tau_agent_core.extension_types.FORM_FIELD_KINDS` a head renders a SINGLE value of this domain as. `\"select\"` asserts the whole legal set can be put on screen at once; a domain whose set is unbounded or merely large says `\"text\"` and is completed against instead. A head may substitute a richer control than the kind names \u2014 the TUI answers `session_id` with its filtered picker \u2014 and may never substitute a poorer one.",
+          "type": "string"
+        },
+        "free": {
+          "description": "Whether any value is legal. A free domain has no enumerator and no fixed values, and a head renders it as a plain field.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "The domain's name, as an argument declares it.",
+          "type": "string"
+        },
+        "values": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The fixed legal values, when there are few and they never change."
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "type": "object"
+    },
+    "DomainChoice": {
+      "description": "One legal value: `value` is what is bound, `label` what is shown.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "label"
+      ],
+      "type": "object"
+    },
+    "DomainListing": {
+      "description": "The answer to `EnumerateDomain`.",
+      "properties": {
+        "domain": {
+          "type": "string"
+        },
+        "total": {
+          "description": "How many values match, counting past `limit`.",
+          "type": "integer"
+        },
+        "values": {
+          "items": {
+            "$ref": "#/$defs/DomainChoice"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "domain",
+        "values",
+        "total"
+      ],
+      "type": "object"
+    },
+    "ElideEntry": {
+      "description": "A splice anchor with no summary: the path before `firstKeptId` leaves the context.",
+      "properties": {
+        "configId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "coveredEntries": {
+          "type": "integer"
+        },
+        "coveredTokens": {
+          "type": "integer"
+        },
+        "firstKeptId": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": false,
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "const": "elide"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type",
+        "firstKeptId"
+      ],
       "type": "object"
     },
     "EndCompare": {
-      "description": "End a comparison: the head cursor moves onto ``keep``'s leaf, and every compare cursor closes.",
+      "additionalProperties": false,
+      "description": "End a comparison: the head cursor moves onto `keep`'s leaf, and every compare cursor closes.",
       "properties": {
         "comparison_id": {
           "type": "string"
@@ -447,9 +1855,7 @@
           "type": "string"
         },
         "type": {
-          "enum": [
-            "end_compare"
-          ]
+          "const": "end_compare"
         }
       },
       "required": [
@@ -458,12 +1864,166 @@
         "keep",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/CompareEnded"
+      }
+    },
+    "Entry": {
+      "description": "One session-log entry, told apart by `type`; an unfinished one carries `status: \"incomplete\"`. Apply by `id`, last write wins (docs/TAU-SERVE.md \u00a74.1).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/MessageEntry"
+        },
+        {
+          "$ref": "#/$defs/CustomMessageEntry"
+        },
+        {
+          "$ref": "#/$defs/CustomEntryEntry"
+        },
+        {
+          "$ref": "#/$defs/CompactionEntry"
+        },
+        {
+          "$ref": "#/$defs/ElideEntry"
+        },
+        {
+          "$ref": "#/$defs/BranchSummaryEntry"
+        },
+        {
+          "$ref": "#/$defs/SessionInfoEntry"
+        },
+        {
+          "$ref": "#/$defs/NavigateEntry"
+        },
+        {
+          "$ref": "#/$defs/ModelChangeEntry"
+        },
+        {
+          "$ref": "#/$defs/ThinkingChangeEntry"
+        },
+        {
+          "$ref": "#/$defs/ForeignEntry"
+        },
+        {
+          "$ref": "#/$defs/IncompleteEntry"
+        }
+      ]
+    },
+    "EntryAppendEvent": {
+      "description": "A `entry_append` event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/EntryEventData"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "entry_append"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "event"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "EntryEventData": {
+      "description": "An `entry_open`, `entry_final` or `entry_append`: one log write.",
+      "properties": {
+        "entry": {
+          "$ref": "#/$defs/Entry"
+        }
+      },
+      "required": [
+        "entry"
+      ],
+      "type": "object"
+    },
+    "EntryFinalEvent": {
+      "description": "A `entry_final` event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/EntryEventData"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "entry_final"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "event"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "EntryOpenEvent": {
+      "description": "A `entry_open` event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/EntryEventData"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "entry_open"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "event"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type",
+        "data"
+      ],
       "type": "object"
     },
     "EnumerateDomain": {
-      "description": "The values legal for a domain right now (RPC ``enumerate_domain``).",
+      "additionalProperties": false,
+      "description": "The values legal for a domain right now (RPC `enumerate_domain`).",
       "properties": {
         "domain": {
+          "description": "A domain name, as a step's `domain.name` gives it.",
           "type": "string"
         },
         "leaf": {
@@ -474,12 +2034,15 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The entry a scoped `message_id` is relative to; `None` is the head cursor's leaf."
         },
         "limit": {
+          "description": "The most values answered.",
           "type": "integer"
         },
         "query": {
+          "description": "A prefix of the value, or a substring of the label; empty matches all.",
           "type": "string"
         },
         "scope": {
@@ -494,15 +2057,14 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "For `message_id`: which entries are candidates; `None` is `in_session`."
         },
         "session_id": {
           "type": "string"
         },
         "type": {
-          "enum": [
-            "enumerate_domain"
-          ]
+          "const": "enumerate_domain"
         }
       },
       "required": [
@@ -510,10 +2072,13 @@
         "domain",
         "type"
       ],
-      "type": "object"
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/DomainListing"
+      }
     },
     "Error": {
-      "description": "Why a request failed. ``code`` is stable; ``message`` is for a human.",
+      "description": "Why a request failed. `code` is stable; `message` is for a human.",
       "properties": {
         "code": {
           "enum": [
@@ -536,51 +2101,104 @@
       "type": "object"
     },
     "Event": {
-      "description": "A push for an attached session, numbered per session within an ``epoch``.",
-      "properties": {
-        "data": {
-          "additionalProperties": {},
-          "type": "object"
+      "description": "A push for an attached session, numbered per session within an `epoch`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/EntryOpenEvent"
         },
-        "epoch": {
-          "type": "string"
+        {
+          "$ref": "#/$defs/EntryFinalEvent"
+        },
+        {
+          "$ref": "#/$defs/EntryAppendEvent"
+        },
+        {
+          "$ref": "#/$defs/AgentEventEvent"
+        },
+        {
+          "$ref": "#/$defs/ChannelEvent"
+        },
+        {
+          "$ref": "#/$defs/CursorsEvent"
+        },
+        {
+          "$ref": "#/$defs/RequestEvent"
+        },
+        {
+          "$ref": "#/$defs/RequestClosedEvent"
+        },
+        {
+          "$ref": "#/$defs/UiEvent"
+        }
+      ],
+      "x-data": {
+        "agent_event": {
+          "$ref": "#/$defs/AgentEvent"
+        },
+        "channel": {
+          "$ref": "#/$defs/ChannelEventData"
+        },
+        "cursors": {
+          "$ref": "#/$defs/CursorsEventData"
+        },
+        "entry_append": {
+          "$ref": "#/$defs/EntryEventData"
+        },
+        "entry_final": {
+          "$ref": "#/$defs/EntryEventData"
+        },
+        "entry_open": {
+          "$ref": "#/$defs/EntryEventData"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestEventData"
+        },
+        "request_closed": {
+          "$ref": "#/$defs/RequestClosedEventData"
+        },
+        "ui": {
+          "$ref": "#/$defs/UiEventData"
+        }
+      }
+    },
+    "ExtensionCommandAnswer": {
+      "description": "A `Perform` whose operation returned an `ExtensionCommandResult`.",
+      "properties": {
+        "fields": {
+          "$ref": "#/$defs/ExtensionCommandResult"
         },
         "kind": {
-          "enum": [
-            "entry_open",
-            "entry_final",
-            "entry_append",
-            "agent_event",
-            "channel",
-            "cursors",
-            "request",
-            "request_closed",
-            "ui"
-          ]
+          "const": "ExtensionCommandResult"
+        }
+      },
+      "required": [
+        "fields",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ExtensionCommandResult": {
+      "description": "Outcome of `AgentSession.run_extension_command` (E7 \u00a73 / S46).",
+      "properties": {
+        "handled": {
+          "type": "boolean"
         },
-        "seq": {
-          "type": "integer"
-        },
-        "session_id": {
-          "type": "string"
-        },
-        "type": {
-          "enum": [
-            "event"
+        "output": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
           ]
         }
       },
       "required": [
-        "session_id",
-        "epoch",
-        "seq",
-        "kind",
-        "type"
+        "handled"
       ],
       "type": "object"
     },
     "ExtensionInfo": {
-      "description": "One loaded extension and what it registered, as RPC ``get_extension_state`` lists it.",
+      "description": "One loaded extension and what it registered, as RPC `get_extension_state` lists it.",
       "properties": {
         "commands": {
           "items": {
@@ -634,10 +2252,213 @@
       ],
       "type": "object"
     },
-    "ForkSession": {
-      "description": "Copy a session into a new one in the same cwd; answered with ``{session_id}``.",
+    "ExtensionRequest": {
+      "description": "An extension request at a cursor, as RPC `get_pending_request` answers it (docs/EXTENSION-LOCKS.md).",
       "properties": {
-        "at": {
+        "ask": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ask"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What it asks, or `None` for a bare lock."
+        },
+        "entry_id": {
+          "description": "The request entry's id; `AnswerRequest` names it.",
+          "type": "string"
+        },
+        "extension": {
+          "type": "string"
+        },
+        "extension_name": {
+          "description": "The display stem of `extension`.",
+          "type": "string"
+        },
+        "label": {
+          "description": "\u03c4's framing line for the request (\u00a79).",
+          "type": "string"
+        },
+        "lock": {
+          "description": "Whether a submission at this cursor is refused.",
+          "type": "boolean"
+        },
+        "release": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A command that clears the lock, or `None`."
+        },
+        "sentence": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry_id",
+        "extension",
+        "extension_name",
+        "sentence",
+        "label",
+        "lock",
+        "ask",
+        "release"
+      ],
+      "type": "object"
+    },
+    "ExtensionRequestRecord": {
+      "description": "One reserved `customEntry`, read back off the tree.",
+      "properties": {
+        "ask": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The validated ask spec a head renders, or `None`."
+        },
+        "entry_id": {
+          "description": "The tree entry's own id.",
+          "type": "string"
+        },
+        "extension": {
+          "description": "The appending extension's path, stored rather than looked up (\u00a74) \u2014 the case this exists for is a reload where that extension never loaded.",
+          "type": "string"
+        },
+        "lock": {
+          "description": "Whether a submission at this cursor is refused.",
+          "type": "boolean"
+        },
+        "release": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A command name that clears the lock, or `None`. Advisory \u2014 commands are exempt from the lock by placement (\u00a75), not by name."
+        },
+        "sentence": {
+          "description": "The extension's own one line. Distinct from `label`, which is \u03c4's framing of it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry_id",
+        "extension",
+        "sentence",
+        "lock",
+        "ask",
+        "release"
+      ],
+      "type": "object"
+    },
+    "FlowStep": {
+      "description": "One argument a flow still needs, and everything required to ask for it.",
+      "properties": {
+        "argument": {
+          "$ref": "#/$defs/Argument",
+          "description": "The argument being asked for."
+        },
+        "bound": {
+          "additionalProperties": {},
+          "description": "The arguments already bound, so a head redrawing a form has them.",
+          "type": "object"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`."
+        },
+        "domain": {
+          "$ref": "#/$defs/Domain",
+          "description": "That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up."
+        },
+        "flow": {
+          "description": "The flow's name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow",
+        "argument",
+        "domain",
+        "cursor",
+        "bound"
+      ],
+      "type": "object"
+    },
+    "FlowStepArm": {
+      "description": "One argument a flow still needs, and everything required to ask for it.",
+      "properties": {
+        "argument": {
+          "$ref": "#/$defs/Argument",
+          "description": "The argument being asked for."
+        },
+        "arm": {
+          "const": "FlowStep"
+        },
+        "bound": {
+          "additionalProperties": {},
+          "description": "The arguments already bound, so a head redrawing a form has them.",
+          "type": "object"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`."
+        },
+        "domain": {
+          "$ref": "#/$defs/Domain",
+          "description": "That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up."
+        },
+        "flow": {
+          "description": "The flow's name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "arm",
+        "flow",
+        "argument",
+        "domain",
+        "cursor",
+        "bound"
+      ],
+      "type": "object"
+    },
+    "ForeignEntry": {
+      "additionalProperties": true,
+      "description": "A document another system's store put in the tree, typed `system:kind` (`jmfts:document`).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "parentId": {
           "anyOf": [
             {
               "type": "string"
@@ -647,13 +2468,43 @@
             }
           ]
         },
+        "status": false,
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "pattern": "^[^:]+:.+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ForkSession": {
+      "additionalProperties": false,
+      "description": "Copy a session into a new one in the same cwd.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The entry to fork at, copying only the path to it; `None` copies the whole tree."
+        },
         "session_id": {
           "type": "string"
         },
         "type": {
-          "enum": [
-            "fork_session"
-          ]
+          "const": "fork_session"
         }
       },
       "required": [
@@ -661,9 +2512,63 @@
         "at",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/SessionForked"
+      }
+    },
+    "FormField": {
+      "description": "One field of an extension form (`extension_types.validate_form_spec`).",
+      "properties": {
+        "default": {},
+        "kind": {
+          "enum": [
+            "text",
+            "select",
+            "multiselect",
+            "confirm",
+            "number"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "FormSpec": {
+      "description": "An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.md \u00a78.2).",
+      "properties": {
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FormField"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "fields"
+      ],
       "type": "object"
     },
     "GetTree": {
+      "additionalProperties": false,
       "description": "Every entry of a session's tree as a browser row, seen from one cursor.",
       "properties": {
         "cursor_id": {
@@ -673,9 +2578,7 @@
           "type": "string"
         },
         "type": {
-          "enum": [
-            "get_tree"
-          ]
+          "const": "get_tree"
         }
       },
       "required": [
@@ -683,15 +2586,21 @@
         "cursor_id",
         "type"
       ],
-      "type": "object"
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/TreeResult"
+      }
     },
     "Hello": {
+      "additionalProperties": false,
       "description": "The first request on every connection; nothing else is served before it.",
       "properties": {
         "client": {
+          "description": "What the client is, for the daemon's log (`tui`, `tail`, `web`).",
           "type": "string"
         },
         "protocol": {
+          "description": "The client's `PROTOCOL_VERSION`; a different one is refused.",
           "type": "string"
         },
         "token": {
@@ -702,12 +2611,11 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The shared secret, required only when the daemon's config sets `serve.token`. A client reads it from `TAUD_TOKEN`."
         },
         "type": {
-          "enum": [
-            "hello"
-          ]
+          "const": "hello"
         }
       },
       "required": [
@@ -715,24 +2623,229 @@
         "client",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/HelloResult"
+      }
+    },
+    "HelloResult": {
+      "description": "The answer to `Hello`.",
+      "properties": {
+        "client_id": {
+          "description": "This connection's name in the daemon's log.",
+          "type": "string"
+        },
+        "cwd": {
+          "description": "The daemon's working directory at start, absolute; a default for `CreateSession`.",
+          "type": "string"
+        },
+        "pid": {
+          "description": "The daemon's process id.",
+          "type": "integer"
+        },
+        "protocol": {
+          "description": "The daemon's `PROTOCOL_VERSION`.",
+          "type": "string"
+        },
+        "version": {
+          "description": "\u03c4's package version, as `tau --version` prints it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "client_id",
+        "pid",
+        "version",
+        "cwd"
+      ],
+      "type": "object"
+    },
+    "ImageContent": {
+      "description": "An image content block in a message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "mime_type": {
+          "type": "string"
+        },
+        "type": {
+          "const": "image",
+          "default": "image",
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "mime_type",
+        "type"
+      ],
+      "type": "object"
+    },
+    "IncompleteEntry": {
+      "additionalProperties": true,
+      "description": "An entry opened and not yet finalized (docs/TAU-SERVE.md \u00a74).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "const": "incomplete"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "parentId",
+        "timestamp",
+        "status"
+      ],
       "type": "object"
     },
     "ListSessions": {
+      "additionalProperties": false,
       "description": "Every session in the daemon's store, across every cwd, newest first.",
       "properties": {
         "type": {
-          "enum": [
-            "list_sessions"
-          ]
+          "const": "list_sessions"
         }
       },
       "required": [
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/SessionList"
+      }
+    },
+    "Message": {
+      "description": "A message as the log stores it, told apart by `role`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/UserMessage"
+        },
+        {
+          "$ref": "#/$defs/AssistantMessage"
+        },
+        {
+          "$ref": "#/$defs/ToolResultMessage"
+        },
+        {
+          "$ref": "#/$defs/SystemMessage"
+        },
+        {
+          "$ref": "#/$defs/CustomRoleMessage"
+        }
+      ]
+    },
+    "MessageEntry": {
+      "description": "A message on the conversation path.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "message": {
+          "$ref": "#/$defs/Message"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": false,
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "const": "message"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ModelChangeEntry": {
+      "description": "Legacy: the config model from here on, before config entries.",
+      "properties": {
+        "backend": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": false,
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "const": "model_change"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type",
+        "model"
+      ],
       "type": "object"
     },
     "ModelRecord": {
-      "description": "One model the daemon's config defines, as RPC ``get_models`` lists it.",
+      "description": "One model the daemon's config defines, as RPC `get_models` lists it.",
       "properties": {
         "model": {
           "$ref": "#/$defs/ModelSpec"
@@ -743,6 +2856,19 @@
       },
       "required": [
         "name",
+        "model"
+      ],
+      "type": "object"
+    },
+    "ModelSet": {
+      "description": "The answer to `SetModel`.",
+      "properties": {
+        "model": {
+          "description": "The model id the cursor's next turn calls.",
+          "type": "string"
+        }
+      },
+      "required": [
         "model"
       ],
       "type": "object"
@@ -768,7 +2894,8 @@
       "type": "object"
     },
     "MoveCursor": {
-      "description": "Move a cursor to ``leaf``. Writes nothing.",
+      "additionalProperties": false,
+      "description": "Move a cursor to `leaf`. Writes nothing.",
       "properties": {
         "cursor_id": {
           "type": "string"
@@ -787,9 +2914,7 @@
           "type": "string"
         },
         "type": {
-          "enum": [
-            "move_cursor"
-          ]
+          "const": "move_cursor"
         }
       },
       "required": [
@@ -798,10 +2923,57 @@
         "leaf",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "type": "null"
+      }
+    },
+    "NavigateEntry": {
+      "description": "Legacy: a recorded move to `targetId`, written before cursors (docs/CURSORS.md \u00a71.1).",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": false,
+        "targetId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "const": "navigate"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type",
+        "targetId"
+      ],
       "type": "object"
     },
     "NextStep": {
-      "description": "The next argument a flow needs, or the mutation it is ready for (RPC ``next_step``).",
+      "additionalProperties": false,
+      "description": "The next argument a flow needs, or the mutation it is ready for (RPC `next_step`).",
       "properties": {
         "bound": {
           "anyOf": [
@@ -812,9 +2984,11 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The arguments bound so far; `None` or `{}` is the first step."
         },
         "flow": {
+          "description": "A command `name` whose `flow` is true in the `Surface`.",
           "type": "string"
         },
         "leaf": {
@@ -825,15 +2999,14 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The entry a scoped `message_id` argument is relative to, echoed back as the step's `cursor` for `EnumerateDomain`."
         },
         "session_id": {
           "type": "string"
         },
         "type": {
-          "enum": [
-            "next_step"
-          ]
+          "const": "next_step"
         }
       },
       "required": [
@@ -841,10 +3014,51 @@
         "flow",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/NextStepResult"
+      }
+    },
+    "NextStepResult": {
+      "description": "The answer to `NextStep`: exactly one of `step` and `ready` is set, as `status` says.",
+      "properties": {
+        "ready": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ready"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "step",
+            "ready"
+          ]
+        },
+        "step": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlowStep"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "step",
+        "ready"
+      ],
       "type": "object"
     },
     "OpenCursor": {
-      "description": "Open a cursor at ``leaf`` (an entry id, or ``None`` before the root).",
+      "additionalProperties": false,
+      "description": "Open a cursor at `leaf` (an entry id, or `None` before the root).",
       "properties": {
         "label": {
           "type": "string"
@@ -873,9 +3087,7 @@
           "type": "string"
         },
         "type": {
-          "enum": [
-            "open_cursor"
-          ]
+          "const": "open_cursor"
         }
       },
       "required": [
@@ -883,28 +3095,174 @@
         "leaf",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/CursorOpened"
+      }
+    },
+    "PanelAction": {
+      "description": "A panel button: it runs the extension command `command` with `args`.",
+      "properties": {
+        "args": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "command",
+        "args"
+      ],
+      "type": "object"
+    },
+    "PanelBody": {
+      "description": "A panel's body, told apart by `kind` (`extension_types.validate_panel_spec`).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/PanelText"
+        },
+        {
+          "$ref": "#/$defs/PanelList"
+        },
+        {
+          "$ref": "#/$defs/PanelTable"
+        }
+      ]
+    },
+    "PanelList": {
+      "description": "A panel body listing strings.",
+      "properties": {
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "list"
+        }
+      },
+      "required": [
+        "kind",
+        "items"
+      ],
+      "type": "object"
+    },
+    "PanelSpec": {
+      "description": "A `ui.panel` spec, normalized (`extension_types.validate_panel_spec`).",
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/PanelAction"
+          },
+          "type": "array"
+        },
+        "body": {
+          "$ref": "#/$defs/PanelBody"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body",
+        "actions"
+      ],
+      "type": "object"
+    },
+    "PanelTable": {
+      "description": "A panel body of string cells; every row has one cell per column.",
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "table"
+        },
+        "rows": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "columns",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "PanelText": {
+      "description": "A panel body of text.",
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "PathMatch": {
+      "description": "One path an `@` token can complete to.",
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "is_dir": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "detail",
+        "is_dir"
+      ],
       "type": "object"
     },
     "Perform": {
-      "description": "Call one of the session backend's operations, acting at ``cursor_id``.",
+      "additionalProperties": false,
+      "description": "Call one of the session backend's operations, acting at `cursor_id`.",
       "properties": {
         "arguments": {
           "additionalProperties": {},
+          "description": "Its keyword arguments.",
           "type": "object"
         },
         "cursor_id": {
+          "description": "The cursor the operation acts on: the tree edits move and append at it, and `rollback_turn` runs its turn there.",
           "type": "string"
         },
         "method": {
+          "description": "One of `PERFORMABLE`.",
           "type": "string"
         },
         "session_id": {
           "type": "string"
         },
         "type": {
-          "enum": [
-            "perform"
-          ]
+          "const": "perform"
         }
       },
       "required": [
@@ -913,10 +3271,337 @@
         "method",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/PerformResult"
+      }
+    },
+    "PerformReady": {
+      "additionalProperties": false,
+      "description": "Perform a flow's `Ready` at a cursor, as a submit that resolved to it would.",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "ready": {
+          "$ref": "#/$defs/Ready",
+          "description": "What `NextStep` answered once every argument was bound. Its `mutation` must be its flow's."
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "perform_ready"
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id",
+        "ready",
+        "type"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/DispatchedCommand"
+      }
+    },
+    "PerformResult": {
+      "description": "The answer to `perform`, told apart by `kind`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/PerformedAnswer"
+        },
+        {
+          "$ref": "#/$defs/ExtensionCommandAnswer"
+        },
+        {
+          "$ref": "#/$defs/SubmissionAnswer"
+        },
+        {
+          "$ref": "#/$defs/CompactionAnswer"
+        },
+        {
+          "$ref": "#/$defs/ValueAnswer"
+        }
+      ]
+    },
+    "Performed": {
+      "description": "What a capability produced. The past tense of `Ready`.",
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The session-log cursor after the call, or `None` for a session with no log. It is the promoted copy of `data[\"cursor\"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it."
+        },
+        "data": {
+          "additionalProperties": {},
+          "description": "What it returned, keyed as its `returns` declares. JSON-able.",
+          "type": "object"
+        },
+        "flow": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The flow that named the mutation, when a flow did. `None` when a caller performed the capability directly."
+        },
+        "mutation": {
+          "description": "The capability that ran.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow",
+        "mutation",
+        "data"
+      ],
+      "type": "object"
+    },
+    "PerformedAnswer": {
+      "description": "A `Perform` whose operation returned a `Performed`.",
+      "properties": {
+        "fields": {
+          "$ref": "#/$defs/Performed"
+        },
+        "kind": {
+          "const": "Performed"
+        }
+      },
+      "required": [
+        "fields",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "PerformedArm": {
+      "description": "What a capability produced. The past tense of `Ready`.",
+      "properties": {
+        "arm": {
+          "const": "Performed"
+        },
+        "cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The session-log cursor after the call, or `None` for a session with no log. It is the promoted copy of `data[\"cursor\"]` wherever the capability declares one, so a head reads the same field for every mutation instead of knowing which ones carry it."
+        },
+        "data": {
+          "additionalProperties": {},
+          "description": "What it returned, keyed as its `returns` declares. JSON-able.",
+          "type": "object"
+        },
+        "flow": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The flow that named the mutation, when a flow did. `None` when a caller performed the capability directly."
+        },
+        "mutation": {
+          "description": "The capability that ran.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "arm",
+        "flow",
+        "mutation",
+        "data"
+      ],
+      "type": "object"
+    },
+    "Ready": {
+      "additionalProperties": false,
+      "description": "A flow with every required argument bound: the mutation, and what to call it with.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": {},
+          "description": "What to perform it with, keyed by the mutation's own parameter names, so a caller can splat it.",
+          "type": "object"
+        },
+        "flow": {
+          "description": "The flow's name.",
+          "type": "string"
+        },
+        "mutation": {
+          "description": "The capability to perform \u2014 the flow's, always. Which mutation runs is a property of which flow was named, never of what was bound.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow",
+        "mutation",
+        "arguments"
+      ],
+      "type": "object"
+    },
+    "ReadyArm": {
+      "description": "A flow with every required argument bound: the mutation, and what to call it with.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": {},
+          "description": "What to perform it with, keyed by the mutation's own parameter names, so a caller can splat it.",
+          "type": "object"
+        },
+        "arm": {
+          "const": "Ready"
+        },
+        "flow": {
+          "description": "The flow's name.",
+          "type": "string"
+        },
+        "mutation": {
+          "description": "The capability to perform \u2014 the flow's, always. Which mutation runs is a property of which flow was named, never of what was bound.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "arm",
+        "flow",
+        "mutation",
+        "arguments"
+      ],
+      "type": "object"
+    },
+    "RequestAnswered": {
+      "description": "The answer to `AnswerRequest`.",
+      "properties": {
+        "handled": {
+          "description": "Whether the action's command ran.",
+          "type": "boolean"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What the command returned, as text, or `None`."
+        }
+      },
+      "required": [
+        "handled",
+        "output"
+      ],
+      "type": "object"
+    },
+    "RequestClosedEvent": {
+      "description": "A `request_closed` event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/RequestClosedEventData"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "request_closed"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "event"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "RequestClosedEventData": {
+      "description": "A form some client answered, or its asker gave up on.",
+      "properties": {
+        "request_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request_id"
+      ],
+      "type": "object"
+    },
+    "RequestEvent": {
+      "description": "A `request` event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/RequestEventData"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "request"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "event"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "RequestEventData": {
+      "description": "An extension form open now: the `request` event's data, and one of `Attached`'s `requests`.",
+      "properties": {
+        "request_id": {
+          "description": "What `Answer` names.",
+          "type": "string"
+        },
+        "spec": {
+          "$ref": "#/$defs/FormSpec"
+        }
+      },
+      "required": [
+        "request_id",
+        "spec"
+      ],
       "type": "object"
     },
     "Response": {
-      "description": "The one answer to a request, matched by ``id``.",
+      "description": "The one answer to a request, matched by `id`.",
       "properties": {
         "error": {
           "anyOf": [
@@ -934,11 +3619,11 @@
         "ok": {
           "type": "boolean"
         },
-        "result": {},
+        "result": {
+          "description": "When `ok`, the request's result: `Results[request.type]` in the schema. `null` when not `ok`."
+        },
         "type": {
-          "enum": [
-            "response"
-          ]
+          "const": "response"
         }
       },
       "required": [
@@ -948,8 +3633,111 @@
       ],
       "type": "object"
     },
+    "ServeStarted": {
+      "description": "What `tau serve -d --json` prints: the one daemon at `address`.",
+      "properties": {
+        "address": {
+          "description": "`HOST:PORT` or `unix:/PATH`.",
+          "type": "string"
+        },
+        "log": {
+          "description": "The background log a daemon started by `-d` writes.",
+          "type": "string"
+        },
+        "pid": {
+          "description": "The daemon's process id.",
+          "type": "integer"
+        },
+        "started": {
+          "description": "Whether this call started it.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "address",
+        "pid",
+        "started",
+        "log"
+      ],
+      "type": "object"
+    },
+    "SessionCreated": {
+      "description": "The answer to `CreateSession`.",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionForked": {
+      "description": "The answer to `ForkSession`.",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "SessionInfoEntry": {
+      "description": "The session's display name from here on; the model never sees it.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": false,
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "const": "session_info"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type",
+        "name"
+      ],
+      "type": "object"
+    },
+    "SessionList": {
+      "description": "The answer to `ListSessions`.",
+      "properties": {
+        "sessions": {
+          "items": {
+            "$ref": "#/$defs/SessionRow"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sessions"
+      ],
+      "type": "object"
+    },
     "SessionRow": {
-      "description": "One line of :class:`ListSessions`' answer.",
+      "description": "One line of `ListSessions`' answer.",
       "properties": {
         "cwd": {
           "type": "string"
@@ -992,6 +3780,7 @@
       "type": "object"
     },
     "SetModel": {
+      "additionalProperties": false,
       "description": "Switch the model a cursor's next turn runs, by a name from the daemon's config.",
       "properties": {
         "cursor_id": {
@@ -1004,9 +3793,7 @@
           "type": "string"
         },
         "type": {
-          "enum": [
-            "set_model"
-          ]
+          "const": "set_model"
         }
       },
       "required": [
@@ -1015,13 +3802,81 @@
         "model",
         "type"
       ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/ModelSet"
+      }
+    },
+    "SubmissionAnswer": {
+      "description": "A `Perform` whose operation returned a `SubmissionResult` (`rollback_turn`).",
+      "properties": {
+        "fields": {
+          "$ref": "#/$defs/SubmissionResult"
+        },
+        "kind": {
+          "const": "SubmissionResult"
+        }
+      },
+      "required": [
+        "fields",
+        "kind"
+      ],
       "type": "object"
     },
-    "Submit": {
-      "description": "Send text to a cursor: a prompt, or a ``/command`` when ``expand_commands``.",
+    "SubmissionEndChannel": {
+      "description": "The `submission_end` channel.",
       "properties": {
-        "cursor_id": {
-          "type": "string"
+        "name": {
+          "const": "submission_end"
+        },
+        "payload": {
+          "$ref": "#/$defs/SubmissionEndPayload"
+        }
+      },
+      "required": [
+        "payload",
+        "name"
+      ],
+      "type": "object"
+    },
+    "SubmissionEndPayload": {
+      "description": "A submission's turn ended, however it ended.",
+      "properties": {
+        "side_usage": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tokens its side completions (summaries) spent, by usage field."
+        },
+        "submission": {
+          "$ref": "#/$defs/SubmissionInfo"
+        }
+      },
+      "required": [
+        "submission",
+        "side_usage"
+      ],
+      "type": "object"
+    },
+    "SubmissionInfo": {
+      "description": "A `Submission` as its channel events carry it (`tau_agent_core.submission`).",
+      "properties": {
+        "allow_user_input": {
+          "type": "boolean"
+        },
+        "correlation": {
+          "$ref": "#/$defs/Correlation"
+        },
+        "depth": {
+          "type": "integer"
         },
         "expand_commands": {
           "type": "boolean"
@@ -1042,6 +3897,234 @@
         },
         "multitask_strategy": {
           "enum": [
+            "reject",
+            "enqueue",
+            "steer",
+            "rollback",
+            "fork"
+          ]
+        },
+        "silent": {
+          "type": "boolean"
+        },
+        "source": {
+          "enum": [
+            "interactive",
+            "rpc",
+            "extension",
+            "bus",
+            "timer",
+            "webhook",
+            "voice",
+            "agent"
+          ]
+        },
+        "store_history": {
+          "type": "boolean"
+        },
+        "submission_id": {
+          "type": "string"
+        },
+        "submitter": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "source",
+        "submitter",
+        "submission_id",
+        "images",
+        "multitask_strategy",
+        "expand_commands",
+        "allow_user_input",
+        "store_history",
+        "silent",
+        "correlation",
+        "depth"
+      ],
+      "type": "object"
+    },
+    "SubmissionResult": {
+      "description": "The outcome of a `Submission` \u2014 LSP's `ApplyWorkspaceEditResult` shape: a refusal is a **result**, not an exception (decision-adjacent to the spec's \"Five mechanisms\" point 5).",
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlowStep"
+            },
+            {
+              "$ref": "#/$defs/Ready"
+            },
+            {
+              "$ref": "#/$defs/Performed"
+            },
+            {
+              "$ref": "#/$defs/View"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lock": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExtensionRequestRecord"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "messages": {
+          "items": {
+            "additionalProperties": {},
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "rejection_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "submission_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted",
+        "submission_id"
+      ],
+      "type": "object"
+    },
+    "SubmissionStartChannel": {
+      "description": "The `submission_start` channel.",
+      "properties": {
+        "name": {
+          "const": "submission_start"
+        },
+        "payload": {
+          "$ref": "#/$defs/SubmissionStartPayload"
+        }
+      },
+      "required": [
+        "payload",
+        "name"
+      ],
+      "type": "object"
+    },
+    "SubmissionStartPayload": {
+      "description": "A submission admitted to run a turn.",
+      "properties": {
+        "attachments": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttachmentReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What `expand_attachments` did, or `None` when it was not asked."
+        },
+        "cursor_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The cursor its turn extends."
+        },
+        "images": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": {},
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "That cursor's owner, for a sub-agent's turn."
+        },
+        "submission": {
+          "$ref": "#/$defs/SubmissionInfo"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "submission",
+        "text",
+        "images",
+        "cursor_id",
+        "owner_id",
+        "attachments"
+      ],
+      "type": "object"
+    },
+    "Submit": {
+      "additionalProperties": false,
+      "description": "Send text to a cursor: a prompt, or a `/command` when `expand_commands`.",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "expand_attachments": {
+          "description": "Resolve `@path` references in `text` against the session's cwd on the daemon's machine, as the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72).",
+          "type": "boolean"
+        },
+        "expand_commands": {
+          "type": "boolean"
+        },
+        "images": {
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": {},
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Image content blocks to send with the text."
+        },
+        "multitask_strategy": {
+          "description": "What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md).",
+          "enum": [
             "enqueue",
             "reject",
             "steer",
@@ -1059,15 +4142,14 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The id the events of this submission carry; the daemon mints one when `None`. A client that renders its own streams sends it."
         },
         "text": {
           "type": "string"
         },
         "type": {
-          "enum": [
-            "submit"
-          ]
+          "const": "submit"
         }
       },
       "required": [
@@ -1076,10 +4158,13 @@
         "text",
         "type"
       ],
-      "type": "object"
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/SubmitResult"
+      }
     },
     "SubmitResult": {
-      "description": "How a submission ended; a refusal is an answer, not an error.",
+      "description": "The answer to `Submit`: how the submission ended. A refusal is an answer, not an error.",
       "properties": {
         "accepted": {
           "type": "boolean"
@@ -1087,13 +4172,13 @@
         "command": {
           "anyOf": [
             {
-              "additionalProperties": {},
-              "type": "object"
+              "$ref": "#/$defs/DispatchedCommand"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "When the text was a command, what it resolved to. The daemon performs a `Ready` itself, except `fork` and `switch_session`."
         },
         "reason": {
           "anyOf": [
@@ -1129,15 +4214,18 @@
               }
             ]
           },
+          "description": "Each extension command's argument hint, or `None`.",
           "type": "object"
         },
         "commands": {
+          "description": "Every command, built-in and extension, in resolution order.",
           "items": {
             "$ref": "#/$defs/CommandInfo"
           },
           "type": "array"
         },
         "extensions": {
+          "description": "`[path, enabled]` per managed extension.",
           "items": {
             "items": {},
             "type": "array"
@@ -1145,6 +4233,7 @@
           "type": "array"
         },
         "load_errors": {
+          "description": "`[path, error]` per extension file that failed to load.",
           "items": {
             "items": {
               "type": "string"
@@ -1154,12 +4243,14 @@
           "type": "array"
         },
         "loaded": {
+          "description": "Every loaded extension and what it registered.",
           "items": {
             "$ref": "#/$defs/ExtensionInfo"
           },
           "type": "array"
         },
         "shortcuts": {
+          "description": "`[key, command, args, description]` per extension shortcut.",
           "items": {
             "items": {
               "type": "string"
@@ -1179,16 +4270,249 @@
       ],
       "type": "object"
     },
+    "SystemMessage": {
+      "description": "The system prompt, which a session stores as its first message entry.",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "role": {
+          "const": "system"
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
+    },
+    "TextContent": {
+      "description": "A text content block in a message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "const": "text",
+          "default": "text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ThinkingChangeEntry": {
+      "description": "Legacy: the reasoning level from here on, before config entries.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "level": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": false,
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "const": "thinking_change"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type",
+        "level"
+      ],
+      "type": "object"
+    },
+    "ThinkingContent": {
+      "description": "A thinking/reasoning content block.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "properties": {
+        "cached_tokens": {
+          "default": 0,
+          "type": "integer"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "thinking_signature": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          ],
+          "default": ""
+        },
+        "type": {
+          "const": "thinking",
+          "default": "thinking",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thinking",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ToolCall": {
+      "description": "A tool call content block in a message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "properties": {
+        "arguments": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider_signature": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": {
+          "const": "toolCall",
+          "default": "toolCall",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "arguments",
+        "type"
+      ],
+      "type": "object"
+    },
+    "ToolResultMessage": {
+      "description": "A tool result message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "properties": {
+        "content": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/TextContent"
+              },
+              {
+                "$ref": "#/$defs/ImageContent"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "is_error": {
+          "default": false,
+          "type": "boolean"
+        },
+        "role": {
+          "const": "toolResult",
+          "default": "toolResult",
+          "type": "string"
+        },
+        "timestamp": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_call_id": {
+          "type": "string"
+        },
+        "tool_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call_id",
+        "tool_name",
+        "content",
+        "timestamp",
+        "role"
+      ],
+      "type": "object"
+    },
+    "TreeResult": {
+      "description": "The answer to `GetTree`.",
+      "properties": {
+        "count": {
+          "description": "How many rows.",
+          "type": "integer"
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The cursor's leaf: the one row whose `is_leaf` is true."
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/TreeRow"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "nodes",
+        "leaf",
+        "count"
+      ],
+      "type": "object"
+    },
     "TreeRow": {
-      "description": "One :class:`GetTree` row: RPC ``get_tree``'s node, with ``is_cursor`` named ``is_leaf``.",
+      "description": "One `GetTree` row: RPC `get_tree`'s node, with `is_cursor` named `is_leaf`.",
       "properties": {
         "copyable": {
+          "description": "Whether `paste_subtree` can take this entry as its source.",
           "type": "boolean"
         },
         "entry_id": {
           "type": "string"
         },
         "estimated_tokens": {
+          "description": "An estimate of the entry's tokens, 0 when it holds no message.",
           "type": "integer"
         },
         "first_kept_id": {
@@ -1199,7 +4523,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "On a `compaction` or `elide`, the oldest entry kept."
         },
         "from_id": {
           "anyOf": [
@@ -1209,15 +4534,19 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "On a `branch_summary`, the branch head it summarizes."
         },
         "is_leaf": {
+          "description": "Whether this entry is the cursor's leaf.",
           "type": "boolean"
         },
         "is_system": {
+          "description": "Whether this is the system prompt.",
           "type": "boolean"
         },
         "kind": {
+          "description": "The entry's `type`.",
           "type": "string"
         },
         "parent_id": {
@@ -1231,6 +4560,7 @@
           ]
         },
         "preview": {
+          "description": "The entry's first line.",
           "type": "string"
         },
         "role": {
@@ -1241,7 +4571,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The message role; `None` on a bookkeeping entry."
         },
         "timestamp": {
           "anyOf": [
@@ -1251,7 +4582,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Epoch milliseconds, or `None`."
         },
         "tool_call_id": {
           "anyOf": [
@@ -1261,9 +4593,11 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The call a tool result answers."
         },
         "tool_call_ids": {
+          "description": "The tool call ids an assistant message declares.",
           "items": {
             "type": "string"
           },
@@ -1287,408 +4621,1213 @@
         "estimated_tokens"
       ],
       "type": "object"
+    },
+    "UiEvent": {
+      "description": "A `ui` event.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/UiEventData"
+        },
+        "epoch": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "ui"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "const": "event"
+        }
+      },
+      "required": [
+        "session_id",
+        "epoch",
+        "seq",
+        "kind",
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    "UiEventData": {
+      "description": "An extension display call, told apart by `op`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/UiNotify"
+        },
+        {
+          "$ref": "#/$defs/UiStatus"
+        },
+        {
+          "$ref": "#/$defs/UiPanel"
+        }
+      ]
+    },
+    "UiNotify": {
+      "description": "An extension's notification.",
+      "properties": {
+        "level": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "op": {
+          "const": "notify"
+        }
+      },
+      "required": [
+        "message",
+        "level",
+        "op"
+      ],
+      "type": "object"
+    },
+    "UiPanel": {
+      "description": "An extension's panel under `key`; `None` closes it.",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "op": {
+          "const": "panel"
+        },
+        "spec": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PanelSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "spec",
+        "op"
+      ],
+      "type": "object"
+    },
+    "UiStatus": {
+      "description": "An extension's status-line text under `key`; `None` clears it.",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "op": {
+          "const": "status"
+        },
+        "text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "text",
+        "op"
+      ],
+      "type": "object"
+    },
+    "Usage": {
+      "description": "Token usage information for an LLM response.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\nUsage is immutable (frozen) \u2014 once created, its fields cannot be modified.\n\n``cache_reported`` says whether the SERVER accounted for a prompt cache on\nthis completion at all, which a 0 in the two counters cannot: llama.cpp\nreports no cache fields, so its 0 means \"no cache here\" where a gateway's 0\nmeans \"cached nothing\". Only the second is a finding\n(docs/PROMPT-CACHING.md \u00a77).",
+      "properties": {
+        "cache_read_tokens": {
+          "default": 0,
+          "type": "integer"
+        },
+        "cache_reported": {
+          "default": false,
+          "type": "boolean"
+        },
+        "cache_write_tokens": {
+          "default": 0,
+          "type": "integer"
+        },
+        "cost": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        "extra": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "input_tokens": {
+          "default": 0,
+          "type": "integer"
+        },
+        "output_tokens": {
+          "default": 0,
+          "type": "integer"
+        },
+        "total_tokens": {
+          "default": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "UserMessage": {
+      "description": "A user message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "properties": {
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TextContent"
+                  },
+                  {
+                    "$ref": "#/$defs/ImageContent"
+                  }
+                ]
+              },
+              "type": "array"
+            }
+          ]
+        },
+        "role": {
+          "const": "user",
+          "default": "user",
+          "type": "string"
+        },
+        "timestamp": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "content",
+        "timestamp",
+        "role"
+      ],
+      "type": "object"
+    },
+    "ValueAnswer": {
+      "description": "A `Perform` whose operation returned a plain value.",
+      "properties": {
+        "kind": {
+          "const": "value"
+        },
+        "value": {
+          "description": "`navigate_tree`, `elide_span` and `commit_branch` return the context's messages; `paste_subtree` the minted ids; `list_managed_extensions` `[path, enabled]` pairs; `compact` `null` when there was nothing to compact."
+        }
+      },
+      "required": [
+        "value",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "View": {
+      "description": "A named surface only a head can open.",
+      "properties": {
+        "name": {
+          "description": "The view's name, a key of `tau_agent_core.capabilities.VIEW_COMMANDS`.",
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What a head draws the view from. `None` everywhere today \u2014 no capability projects the session tree yet (docs/VSCODE-HEAD.md \u00a76), and this is the spot that payload lands in when one does, with no change to the union."
+        },
+        "unavailable_because": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why no `state` rides with this, in a sentence a head can print. A head that has its own view of that name ignores it and opens it; a head that has none prints it and does nothing else. Not a fallback: it is the same idiom the RPC table's seven `declined_because` entries already use."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ViewArm": {
+      "description": "A named surface only a head can open.",
+      "properties": {
+        "arm": {
+          "const": "View"
+        },
+        "name": {
+          "description": "The view's name, a key of `tau_agent_core.capabilities.VIEW_COMMANDS`.",
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What a head draws the view from. `None` everywhere today \u2014 no capability projects the session tree yet (docs/VSCODE-HEAD.md \u00a76), and this is the spot that payload lands in when one does, with no change to the union."
+        },
+        "unavailable_because": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why no `state` rides with this, in a sentence a head can print. A head that has its own view of that name ignores it and opens it; a head that has none prints it and does nothing else. Not a fallback: it is the same idiom the RPC table's seven `declined_because` entries already use."
+        }
+      },
+      "required": [
+        "arm",
+        "name"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "ClientFrame": {
     "oneOf": [
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/Hello"
+        "additionalProperties": false,
+        "description": "A `hello` request with its id.",
+        "properties": {
+          "client": {
+            "description": "What the client is, for the daemon's log (`tui`, `tail`, `web`).",
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+          "id": {
+            "type": "integer"
+          },
+          "protocol": {
+            "description": "The client's `PROTOCOL_VERSION`; a different one is refused.",
+            "type": "string"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
               }
-            },
-            "type": "object"
+            ],
+            "description": "The shared secret, required only when the daemon's config sets `serve.token`. A client reads it from `TAUD_TOKEN`."
+          },
+          "type": {
+            "const": "hello"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "protocol",
+          "client",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/ListSessions"
+        "additionalProperties": false,
+        "description": "A `list_sessions` request with its id.",
+        "properties": {
+          "id": {
+            "type": "integer"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
-            "type": "object"
+          "type": {
+            "const": "list_sessions"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/CreateSession"
+        "additionalProperties": false,
+        "description": "A `create_session` request with its id.",
+        "properties": {
+          "cwd": {
+            "description": "The directory its tools run in; the create fails if it does not exist.",
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+          "id": {
+            "type": "integer"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
               }
-            },
-            "type": "object"
+            ],
+            "description": "A model name from the daemon's config, or `None` for its default."
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A session name, or `None`."
+          },
+          "type": {
+            "const": "create_session"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "cwd",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/Attach"
-          },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+        "additionalProperties": false,
+        "description": "A `attach` request with its id.",
+        "properties": {
+          "epoch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
               }
-            },
-            "type": "object"
+            ],
+            "description": "The `epoch` of an earlier attach, to resume rather than re-read."
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "description": "The session, or an unambiguous prefix of its id.",
+            "type": "string"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The last `seq` the client applied under that epoch."
+          },
+          "type": {
+            "const": "attach"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/Detach"
+        "additionalProperties": false,
+        "description": "A `detach` request with its id.",
+        "properties": {
+          "id": {
+            "type": "integer"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
-            "type": "object"
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "detach"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/Submit"
+        "additionalProperties": false,
+        "description": "A `submit` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+          "expand_attachments": {
+            "description": "Resolve `@path` references in `text` against the session's cwd on the daemon's machine, as the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72).",
+            "type": "boolean"
+          },
+          "expand_commands": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "images": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": {},
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
               }
-            },
-            "type": "object"
+            ],
+            "description": "Image content blocks to send with the text."
+          },
+          "multitask_strategy": {
+            "description": "What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md).",
+            "enum": [
+              "enqueue",
+              "reject",
+              "steer",
+              "follow_up"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "submission_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The id the events of this submission carry; the daemon mints one when `None`. A client that renders its own streams sends it."
+          },
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "const": "submit"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "cursor_id",
+          "text",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/Abort"
+        "additionalProperties": false,
+        "description": "A `abort` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
-            "type": "object"
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "abort"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "cursor_id",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/OpenCursor"
+        "additionalProperties": false,
+        "description": "A `open_cursor` request with its id.",
+        "properties": {
+          "id": {
+            "type": "integer"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+          "label": {
+            "type": "string"
+          },
+          "leaf": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
               }
-            },
-            "type": "object"
+            ]
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "open_cursor"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "leaf",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/CloseCursor"
+        "additionalProperties": false,
+        "description": "A `close_cursor` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
-            "type": "object"
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "close_cursor"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "cursor_id",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/MoveCursor"
+        "additionalProperties": false,
+        "description": "A `move_cursor` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+          "id": {
+            "type": "integer"
+          },
+          "leaf": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
               }
-            },
-            "type": "object"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "move_cursor"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "cursor_id",
+          "leaf",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/SetModel"
+        "additionalProperties": false,
+        "description": "A `set_model` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
-            "type": "object"
+          "id": {
+            "type": "integer"
+          },
+          "model": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "set_model"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "cursor_id",
+          "model",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/Answer"
+        "additionalProperties": false,
+        "description": "A `answer` request with its id.",
+        "properties": {
+          "id": {
+            "type": "integer"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+          "request_id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "answer"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "additionalProperties": {},
+                "type": "object"
+              },
+              {
+                "type": "null"
               }
-            },
-            "type": "object"
+            ],
+            "description": "The `{field: value}` answers, or `None` to cancel the form."
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "request_id",
+          "value",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/AnswerRequest"
+        "additionalProperties": false,
+        "description": "A `answer_request` request with its id.",
+        "properties": {
+          "action": {
+            "description": "The label of the pressed action.",
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
+          "cursor_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "request_id": {
+            "description": "The request entry's id.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "answer_request"
+          },
+          "values": {
+            "additionalProperties": {},
+            "description": "The filled fields, keyed by name.",
             "type": "object"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "cursor_id",
+          "request_id",
+          "action",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/Perform"
-          },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
+        "additionalProperties": false,
+        "description": "A `perform` request with its id.",
+        "properties": {
+          "arguments": {
+            "additionalProperties": {},
+            "description": "Its keyword arguments.",
             "type": "object"
+          },
+          "cursor_id": {
+            "description": "The cursor the operation acts on: the tree edits move and append at it, and `rollback_turn` runs its turn there.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "method": {
+            "description": "One of `PERFORMABLE`.",
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "perform"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "cursor_id",
+          "method",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/Describe"
+        "additionalProperties": false,
+        "description": "A `perform_ready` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
-            "type": "object"
+          "id": {
+            "type": "integer"
+          },
+          "ready": {
+            "$ref": "#/$defs/Ready",
+            "description": "What `NextStep` answered once every argument was bound. Its `mutation` must be its flow's."
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "perform_ready"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "cursor_id",
+          "ready",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/Compare"
+        "additionalProperties": false,
+        "description": "A `describe` request with its id.",
+        "properties": {
+          "id": {
+            "type": "integer"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
-            "type": "object"
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "describe"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/EndCompare"
+        "additionalProperties": false,
+        "description": "A `compare` request with its id.",
+        "properties": {
+          "id": {
+            "type": "integer"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+          "leaf": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
               }
+            ],
+            "description": "The entry the cursors start from; `None` is the head cursor's leaf."
+          },
+          "models": {
+            "description": "Model names from the daemon's config, one cursor each; one may repeat.",
+            "items": {
+              "type": "string"
             },
-            "type": "object"
+            "type": "array"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "description": "The prompt every cursor receives, never expanded as a command.",
+            "type": "string"
+          },
+          "type": {
+            "const": "compare"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "models",
+          "text",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/NextStep"
+        "additionalProperties": false,
+        "description": "A `end_compare` request with its id.",
+        "properties": {
+          "comparison_id": {
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+          "id": {
+            "type": "integer"
+          },
+          "keep": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
               }
-            },
-            "type": "object"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "end_compare"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "comparison_id",
+          "keep",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/EnumerateDomain"
-          },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+        "additionalProperties": false,
+        "description": "A `next_step` request with its id.",
+        "properties": {
+          "bound": {
+            "anyOf": [
+              {
+                "additionalProperties": {},
+                "type": "object"
+              },
+              {
+                "type": "null"
               }
-            },
-            "type": "object"
+            ],
+            "description": "The arguments bound so far; `None` or `{}` is the first step."
+          },
+          "flow": {
+            "description": "A command `name` whose `flow` is true in the `Surface`.",
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "leaf": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The entry a scoped `message_id` argument is relative to, echoed back as the step's `cursor` for `EnumerateDomain`."
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "next_step"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "flow",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/CompletePath"
+        "additionalProperties": false,
+        "description": "A `enumerate_domain` request with its id.",
+        "properties": {
+          "domain": {
+            "description": "A domain name, as a step's `domain.name` gives it.",
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
+          "id": {
+            "type": "integer"
+          },
+          "leaf": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
               }
-            },
-            "type": "object"
+            ],
+            "description": "The entry a scoped `message_id` is relative to; `None` is the head cursor's leaf."
+          },
+          "limit": {
+            "description": "The most values answered.",
+            "type": "integer"
+          },
+          "query": {
+            "description": "A prefix of the value, or a substring of the label; empty matches all.",
+            "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "in_session",
+                  "ancestors_of_cursor",
+                  "descendants_of_cursor"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For `message_id`: which entries are candidates; `None` is `in_session`."
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "enumerate_domain"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "domain",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/GetTree"
+        "additionalProperties": false,
+        "description": "A `complete_path` request with its id.",
+        "properties": {
+          "id": {
+            "type": "integer"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
-            "type": "object"
+          "offset": {
+            "description": "The caret's character offset in `text`.",
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "const": "complete_path"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "text",
+          "offset",
+          "type"
+        ],
+        "type": "object"
       },
       {
-        "allOf": [
-          {
-            "$ref": "#/$defs/ForkSession"
+        "additionalProperties": false,
+        "description": "A `get_tree` request with its id.",
+        "properties": {
+          "cursor_id": {
+            "type": "string"
           },
-          {
-            "properties": {
-              "id": {
-                "type": "integer"
-              }
-            },
-            "type": "object"
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "get_tree"
           }
-        ],
+        },
         "required": [
-          "id"
-        ]
+          "id",
+          "session_id",
+          "cursor_id",
+          "type"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `fork_session` request with its id.",
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The entry to fork at, copying only the path to it; `None` copies the whole tree."
+          },
+          "id": {
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "fork_session"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "at",
+          "type"
+        ],
+        "type": "object"
       }
     ]
+  },
+  "Results": {
+    "abort": {
+      "type": "null"
+    },
+    "answer": {
+      "type": "null"
+    },
+    "answer_request": {
+      "$ref": "#/$defs/RequestAnswered"
+    },
+    "attach": {
+      "$ref": "#/$defs/Attached"
+    },
+    "close_cursor": {
+      "type": "null"
+    },
+    "compare": {
+      "$ref": "#/$defs/CompareStarted"
+    },
+    "complete_path": {
+      "$ref": "#/$defs/CompletePathResult"
+    },
+    "create_session": {
+      "$ref": "#/$defs/SessionCreated"
+    },
+    "describe": {
+      "$ref": "#/$defs/Surface"
+    },
+    "detach": {
+      "type": "null"
+    },
+    "end_compare": {
+      "$ref": "#/$defs/CompareEnded"
+    },
+    "enumerate_domain": {
+      "$ref": "#/$defs/DomainListing"
+    },
+    "fork_session": {
+      "$ref": "#/$defs/SessionForked"
+    },
+    "get_tree": {
+      "$ref": "#/$defs/TreeResult"
+    },
+    "hello": {
+      "$ref": "#/$defs/HelloResult"
+    },
+    "list_sessions": {
+      "$ref": "#/$defs/SessionList"
+    },
+    "move_cursor": {
+      "type": "null"
+    },
+    "next_step": {
+      "$ref": "#/$defs/NextStepResult"
+    },
+    "open_cursor": {
+      "$ref": "#/$defs/CursorOpened"
+    },
+    "perform": {
+      "$ref": "#/$defs/PerformResult"
+    },
+    "perform_ready": {
+      "$ref": "#/$defs/DispatchedCommand"
+    },
+    "set_model": {
+      "$ref": "#/$defs/ModelSet"
+    },
+    "submit": {
+      "$ref": "#/$defs/SubmitResult"
+    }
   },
   "ServerFrame": {
     "oneOf": [
@@ -1700,5 +5839,8 @@
       }
     ]
   },
-  "title": "tau serve protocol 0.2"
+  "description": "The tau serve WebSocket protocol (docs/SERVE-PROTOCOL.md). Request records are closed (`additionalProperties: false`), because the daemon refuses an unknown field. Everything the daemon sends is open: a client must ignore a field it does not know, so a minor version may add one. Each request $def names its answer in `x-result`, and `Results` maps every request `type` to it; `Event`'s `x-data` maps every `kind` to its data.",
+  "title": "tau serve protocol 0.3",
+  "x-default-port": 8256,
+  "x-protocol-version": "0.3"
 }

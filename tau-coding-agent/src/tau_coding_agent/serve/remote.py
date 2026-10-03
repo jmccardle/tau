@@ -26,6 +26,7 @@ from typing import Any
 
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.capabilities import Argument, Domain
+from tau_agent_core.compaction import CompactionDetails, CompactionResult
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.extension_locks import ExtensionRequest, request_at
@@ -453,7 +454,14 @@ def value_from_wire(answer: dict[str, Any]) -> Any:
     if kind == "SubmissionResult":
         fields = dict(fields)
         fields["command"] = None
+        if fields["lock"] is not None:
+            fields["lock"] = ExtensionRequest(**fields["lock"])
         return SubmissionResult(**fields)
+    if kind == "CompactionResult":
+        fields = dict(fields)
+        if fields["details"] is not None:
+            fields["details"] = CompactionDetails(**fields["details"])
+        return CompactionResult(**fields)
     raise RemoteUnsupportedError(f"the daemon answered with a {kind!r} this head cannot read")
 
 

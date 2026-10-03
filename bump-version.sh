@@ -3,18 +3,18 @@
 # bump-version.sh — set the τ monorepo's release version.
 #
 # The five distributions release in lockstep: one number, five wheels. That
-# number is written in fifteen places, and tau-coding-agent/tests/test_packaging.py
-# fails until all fifteen agree — so nothing drifts silently, but a release means
-# fifteen hand edits. This script is those fifteen edits.
+# number is written in sixteen places, and tau-coding-agent/tests/test_packaging.py
+# fails until all sixteen agree — so nothing drifts silently, but a release means
+# sixteen hand edits. This script is those sixteen edits.
 #
-# The fifteen:
+# The sixteen:
 #   * five ``__version__`` literals, one per package __init__.py. These are what
 #     setuptools reads for [tool.setuptools.dynamic], so they ARE the wheels'
 #     versions — NEVER add a ``version = "..."`` literal back to a package
 #     pyproject.toml to "fix" a mismatch; a test forbids the second copy.
 #   * one literal in the repo-root pyproject.toml, which is config rather than a
 #     distribution and so has no package to read from.
-#   * nine ``ffwf-tau…==<version>`` pins on in-repo requirements. A requirement
+#   * ten ``ffwf-tau…==<version>`` pins on in-repo requirements. A requirement
 #     string has nowhere to read a version from, so these are the copies this
 #     repo cannot make dynamic — and the ones a manual bump forgets.
 #
@@ -94,10 +94,10 @@ VERSION_FILES=(
 )
 ROOT_PYPROJECT="pyproject.toml"
 
-# The pins, by contrast, are DISCOVERED rather than listed. There are seven today,
+# The pins, by contrast, are DISCOVERED rather than listed. There are ten today,
 # spread over four of the five package pyprojects (tau-llm depends on nothing
-# in-repo). An eighth added next month must be bumped too, and a hardcoded list
-# of seven would miss it silently — which is the exact failure this script exists
+# in-repo). Another added next month must be bumped too, and a hardcoded list
+# of ten would miss it silently — which is the exact failure this script exists
 # to prevent. Anything matching this pattern is in scope, wherever it appears.
 # tau-meta's single pin was picked up by this glob on the day it was added, with
 # no edit here — which is the property being described.

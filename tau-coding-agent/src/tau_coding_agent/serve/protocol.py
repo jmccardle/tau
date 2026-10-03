@@ -4,24 +4,99 @@ One JSON object per WebSocket text frame. A client sends requests, each with an
 ``id`` it chose; the daemon answers each with one :class:`Response`, and pushes
 :class:`Event` frames for every session the client is attached to.
 
-The dataclasses here are the definition. :func:`json_schema` derives JSON Schema
-from them, ``scripts/generate_serve_protocol.py`` writes it with
-``docs/SERVE-PROTOCOL.md``, and tau-code generates its TS types from that schema.
+The definitions here are the protocol. Dataclasses are what the daemon builds and
+sends; TypedDicts are the shapes of dicts it forwards from the log and the core
+(an entry, a message, a form). :func:`json_schema` derives JSON Schema from both,
+``scripts/generate_serve_protocol.py`` writes it with ``docs/SERVE-PROTOCOL.md``,
+and tau-code generates its TS types from that schema.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
+import re
 import types
 import typing
 from dataclasses import dataclass, field
-from typing import Any, Literal, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    Literal,
+    Never,
+    NotRequired,
+    Required,
+    TypedDict,
+    get_args,
+    get_origin,
+    get_type_hints,
+    is_typeddict,
+)
 
-PROTOCOL_VERSION = "0.2"
+from tau_agent_core.agent_session import ExtensionCommandResult
+from tau_agent_core.compaction import CompactionResult
+from tau_agent_core.events import AgentEvent
+from tau_agent_core.extension_locks import ExtensionRequest as ExtensionRequestRecord
+from tau_agent_core.flows import FlowStep, Performed, Ready, View
+from tau_agent_core.submission import MultitaskStrategy, SubmissionResult, SubmissionSource
+from tau_llm.types import (
+    AssistantMessage,
+    ImageContent,
+    TextContent,
+    ToolResultMessage,
+    UserMessage,
+)
+
+PROTOCOL_VERSION = "0.3"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256
 """The port ``tau serve`` listens on and ``tau --connect HOST`` dials ("ffwf" in base64, as decimal)."""
+
+
+@dataclass(frozen=True)
+class Named:
+    """Marks a union as one ``$defs`` entry whose members a ``const`` field tells apart.
+
+    Attributes:
+        name: The ``$defs`` key.
+        doc: Its description.
+    """
+
+    name: str
+    doc: str
+
+
+@dataclass(frozen=True)
+class Shape:
+    """Marks a ``dict[str, Any]`` the daemon forwards as having the JSON shape of ``hint``."""
+
+    hint: Any
+
+
+@dataclass(frozen=True)
+class Tagged:
+    """Marks a record sent flattened with one more ``const`` field, ``{tag: value, **fields}``.
+
+    Attributes:
+        name: The ``$defs`` key of the tagged form.
+        tag: The added field's name.
+        value: Its constant value.
+    """
+
+    name: str
+    tag: str
+    value: str
+
+
+@dataclass(frozen=True)
+class Pattern:
+    """Marks a ``str`` as matching ``regex``."""
+
+    regex: str
+
+
+# ─── Requests ────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -92,13 +167,17 @@ class Detach:
 class Submit:
     """Send text to a cursor: a prompt, or a ``/command`` when ``expand_commands``.
 
-    Answered when the submission ends, with its :class:`SubmitResult`.
+    Answered when the submission ends. The ``submission_start`` channel event
+    carries what ``expand_attachments`` did, at acceptance.
 
     Attributes:
         multitask_strategy: What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md).
         submission_id: The id the events of this submission carry; the daemon
             mints one when ``None``. A client that renders its own streams sends it.
         images: Image content blocks to send with the text.
+        expand_attachments: Resolve ``@path`` references in ``text`` against the
+            session's cwd on the daemon's machine, as the TUI's editor does
+            (docs/FILE-ATTACHMENTS.md §2).
     """
 
     session_id: str
@@ -108,6 +187,7 @@ class Submit:
     expand_commands: bool = True
     submission_id: str | None = None
     images: list[dict[str, Any]] | None = None
+    expand_attachments: bool = False
     type: Literal["submit"] = "submit"
 
 
@@ -197,8 +277,7 @@ class Perform:
     """Call one of the session backend's operations, acting at ``cursor_id``.
 
     The TUI's commands reach the backend by method name; under ``--connect`` that
-    backend is the daemon's. Answered with a :class:`Performed`-shaped record or a
-    plain value, tagged by ``kind``.
+    backend is the daemon's.
 
     Attributes:
         cursor_id: The cursor the operation acts on: the tree edits move and
@@ -234,6 +313,24 @@ PERFORMABLE = (
 
 
 @dataclass
+class PerformReady:
+    """Perform a flow's ``Ready`` at a cursor, as a submit that resolved to it would.
+
+    ``fork`` and ``switch_session`` move a client to another session, so they come
+    back unperformed for the client to do.
+
+    Attributes:
+        ready: What :class:`NextStep` answered once every argument was bound. Its
+            ``mutation`` must be its flow's.
+    """
+
+    session_id: str
+    cursor_id: str
+    ready: Ready
+    type: Literal["perform_ready"] = "perform_ready"
+
+
+@dataclass
 class Describe:
     """Re-read a session's extension surface, after an extension was enabled or reloaded."""
 
@@ -245,11 +342,9 @@ class Describe:
 class Compare:
     """Open one cursor per model at ``leaf`` and send each the same text (docs/TAU-SERVE.md §8).
 
-    Answered at once with ``{comparison_id, cursors: [{cursor_id, model}], message}``;
-    the turns run on. Each turn's ``submission_start`` carries the comparison in
-    ``submission.correlation["compare"]`` as ``{id, models, index, cursor_id}``, so
-    every attached client can draw the columns. An unknown model fails before
-    anything is opened.
+    Answered at once; the turns run on. Each turn's ``submission_start`` carries
+    the comparison in ``submission.correlation.compare``, so every attached
+    client can draw the columns. An unknown model fails before anything is opened.
 
     Attributes:
         models: Model names from the daemon's config, one cursor each; one may repeat.
@@ -271,7 +366,7 @@ class EndCompare:
     Turns still running on the others are aborted first; every branch stays in
     the tree. ``keep`` ``None`` keeps none and leaves the head where it is. Fails
     with ``busy`` while the kept turn or the head's turn is running, changing
-    nothing. Answered with ``{"leaf": <the head's leaf>}``.
+    nothing.
     """
 
     session_id: str
@@ -283,10 +378,6 @@ class EndCompare:
 @dataclass
 class NextStep:
     """The next argument a flow needs, or the mutation it is ready for (RPC ``next_step``).
-
-    Answered with ``{status: "step"|"ready", step, ready}``: ``step`` is a
-    ``FlowStep`` as JSON ``{flow, argument, domain, cursor, bound}``, ``ready`` a
-    ``Ready`` ``{flow, mutation, arguments}``.
 
     Attributes:
         flow: A command ``name`` whose ``flow`` is true in the :class:`Surface`.
@@ -306,8 +397,7 @@ class NextStep:
 class EnumerateDomain:
     """The values legal for a domain right now (RPC ``enumerate_domain``).
 
-    Answered with ``{domain, values: [{value, label}], total}``; ``total`` counts
-    past ``limit``. ``path`` and ``session_id`` are read in the session's cwd.
+    ``path`` and ``session_id`` are read in the session's cwd.
 
     Attributes:
         domain: A domain name, as a step's ``domain.name`` gives it.
@@ -330,11 +420,9 @@ class EnumerateDomain:
 
 @dataclass
 class CompletePath:
-    """Complete the ``@path`` at ``offset`` in ``text`` against the session's cwd.
+    """Complete the ``@path`` at ``offset`` in ``text`` against the session's cwd (RPC ``complete_path``).
 
-    Answered as RPC ``complete_path``: ``{completion: null}`` outside an ``@``
-    token, else ``{completion: {start, end, token, matches: [{name, detail,
-    is_dir}], total}}``. The paths are on the daemon's machine.
+    The paths are on the daemon's machine.
 
     Attributes:
         offset: The caret's character offset in ``text``.
@@ -348,11 +436,7 @@ class CompletePath:
 
 @dataclass
 class GetTree:
-    """Every entry of a session's tree as a browser row, seen from one cursor.
-
-    Answered with ``{nodes: [TreeRow, ...], leaf, count}``: ``leaf`` is the
-    cursor's, and the one row whose ``is_leaf`` is true.
-    """
+    """Every entry of a session's tree as a browser row, seen from one cursor."""
 
     session_id: str
     cursor_id: str
@@ -361,7 +445,7 @@ class GetTree:
 
 @dataclass
 class ForkSession:
-    """Copy a session into a new one in the same cwd; answered with ``{session_id}``.
+    """Copy a session into a new one in the same cwd.
 
     The source is unchanged and the client stays attached to it; it attaches to
     the new session to continue there.
@@ -391,6 +475,7 @@ REQUESTS: tuple[type, ...] = (
     Answer,
     AnswerRequest,
     Perform,
+    PerformReady,
     Describe,
     Compare,
     EndCompare,
@@ -401,6 +486,278 @@ REQUESTS: tuple[type, ...] = (
     ForkSession,
 )
 """Every request a client may send, by its ``type``."""
+
+
+# ─── Shapes the daemon forwards: specs, messages, entries ────────────────
+
+
+class FormField(TypedDict):
+    """One field of an extension form (``extension_types.validate_form_spec``)."""
+
+    name: str
+    kind: Literal["text", "select", "multiselect", "confirm", "number"]
+    label: NotRequired[str]
+    default: NotRequired[Any]
+    options: NotRequired[list[str]]
+
+
+class FormSpec(TypedDict):
+    """An extension's ``ui.form`` spec, as the extension passed it (docs/EXTENSION-LOCKS.md §8.2)."""
+
+    title: NotRequired[str]
+    fields: list[FormField]
+
+
+class PanelText(TypedDict):
+    """A panel body of text."""
+
+    kind: Literal["text"]
+    text: str
+
+
+class PanelList(TypedDict):
+    """A panel body listing strings."""
+
+    kind: Literal["list"]
+    items: list[str]
+
+
+class PanelTable(TypedDict):
+    """A panel body of string cells; every row has one cell per column."""
+
+    kind: Literal["table"]
+    columns: list[str]
+    rows: list[list[str]]
+
+
+PanelBody = Annotated[
+    PanelText | PanelList | PanelTable,
+    Named(
+        "PanelBody", "A panel's body, told apart by `kind` (`extension_types.validate_panel_spec`)."
+    ),
+]
+
+
+class PanelAction(TypedDict):
+    """A panel button: it runs the extension command ``command`` with ``args``."""
+
+    label: str
+    command: str
+    args: str
+
+
+class PanelSpec(TypedDict):
+    """A ``ui.panel`` spec, normalized (``extension_types.validate_panel_spec``)."""
+
+    title: str
+    body: PanelBody
+    actions: list[PanelAction]
+
+
+class AskAction(TypedDict):
+    """An ask's button: it runs ``command`` with the request's id."""
+
+    label: str
+    command: str
+
+
+class Ask(TypedDict):
+    """What an extension request asks, normalized (``extension_types.validate_ask_spec``)."""
+
+    title: str
+    body: PanelBody | None
+    fields: list[FormField]
+    actions: list[AskAction]
+
+
+class SystemMessage(TypedDict):
+    """The system prompt, which a session stores as its first message entry."""
+
+    role: Literal["system"]
+    content: str
+
+
+class CustomRoleMessage(TypedDict):
+    """An extension's message (``messages.create_custom_message``); the model sees it as ``user``.
+
+    ``visibleToModel`` is absent on nodes written before it existed, which read as true.
+    """
+
+    role: Literal["custom"]
+    customType: str
+    content: list[TextContent | ImageContent]
+    display: bool
+    visibleToModel: NotRequired[bool]
+    details: NotRequired[Any]
+    timestamp: NotRequired[int]
+
+
+Message = Annotated[
+    UserMessage | AssistantMessage | ToolResultMessage | SystemMessage | CustomRoleMessage,
+    Named("Message", "A message as the log stores it, told apart by `role`."),
+]
+
+
+class _EntryBase(TypedDict):
+    """Every finished entry's common fields; ``status`` is absent once an entry is finished."""
+
+    id: str
+    parentId: str | None
+    timestamp: str
+    status: NotRequired[Never]
+
+
+class MessageEntry(_EntryBase):
+    """A message on the conversation path."""
+
+    type: Literal["message"]
+    message: Message
+
+
+class CustomMessageEntry(_EntryBase):
+    """An extension's message, which reaches the model unless ``visibleToModel`` is false."""
+
+    type: Literal["customMessage"]
+    customType: str
+    message: CustomRoleMessage
+
+
+class CustomEntryEntry(_EntryBase):
+    """Durable data the model never sees.
+
+    ``data`` is open: ``customType`` ``config`` holds ``session_log.CONFIG_KEYS``
+    (docs/CURSORS.md §5); ``extension_request`` and ``extension_response`` are
+    docs/EXTENSION-LOCKS.md §4 and §3; ``agent_spec`` is the legacy config; any
+    other ``customType`` is the appending extension's own (``api.append_entry``).
+    """
+
+    type: Literal["customEntry"]
+    customType: str
+    data: dict[str, Any]
+
+
+class CompactionEntry(_EntryBase):
+    """A summary that replaces the path before ``firstKeptId`` in the context.
+
+    The provenance fields are absent on entries written before
+    docs/TREE-BROWSER-AS-EDITOR.md §8.
+    """
+
+    type: Literal["compaction"]
+    summary: str
+    firstKeptId: str
+    tokensBefore: int
+    summarizerModelId: NotRequired[str]
+    summaryUsage: NotRequired[dict[str, int]]
+    coveredEntries: NotRequired[int]
+    coveredTokens: NotRequired[int]
+    configId: NotRequired[str | None]
+
+
+class ElideEntry(_EntryBase):
+    """A splice anchor with no summary: the path before ``firstKeptId`` leaves the context."""
+
+    type: Literal["elide"]
+    firstKeptId: str
+    coveredEntries: NotRequired[int]
+    coveredTokens: NotRequired[int]
+    configId: NotRequired[str | None]
+
+
+class BranchSummaryEntry(_EntryBase):
+    """A summary of the branch left at ``fromId``, in the path where it was appended."""
+
+    type: Literal["branch_summary"]
+    summary: str
+    fromId: str | None
+
+
+class SessionInfoEntry(_EntryBase):
+    """The session's display name from here on; the model never sees it."""
+
+    type: Literal["session_info"]
+    name: str
+
+
+class NavigateEntry(_EntryBase):
+    """Legacy: a recorded move to ``targetId``, written before cursors (docs/CURSORS.md §1.1)."""
+
+    type: Literal["navigate"]
+    targetId: str | None
+
+
+class ModelChangeEntry(_EntryBase):
+    """Legacy: the config model from here on, before config entries."""
+
+    type: Literal["model_change"]
+    model: str | None
+    backend: NotRequired[str | None]
+
+
+class ThinkingChangeEntry(_EntryBase):
+    """Legacy: the reasoning level from here on, before config entries."""
+
+    type: Literal["thinking_change"]
+    level: str | None
+
+
+class ForeignEntry(_EntryBase):
+    """A document another system's store put in the tree, typed ``system:kind`` (``jmfts:document``)."""
+
+    type: Annotated[str, Pattern(r"^[^:]+:.+$")]
+
+
+class IncompleteEntry(TypedDict):
+    """An entry opened and not yet finalized (docs/TAU-SERVE.md §4).
+
+    Its payload is partial: a message holds its ``role`` and what has streamed.
+    An ``entry_final`` with the same ``id`` replaces it.
+    """
+
+    type: str
+    id: str
+    parentId: str | None
+    timestamp: str
+    status: Literal["incomplete"]
+
+
+Entry = Annotated[
+    MessageEntry
+    | CustomMessageEntry
+    | CustomEntryEntry
+    | CompactionEntry
+    | ElideEntry
+    | BranchSummaryEntry
+    | SessionInfoEntry
+    | NavigateEntry
+    | ModelChangeEntry
+    | ThinkingChangeEntry
+    | ForeignEntry
+    | IncompleteEntry,
+    Named(
+        "Entry",
+        "One session-log entry, told apart by `type`; an unfinished one carries "
+        '`status: "incomplete"`. Apply by `id`, last write wins (docs/TAU-SERVE.md §4.1).',
+    ),
+]
+
+
+class CompareCorrelation(TypedDict):
+    """A comparison turn's place in its comparison (``tau_agent_core.compare.COMPARE_KEY``)."""
+
+    id: str
+    models: list[str]
+    index: int
+    cursor_id: str
+
+
+class Correlation(TypedDict):
+    """``Submission.correlation``: open, JSON-safe keys a submitter attached; ``compare`` is τ's."""
+
+    compare: NotRequired[CompareCorrelation]
+
+
+# ─── Records the daemon sends ────────────────────────────────────────────
 
 
 @dataclass
@@ -417,8 +774,35 @@ class SessionRow:
 
 
 @dataclass
+class ExtensionRequest:
+    """An extension request at a cursor, as RPC ``get_pending_request`` answers it (docs/EXTENSION-LOCKS.md).
+
+    Attributes:
+        entry_id: The request entry's id; :class:`AnswerRequest` names it.
+        extension_name: The display stem of ``extension``.
+        label: τ's framing line for the request (§9).
+        lock: Whether a submission at this cursor is refused.
+        ask: What it asks, or ``None`` for a bare lock.
+        release: A command that clears the lock, or ``None``.
+    """
+
+    entry_id: str
+    extension: str
+    extension_name: str
+    sentence: str
+    label: str
+    lock: bool
+    ask: Annotated[dict[str, Any], Shape(Ask)] | None
+    release: str | None
+
+
+@dataclass
 class CursorState:
-    """A live cursor as clients see it; sent whenever one opens, moves, closes or changes busy."""
+    """A live cursor as clients see it; sent whenever one opens, moves, closes or changes busy.
+
+    Attributes:
+        request: The extension request at its leaf, or ``None``.
+    """
 
     cursor_id: str
     leaf: str | None
@@ -426,6 +810,7 @@ class CursorState:
     owner_id: str | None
     busy: bool
     model: str
+    request: ExtensionRequest | None
 
 
 @dataclass
@@ -534,6 +919,69 @@ class TreeRow:
 
 
 @dataclass
+class RequestEventData:
+    """An extension form open now: the ``request`` event's data, and one of :class:`Attached`'s ``requests``.
+
+    Attributes:
+        request_id: What :class:`Answer` names.
+    """
+
+    request_id: str
+    spec: Annotated[dict[str, Any], Shape(FormSpec)]
+
+
+DispatchedCommand = Annotated[
+    Annotated[Performed, Tagged("PerformedArm", "arm", "Performed")]
+    | Annotated[FlowStep, Tagged("FlowStepArm", "arm", "FlowStep")]
+    | Annotated[Ready, Tagged("ReadyArm", "arm", "Ready")]
+    | Annotated[View, Tagged("ViewArm", "arm", "View")],
+    Named(
+        "DispatchedCommand",
+        "What a command resolved to, told apart by `arm`: `Performed` (it ran), "
+        "`FlowStep` (an argument is missing), `Ready` (a `fork` or `switch_session` "
+        "for the client to perform) or `View` (a surface only a head opens).",
+    ),
+]
+
+
+# ─── Results ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class HelloResult:
+    """The answer to :class:`Hello`.
+
+    Attributes:
+        protocol: The daemon's :data:`PROTOCOL_VERSION`.
+        client_id: This connection's name in the daemon's log.
+        pid: The daemon's process id.
+        version: τ's package version, as ``tau --version`` prints it.
+        cwd: The daemon's working directory at start, absolute; a default for
+            :class:`CreateSession`.
+    """
+
+    protocol: str
+    client_id: str
+    pid: int
+    version: str
+    cwd: str
+
+
+@dataclass
+class SessionList:
+    """The answer to :class:`ListSessions`."""
+
+    sessions: list[SessionRow]
+
+
+@dataclass
+class SessionCreated:
+    """The answer to :class:`CreateSession`."""
+
+    session_id: str
+
+
+@dataclass
 class Attached:
     """The answer to :class:`Attach`.
 
@@ -547,34 +995,262 @@ class Attached:
         seq: The newest event number folded into this answer.
         head_cursor_id: The cursor a client drives unless it opens its own.
         models: Every model the daemon's config defines, for a picker.
+        requests: The extension forms open now, which an ``Answer`` closes.
     """
 
     session_id: str
     epoch: str
     seq: int
-    entries: list[dict[str, Any]] | None
+    entries: list[Annotated[dict[str, Any], Shape(Entry)]] | None
     cursors: list[CursorState]
     head_cursor_id: str
     cwd: str
     models: list[ModelRecord]
     surface: Surface
+    requests: list[RequestEventData]
 
 
 @dataclass
 class SubmitResult:
-    """How a submission ended; a refusal is an answer, not an error.
+    """The answer to :class:`Submit`: how the submission ended. A refusal is an answer, not an error.
 
     Attributes:
-        command: When the text was a command, the dispatched arm as
-            ``{"arm": "Performed"|"FlowStep"|"Ready"|"View", ...its fields}``. The
-            daemon performs a ``Ready`` itself, except ``fork`` and
-            ``switch_session``, which move a client and are the client's to perform.
+        command: When the text was a command, what it resolved to. The daemon
+            performs a ``Ready`` itself, except ``fork`` and ``switch_session``.
     """
 
     accepted: bool
     submission_id: str
     reason: str | None = None
-    command: dict[str, Any] | None = None
+    command: Annotated[dict[str, Any], Shape(DispatchedCommand)] | None = None
+
+
+@dataclass
+class CursorOpened:
+    """The answer to :class:`OpenCursor`."""
+
+    cursor_id: str
+
+
+@dataclass
+class ModelSet:
+    """The answer to :class:`SetModel`.
+
+    Attributes:
+        model: The model id the cursor's next turn calls.
+    """
+
+    model: str
+
+
+@dataclass
+class RequestAnswered:
+    """The answer to :class:`AnswerRequest`.
+
+    Attributes:
+        handled: Whether the action's command ran.
+        output: What the command returned, as text, or ``None``.
+    """
+
+    handled: bool
+    output: str | None
+
+
+@dataclass
+class PerformedAnswer:
+    """A :class:`Perform` whose operation returned a ``Performed``."""
+
+    fields: Annotated[dict[str, Any], Shape(Performed)]
+    kind: Literal["Performed"] = "Performed"
+
+
+@dataclass
+class ExtensionCommandAnswer:
+    """A :class:`Perform` whose operation returned an ``ExtensionCommandResult``."""
+
+    fields: Annotated[dict[str, Any], Shape(ExtensionCommandResult)]
+    kind: Literal["ExtensionCommandResult"] = "ExtensionCommandResult"
+
+
+@dataclass
+class SubmissionAnswer:
+    """A :class:`Perform` whose operation returned a ``SubmissionResult`` (``rollback_turn``)."""
+
+    fields: Annotated[dict[str, Any], Shape(SubmissionResult)]
+    kind: Literal["SubmissionResult"] = "SubmissionResult"
+
+
+@dataclass
+class CompactionAnswer:
+    """A :class:`Perform` whose operation returned a ``CompactionResult`` (``compact``)."""
+
+    fields: Annotated[dict[str, Any], Shape(CompactionResult)]
+    kind: Literal["CompactionResult"] = "CompactionResult"
+
+
+@dataclass
+class ValueAnswer:
+    """A :class:`Perform` whose operation returned a plain value.
+
+    Attributes:
+        value: ``navigate_tree``, ``elide_span`` and ``commit_branch`` return the
+            context's messages; ``paste_subtree`` the minted ids;
+            ``list_managed_extensions`` ``[path, enabled]`` pairs; ``compact``
+            ``null`` when there was nothing to compact.
+    """
+
+    value: Any
+    kind: Literal["value"] = "value"
+
+
+PerformResult = Annotated[
+    PerformedAnswer | ExtensionCommandAnswer | SubmissionAnswer | CompactionAnswer | ValueAnswer,
+    Named("PerformResult", "The answer to `perform`, told apart by `kind`."),
+]
+
+
+@dataclass
+class CompareCursor:
+    """One column of a comparison."""
+
+    cursor_id: str
+    model: str
+
+
+@dataclass
+class CompareStarted:
+    """The answer to :class:`Compare`, sent before the turns end.
+
+    Attributes:
+        message: One line naming the models, for a head to show.
+    """
+
+    comparison_id: str
+    cursors: list[CompareCursor]
+    message: str
+
+
+@dataclass
+class CompareEnded:
+    """The answer to :class:`EndCompare`.
+
+    Attributes:
+        leaf: The head cursor's leaf afterwards.
+    """
+
+    leaf: str | None
+
+
+@dataclass
+class NextStepResult:
+    """The answer to :class:`NextStep`: exactly one of ``step`` and ``ready`` is set, as ``status`` says."""
+
+    status: Literal["step", "ready"]
+    step: Annotated[dict[str, Any], Shape(FlowStep)] | None
+    ready: Annotated[dict[str, Any], Shape(Ready)] | None
+
+
+@dataclass
+class DomainChoice:
+    """One legal value: ``value`` is what is bound, ``label`` what is shown."""
+
+    value: str
+    label: str
+
+
+@dataclass
+class DomainListing:
+    """The answer to :class:`EnumerateDomain`.
+
+    Attributes:
+        total: How many values match, counting past ``limit``.
+    """
+
+    domain: str
+    values: list[DomainChoice]
+    total: int
+
+
+@dataclass
+class PathMatch:
+    """One path an ``@`` token can complete to."""
+
+    name: str
+    detail: str
+    is_dir: bool
+
+
+@dataclass
+class AttachmentCompletion:
+    """The ``@`` token at the caret and what it completes to.
+
+    Attributes:
+        start: The token's first character offset in the text.
+        end: The offset after its last.
+        total: How many paths match, counting past the bound on ``matches``.
+    """
+
+    start: int
+    end: int
+    token: str
+    matches: list[PathMatch]
+    total: int
+
+
+@dataclass
+class CompletePathResult:
+    """The answer to :class:`CompletePath`; ``completion`` is ``None`` outside an ``@`` token."""
+
+    completion: AttachmentCompletion | None
+
+
+@dataclass
+class TreeResult:
+    """The answer to :class:`GetTree`.
+
+    Attributes:
+        leaf: The cursor's leaf: the one row whose ``is_leaf`` is true.
+        count: How many rows.
+    """
+
+    nodes: list[TreeRow]
+    leaf: str | None
+    count: int
+
+
+@dataclass
+class SessionForked:
+    """The answer to :class:`ForkSession`."""
+
+    session_id: str
+
+
+RESULTS: dict[type, Any] = {
+    Hello: HelloResult,
+    ListSessions: SessionList,
+    CreateSession: SessionCreated,
+    Attach: Attached,
+    Detach: None,
+    Submit: SubmitResult,
+    Abort: None,
+    OpenCursor: CursorOpened,
+    CloseCursor: None,
+    MoveCursor: None,
+    SetModel: ModelSet,
+    Answer: None,
+    AnswerRequest: RequestAnswered,
+    Perform: PerformResult,
+    PerformReady: DispatchedCommand,
+    Describe: Surface,
+    Compare: CompareStarted,
+    EndCompare: CompareEnded,
+    NextStep: NextStepResult,
+    EnumerateDomain: DomainListing,
+    CompletePath: CompletePathResult,
+    GetTree: TreeResult,
+    ForkSession: SessionForked,
+}
+"""What each request is answered with; ``None`` is a ``null`` result."""
 
 
 @dataclass
@@ -594,7 +1270,12 @@ class Error:
 
 @dataclass
 class Response:
-    """The one answer to a request, matched by ``id``."""
+    """The one answer to a request, matched by ``id``.
+
+    Attributes:
+        result: When ``ok``, the request's result: ``Results[request.type]`` in
+            the schema. ``null`` when not ``ok``.
+    """
 
     id: int
     ok: bool
@@ -603,29 +1284,189 @@ class Response:
     type: Literal["response"] = "response"
 
 
-EVENT_KINDS = (
-    "entry_open",
-    "entry_final",
-    "entry_append",
-    "agent_event",
-    "channel",
-    "cursors",
-    "request",
-    "request_closed",
-    "ui",
-)
-"""What an :class:`Event` carries in ``data``:
+# ─── Events ──────────────────────────────────────────────────────────────
 
-- ``entry_open`` / ``entry_final`` / ``entry_append``: ``{"entry": {...}}``, a log
-  write. Apply by id, last write wins, keeping the first position (§4.1).
-- ``agent_event``: an ``AgentEvent`` as JSON. Changes no state.
-- ``channel``: ``{"name": ..., "payload": {...}}`` for ``submission_start``,
-  ``submission_end`` and ``custom_message``. Changes no state.
-- ``cursors``: ``{"cursors": [CursorState, ...]}``, the whole set after a change.
-- ``request`` / ``request_closed``: ``{"request_id", "spec"}`` / ``{"request_id"}``,
-  an extension form opened, then answered by some client.
-- ``ui``: ``{"op": "notify"|"status"|"panel", ...}``, extension display calls.
+
+@dataclass
+class EntryEventData:
+    """An ``entry_open``, ``entry_final`` or ``entry_append``: one log write.
+
+    Apply by ``entry.id``, last write wins, keeping the first position (§4.1).
+    """
+
+    entry: Annotated[dict[str, Any], Shape(Entry)]
+
+
+@dataclass
+class CursorsEventData:
+    """The whole cursor set after a change."""
+
+    cursors: list[CursorState]
+
+
+@dataclass
+class RequestClosedEventData:
+    """A form some client answered, or its asker gave up on."""
+
+    request_id: str
+
+
+@dataclass
+class AttachmentReport:
+    """What ``Submit.expand_attachments`` did.
+
+    Attributes:
+        expanded: How many ``@`` references were sent as attachments.
+        images: How many of them were images.
+        unresolved: The ``@`` tokens that named no file, sent as written.
+        failures: One line per file that resolved and could not be read.
+    """
+
+    expanded: int
+    images: int
+    unresolved: list[str]
+    failures: list[str]
+
+
+@dataclass
+class SubmissionInfo:
+    """A ``Submission`` as its channel events carry it (``tau_agent_core.submission``)."""
+
+    text: str
+    source: SubmissionSource
+    submitter: str
+    submission_id: str
+    images: list[dict[str, Any]] | None
+    multitask_strategy: MultitaskStrategy
+    expand_commands: bool
+    allow_user_input: bool
+    store_history: bool
+    silent: bool
+    correlation: Annotated[dict[str, Any], Shape(Correlation)]
+    depth: int
+
+
+@dataclass
+class SubmissionStartPayload:
+    """A submission admitted to run a turn.
+
+    Attributes:
+        cursor_id: The cursor its turn extends.
+        owner_id: That cursor's owner, for a sub-agent's turn.
+        attachments: What ``expand_attachments`` did, or ``None`` when it was not asked.
+    """
+
+    submission: SubmissionInfo
+    text: str
+    images: list[dict[str, Any]] | None
+    cursor_id: str | None
+    owner_id: str | None
+    attachments: AttachmentReport | None
+
+
+@dataclass
+class SubmissionEndPayload:
+    """A submission's turn ended, however it ended.
+
+    Attributes:
+        side_usage: Tokens its side completions (summaries) spent, by usage field.
+    """
+
+    submission: SubmissionInfo
+    side_usage: dict[str, int] | None
+
+
+@dataclass
+class CustomMessagePayload:
+    """An extension message appended outside a turn."""
+
+    entry_id: str
+    message: Annotated[dict[str, Any], Shape(CustomRoleMessage)]
+
+
+@dataclass
+class SubmissionStartChannel:
+    """The ``submission_start`` channel."""
+
+    payload: SubmissionStartPayload
+    name: Literal["submission_start"] = "submission_start"
+
+
+@dataclass
+class SubmissionEndChannel:
+    """The ``submission_end`` channel."""
+
+    payload: SubmissionEndPayload
+    name: Literal["submission_end"] = "submission_end"
+
+
+@dataclass
+class CustomMessageChannel:
+    """The ``custom_message`` channel."""
+
+    payload: CustomMessagePayload
+    name: Literal["custom_message"] = "custom_message"
+
+
+ChannelEventData = Annotated[
+    SubmissionStartChannel | SubmissionEndChannel | CustomMessageChannel,
+    Named("ChannelEventData", "A session bus channel, told apart by `name`. Changes no state."),
+]
+
+
+@dataclass
+class UiNotify:
+    """An extension's notification."""
+
+    message: str
+    level: str
+    op: Literal["notify"] = "notify"
+
+
+@dataclass
+class UiStatus:
+    """An extension's status-line text under ``key``; ``None`` clears it."""
+
+    key: str
+    text: str | None
+    op: Literal["status"] = "status"
+
+
+@dataclass
+class UiPanel:
+    """An extension's panel under ``key``; ``None`` closes it."""
+
+    key: str
+    spec: Annotated[dict[str, Any], Shape(PanelSpec)] | None
+    op: Literal["panel"] = "panel"
+
+
+UiEventData = Annotated[
+    UiNotify | UiStatus | UiPanel,
+    Named("UiEventData", "An extension display call, told apart by `op`."),
+]
+
+
+EVENT_DATA: dict[str, Any] = {
+    "entry_open": EntryEventData,
+    "entry_final": EntryEventData,
+    "entry_append": EntryEventData,
+    "agent_event": AgentEvent,
+    "channel": ChannelEventData,
+    "cursors": CursorsEventData,
+    "request": RequestEventData,
+    "request_closed": RequestClosedEventData,
+    "ui": UiEventData,
+}
+"""What each event kind carries in ``data``.
+
+``agent_event`` is ``tau_agent_core.events.AgentEvent`` whole, as
+``model_dump(mode="json")`` writes it: not RPC's bounded ``WireEvent``
+projection. It changes no state; the entry events carry every write.
 """
+
+EVENT_KINDS = tuple(EVENT_DATA)
+"""Every event ``kind``, in :data:`EVENT_DATA`'s order."""
 
 
 @dataclass
@@ -650,9 +1491,102 @@ class Event:
     type: Literal["event"] = "event"
 
 
+@dataclass
+class ServeStarted:
+    """What ``tau serve -d --json`` prints: the one daemon at ``address``.
+
+    Not a frame. ``tau serve -d`` starts no second daemon where one answers a hello.
+
+    Attributes:
+        address: ``HOST:PORT`` or ``unix:/PATH``.
+        pid: The daemon's process id.
+        started: Whether this call started it.
+        log: The background log a daemon started by ``-d`` writes.
+    """
+
+    address: str
+    pid: int
+    started: bool
+    log: str
+
+
+# ─── Building and checking frames ────────────────────────────────────────
+
+
 def to_wire(message: Any) -> dict[str, Any]:
     """A protocol dataclass as the JSON object it is sent as."""
     return dataclasses.asdict(message)
+
+
+def json_safe(value: Any) -> Any:
+    """``value`` with everything JSON cannot hold turned into its ``str``."""
+    return json.loads(json.dumps(value, default=str))
+
+
+def _members(hint: Any) -> tuple[Any, ...]:
+    """The member hints of a :class:`Named` union."""
+    return get_args(get_args(hint)[0])
+
+
+def _base(hint: Any) -> Any:
+    """``hint`` without its ``Annotated`` wrapper."""
+    return get_args(hint)[0] if get_origin(hint) is Annotated else hint
+
+
+def command_to_wire(command: Any) -> dict[str, Any] | None:
+    """A dispatched command as its :data:`DispatchedCommand` arm, or ``None``.
+
+    Raises:
+        TypeError: a record that is no arm of the union.
+    """
+    if command is None:
+        return None
+    for member in _members(DispatchedCommand):
+        if type(command) is _base(member):
+            tag = member.__metadata__[0]
+            return {tag.tag: tag.value, **json_safe(dataclasses.asdict(command))}
+    raise TypeError(f"{type(command).__name__} is not an arm of DispatchedCommand")
+
+
+def perform_answer(value: Any) -> Any:
+    """What a :data:`PERFORMABLE` operation returned, as its :data:`PerformResult` member.
+
+    Raises:
+        TypeError: a record the union does not declare.
+    """
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        for member in _members(PerformResult):
+            hints = get_type_hints(member, include_extras=True)
+            if "fields" in hints and type(value) is hints["fields"].__metadata__[0].hint:
+                return member(fields=json_safe(dataclasses.asdict(value)))
+        raise TypeError(f"a perform answered {type(value).__name__}, which PerformResult lacks")
+    return ValueAnswer(value=json_safe(value))
+
+
+def result_to_wire(request: Any, result: Any) -> Any:
+    """``result`` as the JSON its request is answered with, checked against :data:`RESULTS`.
+
+    Raises:
+        TypeError: ``result`` is not what :data:`RESULTS` declares for ``request``.
+    """
+    declared = RESULTS[type(request)]
+    if declared is None:
+        if result is not None:
+            raise TypeError(f"{type(request).__name__} answers null, not {result!r}")
+        return None
+    if declared is DispatchedCommand:
+        return command_to_wire(result)
+    allowed = (
+        tuple(_base(m) for m in _members(declared))
+        if get_origin(declared) is Annotated
+        else (declared,)
+    )
+    if not isinstance(result, allowed):
+        raise TypeError(
+            f"{type(request).__name__} answers {[c.__name__ for c in allowed]}, "
+            f"not {type(result).__name__}"
+        )
+    return to_wire(result)
 
 
 def parse_request(raw: dict[str, Any]) -> tuple[int, Any]:
@@ -671,15 +1605,28 @@ def parse_request(raw: dict[str, Any]) -> tuple[int, Any]:
     for cls in REQUESTS:
         if _type_tag(cls) == kind:
             fields = {k: v for k, v in raw.items() if k != "id"}
-            known = {f.name for f in dataclasses.fields(cls)}
-            unknown = sorted(set(fields) - known)
-            if unknown:
-                raise ValueError(f"{kind}: unknown field(s) {unknown}")
             try:
-                return request_id, cls(**fields)
+                return request_id, _build(cls, fields, str(kind))
             except TypeError as exc:
                 raise ValueError(f"{kind}: {exc}") from None
     raise ValueError(f"unknown request type {kind!r}")
+
+
+def _build(cls: type, fields: dict[str, Any], where: str) -> Any:
+    """``cls(**fields)``, refusing unknown keys and building nested record fields from dicts."""
+    known = {f.name for f in dataclasses.fields(cls)}
+    unknown = sorted(set(fields) - known)
+    if unknown:
+        raise ValueError(f"{where}: unknown field(s) {unknown}")
+    hints = get_type_hints(cls)
+    built = dict(fields)
+    for name, value in fields.items():
+        nested = hints[name]
+        if isinstance(nested, type) and dataclasses.is_dataclass(nested):
+            if not isinstance(value, dict):
+                raise ValueError(f"{where}: {name!r} must be an object")
+            built[name] = _build(nested, value, f"{where}.{name}")
+    return cls(**built)
 
 
 def _type_tag(cls: type) -> str:
@@ -687,90 +1634,308 @@ def _type_tag(cls: type) -> str:
     return str(get_args(get_type_hints(cls)["type"])[0])
 
 
-def _schema_of(hint: Any, defs: dict[str, Any]) -> dict[str, Any]:
-    """JSON Schema for one annotation; a nested dataclass goes in ``defs``."""
-    origin = get_origin(hint)
-    if hint is Any:
-        return {}
-    if hint is type(None):
-        return {"type": "null"}
-    if hint is str:
-        return {"type": "string"}
-    if hint is bool:
-        return {"type": "boolean"}
-    if hint is int:
-        return {"type": "integer"}
-    if hint is float:
-        return {"type": "number"}
-    if origin is Literal:
-        return {"enum": list(get_args(hint))}
-    if origin in (typing.Union, types.UnionType):
-        return {"anyOf": [_schema_of(arg, defs) for arg in get_args(hint)]}
-    if origin is list:
-        (item,) = get_args(hint)
-        return {"type": "array", "items": _schema_of(item, defs)}
-    if origin is dict:
-        _, value = get_args(hint)
-        return {"type": "object", "additionalProperties": _schema_of(value, defs)}
-    if isinstance(hint, type) and dataclasses.is_dataclass(hint):
-        name = hint.__name__
-        if name not in defs:
-            defs[name] = {}
-            defs[name] = _object_schema(hint, defs)
-        return {"$ref": f"#/$defs/{name}"}
-    raise TypeError(f"no JSON Schema for annotation {hint!r}")
+# ─── JSON Schema ─────────────────────────────────────────────────────────
+
+_OPEN_SHAPES: tuple[Any, ...] = (IncompleteEntry, ForeignEntry, Correlation)
+"""Shapes whose undeclared keys are payload by design, not merely tolerated additions."""
+
+_DEF_NAMES: dict[type, str] = {ExtensionRequestRecord: "ExtensionRequestRecord"}
+"""``$defs`` keys for core classes whose own name a protocol class already takes."""
+
+_PYDANTIC = "pydantic"
+"""The owner recorded for a ``$defs`` entry pydantic generated."""
 
 
-def _object_schema(cls: type, defs: dict[str, Any]) -> dict[str, Any]:
-    """JSON Schema for one dataclass: its fields, and which have no default."""
-    hints = get_type_hints(cls)
-    properties = {}
-    required = []
-    for f in dataclasses.fields(cls):
-        properties[f.name] = _schema_of(hints[f.name], defs)
-        no_default = f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
-        if no_default or f.name == "type":
-            required.append(f.name)
-    schema: dict[str, Any] = {"type": "object", "properties": properties, "required": required}
-    if cls.__doc__:
-        schema["description"] = cls.__doc__.strip().split("\n", 1)[0]
-    return schema
+def _attribute_docs(cls: type) -> dict[str, str]:
+    """A Google docstring's ``Attributes:`` entries, by name, each joined onto one line."""
+    lines = (cls.__doc__ or "").splitlines()
+    docs: dict[str, str] = {}
+    current: str | None = None
+    current_indent = 0
+    inside = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "Attributes:":
+            inside = True
+            continue
+        if not inside:
+            continue
+        if not stripped:
+            current = None
+            continue
+        indent = len(line) - len(line.lstrip())
+        name, sep, text = stripped.partition(": ")
+        if sep and name.isidentifier() and (current is None or indent <= current_indent):
+            current, current_indent = name, indent
+            docs[name] = text
+        elif current is not None:
+            docs[current] += " " + stripped
+    return docs
+
+
+def _markdown(text: str) -> str:
+    """Docstring prose as a schema description: one line, Sphinx roles as Markdown code."""
+    text = re.sub(r":\w+:`~?([^`]+)`", r"`\1`", " ".join(text.split()))
+    return text.replace("``", "`")
+
+
+def _summary(cls: type) -> str:
+    """A docstring's first paragraph, on one line."""
+    return _markdown((cls.__doc__ or "").strip().split("\n\n", 1)[0])
+
+
+def _clean_pydantic(node: Any) -> Any:
+    """Pydantic schema without titles, and with each ``const`` property required."""
+    if isinstance(node, list):
+        return [_clean_pydantic(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if key == "title" and isinstance(value, str):
+            continue
+        if key in ("properties", "$defs"):
+            out[key] = {name: _clean_pydantic(sub) for name, sub in value.items()}
+        else:
+            out[key] = _clean_pydantic(value)
+    consts = [
+        n for n, s in out.get("properties", {}).items() if isinstance(s, dict) and "const" in s
+    ]
+    if consts:
+        required = list(out.get("required", []))
+        out["required"] = required + [n for n in consts if n not in required]
+    return out
+
+
+class _Schema:
+    """Builds the ``$defs`` of :func:`json_schema`, one entry per named type.
+
+    Records reachable from a request are closed (``additionalProperties: false``),
+    because :func:`parse_request` refuses unknown fields. Everything the daemon
+    sends is open, because a client must tolerate an added field.
+    """
+
+    def __init__(self) -> None:
+        self.defs: dict[str, Any] = {}
+        self._owners: dict[str, Any] = {}
+        self._closed = False
+
+    def _define(self, name: str, owner: Any, build: Any) -> dict[str, Any]:
+        """Register ``$defs[name]`` once, refusing two different types under one name."""
+        ref = {"$ref": f"#/$defs/{name}"}
+        if name in self._owners:
+            if self._owners[name] != owner:
+                raise TypeError(f"two types want $defs/{name}: {self._owners[name]!r}, {owner!r}")
+            if self._closed and self.defs[name].get("additionalProperties") is not False:
+                raise TypeError(f"$defs/{name} is sent open and also used in a request")
+            return ref
+        self._owners[name] = owner
+        self.defs[name] = {}
+        self.defs[name] = build()
+        return ref
+
+    def request(self, cls: type) -> None:
+        """Define a request's ``$defs`` entry, closed with everything it reaches."""
+        self._closed = True
+        try:
+            self.of(cls)
+        finally:
+            self._closed = False
+
+    def of(self, hint: Any) -> Any:
+        """JSON Schema for one annotation."""
+        origin = get_origin(hint)
+        if hint is Any or hint is object:
+            return {}
+        if hint is Never:
+            return False
+        if hint is type(None):
+            return {"type": "null"}
+        if hint is str:
+            return {"type": "string"}
+        if hint is bool:
+            return {"type": "boolean"}
+        if hint is int:
+            return {"type": "integer"}
+        if hint is float:
+            return {"type": "number"}
+        if origin is Annotated:
+            return self._annotated(hint)
+        if origin in (NotRequired, Required):
+            return self.of(get_args(hint)[0])
+        if origin is Literal:
+            values = list(get_args(hint))
+            return {"const": values[0]} if len(values) == 1 else {"enum": values}
+        if origin in (typing.Union, types.UnionType):
+            return {"anyOf": [self.of(arg) for arg in get_args(hint)]}
+        if origin in (list, tuple):
+            args = get_args(hint)
+            return {"type": "array", "items": self.of(args[0])}
+        if origin is dict:
+            return {"type": "object", "additionalProperties": self.of(get_args(hint)[1])}
+        if isinstance(hint, type) and hasattr(hint, "model_json_schema"):
+            return self._pydantic(hint)
+        if is_typeddict(hint):
+            return self._define(hint.__name__, hint, lambda: self._typed_dict(hint))
+        if isinstance(hint, type) and dataclasses.is_dataclass(hint):
+            name = _DEF_NAMES.get(hint, hint.__name__)
+            return self._define(name, hint, lambda: self._record(hint))
+        raise TypeError(f"no JSON Schema for annotation {hint!r}")
+
+    def _annotated(self, hint: Any) -> Any:
+        base, marker = get_args(hint)[0], hint.__metadata__[0]
+        if isinstance(marker, Shape):
+            return self.of(marker.hint)
+        if isinstance(marker, Pattern):
+            return {"type": "string", "pattern": marker.regex}
+        if isinstance(marker, Named):
+            return self._define(
+                marker.name,
+                hint,
+                lambda: {"oneOf": [self.of(m) for m in get_args(base)], "description": marker.doc},
+            )
+        if isinstance(marker, Tagged):
+
+            def tagged() -> dict[str, Any]:
+                record = self._record(base)
+                record["properties"] = {marker.tag: {"const": marker.value}, **record["properties"]}
+                record["required"] = [marker.tag, *record["required"]]
+                return record
+
+            return self._define(marker.name, hint, tagged)
+        raise TypeError(f"no JSON Schema for annotation {hint!r}")
+
+    def _record(self, cls: type) -> dict[str, Any]:
+        """A dataclass: its fields; required are those with no default, and every constant."""
+        hints = get_type_hints(cls, include_extras=True)
+        docs = _attribute_docs(cls)
+        properties: dict[str, Any] = {}
+        required: list[str] = []
+        for f in dataclasses.fields(cls):
+            prop = self.of(hints[f.name])
+            if f.name in docs and isinstance(prop, dict):
+                prop = {**prop, "description": _markdown(docs[f.name])}
+            properties[f.name] = prop
+            no_default = (
+                f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
+            )
+            if no_default or _is_const(hints[f.name]):
+                required.append(f.name)
+        return self._object(cls, properties, required)
+
+    def _typed_dict(self, cls: Any) -> dict[str, Any]:
+        """A TypedDict: its keys, each required unless marked ``NotRequired``.
+
+        Read off the hints, because under postponed annotations the class's own
+        ``__required_keys__`` does not see ``NotRequired``.
+        """
+        hints = get_type_hints(cls, include_extras=True)
+        properties = {name: self.of(hint) for name, hint in hints.items()}
+        required = [name for name, hint in hints.items() if get_origin(hint) is not NotRequired]
+        schema = self._object(cls, properties, required)
+        if cls in _OPEN_SHAPES:
+            schema["additionalProperties"] = True
+        return schema
+
+    def _object(self, cls: Any, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+        schema: dict[str, Any] = {"type": "object", "properties": properties, "required": required}
+        if self._closed:
+            schema["additionalProperties"] = False
+        if cls.__doc__:
+            schema["description"] = _summary(cls)
+        return schema
+
+    def _pydantic(self, model: Any) -> dict[str, Any]:
+        """A pydantic model's own schema, its nested ``$defs`` hoisted beside it."""
+        generated = _clean_pydantic(model.model_json_schema(ref_template="#/$defs/{model}"))
+        for name, sub in {**generated.pop("$defs", {}), model.__name__: generated}.items():
+            owner = self._owners.get(name)
+            if owner is None:
+                self._owners[name] = _PYDANTIC
+                self.defs[name] = sub
+            elif owner != _PYDANTIC or self.defs[name] != sub:
+                raise TypeError(f"two types want $defs/{name}")
+        return {"$ref": f"#/$defs/{model.__name__}"}
+
+
+def _is_const(hint: Any) -> bool:
+    """Whether ``hint`` is a one-value ``Literal``: a discriminator, always sent."""
+    return get_origin(hint) is Literal and len(get_args(hint)) == 1
+
+
+def _camel(kind: str) -> str:
+    """``request_closed`` → ``RequestClosed``."""
+    return "".join(part.capitalize() for part in kind.split("_"))
+
+
+RECORD_RULE = (
+    "Request records are closed (`additionalProperties: false`), because the daemon "
+    "refuses an unknown field. Everything the daemon sends is open: a client must "
+    "ignore a field it does not know, so a minor version may add one."
+)
+"""Which records are closed, stated once for the schema and the Markdown."""
+
+SCHEMA_DESCRIPTION = (
+    f"The tau serve WebSocket protocol (docs/SERVE-PROTOCOL.md). {RECORD_RULE} Each "
+    "request $def names its answer in `x-result`, and `Results` maps every request "
+    "`type` to it; `Event`'s `x-data` maps every `kind` to its data."
+)
+"""The schema's top-level ``description``."""
 
 
 def json_schema() -> dict[str, Any]:
     """The whole protocol as one JSON Schema document.
 
     ``ClientFrame`` is any request plus its ``id``; ``ServerFrame`` is a response
-    or an event. Every dataclass here is under ``$defs`` by its class name.
+    or an event. Every named type is under ``$defs``.
     """
-    defs: dict[str, Any] = {}
-    for cls in (
-        *REQUESTS,
-        Response,
-        Event,
-        SessionRow,
-        CursorState,
-        Attached,
-        Surface,
-        SubmitResult,
-        TreeRow,
-    ):
-        _schema_of(cls, defs)
+    s = _Schema()
+    frames = []
+    results: dict[str, Any] = {}
+    for cls in REQUESTS:
+        s.request(cls)
+    for cls in REQUESTS:
+        definition = s.defs[cls.__name__]
+        result = s.of(RESULTS[cls] if RESULTS[cls] is not None else type(None))
+        definition["x-result"] = result
+        tag = _type_tag(cls)
+        results[tag] = result
+        frames.append(
+            {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}, **definition["properties"]},
+                "required": ["id", *definition["required"]],
+                "additionalProperties": False,
+                "description": f"A `{tag}` request with its id.",
+            }
+        )
+    s.of(Response)
+    base = s._record(Event)
+    variants = {}
+    for kind, data in EVENT_DATA.items():
+        name = f"{_camel(kind)}Event"
+        properties = {**base["properties"], "kind": {"const": kind}, "data": s.of(data)}
+        s.defs[name] = {
+            **base,
+            "properties": properties,
+            "required": [*base["required"], "data"],
+            "description": f"A `{kind}` event.",
+        }
+        variants[kind] = properties["data"]
+    s.defs["Event"] = {
+        "oneOf": [{"$ref": f"#/$defs/{_camel(kind)}Event"} for kind in EVENT_DATA],
+        "description": _summary(Event),
+        "x-data": variants,
+    }
+    s.of(ServeStarted)
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": f"tau serve protocol {PROTOCOL_VERSION}",
-        "$defs": defs,
-        "ClientFrame": {
-            "oneOf": [
-                {
-                    "allOf": [
-                        {"$ref": f"#/$defs/{cls.__name__}"},
-                        {"type": "object", "properties": {"id": {"type": "integer"}}},
-                    ],
-                    "required": ["id"],
-                }
-                for cls in REQUESTS
-            ]
-        },
+        "description": SCHEMA_DESCRIPTION,
+        "x-protocol-version": PROTOCOL_VERSION,
+        "x-default-port": DEFAULT_PORT,
+        "$defs": s.defs,
+        "ClientFrame": {"oneOf": frames},
         "ServerFrame": {"oneOf": [{"$ref": "#/$defs/Response"}, {"$ref": "#/$defs/Event"}]},
+        "Results": results,
     }

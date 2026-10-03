@@ -2,8 +2,9 @@
 
 ``tau serve`` runs the daemon in the foreground and logs one line per event to
 stdout. ``-d`` starts it in the background, logging to ``~/.tau/serve.log``,
-and returns once it accepts connections. ``--tail`` is a client: it attaches to
-a session and prints what happens to it.
+and returns once it answers a hello; where a daemon already answers, it starts
+none. ``--tail`` is a client: it attaches to a session and prints what happens
+to it. ``--schema`` prints the protocol's JSON Schema.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from websockets.asyncio.server import serve as ws_serve, unix_serve
-from websockets.exceptions import InvalidHandshake
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import connect as sync_connect, unix_connect as sync_unix_connect
 
 from tau_coding_agent.config import TAU_DIR
@@ -33,6 +34,9 @@ LOG_FILE = "serve.log"
 
 READY_TIMEOUT_S = 30.0
 """How long ``-d`` waits for the daemon to accept a connection before it gives up."""
+
+PROBE_TIMEOUT_S = 2.0
+"""How long a hello probe waits for a daemon's answer."""
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,6 +66,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--connect", metavar="ADDR", help="the daemon --tail dials (default: as --listen)"
     )
+    parser.add_argument(
+        "--web-root",
+        metavar="DIR",
+        help="serve the web client from DIR (default: config serve.web_root)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="with -d: print one ServeStarted JSON object instead of the line",
+    )
+    parser.add_argument(
+        "--schema",
+        action="store_true",
+        help="print the protocol's JSON Schema and exit",
+    )
     return parser
 
 
@@ -71,11 +90,27 @@ def listen_address(flag: str | None, config: dict[str, Any]) -> Address:
     return parse_address(str(text))
 
 
+def serve_settings(web_root: str | None, config: dict[str, Any]) -> dict[str, Any]:
+    """The config's ``serve`` section, with ``--web-root`` over ``serve.web_root``."""
+    settings = dict(config.get("serve") or {})
+    if web_root is not None:
+        settings["web_root"] = web_root
+    return settings
+
+
 def run_serve(argv: list[str]) -> int:
     """Entry point for ``tau serve``; returns the process exit code."""
     from tau_coding_agent.config import load_config
 
     args = build_parser().parse_args(argv)
+    if args.schema:
+        from tau_coding_agent.serve.protocol_doc import render_schema
+
+        sys.stdout.write(render_schema())
+        return 0
+    if args.json and not args.daemon:
+        print("tau serve: --json reports what -d started; use it with -d", file=sys.stderr)
+        return 2
     config = load_config()
     try:
         address = listen_address(args.listen, config)
@@ -85,9 +120,14 @@ def run_serve(argv: list[str]) -> int:
     if args.tail is not None:
         target = parse_address(args.connect) if args.connect else address
         return asyncio.run(tail(target, args.tail or None))
+    settings = serve_settings(args.web_root, config)
     if args.daemon:
-        return start_background(address, [a for a in argv if a not in ("-d", "--daemon")])
-    return asyncio.run(serve(address, config))
+        child_argv = [a for a in argv if a not in ("-d", "--daemon", "--json")]
+        token = os.environ.get("TAUD_TOKEN") or settings.get("token")
+        return start_background(
+            address, child_argv, json_output=args.json, token=str(token) if token else None
+        )
+    return asyncio.run(serve(address, {**config, "serve": settings}))
 
 
 async def serve(address: Address, config: dict[str, Any]) -> int:
@@ -95,9 +135,15 @@ async def serve(address: Address, config: dict[str, Any]) -> int:
     from tau_coding_agent.serve.daemon import Daemon
     from tau_coding_agent.store_factory import build_session_catalog
 
+    try:
+        process_request = build_process_request(
+            config.get("serve") or {}, lambda line: daemon.log(line)
+        )
+    except ValueError as exc:
+        print(f"tau serve: {exc}", file=sys.stderr)
+        return 2
     catalog = build_session_catalog(config, None, None, persist=True)
     daemon = Daemon(config, catalog)
-    process_request = build_process_request(config.get("serve") or {}, daemon.log)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -132,15 +178,31 @@ async def serve(address: Address, config: dict[str, Any]) -> int:
     return 0
 
 
-def start_background(address: Address, argv: list[str]) -> int:
-    """Start ``tau serve`` detached, wait until it accepts connections, and return.
+def start_background(
+    address: Address, argv: list[str], *, json_output: bool = False, token: str | None = None
+) -> int:
+    """Start ``tau serve`` detached unless a daemon already answers at ``address``.
 
     The child is this interpreter running the same command without ``-d``, in
     its own session (its own process group on Windows), with stdout and stderr
-    appended to ``~/.tau/serve.log``. If it exits before it accepts, its log
-    tail is printed and this fails.
+    appended to ``~/.tau/serve.log``. This returns once the child answers a hello
+    with its own pid. If it exits first, its log tail is printed and this fails.
+
+    Args:
+        address: Where to serve.
+        argv: The child's ``tau serve`` arguments.
+        json_output: Print a :class:`~protocol.ServeStarted` object rather than the line.
+        token: The hello token, for a daemon that requires one.
     """
     log_path = TAU_DIR / LOG_FILE
+    try:
+        running = hello_probe(address, token)
+    except RuntimeError as exc:
+        print(f"tau serve: {exc}", file=sys.stderr)
+        return 1
+    if running is not None:
+        _report(address, int(running["pid"]), False, log_path, json_output)
+        return 0
     log_path.parent.mkdir(parents=True, exist_ok=True)
     kwargs: dict[str, Any] = {}
     if os.name == "nt":
@@ -164,8 +226,13 @@ def start_background(address: Address, argv: list[str]) -> int:
             )
             print(_tail_of(log_path, start), file=sys.stderr)
             return 1
-        if accepts(address):
-            print(f"tau serve: listening on {address} (pid {child.pid}, log {log_path})")
+        try:
+            answered = hello_probe(address, token)
+        except RuntimeError as exc:
+            print(f"tau serve: {exc}", file=sys.stderr)
+            return 1
+        if answered is not None and answered["pid"] == child.pid:
+            _report(address, child.pid, True, log_path, json_output)
             return 0
         time.sleep(0.1)
     print(
@@ -173,6 +240,55 @@ def start_background(address: Address, argv: list[str]) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def _report(address: Address, pid: int, started: bool, log_path: Path, json_output: bool) -> None:
+    """Print the daemon at ``address``: one line, or one ``ServeStarted`` JSON object."""
+    if json_output:
+        found = p.ServeStarted(address=str(address), pid=pid, started=started, log=str(log_path))
+        print(json.dumps(p.to_wire(found)))
+    else:
+        print(f"tau serve: listening on {address} (pid {pid}, log {log_path})")
+
+
+def hello_probe(address: Address, token: str | None) -> dict[str, Any] | None:
+    """The :class:`~protocol.HelloResult` of the τ daemon at ``address``, or ``None``.
+
+    A real hello, so a WebSocket server that is not τ reads as no daemon.
+
+    Raises:
+        RuntimeError: a τ daemon answers there and refuses this hello (another
+            protocol version, or the token).
+    """
+    try:
+        if address.path is not None:
+            ws = sync_unix_connect(address.path, uri=address.url, open_timeout=0.5)
+        else:
+            ws = sync_connect(address.url, open_timeout=0.5)
+    except (OSError, TimeoutError, InvalidHandshake):
+        return None
+    hello = p.Hello(protocol=p.PROTOCOL_VERSION, client="probe", token=token)
+    try:
+        ws.send(json.dumps({"id": 1, **p.to_wire(hello)}))
+        raw = ws.recv(timeout=PROBE_TIMEOUT_S)
+    except (OSError, TimeoutError, ConnectionClosed):
+        return None
+    finally:
+        ws.close()
+    try:
+        frame = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(frame, dict) or frame.get("type") != "response" or frame.get("id") != 1:
+        return None
+    if not frame.get("ok"):
+        error = frame.get("error") or {}
+        raise RuntimeError(
+            f"a tau daemon at {address} refused this client: "
+            f"{error.get('code')}: {error.get('message')}"
+        )
+    result = frame.get("result")
+    return result if isinstance(result, dict) else None
 
 
 def accepts(address: Address) -> bool:
