@@ -169,11 +169,12 @@ class SessionPickerModal(TauDialog[Optional[str]]):
     scope: reactive[str] = reactive(SCOPE_CWD, init=False)
     filter_query: reactive[str] = reactive("", init=False)
 
-    def __init__(self, catalog: SessionCatalog, cwd: str) -> None:
+    def __init__(self, catalog: SessionCatalog, cwd: str, *, scope: str = SCOPE_CWD) -> None:
         super().__init__()
         self._catalog = catalog
         self._cwd = cwd
         self._loading = True
+        self.set_reactive(SessionPickerModal.scope, scope)
 
     # -- composition ---------------------------------------------------------
 

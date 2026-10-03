@@ -17,7 +17,7 @@ import inspect
 import os
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional, cast
 from uuid import uuid4
 
 from tau_coding_agent.backends import (
@@ -36,7 +36,7 @@ from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import config_at
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_coding_agent.config import TAU_DIR, ConfigError, bootstrap_config, update_config
-from tau_coding_agent.session_picker import SessionPickerModal
+from tau_coding_agent.session_picker import SCOPE_ALL, SCOPE_CWD, SessionPickerModal
 from tau_coding_agent.session_store import (
     subscribe_session_events,
 )
@@ -107,6 +107,9 @@ from tau_coding_agent.chat_widgets import (
     ENTER_KEY_CONFIG_KEY,
 )
 from tau_coding_agent import modals, editor_widgets, extension_ui, transcript, tree_browser
+
+if TYPE_CHECKING:
+    from tau_coding_agent.serve.remote import RemoteConnection
 
 
 STEERING_CONFIG_KEY = "steering_strategy"
@@ -197,9 +200,12 @@ class TauApp(App):
         session_catalog: Optional[SessionCatalog] = None,
         fun: bool = False,
         resume: bool = False,
+        remote: "RemoteConnection | None" = None,
     ):
         super().__init__()
         self._resume_on_start: bool = resume
+        #: The daemon this head drives under ``tau --connect`` (docs/TAU-SERVE.md §7.1).
+        self._remote = remote
         self._tagline: str = pick_tagline(fun)
         self._cwd: Path = Path.cwd()
         self.messages: list[dict] = []
@@ -239,16 +245,22 @@ class TauApp(App):
         self._theme_registry = build_theme_registry(errors=self._theme_errors)
         self._apply_theme(self._configured_theme_name())
 
-        self.session_catalog: SessionCatalog = (
-            session_catalog
-            if session_catalog is not None
-            else build_session_catalog(
-                self.config,
-                run_config.get("store"),
-                run_config.get("session_dir"),
+        if remote is not None:
+            from tau_coding_agent.serve.remote import RemoteCatalog
+
+            self.session_catalog: SessionCatalog = RemoteCatalog(remote)
+            self._store_name: str = "remote"
+        else:
+            self.session_catalog = (
+                session_catalog
+                if session_catalog is not None
+                else build_session_catalog(
+                    self.config,
+                    run_config.get("store"),
+                    run_config.get("session_dir"),
+                )
             )
-        )
-        self._store_name: str = resolve_backend_name(self.config, run_config.get("store"))
+            self._store_name = resolve_backend_name(self.config, run_config.get("store"))
         self._session_runtime: Optional[AgentSessionRuntime] = None
         #: The position this head extends; opened on each session it shows (docs/CURSORS.md).
         self._cursor: Optional[Cursor] = None
@@ -579,7 +591,7 @@ class TauApp(App):
         yield Header()
 
         with Horizontal():
-            yield ChatSidebar(self.session_catalog)
+            yield ChatSidebar(self.session_catalog, cwd=self._session_cwd())
 
             with Vertical(id="main-area"):
                 yield transcript.ChatDisplay(self._session_facts)
@@ -613,8 +625,75 @@ class TauApp(App):
         for message in self._theme_errors:
             self.notify(message, title="Theme", severity="error", timeout=10)
 
-        if self._resume_on_start:
+        if self._remote is not None:
+            self._start_remote()
+        elif self._resume_on_start:
             self.call_after_refresh(self.action_resume_session)
+
+    def _session_cwd(self) -> str:
+        """The directory sessions are listed for and created in: the daemon's under ``--connect``."""
+        return self._remote.cwd if self._remote is not None else os.getcwd()
+
+    @work(group="remote")
+    async def _start_remote(self) -> None:
+        """Connect to the daemon, then fill the sidebar and open the picker if asked."""
+        assert self._remote is not None
+        try:
+            await self._remote.start(
+                on_status=lambda severity, text: self.notify(text, severity=severity)  # type: ignore[arg-type]
+            )
+        except Exception as exc:
+            self.notify(
+                f"Cannot reach the daemon at {self._remote.address}: {exc}", severity="error"
+            )
+            return
+        self.notify(f"Connected to {self._remote.address}")
+        self.query_one(ChatSidebar).refresh_chats()
+        if self._resume_on_start:
+            self.action_resume_session()
+
+    async def _remote_new_chat(self, model: Optional[str]) -> None:
+        """Ask the daemon for a new session in :meth:`_session_cwd`, then open it."""
+        from tau_coding_agent.serve import protocol as wire
+        from tau_coding_agent.serve.client import ServeError
+
+        assert self._remote is not None
+        try:
+            created = await self._remote.request(
+                wire.CreateSession(cwd=self._session_cwd(), model=model)
+            )
+        except ServeError as exc:
+            self.notify(f"Cannot start a session on the daemon: {exc}", severity="error")
+            return
+        await self._remote_open(created["session_id"])
+        self.notify("Started a new chat on the daemon")
+
+    async def _remote_open(self, ref: str) -> None:
+        """Attach to a daemon session and make it this head's session, cursor and backend.
+
+        Detaches the previous one, so its events stop arriving here; it keeps
+        running in the daemon.
+        """
+        from tau_coding_agent.serve.remote import RemoteBackend, RemoteCursor, ReplicaSession
+
+        assert self._remote is not None
+        replica = await self._remote.attach(ref)
+        previous = self.current_backend
+        if isinstance(previous, RemoteBackend):
+            previous.close()
+            if previous.session_id != replica.session_id:
+                await self._remote.detach(previous.session_id)
+        session = ReplicaSession(self._remote, replica.session_id)
+        self.current_backend = RemoteBackend(self._remote, replica.session_id)
+        self._session_runtime = None
+        self.current_session = session
+        self._cursor = cast(Cursor, RemoteCursor(session))
+        self._rebind_after_session_swap()
+        self.current_backend.set_ui_delegate(extension_ui._ExtensionUIDelegate(self))
+        self.messages = self._cursor.context()
+        await self._reload_transcript(open_ask=True)
+        self._refresh_subtitle()
+        self.query_one(ChatSidebar).refresh_chats()
 
     def _apply_side_columns(self) -> None:
         """Show or hide the sidebar for the current ``_sidebar_open``.
@@ -2407,6 +2486,9 @@ class TauApp(App):
 
     async def action_new_chat(self, model: Optional[str] = None):
         """Start a new chat."""
+        if self._remote is not None:
+            await self._remote_new_chat(model)
+            return
         if model is None:
             model = self.config.get("default_model", "local-llm")
 
@@ -3012,6 +3094,9 @@ class TauApp(App):
         """
         if not self.current_session:
             return
+        if self._remote is not None:
+            await self._remote_new_chat(self._live_model_name())
+            return
 
         system_msg = next((m for m in self.messages if m.get("role") == "system"), None)
         system_prompt = (
@@ -3243,7 +3328,13 @@ class TauApp(App):
         the scope, matching ``ChatSidebar._refresh_chats_worker`` — ``_cwd`` is
         the string the empty pane prints, not the directory sessions are keyed on.
         """
-        ref = await self.push_screen_wait(SessionPickerModal(self.session_catalog, os.getcwd()))
+        ref = await self.push_screen_wait(
+            SessionPickerModal(
+                self.session_catalog,
+                self._session_cwd(),
+                scope=SCOPE_ALL if self._remote is not None else SCOPE_CWD,
+            )
+        )
         if ref is None:
             return
         self.post_message(ChatSelected(ref))
@@ -3584,6 +3675,13 @@ class TauApp(App):
         below, so the two resolutions in this method can no longer disagree
         about what a ref is.
         """
+        if self._remote is not None:
+            try:
+                await self._remote_open(message.chat_ref)
+            except Exception as e:
+                self.notify(f"Error loading session: {e}", severity="error")
+                self.log.error(f"Failed to load session: {e}", exc_info=True)
+            return
         try:
             session = self.session_catalog.resolve_ref(message.chat_ref, cwd=os.getcwd())
 

@@ -96,6 +96,9 @@ class Submit:
 
     Attributes:
         multitask_strategy: What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md).
+        submission_id: The id the events of this submission carry; the daemon
+            mints one when ``None``. A client that renders its own streams sends it.
+        images: Image content blocks to send with the text.
     """
 
     session_id: str
@@ -103,6 +106,8 @@ class Submit:
     text: str
     multitask_strategy: Literal["enqueue", "reject", "steer", "follow_up"] = "enqueue"
     expand_commands: bool = True
+    submission_id: str | None = None
+    images: list[dict[str, Any]] | None = None
     type: Literal["submit"] = "submit"
 
 
@@ -188,6 +193,53 @@ class AnswerRequest:
 
 
 @dataclass
+class Perform:
+    """Call one of the session backend's operations on the head cursor's tree.
+
+    The TUI's commands reach the backend by method name; under ``--connect`` that
+    backend is the daemon's. Answered with a :class:`Performed`-shaped record or a
+    plain value, tagged by ``kind``.
+
+    Attributes:
+        method: One of :data:`PERFORMABLE`.
+        arguments: Its keyword arguments.
+    """
+
+    session_id: str
+    method: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    type: Literal["perform"] = "perform"
+
+
+PERFORMABLE = (
+    "compact",
+    "set_auto_compaction",
+    "set_model",
+    "set_session_name",
+    "enable_extension",
+    "disable_extension",
+    "reload_extension",
+    "run_extension_command",
+    "answer_request",
+    "navigate_tree",
+    "elide_span",
+    "commit_branch",
+    "paste_subtree",
+    "rollback_turn",
+    "list_managed_extensions",
+)
+"""The backend operations :class:`Perform` may name; anything else is refused."""
+
+
+@dataclass
+class Describe:
+    """Re-read a session's extension surface, after an extension was enabled or reloaded."""
+
+    session_id: str
+    type: Literal["describe"] = "describe"
+
+
+@dataclass
 class Compare:
     """Open one cursor per model at ``leaf`` and send each the same text (docs/TAU-SERVE.md §8).
 
@@ -215,6 +267,8 @@ REQUESTS: tuple[type, ...] = (
     SetModel,
     Answer,
     AnswerRequest,
+    Perform,
+    Describe,
     Compare,
 )
 """Every request a client may send, by its ``type``."""
@@ -246,6 +300,23 @@ class CursorState:
 
 
 @dataclass
+class Surface:
+    """What a session's loaded extensions add, which a head reads without a round trip.
+
+    Attributes:
+        commands: ``[name, description]`` per extension command.
+        command_args: Each command's argument hint, or ``None``.
+        shortcuts: ``[key, command, args, description]`` per extension shortcut.
+        extensions: ``[path, enabled]`` per managed extension.
+    """
+
+    commands: list[list[str]]
+    command_args: dict[str, str | None]
+    shortcuts: list[list[str]]
+    extensions: list[list[Any]]
+
+
+@dataclass
 class Attached:
     """The answer to :class:`Attach`.
 
@@ -269,7 +340,7 @@ class Attached:
     head_cursor_id: str
     cwd: str
     models: list[str]
-    commands: list[list[str]]
+    surface: Surface
 
 
 @dataclass
@@ -454,7 +525,16 @@ def json_schema() -> dict[str, Any]:
     or an event. Every dataclass here is under ``$defs`` by its class name.
     """
     defs: dict[str, Any] = {}
-    for cls in (*REQUESTS, Response, Event, SessionRow, CursorState, Attached, SubmitResult):
+    for cls in (
+        *REQUESTS,
+        Response,
+        Event,
+        SessionRow,
+        CursorState,
+        Attached,
+        Surface,
+        SubmitResult,
+    ):
         _schema_of(cls, defs)
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

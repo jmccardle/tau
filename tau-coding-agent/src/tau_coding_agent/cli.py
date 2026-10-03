@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from dataclasses import dataclass, field
+from typing import Any
 
 from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_coding_agent.config import TAU_DIR, ConfigError, load_config
@@ -80,6 +82,8 @@ class CLIArgs:
     export_session: list[str] | None = None  # --export-session REF PATH (nargs=2)
     verbose: bool = False
     fun: bool = FUN_DEFAULT
+    connect: str | None = None  # --connect ADDR → drive a `tau serve` daemon
+    cwd: str | None = None  # --cwd PATH → new sessions' directory on the daemon
 
     @property
     def is_verbose(self) -> bool:
@@ -342,6 +346,20 @@ def build_parser() -> argparse.ArgumentParser:
         '"session_store.backend" (default: file)',
     )
     parser.add_argument(
+        "--connect",
+        default=None,
+        metavar="ADDR",
+        help="drive a session on a running `tau serve` at HOST[:PORT] or unix:/PATH "
+        "instead of in this process (docs/TAU-SERVE.md §7)",
+    )
+    parser.add_argument(
+        "--cwd",
+        default=None,
+        metavar="PATH",
+        help="with --connect: the directory new sessions get, on the daemon's machine "
+        "(default: this directory)",
+    )
+    parser.add_argument(
         "--session-dir",
         dest="session_dir",
         default=None,
@@ -421,6 +439,8 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         export_session=list(ns.export_session) if ns.export_session else None,
         verbose=ns.verbose,
         fun=ns.fun,
+        connect=ns.connect,
+        cwd=ns.cwd,
     )
 
 
@@ -479,6 +499,105 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         cli_run_config=run_config,
         fun=args.fun,
         resume=args.resume,
+    )
+    app.run()
+    return 0
+
+
+_LOCAL_ONLY_FLAGS: tuple[tuple[str, str], ...] = (
+    ("store", "--store"),
+    ("session_dir", "--session-dir"),
+    ("no_session", "--no-session"),
+    ("extensions", "-e/--extension"),
+    ("no_extensions", "--no-extensions"),
+    ("tools", "--tools"),
+    ("no_tools", "--no-tools"),
+    ("exclude_tools", "--exclude-tools"),
+    ("no_builtin_tools", "--no-builtin-tools"),
+    ("bus", "--bus"),
+    ("append_system_prompt", "--append-system-prompt"),
+    ("system_prompt", "--system-prompt"),
+    ("no_context_files", "--no-context-files"),
+    ("max_turns", "--max-turns"),
+    ("ext_config", "--ext-config"),
+    ("provider", "--provider"),
+    ("thinking", "--thinking"),
+)
+"""Flags that configure a session in THIS process, which ``--connect`` does not run.
+
+The daemon builds every session from its own config (docs/TAU-SERVE.md §3), so
+each of these would be silently ignored; naming one is an error instead.
+"""
+
+
+def _remote_address(args: CLIArgs, config: dict) -> Any:
+    """The daemon this TUI should drive, or ``None`` to run in-process.
+
+    ``--connect`` names one. Without it, ``"serve": {"autostart": true}`` in the
+    config makes a plain ``tau`` drive the local daemon at ``serve.listen``,
+    starting one with ``tau serve -d`` if nothing answers there (§7.2).
+
+    Raises:
+        CLIError: ``--connect`` with a flag from :data:`_LOCAL_ONLY_FLAGS`, or a
+            daemon that would not start.
+    """
+    serve_config = config.get("serve") or {}
+    if args.connect is None and not serve_config.get("autostart"):
+        return None
+    for attr, flag in _LOCAL_ONLY_FLAGS:
+        if getattr(args, attr):
+            raise CLIError(
+                f"{flag} configures a session in this process, and under --connect (or "
+                "serve.autostart) the daemon builds every session from its own config; "
+                "drop the flag, or set it in the daemon's config"
+            )
+    if args.continue_session or args.session or args.fork:
+        raise CLIError(
+            "--continue/--session/--fork are headless; under --connect use --resume to "
+            "pick any of the daemon's sessions"
+        )
+    try:
+        from tau_coding_agent.serve.cli import accepts, listen_address, start_background
+        from tau_coding_agent.serve.client import parse_address
+    except ModuleNotFoundError as exc:
+        if exc.name != "websockets":
+            raise
+        raise CLIError(
+            "--connect needs the 'serve' extra (websockets is missing): "
+            "pip install 'ffwf-tau-coding-agent[serve]'"
+        ) from exc
+    if args.connect is not None:
+        return parse_address(args.connect)
+    address = listen_address(None, config)
+    if not accepts(address) and start_background(address, []) != 0:
+        raise CLIError(f"serve.autostart: no daemon at {address}, and starting one failed")
+    return address
+
+
+def _launch_remote_tui(args: CLIArgs, address: Any) -> int:
+    """Run the TUI against a daemon (docs/TAU-SERVE.md §7.1)."""
+    try:
+        from tau_coding_agent.app import TauApp
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"textual", "rich"}:
+            raise
+        raise CLIError(
+            f"the interactive TUI needs the 'tui' extra ({exc.name} is missing): "
+            "pip install 'ffwf-tau-coding-agent[tui]'"
+        ) from exc
+    from tau_coding_agent.serve.remote import RemoteConnection
+
+    remote = RemoteConnection(address, cwd=args.cwd or os.getcwd())
+    overrides: dict = {}
+    if args.model:
+        overrides["default_model"] = args.model
+    if args.theme is not None:
+        overrides["theme"] = args.theme
+    app = TauApp(
+        cli_overrides=overrides or None,
+        fun=args.fun,
+        resume=args.resume,
+        remote=remote,
     )
     app.run()
     return 0
@@ -585,6 +704,14 @@ def main(argv: list[str] | None = None) -> int:
                 "stores none (the run is ephemeral); drop one of them"
             )
 
+        if (args.connect is not None or args.cwd is not None) and (
+            args.mode in ("rpc", "repl") or args.print_mode
+        ):
+            raise CLIError(
+                "--connect/--cwd drive a `tau serve` daemon from the TUI; --print, "
+                "--mode rpc and --mode repl run the agent in this process"
+            )
+
         if args.mode == "rpc":
             if args.print_mode:
                 raise CLIError(
@@ -685,6 +812,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.mode == "json":
             raise CLIError("--mode json only applies to headless --print runs")
+        address = _remote_address(args, config)
+        if address is not None:
+            return _launch_remote_tui(args, address)
+        if args.cwd is not None:
+            raise CLIError("--cwd names a directory on a daemon's machine; it needs --connect")
         return _launch_tui(args, config)
     except ConfigError as exc:
         print(f"tau: error: {exc}", file=sys.stderr)

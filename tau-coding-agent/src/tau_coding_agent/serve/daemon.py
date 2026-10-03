@@ -20,6 +20,7 @@ from typing import Any, TextIO, cast
 
 from tau_agent_core.cursor import TURN_CURSOR, Cursor, TurnFrame
 from tau_agent_core.extension_types import form_headless_value, validate_form_spec
+from tau_agent_core.flows import Performed, Ready
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.session_log import SessionLog, is_incomplete
 from tau_agent_core.submission import Submission
@@ -77,13 +78,25 @@ def watch_writes(log: SessionLog, listener: Callable[[str, dict[str, Any]], None
     log.finalize = watched_finalize  # type: ignore[method-assign]
 
 
+def _json_safe(value: Any) -> Any:
+    """``value`` with everything JSON cannot hold turned into its ``str``."""
+    return json.loads(json.dumps(value, default=str))
+
+
 def dispatched_to_wire(command: Any) -> dict[str, Any] | None:
     """A dispatched command arm as ``{"arm": name, ...fields}``, or ``None``."""
     if command is None:
         return None
     is_record = dataclasses.is_dataclass(command) and not isinstance(command, type)
     fields = dataclasses.asdict(command) if is_record else {}
-    return {"arm": type(command).__name__, **json.loads(json.dumps(fields, default=str))}
+    return {"arm": type(command).__name__, **_json_safe(fields)}
+
+
+def value_to_wire(value: Any) -> dict[str, Any]:
+    """A :class:`~protocol.Perform` result: a record as ``{"kind": class, "fields"}``, else a value."""
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {"kind": type(value).__name__, "fields": _json_safe(dataclasses.asdict(value))}
+    return {"kind": "value", "value": _json_safe(value)}
 
 
 class Client:
@@ -279,12 +292,23 @@ class SessionHost:
             head_cursor_id=self.agent_session.cursor.id,
             cwd=str(self.log.header.get("cwd", "")),
             models=sorted(self.daemon.config.get("models", {})),
-            commands=[list(c) for c in self.agent_session.get_extension_commands()],
+            surface=self.surface(),
         )
         self.clients.add(client)
         client.attached.add(self.session_id)
         self.daemon.log(f"{self.tag} client {client.id} ({client.name}) attached")
         return p.to_wire(attached)
+
+    def surface(self) -> p.Surface:
+        """The session's extension commands, shortcuts and managed extensions, read now."""
+        session = self.agent_session
+        commands = session.get_extension_commands()
+        return p.Surface(
+            commands=[list(c) for c in commands],
+            command_args={name: session.get_extension_command_args(name) for name, _ in commands},
+            shortcuts=[list(s) for s in session.get_extension_shortcuts()],
+            extensions=[list(e) for e in session.list_managed_extensions()],
+        )
 
     def replay(self, client: Client, since: int) -> None:
         """Queue every kept event after ``since`` for ``client``."""
@@ -614,7 +638,7 @@ class Daemon:
             host.publish("cursors", {"cursors": host.cursor_states()})
             return None
         if isinstance(request, p.SetModel):
-            return self._set_model(host, request)
+            return await self._set_model(host, request)
         if isinstance(request, p.Answer):
             host.ui.answer(request.request_id, request.value)
             return None
@@ -628,7 +652,11 @@ class Daemon:
                 raise RequestError("bad_request", str(exc)) from exc
             finally:
                 TURN_CURSOR.reset(token)
-            return {"handled": outcome.handled, "output": outcome.output_text}
+            return {"handled": outcome.handled, "output": outcome.output_text()}
+        if isinstance(request, p.Perform):
+            return await self._perform(client, host, request)
+        if isinstance(request, p.Describe):
+            return p.to_wire(host.surface())
         if isinstance(request, p.Compare):
             return await self._compare(host, request)
         raise RequestError("bad_request", f"unhandled request {type(request).__name__}")
@@ -682,28 +710,68 @@ class Daemon:
         )
         submission = Submission(
             text=request.text,
+            images=request.images,
             source="interactive",
             submitter="human",
-            submission_id=uuid.uuid4().hex,
+            submission_id=request.submission_id or uuid.uuid4().hex,
             multitask_strategy=strategy,  # type: ignore[arg-type]
             expand_commands=request.expand_commands,
             allow_user_input=True,
         )
         result = await host.agent_session.submit(submission, cursor=cursor)
+        command = result.command
+        if isinstance(command, Ready):
+            command = await self._perform_ready(host, command)
         return p.to_wire(
             p.SubmitResult(
                 accepted=result.accepted,
                 submission_id=result.submission_id,
                 reason=result.rejection_reason,
-                command=dispatched_to_wire(result.command),
+                command=dispatched_to_wire(command),
             )
         )
 
-    def _set_model(self, host: SessionHost, request: p.SetModel) -> dict[str, Any]:
+    async def _perform_ready(self, host: SessionHost, ready: Ready) -> Performed:
+        """Perform a command whose arguments are all bound, as a local head would.
+
+        The session-switching mutations are a client's to make, by attaching
+        elsewhere, so they are refused here rather than performed for everyone.
+
+        Raises:
+            RequestError: a session-switching mutation, or one the backend lacks.
+        """
+        if ready.mutation in ("fork", "switch_session", "new_session"):
+            raise RequestError(
+                "bad_request",
+                f"/{ready.flow} switches sessions; under --connect, pick the session instead",
+            )
+        if ready.flow in host.agent_session.vocabulary.extension_flows:
+            bound = " ".join(str(value) for value in ready.arguments.values())
+            outcome = await host.backend.run_extension_command(ready.flow, bound)
+            return Performed(
+                flow=ready.flow,
+                mutation=ready.mutation,
+                data={"handled": outcome.handled, "output": outcome.output_text()},
+            )
+        action = getattr(host.backend, ready.mutation, None)
+        if action is None:
+            raise RequestError(
+                "not_found", f"/{ready.flow} performs {ready.mutation!r}, which the daemon lacks"
+            )
+        result = action(**ready.arguments)
+        if asyncio.iscoroutine(result):
+            result = await result
+        if not isinstance(result, Performed):
+            raise RequestError(
+                "failed", f"/{ready.flow} answered {type(result).__name__}, not a Performed"
+            )
+        return result
+
+    async def _set_model(self, host: SessionHost, request: p.SetModel) -> dict[str, Any]:
         cursor = host.cursor(request.cursor_id)
         session = host.agent_session
         if cursor is session.cursor:
-            session.set_model(request.model)
+            await host.backend.set_model(request.model)
         else:
             resolver = session.model_resolver
             if resolver is None:
@@ -719,6 +787,24 @@ class Daemon:
             )
         host.publish("cursors", {"cursors": host.cursor_states()})
         return {"model": host.cursor_model(cursor)}
+
+    async def _perform(
+        self, client: Client, host: SessionHost, request: p.Perform
+    ) -> dict[str, Any]:
+        """Run a :data:`~protocol.PERFORMABLE` backend operation for a client."""
+        if request.method not in p.PERFORMABLE:
+            raise RequestError("bad_request", f"{request.method!r} is not performable")
+        method = getattr(host.backend, request.method, None)
+        if method is None:
+            raise RequestError("not_found", f"the session backend has no {request.method!r}")
+        self.log(f"{host.tag} client {client.id} performs {request.method}")
+        try:
+            result = method(**request.arguments)
+            if asyncio.iscoroutine(result):
+                result = await result
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RequestError("bad_request", f"{request.method}: {exc}") from exc
+        return value_to_wire(result)
 
     async def _compare(self, host: SessionHost, request: p.Compare) -> dict[str, Any]:
         raise RequestError("bad_request", "compare is not built yet (docs/TAU-SERVE.md §8, M5)")

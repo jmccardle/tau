@@ -40,6 +40,8 @@ REJECTED_UNDER_RPC = {
     "fork",
     "name",
     "store",
+    "connect",
+    "cwd",
 }
 
 HONORED_UNDER_RPC = {

@@ -8,7 +8,7 @@
 
 - **Protocol version:** `0.1`
 - **Default port:** `8256`
-- **Counts:** 14 requests, 9 event kinds. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 16 requests, 9 event kinds. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12).
 
 ## Framing
@@ -74,6 +74,8 @@ Answered when the submission ends, with its :class:`SubmitResult`.
 | `text` | string | yes |
 | `multitask_strategy` | `"enqueue"` \| `"reject"` \| `"steer"` \| `"follow_up"` | no |
 | `expand_commands` | boolean | no |
+| `submission_id` | string \| null | no |
+| `images` | list of object \| null | no |
 
 ### `abort`
 
@@ -146,6 +148,28 @@ Answer an extension request written in the tree (docs/EXTENSION-LOCKS.md §3).
 | `action` | string | yes |
 | `values` | object | no |
 
+### `perform`
+
+Call one of the session backend's operations on the head cursor's tree.
+
+The TUI's commands reach the backend by method name; under ``--connect`` that
+backend is the daemon's. Answered with a :class:`Performed`-shaped record or a
+plain value, tagged by ``kind``.
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | string | yes |
+| `method` | string | yes |
+| `arguments` | object | no |
+
+### `describe`
+
+Re-read a session's extension surface, after an extension was enabled or reloaded.
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | string | yes |
+
 ### `compare`
 
 Open one cursor per model at ``leaf`` and send each the same text (docs/TAU-SERVE.md §8).
@@ -216,7 +240,7 @@ events that follow (``seq > since``) are a replay.
 | `head_cursor_id` | string | yes |
 | `cwd` | string | yes |
 | `models` | list of string | yes |
-| `commands` | list of list of string | yes |
+| `surface` | Surface | yes |
 
 ### `CursorState`
 

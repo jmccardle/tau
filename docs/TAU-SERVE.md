@@ -1,6 +1,6 @@
 # τ serves its trees: the 0.12.0 plan
 
-Plan and cost record (2026-10-02). M0–M2 built 2026-10-03; M3–M6 not
+Plan and cost record (2026-10-02). M0–M3 built 2026-10-03; M4–M6 not
 written. This record continues
 `docs/CURSORS.md` and replaces two of the records its §11 named: durable writes
 (§4 here) and the web head (§6–§7 here). It plans one development pass, which
@@ -312,6 +312,50 @@ is the one core change this section needs.
   default only when the daemon is local.
 - In-process `tau` stays the default, and nothing about it changes.
 
+### 7.1.1 Built note (M3)
+
+The 33 sites were cheaper than §7.1 feared, because 22 of the 26
+`self._cursor` uses are `self._cursor.context()`, a pure read, and every
+backend use is already `getattr(backend, name, None)`. What shipped, in
+`tau_coding_agent/serve/remote.py`:
+
+- `ReplicaSession` is a `ConversationSession` over the replica. Every read is
+  local; `append_at` and `finalize` raise `RemoteUnsupportedError`, so a TUI
+  path that still writes locally fails with its name rather than writing a
+  second copy.
+- `RemoteCursor` reads the head cursor's leaf and busy state from the replica's
+  `cursors` events, and follows the head across a daemon restart.
+- `RemoteBackend` has no `agent_session`, so the in-process paths skip it.
+  `submit_turn` and `submit_command` are `submit`; `subscribe_render` feeds the
+  daemon's `agent_event` and `channel` events into the same `RenderRouter` a
+  local bus feeds. Mutations the TUI calls by name (`compact`,
+  `set_session_name`, `navigate_tree`, `elide_span`, `commit_branch`,
+  `paste_subtree`, `rollback_turn`, the extension actions) are one new request,
+  `perform`, over an allowlist (`protocol.PERFORMABLE`).
+- Reads the TUI makes synchronously on the event loop (extension commands,
+  argument hints, shortcuts, managed extensions) ride in the attach answer as a
+  `Surface`, refreshed by `describe` after an extension changes.
+- A command that resolves to `Ready` is performed by the daemon, which holds
+  the backend, and comes back as `Performed`. A `FlowStep` (a command missing
+  an argument) is refused under `--connect`; give the argument in full.
+- `RemoteCatalog` serves only `list`, from a worker thread; creating, opening
+  and clearing a session are the app's `_remote_new_chat` / `_remote_open`.
+  The picker opens on all cwds.
+- `RemoteConnection` reconnects with backoff and re-attaches with `since`.
+
+`tau --connect ADDR [--cwd PATH]`: `--cwd` is the directory new sessions get on
+the daemon's machine, defaulting to this one. Every flag that configures an
+in-process session (`--store`, `--session-dir`, `-e`, `--tools`, `--thinking`
+and the rest, `cli._LOCAL_ONLY_FLAGS`) is refused with `--connect`, and
+`--connect` is refused with `-p`, `--mode rpc` and `--mode repl`.
+
+Measured: a real `TauApp` driven by Textual's pilot against the real daemon
+process resumed the session from the §6.4 kill run and ran a turn. Its replica
+equalled the daemon's file and a second client's replica
+(`test_connect_tui.py`). Not built: `fork` and `/new`'s session switching from a
+command (pick the session instead), and the `/extensions` view's load-error
+list, which needs `get_extension_state`.
+
 ### 7.2 Starting a local daemon automatically
 
 With `"serve": {"autostart": true}` in the config, a plain `tau` first tries to
@@ -319,6 +363,10 @@ connect to the configured address. If nothing answers, it runs `tau serve -d`,
 waits until the port accepts connections, and then connects. Doing this twice is
 harmless: a second daemon fails to bind the port, and that error ends it. No
 lock file is needed.
+
+Built note (M3): as planned. `"serve": {"autostart": true}` makes a plain `tau`
+dial `serve.listen`, run `tau serve -d` if no handshake succeeds, and connect;
+a second run finds the first daemon and reuses it.
 
 ### 7.3 tau-code
 

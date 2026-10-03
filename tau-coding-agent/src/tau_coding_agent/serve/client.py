@@ -76,6 +76,7 @@ class Replica:
         cursors: Every live cursor, by id, as :class:`~protocol.CursorState` dicts.
         epoch: The daemon's epoch for this session; a change means re-snapshot.
         seq: The newest event applied.
+        surface: The :class:`~protocol.Surface` dict as last read.
     """
 
     session_id: str
@@ -86,7 +87,7 @@ class Replica:
     head_cursor_id: str
     cwd: str
     models: list[str]
-    commands: list[list[str]]
+    surface: dict[str, Any]
     _index: dict[str, int] = field(default_factory=dict)
 
     @classmethod
@@ -101,7 +102,7 @@ class Replica:
             head_cursor_id=attached["head_cursor_id"],
             cwd=attached["cwd"],
             models=list(attached["models"]),
-            commands=[list(c) for c in attached["commands"]],
+            surface=dict(attached["surface"]),
         )
         replica._index = {e["id"]: i for i, e in enumerate(replica.entries)}
         return replica

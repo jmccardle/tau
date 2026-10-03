@@ -410,9 +410,10 @@ class ChatSidebar(Container):
 
     _GROUP_LIMIT = 10
 
-    def __init__(self, catalog: SessionCatalog):
+    def __init__(self, catalog: SessionCatalog, cwd: str | None = None):
         super().__init__(id="sidebar")
         self.catalog = catalog
+        self._cwd = cwd
         self.sessions: list[SessionInfo] = []
         self._render_pending = False
 
@@ -464,7 +465,7 @@ class ChatSidebar(Container):
         overwrite the sidebar with stale data: a freeze traded for a lie.
         """
         worker = get_current_worker()
-        sessions = self.catalog.list(os.getcwd())
+        sessions = self.catalog.list(self._cwd if self._cwd is not None else os.getcwd())
         if worker.is_cancelled:
             return
         self.app.call_from_thread(self._apply_sessions, sessions)
