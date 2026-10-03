@@ -181,6 +181,9 @@ class _EphemeralConversationSession:
     ) -> str:
         return await self._log.append_at(parent_id, entry_type, payload)
 
+    async def finalize(self, entry_id: str, payload: dict[str, Any]) -> None:
+        await self._log.finalize(entry_id, payload)
+
     @property
     def header(self) -> dict[str, Any]:
         return {

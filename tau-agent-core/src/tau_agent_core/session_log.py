@@ -59,15 +59,81 @@ class SessionLog(Protocol):
         """
         ...
 
+    async def finalize(self, entry_id: str, payload: dict[str, Any]) -> None:
+        """Replace an incomplete entry's payload, keeping its id, parent and position.
+
+        The entry was appended with ``"status": "incomplete"``
+        (docs/TAU-SERVE.md §4.1). The new payload carries no ``status``, and the
+        entry's ``timestamp`` becomes :func:`event_iso` of it. A store that appends
+        lines writes a second line with the same id, and its loader keeps the last.
+
+        Raises:
+            ValueError: ``entry_id`` names no entry, or one that is not incomplete.
+        """
+        ...
+
+
+INCOMPLETE = "incomplete"
+"""The ``status`` of an entry opened and not yet finalized (docs/TAU-SERVE.md §4)."""
+
+
+@agent_facing(topic="sessions")
+def is_incomplete(entry: dict[str, Any]) -> bool:
+    """Whether ``entry`` was opened and never finalized: an interrupted message."""
+    return entry.get("status") == INCOMPLETE
+
+
+def finalized_entry(
+    entry: dict[str, Any], payload: dict[str, Any], now: Callable[[], str]
+) -> dict[str, Any]:
+    """``entry`` with ``payload`` in place of its old one: what every store's ``finalize`` writes.
+
+    Raises:
+        ValueError: ``entry`` is not incomplete, or ``payload`` sets a ``status``.
+    """
+    if not is_incomplete(entry):
+        raise ValueError(f"finalize: entry {entry.get('id')!r} is not incomplete")
+    if "status" in payload:
+        raise ValueError("finalize: a finalized payload carries no status")
+    return {
+        "type": entry["type"],
+        "id": entry["id"],
+        "parentId": entry.get("parentId"),
+        "timestamp": event_iso(payload, now),
+        **payload,
+    }
+
+
+def keep_last_per_id(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold loaded lines so the last line for an id wins, at its first line's position.
+
+    The load rule of a store that finalizes by appending (docs/TAU-SERVE.md §4.1).
+    A line with no id is kept as it is.
+    """
+    position: dict[str, int] = {}
+    folded: list[dict[str, Any]] = []
+    for line in lines:
+        entry_id = line.get("id")
+        if entry_id is None:
+            folded.append(line)
+        elif entry_id in position:
+            folded[position[entry_id]] = line
+        else:
+            position[entry_id] = len(folded)
+            folded.append(line)
+    return folded
+
 
 @agent_facing(topic="sessions")
 def default_leaf(entries: list[dict[str, Any]]) -> str | None:
-    """Where a reopened tree continues: the newest entry a cursor wrote.
+    """Where a reopened tree continues: the newest finished entry a cursor wrote.
 
-    Skipped: a legacy ``navigate``, which names a different position
-    (docs/CURSORS.md §1.1, §4), and a namespaced kind (``system:kind``), which a
-    store synthesizes for a document another system put in the tree — the JMFTS
-    store's ``jmfts:document``. τ's own entry kinds are bare words.
+    Skipped: an incomplete entry, so a session interrupted mid-message reopens at
+    the entry before it and the interrupted branch stays beside the retry
+    (docs/TAU-SERVE.md §4.3); a legacy ``navigate``, which names a different
+    position (docs/CURSORS.md §1.1, §4); and a namespaced kind (``system:kind``),
+    which a store synthesizes for a document another system put in the tree — the
+    JMFTS store's ``jmfts:document``. τ's own entry kinds are bare words.
 
     Args:
         entries: A log's entries in append order.
@@ -77,7 +143,7 @@ def default_leaf(entries: list[dict[str, Any]]) -> str | None:
     """
     for entry in reversed(entries):
         kind = str(entry.get("type", ""))
-        if kind != "navigate" and ":" not in kind:
+        if kind != "navigate" and ":" not in kind and not is_incomplete(entry):
             return str(entry["id"])
     return None
 
@@ -398,3 +464,10 @@ class InMemorySessionLog:
         self._entries.append(entry)
         self._ids.add(entry["id"])
         return str(entry["id"])
+
+    async def finalize(self, entry_id: str, payload: dict[str, Any]) -> None:
+        for index, entry in enumerate(self._entries):
+            if entry["id"] == entry_id:
+                self._entries[index] = finalized_entry(entry, payload, _now_iso)
+                return
+        raise ValueError(f"finalize: entry {entry_id!r} not found")

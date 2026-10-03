@@ -39,6 +39,7 @@ from tau_agent_core.session_log import (
     default_leaf,
     session_name,
     event_iso,
+    finalized_entry,
     normalize_loaded_entries,
 )
 from tau_jmfts.client import JmftsClient
@@ -243,6 +244,7 @@ class JmftsSessionLog:
         entries: list[dict[str, Any]],
         *,
         next_seq: int,
+        seqs: dict[str, int] | None = None,
     ) -> None:
         self._client = client
         self._root_doc_id = root_doc_id
@@ -250,6 +252,7 @@ class JmftsSessionLog:
         self._entries = entries
         self._ids: set[str] = {e["id"] for e in entries}
         self._next_seq = next_seq
+        self._seqs: dict[str, int] = dict(seqs or {})
         self._append_lock = threading.Lock()
 
     # --- identity / header --------------------------------------------------
@@ -433,7 +436,12 @@ class JmftsSessionLog:
 
         next_seq = (max(seqs) + 1) if seqs else 1
         return cls(
-            client, root_doc_id, header, normalize_loaded_entries(entries), next_seq=next_seq
+            client,
+            root_doc_id,
+            header,
+            normalize_loaded_entries(entries),
+            next_seq=next_seq,
+            seqs={str(doc_id): seq for doc_id, seq in tau_order},
         )
 
     @classmethod
@@ -554,6 +562,37 @@ class JmftsSessionLog:
             raise ValueError(f"append parent {parent_id!r} not found")
         return await asyncio.to_thread(self._append_now, parent_id, entry_type, payload)
 
+    async def finalize(self, entry_id: str, payload: dict[str, Any]) -> None:
+        """Complete an incomplete entry by patching its document in place.
+
+        The document keeps its id, parent and ``seq``, so ``load``'s order check
+        still holds; only ``structured_content.tau`` and its projections change.
+
+        Raises:
+            ValueError: ``entry_id`` names no entry, or one that is not incomplete.
+        """
+        await asyncio.to_thread(self._finalize_now, entry_id, payload)
+
+    def _finalize_now(self, entry_id: str, payload: dict[str, Any]) -> None:
+        """The PATCH :meth:`finalize` runs on a worker thread, under the append lock."""
+        with self._append_lock:
+            for index, entry in enumerate(self._entries):
+                if entry["id"] == entry_id:
+                    break
+            else:
+                raise ValueError(f"finalize: entry {entry_id!r} not found")
+            final = finalized_entry(entry, payload, _now_iso)
+            tau_payload = {k: v for k, v in final.items() if k not in ("id", "parentId")}
+            seq = self._seqs[entry_id]
+            self._client.update_document(
+                int(entry_id),
+                title=_title_for(final["type"], payload, seq),
+                content=_content_for(final["type"], payload),
+                structured_content={"tau": tau_payload, "seq": seq},
+                re_embed=False,
+            )
+            self._entries[index] = final
+
     # --- internals -------------------------------------------------------
 
     def _append_now(self, parent_id: str | None, kind: str, payload: dict[str, Any]) -> str:
@@ -586,6 +625,7 @@ class JmftsSessionLog:
             entry_id = str(doc["id"])
             self._entries.append({**tau_payload, "id": entry_id, "parentId": parent_id})
             self._ids.add(entry_id)
+            self._seqs[entry_id] = seq
         if kind == "session_info":
             self._client.update_document(self._root_doc_id, title=payload["name"], re_embed=False)
         return entry_id

@@ -91,6 +91,9 @@ class _InMemoryConversationSession:
     ) -> str:
         return self._append_at_now(parent_id, entry_type, payload)
 
+    async def finalize(self, entry_id: str, payload: dict[str, Any]) -> None:
+        await self._log.finalize(entry_id, payload)
+
     def _append_at_now(
         self, parent_id: str | None, entry_type: str, payload: dict[str, Any]
     ) -> str:

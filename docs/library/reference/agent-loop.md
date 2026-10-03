@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None)
+class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None)
 ```
 
 `tau_agent_core.agent_loop.AgentLoop`
@@ -28,6 +28,7 @@ Reference: SUBPHASE-0.0.md, "5. Agent Events" section.
 - `hook_dispatcher: ExtensionRunner | None = None` — *(no description)*
 - `steer_queue: list[Any] | None = None` — *(no description)*
 - `mid_turn_compactor: MidTurnCompactor | None = None` — *(no description)*
+- `writer: TurnWriter | None = None` — *(no description)*
 
 ### add_tool
 
@@ -284,6 +285,60 @@ Unique tool call ID (from model response)
 `tau_agent_core.agent_loop_types.PreparedToolCall.name: str`
 
 Name of the tool to execute
+
+## TurnWriter
+<!-- agent: yes -->
+
+`tau_agent_core.agent_loop.TurnWriter`
+
+Where a loop writes each message the moment it exists (docs/TAU-SERVE.md §4.2).
+
+:class:`~tau_agent_core.agent_session.AgentSession` implements it over the
+turn's cursor. A loop with no writer writes nothing and only returns what it
+produced.
+
+### append
+
+```python
+async append(message: Any) -> None
+```
+
+`tau_agent_core.agent_loop.TurnWriter.append`
+
+Write a message that is finished when it exists: a tool result, a steer, a node.
+
+**Parameters**
+
+- `message: Any` — *(no description)*
+
+### finalize
+
+```python
+async finalize(handle: Any, message: Any) -> None
+```
+
+`tau_agent_core.agent_loop.TurnWriter.finalize`
+
+Complete the message :meth:`open` started.
+
+**Parameters**
+
+- `handle: Any` — *(no description)*
+- `message: Any` — *(no description)*
+
+### open
+
+```python
+async open(message: dict[str, Any]) -> Any
+```
+
+`tau_agent_core.agent_loop.TurnWriter.open`
+
+Record that an assistant message has started; return a handle for :meth:`finalize`.
+
+**Parameters**
+
+- `message: dict[str, Any]` — *(no description)*
 
 ## completed_messages
 <!-- agent: yes -->

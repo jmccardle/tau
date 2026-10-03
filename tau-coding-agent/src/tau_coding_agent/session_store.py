@@ -31,6 +31,8 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
 from tau_agent_core.session_log import (
     event_iso,
+    finalized_entry,
+    keep_last_per_id,
     normalize_loaded_entries,
     CONFIG_ENTRY_TYPE,
     config_at,
@@ -408,7 +410,7 @@ class Session:
                     entries.append(obj)
         if header is None:
             raise ValueError(f"{path}: empty session file (no header)")
-        session = cls(path, header, normalize_loaded_entries(entries))
+        session = cls(path, header, normalize_loaded_entries(keep_last_per_id(entries)))
         _emit_session_event(SESSION_START, session)
         return session
 
@@ -536,6 +538,20 @@ class Session:
         self._persist_entry(entry)
         return str(entry["id"])
 
+    async def finalize(self, entry_id: str, payload: dict[str, Any]) -> None:
+        """Complete an incomplete entry: a second line with its id, which the loader keeps.
+
+        Raises:
+            ValueError: ``entry_id`` names no entry, or one that is not incomplete.
+        """
+        for index, entry in enumerate(self._entries):
+            if entry.get("id") == entry_id:
+                final = finalized_entry(entry, payload, _now_iso)
+                self._entries[index] = final
+                self._persist_entry(final)
+                return
+        raise ValueError(f"finalize: entry {entry_id!r} not found")
+
     def _persist_header(self) -> None:
         if self.path is None:
             return
@@ -600,6 +616,7 @@ def read_session_info(path: Path) -> SessionInfo | None:
         if header is None:
             return None
 
+        entries = keep_last_per_id(entries)
         for entry in ConversationTree(entries, default_leaf(entries)).path():
             if entry.get("type") != "message":
                 continue

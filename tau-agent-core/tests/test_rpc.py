@@ -35,7 +35,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tau_llm.streaming import TextDeltaEvent
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.commands import FRONTEND_COMMANDS
@@ -162,6 +162,8 @@ class _Stream:
     def __aiter__(self):
         async def _gen():
             yield TextDeltaEvent(delta=self._text, partial=_assistant(self._text))
+            final = _assistant(self._text)
+            yield DoneEvent(final=final, usage=final.usage)
 
         return _gen()
 

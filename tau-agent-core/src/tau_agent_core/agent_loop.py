@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 from tau_llm.abort import AbortSignal
 from tau_llm.client import stream_simple
@@ -33,11 +33,8 @@ from tau_llm.streaming import (
 from tau_llm.tools import validate_tool_arguments
 from tau_llm.types import (
     AssistantMessage,
-    TextContent,
-    ThinkingContent,
     ToolCall,
     ToolResultMessage,
-    Usage,
 )
 
 from tau_agent_core.agent_loop_types import (
@@ -61,6 +58,28 @@ context, or None to leave it alone. :meth:`AgentSession._compact_mid_turn` is th
 implementation; the loop itself holds no compaction policy, because the window,
 the settings and the session log all live a layer up.
 """
+
+
+@agent_facing(topic="agent-loop")
+class TurnWriter(Protocol):
+    """Where a loop writes each message the moment it exists (docs/TAU-SERVE.md §4.2).
+
+    :class:`~tau_agent_core.agent_session.AgentSession` implements it over the
+    turn's cursor. A loop with no writer writes nothing and only returns what it
+    produced.
+    """
+
+    async def open(self, message: dict[str, Any]) -> Any:
+        """Record that an assistant message has started; return a handle for :meth:`finalize`."""
+        ...
+
+    async def finalize(self, handle: Any, message: Any) -> None:
+        """Complete the message :meth:`open` started."""
+        ...
+
+    async def append(self, message: Any) -> None:
+        """Write a message that is finished when it exists: a tool result, a steer, a node."""
+        ...
 
 
 @agent_facing(topic="agent-loop")
@@ -151,6 +170,7 @@ class AgentLoop:
         hook_dispatcher: ExtensionRunner | None = None,
         steer_queue: list[Any] | None = None,
         mid_turn_compactor: MidTurnCompactor | None = None,
+        writer: TurnWriter | None = None,
     ) -> None:
         self.config = config
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
@@ -163,6 +183,8 @@ class AgentLoop:
         self._hook_dispatcher: ExtensionRunner | None = hook_dispatcher
         self._steer_queue: list[Any] | None = steer_queue
         self._mid_turn_compactor: MidTurnCompactor | None = mid_turn_compactor
+        self._writer: TurnWriter | None = writer
+        self._recorded: dict[int, dict[str, Any]] = {}
 
     @staticmethod
     async def _noop_emit(event: AgentEvent) -> None:
@@ -660,6 +682,7 @@ class AgentLoop:
             )
             messages.append(message)
             final_messages.append(message)
+            await self._write(message)
             await self._emit(
                 AgentEvent(
                     type="message_end",
@@ -668,6 +691,11 @@ class AgentLoop:
                 )
             )
         return len(pending)
+
+    async def _write(self, message: Any) -> None:
+        """Hand a finished message to the writer, if there is one."""
+        if self._writer is not None:
+            await self._writer.append(message)
 
     @staticmethod
     def _serialize_message(message: Any) -> Any:
@@ -717,6 +745,7 @@ class AgentLoop:
             node = self._turn_end_custom_node(raw)
             messages.append(node)
             final_messages.append(node)
+            await self._write(node)
 
     @staticmethod
     def _turn_end_custom_node(message: dict[str, Any]) -> dict[str, Any]:
@@ -811,6 +840,7 @@ class AgentLoop:
         partial_reasoning = ""
         partial_content_blocks: list[dict[str, Any]] = []
         started = False
+        handle: Any = None
 
         async def start_once(content: list[Any]) -> None:
             """Emit ``message_start`` for this completion, at most once.
@@ -827,10 +857,14 @@ class AgentLoop:
             ``message_start`` events), and never opened it at all for a completion
             that produced only reasoning or only a tool call.
             """
-            nonlocal started
+            nonlocal started, handle
             if started:
                 return
             started = True
+            if self._writer is not None:
+                handle = await self._writer.open(
+                    {"role": "assistant", "content": [], "model": getattr(model, "id", None)}
+                )
             await self._emit(
                 AgentEvent(
                     type="message_start",
@@ -890,6 +924,8 @@ class AgentLoop:
                     c.model_dump() if hasattr(c, "model_dump") else c for c in final_msg.content
                 ]
                 await start_once(final_blocks)
+                if self._writer is not None:
+                    await self._writer.finalize(handle, final_msg)
                 await self._emit(
                     AgentEvent(
                         type="message_end",
@@ -932,19 +968,10 @@ class AgentLoop:
                 )
                 raise RuntimeError(detail)
 
-        # Stream completed without DoneEvent
-        content_blocks: list[TextContent | ThinkingContent | ToolCall] = (
-            [TextContent(text=partial_text)] if partial_text else []
-        )
-        model_id = model if isinstance(model, str) else "unknown"
-        return AssistantMessage(
-            content=content_blocks,
-            api="openai-completions",
-            provider="openai",
-            model=model_id if isinstance(model_id, str) else getattr(model, "id", "unknown"),
-            usage=Usage(),
-            stop_reason="stop",
-            timestamp=int(time.time() * 1000),
+        raise RuntimeError(
+            f"the stream for model {getattr(model, 'id', model)!r} ended without a "
+            "DoneEvent; the message is incomplete and its ending is not made up "
+            "(docs/TAU-SERVE.md §4.4)"
         )
 
     async def _execute_tool_calls(
@@ -993,6 +1020,7 @@ class AgentLoop:
         Returns:
             ToolBatchResult with tool result messages.
         """
+        self._recorded = {}
         if self._abort_signal and self._abort_signal.is_aborted():
             return await self._aborted_batch(tool_calls, prior=[])
 
@@ -1055,7 +1083,9 @@ class AgentLoop:
                     is_error=True,
                 )
             )
-            results.append(AgentToolResult.from_error(tc.name, ABORTED_TOOL_RESULT, tc.id))
+            aborted = AgentToolResult.from_error(tc.name, ABORTED_TOOL_RESULT, tc.id)
+            await self._record(aborted)
+            results.append(aborted)
         return self._build_batch_result(results)
 
     def _emit_veto_record(self, tool_name: str, reason: str, extension: str | None) -> None:
@@ -1123,13 +1153,13 @@ class AgentLoop:
                         blocked_by=blocked_by,
                     )
                 )
-                all_results.append(
-                    AgentToolResult.from_error(
-                        prepared.call.name,
-                        prepared.error,
-                        prepared.call.id,
-                    )
+                blocked = AgentToolResult.from_error(
+                    prepared.call.name,
+                    prepared.error,
+                    prepared.call.id,
                 )
+                await self._record(blocked)
+                all_results.append(blocked)
                 continue
             elif isinstance(prepared, ErrorCall):
                 await self._emit(
@@ -1142,13 +1172,13 @@ class AgentLoop:
                         is_error=True,
                     )
                 )
-                all_results.append(
-                    AgentToolResult.from_error(
-                        prepared.call.name,
-                        prepared.error,
-                        prepared.call.id,
-                    )
+                errored = AgentToolResult.from_error(
+                    prepared.call.name,
+                    prepared.error,
+                    prepared.call.id,
                 )
+                await self._record(errored)
+                all_results.append(errored)
                 continue
 
             result = await self._execute_tool(prepared)
@@ -1166,6 +1196,7 @@ class AgentLoop:
                 )
             )
 
+            await self._record(result)
             all_results.append(result)
             if result.terminate:
                 terminated = True
@@ -1202,30 +1233,55 @@ class AgentLoop:
                 )
             )
 
-        # Execute all in parallel
-        async def _run_tool(pc):
+        finished: list[AgentToolResult | None] = [None] * len(prepared_calls)
+        flushed = 0
+        flush_lock = asyncio.Lock()
+
+        async def _flush_prefix() -> None:
+            """Write every finished result whose earlier calls have all finished."""
+            nonlocal flushed
+            async with flush_lock:
+                while flushed < len(finished):
+                    ready = finished[flushed]
+                    if ready is None:
+                        return
+                    await self._record(ready)
+                    flushed += 1
+
+        def _raised(pc: Any, exc: BaseException) -> AgentToolResult:
+            return AgentToolResult(
+                tool_name=pc.name if isinstance(pc, PreparedToolCall) else pc.call.name,
+                tool_call_id=pc.id if isinstance(pc, PreparedToolCall) else pc.call.id,
+                content=[{"type": "text", "text": str(exc)}],
+                is_error=True,
+                error_message=str(exc),
+            )
+
+        async def _run_tool(index: int, pc: Any) -> AgentToolResult:
             if isinstance(pc, (BlockedCall, ErrorCall)):
-                return AgentToolResult.from_error(pc.call.name, pc.error, pc.call.id)
-            # pc is a PreparedToolCall
-            result = await self._execute_tool(pc)
-            result = await self._apply_after_hooks(result, pc.arguments)
+                result = AgentToolResult.from_error(pc.call.name, pc.error, pc.call.id)
+            else:
+                try:
+                    result = await self._execute_tool(pc)
+                    result = await self._apply_after_hooks(result, pc.arguments)
+                except Exception as exc:
+                    finished[index] = _raised(pc, exc)
+                    await _flush_prefix()
+                    raise
+            finished[index] = result
+            await _flush_prefix()
             return result
 
-        tasks = [_run_tool(pc) for pc in prepared_calls]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(
+            *(_run_tool(i, pc) for i, pc in enumerate(prepared_calls)), return_exceptions=True
+        )
 
         all_results: list[AgentToolResult] = []
         for i, res in enumerate(results):
             pc = prepared_calls[i]
             if isinstance(res, BaseException):
-                # Task raised an exception
-                error_result = AgentToolResult(
-                    tool_name=pc.name if isinstance(pc, PreparedToolCall) else pc.call.name,
-                    tool_call_id=pc.id if isinstance(pc, PreparedToolCall) else pc.call.id,
-                    content=[{"type": "text", "text": str(res)}],
-                    is_error=True,
-                    error_message=str(res),
-                )
+                error_result = finished[i] or _raised(pc, res)
+                finished[i] = error_result
                 all_results.append(error_result)
                 await self._emit(
                     AgentEvent(
@@ -1238,7 +1294,6 @@ class AgentLoop:
                     )
                 )
             else:
-                # Normal result (including from_error for BlockedCall/ ErrorCall)
                 all_results.append(res)
                 blocked_by: str | None = None
                 if isinstance(pc, BlockedCall) and pc.blocked_by_extension is not None:
@@ -1257,6 +1312,7 @@ class AgentLoop:
                         blocked_by=blocked_by,
                     )
                 )
+        await _flush_prefix()
 
         terminated = any(getattr(r, "terminate", False) for r in all_results)
         return self._build_batch_result(all_results, terminate=terminated)
@@ -1275,31 +1331,36 @@ class AgentLoop:
         Returns:
             ToolBatchResult with messages and metadata.
         """
-        result_messages = []
-        for r in results:
-            content_list = (
-                r.content
-                if isinstance(r.content, list)
-                else [{"type": "text", "text": str(r.content)}]
-            )
-            result_messages.append(
-                ToolResultMessage.model_validate(
-                    {
-                        "role": "toolResult",
-                        "tool_call_id": r.tool_call_id or "",
-                        "tool_name": r.tool_name,
-                        "content": content_list,
-                        "details": r.details,
-                        "is_error": r.is_error,
-                        "timestamp": int(time.time() * 1000),
-                    }
-                )
-            )
         return ToolBatchResult(
-            messages=[m.model_dump() for m in result_messages],
+            messages=[self._recorded[id(r)] for r in results],
             tool_results=results,
             terminate=terminate,
         )
+
+    async def _record(self, result: AgentToolResult) -> None:
+        """Build ``result``'s toolResult message, keep it for the batch, and write it.
+
+        The timestamp is when the result was collected, and the write happens then,
+        so a crash keeps every result that finished before it (docs/TAU-SERVE.md §4.2).
+        """
+        content_list = (
+            result.content
+            if isinstance(result.content, list)
+            else [{"type": "text", "text": str(result.content)}]
+        )
+        message = ToolResultMessage.model_validate(
+            {
+                "role": "toolResult",
+                "tool_call_id": result.tool_call_id or "",
+                "tool_name": result.tool_name,
+                "content": content_list,
+                "details": result.details,
+                "is_error": result.is_error,
+                "timestamp": int(time.time() * 1000),
+            }
+        ).model_dump()
+        self._recorded[id(result)] = message
+        await self._write(message)
 
     async def _prepare_tool_call(
         self, tool_call: ToolCall

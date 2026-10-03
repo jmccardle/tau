@@ -19,7 +19,14 @@ from tau_llm.abort import AbortSignal
 from tau_llm.docs import agent_facing
 
 from tau_agent_core.conversation_tree import ConversationTree
-from tau_agent_core.session_log import CONFIG_ENTRY_TYPE, CONFIG_KEYS, SessionLog, default_leaf
+from tau_agent_core.session_log import (
+    CONFIG_ENTRY_TYPE,
+    CONFIG_KEYS,
+    INCOMPLETE,
+    SessionLog,
+    default_leaf,
+    is_incomplete,
+)
 
 __all__ = ["Cursor", "TURN_CURSOR", "TurnFrame"]
 
@@ -50,10 +57,18 @@ class TurnFrame:
     hooks: bool = False
 
 
-def _require_entry(log: SessionLog, entry_id: str | None, what: str) -> None:
-    """Raise unless ``entry_id`` is ``None`` (before the root) or names an entry of ``log``."""
-    if entry_id is not None and entry_id not in {str(e["id"]) for e in log.entries()}:
-        raise ValueError(f"{what} {entry_id!r} not found")
+def _require_entry(log: SessionLog, entry_id: str | None, what: str) -> bool:
+    """Raise unless ``entry_id`` is ``None`` (before the root) or names an entry of ``log``.
+
+    Returns:
+        Whether the entry is incomplete; ``False`` for ``None``.
+    """
+    if entry_id is None:
+        return False
+    for entry in log.entries():
+        if str(entry["id"]) == entry_id:
+            return is_incomplete(entry)
+    raise ValueError(f"{what} {entry_id!r} not found")
 
 
 @agent_facing(topic="sessions")
@@ -82,8 +97,7 @@ class Cursor:
         submission: The submission whose turn is running, for event provenance.
         is_streaming: Whether a turn is running here.
         last_usage: The newest completion's usage on this cursor's path.
-        turn_persistence: What the running turn has yet to write, for a mid-turn
-            compaction or an exception to flush.
+        turn_writer: The running turn's writer, which a mid-turn compaction reads.
         in_flight_context: The running turn's context, for a mid-turn estimate.
         persistence_settled: Clear from a turn's ``agent_end`` until its messages
             are written (docs/ASYNC-SESSION-LOG.md §3.3).
@@ -104,12 +118,13 @@ class Cursor:
         Raises:
             ValueError: ``leaf`` names no entry of ``log``.
         """
-        _require_entry(log, leaf, "cursor leaf")
+        self._leaf_incomplete = _require_entry(log, leaf, "cursor leaf")
         self.id = uuid.uuid4().hex[:8]
         self.log = log
         self.owner = owner
         self.label = label
         self._leaf = leaf
+        self._open: dict[str, str | None] = {}
         self.turn_lock = asyncio.Lock()
         self.abort_signal = AbortSignal()
         self.steer_queue: list[Any] = []
@@ -122,7 +137,7 @@ class Cursor:
         self.submission: Any = None
         self.is_streaming = False
         self.last_usage: dict[str, Any] | None = None
-        self.turn_persistence: Any = None
+        self.turn_writer: Any = None
         self.in_flight_context: list[dict[str, Any]] | None = None
         self.persistence_settled = asyncio.Event()
         self.persistence_settled.set()
@@ -171,14 +186,61 @@ class Cursor:
         Raises:
             ValueError: ``target`` names no entry.
         """
-        _require_entry(self.log, target, "move target")
+        self._leaf_incomplete = _require_entry(self.log, target, "move target")
         self._leaf = target
 
     async def append(self, entry_type: str, **payload: Any) -> str:
-        """Write an entry at the leaf, move onto it, and return its id."""
+        """Write an entry at the leaf, move onto it, and return its id.
+
+        Raises:
+            ValueError: the leaf is an incomplete entry; nothing grows from one.
+        """
+        self._refuse_incomplete_leaf()
         entry_id = await self.log.append_at(self._leaf, entry_type, payload)
         self._leaf = entry_id
+        self._leaf_incomplete = False
         return entry_id
+
+    async def open(self, entry_type: str, **payload: Any) -> str:
+        """Write an incomplete entry at the leaf, and stay where it was (docs/TAU-SERVE.md §4).
+
+        The cursor moves onto the entry when :meth:`finalize` completes it, so
+        the leaf never names an incomplete entry and a read of :meth:`context`
+        mid-message still folds.
+        """
+        self._refuse_incomplete_leaf()
+        entry_id = await self.log.append_at(
+            self._leaf, entry_type, {**payload, "status": INCOMPLETE}
+        )
+        self._open[entry_id] = self._leaf
+        return entry_id
+
+    async def finalize(self, entry_id: str, **payload: Any) -> None:
+        """Complete the entry :meth:`open` wrote, and move onto it.
+
+        Raises:
+            ValueError: this cursor did not open ``entry_id``, or the leaf moved
+                while it was open, so the entry no longer extends this position.
+        """
+        if entry_id not in self._open:
+            raise ValueError(f"finalize: entry {entry_id!r} was not opened by this cursor")
+        if self._open[entry_id] != self._leaf:
+            raise ValueError(
+                f"finalize: entry {entry_id!r} hangs from {self._open[entry_id]!r}, not "
+                f"this cursor's leaf {self._leaf!r}"
+            )
+        await self.log.finalize(entry_id, payload)
+        del self._open[entry_id]
+        self._leaf = entry_id
+        self._leaf_incomplete = False
+
+    def _refuse_incomplete_leaf(self) -> None:
+        """Raise when the leaf is an interrupted entry, which a cursor never extends."""
+        if self._leaf_incomplete:
+            raise ValueError(
+                f"cursor leaf {self._leaf!r} is an incomplete entry; move to a finished "
+                "one before appending"
+            )
 
     async def append_message(self, message: dict[str, Any]) -> str:
         """Append a ``message`` entry."""

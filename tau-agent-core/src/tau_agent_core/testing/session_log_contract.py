@@ -23,9 +23,9 @@ from typing import Any
 
 import pytest
 
-from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.conversation_tree import ConversationTree, IncompleteEntryError
 from tau_agent_core.cursor import Cursor
-from tau_agent_core.session_log import SessionLog, default_leaf
+from tau_agent_core.session_log import SessionLog, default_leaf, is_incomplete
 
 
 def _msg(role: str, text: str) -> dict[str, Any]:
@@ -672,6 +672,62 @@ class SessionLogContractTests:
         texts = _texts(ConversationTree(log.entries(), leaf).context_for(leaf))
         assert "BRANCH ONLY" not in texts
         assert "shared prefix" in texts and "own work" in texts
+
+    # --------------------------------------------------------- durable writes
+
+    async def test_an_opened_entry_is_incomplete_and_the_cursor_stays(self, log, cursor):
+        """An opened entry is in the tree at once, and the cursor stays on its parent,
+        so a context read while a message streams still folds (docs/TAU-SERVE.md §4)."""
+        prompt = await cursor.append_message(_msg("user", "go"))
+        opened = await cursor.open("message", message=_msg("assistant", ""))
+
+        entry = {e["id"]: e for e in log.entries()}[opened]
+        assert is_incomplete(entry) and entry["parentId"] == prompt
+        assert cursor.leaf == prompt
+        assert _texts(cursor.context()) == ["go"]
+
+    async def test_finalize_keeps_id_parent_and_position(self, log, cursor):
+        """Finalizing replaces the payload under the same id; nothing else moves."""
+        prompt = await cursor.append_message(_msg("user", "go"))
+        opened = await cursor.open("message", message=_msg("assistant", ""))
+        after = await log.append_at(prompt, "message", {"message": _msg("user", "sibling")})
+        await cursor.finalize(opened, message=_msg("assistant", "done"))
+
+        entries = log.entries()
+        ids = [e["id"] for e in entries]
+        assert ids.index(opened) < ids.index(after), "the entry keeps its append position"
+        final = entries[ids.index(opened)]
+        assert not is_incomplete(final) and final["parentId"] == prompt
+        assert cursor.leaf == opened
+        assert _texts(cursor.context()) == ["go", "done"]
+
+        reloaded = self.reload(log)
+        if reloaded is None:
+            return
+        assert reloaded.entries() == entries, "a reload reads the finalized entry once"
+
+    async def test_finalizing_a_finished_entry_raises(self, log, cursor):
+        done = await cursor.append_message(_msg("user", "finished"))
+        with pytest.raises(ValueError):
+            await log.finalize(done, {"message": _msg("user", "again")})
+
+    async def test_an_interrupted_entry_survives_a_reload_and_is_never_a_reload_point(
+        self, log, cursor
+    ):
+        """A crash leaves the entry open: the tree keeps it, the default leaf skips it,
+        and a context through it raises instead of inventing an ending (§4.3)."""
+        prompt = await cursor.append_message(_msg("user", "go"))
+        opened = await cursor.open("message", message=_msg("assistant", ""))
+
+        reloaded = self.reload(log) or log
+        entries = reloaded.entries()
+        assert is_incomplete({e["id"]: e for e in entries}[opened])
+        assert default_leaf(entries) == prompt
+        with pytest.raises(IncompleteEntryError):
+            ConversationTree(entries, opened).context_for()
+        stuck = Cursor(reloaded, opened)
+        with pytest.raises(ValueError):
+            await stuck.append_message(_msg("user", "from an interrupted entry"))
 
     # --------------------------------------------------------- branch summary
 

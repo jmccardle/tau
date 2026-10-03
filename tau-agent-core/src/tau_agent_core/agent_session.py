@@ -61,7 +61,7 @@ from tau_agent_core.session_log import (
     session_log_is_addressable,
 )
 from tau_agent_core.cursor import TURN_CURSOR, Cursor, TurnFrame
-from tau_agent_core.agent_loop import AgentLoop, completed_messages
+from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
 from tau_agent_core.commands import (
@@ -364,35 +364,55 @@ def _newest_compaction_ms(entries: list[dict[str, Any]]) -> int:
     return newest
 
 
-@dataclass
-class _TurnPersistence:
-    """What one ``_run_one_turn`` has written to the log, and what it still owes.
+class _CursorWriter:
+    """The :class:`~tau_agent_core.agent_loop.TurnWriter` one turn writes through.
 
-    Persistence used to be a single write at the tail of the turn, so "have the
-    inputs been written" was answerable by where you were in the function.
-    Mid-turn compaction breaks that: it has to flush the turn so far BEFORE it
-    can compact, and whatever the loop produces afterwards must not be written a
-    second time. Both facts now live here instead of in control flow.
+    Every message reaches the log when it exists, not when the turn ends
+    (docs/TAU-SERVE.md §4.2), so a crash keeps everything finished before it.
 
     Attributes:
-        pre_user: ``before_agent_start`` injections placed before the user message.
-        user_msg: The user's own message for this turn.
-        queued: Pending ``nextTurn`` messages threaded after the user message.
-        post_user: ``before_agent_start`` injections placed after it.
-        turn_messages: This turn's new messages, in order — ``prompt()``'s return.
-        persist: ``store_history``. False still collects, and writes nothing.
-        inputs_written: Whether the four input groups have reached the log.
-        loop_written: How many of the loop's produced messages have reached it.
+        messages: This turn's new messages in order: ``prompt()``'s return.
+        persist: ``store_history``. ``False`` still collects, and writes nothing.
     """
 
-    pre_user: list[dict[str, Any]]
-    user_msg: UserMessage
-    queued: list[UserMessage]
-    post_user: list[dict[str, Any]]
-    turn_messages: list[dict[str, Any]]
-    persist: bool
-    inputs_written: bool = False
-    loop_written: int = 0
+    def __init__(self, cursor: Cursor, persist: bool) -> None:
+        self._cursor = cursor
+        self.persist = persist
+        self.messages: list[dict[str, Any]] = []
+
+    async def open(self, message: dict[str, Any]) -> str | None:
+        if not self.persist:
+            return None
+        return await self._cursor.open("message", message=message)
+
+    async def finalize(self, handle: str | None, message: Any) -> None:
+        message_dict = message.model_dump() if hasattr(message, "model_dump") else message
+        if self.persist:
+            if handle is None:
+                raise RuntimeError("finalize: no entry was opened for this message")
+            await self._cursor.finalize(handle, message=message_dict)
+        self.messages.append(message_dict)
+
+    async def append(self, message: Any) -> None:
+        """Write a finished message; a ``custom`` role node becomes a ``customMessage``.
+
+        Raises:
+            ValueError: a ``custom`` node has no ``customType``; the extension-origin
+                identity is not made up. Checked whether or not it is written.
+        """
+        message_dict = message.model_dump() if hasattr(message, "model_dump") else message
+        if message_dict.get("role") == CUSTOM_ROLE:
+            custom_type = message_dict.get("customType")
+            if not custom_type:
+                raise ValueError(
+                    "custom node is missing 'customType' — the extension-origin type "
+                    "is required (Fail-Early)"
+                )
+            if self.persist:
+                await self._cursor.append_custom_message(message_dict, str(custom_type))
+        elif self.persist:
+            await self._cursor.append_message(message_dict)
+        self.messages.append(message_dict)
 
 
 class _SideCompletionWatch:
@@ -3294,6 +3314,7 @@ class AgentSession:
             **self._turn_cap(),
         )
 
+        writer = _CursorWriter(self._turn_cursor(), persist)
         loop = AgentLoop(
             config=config,
             emit=self._emit_stamped,
@@ -3303,114 +3324,29 @@ class AgentSession:
             hook_dispatcher=hooks,
             steer_queue=self._turn_cursor().steer_queue,
             mid_turn_compactor=self._compact_mid_turn,
+            writer=writer,
         )
 
-        turn_messages: list[dict[str, Any]] = []
-        turn = _TurnPersistence(
-            pre_user=pre_user_messages,
-            user_msg=user_msg,
-            queued=queued,
-            post_user=post_user_messages,
-            turn_messages=turn_messages,
-            persist=persist,
-        )
-        self._turn_cursor().turn_persistence = turn
+        # The inputs are written before the loop runs, so a crash mid-turn keeps the prompt.
+        if persist:
+            await self._record_config()
+        for message in [*pre_user_messages, user_msg, *queued, *post_user_messages]:
+            await writer.append(message)
+        self._turn_cursor().turn_writer = writer
 
         # Cleared BEFORE loop.run, because loop.run is what emits agent_end.
         self._turn_cursor().persistence_settled.clear()
         try:
-            try:
-                final_messages = await loop.run(
-                    prompts=[*pre_user_messages, user_msg, *queued, *post_user_messages],
-                    context=context_messages,
-                )
-            except BaseException as exc:
-                await self._persist_turn_inputs_once(turn)
-                await self._persist_loop_messages(
-                    completed_messages(exc)[turn.loop_written :],
-                    turn_messages,
-                    persist=persist,
-                )
-                raise
-
-            await self._persist_turn_inputs_once(turn)
-            await self._persist_loop_messages(
-                final_messages[turn.loop_written :], turn_messages, persist=persist
+            await loop.run(
+                prompts=[*pre_user_messages, user_msg, *queued, *post_user_messages],
+                context=context_messages,
             )
         finally:
-            self._turn_cursor().turn_persistence = None
+            self._turn_cursor().turn_writer = None
             self._turn_cursor().in_flight_context = None
             self._turn_cursor().persistence_settled.set()
 
-        return turn_messages
-
-    async def _persist_turn_inputs_once(self, turn: _TurnPersistence) -> None:
-        """Write this turn's input messages, at most once.
-
-        A turn can reach the tail persist having already flushed its inputs, if
-        :meth:`_compact_mid_turn` fired: the compaction needed the user message on
-        the path before it could cut one. The latch is on the record rather than
-        on control flow, because there are now three callers and only one of them
-        can see where the others were.
-        """
-        if turn.inputs_written:
-            return
-        turn.inputs_written = True
-        await self._persist_turn_inputs(
-            turn.pre_user,
-            turn.user_msg,
-            turn.queued,
-            turn.post_user,
-            turn.turn_messages,
-            turn.persist,
-        )
-
-    async def _persist_turn_inputs(
-        self,
-        pre_user_messages: list[dict[str, Any]],
-        user_msg: UserMessage,
-        queued: list[UserMessage],
-        post_user_messages: list[dict[str, Any]],
-        turn_messages: list[dict[str, Any]],
-        persist: bool,
-    ) -> None:
-        """Append this turn's INPUT messages to the log and to *turn_messages*.
-
-        Everything the model was given before it answered: the ``before_user``
-        injections, the user's own message, the queued ``nextTurn`` messages, and
-        the ``after_user`` injections — in the order the model saw them.
-
-        Split out of :meth:`_run_one_turn` so the success path and the failure
-        path write the same things. It was inline, and therefore only on the
-        success path, which is why an aborted turn lost the user's prompt as well
-        as the assistant's reply.
-        """
-        if persist:
-            await self._record_config()
-        for pre_msg in pre_user_messages:
-            if persist:
-                await self._turn_cursor().append_custom_message(
-                    pre_msg, custom_type=str(pre_msg["customType"])
-                )
-            turn_messages.append(pre_msg)
-
-        user_dict = user_msg.model_dump()
-        if persist:
-            await self._turn_cursor().append_message(user_dict)
-        turn_messages.append(user_dict)
-
-        for qmsg in queued:
-            qdict = qmsg.model_dump()
-            if persist:
-                await self._turn_cursor().append_message(qdict)
-            turn_messages.append(qdict)
-
-        for cmsg in post_user_messages:
-            if persist:
-                await self._turn_cursor().append_custom_message(
-                    cmsg, custom_type=str(cmsg["customType"])
-                )
-            turn_messages.append(cmsg)
+        return writer.messages
 
     async def _end_of_prompt_drain(self, turn_messages: list[dict[str, Any]]) -> None:
         """Drain the auto-compaction + deferred + followUp work at prompt()'s tail.
@@ -3538,7 +3474,7 @@ class AgentSession:
                 **self._turn_cap(),
             )
 
-            # Create and run the agent loop (continuation mode)
+            writer = _CursorWriter(cur, persist=True)
             loop = AgentLoop(
                 config=config,
                 emit=self._emit_stamped,
@@ -3547,17 +3483,10 @@ class AgentSession:
                 abort_signal=cur.abort_signal,
                 hook_dispatcher=self._hooks(),
                 steer_queue=cur.steer_queue,
+                writer=writer,
             )
-
-            # Run the loop — handles LLM call, tool execution, re-tries
-            final_messages = await loop.run_continue(
-                context=context_messages,
-            )
-
-            turn_messages: list[dict[str, Any]] = []
-            await self._persist_loop_messages(final_messages, turn_messages)
-
-            return turn_messages
+            await loop.run_continue(context=context_messages)
+            return writer.messages
 
         finally:
             cur.is_streaming = False
@@ -3817,22 +3746,20 @@ class AgentSession:
         if context_window <= 0:
             return None
 
-        turn = self._turn_cursor().turn_persistence
-        if turn is None:
+        writer = self._turn_cursor().turn_writer
+        if writer is None:
             return None
 
-        unwritten = [self._as_message_dict(m) for m in produced[turn.loop_written :]]
-        path = [*self.messages, *[m for m in unwritten if m is not None]]
+        path = self.messages if writer.persist else [*self.messages, *writer.messages]
         self._turn_cursor().in_flight_context = path
         estimate = self.context_estimate(path)
         if not must_compact(estimate.tokens, context_window, self._compaction_settings):
             return None
-
-        await self._persist_turn_inputs_once(turn)
-        await self._persist_loop_messages(
-            produced[turn.loop_written :], turn.turn_messages, persist=turn.persist
-        )
-        turn.loop_written = len(produced)
+        if not writer.persist:
+            raise RuntimeError(
+                "a store_history=False turn crossed the hard context limit; it cannot "
+                "compact, because compaction writes to the tree and this turn writes nothing"
+            )
 
         await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
         try:
@@ -3842,14 +3769,6 @@ class AgentSession:
         compacted = list(self.messages)
         self._turn_cursor().in_flight_context = compacted
         return compacted
-
-    @staticmethod
-    def _as_message_dict(message: Any) -> dict[str, Any] | None:
-        """One loop message as a plain dict, or None when it is not a message."""
-        if hasattr(message, "model_dump"):
-            dumped = message.model_dump()
-            return dumped if isinstance(dumped, dict) else None
-        return message if isinstance(message, dict) else None
 
     async def _maybe_auto_compact(self) -> None:
         """Compact automatically when context approaches the model's window.
@@ -4077,55 +3996,6 @@ class AgentSession:
                 )
             )
         return resolved
-
-    async def _persist_loop_messages(
-        self,
-        final_messages: list[Any],
-        turn_messages: list[dict[str, Any]],
-        persist: bool = True,
-    ) -> None:
-        """Persist a loop's produced messages, routing durable ``custom`` nodes.
-
-        Assistant / tool-result messages persist as plain ``message`` tree nodes.
-        An extension-injected ``role: "custom"`` node produced mid-loop by the
-        mutating ``turn_end`` hook (S43) persists as a ``customMessage`` tree node
-        instead — so it lands on the active path exactly like a ``before_agent_start``
-        injection (persisted == rendered == sent) and a reload replays the same path.
-        Each persisted dict is collected into ``turn_messages`` (this turn's new
-        messages — the ``prompt()`` return value), preserving loop order.
-
-        ``persist=False`` (:meth:`submit`'s ``store_history=False`` path) still
-        builds and collects ``turn_messages`` exactly as before but skips both
-        ``append_*`` calls — the transcript is returned to the caller, never
-        written to the log.
-
-        Fail-Early: a ``custom`` node missing ``customType`` raises rather than
-        fabricating an extension-origin identity — checked regardless of
-        ``persist``, since a malformed node is a construction bug either way.
-        """
-        for msg in final_messages:
-            if hasattr(msg, "model_dump"):
-                msg_dict = msg.model_dump()
-            elif isinstance(msg, dict):
-                msg_dict = msg
-            else:
-                continue
-
-            if msg_dict.get("role") == CUSTOM_ROLE:
-                custom_type = msg_dict.get("customType")
-                if not custom_type:
-                    raise ValueError(
-                        "turn_end custom node is missing 'customType' — the "
-                        "extension-origin type is required (Fail-Early)"
-                    )
-                if persist:
-                    await self._turn_cursor().append_custom_message(
-                        msg_dict, custom_type=str(custom_type)
-                    )
-            else:
-                if persist:
-                    await self._turn_cursor().append_message(msg_dict)
-            turn_messages.append(msg_dict)
 
     def _custom_message_node(
         self, message: dict[str, Any], hook: str = "before_agent_start"

@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tau_llm.streaming import TextDeltaEvent
+from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent
@@ -66,6 +66,8 @@ class _Stream:
     def __aiter__(self):
         async def _gen():
             yield TextDeltaEvent(delta=self._text, partial=_assistant(self._text))
+            final = _assistant(self._text)
+            yield DoneEvent(final=final, usage=final.usage)
 
         return _gen()
 
@@ -474,6 +476,8 @@ async def test_cancel_background_tasks_completes_a_turn_re_stalled_in_agent_end(
                 for _ in range(self._n):
                     acc += "x"
                     yield TextDeltaEvent(delta="x", partial=_assistant(acc))
+                final = _assistant(acc)
+                yield DoneEvent(final=final, usage=final.usage)
 
             return _gen()
 

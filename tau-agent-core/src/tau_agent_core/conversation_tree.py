@@ -45,6 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from tau_agent_core.compaction import estimate_tokens
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, read_request
+from tau_agent_core.session_log import is_incomplete
 from tau_llm.docs import agent_facing
 
 MessageIdScope = Literal["in_session", "ancestors_of_cursor", "descendants_of_cursor"]
@@ -56,6 +57,12 @@ _SUMMARY_KINDS = ("compaction", "branch_summary")
 _SPLICE_ANCHOR_KINDS = ("compaction", "elide")
 
 _SPLICE_VERBS = {"compaction": "folds", "elide": "hides"}
+
+
+@agent_facing(topic="sessions")
+class IncompleteEntryError(ValueError):
+    """A context was asked for through an interrupted entry (docs/TAU-SERVE.md §4.3)."""
+
 
 COPYABLE_KINDS = ("message", "customMessage", "branch_summary")
 """The entry kinds ``paste_subtree`` will take as a copy source.
@@ -169,9 +176,19 @@ def entries_to_messages(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         message at all (``navigate``, ``customEntry``, ``model_change``) contribute
         nothing, and an ``elide`` contributes nothing by design: it is a splice
         anchor with no payload to render.
+
+    Raises:
+        IncompleteEntryError: an entry was opened and never finalized. An
+            interrupted message is invalid input to every provider, and making up
+            its ending is what docs/TAU-SERVE.md §4.4 removed.
     """
     messages: list[dict[str, Any]] = []
     for entry in entries:
+        if is_incomplete(entry):
+            raise IncompleteEntryError(
+                f"entry {entry.get('id')!r} was interrupted before it finished; "
+                "continue from an entry before it"
+            )
         kind = entry.get("type")
         if kind == "message":
             messages.append(entry.get("message", {}))
@@ -945,7 +962,8 @@ class ConversationTree:
         else:
             text = ""
         stripped = text.strip()
-        return stripped.split("\n", 1)[0] if stripped else ""
+        first = stripped.split("\n", 1)[0] if stripped else ""
+        return f"[interrupted] {first}".rstrip() if is_incomplete(entry) else first
 
     def _splice_anchor_preview(self, entry: dict[str, Any]) -> str:
         """Row text for a splice anchor: WHAT it removes, then WHAT it left behind.

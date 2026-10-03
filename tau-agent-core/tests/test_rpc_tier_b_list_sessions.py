@@ -123,6 +123,9 @@ class _FakeConversationSession:
     async def append_at(self, parent_id, entry_type, payload) -> str:
         return self._append_at_now(parent_id, entry_type, payload)
 
+    async def finalize(self, entry_id, payload) -> None:
+        await self._log.finalize(entry_id, payload)
+
     def _append_at_now(self, parent_id, entry_type, payload) -> str:
         """Synchronous write for ``create``/``fork``, which are not coroutines."""
         return self._log.append_at_now(parent_id, entry_type, payload)

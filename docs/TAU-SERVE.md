@@ -1,6 +1,7 @@
 # τ serves its trees: the 0.12.0 plan
 
-Plan and cost record (2026-10-02), nothing built. This record continues
+Plan and cost record (2026-10-02). M0 and M1 built 2026-10-03; M2–M6 not
+written. This record continues
 `docs/CURSORS.md` and replaces two of the records its §11 named: durable writes
 (§4 here) and the web head (§6–§7 here). It plans one development pass, which
 ends when the scenario in §2 runs.
@@ -24,10 +25,11 @@ ends when the scenario in §2 runs.
   process, and therefore one conversation, to several browsers
   (`tau-code/packages/server/src/hub.ts`, its class docstring), using 991 lines
   of TS in `server/` and `runner/`.
-- **Two concurrent top-level turns on separate cursors are untested.**
-  `test_cursor.py` covers opening, moving and isolating cursors. Concurrent
-  sub-agents are tested elsewhere. Nothing runs two user turns at the same time
-  on two cursors of one session, and that is what §8 needs.
+- **Two concurrent top-level turns on separate cursors were thought untested.**
+  Built note (M0): that was wrong. `test_cursor_turns.py` already ran two user
+  turns at once on two cursors. What no test covered was §8's shape: two
+  cursors at one leaf, each under its own model, on the file store.
+  `test_compare_cursors.py` now does, and it passed with no core change.
 - **Protocol counts are written by hand and drift.** Defect 5 of the 2026-10-02
   comparison: ROADMAP and tau-code's ARCHITECTURE.md give RPC verb counts that no
   longer match protocol 1.8.
@@ -87,9 +89,13 @@ one. It loses because every reader of the tree would then have to join the two
 entries: `ConversationTree`, `context_for`, all three `SessionLog`
 implementations, and the client replica of §5. With "the last line for an id
 wins", only the loaders change. The cost is that an id is no longer written only
-once, so the `SessionLog` contract suite gains that rule as a test. The JMFTS
-store must update the document in place, or follow the same last-wins rule. I
-did not check which of those its client supports.
+once, so the `SessionLog` contract suite gains that rule as a test.
+
+Built note (M1): `SessionLog.finalize(entry_id, payload)` is the new protocol
+member. The file store appends the second line and `keep_last_per_id` folds on
+load. The JMFTS store PATCHes the document in place, keeping its `seq`, so
+`load`'s order check still holds. The contract suite's "durable writes" section
+checks all three.
 
 ### 4.2 What is written when
 
@@ -97,9 +103,20 @@ did not check which of those its client supports.
 |---|---|
 | Turn admitted | The user message (and queued inputs), finalized at once |
 | `message_start` (assistant) | The entry, opened, with no content |
-| `message_end` | The entry, finalized, with its content and usage |
-| Tool call starts | The tool-result entry, opened, holding the call's name and arguments |
-| Tool call ends | The tool-result entry, finalized |
+| `DoneEvent` | The entry, finalized, with its content and usage |
+| A tool result is collected | The tool-result entry, once every earlier call in its batch has one |
+| A steer is delivered, a `turn_end` hook injects | That message |
+
+Built note (M1), two divergences from the plan:
+
+- **Tool results are not opened.** The finalized assistant entry already holds
+  every call's name and arguments, so an assistant message whose calls have no
+  results is the record that tools were running. A parallel batch writes its
+  results in call order, each as soon as it and every earlier result exist.
+- **The cursor stays on the parent of an open entry** and moves onto it when it
+  is finalized. So a context read while a message streams, by a tool, a
+  sub-agent or a head, still folds, and the leaf never names an incomplete
+  entry.
 
 Deltas are not written. A crash therefore loses the partial text of the message
 that was streaming, but keeps the fact that it was streaming, and everything
@@ -107,8 +124,9 @@ finished before it. Writing a checkpoint every N deltas could be added later. It
 is absent here (§11).
 
 This replaces the end-of-turn write in `_run_one_turn`. The `_TurnPersistence`
-latch (`inputs_written`, `loop_written`) exists only because writing happened
-late, so it goes away.
+latch (`inputs_written`, `loop_written`) existed only because writing happened
+late, so it is gone. The loop writes through a `TurnWriter`
+(`agent_loop.py`), which `AgentSession` implements over the turn's cursor.
 
 ### 4.3 An incomplete entry on reopen
 

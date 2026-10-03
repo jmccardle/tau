@@ -2603,6 +2603,10 @@ Write an entry at the leaf, move onto it, and return its id.
 - `entry_type: str` — *(no description)*
 - `**payload: Any` — *(no description)*
 
+**Raises**
+
+- `ValueError` — the leaf is an incomplete entry; nothing grows from one.
+
 ### append_branch_summary
 
 ```python
@@ -2769,6 +2773,25 @@ entries() -> list[dict[str, Any]]
 
 Every entry of the tree, all branches — not only this cursor's path.
 
+### finalize
+
+```python
+async finalize(entry_id: str, **payload: Any) -> None
+```
+
+`tau_agent_core.cursor.Cursor.finalize`
+
+Complete the entry :meth:`open` wrote, and move onto it.
+
+**Parameters**
+
+- `entry_id: str` — *(no description)*
+- `**payload: Any` — *(no description)*
+
+**Raises**
+
+- `ValueError` — this cursor did not open ``entry_id``, or the leaf moved while it was open, so the entry no longer extends this position.
+
 ### follow_up_queue
 
 `tau_agent_core.cursor.Cursor.follow_up_queue: list[str]`
@@ -2852,6 +2875,25 @@ A cursor at ``log``'s default leaf: where a reopened tree continues.
 
 Texts injected alongside the next prompt's user turn.
 
+### open
+
+```python
+async open(entry_type: str, **payload: Any) -> str
+```
+
+`tau_agent_core.cursor.Cursor.open`
+
+Write an incomplete entry at the leaf, and stay where it was (docs/TAU-SERVE.md §4).
+
+The cursor moves onto the entry when :meth:`finalize` completes it, so
+the leaf never names an incomplete entry and a read of :meth:`context`
+mid-message still folds.
+
+**Parameters**
+
+- `entry_type: str` — *(no description)*
+- `**payload: Any` — *(no description)*
+
 ### persistence_settled
 
 `tau_agent_core.cursor.Cursor.persistence_settled`
@@ -2901,13 +2943,6 @@ The tree folded at this cursor's leaf.
 Held while a turn extends this cursor; one turn at a time here,
 any number across cursors.
 
-### turn_persistence
-
-`tau_agent_core.cursor.Cursor.turn_persistence: Any`
-
-What the running turn has yet to write, for a mid-turn
-compaction or an exception to flush.
-
 ### turn_task
 
 `tau_agent_core.cursor.Cursor.turn_task: asyncio.Task[Any] | None`
@@ -2919,6 +2954,12 @@ The ``asyncio.Task`` running the turn, for the reentrancy guard.
 `tau_agent_core.cursor.Cursor.turn_token: int | None`
 
 Which admitted turn is running; a rollback checks it is unchanged.
+
+### turn_writer
+
+`tau_agent_core.cursor.Cursor.turn_writer: Any`
+
+The running turn's writer, which a mid-turn compaction reads.
 
 ## CustomMessageEntry
 <!-- agent: yes -->
@@ -3262,6 +3303,28 @@ entries() -> list[dict[str, Any]]
 `tau_agent_core.session_log.InMemorySessionLog.entries`
 
 *No description. This object is marked but undocumented.*
+
+### finalize
+
+```python
+async finalize(entry_id: str, payload: dict[str, Any]) -> None
+```
+
+`tau_agent_core.session_log.InMemorySessionLog.finalize`
+
+*No description. This object is marked but undocumented.*
+
+**Parameters**
+
+- `entry_id: str` — *(no description)*
+- `payload: dict[str, Any]` — *(no description)*
+
+## IncompleteEntryError
+<!-- agent: yes -->
+
+`tau_agent_core.conversation_tree.IncompleteEntryError`
+
+A context was asked for through an interrupted entry (docs/TAU-SERVE.md §4.3).
 
 ## MessageEntry
 <!-- agent: yes -->
@@ -3868,6 +3931,30 @@ entries() -> list[dict[str, Any]]
 `tau_agent_core.session_log.SessionLog.entries`
 
 Every entry of every branch, in append order; a copy the caller may mutate.
+
+### finalize
+
+```python
+async finalize(entry_id: str, payload: dict[str, Any]) -> None
+```
+
+`tau_agent_core.session_log.SessionLog.finalize`
+
+Replace an incomplete entry's payload, keeping its id, parent and position.
+
+The entry was appended with ``"status": "incomplete"``
+(docs/TAU-SERVE.md §4.1). The new payload carries no ``status``, and the
+entry's ``timestamp`` becomes :func:`event_iso` of it. A store that appends
+lines writes a second line with the same id, and its loader keeps the last.
+
+**Parameters**
+
+- `entry_id: str` — *(no description)*
+- `payload: dict[str, Any]` — *(no description)*
+
+**Raises**
+
+- `ValueError` — ``entry_id`` names no entry, or one that is not incomplete.
 
 ### id
 
@@ -4620,12 +4707,14 @@ default_leaf(entries: list[dict[str, Any]]) -> str | None
 
 `tau_agent_core.session_log.default_leaf`
 
-Where a reopened tree continues: the newest entry a cursor wrote.
+Where a reopened tree continues: the newest finished entry a cursor wrote.
 
-Skipped: a legacy ``navigate``, which names a different position
-(docs/CURSORS.md §1.1, §4), and a namespaced kind (``system:kind``), which a
-store synthesizes for a document another system put in the tree — the JMFTS
-store's ``jmfts:document``. τ's own entry kinds are bare words.
+Skipped: an incomplete entry, so a session interrupted mid-message reopens at
+the entry before it and the interrupted branch stays beside the retry
+(docs/TAU-SERVE.md §4.3); a legacy ``navigate``, which names a different
+position (docs/CURSORS.md §1.1, §4); and a namespaced kind (``system:kind``),
+which a store synthesizes for a document another system put in the tree — the
+JMFTS store's ``jmfts:document``. τ's own entry kinds are bare words.
 
 **Parameters**
 
@@ -4718,6 +4807,10 @@ Mirrors ``SessionManager.get_active_messages`` (``session_manager.py:191-221``).
 **Returns**
 
 The messages those entries contribute, in order. Entry kinds that carry no message at all (``navigate``, ``customEntry``, ``model_change``) contribute nothing, and an ``elide`` contributes nothing by design: it is a splice anchor with no payload to render.
+
+**Raises**
+
+- `IncompleteEntryError` — an entry was opened and never finalized. An interrupted message is invalid input to every provider, and making up its ending is what docs/TAU-SERVE.md §4.4 removed.
 
 ## enumerate_domain
 <!-- agent: yes -->
@@ -4861,6 +4954,21 @@ A spec ``{"title": …, "fields": [...]}`` that func:`~tau_agent_core.extension_
 
 - `UnknownFlowError` — No flow has that name.
 - `ValueError` — An argument renders as a ``select`` and ``options`` carries no non-empty list for it. Fail-Early: degrading a select to a free text box would silently accept values the domain does not admit, and offering an empty select would be a question with no answers.
+
+## is_incomplete
+<!-- agent: yes -->
+
+```python
+is_incomplete(entry: dict[str, Any]) -> bool
+```
+
+`tau_agent_core.session_log.is_incomplete`
+
+Whether ``entry`` was opened and never finalized: an interrupted message.
+
+**Parameters**
+
+- `entry: dict[str, Any]` — *(no description)*
 
 ## last_assistant_text
 <!-- agent: yes -->

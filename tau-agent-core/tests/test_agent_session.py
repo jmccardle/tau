@@ -22,7 +22,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tau_llm.types import Model
+from tau_llm.streaming import DoneEvent
+from tau_llm.types import AssistantMessage, Model, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent, EventBus
 from tau_agent_core.extension_types import ExtensionAPI
@@ -407,16 +408,13 @@ class TestPromptReturnsOnlyThisTurnsMessages:
         """A drop-in for AgentLoop whose run() returns one assistant message."""
 
         class _FakeLoop:
-            def __init__(self, *args, **kwargs) -> None:
-                pass
+            def __init__(self, *args, writer, **kwargs) -> None:  # noqa: ANN001
+                self._writer = writer
 
             async def run(self, prompts, context):  # noqa: ANN001
-                return [
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": answer}],
-                    }
-                ]
+                message = {"role": "assistant", "content": [{"type": "text", "text": answer}]}
+                await self._writer.append(message)
+                return [message]
 
         return _FakeLoop
 
@@ -492,8 +490,15 @@ class TestApiKeyThreadedToProvider:
         class _Empty:
             def __aiter__(self):
                 async def _gen():
-                    return
-                    yield  # pragma: no cover - makes this an async generator
+                    final = AssistantMessage(
+                        content=[],
+                        api="openai-completions",
+                        provider="openai",
+                        model="gpt-4o",
+                        stop_reason="stop",
+                        usage=Usage(),
+                    )
+                    yield DoneEvent(final=final, usage=final.usage)
 
                 return _gen()
 

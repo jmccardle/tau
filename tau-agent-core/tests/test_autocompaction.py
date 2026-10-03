@@ -540,12 +540,10 @@ def test_a_single_overlong_turn_is_preparable() -> None:
 
 
 async def test_the_estimate_tracks_the_turn_while_the_turn_is_running(monkeypatch) -> None:
-    """The persisted path is stale mid-turn, and the header reads the same number.
+    """The estimate climbs with the turn, because the turn is written as it runs.
 
-    Nothing a turn produces reaches the session log until the turn ends, so a
-    bare `context_estimate()` during a long tool loop reported the conversation
-    as it stood before the turn began. The loop publishes its live context at
-    each turn boundary; this asserts the reading climbs with it.
+    The prompt is on the tree before the first request (docs/TAU-SERVE.md §4.2),
+    and every tool result is on it by the next boundary.
     """
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _summary)
     session = _session(CompactionSettings(hard_limit_tokens=200_000, soft_limit_tokens=150_000))
@@ -562,10 +560,9 @@ async def test_the_estimate_tracks_the_turn_while_the_turn_is_running(monkeypatc
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake):
         await session.prompt("start")
 
-    assert readings[0] == 0, "nothing is persisted before the first request of a turn"
     assert len(readings) == 4
-    assert readings[1] > 0, "the loop's own context reaches the estimate at the first boundary"
-    assert readings[1] < readings[2] < readings[3], "and it climbs as tool results arrive"
+    assert readings[0] > 0, "the prompt is written before the first request"
+    assert readings[0] < readings[1] < readings[2] < readings[3], "it climbs as results arrive"
 
 
 def test_the_usage_anchor_does_not_survive_a_compaction() -> None:
