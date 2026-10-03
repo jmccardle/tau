@@ -199,6 +199,11 @@ def render() -> str:
     w("")
     w(f"- **Protocol version:** `{doc['protocol_version']}`")
     w(f"- **Dialect:** `{doc['dialect']}`")
+    w(
+        f"- **Counts:** {len(doc['commands'])} live verbs, {len(doc['declined'])} "
+        f"declined verbs, {len(doc['events'])} event types. Cite this line; never "
+        "copy the numbers into hand-written prose."
+    )
     w("")
     w(capabilities.NEGOTIATION_NOTE)
     w("")

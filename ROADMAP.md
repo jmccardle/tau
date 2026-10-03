@@ -215,7 +215,8 @@ built, reviewed, and tested. `--mode rpc` is wired
 a package (`tau-agent-core/src/tau_agent_core/rpc/`: commands, handler,
 transport, dialect, capabilities, wire_events — commit `0ea6d2d`, 2026-08-05).
 20 command verbs implemented, 7 formally declined with a stated rationale
-(`commands.py:3642-3727`) — 27 of pi's 28 accounted for. `docs/RPC-PROTOCOL.md`
+— 27 of pi's 28 accounted for, as of 2026-08-07. Those are the counts of that
+date; today's are generated on the "Counts" line of `docs/RPC-PROTOCOL.md`. `docs/RPC-PROTOCOL.md`
 is machine-generated from `COMMAND_TABLE` (`scripts/generate_rpc_protocol_doc.py`)
 and drift-tested (`test_rpc_protocol_doc.py`). Tier B
 (`docs/RPC-TIER-B.md`) adds 6 more verbs (`set_model`, `compact`,

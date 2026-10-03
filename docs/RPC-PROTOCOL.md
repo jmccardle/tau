@@ -18,6 +18,7 @@
 
 - **Protocol version:** `1.8`
 - **Dialect:** `jsonrpc-2.0`
+- **Counts:** 40 live verbs, 7 declined verbs, 13 event types. Cite this line; never copy the numbers into hand-written prose.
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
 
