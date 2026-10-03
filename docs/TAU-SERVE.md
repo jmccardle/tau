@@ -278,8 +278,8 @@ what it receives; tau-code generates its types from it. `PROTOCOL_VERSION` is
   top, and `docs/SERVE-PROTOCOL.md` says so too. `test_serve_schema.py` runs a
   real session through every request and event kind, and validates each frame
   with undeclared keys refused. `jsonschema` is not installed in the venv, so
-  `tests/schema_check.py` validates the keyword subset the schema uses, and
-  raises on any other keyword.
+  `tau_agent_core.testing.schema_check` validates the keyword subset the schema
+  uses, and raises on any other keyword.
 - **Added on the wire.** `hello` answers `pid`, `version` and `cwd`.
   `CursorState.request` is the extension request at the cursor's leaf, in the
   shape of RPC `get_pending_request`, cached per leaf. `Attached.requests` lists
@@ -426,7 +426,20 @@ array without `items` or an object with neither fields nor a value type.
 Strict validation then found one more shape: the context renders a
 compaction or branch summary as a user message with no `timestamp`, which
 no stored message matches, so a context is a list of `ContextMessage`,
-whose `SummaryMessage` arm alone has no `timestamp`. Under `--connect` the picker searches a session's bounded `title`,
+whose `SummaryMessage` arm alone has no `timestamp`.
+
+**Built note (2026-10-03, RPC 2.1):** the typing moved into core, so RPC's own
+reference is typed too. The generator is `tau_agent_core.json_schema`; the
+records and the tables, now `RESULT_TYPES` and `PARAM_TYPES`, are
+`tau_agent_core.rpc.records`. `get_capabilities` publishes each verb's schemas
+typed, plus a `$defs` map their `$ref`s resolve against, and
+`docs/RPC-PROTOCOL.md` renders `$defs` under "Types". The RPC table's own
+schemas stay untyped, because they are the vocabulary `validate_params`
+enforces, which has no `$ref`. Serve's schema builds on the same functions.
+Its structure was unchanged by the move, except for five params maps the
+core test was the first to check: `correlation`, `bound` and two `values`.
+The five verbs serve does not run, `get_capabilities` and the session
+lifecycle, are typed and strictly validated in core's tests. Under `--connect` the picker searches a session's bounded `title`,
 since the listing no longer carries `first_message`.
 
 ## 6. `tau serve`

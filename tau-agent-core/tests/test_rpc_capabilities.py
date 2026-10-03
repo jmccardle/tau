@@ -13,8 +13,9 @@ import json
 import re
 from pathlib import Path
 
-from tau_agent_core.rpc import capabilities, protocol_doc
+from tau_agent_core.rpc import capabilities, protocol_doc, records
 from tau_agent_core.rpc.commands import COMMAND_TABLE
+from tau_agent_core.testing.schema_check import open_nodes, validate
 
 _COMMON_READLINE_DEFAULT_BYTES = 64 * 1024
 
@@ -43,6 +44,7 @@ def test_the_document_has_exactly_k1s_keys():
         "ui_methods",
         "declined",
         "limits",
+        "$defs",
     }
 
 
@@ -195,3 +197,29 @@ def test_events_and_event_schema_match_rpc_event_schema_unchanged():
 
 def test_build_capabilities_is_deterministic():
     assert capabilities.build_capabilities() == capabilities.build_capabilities()
+
+
+def test_every_published_schema_is_typed_to_its_leaves():
+    """A host generates types from these: no params, result or record may leave a shape as prose."""
+    doc = capabilities.build_capabilities()
+    found = [
+        path
+        for row in doc["commands"]
+        for half in ("params_schema", "result_schema")
+        for path in open_nodes(row[half], f"{row['name']}.{half}")
+    ]
+    found += [path for name, schema in doc["$defs"].items() for path in open_nodes(schema, name)]
+    assert found == []
+
+
+def test_the_type_tables_name_only_live_verbs():
+    """A table row for a verb that left the table would type nothing, silently."""
+    live = {row["name"] for row in capabilities.build_capabilities()["commands"]}
+    assert set(records.RESULT_TYPES) - live == set()
+    assert set(records.PARAM_TYPES) - live == set()
+
+
+def test_get_capabilities_answers_its_own_typed_schema():
+    doc = capabilities.build_capabilities()
+    (row,) = [r for r in doc["commands"] if r["name"] == "get_capabilities"]
+    validate(doc, row["result_schema"], doc, strict=True)

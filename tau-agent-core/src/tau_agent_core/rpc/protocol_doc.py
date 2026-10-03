@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from tau_agent_core.json_schema import definition_markdown
 from tau_agent_core.rpc import capabilities, dialect
 
 _ERROR_ORDER: list[tuple[int, str, str]] = [
@@ -178,7 +179,7 @@ def render() -> str:
     w("")
     w("> **Generated reference — do not hand-edit.** Run")
     w("> `python scripts/generate_rpc_protocol_doc.py` after any change to")
-    w("> `tau_agent_core.rpc.commands.COMMAND_TABLE` or")
+    w("> `tau_agent_core.rpc.commands.COMMAND_TABLE`, `tau_agent_core.rpc.records` or")
     w("> `tau_agent_core.rpc_event_schema.WireEvent`, and commit the result.")
     w("> `tests/test_rpc_protocol_doc.py` fails the suite if this file and the")
     w("> generator disagree (K3, docs/REMOTE-CONTROL.md §4[8]).")
@@ -201,7 +202,8 @@ def render() -> str:
     w(f"- **Dialect:** `{doc['dialect']}`")
     w(
         f"- **Counts:** {len(doc['commands'])} live verbs, {len(doc['declined'])} "
-        f"declined verbs, {len(doc['events'])} event types. Cite this line; never "
+        f"declined verbs, {len(doc['events'])} event types, {len(doc['$defs'])} type "
+        "definitions. Cite this line; never "
         "copy the numbers into hand-written prose."
     )
     w("")
@@ -277,7 +279,9 @@ def render() -> str:
     w("")
     w(
         "One entry per non-declined `COMMAND_TABLE` row, grouped by tier. `since` "
-        "names the unit that added the verb, not a protocol version."
+        "names the unit that added the verb, not a protocol version. A "
+        "`$ref` of `#/$defs/Name` resolves against the capability document's "
+        "`$defs`, rendered under [Types](#types)."
     )
     w("")
     current_tier: str | None = None
@@ -393,6 +397,16 @@ def render() -> str:
     w("|---|---|---|")
     for code, name, description in _ERROR_ORDER:
         w(f"| `{code}` | `{name}` | {description} |")
+    w("")
+    w("## Types")
+    w("")
+    w(
+        "Every record the schemas above reference, from `get_capabilities`' "
+        "`$defs`. A client must ignore a field it does not know."
+    )
+    for name, definition in doc["$defs"].items():
+        w("")
+        lines.extend(definition_markdown(name, definition))
     w("")
     w("## License")
     w("")

@@ -9,61 +9,19 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
 
+from tau_agent_core.json_schema import (
+    cell_markdown as _cell,
+    definition_markdown as _definition,
+    table_markdown as _table,
+    type_markdown as _type_text,
+)
 from tau_coding_agent.serve import protocol as p
 
 
 def render_schema() -> str:
     """The JSON Schema file's exact text."""
     return json.dumps(p.json_schema(), indent=2, sort_keys=True) + "\n"
-
-
-def _type_text(schema: Any) -> str:
-    """A short human spelling of one property's schema."""
-    if schema is False:
-        return "absent"
-    if "$ref" in schema:
-        name = str(schema["$ref"]).rsplit("/", 1)[-1]
-        return f"[{name}](#{name.lower()})"
-    if "const" in schema:
-        return f"`{json.dumps(schema['const'])}`"
-    if "enum" in schema:
-        return " \\| ".join(f"`{json.dumps(v)}`" for v in schema["enum"])
-    for key in ("anyOf", "oneOf"):
-        if key in schema:
-            return " \\| ".join(_type_text(s) for s in schema[key])
-    if schema.get("type") == "array":
-        return f"list of {_type_text(schema.get('items', {}))}"
-    if schema.get("type") == "object" or "additionalProperties" in schema:
-        values = schema.get("additionalProperties")
-        if isinstance(values, dict) and values:
-            return f"object of {_type_text(values)}"
-        return "object"
-    if "pattern" in schema:
-        return f"string matching `{schema['pattern']}`"
-    return str(schema.get("type", "any"))
-
-
-def _cell(text: str) -> str:
-    """``text`` safe inside a Markdown table cell."""
-    return " ".join(text.split()).replace("|", "\\|")
-
-
-def _table(schema: dict[str, Any], skip: tuple[str, ...] = ()) -> list[str]:
-    """One object schema as a field table."""
-    properties = {k: v for k, v in schema.get("properties", {}).items() if k not in skip}
-    if not properties:
-        return ["No fields."]
-    required = set(schema.get("required", []))
-    rows = ["| Field | Type | Required | Description |", "|---|---|---|---|"]
-    for name, prop in properties.items():
-        described = prop.get("description", "") if isinstance(prop, dict) else ""
-        rows.append(
-            f"| `{name}` | {_type_text(prop)} | {'yes' if name in required else 'no'} "
-            f"| {_cell(described)} |"
-        )
-    return rows
 
 
 def _md(text: str) -> str:
@@ -78,18 +36,6 @@ def _doc(cls: type) -> str:
     if "Attributes:" in lines:
         lines = lines[: lines.index("Attributes:")]
     return _md("\n".join(lines).strip())
-
-
-def _definition(name: str, schema: Any) -> list[str]:
-    """One ``$defs`` entry: its description, then its fields or its members."""
-    out = [f"### {name}", ""]
-    if isinstance(schema, dict) and schema.get("description"):
-        out += [_cell(str(schema["description"]).split("\n\n", 1)[0]), ""]
-    if isinstance(schema, dict) and "oneOf" in schema:
-        out.append("One of: " + ", ".join(_type_text(member) for member in schema["oneOf"]) + ".")
-    elif isinstance(schema, dict):
-        out.extend(_table(schema))
-    return out
 
 
 def render_markdown() -> str:

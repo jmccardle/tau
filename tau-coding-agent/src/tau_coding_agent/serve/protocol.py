@@ -5,18 +5,17 @@ One JSON object per WebSocket text frame. A client sends requests, each with an
 :class:`Event` frames for every session the client is attached to.
 
 The definitions here are the protocol. Dataclasses are what the daemon builds and
-sends; TypedDicts are the shapes of dicts it forwards from the log and the core
-(an entry, a message, a form). :func:`json_schema` derives JSON Schema from both,
+sends. The shapes it shares with RPC (an entry, a message, a form, a verb's
+records) are ``tau_agent_core.rpc.records``. :func:`json_schema` derives JSON
+Schema from both with ``tau_agent_core.json_schema``,
 ``scripts/generate_serve_protocol.py`` writes it with ``docs/SERVE-PROTOCOL.md``,
 and tau-code generates its TS types from that schema.
 """
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 import json
-import re
 import types
 import typing
 from dataclasses import dataclass, field
@@ -24,93 +23,37 @@ from typing import (
     Annotated,
     Any,
     Literal,
-    Never,
-    NotRequired,
-    Required,
-    TypedDict,
     get_args,
     get_origin,
     get_type_hints,
-    is_typeddict,
 )
 
-from tau_agent_core.extension_locks import ExtensionRequest as ExtensionRequestRecord
 from tau_agent_core.flows import FlowStep, Performed, Ready, View
+from tau_agent_core.json_schema import Given, SchemaBuilder, Shape, Tagged, Named, summary
+from tau_agent_core.rpc import capabilities
 from tau_agent_core.rpc import commands as rpc
+from tau_agent_core.rpc import records
+from tau_agent_core.rpc.records import (
+    AttachmentReport,
+    CustomRoleMessage,
+    Correlation,
+    Entry,
+    ExtensionInfo,
+    ExtensionRequest,
+    FormSpec,
+    ModelRecord,
+    PanelSpec,
+    SessionScope,
+    SessionTuple,
+)
 from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.submission import MultitaskStrategy, SubmissionSource
-from tau_llm.types import (
-    AssistantMessage,
-    Usage,
-    ImageContent,
-    TextContent,
-    ToolResultMessage,
-    UserMessage,
-)
 
 PROTOCOL_VERSION = "0.6"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256
 """The port ``tau serve`` listens on and ``tau --connect HOST`` dials ("ffwf" in base64, as decimal)."""
-
-
-@dataclass(frozen=True)
-class Named:
-    """Marks a union as one ``$defs`` entry whose members a ``const`` field tells apart.
-
-    Attributes:
-        name: The ``$defs`` key.
-        doc: Its description.
-    """
-
-    name: str
-    doc: str
-
-
-@dataclass(frozen=True)
-class Shape:
-    """Marks a ``dict[str, Any]`` the daemon forwards as having the JSON shape of ``hint``."""
-
-    hint: Any
-
-
-@dataclass(frozen=True)
-class Tagged:
-    """Marks a record sent flattened with one more ``const`` field, ``{tag: value, **fields}``.
-
-    Attributes:
-        name: The ``$defs`` key of the tagged form.
-        tag: The added field's name.
-        value: Its constant value.
-    """
-
-    name: str
-    tag: str
-    value: str
-
-
-@dataclass(frozen=True)
-class Pattern:
-    """Marks a ``str`` as matching ``regex``."""
-
-    regex: str
-
-
-@dataclass(frozen=True, eq=False)
-class Given:
-    """Marks a value whose JSON Schema is written out whole, as RPC's command table holds it.
-
-    Attributes:
-        name: The ``$defs`` key.
-        schema: The schema, used as is but for ``types``.
-        types: Nodes of ``schema`` it leaves open, and the type each has, as
-            :data:`RPC_TYPES` maps them.
-    """
-
-    name: str
-    schema: dict[str, Any]
-    types: dict[str, Any] = field(default_factory=dict)
 
 
 # ─── Requests ────────────────────────────────────────────────────────────
@@ -402,310 +345,11 @@ RPC_VERBS: tuple[str, ...] = (*RPC_OWN, *RPC_RUN)
 schema; ``switch_session`` is ``attach``; the rest of RPC's table is declined there too."""
 
 
-# ─── Shapes the daemon forwards: specs, messages, entries ────────────────
-
-
-class FormField(TypedDict):
-    """One field of an extension form (``extension_types.validate_form_spec``)."""
-
-    name: str
-    kind: Literal["text", "select", "multiselect", "confirm", "number"]
-    label: NotRequired[str]
-    default: NotRequired[Any]
-    options: NotRequired[list[str]]
-
-
-class FormSpec(TypedDict):
-    """An extension's ``ui.form`` spec, as the extension passed it (docs/EXTENSION-LOCKS.md §8.2)."""
-
-    title: NotRequired[str]
-    fields: list[FormField]
-
-
-class PanelText(TypedDict):
-    """A panel body of text."""
-
-    kind: Literal["text"]
-    text: str
-
-
-class PanelList(TypedDict):
-    """A panel body listing strings."""
-
-    kind: Literal["list"]
-    items: list[str]
-
-
-class PanelTable(TypedDict):
-    """A panel body of string cells; every row has one cell per column."""
-
-    kind: Literal["table"]
-    columns: list[str]
-    rows: list[list[str]]
-
-
-PanelBody = Annotated[
-    PanelText | PanelList | PanelTable,
-    Named(
-        "PanelBody", "A panel's body, told apart by `kind` (`extension_types.validate_panel_spec`)."
-    ),
-]
-
-
-class PanelAction(TypedDict):
-    """A panel button: it runs the extension command ``command`` with ``args``."""
-
-    label: str
-    command: str
-    args: str
-
-
-class PanelSpec(TypedDict):
-    """A ``ui.panel`` spec, normalized (``extension_types.validate_panel_spec``)."""
-
-    title: str
-    body: PanelBody
-    actions: list[PanelAction]
-
-
-class AskAction(TypedDict):
-    """An ask's button: it runs ``command`` with the request's id."""
-
-    label: str
-    command: str
-
-
-class Ask(TypedDict):
-    """What an extension request asks, normalized (``extension_types.validate_ask_spec``)."""
-
-    title: str
-    body: PanelBody | None
-    fields: list[FormField]
-    actions: list[AskAction]
-
-
-class SystemMessage(TypedDict):
-    """The system prompt, which a session stores as its first message entry."""
-
-    role: Literal["system"]
-    content: str
-
-
-class CustomRoleMessage(TypedDict):
-    """An extension's message (``messages.create_custom_message``); the model sees it as ``user``.
-
-    ``visibleToModel`` is absent on nodes written before it existed, which read as true.
-    """
-
-    role: Literal["custom"]
-    customType: str
-    content: list[TextContent | ImageContent]
-    display: bool
-    visibleToModel: NotRequired[bool]
-    details: NotRequired[Any]
-    timestamp: NotRequired[int]
-
-
-Message = Annotated[
-    UserMessage | AssistantMessage | ToolResultMessage | SystemMessage | CustomRoleMessage,
-    Named("Message", "A message as the log stores it, told apart by `role`."),
-]
-
-
-class SummaryMessage(TypedDict):
-    """A compaction or branch summary as the context renders it: a user message with no timestamp.
-
-    ``conversation_tree.summary_message_of`` recognises one by its text.
-    """
-
-    role: Literal["user"]
-    content: list[TextContent]
-    timestamp: NotRequired[Never]
-
-
-ContextMessage = Annotated[
-    UserMessage
-    | SummaryMessage
-    | AssistantMessage
-    | ToolResultMessage
-    | SystemMessage
-    | CustomRoleMessage,
-    Named(
-        "ContextMessage",
-        "A message of model input: a stored message, or a summary rendered as a user "
-        "message, which alone has no `timestamp`.",
-    ),
-]
-
-
-class _EntryBase(TypedDict):
-    """Every finished entry's common fields; ``status`` is absent once an entry is finished.
-
-    ``copiedFrom`` is set on an entry ``paste_subtree`` minted: the id it copies.
-    """
-
-    id: str
-    parentId: str | None
-    timestamp: str
-    status: NotRequired[Never]
-    copiedFrom: NotRequired[str]
-
-
-class MessageEntry(_EntryBase):
-    """A message on the conversation path."""
-
-    type: Literal["message"]
-    message: Message
-
-
-class CustomMessageEntry(_EntryBase):
-    """An extension's message, which reaches the model unless ``visibleToModel`` is false."""
-
-    type: Literal["customMessage"]
-    customType: str
-    message: CustomRoleMessage
-
-
-class CustomEntryEntry(_EntryBase):
-    """Durable data the model never sees.
-
-    ``data`` is open: ``customType`` ``config`` holds ``session_log.CONFIG_KEYS``
-    (docs/CURSORS.md §5); ``extension_request`` and ``extension_response`` are
-    docs/EXTENSION-LOCKS.md §4 and §3; ``agent_spec`` is the legacy config; any
-    other ``customType`` is the appending extension's own (``api.append_entry``).
-    """
-
-    type: Literal["customEntry"]
-    customType: str
-    data: dict[str, Any]
-
-
-class CompactionEntry(_EntryBase):
-    """A summary that replaces the path before ``firstKeptId`` in the context.
-
-    The provenance fields are absent on entries written before
-    docs/TREE-BROWSER-AS-EDITOR.md §8.
-    """
-
-    type: Literal["compaction"]
-    summary: str
-    firstKeptId: str
-    tokensBefore: int
-    summarizerModelId: NotRequired[str]
-    summaryUsage: NotRequired[dict[str, int]]
-    coveredEntries: NotRequired[int]
-    coveredTokens: NotRequired[int]
-    configId: NotRequired[str | None]
-
-
-class ElideEntry(_EntryBase):
-    """A splice anchor with no summary: the path before ``firstKeptId`` leaves the context."""
-
-    type: Literal["elide"]
-    firstKeptId: str
-    coveredEntries: NotRequired[int]
-    coveredTokens: NotRequired[int]
-    configId: NotRequired[str | None]
-
-
-class BranchSummaryEntry(_EntryBase):
-    """A summary of the branch left at ``fromId``, in the path where it was appended."""
-
-    type: Literal["branch_summary"]
-    summary: str
-    fromId: str | None
-
-
-class SessionInfoEntry(_EntryBase):
-    """The session's display name from here on; the model never sees it."""
-
-    type: Literal["session_info"]
-    name: str
-
-
-class NavigateEntry(_EntryBase):
-    """Legacy: a recorded move to ``targetId``, written before cursors (docs/CURSORS.md §1.1)."""
-
-    type: Literal["navigate"]
-    targetId: str | None
-
-
-class ModelChangeEntry(_EntryBase):
-    """Legacy: the config model from here on, before config entries."""
-
-    type: Literal["model_change"]
-    model: str | None
-    backend: NotRequired[str | None]
-
-
-class ThinkingChangeEntry(_EntryBase):
-    """Legacy: the reasoning level from here on, before config entries."""
-
-    type: Literal["thinking_change"]
-    level: str | None
-
-
-class ForeignEntry(_EntryBase):
-    """A document another system's store put in the tree, typed ``system:kind`` (``jmfts:document``)."""
-
-    type: Annotated[str, Pattern(r"^[^:]+:.+$")]
-
-
-class IncompleteEntry(TypedDict):
-    """An entry opened and not yet finalized (docs/TAU-SERVE.md §4).
-
-    Its payload is partial: a message holds its ``role`` and what has streamed.
-    An ``entry_final`` with the same ``id`` replaces it.
-    """
-
-    type: str
-    id: str
-    parentId: str | None
-    timestamp: str
-    status: Literal["incomplete"]
-
-
-Entry = Annotated[
-    MessageEntry
-    | CustomMessageEntry
-    | CustomEntryEntry
-    | CompactionEntry
-    | ElideEntry
-    | BranchSummaryEntry
-    | SessionInfoEntry
-    | NavigateEntry
-    | ModelChangeEntry
-    | ThinkingChangeEntry
-    | ForeignEntry
-    | IncompleteEntry,
-    Named(
-        "Entry",
-        "One session-log entry, told apart by `type`; an unfinished one carries "
-        '`status: "incomplete"`. Apply by `id`, last write wins (docs/TAU-SERVE.md §4.1).',
-    ),
-]
-
-
-class CompareCorrelation(TypedDict):
-    """A comparison turn's place in its comparison (``tau_agent_core.compare.COMPARE_KEY``)."""
-
-    id: str
-    models: list[str]
-    index: int
-    cursor_id: str
-
-
-class Correlation(TypedDict):
-    """``Submission.correlation``: open, JSON-safe keys a submitter attached; ``compare`` is τ's."""
-
-    compare: NotRequired[CompareCorrelation]
-
-
 # ─── Records the daemon sends ────────────────────────────────────────────
 
 
 @dataclass
-class SessionRow:
+class SessionRow(records.SessionRow):
     """One line of :class:`ListSessions`' answer: RPC's row, plus where and whether it is loaded.
 
     Attributes:
@@ -719,65 +363,8 @@ class SessionRow:
         loaded: Whether the daemon holds it now.
     """
 
-    session_id: str
-    ref: str
-    name: str | None
-    title: str
-    message_count: int
-    created: str
-    modified: str
-    parent: str | None
-    error: str | None
     cwd: str
     loaded: bool
-
-
-@dataclass
-class SessionScope:
-    """What universe a listing is: the daemon's store, and ``cwd`` ``None`` for every directory."""
-
-    store: str
-    cwd: str | None
-
-
-@dataclass
-class SessionTuple:
-    """A loaded session, as RPC's session tuple names it.
-
-    Attributes:
-        cursor_id: Its head cursor.
-        leaf: The head cursor's leaf.
-        addressable: Whether another request can name it; always true here.
-    """
-
-    store: str
-    session_id: str
-    cursor_id: str
-    leaf: str | None
-    addressable: bool
-
-
-@dataclass
-class ExtensionRequest:
-    """An extension request at a cursor, as RPC ``get_pending_request`` answers it (docs/EXTENSION-LOCKS.md).
-
-    Attributes:
-        entry_id: The request entry's id; :class:`AnswerRequest` names it.
-        extension_name: The display stem of ``extension``.
-        label: τ's framing line for the request (§9).
-        lock: Whether a submission at this cursor is refused.
-        ask: What it asks, or ``None`` for a bare lock.
-        release: A command that clears the lock, or ``None``.
-    """
-
-    entry_id: str
-    extension: str
-    extension_name: str
-    sentence: str
-    label: str
-    lock: bool
-    ask: Annotated[dict[str, Any], Shape(Ask)] | None
-    release: str | None
 
 
 @dataclass
@@ -816,20 +403,6 @@ class CommandInfo:
 
 
 @dataclass
-class ExtensionInfo:
-    """One loaded extension and what it registered, as RPC ``get_extension_state`` lists it."""
-
-    name: str
-    path: str
-    tools: list[str]
-    commands: list[str]
-    shortcuts: list[str]
-    hooks: list[str]
-    content_hash: str
-    subjects: list[str]
-
-
-@dataclass
 class Surface:
     """What a session answers beyond its tree, which a head reads without a round trip.
 
@@ -848,23 +421,6 @@ class Surface:
     extensions: list[list[Any]]
     loaded: list[ExtensionInfo]
     load_errors: list[list[str]]
-
-
-@dataclass
-class ModelSpec:
-    """What a config model name resolves to."""
-
-    id: str
-    provider: str
-    context_window: int
-
-
-@dataclass
-class ModelRecord:
-    """One model the daemon's config defines, as RPC ``get_models`` lists it."""
-
-    name: str
-    model: ModelSpec
 
 
 @dataclass
@@ -891,186 +447,6 @@ DispatchedCommand = Annotated[
         "for the client to perform) or `View` (a surface only a head opens).",
     ),
 ]
-
-
-@dataclass
-class AttachmentReport:
-    """What ``Submit.expand_attachments`` did.
-
-    Attributes:
-        expanded: How many ``@`` references were sent as attachments.
-        images: How many of them were images.
-        unresolved: The ``@`` tokens that named no file, sent as written.
-        failures: One line per file that resolved and could not be read.
-    """
-
-    expanded: int
-    images: int
-    unresolved: list[str]
-    failures: list[str]
-
-
-@dataclass
-class DomainChoice:
-    """One legal value of a domain: ``value`` is what is bound, ``label`` what is shown."""
-
-    value: str
-    label: str
-
-
-@dataclass
-class MessageMatch:
-    """One entry ``complete_message_id`` offers: its id, and its first line."""
-
-    entry_id: str
-    preview: str
-
-
-@dataclass
-class PathMatch:
-    """One path an ``@`` token can complete to."""
-
-    name: str
-    detail: str
-    is_dir: bool
-
-
-@dataclass
-class AttachmentCompletion:
-    """The ``@`` token at the caret and what it completes to.
-
-    Attributes:
-        start: The token's first character offset in the text.
-        end: The offset after its last.
-        total: How many paths match, counting past the bound on ``matches``.
-    """
-
-    start: int
-    end: int
-    token: str
-    matches: list[PathMatch]
-    total: int
-
-
-@dataclass
-class CommandOutput:
-    """An extension command's completion, as RPC's ``submit`` answer names it.
-
-    Attributes:
-        name: The command that ran, which an input hook may have rewritten.
-        output: What it returned, as display text, or ``None``.
-    """
-
-    name: str | None
-    output: str | None
-
-
-@dataclass
-class ManagedExtension:
-    """One managed extension file and whether it is enabled."""
-
-    path: str
-    enabled: bool
-
-
-@dataclass
-class LoadError:
-    """An extension file that failed to load, and why."""
-
-    path: str
-    error: str
-
-
-@dataclass
-class ContextEstimate:
-    """The context's size, as ``get_session_stats`` measures it (``compaction.ContextUsageEstimate``)."""
-
-    tokens: int
-    usage_tokens: int
-    trailing_tokens: int
-    last_usage_index: int | None
-
-
-@dataclass
-class CompactionSettingsRecord:
-    """When compaction runs (``compaction.CompactionSettings``)."""
-
-    enabled: bool
-    reserve_tokens: int
-    keep_recent_tokens: int
-
-
-@dataclass
-class LastCompaction:
-    """The newest compaction entry on the path (``agent_session.CompactionRecord``).
-
-    Attributes:
-        timestamp: ISO-8601.
-    """
-
-    id: str
-    timestamp: str
-    summary: str
-    first_kept_id: str | None
-    tokens_before: int | None
-
-
-RPC_TYPES: dict[str, dict[str, Any]] = {
-    "submit": {"command": CommandOutput, "view": View, "attachments": AttachmentReport},
-    "prompt": {"command": CommandOutput, "view": View, "attachments": AttachmentReport},
-    "get_state": {"model": ModelSpec, "usage": Usage | None},
-    "get_messages": {"messages": list[ContextMessage]},
-    "get_tools": {"tools[].parameters": dict[str, Any]},
-    "get_models": {"models": list[ModelRecord]},
-    "get_session_stats": {
-        "context": ContextEstimate,
-        "compaction_settings": CompactionSettingsRecord,
-        "last_compaction": LastCompaction | None,
-        "usage": Usage | None,
-    },
-    "set_model": {"model": ModelSpec},
-    "complete_path": {"completion": AttachmentCompletion | None},
-    "next_step": {
-        "step": Annotated[dict[str, Any], Shape(FlowStep)] | None,
-        "ready": Annotated[dict[str, Any], Shape(Ready)] | None,
-    },
-    "enumerate_domain": {"values": list[DomainChoice]},
-    "complete_message_id": {"matches": list[MessageMatch]},
-    "get_entry": {"entry": Annotated[dict[str, Any], Shape(Entry)]},
-    "get_pending_request": {"request": ExtensionRequest | None},
-    "list_managed_extensions": {"extensions": list[ManagedExtension]},
-    "get_extension_state": {"extensions": list[ExtensionInfo], "errors": list[LoadError]},
-    "get_extension_config": {
-        "schema": Annotated[dict[str, Any], Shape(FormSpec)] | None,
-        "values": dict[str, Any],
-    },
-    "navigate": {"messages": list[ContextMessage]},
-    "summarize_and_navigate": {"messages": list[ContextMessage]},
-    "elide_span": {"messages": list[ContextMessage]},
-    "commit_branch": {"messages": list[ContextMessage]},
-    "paste_subtree": {"minted_ids": list[str]},
-}
-"""Where an RPC verb's result schema leaves a shape open, the type it has.
-
-RPC's result schemas describe some objects in prose; serve's schema replaces
-each such node with its record, so a client generates every field. A path
-steps into ``properties`` by name and into ``items`` by ``[]``.
-"""
-
-RPC_PARAM_TYPES: dict[str, dict[str, Any]] = {
-    "submit": {"images": list[ImageContent] | None},
-    "prompt": {"images": list[ImageContent] | None},
-    "commit_branch": {"ids": list[str]},
-}
-"""The same, for RPC params: arrays whose items its schema leaves open."""
-
-COMPACTION_END_TYPES: dict[str, Any] = {
-    "compacted_entry_ids": list[str],
-    "read_files": list[str],
-    "modified_files": list[str],
-    "usage": Usage,
-}
-"""The same, for RPC's ``compaction_end`` payload."""
 
 
 # ─── Results ─────────────────────────────────────────────────────────────
@@ -1415,7 +791,7 @@ EVENT_DATA: dict[str, Any] = {
     "ui": UiEventData,
     "compaction_end": Annotated[
         dict[str, Any],
-        Given("CompactionEnd", rpc.COMPACTION_END_PARAMS_SCHEMA, COMPACTION_END_TYPES),
+        Given("CompactionEnd", rpc.COMPACTION_END_PARAMS_SCHEMA, records.COMPACTION_END_TYPES),
     ],
 }
 """What each event kind carries in ``data``.
@@ -1645,238 +1021,6 @@ def _type_tag(cls: type) -> str:
 
 # ─── JSON Schema ─────────────────────────────────────────────────────────
 
-_OPEN_SHAPES: tuple[Any, ...] = (IncompleteEntry, ForeignEntry, Correlation)
-"""Shapes whose undeclared keys are payload by design, not merely tolerated additions."""
-
-_DEF_NAMES: dict[type, str] = {ExtensionRequestRecord: "ExtensionRequestRecord"}
-"""``$defs`` keys for core classes whose own name a protocol class already takes."""
-
-_PYDANTIC = "pydantic"
-"""The owner recorded for a ``$defs`` entry pydantic generated."""
-
-
-def _attribute_docs(cls: type) -> dict[str, str]:
-    """A Google docstring's ``Attributes:`` entries, by name, each joined onto one line."""
-    lines = (cls.__doc__ or "").splitlines()
-    docs: dict[str, str] = {}
-    current: str | None = None
-    current_indent = 0
-    inside = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped == "Attributes:":
-            inside = True
-            continue
-        if not inside:
-            continue
-        if not stripped:
-            current = None
-            continue
-        indent = len(line) - len(line.lstrip())
-        name, sep, text = stripped.partition(": ")
-        if sep and name.isidentifier() and (current is None or indent <= current_indent):
-            current, current_indent = name, indent
-            docs[name] = text
-        elif current is not None:
-            docs[current] += " " + stripped
-    return docs
-
-
-def _markdown(text: str) -> str:
-    """Docstring prose as a schema description: one line, Sphinx roles as Markdown code."""
-    text = re.sub(r":\w+:`~?([^`]+)`", r"`\1`", " ".join(text.split()))
-    return text.replace("``", "`")
-
-
-def _summary(cls: type) -> str:
-    """A docstring's first paragraph, on one line."""
-    return _markdown((cls.__doc__ or "").strip().split("\n\n", 1)[0])
-
-
-def _clean_pydantic(node: Any) -> Any:
-    """Pydantic schema without titles, and with each ``const`` property required."""
-    if isinstance(node, list):
-        return [_clean_pydantic(item) for item in node]
-    if not isinstance(node, dict):
-        return node
-    out: dict[str, Any] = {}
-    for key, value in node.items():
-        if key == "title" and isinstance(value, str):
-            continue
-        if key in ("properties", "$defs"):
-            out[key] = {name: _clean_pydantic(sub) for name, sub in value.items()}
-        else:
-            out[key] = _clean_pydantic(value)
-    consts = [
-        n for n, s in out.get("properties", {}).items() if isinstance(s, dict) and "const" in s
-    ]
-    if consts:
-        required = list(out.get("required", []))
-        out["required"] = required + [n for n in consts if n not in required]
-    return out
-
-
-class _Schema:
-    """Builds the ``$defs`` of :func:`json_schema`, one entry per named type.
-
-    Records reachable from a request are closed (``additionalProperties: false``),
-    because :func:`parse_request` refuses unknown fields. Everything the daemon
-    sends is open, because a client must tolerate an added field.
-    """
-
-    def __init__(self) -> None:
-        self.defs: dict[str, Any] = {}
-        self._owners: dict[str, Any] = {}
-        self._closed = False
-
-    def _define(self, name: str, owner: Any, build: Any) -> dict[str, Any]:
-        """Register ``$defs[name]`` once, refusing two different types under one name."""
-        ref = {"$ref": f"#/$defs/{name}"}
-        if name in self._owners:
-            if self._owners[name] != owner:
-                raise TypeError(f"two types want $defs/{name}: {self._owners[name]!r}, {owner!r}")
-            if self._closed and self.defs[name].get("additionalProperties") is not False:
-                raise TypeError(f"$defs/{name} is sent open and also used in a request")
-            return ref
-        self._owners[name] = owner
-        self.defs[name] = {}
-        self.defs[name] = build()
-        return ref
-
-    def request(self, cls: type) -> None:
-        """Define a request's ``$defs`` entry, closed with everything it reaches."""
-        self._closed = True
-        try:
-            self.of(cls)
-        finally:
-            self._closed = False
-
-    def of(self, hint: Any) -> Any:
-        """JSON Schema for one annotation."""
-        origin = get_origin(hint)
-        if hint is Any or hint is object:
-            return {}
-        if hint is Never:
-            return False
-        if hint is type(None):
-            return {"type": "null"}
-        if hint is str:
-            return {"type": "string"}
-        if hint is bool:
-            return {"type": "boolean"}
-        if hint is int:
-            return {"type": "integer"}
-        if hint is float:
-            return {"type": "number"}
-        if origin is Annotated:
-            return self._annotated(hint)
-        if origin in (NotRequired, Required):
-            return self.of(get_args(hint)[0])
-        if origin is Literal:
-            values = list(get_args(hint))
-            return {"const": values[0]} if len(values) == 1 else {"enum": values}
-        if origin in (typing.Union, types.UnionType):
-            return {"anyOf": [self.of(arg) for arg in get_args(hint)]}
-        if origin in (list, tuple):
-            args = get_args(hint)
-            return {"type": "array", "items": self.of(args[0])}
-        if origin is dict:
-            return {"type": "object", "additionalProperties": self.of(get_args(hint)[1])}
-        if isinstance(hint, type) and hasattr(hint, "model_json_schema"):
-            return self._pydantic(hint)
-        if is_typeddict(hint):
-            return self._define(hint.__name__, hint, lambda: self._typed_dict(hint))
-        if isinstance(hint, type) and dataclasses.is_dataclass(hint):
-            name = _DEF_NAMES.get(hint, hint.__name__)
-            return self._define(name, hint, lambda: self._record(hint))
-        raise TypeError(f"no JSON Schema for annotation {hint!r}")
-
-    def _annotated(self, hint: Any) -> Any:
-        base, marker = get_args(hint)[0], hint.__metadata__[0]
-        if isinstance(marker, Shape):
-            return self.of(marker.hint)
-        if isinstance(marker, Pattern):
-            return {"type": "string", "pattern": marker.regex}
-        if isinstance(marker, Given):
-            return self._define(
-                marker.name,
-                marker.name,
-                lambda: _typed(self, marker.schema, marker.types, marker.name),
-            )
-        if isinstance(marker, Named):
-            return self._define(
-                marker.name,
-                hint,
-                lambda: {"oneOf": [self.of(m) for m in get_args(base)], "description": marker.doc},
-            )
-        if isinstance(marker, Tagged):
-
-            def tagged() -> dict[str, Any]:
-                record = self._record(base)
-                record["properties"] = {marker.tag: {"const": marker.value}, **record["properties"]}
-                record["required"] = [marker.tag, *record["required"]]
-                return record
-
-            return self._define(marker.name, hint, tagged)
-        raise TypeError(f"no JSON Schema for annotation {hint!r}")
-
-    def _record(self, cls: type) -> dict[str, Any]:
-        """A dataclass: its fields; required are those with no default, and every constant."""
-        hints = get_type_hints(cls, include_extras=True)
-        docs = _attribute_docs(cls)
-        properties: dict[str, Any] = {}
-        required: list[str] = []
-        for f in dataclasses.fields(cls):
-            prop = self.of(hints[f.name])
-            if f.name in docs and isinstance(prop, dict):
-                prop = {**prop, "description": _markdown(docs[f.name])}
-            properties[f.name] = prop
-            no_default = (
-                f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING
-            )
-            if no_default or _is_const(hints[f.name]):
-                required.append(f.name)
-        return self._object(cls, properties, required)
-
-    def _typed_dict(self, cls: Any) -> dict[str, Any]:
-        """A TypedDict: its keys, each required unless marked ``NotRequired``.
-
-        Read off the hints, because under postponed annotations the class's own
-        ``__required_keys__`` does not see ``NotRequired``.
-        """
-        hints = get_type_hints(cls, include_extras=True)
-        properties = {name: self.of(hint) for name, hint in hints.items()}
-        required = [name for name, hint in hints.items() if get_origin(hint) is not NotRequired]
-        schema = self._object(cls, properties, required)
-        if cls in _OPEN_SHAPES:
-            schema["additionalProperties"] = True
-        return schema
-
-    def _object(self, cls: Any, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
-        schema: dict[str, Any] = {"type": "object", "properties": properties, "required": required}
-        if self._closed:
-            schema["additionalProperties"] = False
-        if cls.__doc__:
-            schema["description"] = _summary(cls)
-        return schema
-
-    def _pydantic(self, model: Any) -> dict[str, Any]:
-        """A pydantic model's own schema, its nested ``$defs`` hoisted beside it."""
-        generated = _clean_pydantic(model.model_json_schema(ref_template="#/$defs/{model}"))
-        for name, sub in {**generated.pop("$defs", {}), model.__name__: generated}.items():
-            owner = self._owners.get(name)
-            if owner is None:
-                self._owners[name] = _PYDANTIC
-                self.defs[name] = sub
-            elif owner != _PYDANTIC or self.defs[name] != sub:
-                raise TypeError(f"two types want $defs/{name}")
-        return {"$ref": f"#/$defs/{model.__name__}"}
-
-
-def _is_const(hint: Any) -> bool:
-    """Whether ``hint`` is a one-value ``Literal``: a discriminator, always sent."""
-    return get_origin(hint) is Literal and len(get_args(hint)) == 1
-
 
 def _camel(kind: str) -> str:
     """``request_closed`` → ``RequestClosed``."""
@@ -1898,9 +1042,9 @@ SCHEMA_DESCRIPTION = (
 """The schema's top-level ``description``."""
 
 
-def _rpc_request(s: _Schema, verb: str) -> dict[str, Any]:
-    """An RPC verb's request: RPC's params, typed by :data:`RPC_PARAM_TYPES`, plus where it acts."""
-    params = _typed(s, rpc.COMMAND_TABLE[verb].params_schema, RPC_PARAM_TYPES.get(verb, {}), verb)
+def _rpc_request(s: SchemaBuilder, verb: str) -> dict[str, Any]:
+    """An RPC verb's request: RPC's typed params, plus where it acts."""
+    params = capabilities.typed_params(s, verb)
     how = RPC_OWN.get(verb, "The daemon runs RPC's own handler at `cursor_id`.")
     return {
         "type": "object",
@@ -1916,13 +1060,10 @@ def _rpc_request(s: _Schema, verb: str) -> dict[str, Any]:
     }
 
 
-def _rpc_result(s: _Schema, verb: str) -> dict[str, Any]:
-    """An RPC verb's answer: RPC's result schema; ``submit`` and ``prompt`` add ``dispatched``."""
-    declared = rpc.COMMAND_TABLE[verb].result_schema
-    if declared is None:
-        raise TypeError(f"RPC {verb!r} declares no result schema")
-    result = _typed(s, declared, RPC_TYPES.get(verb, {}), verb)
-    if verb in ("submit", "prompt"):
+def _rpc_result(s: SchemaBuilder, verb: str) -> dict[str, Any]:
+    """An RPC verb's answer: RPC's typed result; ``submit`` and ``prompt`` add ``admitted`` and ``dispatched``."""
+    result = capabilities.typed_result(s, verb)
+    if verb in RPC_OWN:
         result["properties"] = {
             **result["properties"],
             "admitted": {
@@ -1940,39 +1081,13 @@ def _rpc_result(s: _Schema, verb: str) -> dict[str, Any]:
     return result
 
 
-def _typed(s: _Schema, schema: dict[str, Any], types: dict[str, Any], where: str) -> dict[str, Any]:
-    """``schema`` with each node ``types`` names replaced by its type's schema, its description kept.
-
-    Raises:
-        KeyError: a path that names no node, so the table cannot outlive the schema.
-    """
-    result = copy.deepcopy(schema)
-    for path, hint in types.items():
-        parent: dict[str, Any] = result
-        steps = path.split(".")
-        for step in steps[:-1]:
-            name, _, item = step.partition("[]")
-            parent = parent["properties"][name]
-            if step.endswith("[]"):
-                parent = parent["items"]
-        last = steps[-1]
-        if last not in parent.get("properties", {}):
-            raise KeyError(f"{where}: no node {path!r} to type")
-        described = parent["properties"][last].get("description")
-        typed = dict(s.of(hint))
-        parent["properties"][last] = (
-            {**typed, "description": described} if described is not None else typed
-        )
-    return result
-
-
 def json_schema() -> dict[str, Any]:
     """The whole protocol as one JSON Schema document.
 
     ``ClientFrame`` is any request plus its ``id``; ``ServerFrame`` is a response
     or an event. Every named type is under ``$defs``.
     """
-    s = _Schema()
+    s = capabilities.schema_builder()
     frames = []
     results: dict[str, Any] = {}
     for cls in REQUESTS:
@@ -2007,7 +1122,7 @@ def json_schema() -> dict[str, Any]:
             }
         )
     s.of(Response)
-    base = s._record(Event)
+    base = s.record(Event)
     variants = {}
     for kind, data in EVENT_DATA.items():
         name = f"{_camel(kind)}Event"
@@ -2021,7 +1136,7 @@ def json_schema() -> dict[str, Any]:
         variants[kind] = properties["data"]
     s.defs["Event"] = {
         "oneOf": [{"$ref": f"#/$defs/{_camel(kind)}Event"} for kind in EVENT_DATA],
-        "description": _summary(Event),
+        "description": summary(Event),
         "x-data": variants,
     }
     s.of(ServeStarted)

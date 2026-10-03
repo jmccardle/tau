@@ -140,6 +140,7 @@
           "const": "answer_request"
         },
         "values": {
+          "additionalProperties": {},
           "description": "The filled fields, keyed by field name. Omitted is the empty dict, which is what an ask declaring no fields takes. Checked against the ask's declared fields before anything is appended: nothing is coerced and no partial answer is persisted.",
           "type": "object"
         }
@@ -527,7 +528,7 @@
       "type": "object"
     },
     "AttachmentReport": {
-      "description": "What `Submit.expand_attachments` did.",
+      "description": "What a submission's `expand_attachments` did.",
       "properties": {
         "expanded": {
           "description": "How many `@` references were sent as attachments.",
@@ -715,7 +716,7 @@
       "type": "object"
     },
     "CommandOutput": {
-      "description": "An extension command's completion, as RPC's `submit` answer names it.",
+      "description": "An extension command's completion, as `submit`'s answer names it.",
       "properties": {
         "name": {
           "anyOf": [
@@ -2427,7 +2428,7 @@
       }
     },
     "ExtensionInfo": {
-      "description": "One loaded extension and what it registered, as RPC `get_extension_state` lists it.",
+      "description": "One loaded extension and what it registered, as `get_extension_state` lists it.",
       "properties": {
         "commands": {
           "items": {
@@ -2482,7 +2483,7 @@
       "type": "object"
     },
     "ExtensionRequest": {
-      "description": "An extension request at a cursor, as RPC `get_pending_request` answers it (docs/EXTENSION-LOCKS.md).",
+      "description": "An extension request at a cursor, as `get_pending_request` answers it (docs/EXTENSION-LOCKS.md).",
       "properties": {
         "ask": {
           "anyOf": [
@@ -2496,7 +2497,7 @@
           "description": "What it asks, or `None` for a bare lock."
         },
         "entry_id": {
-          "description": "The request entry's id; `AnswerRequest` names it.",
+          "description": "The request entry's id; `answer_request` names it.",
           "type": "string"
         },
         "extension": {
@@ -3937,7 +3938,7 @@
       "type": "object"
     },
     "ModelRecord": {
-      "description": "One model the daemon's config defines, as RPC `get_models` lists it.",
+      "description": "One model the config defines, as `get_models` lists it.",
       "properties": {
         "model": {
           "$ref": "#/$defs/ModelSpec"
@@ -4154,6 +4155,7 @@
       "description": "RPC `next_step` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
       "properties": {
         "bound": {
+          "additionalProperties": {},
           "description": "The arguments bound so far, keyed by argument name. Omit it, or send {}, for the flow's first step. Only REQUIRED arguments block, so a flow whose arguments are all optional is `ready` on the first call.",
           "type": "object"
         },
@@ -4555,8 +4557,8 @@
           "type": "boolean"
         },
         "correlation": {
-          "description": "Free-form origin detail (bus subject, cron id, HTTP request id).",
-          "type": "object"
+          "$ref": "#/$defs/Correlation",
+          "description": "Free-form origin detail (bus subject, cron id, HTTP request id)."
         },
         "cursor_id": {
           "description": "The cursor the verb acts at.",
@@ -5148,7 +5150,7 @@
       "type": "object"
     },
     "SessionScope": {
-      "description": "What universe a listing is: the daemon's store, and `cwd` `None` for every directory.",
+      "description": "What universe a listing is: a store, and the `cwd` it is scoped to, `None` for every one.",
       "properties": {
         "cwd": {
           "anyOf": [
@@ -5171,14 +5173,14 @@
       "type": "object"
     },
     "SessionTuple": {
-      "description": "A loaded session, as RPC's session tuple names it.",
+      "description": "A session a connection drives (F2).",
       "properties": {
         "addressable": {
-          "description": "Whether another request can name it; always true here.",
+          "description": "Whether another call can name `session_id`; false for an in-memory session, which `list_sessions` never shows.",
           "type": "boolean"
         },
         "cursor_id": {
-          "description": "Its head cursor.",
+          "description": "The cursor the connection drives in it.",
           "type": "string"
         },
         "leaf": {
@@ -5190,12 +5192,13 @@
               "type": "null"
             }
           ],
-          "description": "The head cursor's leaf."
+          "description": "That cursor's leaf."
         },
         "session_id": {
           "type": "string"
         },
         "store": {
+          "description": "The backend label of the connection's catalog.",
           "type": "string"
         }
       },
@@ -5277,6 +5280,7 @@
           "const": "set_extension_config"
         },
         "values": {
+          "additionalProperties": {},
           "description": "The complete new slice, keyed by the field names get_extension_config's `schema` declares. Every declared field must be present: missing is not empty, and nothing is filled in for you.",
           "type": "object"
         }
@@ -5651,8 +5655,8 @@
           "type": "boolean"
         },
         "correlation": {
-          "description": "Free-form origin detail (bus subject, cron id, HTTP request id).",
-          "type": "object"
+          "$ref": "#/$defs/Correlation",
+          "description": "Free-form origin detail (bus subject, cron id, HTTP request id)."
         },
         "cursor_id": {
           "description": "The cursor the verb acts at.",
@@ -7242,8 +7246,8 @@
             "type": "boolean"
           },
           "correlation": {
-            "description": "Free-form origin detail (bus subject, cron id, HTTP request id).",
-            "type": "object"
+            "$ref": "#/$defs/Correlation",
+            "description": "Free-form origin detail (bus subject, cron id, HTTP request id)."
           },
           "cursor_id": {
             "description": "The cursor the verb acts at.",
@@ -7352,8 +7356,8 @@
             "type": "boolean"
           },
           "correlation": {
-            "description": "Free-form origin detail (bus subject, cron id, HTTP request id).",
-            "type": "object"
+            "$ref": "#/$defs/Correlation",
+            "description": "Free-form origin detail (bus subject, cron id, HTTP request id)."
           },
           "cursor_id": {
             "description": "The cursor the verb acts at.",
@@ -7849,6 +7853,7 @@
         "description": "A `next_step` request with its id.",
         "properties": {
           "bound": {
+            "additionalProperties": {},
             "description": "The arguments bound so far, keyed by argument name. Omit it, or send {}, for the flow's first step. Only REQUIRED arguments block, so a flow whose arguments are all optional is `ready` on the first call.",
             "type": "object"
           },
@@ -8103,6 +8108,7 @@
             "const": "answer_request"
           },
           "values": {
+            "additionalProperties": {},
             "description": "The filled fields, keyed by field name. Omitted is the empty dict, which is what an ask declaring no fields takes. Checked against the ask's declared fields before anything is appended: nothing is coerced and no partial answer is persisted.",
             "type": "object"
           }
@@ -8222,6 +8228,7 @@
             "const": "set_extension_config"
           },
           "values": {
+            "additionalProperties": {},
             "description": "The complete new slice, keyed by the field names get_extension_config's `schema` declares. Every declared field must be present: missing is not empty, and nothing is filled in for you.",
             "type": "object"
           }

@@ -33,7 +33,7 @@ from tau_agent_core.projections import (
 )
 from tau_agent_core.capabilities import CAPABILITIES
 from tau_agent_core.rpc import commands as rpc
-from tau_agent_core.rpc import dialect
+from tau_agent_core.rpc import dialect, records
 from tau_agent_core.rpc.wire_events import WireEventProjector
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.session_log import SessionLog, is_incomplete
@@ -470,7 +470,7 @@ class SessionHost:
     def models(self) -> list[p.ModelRecord]:
         """Every model the session's resolver accepts, as ``get_models`` lists them."""
         return [
-            p.ModelRecord(name=m["name"], model=p.ModelSpec(**m["model"]))
+            p.ModelRecord(name=m["name"], model=records.ModelSpec(**m["model"]))
             for m in model_catalog(self.agent_session.model_resolver)
         ]
 

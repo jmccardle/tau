@@ -504,13 +504,10 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
 - **RPC says `cursor` where it means an entry id** — **done 2026-10-03, RPC
   2.0 / serve 0.5** (`docs/TAU-SERVE.md` §7.4). The entry id is `leaf`, the caret
   is `offset`, `is_cursor` is `is_leaf`. tau-code needs the matching update.
-- **RPC's result schemas leave shapes as prose** (found 2026-10-03). Context
-  messages, models, domain values, flow steps and a dozen more are `object` or
-  an `array` with no `items` in `docs/RPC-PROTOCOL.md`. Serve 0.6 types every
-  one through `serve.protocol.RPC_TYPES`, but the records it uses live in
-  `tau-coding-agent`, which `tau-agent-core`'s RPC table cannot import. One fix
-  for both wires is to move those records and the schema generator into core
-  and have the RPC table reference them.
+- **RPC's result schemas leave shapes as prose** — **done 2026-10-03, RPC
+  2.1** (`docs/TAU-SERVE.md` §5 built note). The records and the schema
+  generator are in core; `get_capabilities` and `docs/RPC-PROTOCOL.md` are
+  typed to their leaves, with `$defs`.
 
 ---
 

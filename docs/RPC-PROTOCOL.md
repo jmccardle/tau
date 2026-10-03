@@ -2,7 +2,7 @@
 
 > **Generated reference — do not hand-edit.** Run
 > `python scripts/generate_rpc_protocol_doc.py` after any change to
-> `tau_agent_core.rpc.commands.COMMAND_TABLE` or
+> `tau_agent_core.rpc.commands.COMMAND_TABLE`, `tau_agent_core.rpc.records` or
 > `tau_agent_core.rpc_event_schema.WireEvent`, and commit the result.
 > `tests/test_rpc_protocol_doc.py` fails the suite if this file and the
 > generator disagree (K3, docs/REMOTE-CONTROL.md §4[8]).
@@ -16,9 +16,9 @@
 
 ## Version negotiation
 
-- **Protocol version:** `2.0`
+- **Protocol version:** `2.1`
 - **Dialect:** `jsonrpc-2.0`
-- **Counts:** 40 live verbs, 7 declined verbs, 13 event types. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 40 live verbs, 7 declined verbs, 13 event types, 62 type definitions. Cite this line; never copy the numbers into hand-written prose.
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
 
@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 137,277 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 165,928 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -44,7 +44,7 @@ Events are the exception, and deliberately: no unbounded field is ever *pushed* 
 
 ## Commands
 
-One entry per non-declined `COMMAND_TABLE` row, grouped by tier. `since` names the unit that added the verb, not a protocol version.
+One entry per non-declined `COMMAND_TABLE` row, grouped by tier. `since` names the unit that added the verb, not a protocol version. A `$ref` of `#/$defs/Name` resolves against the capability document's `$defs`, rendered under [Types](#types).
 
 ### Tier A
 
@@ -123,8 +123,8 @@ what rides on top of this on every response):
       ]
     },
     "session": {
-      "description": "F2's session tuple: {store, session_id, cursor_id, leaf, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
-      "type": "object"
+      "$ref": "#/$defs/SessionTuple",
+      "description": "F2's session tuple: {store, session_id, cursor_id, leaf, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store."
     }
   },
   "required": [
@@ -154,12 +154,26 @@ what rides on top of this on every response):
 ```json
 {
   "properties": {
+    "$defs": {
+      "additionalProperties": {
+        "additionalProperties": {},
+        "type": "object"
+      },
+      "description": "Every record the schemas in `commands` reference, by name: a `$ref` of `#/$defs/Name` resolves against this document.",
+      "type": "object"
+    },
     "commands": {
       "description": "Every non-declined COMMAND_TABLE row: {name, tier, since, notes, params_schema, result_schema}.",
+      "items": {
+        "$ref": "#/$defs/CommandRow"
+      },
       "type": "array"
     },
     "declined": {
       "description": "Every declined verb: {name, reason} (C1).",
+      "items": {
+        "$ref": "#/$defs/DeclinedVerb"
+      },
       "type": "array"
     },
     "dialect": {
@@ -167,16 +181,20 @@ what rides on top of this on every response):
       "type": "string"
     },
     "event_schema": {
+      "additionalProperties": {},
       "description": "JSON Schema for a WireEvent's params (generated from AgentEvent, \u00a76 point 3).",
       "type": "object"
     },
     "events": {
       "description": "The AgentEvent-derived wire event type names.",
+      "items": {
+        "type": "string"
+      },
       "type": "array"
     },
     "limits": {
-      "description": "Bounds this process enforces on what a host may SEND, as numbers rather than as something to discover by tripping over it \u2014 today {max_request_line_bytes} (T7). Read live off the code that enforces each bound (capabilities.build_limits), so an advertised limit cannot drift from the applied one. A MAP rather than one field per bound: the next bound to be published is an addition INSIDE this object, which a host honoring E3 gets for free.",
-      "type": "object"
+      "$ref": "#/$defs/Limits",
+      "description": "Bounds this process enforces on what a host may SEND, as numbers rather than as something to discover by tripping over it \u2014 today {max_request_line_bytes} (T7). Read live off the code that enforces each bound (capabilities.build_limits), so an advertised limit cannot drift from the applied one. A MAP rather than one field per bound: the next bound to be published is an addition INSIDE this object, which a host honoring E3 gets for free."
     },
     "protocol_version": {
       "description": "MAJOR.MINOR (K2).",
@@ -184,6 +202,9 @@ what rides on top of this on every response):
     },
     "ui_methods": {
       "description": "Always [] in v1 (RC3) \u2014 the reverse channel does not exist yet.",
+      "items": {
+        "type": "string"
+      },
       "type": "array"
     }
   },
@@ -195,7 +216,8 @@ what rides on top of this on every response):
     "event_schema",
     "ui_methods",
     "declined",
-    "limits"
+    "limits",
+    "$defs"
   ],
   "type": "object"
 }
@@ -292,35 +314,7 @@ what rides on top of this on every response):
     "messages": {
       "description": "AgentSession.messages \u2014 the terminal, flat message array (E2's pull side).",
       "items": {
-        "properties": {
-          "content": {
-            "description": "A plain string on a system message; elsewhere a list of content blocks, each carrying its own `type` \u2014 text, image, thinking or toolCall.",
-            "type": [
-              "string",
-              "array"
-            ]
-          },
-          "role": {
-            "description": "'system', 'user', 'assistant' or 'toolResult'. An extension-injected node carries 'custom' and the loop remaps it to 'user' before a provider sees it.",
-            "type": "string"
-          },
-          "timestamp": {
-            "description": "Epoch MILLISECONDS at the moment the message happened: a user message's send, a toolResult's collection, an assistant message's end (or its cancellation, for a partial). null means no clock applies \u2014 a synthetic message an extension built, or a system message. Never 0; a session written before \u03c4 fixed this carries 0 on disk and every store maps it to null on load, so a host never sees one (docs/MESSAGE-TIMESTAMPS.md). Consecutive timestamps are what let a host compute per-call latency and whether a prompt cache entry had expired, and they read identically live and after a reload.",
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "usage": {
-            "description": "Present on assistant messages: the ONE completion that produced this message, as {input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_reported, total_tokens, extra}. Per-completion, never cumulative \u2014 each prompt already contains every earlier one, so summing total_tokens over a conversation counts turn 1 once per turn. cache_reported false means the server accounts for no prompt cache, so its cache_read_tokens of 0 is silence and not a miss; cache_read_tokens at 0 WITH cache_reported true is the signal described in docs/PROMPT-CACHING.md \u00a77.",
-            "type": "object"
-          }
-        },
-        "required": [
-          "role",
-          "content"
-        ],
-        "type": "object"
+        "$ref": "#/$defs/ContextMessage"
       },
       "type": "array"
     }
@@ -372,8 +366,8 @@ what rides on top of this on every response):
       "type": "integer"
     },
     "model": {
-      "description": "AgentSession.get_model(): {id, provider, context_window}.",
-      "type": "object"
+      "$ref": "#/$defs/ModelSpec",
+      "description": "AgentSession.get_model(): {id, provider, context_window}."
     },
     "session_id": {
       "description": "AgentSession.state.session_id.",
@@ -388,11 +382,15 @@ what rides on top of this on every response):
       "type": "string"
     },
     "usage": {
-      "description": "AgentSession.get_usage() \u2014 null before the first completion.",
-      "type": [
-        "object",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Usage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "AgentSession.get_usage() \u2014 null before the first completion."
     }
   },
   "required": [
@@ -442,6 +440,7 @@ what rides on top of this on every response):
             "type": "string"
           },
           "parameters": {
+            "additionalProperties": {},
             "description": "The tool's own JSON Schema, passed to the provider unchanged \u2014 this table's supported-keyword rule does not govern it.",
             "type": "object"
           }
@@ -500,8 +499,8 @@ what rides on top of this on every response):
       ]
     },
     "session": {
-      "description": "F2's session tuple: {store, session_id, cursor_id, leaf, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
-      "type": "object"
+      "$ref": "#/$defs/SessionTuple",
+      "description": "F2's session tuple: {store, session_id, cursor_id, leaf, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store."
     }
   },
   "required": [
@@ -526,8 +525,8 @@ what rides on top of this on every response):
       "type": "boolean"
     },
     "correlation": {
-      "description": "Free-form origin detail (bus subject, cron id, HTTP request id).",
-      "type": "object"
+      "$ref": "#/$defs/Correlation",
+      "description": "Free-form origin detail (bus subject, cron id, HTTP request id)."
     },
     "depth": {
       "description": "Self-submission depth floor; submit() may raise it further.",
@@ -543,11 +542,18 @@ what rides on top of this on every response):
       "type": "boolean"
     },
     "images": {
-      "description": "Optional list of image content blocks.",
-      "type": [
-        "array",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/ImageContent"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional list of image content blocks."
     },
     "multitask_strategy": {
       "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
@@ -613,12 +619,12 @@ what rides on top of this on every response):
       "type": "boolean"
     },
     "attachments": {
-      "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one.",
-      "type": "object"
+      "$ref": "#/$defs/AttachmentReport",
+      "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one."
     },
     "command": {
-      "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} \u2014 `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead.",
-      "type": "object"
+      "$ref": "#/$defs/CommandOutput",
+      "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} \u2014 `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead."
     },
     "rejection_reason": {
       "description": "Always null on this success shape; a real rejection is SUBMISSION_REJECTED instead.",
@@ -629,8 +635,8 @@ what rides on top of this on every response):
       "type": "string"
     },
     "view": {
-      "description": "Present ONLY when this submission resolved to a VIEW command \u2014 /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. \u03c4 projects no view state yet (docs/VSCODE-HEAD.md \u00a76), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host.",
-      "type": "object"
+      "$ref": "#/$defs/View",
+      "description": "Present ONLY when this submission resolved to a VIEW command \u2014 /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. \u03c4 projects no view state yet (docs/VSCODE-HEAD.md \u00a76), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host."
     }
   },
   "required": [
@@ -682,8 +688,8 @@ what rides on top of this on every response):
       ]
     },
     "session": {
-      "description": "F2's session tuple: {store, session_id, cursor_id, leaf, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store.",
-      "type": "object"
+      "$ref": "#/$defs/SessionTuple",
+      "description": "F2's session tuple: {store, session_id, cursor_id, leaf, addressable}. `cursor_id` names the cursor this connection now drives (docs/CURSORS.md), which every forwarded event's `cursor_id` matches. Present only when cancelled is false. `addressable` (finding 7 of the Tier B review) is the field that says whether `session_id` is a value ANOTHER call can use: true means list_sessions returns this id and switch_session resolves it; false means this session exists in memory only \u2014 it is `new_session {\"persist\": false}`'s product, switch_session answers -32602 for it, list_sessions never shows it, and the verbs D-7 rule 1 governs (set_model/set_session_name/compact) refuse on it. `store` names the store THIS CONNECTION's catalog is on, which is not a claim that this session is in it: when addressable is false, nothing was written to that store."
     }
   },
   "required": [
@@ -772,11 +778,15 @@ what rides on top of this on every response):
 {
   "properties": {
     "completion": {
-      "description": "`null` when `offset` is not inside an @reference at all \u2014 the host shows no popup. Otherwise {start, end, token, matches, total}: `start`/`end` are the character span of the whole @word, so a host replaces that span rather than guessing where the token began; `matches` is a list of {name, detail, is_dir}, `name` being the text that goes AFTER the @ (directories end in '/'); `total` is how many entries matched before the list was bounded, so a host can say '12 of 340' instead of implying it showed everything. An EMPTY `matches` with a non-null completion is the 'this names no file' warning, not an absence of information.",
-      "type": [
-        "object",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AttachmentCompletion"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "`null` when `offset` is not inside an @reference at all \u2014 the host shows no popup. Otherwise {start, end, token, matches, total}: `start`/`end` are the character span of the whole @word, so a host replaces that span rather than guessing where the token began; `matches` is a list of {name, detail, is_dir}, `name` being the text that goes AFTER the @ (directories end in '/'); `total` is how many entries matched before the list was bounded, so a host can say '12 of 340' instead of implying it showed everything. An EMPTY `matches` with a non-null completion is the 'this names no file' warning, not an absence of information."
     }
   },
   "required": [
@@ -843,6 +853,9 @@ what rides on top of this on every response):
   "properties": {
     "models": {
       "description": "Every config model NAME this child can switch to, sorted, as [{name, model}]: `name` is the exact string set_model's `name` param takes, and `model` is the SAME projection get_state publishes for the active model \u2014 {id, provider, context_window} \u2014 obtained by resolving `name` through the session's bound model resolver, i.e. by asking the one component set_model itself would ask. Empty only when the child's config declares no models; a resolver that cannot be enumerated is an INTERNAL_ERROR, never an empty list.",
+      "items": {
+        "$ref": "#/$defs/ModelRecord"
+      },
       "type": "array"
     }
   },
@@ -909,12 +922,12 @@ what rides on top of this on every response):
 {
   "properties": {
     "compaction_settings": {
-      "description": "The session's EFFECTIVE CompactionSettings \u2014 {enabled, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. An RPC session is CONSTRUCTED with enabled=False (backends.py:885) \u2014 that is how a host discovers auto-compaction is off (\u00a71.1) \u2014 and set_auto_compaction (D-4, shipped in this same tier) is the one thing that changes it, so this reports the session's LIVE effective setting at call time, never a constant.",
-      "type": "object"
+      "$ref": "#/$defs/CompactionSettingsRecord",
+      "description": "The session's EFFECTIVE CompactionSettings \u2014 {enabled, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. An RPC session is CONSTRUCTED with enabled=False (backends.py:885) \u2014 that is how a host discovers auto-compaction is off (\u00a71.1) \u2014 and set_auto_compaction (D-4, shipped in this same tier) is the one thing that changes it, so this reports the session's LIVE effective setting at call time, never a constant."
     },
     "context": {
-      "description": "estimate_context_tokens(session.messages) (compaction.py) projected as {tokens, usage_tokens, trailing_tokens, last_usage_index}: tokens is the total estimate the compaction threshold is checked against; usage_tokens is the anchored provider-reported count up to the last assistant Usage, trailing_tokens the heuristic estimate for messages after it, last_usage_index that message's index (null if no assistant Usage exists yet, in which case tokens==trailing_tokens and the whole list was heuristically estimated).",
-      "type": "object"
+      "$ref": "#/$defs/ContextEstimate",
+      "description": "estimate_context_tokens(session.messages) (compaction.py) projected as {tokens, usage_tokens, trailing_tokens, last_usage_index}: tokens is the total estimate the compaction threshold is checked against; usage_tokens is the anchored provider-reported count up to the last assistant Usage, trailing_tokens the heuristic estimate for messages after it, last_usage_index that message's index (null if no assistant Usage exists yet, in which case tokens==trailing_tokens and the whole list was heuristically estimated)."
     },
     "context_headroom": {
       "description": "context_window - context.tokens. Can be negative: an honest over-budget number, never clamped to zero.",
@@ -925,18 +938,26 @@ what rides on top of this on every response):
       "type": "integer"
     },
     "last_compaction": {
-      "description": "{id, timestamp, summary, first_kept_id, tokens_before} for the most recent type=='compaction' entry in session_log.entries(), or null if this session has never compacted \u2014 an honest absence, never a fabricated entry.",
-      "type": [
-        "object",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LastCompaction"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "{id, timestamp, summary, first_kept_id, tokens_before} for the most recent type=='compaction' entry in session_log.entries(), or null if this session has never compacted \u2014 an honest absence, never a fabricated entry."
     },
     "usage": {
-      "description": "AgentSession.get_usage() \u2014 null before the first completion.",
-      "type": [
-        "object",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Usage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "AgentSession.get_usage() \u2014 null before the first completion."
     }
   },
   "required": [
@@ -972,11 +993,14 @@ what rides on top of this on every response):
 {
   "properties": {
     "scope": {
-      "description": "What universe the list above is, as {store, cwd}: `store` is the same backend label the session tuple of new_session/fork/switch_session carries, and `cwd` is the working directory the listing is scoped to \u2014 this process's own, the identical scope switch_session resolves against (SessionCatalog.resolve_ref is built on list(cwd)), so the ids here are exactly the ids that verb accepts. Sessions in OTHER directories are not listed because switch_session could not reach them either. The BASE DIRECTORY is not a field: no SessionCatalog declares one (the file store's is private and `None` means the default), and each entry's `ref` names it exactly \u2014 stated as a limit, not hidden: an EMPTY list therefore names no location at all.",
-      "type": "object"
+      "$ref": "#/$defs/SessionScope",
+      "description": "What universe the list above is, as {store, cwd}: `store` is the same backend label the session tuple of new_session/fork/switch_session carries, and `cwd` is the working directory the listing is scoped to \u2014 this process's own, the identical scope switch_session resolves against (SessionCatalog.resolve_ref is built on list(cwd)), so the ids here are exactly the ids that verb accepts. Sessions in OTHER directories are not listed because switch_session could not reach them either. The BASE DIRECTORY is not a field: no SessionCatalog declares one (the file store's is private and `None` means the default), and each entry's `ref` names it exactly \u2014 stated as a limit, not hidden: an EMPTY list therefore names no location at all."
     },
     "sessions": {
       "description": "Every session `switch_session` can resolve from this connection, newest-modified first, as [{session_id, ref, name, title, message_count, created, modified, parent, error}]. `session_id` is the exact string switch_session's `session_id` param takes. `ref` is the STORE's own handle for that session (SessionCatalog's listing ref \u2014 the file store's absolute .jsonl path, a JMFTS catalog's document id): it is what names WHICH universe this listing is, since --mode rpc's default session base is <tmp>/.tau-<uid>/sessions and the TUI's is ~/.tau/sessions (D-6/H1b). `name` is what set_session_name set, null if never named; `title` is the picker's bounded display label (SessionInfo.display_title) and is the only place message TEXT appears here \u2014 first_message/last_message are deliberately not published, being unbounded (a 40kB prompt would ride every listing). `created`/`modified` are ISO-8601; `parent` is the id this session was forked from, else null; `error` is why this row's entries could not be read, else null \u2014 an unreadable session stays LISTED and says so (SessionInfo.error) rather than vanishing from a host's view.",
+      "items": {
+        "$ref": "#/$defs/SessionRow"
+      },
       "type": "array"
     }
   },
@@ -1072,8 +1096,8 @@ what rides on top of this on every response):
       ]
     },
     "model": {
-      "description": "AgentSession.get_model() after the switch: {id, provider, context_window}.",
-      "type": "object"
+      "$ref": "#/$defs/ModelSpec",
+      "description": "AgentSession.get_model() after the switch: {id, provider, context_window}."
     }
   },
   "required": [
@@ -1153,6 +1177,7 @@ what rides on top of this on every response):
       "type": "string"
     },
     "values": {
+      "additionalProperties": {},
       "description": "The filled fields, keyed by field name. Omitted is the empty dict, which is what an ask declaring no fields takes. Checked against the ask's declared fields before anything is appended: nothing is coerced and no partial answer is persisted.",
       "type": "object"
     }
@@ -1215,6 +1240,9 @@ what rides on top of this on every response):
     },
     "ids": {
       "description": "The marked entry ids, in any order \u2014 tree_surgery puts them into tree order. The longest run that is already an ancestor chain is kept in place; the rest are minted as copies parented under it, so nothing is re-parented and nothing is erased.",
+      "items": {
+        "type": "string"
+      },
       "type": "array"
     }
   },
@@ -1241,6 +1269,9 @@ what rides on top of this on every response):
     },
     "messages": {
       "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+      "items": {
+        "$ref": "#/$defs/ContextMessage"
+      },
       "type": "array"
     }
   },
@@ -1297,6 +1328,9 @@ what rides on top of this on every response):
   "properties": {
     "matches": {
       "description": "The candidates in tree order (root-most first), as [{entry_id, preview}]: `entry_id` is the value every message_id argument takes, and `preview` is the entry's first line \u2014 the row the tree browser draws. Bounded by `limit`.",
+      "items": {
+        "$ref": "#/$defs/MessageMatch"
+      },
       "type": "array"
     },
     "total": {
@@ -1423,6 +1457,9 @@ what rides on top of this on every response):
     },
     "messages": {
       "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+      "items": {
+        "$ref": "#/$defs/ContextMessage"
+      },
       "type": "array"
     }
   },
@@ -1570,6 +1607,9 @@ what rides on top of this on every response):
     },
     "values": {
       "description": "A list of {value, label}. `value` is what a host binds into `next_step`'s `bound`; `label` is what it shows. They are equal for a domain whose values already read as text.",
+      "items": {
+        "$ref": "#/$defs/DomainChoice"
+      },
       "type": "array"
     }
   },
@@ -1611,8 +1651,8 @@ what rides on top of this on every response):
 {
   "properties": {
     "entry": {
-      "description": "The raw session-log entry, as stored: camelCase `parentId` / `firstKeptId` / `fromId`, a `type`, and whatever payload that type carries \u2014 a `message` for the message kinds, a `summary` for a compaction or a branch_summary. Handed over whole rather than projected, because the caller is a detail pane rendering ONE node and a projection would be a second message shape to keep in step with get_messages'. One node per call: get_tree carries a one-line preview per row precisely so a browser does not pull bodies it is not showing.",
-      "type": "object"
+      "$ref": "#/$defs/Entry",
+      "description": "The raw session-log entry, as stored: camelCase `parentId` / `firstKeptId` / `fromId`, a `type`, and whatever payload that type carries \u2014 a `message` for the message kinds, a `summary` for a compaction or a branch_summary. Handed over whole rather than projected, because the caller is a detail pane rendering ONE node and a projection would be a second message shape to keep in step with get_messages'. One node per call: get_tree carries a one-line preview per row precisely so a browser does not pull bodies it is not showing."
     }
   },
   "required": [
@@ -1655,10 +1695,18 @@ what rides on top of this on every response):
       "type": "string"
     },
     "schema": {
-      "description": "The extension's CONFIG_SCHEMA, normalized at load into {title, fields} \u2014 the same spec shape ui.form takes, so a head that can render a form can render a settings screen with no new widget. null for an extension that declares none, which is the answer that tells a head to offer no screen rather than an empty one.",
-      "type": "object"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FormSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The extension's CONFIG_SCHEMA, normalized at load into {title, fields} \u2014 the same spec shape ui.form takes, so a head that can render a form can render a settings screen with no new widget. null for an extension that declares none, which is the answer that tells a head to offer no screen rather than an empty one."
     },
     "values": {
+      "additionalProperties": {},
       "description": "The live slice api.config returns for this extension, keyed by file stem: config.json's extensions.<stem> with --ext-config overrides applied, plus any set_extension_config since. {} for an unconfigured extension \u2014 never the schema's defaults, which the extension itself supplies.",
       "type": "object"
     }
@@ -1694,10 +1742,16 @@ what rides on top of this on every response):
   "properties": {
     "errors": {
       "description": "Every discovered file that FAILED to load, as [{path, error}]. Kept from the last load_extensions call, because a failed import leaves nothing to recompute from. This is the half that makes this a read of its own rather than list_managed_extensions with more fields: a file that cannot import can never be a legal extension_name, and is exactly what a listing must show.",
+      "items": {
+        "$ref": "#/$defs/LoadError"
+      },
       "type": "array"
     },
     "extensions": {
       "description": "Every loaded extension and what it registered, as [{name, path, tools, commands, shortcuts, hooks, content_hash, subjects}] \u2014 sdk.summarize_extensions of the live registry, which is the same projection the TUI's /extensions listing draws. Read LIVE, not from the load-time snapshot, so a reload_extension is reflected here.",
+      "items": {
+        "$ref": "#/$defs/ExtensionInfo"
+      },
       "type": "array"
     }
   },
@@ -1730,11 +1784,15 @@ what rides on top of this on every response):
 {
   "properties": {
     "request": {
-      "description": "The extension request AT THE CURSOR, or null when there is none. The cursor only, never an ancestry walk: the thing a user is looking at and the thing that refused their submission are one entry. {entry_id, extension, extension_name, sentence, label, lock, ask, release} \u2014 `label` is \u03c4's own framing of the four states over `lock` and `ask`, `sentence` is the extension's own line, `ask` is a validated `ui.form` spec ({title, fields, actions}) or null, and `release` names a command that clears the lock (advisory: commands are exempt from a lock by placement, not by name). A host renders all four states; three of them draw something and the fourth is this verb answering null.",
-      "type": [
-        "object",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExtensionRequest"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The extension request AT THE CURSOR, or null when there is none. The cursor only, never an ancestry walk: the thing a user is looking at and the thing that refused their submission are one entry. {entry_id, extension, extension_name, sentence, label, lock, ask, release} \u2014 `label` is \u03c4's own framing of the four states over `lock` and `ask`, `sentence` is the extension's own line, `ask` is a validated `ui.form` spec ({title, fields, actions}) or null, and `release` names a command that clears the lock (advisory: commands are exempt from a lock by placement, not by name). A host renders all four states; three of them draw something and the fourth is this verb answering null."
     }
   },
   "required": [
@@ -1909,6 +1967,9 @@ what rides on top of this on every response):
   "properties": {
     "extensions": {
       "description": "Every file extension under management, in load order, as [{path, enabled}]. `path` is the exact string every extension_name argument takes (enable_extension, disable_extension, reload_extension); `enabled` is false exactly when the extension is loaded but its bucket has been removed from the runner, so its hooks, tools and slash commands are not offered.",
+      "items": {
+        "$ref": "#/$defs/ManagedExtension"
+      },
       "type": "array"
     }
   },
@@ -1956,6 +2017,9 @@ what rides on top of this on every response):
     },
     "messages": {
       "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+      "items": {
+        "$ref": "#/$defs/ContextMessage"
+      },
       "type": "array"
     }
   },
@@ -1978,6 +2042,7 @@ what rides on top of this on every response):
   "additionalProperties": false,
   "properties": {
     "bound": {
+      "additionalProperties": {},
       "description": "The arguments bound so far, keyed by argument name. Omit it, or send {}, for the flow's first step. Only REQUIRED arguments block, so a flow whose arguments are all optional is `ready` on the first call.",
       "type": "object"
     },
@@ -2007,11 +2072,15 @@ what rides on top of this on every response):
 {
   "properties": {
     "ready": {
-      "description": "{flow, mutation, arguments}. `mutation` is the capability to perform \u2014 the named flow's, always, so a host that already knows which flow it stepped can dispatch before this returns. `arguments` is what to perform it with, keyed by the mutation's own parameter names. This is a commitment: \u03c4 does not ask a second time, and a host that wants a confirmation renders one from this.",
-      "type": [
-        "object",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ready"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "{flow, mutation, arguments}. `mutation` is the capability to perform \u2014 the named flow's, always, so a host that already knows which flow it stepped can dispatch before this returns. `arguments` is what to perform it with, keyed by the mutation's own parameter names. This is a commitment: \u03c4 does not ask a second time, and a host that wants a confirmation renders one from this."
     },
     "status": {
       "description": "`step` \u2014 one required argument is still unbound and `step` describes it. `ready` \u2014 every required argument is bound and `ready` names the mutation to perform and what to perform it with. The two are mutually exclusive and exactly one is present.",
@@ -2022,11 +2091,15 @@ what rides on top of this on every response):
       "type": "string"
     },
     "step": {
-      "description": "{flow, argument, domain, leaf, bound}. `argument` is {name, domain, description, cardinality, required, scope}; `domain` is the resolved domain record {name, description, free, values, enumerator}, included so a host can render the field without a second call \u2014 `values` is non-null for a small fixed set, and `enumerator` non-null means call `enumerate_domain` for the live set.",
-      "type": [
-        "object",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FlowStep"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "{flow, argument, domain, leaf, bound}. `argument` is {name, domain, description, cardinality, required, scope}; `domain` is the resolved domain record {name, description, free, values, enumerator}, included so a host can render the field without a second call \u2014 `values` is non-null for a small fixed set, and `enumerator` non-null means call `enumerate_domain` for the live set."
     }
   },
   "required": [
@@ -2078,6 +2151,9 @@ what rides on top of this on every response):
     },
     "minted_ids": {
       "description": "The ids minted, in the order they were appended. The first is the copy of `source_id` itself. Ids rather than messages because a paste edits the TREE and never moves the leaf: the current context is unchanged, so there is nothing to re-render until someone navigates onto the copy.",
+      "items": {
+        "type": "string"
+      },
       "type": "array"
     }
   },
@@ -2172,6 +2248,7 @@ what rides on top of this on every response):
       "type": "string"
     },
     "values": {
+      "additionalProperties": {},
       "description": "The complete new slice, keyed by the field names get_extension_config's `schema` declares. Every declared field must be present: missing is not empty, and nothing is filled in for you.",
       "type": "object"
     }
@@ -2246,8 +2323,8 @@ what rides on top of this on every response):
       "type": "boolean"
     },
     "correlation": {
-      "description": "Free-form origin detail (bus subject, cron id, HTTP request id).",
-      "type": "object"
+      "$ref": "#/$defs/Correlation",
+      "description": "Free-form origin detail (bus subject, cron id, HTTP request id)."
     },
     "depth": {
       "description": "Self-submission depth floor; submit() may raise it further.",
@@ -2263,11 +2340,18 @@ what rides on top of this on every response):
       "type": "boolean"
     },
     "images": {
-      "description": "Optional list of image content blocks.",
-      "type": [
-        "array",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/ImageContent"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional list of image content blocks."
     },
     "multitask_strategy": {
       "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
@@ -2336,12 +2420,12 @@ what rides on top of this on every response):
       "type": "boolean"
     },
     "attachments": {
-      "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one.",
-      "type": "object"
+      "$ref": "#/$defs/AttachmentReport",
+      "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one."
     },
     "command": {
-      "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} \u2014 `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead.",
-      "type": "object"
+      "$ref": "#/$defs/CommandOutput",
+      "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} \u2014 `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead."
     },
     "rejection_reason": {
       "description": "Always null on this success shape; a real rejection is SUBMISSION_REJECTED instead.",
@@ -2352,8 +2436,8 @@ what rides on top of this on every response):
       "type": "string"
     },
     "view": {
-      "description": "Present ONLY when this submission resolved to a VIEW command \u2014 /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. \u03c4 projects no view state yet (docs/VSCODE-HEAD.md \u00a76), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host.",
-      "type": "object"
+      "$ref": "#/$defs/View",
+      "description": "Present ONLY when this submission resolved to a VIEW command \u2014 /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. \u03c4 projects no view state yet (docs/VSCODE-HEAD.md \u00a76), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host."
     }
   },
   "required": [
@@ -2406,6 +2490,9 @@ what rides on top of this on every response):
     },
     "messages": {
       "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+      "items": {
+        "$ref": "#/$defs/ContextMessage"
+      },
       "type": "array"
     }
   },
@@ -2495,6 +2582,717 @@ Every `type: "event"` notification carries a `WireEvent` payload (generated from
 | `-32002` | `TURN_STILL_RUNNING` | A `new_session`/`fork`/`switch_session` call requested the in-flight turn stop and waited, but it did not free the admission lock within the bounded wait — an expected, structured refusal (nothing was touched; retry, or wait for `agent_end` first), not a crash and not an unbounded hang. |
 | `-32003` | `REQUEST_TOO_LARGE` | One request line exceeded `limits.max_request_line_bytes` and was discarded unread, through its next LF (T7). `id` is `null` — the request's own id was inside the bytes that were never parsed — and `error.data` carries `max_request_line_bytes`, the length observed, and whether that length is exact (`line_complete: true`) or a lower bound (the line was refused while still arriving). The connection is otherwise unaffected: the next well-formed line is served normally. |
 | `-32004` | `SESSION_NOT_PERSISTED` | A verb that APPENDS a session-log entry was called on a session with no durable location — the product of `new_session {"persist": false}`, or of a process started with `--no-session` (D-7). `set_model`, `set_session_name` and `compact` refuse here; `set_auto_compaction` and every read do not, because they append nothing. Nothing was mutated before the refusal, and `error.data.method` names the verb that refused. The one honest fix is to put the connection on a persisted session (`fork`, `switch_session`, or `new_session` with `persist` left at its default) and retry. A host does not have to meet this by tripping it: `get_state` reports `addressable`, the same predicate, for whichever session the connection is on — and under `--no-session` that is false from the first request, so the answer is available before any write is attempted. |
+
+## Types
+
+Every record the schemas above reference, from `get_capabilities`' `$defs`. A client must ignore a field it does not know.
+
+### Argument
+
+One argument a flow needs before it can run.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | The argument's name, as the bound-argument mapping keys it. |
+| `domain` | string | yes | The name of its `Domain`, a key of `DOMAINS`. |
+| `description` | string | yes | The prompt a head shows for it. |
+| `cardinality` | `"one"` \| `"many"` | no | `"one"` for a single value, `"many"` for a list. |
+| `required` | boolean | no | Whether the flow can run without it. An optional argument is offered as a step and may be skipped. |
+| `scope` | `"in_session"` \| `"ancestors_of_leaf"` \| `"descendants_of_leaf"` \| null | no | For the `message_id` domain, which entries are candidates — one of `ConversationTree.complete_message_id`'s scopes. `None` everywhere else. |
+
+### Ask
+
+What an extension request asks, normalized (`extension_types.validate_ask_spec`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `title` | string | yes |  |
+| `body` | [PanelBody](#panelbody) \| null | yes |  |
+| `fields` | list of [FormField](#formfield) | yes |  |
+| `actions` | list of [AskAction](#askaction) | yes |  |
+
+### AskAction
+
+An ask's button: it runs `command` with the request's id.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes |  |
+| `command` | string | yes |  |
+
+### AssistantMessage
+
+An assistant message from the LLM.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `role` | `"assistant"` | yes |  |
+| `content` | list of [TextContent](#textcontent) \| [ThinkingContent](#thinkingcontent) \| [ToolCall](#toolcall) | yes |  |
+| `api` | string | yes |  |
+| `provider` | string | yes |  |
+| `model` | string | yes |  |
+| `response_id` | string \| null | no |  |
+| `usage` | [Usage](#usage) | no |  |
+| `stop_reason` | `"stop"` \| `"length"` \| `"toolUse"` \| `"error"` \| `"aborted"` | yes |  |
+| `error_message` | string \| null | no |  |
+| `timestamp` | integer \| null | no |  |
+
+### AttachmentCompletion
+
+The `@` token at the caret and what it completes to.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `start` | integer | yes | The token's first character offset in the text. |
+| `end` | integer | yes | The offset after its last. |
+| `token` | string | yes |  |
+| `matches` | list of [PathMatch](#pathmatch) | yes |  |
+| `total` | integer | yes | How many paths match, counting past the bound on `matches`. |
+
+### AttachmentReport
+
+What a submission's `expand_attachments` did.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `expanded` | integer | yes | How many `@` references were sent as attachments. |
+| `images` | integer | yes | How many of them were images. |
+| `unresolved` | list of string | yes | The `@` tokens that named no file, sent as written. |
+| `failures` | list of string | yes | One line per file that resolved and could not be read. |
+
+### BranchSummaryEntry
+
+A summary of the branch left at `fromId`, in the path where it was appended.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | `"branch_summary"` | yes |  |
+| `summary` | string | yes |  |
+| `fromId` | string \| null | yes |  |
+
+### CommandOutput
+
+An extension command's completion, as `submit`'s answer names it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string \| null | yes | The command that ran, which an input hook may have rewritten. |
+| `output` | string \| null | yes | What it returned, as display text, or `None`. |
+
+### CommandRow
+
+One verb `get_capabilities` lists.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `tier` | `"A"` \| `"B"` \| `"C"` \| `"D"` | yes |  |
+| `since` | string | yes | The unit that added the verb, not a protocol version. |
+| `notes` | string | yes |  |
+| `params_schema` | object | yes | JSON Schema for its params; `$ref` resolves against the capability document's `$defs`. |
+| `result_schema` | object | yes | JSON Schema for its result, the same way. |
+
+### CompactionEntry
+
+A summary that replaces the path before `firstKeptId` in the context.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | `"compaction"` | yes |  |
+| `summary` | string | yes |  |
+| `firstKeptId` | string | yes |  |
+| `tokensBefore` | integer | yes |  |
+| `summarizerModelId` | string | no |  |
+| `summaryUsage` | object of integer | no |  |
+| `coveredEntries` | integer | no |  |
+| `coveredTokens` | integer | no |  |
+| `configId` | string \| null | no |  |
+
+### CompactionSettingsRecord
+
+When compaction runs (`compaction.CompactionSettings`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes |  |
+| `reserve_tokens` | integer | yes |  |
+| `keep_recent_tokens` | integer | yes |  |
+
+### CompareCorrelation
+
+A comparison turn's place in its comparison (`tau_agent_core.compare.COMPARE_KEY`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `models` | list of string | yes |  |
+| `index` | integer | yes |  |
+| `cursor_id` | string | yes |  |
+
+### ContextEstimate
+
+The context's size, as `get_session_stats` measures it (`compaction.ContextUsageEstimate`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tokens` | integer | yes |  |
+| `usage_tokens` | integer | yes |  |
+| `trailing_tokens` | integer | yes |  |
+| `last_usage_index` | integer \| null | yes |  |
+
+### ContextMessage
+
+A message of model input: a stored message, or a summary rendered as a user message, which alone has no `timestamp`.
+
+One of: [UserMessage](#usermessage), [SummaryMessage](#summarymessage), [AssistantMessage](#assistantmessage), [ToolResultMessage](#toolresultmessage), [SystemMessage](#systemmessage), [CustomRoleMessage](#customrolemessage).
+
+### Correlation
+
+`Submission.correlation`: open, JSON-safe keys a submitter attached; `compare` is τ's.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `compare` | [CompareCorrelation](#comparecorrelation) | no |  |
+
+### CustomEntryEntry
+
+Durable data the model never sees.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | `"customEntry"` | yes |  |
+| `customType` | string | yes |  |
+| `data` | object | yes |  |
+
+### CustomMessageEntry
+
+An extension's message, which reaches the model unless `visibleToModel` is false.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | `"customMessage"` | yes |  |
+| `customType` | string | yes |  |
+| `message` | [CustomRoleMessage](#customrolemessage) | yes |  |
+
+### CustomRoleMessage
+
+An extension's message (`messages.create_custom_message`); the model sees it as `user`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `role` | `"custom"` | yes |  |
+| `customType` | string | yes |  |
+| `content` | list of [TextContent](#textcontent) \| [ImageContent](#imagecontent) | yes |  |
+| `display` | boolean | yes |  |
+| `visibleToModel` | boolean | no |  |
+| `details` | any | no |  |
+| `timestamp` | integer | no |  |
+
+### DeclinedVerb
+
+A verb τ does not implement, and why; calling it answers `METHOD_NOT_FOUND`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `reason` | string | yes |  |
+
+### Domain
+
+A named type in τ's object model, and how its values are found.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | The domain's name, as an argument declares it. |
+| `description` | string | yes | What a value of this domain means, for a person reading a form. |
+| `free` | boolean | no | Whether any value is legal. A free domain has no enumerator and no fixed values, and a head renders it as a plain field. |
+| `values` | list of string \| null | no | The fixed legal values, when there are few and they never change. |
+| `enumerator` | string \| null | no | The name of the `Capability` that computes the legal values, when they depend on live state. |
+| `field_kind` | string | no | Which of `tau_agent_core.extension_types.FORM_FIELD_KINDS` a head renders a SINGLE value of this domain as. `"select"` asserts the whole legal set can be put on screen at once; a domain whose set is unbounded or merely large says `"text"` and is completed against instead. A head may substitute a richer control than the kind names — the TUI answers `session_id` with its filtered picker — and may never substitute a poorer one. |
+
+### DomainChoice
+
+One legal value of a domain: `value` is what is bound, `label` what is shown.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `value` | string | yes |  |
+| `label` | string | yes |  |
+
+### ElideEntry
+
+A splice anchor with no summary: the path before `firstKeptId` leaves the context.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | `"elide"` | yes |  |
+| `firstKeptId` | string | yes |  |
+| `coveredEntries` | integer | no |  |
+| `coveredTokens` | integer | no |  |
+| `configId` | string \| null | no |  |
+
+### Entry
+
+One session-log entry, told apart by `type`; an unfinished one carries `status: "incomplete"`. Apply by `id`, last write wins (docs/TAU-SERVE.md §4.1).
+
+One of: [MessageEntry](#messageentry), [CustomMessageEntry](#custommessageentry), [CustomEntryEntry](#customentryentry), [CompactionEntry](#compactionentry), [ElideEntry](#elideentry), [BranchSummaryEntry](#branchsummaryentry), [SessionInfoEntry](#sessioninfoentry), [NavigateEntry](#navigateentry), [ModelChangeEntry](#modelchangeentry), [ThinkingChangeEntry](#thinkingchangeentry), [ForeignEntry](#foreignentry), [IncompleteEntry](#incompleteentry).
+
+### ExtensionInfo
+
+One loaded extension and what it registered, as `get_extension_state` lists it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `path` | string | yes |  |
+| `tools` | list of string | yes |  |
+| `commands` | list of string | yes |  |
+| `shortcuts` | list of string | yes |  |
+| `hooks` | list of string | yes |  |
+| `content_hash` | string | yes |  |
+| `subjects` | list of string | yes |  |
+
+### ExtensionRequest
+
+An extension request at a cursor, as `get_pending_request` answers it (docs/EXTENSION-LOCKS.md).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `entry_id` | string | yes | The request entry's id; `answer_request` names it. |
+| `extension` | string | yes |  |
+| `extension_name` | string | yes | The display stem of `extension`. |
+| `sentence` | string | yes |  |
+| `label` | string | yes | τ's framing line for the request (§9). |
+| `lock` | boolean | yes | Whether a submission at this cursor is refused. |
+| `ask` | [Ask](#ask) \| null | yes | What it asks, or `None` for a bare lock. |
+| `release` | string \| null | yes | A command that clears the lock, or `None`. |
+
+### FlowStep
+
+One argument a flow still needs, and everything required to ask for it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `flow` | string | yes | The flow's name. |
+| `argument` | [Argument](#argument) | yes | The argument being asked for. |
+| `domain` | [Domain](#domain) | yes | That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up. |
+| `leaf` | string \| null | yes | The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`. |
+| `bound` | object | yes | The arguments already bound, so a head redrawing a form has them. |
+
+### ForeignEntry
+
+A document another system's store put in the tree, typed `system:kind` (`jmfts:document`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | string matching `^[^:]+:.+$` | yes |  |
+
+### FormField
+
+One field of an extension form (`extension_types.validate_form_spec`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `kind` | `"text"` \| `"select"` \| `"multiselect"` \| `"confirm"` \| `"number"` | yes |  |
+| `label` | string | no |  |
+| `default` | any | no |  |
+| `options` | list of string | no |  |
+
+### FormSpec
+
+An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.md §8.2).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `title` | string | no |  |
+| `fields` | list of [FormField](#formfield) | yes |  |
+
+### ImageContent
+
+An image content block in a message.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"image"` | yes |  |
+| `data` | string | yes |  |
+| `mime_type` | string | yes |  |
+
+### IncompleteEntry
+
+An entry opened and not yet finalized (docs/TAU-SERVE.md §4).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | string | yes |  |
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | `"incomplete"` | yes |  |
+
+### LastCompaction
+
+The newest compaction entry on the path (`agent_session.CompactionRecord`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `timestamp` | string | yes | ISO-8601. |
+| `summary` | string | yes |  |
+| `first_kept_id` | string \| null | yes |  |
+| `tokens_before` | integer \| null | yes |  |
+
+### Limits
+
+Bounds on what a host may send (T7).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `max_request_line_bytes` | integer | yes | The longest request line read, excluding its LF. |
+
+### LoadError
+
+An extension file that failed to load, and why.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | yes |  |
+| `error` | string | yes |  |
+
+### ManagedExtension
+
+One managed extension file and whether it is enabled.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | yes |  |
+| `enabled` | boolean | yes |  |
+
+### Message
+
+A message as the log stores it, told apart by `role`.
+
+One of: [UserMessage](#usermessage), [AssistantMessage](#assistantmessage), [ToolResultMessage](#toolresultmessage), [SystemMessage](#systemmessage), [CustomRoleMessage](#customrolemessage).
+
+### MessageEntry
+
+A message on the conversation path.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | `"message"` | yes |  |
+| `message` | [Message](#message) | yes |  |
+
+### MessageMatch
+
+One entry `complete_message_id` offers: its id, and its first line.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `entry_id` | string | yes |  |
+| `preview` | string | yes |  |
+
+### ModelChangeEntry
+
+Legacy: the config model from here on, before config entries.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | `"model_change"` | yes |  |
+| `model` | string \| null | yes |  |
+| `backend` | string \| null | no |  |
+
+### ModelRecord
+
+One model the config defines, as `get_models` lists it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `model` | [ModelSpec](#modelspec) | yes |  |
+
+### ModelSpec
+
+What a config model name resolves to.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `provider` | string | yes |  |
+| `context_window` | integer | yes |  |
+
+### NavigateEntry
+
+Legacy: a recorded move to `targetId`, written before cursors (docs/CURSORS.md §1.1).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | `"navigate"` | yes |  |
+| `targetId` | string \| null | yes |  |
+
+### PanelBody
+
+A panel's body, told apart by `kind` (`extension_types.validate_panel_spec`).
+
+One of: [PanelText](#paneltext), [PanelList](#panellist), [PanelTable](#paneltable).
+
+### PanelList
+
+A panel body listing strings.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"list"` | yes |  |
+| `items` | list of string | yes |  |
+
+### PanelTable
+
+A panel body of string cells; every row has one cell per column.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"table"` | yes |  |
+| `columns` | list of string | yes |  |
+| `rows` | list of list of string | yes |  |
+
+### PanelText
+
+A panel body of text.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"text"` | yes |  |
+| `text` | string | yes |  |
+
+### PathMatch
+
+One path an `@` token can complete to.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `detail` | string | yes |  |
+| `is_dir` | boolean | yes |  |
+
+### Ready
+
+A flow with every required argument bound: the mutation, and what to call it with.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `flow` | string | yes | The flow's name. |
+| `mutation` | string | yes | The capability to perform — the flow's, always. Which mutation runs is a property of which flow was named, never of what was bound. |
+| `arguments` | object | yes | What to perform it with, keyed by the mutation's own parameter names, so a caller can splat it. |
+
+### SessionInfoEntry
+
+The session's display name from here on; the model never sees it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | `"session_info"` | yes |  |
+| `name` | string | yes |  |
+
+### SessionRow
+
+One session `list_sessions` lists.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `session_id` | string | yes | What `switch_session` takes. |
+| `ref` | string | yes | The store's own handle for the session (a file store's path, a JMFTS document id), which names the universe the listing is. |
+| `name` | string \| null | yes | What `set_session_name` set, or `None`. |
+| `title` | string | yes | A bounded display label; message text appears nowhere else here. |
+| `message_count` | integer | yes |  |
+| `created` | string | yes | ISO-8601. |
+| `modified` | string | yes | ISO-8601. |
+| `parent` | string \| null | yes | The session this one was forked from, or `None`. |
+| `error` | string \| null | yes | Why its entries could not be read, or `None`; such a row stays listed. |
+
+### SessionScope
+
+What universe a listing is: a store, and the `cwd` it is scoped to, `None` for every one.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `store` | string | yes |  |
+| `cwd` | string \| null | yes |  |
+
+### SessionTuple
+
+A session a connection drives (F2).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `store` | string | yes | The backend label of the connection's catalog. |
+| `session_id` | string | yes |  |
+| `cursor_id` | string | yes | The cursor the connection drives in it. |
+| `leaf` | string \| null | yes | That cursor's leaf. |
+| `addressable` | boolean | yes | Whether another call can name `session_id`; false for an in-memory session, which `list_sessions` never shows. |
+
+### SummaryMessage
+
+A compaction or branch summary as the context renders it: a user message with no timestamp.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `role` | `"user"` | yes |  |
+| `content` | list of [TextContent](#textcontent) | yes |  |
+| `timestamp` | absent | no |  |
+
+### SystemMessage
+
+The system prompt, which a session stores as its first message entry.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `role` | `"system"` | yes |  |
+| `content` | string | yes |  |
+
+### TextContent
+
+A text content block in a message.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"text"` | yes |  |
+| `text` | string | yes |  |
+
+### ThinkingChangeEntry
+
+Legacy: the reasoning level from here on, before config entries.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `type` | `"thinking_change"` | yes |  |
+| `level` | string \| null | yes |  |
+
+### ThinkingContent
+
+A thinking/reasoning content block.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"thinking"` | yes |  |
+| `thinking` | string | yes |  |
+| `cached_tokens` | integer | no |  |
+| `thinking_signature` | string \| object | no |  |
+
+### ToolCall
+
+A tool call content block in a message.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | `"toolCall"` | yes |  |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `arguments` | object | yes |  |
+| `provider_signature` | object | no |  |
+
+### ToolResultMessage
+
+A tool result message.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `role` | `"toolResult"` | yes |  |
+| `tool_call_id` | string | yes |  |
+| `tool_name` | string | yes |  |
+| `content` | list of [TextContent](#textcontent) \| [ImageContent](#imagecontent) | yes |  |
+| `details` | object \| null | no |  |
+| `is_error` | boolean | no |  |
+| `timestamp` | integer | yes |  |
+
+### Usage
+
+Token usage information for an LLM response.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `input_tokens` | integer | no |  |
+| `output_tokens` | integer | no |  |
+| `cache_read_tokens` | integer | no |  |
+| `cache_write_tokens` | integer | no |  |
+| `cache_reported` | boolean | no |  |
+| `total_tokens` | integer | no |  |
+| `cost` | object of number | no |  |
+| `extra` | object | no |  |
+
+### UserMessage
+
+A user message.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `role` | `"user"` | yes |  |
+| `content` | string \| list of [TextContent](#textcontent) \| [ImageContent](#imagecontent) | yes |  |
+| `timestamp` | integer | yes |  |
+
+### View
+
+A named surface only a head can open.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | The view's name, a key of `tau_agent_core.capabilities.VIEW_COMMANDS`. |
+| `state` | object \| null | no | What a head draws the view from. `None` everywhere today — no capability projects the session tree yet (docs/VSCODE-HEAD.md §6), and this is the spot that payload lands in when one does, with no change to the union. |
+| `unavailable_because` | string \| null | no | Why no `state` rides with this, in a sentence a head can print. A head that has its own view of that name ignores it and opens it; a head that has none prints it and does nothing else. Not a fallback: it is the same idiom the RPC table's seven `declined_because` entries already use. |
 
 ## License
 

@@ -17,7 +17,7 @@ from typing import Any, get_args, get_type_hints
 from unittest.mock import MagicMock, patch
 
 import pytest
-from schema_check import SchemaError, validate
+from tau_agent_core.testing.schema_check import SchemaError, open_nodes, validate
 from test_serve import _CONFIG, _fake_stream, _serve, _until
 from websockets.asyncio.client import connect
 
@@ -555,31 +555,12 @@ def test_every_request_names_its_result_and_every_kind_its_data():
     assert SCHEMA["x-default-port"] == p.DEFAULT_PORT
 
 
-def _open_nodes(node: Any, path: str) -> list[str]:
-    """Each array without ``items``, and object with neither fields nor a value type, under ``node``."""
-    if not isinstance(node, dict) or "$ref" in node:
-        return []
-    kinds = node.get("type")
-    kinds = kinds if isinstance(kinds, list) else [kinds]
-    found = []
-    if "array" in kinds and "items" not in node:
-        found.append(path + "[]")
-    if "object" in kinds and "properties" not in node and "additionalProperties" not in node:
-        found.append(path + "{}")
-    for name, sub in node.get("properties", {}).items():
-        found += _open_nodes(sub, f"{path}.{name}")
-    found += _open_nodes(node.get("items"), path + "[]")
-    for key in ("anyOf", "oneOf"):
-        for sub in node.get(key, []):
-            found += _open_nodes(sub, path)
-    return found
-
-
 def test_every_answer_and_event_payload_is_typed_to_its_leaves():
-    """A client generates its types from this schema: no answer may leave a shape as prose."""
+    """A client generates its types from this schema: no RPC request or answer may leave a shape as prose."""
     defs = SCHEMA["$defs"]
-    named = [f"{p._camel(verb)}Result" for verb in p.RPC_VERBS] + ["CompactionEnd"]
-    assert [path for name in named for path in _open_nodes(defs[name], name)] == []
+    named = [f"{p._camel(verb)}{half}" for verb in p.RPC_VERBS for half in ("", "Result")]
+    named.append("CompactionEnd")
+    assert [path for name in named for path in open_nodes(defs[name], name)] == []
 
 
 def test_tau_serve_schema_prints_the_checked_in_schema(capsys):

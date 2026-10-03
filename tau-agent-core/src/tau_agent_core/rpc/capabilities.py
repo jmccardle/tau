@@ -6,7 +6,7 @@ audit, do not generate" (items 1 and 3), §8 decision 8, §9 R-T2, §10.
 This module does exactly one thing: WALK the two artifacts unit 2A/2B
 already built — `commands.COMMAND_TABLE` (hand-written, §6 point 1) and
 `rpc_event_schema` (generated from `AgentEvent`, §6 point 3) — into the one
-document K1 describes. It does not decorate or introspect `AgentSession`
+document K1 describes, each verb's schemas typed by `rpc.records`. It does not decorate or introspect `AgentSession`
 (§6 A1-A6); every field below is a projection of data those two modules
 already declare. `docs/RPC-PROTOCOL.md` (K3) is `rpc.protocol_doc.render()`
 applied to this module's `build_capabilities()` output, checked by
@@ -27,8 +27,10 @@ from __future__ import annotations
 from typing import Any
 
 from tau_agent_core import rpc_event_schema
+from tau_agent_core.json_schema import SchemaBuilder, typed
+from tau_agent_core.rpc import records
 
-PROTOCOL_VERSION = "2.0"
+PROTOCOL_VERSION = "2.1"
 
 DIALECT = "jsonrpc-2.0"
 
@@ -74,10 +76,40 @@ def build_limits() -> dict[str, Any]:
     return {"max_request_line_bytes": MAX_REQUEST_LINE_BYTES}
 
 
+def schema_builder() -> SchemaBuilder:
+    """A builder whose ``$defs`` the typed schemas below reference."""
+    return SchemaBuilder(open_shapes=records.OPEN_SHAPES)
+
+
+def typed_params(s: SchemaBuilder, verb: str) -> dict[str, Any]:
+    """``verb``'s params schema with :data:`records.PARAM_TYPES` substituted into ``s``."""
+    from tau_agent_core.rpc.commands import COMMAND_TABLE  # see module docstring
+
+    return typed(s, COMMAND_TABLE[verb].params_schema, records.PARAM_TYPES.get(verb, {}), verb)
+
+
+def typed_result(s: SchemaBuilder, verb: str) -> dict[str, Any]:
+    """``verb``'s result schema with :data:`records.RESULT_TYPES` substituted into ``s``.
+
+    Raises:
+        TypeError: a declined verb, which has no result.
+    """
+    from tau_agent_core.rpc.commands import COMMAND_TABLE  # see module docstring
+
+    declared = COMMAND_TABLE[verb].result_schema
+    if declared is None:
+        raise TypeError(f"RPC {verb!r} declares no result schema")
+    return typed(s, declared, records.RESULT_TYPES.get(verb, {}), verb)
+
+
 def build_capabilities() -> dict[str, Any]:
     """The `get_capabilities` payload (K1): `{protocol_version, dialect,
     commands[], events[], event_schema, ui_methods[], declined[{name,
-    reason}], limits{}}`.
+    reason}], limits{}, $defs}`.
+
+    Each row's schemas are typed to their leaves (`typed_params`,
+    `typed_result`), so they reference records by `#/$defs/Name`, which
+    resolves against this document.
 
     `commands[]` and `declined[]` are a WALK of `commands.COMMAND_TABLE` —
     never hand-copied (§6's whole point: the table and the document must be
@@ -91,6 +123,7 @@ def build_capabilities() -> dict[str, Any]:
     """
     from tau_agent_core.rpc.commands import COMMAND_TABLE  # see module docstring
 
+    s = schema_builder()
     commands_out: list[dict[str, Any]] = []
     declined_out: list[dict[str, Any]] = []
     for entry in COMMAND_TABLE.values():
@@ -103,8 +136,8 @@ def build_capabilities() -> dict[str, Any]:
                     "tier": entry.tier,
                     "since": entry.since,
                     "notes": entry.notes,
-                    "params_schema": entry.params_schema,
-                    "result_schema": entry.result_schema,
+                    "params_schema": typed_params(s, entry.name),
+                    "result_schema": typed_result(s, entry.name),
                 }
             )
     commands_out.sort(key=lambda c: (c["tier"], c["name"]))
@@ -121,4 +154,5 @@ def build_capabilities() -> dict[str, Any]:
         "ui_methods": [],
         "declined": declined_out,
         "limits": build_limits(),
+        "$defs": dict(sorted(s.defs.items())),
     }

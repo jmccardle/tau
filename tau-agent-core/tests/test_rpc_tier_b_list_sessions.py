@@ -57,11 +57,12 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.cursor import Cursor
-from tau_agent_core.rpc import commands, dialect
+from tau_agent_core.rpc import capabilities, commands, dialect
 from tau_agent_core.rpc.dialect import SESSION_NOT_PERSISTED
 from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
 from tau_agent_core.session_log import InMemorySessionLog, default_leaf
+from tau_agent_core.testing.schema_check import validate
 from tau_llm.types import Model
 
 _CWD = "/work"
@@ -611,6 +612,32 @@ class _DeclaresARootDoc(InMemorySessionLog):
     `_DURABLE_LOCATION_ATTRS`, so the predicate cannot be a `path` check."""
 
     root_doc_id = 41
+
+
+async def test_the_lifecycle_answers_fit_their_published_typed_schemas(
+    handler: RPCHandler, catalog: _FakeCatalog
+) -> None:
+    """Strictly: every field these verbs answer is one their typed result declares.
+
+    Serve runs the other verbs through the same handlers and validates them;
+    these five it answers itself, so this is where their typing is held.
+    """
+    doc = capabilities.build_capabilities()
+    schemas = {row["name"]: row["result_schema"] for row in doc["commands"]}
+    persisted = catalog.create(_CWD, "m", "openai", name="kept")
+    await Cursor.newest(persisted).append_message({"role": "user", "content": "hi"})
+    calls = [
+        ("new_session", {}),
+        ("list_sessions", {}),
+        ("switch_session", {"session_id": persisted.id}),
+        ("fork", {}),
+        ("get_capabilities", {}),
+    ]
+    for method, params in calls:
+        response = await _call(handler, method, **params)
+        assert "error" not in response, (method, response)
+        result = {k: v for k, v in response["result"].items() if k != "method"}
+        validate(result, schemas[method], doc, strict=True)
 
 
 @pytest.mark.parametrize(

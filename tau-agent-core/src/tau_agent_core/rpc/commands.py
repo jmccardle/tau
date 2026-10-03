@@ -711,6 +711,13 @@ GET_CAPABILITIES_RESULT_SCHEMA: dict[str, Any] = {
                 "honoring E3 gets for free."
             ),
         },
+        "$defs": {
+            "type": "object",
+            "description": (
+                "Every record the schemas in `commands` reference, by name: a "
+                "`$ref` of `#/$defs/Name` resolves against this document."
+            ),
+        },
     },
     "required": [
         "protocol_version",
@@ -721,6 +728,7 @@ GET_CAPABILITIES_RESULT_SCHEMA: dict[str, Any] = {
         "ui_methods",
         "declined",
         "limits",
+        "$defs",
     ],
 }
 

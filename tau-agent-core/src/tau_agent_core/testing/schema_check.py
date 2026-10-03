@@ -1,7 +1,7 @@
-"""A JSON Schema validator for the subset ``docs/serve-protocol.schema.json`` uses.
+"""A JSON Schema validator for the subset ``tau_agent_core.json_schema`` emits.
 
-``jsonschema`` is not a dependency of this repo, and the serve protocol's schema
-uses a dozen keywords, so the tests validate real frames with this instead. An
+``jsonschema`` is not a dependency of this repo, and the RPC and serve schemas
+use a dozen keywords, so the tests validate real answers with this instead. An
 unknown keyword raises rather than passing, so the subset cannot silently shrink.
 
 ``strict`` also refuses a key an object schema does not declare where the schema
@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import re
 from typing import Any
+
+__all__ = ["SchemaError", "open_nodes", "validate"]
 
 _ANNOTATIONS = {"description", "default", "title", "$schema", "x-result", "x-data"}
 _TYPES = {
@@ -43,6 +45,7 @@ def _same(a: Any, b: Any) -> bool:
 
 
 def _errors(value: Any, schema: Any, root: dict[str, Any], path: str, strict: bool) -> list[str]:
+    """Every violation of ``schema`` by ``value``, each prefixed with its JSON path."""
     if schema is True:
         return []
     if schema is False:
@@ -118,3 +121,28 @@ def _errors(value: Any, schema: Any, root: dict[str, Any], path: str, strict: bo
     if "not" in schema and not _errors(value, schema["not"], root, path, strict):
         errors.append(f"{path}: matches a schema it must not")
     return errors
+
+
+def open_nodes(node: Any, path: str) -> list[str]:
+    """Each array without ``items``, and object with neither fields nor a value type, under ``node``.
+
+    Such a node leaves its shape to prose, so a client generating types from the
+    schema gets nothing for it. An explicit ``dict[str, Any]`` is not open: it
+    declares its values as anything.
+    """
+    if not isinstance(node, dict) or "$ref" in node:
+        return []
+    kinds = node.get("type")
+    kinds = kinds if isinstance(kinds, list) else [kinds]
+    found = []
+    if "array" in kinds and "items" not in node:
+        found.append(path + "[]")
+    if "object" in kinds and "properties" not in node and "additionalProperties" not in node:
+        found.append(path + "{}")
+    for name, sub in node.get("properties", {}).items():
+        found += open_nodes(sub, f"{path}.{name}")
+    found += open_nodes(node.get("items"), path + "[]")
+    for key in ("anyOf", "oneOf"):
+        for sub in node.get(key, []):
+            found += open_nodes(sub, path)
+    return found

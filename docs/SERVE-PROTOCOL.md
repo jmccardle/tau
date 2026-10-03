@@ -492,7 +492,7 @@ Every `$defs` entry the requests above do not already show, by name.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `status` | `"aborted"` | yes | Always 'aborted'. |
-| `compaction_id` | ['string', 'null'] | yes | The compaction this abort's signal was delivered to, or null when none was in flight (finding 5, Tier B review). Present so a host knows to expect a compaction_end carrying cancelled: true for that id. Whether the compaction actually stopped is reported THERE and not here — same signal-vs-outcome split that keeps `leaf` off this response. |
+| `compaction_id` | string \| `null` | yes | The compaction this abort's signal was delivered to, or null when none was in flight (finding 5, Tier B review). Present so a host knows to expect a compaction_end carrying cancelled: true for that id. Whether the compaction actually stopped is reported THERE and not here — same signal-vs-outcome split that keeps `leaf` off this response. |
 
 ### AgentEventEvent
 
@@ -512,8 +512,8 @@ A `agent_event` event.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `handled` | boolean | yes | Whether the extension that raised the request was loaded and ran its action. FALSE still means the response was appended and the lock released — a lock whose owner cannot answer must not become a session nobody can continue — so a host reports it as a warning and carries on, rather than as a failure to retry. |
-| `output` | ['string', 'null'] | yes | What the dispatched command produced, or null. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf after the response was appended (E5 rule 1). The append is what RELEASES the lock — appending moves the cursor and a lock is read at the cursor — so this value is the evidence the session is answerable again. |
+| `output` | string \| `null` | yes | What the dispatched command produced, or null. |
+| `leaf` | string \| `null` | yes | cursor.leaf after the response was appended (E5 rule 1). The append is what RELEASES the lock — appending moves the cursor and a lock is read at the cursor — so this value is the evidence the session is answerable again. |
 
 ### Argument
 
@@ -596,7 +596,7 @@ The `@` token at the caret and what it completes to.
 
 ### AttachmentReport
 
-What `Submit.expand_attachments` did.
+What a submission's `expand_attachments` did.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -653,7 +653,7 @@ One slash command a session answers, as RPC `get_commands` lists it.
 
 ### CommandOutput
 
-An extension command's completion, as RPC's `submit` answer names it.
+An extension command's completion, as `submit`'s answer names it.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -665,7 +665,7 @@ An extension command's completion, as RPC's `submit` answer names it.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `messages` | list of [ContextMessage](#contextmessage) | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf after the mutation (E5 rule 1). |
+| `leaf` | string \| `null` | yes | cursor.leaf after the mutation (E5 rule 1). |
 
 ### CompactResult
 
@@ -679,9 +679,9 @@ An extension command's completion, as RPC's `submit` answer names it.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `compaction_id` | string | yes | The id the compact acknowledgement returned (correlation). |
-| `request_id` | ['integer', 'null'] | yes | The JSON-RPC id of the compact request that started this compaction — null when that request was a notification (no id), which is the one case compaction_id is the only correlation handle. |
+| `request_id` | integer \| `null` | yes | The JSON-RPC id of the compact request that started this compaction — null when that request was a notification (no id), which is the one case compaction_id is the only correlation handle. |
 | `is_error` | boolean | yes | True when AgentSession.compact() raised (e.g. CompactionError — summary generation failed and, Fail-Early, nothing was written). `error` carries the detail and `performed` is absent. |
-| `error` | ['string', 'null'] | no | The exception's repr when is_error, else null. |
+| `error` | string \| `null` | no | The exception's repr when is_error, else null. |
 | `cancelled` | boolean | yes | True when a host's `abort` stopped this compaction part-way (finding 5, Tier B review). Nothing was written — the summary is generated before the entry is appended — so `performed` is ABSENT, exactly as it is when is_error is true, and `leaf` is the unchanged tip. False on every other outcome rather than omitted: absence is not this tier's way of saying anything (E5 rule 3). A compaction cancelled by SHUTDOWN never reaches this notification at all — that one reports on stderr (D-5, T4). |
 | `performed` | boolean | no | False when AgentSession.compact() returned None — a real outcome (nothing to compact), not an error, and the expected answer under the shipped keep_recent_tokens for any conversation smaller than it, because the cut then removes nothing. Absent entirely when is_error or cancelled is true. Every CompactionResult field below is absent unless this is true. |
 | `summary` | string | no | CompactionResult.summary — the generated text. |
@@ -692,7 +692,7 @@ An extension command's completion, as RPC's `submit` answer names it.
 | `read_files` | list of string | no | CompactionDetails.read_files ([] when details is None). |
 | `modified_files` | list of string | no | CompactionDetails.modified_files ([] when details is None). |
 | `usage` | [Usage](#usage) | no | What GENERATING this summary cost (CompactionResult.usage) — routinely the priciest single call in a session; distinct from tokens_saved, which is what compaction bought. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf once the compaction finished (E5/F3): the post-compaction tip when performed is true, else the unchanged tip. |
+| `leaf` | string \| `null` | yes | cursor.leaf once the compaction finished (E5/F3): the post-compaction tip when performed is true, else the unchanged tip. |
 
 ### CompactionEndEvent
 
@@ -927,7 +927,7 @@ An extension's message (`messages.create_custom_message`); the model sees it as 
 | `path` | string | yes | The managed path the action resolved to. NOT always what was sent: `path` accepts a file stem as well as a full path, and this is the full path it matched. On a failed resolution it is the unresolved string, so a host can quote back what it asked for. |
 | `ok` | boolean | yes | Whether the action changed anything. false is a reportable no-op, never an error: an unknown target, an already-enabled extension, an already-disabled one. A hard failure — a file that no longer imports, which only reload can hit — RAISES instead and reaches the host as INTERNAL_ERROR, with the extension left torn down. |
 | `message` | string | yes | The human-readable line, the same one the TUI listing shows. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf — E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has. |
+| `leaf` | string \| `null` | yes | cursor.leaf — E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has. |
 
 ### DispatchedCommand
 
@@ -979,7 +979,7 @@ A splice anchor with no summary: the path before `firstKeptId` leaves the contex
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `messages` | list of [ContextMessage](#contextmessage) | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf after the mutation (E5 rule 1). |
+| `leaf` | string \| `null` | yes | cursor.leaf after the mutation (E5 rule 1). |
 
 ### EnableExtensionResult
 
@@ -989,7 +989,7 @@ A splice anchor with no summary: the path before `firstKeptId` leaves the contex
 | `path` | string | yes | The managed path the action resolved to. NOT always what was sent: `path` accepts a file stem as well as a full path, and this is the full path it matched. On a failed resolution it is the unresolved string, so a host can quote back what it asked for. |
 | `ok` | boolean | yes | Whether the action changed anything. false is a reportable no-op, never an error: an unknown target, an already-enabled extension, an already-disabled one. A hard failure — a file that no longer imports, which only reload can hit — RAISES instead and reaches the host as INTERNAL_ERROR, with the extension left torn down. |
 | `message` | string | yes | The human-readable line, the same one the TUI listing shows. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf — E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has. |
+| `leaf` | string \| `null` | yes | cursor.leaf — E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has. |
 
 ### Entry
 
@@ -1071,7 +1071,7 @@ One of: [EntryOpenEvent](#entryopenevent), [EntryFinalEvent](#entryfinalevent), 
 
 ### ExtensionInfo
 
-One loaded extension and what it registered, as RPC `get_extension_state` lists it.
+One loaded extension and what it registered, as `get_extension_state` lists it.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -1086,11 +1086,11 @@ One loaded extension and what it registered, as RPC `get_extension_state` lists 
 
 ### ExtensionRequest
 
-An extension request at a cursor, as RPC `get_pending_request` answers it (docs/EXTENSION-LOCKS.md).
+An extension request at a cursor, as `get_pending_request` answers it (docs/EXTENSION-LOCKS.md).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `entry_id` | string | yes | The request entry's id; `AnswerRequest` names it. |
+| `entry_id` | string | yes | The request entry's id; `answer_request` names it. |
 | `extension` | string | yes |  |
 | `extension_name` | string | yes | The display stem of `extension`. |
 | `sentence` | string | yes |  |
@@ -1189,7 +1189,7 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `text` | ['string', 'null'] | yes | The last assistant message's concatenated 'text' content blocks, trimmed. null if no qualifying assistant message exists YET, or if one exists but it has no text (e.g. a pure tool-call turn) — the two cases are DELIBERATELY indistinguishable on the wire, matching pi's own `getLastAssistantText(): string \| undefined` (pi agent-session.ts:3092) and its RPC verb (rpc-mode.ts:609-612, docs/rpc.md: 'Returns {"text": null} if no assistant messages exist' — silent on the second null-producing case, because on the wire there is only one representable 'nothing' and pi does not either). |
+| `text` | string \| `null` | yes | The last assistant message's concatenated 'text' content blocks, trimmed. null if no qualifying assistant message exists YET, or if one exists but it has no text (e.g. a pure tool-call turn) — the two cases are DELIBERATELY indistinguishable on the wire, matching pi's own `getLastAssistantText(): string \| undefined` (pi agent-session.ts:3092) and its RPC verb (rpc-mode.ts:609-612, docs/rpc.md: 'Returns {"text": null} if no assistant messages exist' — silent on the second null-producing case, because on the wire there is only one representable 'nothing' and pi does not either). |
 
 ### GetMessagesResult
 
@@ -1213,7 +1213,7 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `name` | ['string', 'null'] | yes | The session's durable display name, or null if never set (extension_types.read_session_name). |
+| `name` | string \| `null` | yes | The session's durable display name, or null if never set (extension_types.read_session_name). |
 
 ### GetSessionStatsResult
 
@@ -1236,7 +1236,7 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 | `model` | [ModelSpec](#modelspec) | yes | AgentSession.get_model(): {id, provider, context_window}. |
 | `usage` | [Usage](#usage) \| null | yes | AgentSession.get_usage() — null before the first completion. |
 | `message_count` | integer | yes | len(AgentSession.messages). |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf (F3: no host may cache 'the tip'). |
+| `leaf` | string \| `null` | yes | cursor.leaf (F3: no host may cache 'the tip'). |
 | `addressable` | boolean | yes | Whether the CURRENT session is persisted: true if list_sessions returns it and switch_session can reach it later. The same predicate new_session/fork/switch_session publish on their session tuple, asked about the session this connection is on right now. False means the appending verbs (set_model, set_session_name, compact — D-7) will refuse with -32004 SESSION_NOT_PERSISTED, and nothing this connection does is written to the store. Reachable without a respawn: new_session {"persist": true} moves onto a persisted session. |
 
 ### GetToolsResult
@@ -1250,7 +1250,7 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `nodes` | list of object | yes | Every entry in the log, in the order a browser draws them — preorder over the parent/child tree, roots in load order, children oldest first. FLAT, with `parent_id` carrying the shape: a nested projection of a long linear conversation is one nesting level per message, which is a serializer's recursion limit rather than a tree anyone wanted. Nothing is filtered out — which rows a browser declines to draw (a `navigate` with one child) is the reader's rule, not the log's. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf at the moment of the read, duplicated out of `nodes` so a host finds it without scanning. Null on a session whose cursor names no entry, which is also the one case in which no node carries is_leaf: true. |
+| `leaf` | string \| `null` | yes | cursor.leaf at the moment of the read, duplicated out of `nodes` so a host finds it without scanning. Null on a session whose cursor names no entry, which is also the one case in which no node carries is_leaf: true. |
 | `count` | integer | yes | len(nodes). Present so a host can check it read a whole tree rather than a truncated one: this read is UNBOUNDED by design — the shape IS the answer and a bounded shape is a different tree — which is why it is a pull and is never pushed (G3). |
 
 ### HelloResult
@@ -1369,7 +1369,7 @@ Legacy: the config model from here on, before config entries.
 
 ### ModelRecord
 
-One model the daemon's config defines, as RPC `get_models` lists it.
+One model the config defines, as `get_models` lists it.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -1405,7 +1405,7 @@ Legacy: a recorded move to `targetId`, written before cursors (docs/CURSORS.md �
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `messages` | list of [ContextMessage](#contextmessage) | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf after the mutation (E5 rule 1). |
+| `leaf` | string \| `null` | yes | cursor.leaf after the mutation (E5 rule 1). |
 
 ### NextStepResult
 
@@ -1474,7 +1474,7 @@ A panel body of text.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `minted_ids` | list of string | yes | The ids minted, in the order they were appended. The first is the copy of `source_id` itself. Ids rather than messages because a paste edits the TREE and never moves the leaf: the current context is unchanged, so there is nothing to re-render until someone navigates onto the copy. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf after the paste — E5 rule 1, and here it is the UNCHANGED tip, present because absence is never a signal (rule 3), not because anything moved. |
+| `leaf` | string \| `null` | yes | cursor.leaf after the paste — E5 rule 1, and here it is the UNCHANGED tip, present because absence is never a signal (rule 3), not because anything moved. |
 
 ### PathMatch
 
@@ -1540,7 +1540,7 @@ A flow with every required argument bound: the mutation, and what to call it wit
 | `path` | string | yes | The managed path the action resolved to. NOT always what was sent: `path` accepts a file stem as well as a full path, and this is the full path it matched. On a failed resolution it is the unresolved string, so a host can quote back what it asked for. |
 | `ok` | boolean | yes | Whether the action changed anything. false is a reportable no-op, never an error: an unknown target, an already-enabled extension, an already-disabled one. A hard failure — a file that no longer imports, which only reload can hit — RAISES instead and reaches the host as INTERNAL_ERROR, with the extension left torn down. |
 | `message` | string | yes | The human-readable line, the same one the TUI listing shows. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf — E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has. |
+| `leaf` | string \| `null` | yes | cursor.leaf — E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has. |
 
 ### RequestClosedEvent
 
@@ -1661,7 +1661,7 @@ One line of `ListSessions`' answer: RPC's row, plus where and whether it is load
 
 ### SessionScope
 
-What universe a listing is: the daemon's store, and `cwd` `None` for every directory.
+What universe a listing is: a store, and the `cwd` it is scoped to, `None` for every one.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -1670,22 +1670,22 @@ What universe a listing is: the daemon's store, and `cwd` `None` for every direc
 
 ### SessionTuple
 
-A loaded session, as RPC's session tuple names it.
+A session a connection drives (F2).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `store` | string | yes |  |
+| `store` | string | yes | The backend label of the connection's catalog. |
 | `session_id` | string | yes |  |
-| `cursor_id` | string | yes | Its head cursor. |
-| `leaf` | string \| null | yes | The head cursor's leaf. |
-| `addressable` | boolean | yes | Whether another request can name it; always true here. |
+| `cursor_id` | string | yes | The cursor the connection drives in it. |
+| `leaf` | string \| null | yes | That cursor's leaf. |
+| `addressable` | boolean | yes | Whether another call can name `session_id`; false for an in-memory session, which `list_sessions` never shows. |
 
 ### SetAutoCompactionResult
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `enabled` | boolean | yes | The effective state after this call (D-4: 'a plain, idempotent setter ... returns the effective state') — what AgentSession.set_auto_compaction returns, read back off the settings rather than echoed from the request. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf after this call (E5, rule 1 of 'E5 in Tier B' above). ALWAYS the unchanged tip: this verb mutates an in-memory CompactionSettings and appends no log entry, so there is nothing here that could move it. Returned rather than omitted because absence is not a signal (rule 3) — a host reads the same field from every mutator and never has to infer the tip from a missing key (F3). |
+| `leaf` | string \| `null` | yes | cursor.leaf after this call (E5, rule 1 of 'E5 in Tier B' above). ALWAYS the unchanged tip: this verb mutates an in-memory CompactionSettings and appends no log entry, so there is nothing here that could move it. Returned rather than omitted because absence is not a signal (rule 3) — a host reads the same field from every mutator and never has to infer the tip from a missing key (F3). |
 
 ### SetExtensionConfigResult
 
@@ -1695,21 +1695,21 @@ A loaded session, as RPC's session tuple names it.
 | `path` | string | yes | The managed path the action resolved to. NOT always what was sent: `path` accepts a file stem as well as a full path, and this is the full path it matched. On a failed resolution it is the unresolved string, so a host can quote back what it asked for. |
 | `ok` | boolean | yes | Whether the action changed anything. false is a reportable no-op, never an error: an unknown target, an already-enabled extension, an already-disabled one. A hard failure — a file that no longer imports, which only reload can hit — RAISES instead and reaches the host as INTERNAL_ERROR, with the extension left torn down. |
 | `message` | string | yes | The human-readable line, the same one the TUI listing shows. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf — E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has. |
+| `leaf` | string \| `null` | yes | cursor.leaf — E5 rule 1 on a mutator whose whole product is runtime state. It is the live tip reported as a READ, not a claim that this call wrote anything; the same reading set_auto_compaction's cursor already has. |
 
 ### SetModelResult
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `model` | [ModelSpec](#modelspec) | yes | AgentSession.get_model() after the switch: {id, provider, context_window}. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf immediately after the model_change entry this call appended (E5) — that entry's own id, since the append is the last write this handler makes. |
+| `leaf` | string \| `null` | yes | cursor.leaf immediately after the model_change entry this call appended (E5) — that entry's own id, since the append is the last write this handler makes. |
 
 ### SetSessionNameResult
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | The name just persisted (echoes params.name). |
-| `leaf` | ['string', 'null'] | yes | The resulting cursor.leaf (E5/F3 — every mutating response returns the resulting leaf). |
+| `leaf` | string \| `null` | yes | The resulting cursor.leaf (E5/F3 — every mutating response returns the resulting leaf). |
 
 ### SubmissionEndChannel
 
@@ -1788,7 +1788,7 @@ A submission admitted to run a turn.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `messages` | list of [ContextMessage](#contextmessage) | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
-| `leaf` | ['string', 'null'] | yes | cursor.leaf after the mutation (E5 rule 1). |
+| `leaf` | string \| `null` | yes | cursor.leaf after the mutation (E5 rule 1). |
 
 ### SummaryMessage
 
