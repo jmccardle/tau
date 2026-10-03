@@ -1421,6 +1421,7 @@
           ]
         },
         "model": {
+          "description": "The config name of the model its next turn calls, as `set_model` takes it and `get_models` lists it; not the model id, which two names may share.",
           "type": "string"
         },
         "owner_id": {

@@ -504,6 +504,11 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
 - **RPC says `cursor` where it means an entry id** — **done 2026-10-03, RPC
   2.0 / serve 0.5** (`docs/TAU-SERVE.md` §7.4). The entry id is `leaf`, the caret
   is `offset`, `is_cursor` is `is_leaf`. tau-code needs the matching update.
+- **RPC's `get_state` names the model by id only** (found 2026-10-03). Two
+  config names may resolve to one id, so a stdio host cannot tell which
+  `get_models` row is running (`get_models`' own notes call this known gap 1).
+  `AgentSession.model_name` holds the config name and serve's `CursorState.model`
+  carries it; `get_state` could add it as `model_name`.
 - **RPC's result schemas leave shapes as prose** — **done 2026-10-03, RPC
   2.1** (`docs/TAU-SERVE.md` §5 built note). The records and the schema
   generator are in core; `get_capabilities` and `docs/RPC-PROTOCOL.md` are

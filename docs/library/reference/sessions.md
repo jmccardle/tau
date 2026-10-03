@@ -755,6 +755,16 @@ file stem. ``None`` leaves the constructor-supplied map (default ``{}``).
 
 The model-input context at this session's cursor.
 
+### model_name
+
+`tau_agent_core.agent_session.AgentSession.model_name: str`
+
+The acting cursor's model's ``Model.name``.
+
+A head that builds models from config names them by their config key,
+the name :meth:`set_model` takes; :meth:`get_model`'s id is not one,
+because two names may resolve to one id.
+
 ### open_cursor
 
 ```python

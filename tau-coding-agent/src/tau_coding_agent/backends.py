@@ -995,6 +995,10 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     fresh backend would. Maps the ``backend`` provider field, derives the reasoning
     flag from a non-``off`` ``thinking`` level (or an explicit ``reasoning: true``),
     and carries the optional ``thinking_level_map``.
+
+    ``Model.name`` is ``config_name``, the config key the entry was found under,
+    so a head can name the running model as ``set_model`` takes it; an ad-hoc
+    ``--model`` id has no key and is named by its id.
     """
     model_id = config.get("model", "gpt-4")
     backend_type = config.get("backend", "openai").lower()
@@ -1090,7 +1094,7 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
 
     return Model(
         id=model_id,
-        name=model_id,
+        name=str(config.get("config_name", model_id)),
         api=api,
         provider=provider,
         base_url=base_url,
@@ -1160,7 +1164,7 @@ class ConfigModelResolver:
         if entry is None:
             known = ", ".join(self.model_names()) or "(none configured)"
             raise KeyError(f"unknown model {name!r}; configured models: {known}")
-        return build_model_from_config(entry)
+        return build_model_from_config({**entry, "config_name": name})
 
 
 def make_model_resolver(models: dict[str, Any]) -> ConfigModelResolver:

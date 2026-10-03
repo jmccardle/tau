@@ -197,6 +197,10 @@ NOT_EXPOSED: dict[str, str] = {
         "Awaits deliver_queued's background turns, for a caller that must know "
         "they finished; their events already reach a host on the bus."
     ),
+    "model_name": (
+        "Serve's CursorState.model reads it. RPC's get_state does not carry it "
+        "yet, so a stdio host cannot mark the active get_models row (ROADMAP)."
+    ),
     "acting_cursor": (
         "The cursor a call acts on: the head over stdio, the named cursor under "
         "tau serve. A host addresses it by `cursor_id`, never reads the object."

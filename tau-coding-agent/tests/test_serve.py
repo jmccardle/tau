@@ -152,7 +152,7 @@ async def test_a_turn_reaches_the_file_and_every_client_replica(served, tmp_path
     assert names[:1] == ["submission_start"] and names[-1] == "submission_end"
     assert on_disk[-1]["message"]["content"][0]["text"] == "re: hello"
     log = served.out.getvalue()
-    assert "turn started (fake-model): 'hello'" in log
+    assert "turn started (fake): 'hello'" in log
     assert "ended: 5 tokens" in log
     await one.close()
     await two.close()
@@ -249,7 +249,7 @@ async def test_two_cursors_stream_at_once_to_one_client(served, tmp_path):
 
     await _until(lambda: replica.seq == served.daemon.hosts[session_id].seq)
     states = replica.cursors
-    assert states[other]["model"] == "other-model"
+    assert states[other]["model"] == "other"
     texts = {
         e["message"]["content"][0]["text"]
         for e in replica.entries
@@ -556,12 +556,12 @@ async def test_an_rpc_verb_acts_at_the_named_cursor_not_the_head(served, tmp_pat
     assert replica.cursors[head]["leaf"] == head_leaf, "the head did not move"
     info = next(e for e in replica.entries if e["type"] == "session_info")
     assert info["parentId"] == user and named["leaf"] == info["id"]
-    assert replica.cursors[side]["model"] == "other-model"
-    assert replica.cursors[head]["model"] == "fake-model", "the head keeps its own model"
+    assert replica.cursors[side]["model"] == "other"
+    assert replica.cursors[head]["model"] == "fake", "the head keeps its own model"
     host = served.daemon.hosts[session_id]
     token = TURN_CURSOR.set(host.cursor(side))
     try:
-        assert host.cursor_model(host.cursor(head)) == "fake-model", "even inside the side's turn"
+        assert host.cursor_model(host.cursor(head)) == "fake", "even inside the side's turn"
     finally:
         TURN_CURSOR.reset(token)
     assert model["model"]["id"] == "other-model"

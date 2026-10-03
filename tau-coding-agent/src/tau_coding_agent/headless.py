@@ -100,7 +100,8 @@ def resolve_model_config(
 
     Returns ``(model_name, model_config)`` where ``model_config`` is the dict
     handed to :func:`tau_coding_agent.backends.create_backend` (keys
-    ``backend``/``model``/``base_url``/``api_key`` and optionally ``tools``).
+    ``backend``/``model``/``base_url``/``api_key`` and optionally ``tools``; a
+    config entry also sets ``config_name``, the key it was found under).
 
     Resolution order, mirroring the TUI and pi's ``resolveCliModel``:
       1. ``--model NAME`` matching a key in ``config["models"]`` → that entry.
@@ -129,7 +130,7 @@ def resolve_model_config(
     suffix_thinking: str | None = None
     if spec in models:
         # Exact config-key match wins (so a key may legitimately contain a colon).
-        model_config = dict(models[spec])
+        model_config = {**models[spec], "config_name": spec}
     else:
         head, sep, tail = spec.rpartition(":")
         spec_id = spec

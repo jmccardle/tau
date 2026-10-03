@@ -833,7 +833,7 @@ A live cursor as clients see it; sent whenever one opens, moves, closes or chang
 | `label` | string | yes |  |
 | `owner_id` | string \| null | yes |  |
 | `busy` | boolean | yes |  |
-| `model` | string | yes |  |
+| `model` | string | yes | The config name of the model its next turn calls, as `set_model` takes it and `get_models` lists it; not the model id, which two names may share. |
 | `request` | [ExtensionRequest](#extensionrequest) \| null | yes | The extension request at its leaf, or `None`. |
 
 ### CursorsEvent

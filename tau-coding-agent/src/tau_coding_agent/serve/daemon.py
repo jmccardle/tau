@@ -357,10 +357,10 @@ class SessionHost:
         raise RequestError("not_found", f"{self.tag} has no cursor {cursor_id!r}")
 
     def cursor_model(self, cursor: Cursor) -> str:
-        """The model id ``cursor``'s next turn calls, read with ``cursor`` bound as the acting one."""
+        """The config name of the model ``cursor``'s next turn calls, read with ``cursor`` acting."""
         token = TURN_CURSOR.set(cursor)
         try:
-            return str(self.agent_session.get_model()["id"])
+            return str(self.agent_session.model_name)
         finally:
             TURN_CURSOR.reset(token)
 

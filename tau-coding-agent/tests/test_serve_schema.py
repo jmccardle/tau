@@ -216,7 +216,7 @@ async def test_every_frame_a_session_produces_validates_against_the_schema(daemo
         p.PerformReady(session_id=sid, cursor_id=head, ready=p.Ready(**ready))
     )
     assert performed["arm"] == "Performed" and performed["mutation"] == "set_model"
-    await _until(lambda: host.cursor_states()[0].model == "other-model")
+    await _until(lambda: host.cursor_states()[0].model == "other")
 
     side = (await client.request(p.OpenCursor(session_id=sid, leaf=None, label="s")))["cursor_id"]
     await client.rpc("set_model", sid, side, name="fake")

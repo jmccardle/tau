@@ -372,6 +372,9 @@ class CursorState:
     """A live cursor as clients see it; sent whenever one opens, moves, closes or changes busy.
 
     Attributes:
+        model: The config name of the model its next turn calls, as ``set_model``
+            takes it and ``get_models`` lists it; not the model id, which two
+            names may share.
         request: The extension request at its leaf, or ``None``.
     """
 

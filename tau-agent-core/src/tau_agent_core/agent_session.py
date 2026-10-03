@@ -928,6 +928,17 @@ class AgentSession:
         """
         return self._cursor.turn_lock
 
+    @property
+    @agent_facing(topic="sessions")
+    def model_name(self) -> str:
+        """The acting cursor's model's ``Model.name``.
+
+        A head that builds models from config names them by their config key,
+        the name :meth:`set_model` takes; :meth:`get_model`'s id is not one,
+        because two names may resolve to one id.
+        """
+        return self._turn_model().name
+
     def get_model(self) -> dict[str, Any]:
         """The active model as ``{id, provider, context_window}`` (S45).
 
