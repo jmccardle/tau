@@ -1477,7 +1477,7 @@ class ExtensionContext:
 
 @agent_facing(topic="extensions")
 async def apply_session_name(session: Any, name: str) -> None:
-    """Append a ``session_info`` entry naming ``session``, at its cursor.
+    """Append a ``session_info`` entry naming ``session``, at the cursor acting now.
 
     The model never sees a ``session_info``; the picker and the TUI title read
     the newest one (:func:`~tau_agent_core.session_log.session_name`). Whether
@@ -1489,7 +1489,7 @@ async def apply_session_name(session: Any, name: str) -> None:
     """
     if not name:
         raise ValueError("set_session_name: name must be a non-empty string")
-    await session.cursor.append("session_info", name=name)
+    await session._turn_cursor().append("session_info", name=name)
 
 
 @agent_facing(topic="extensions")

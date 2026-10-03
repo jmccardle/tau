@@ -1762,7 +1762,7 @@ async apply_session_name(session: Any, name: str) -> None
 
 `tau_agent_core.extension_types.apply_session_name`
 
-Append a ``session_info`` entry naming ``session``, at its cursor.
+Append a ``session_info`` entry naming ``session``, at the cursor acting now.
 
 The model never sees a ``session_info``; the picker and the TUI title read
 the newest one (:func:`~tau_agent_core.session_log.session_name`). Whether

@@ -288,3 +288,219 @@ def test_the_schema_names_every_request_and_the_checked_in_copy_is_current():
     root = Path(__file__).resolve().parents[2]
     assert (root / "docs" / "SERVE-PROTOCOL.md").read_text() == render_markdown()
     assert (root / "docs" / "serve-protocol.schema.json").read_text() == render_schema()
+
+
+async def _session_with_a_turn(client: ServeClient, cwd: Path, text: str = "hello"):
+    session_id = (await client.request(p.CreateSession(cwd=str(cwd))))["session_id"]
+    replica = await client.attach(session_id)
+    await client.request(
+        p.Submit(session_id=session_id, cursor_id=replica.head_cursor_id, text=text)
+    )
+    return session_id, replica
+
+
+def _user_entry(entries: list[dict[str, Any]]) -> str:
+    return next(e["id"] for e in entries if e.get("message", {}).get("role") == "user")
+
+
+async def test_the_attach_answer_carries_the_whole_vocabulary_models_and_load_errors(
+    served, tmp_path
+):
+    extensions = tmp_path / "home" / ".tau" / "extensions"
+    extensions.mkdir(parents=True)
+    (extensions / "broken.py").write_text("raise RuntimeError('nope')\n")
+    (extensions / "greet.py").write_text(
+        "def register(api):\n"
+        "    api.register_command('greet', {'description': 'say hi', 'handler': "
+        "lambda args, ctx: None})\n"
+    )
+    client = await served.client()
+    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    replica = await client.attach(session_id)
+
+    commands = {c["name"]: c for c in replica.surface["commands"]}
+    assert commands["model"] == {
+        "name": "model",
+        "description": commands["model"]["description"],
+        "origin": "builtin",
+        "flow": True,
+        "hidden": False,
+    }
+    assert commands["tree"]["flow"] is False, "a view is not a flow"
+    assert commands["greet"]["origin"] == "extension" and not commands["greet"]["hidden"]
+    assert any(c["hidden"] and c["name"].endswith("greet") for c in commands.values())
+    [(path, error)] = replica.surface["load_errors"]
+    assert path.endswith("broken.py") and "nope" in error
+    assert [info["name"] for info in replica.surface["loaded"]] == ["greet"]
+    assert replica.models == [
+        {
+            "name": "fake",
+            "model": {"id": "fake-model", "provider": "openai", "context_window": 128000},
+        },
+        {
+            "name": "other",
+            "model": {"id": "other-model", "provider": "openai", "context_window": 128000},
+        },
+    ]
+    await client.close()
+
+
+async def test_next_step_and_enumerate_domain_answer_as_rpc_does(served, tmp_path):
+    client = await served.client()
+    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    await client.attach(session_id)
+
+    step = await client.request(p.NextStep(session_id=session_id, flow="model"))
+    assert step["status"] == "step" and step["ready"] is None
+    assert step["step"]["argument"]["name"] == "name"
+    assert step["step"]["domain"]["name"] == "model_name"
+    values = await client.request(p.EnumerateDomain(session_id=session_id, domain="model_name"))
+    assert values == {
+        "domain": "model_name",
+        "values": [{"value": "fake", "label": "fake"}, {"value": "other", "label": "other"}],
+        "total": 2,
+    }
+    ready = await client.request(
+        p.NextStep(session_id=session_id, flow="model", bound={"name": "other"})
+    )
+    assert ready["ready"] == {
+        "flow": "model",
+        "mutation": "set_model",
+        "arguments": {"name": "other"},
+    }
+    with pytest.raises(ServeError, match="not_found"):
+        await client.request(p.NextStep(session_id=session_id, flow="no-such-flow"))
+    with pytest.raises(ServeError, match="not_found"):
+        await client.request(p.EnumerateDomain(session_id=session_id, domain="no-such-domain"))
+    await client.close()
+
+
+async def test_a_command_missing_its_argument_answers_its_flow_step(served, tmp_path):
+    from tau_agent_core.flows import FlowStep
+
+    from tau_coding_agent.serve.remote import submission_result_from_wire
+
+    client = await served.client()
+    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    replica = await client.attach(session_id)
+
+    answer = await client.request(
+        p.Submit(session_id=session_id, cursor_id=replica.head_cursor_id, text="/model")
+    )
+
+    assert answer["command"]["arm"] == "FlowStep"
+    step = submission_result_from_wire(answer, "x").command
+    assert isinstance(step, FlowStep)
+    assert (step.flow, step.argument.name, step.domain.name) == ("model", "name", "model_name")
+    assert step.domain.field_kind == "select"
+    await client.close()
+
+
+async def test_complete_path_reads_the_sessions_cwd_not_the_daemons(served, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "notes.txt").write_text("x")
+    client = await served.client()
+    session_id = (await client.request(p.CreateSession(cwd=str(project))))["session_id"]
+
+    found = await client.request(p.CompletePath(session_id=session_id, text="see @no", offset=7))
+    assert found["completion"]["token"] == "no"
+    assert [m["name"] for m in found["completion"]["matches"]] == ["notes.txt"]
+    nothing = await client.request(p.CompletePath(session_id=session_id, text="plain", offset=5))
+    assert nothing == {"completion": None}
+    await client.close()
+
+
+async def test_get_tree_is_read_at_the_named_cursor(served, tmp_path):
+    client = await served.client()
+    session_id, replica = await _session_with_a_turn(client, tmp_path)
+    user = _user_entry(replica.entries)
+    side = (await client.request(p.OpenCursor(session_id=session_id, leaf=user)))["cursor_id"]
+
+    tree = await client.request(p.GetTree(session_id=session_id, cursor_id=side))
+    head = await client.request(p.GetTree(session_id=session_id, cursor_id=replica.head_cursor_id))
+
+    assert tree["leaf"] == user and tree["count"] == len(tree["nodes"]) == len(replica.entries)
+    assert [n["entry_id"] for n in tree["nodes"] if n["is_leaf"]] == [user]
+    assert head["leaf"] != user
+    assert set(tree["nodes"][0]) == set(p.TreeRow.__dataclass_fields__)
+    await client.close()
+
+
+async def test_fork_session_copies_into_a_new_session_and_leaves_the_source(served, tmp_path):
+    client = await served.client()
+    session_id, replica = await _session_with_a_turn(client, tmp_path)
+    user = _user_entry(replica.entries)
+    before = [e["id"] for e in replica.entries]
+
+    whole = (await client.request(p.ForkSession(session_id=session_id, at=None)))["session_id"]
+    at_user = (await client.request(p.ForkSession(session_id=session_id, at=user)))["session_id"]
+
+    assert len({session_id, whole, at_user}) == 3
+    copy = await client.attach(whole)
+    assert [e["id"] for e in copy.entries] == before
+    assert copy.cwd == replica.cwd
+    cut = await client.attach(at_user)
+    assert cut.entries[-1]["id"] == user
+    assert len(cut.entries) < len(before)
+    assert [e["id"] for e in replica.entries] == before, "the source is unchanged"
+    with pytest.raises(ServeError, match="not_found"):
+        await client.request(p.ForkSession(session_id=session_id, at="no-such-entry"))
+    rows = (await client.request(p.ListSessions()))["sessions"]
+    assert {whole, at_user} <= {row["id"] for row in rows}
+    await client.close()
+
+
+async def test_a_fork_command_answers_ready_for_the_client_to_perform(served, tmp_path):
+    client = await served.client()
+    session_id, replica = await _session_with_a_turn(client, tmp_path)
+
+    answer = await client.request(
+        p.Submit(session_id=session_id, cursor_id=replica.head_cursor_id, text="/fork")
+    )
+
+    assert answer["command"] == {
+        "arm": "Ready",
+        "flow": "fork",
+        "mutation": "fork",
+        "arguments": {},
+    }
+    await client.close()
+
+
+async def test_perform_acts_at_the_named_cursor_not_the_head(served, tmp_path):
+    client = await served.client()
+    session_id, replica = await _session_with_a_turn(client, tmp_path)
+    head = replica.head_cursor_id
+    head_leaf = replica.cursors[head]["leaf"]
+    user = _user_entry(replica.entries)
+    side = (await client.request(p.OpenCursor(session_id=session_id, leaf=head_leaf)))["cursor_id"]
+
+    await client.request(
+        p.Perform(
+            session_id=session_id,
+            cursor_id=side,
+            method="navigate_tree",
+            arguments={"target_id": user},
+        )
+    )
+    named = await client.request(
+        p.Perform(
+            session_id=session_id,
+            cursor_id=side,
+            method="set_session_name",
+            arguments={"name": "from the side"},
+        )
+    )
+
+    await _until(lambda: replica.seq == served.daemon.hosts[session_id].seq)
+    assert replica.cursors[head]["leaf"] == head_leaf, "the head did not move"
+    info = replica.entries[-1]
+    assert info["type"] == "session_info" and info["parentId"] == user
+    assert replica.cursors[side]["leaf"] == info["id"]
+    assert named["kind"] == "Performed" and named["fields"]["cursor"] == info["id"]
+    with pytest.raises(ServeError, match="bad_request"):
+        await client.request(
+            p.Perform(session_id=session_id, cursor_id=head, method="set_model", arguments={})
+        )
+    await client.close()

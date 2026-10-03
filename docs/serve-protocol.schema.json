@@ -162,7 +162,7 @@
         },
         "models": {
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/ModelRecord"
           },
           "type": "array"
         },
@@ -211,6 +211,37 @@
       ],
       "type": "object"
     },
+    "CommandInfo": {
+      "description": "One slash command a session answers, as RPC ``get_commands`` lists it.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "flow": {
+          "type": "boolean"
+        },
+        "hidden": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "builtin",
+            "extension"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "origin",
+        "flow",
+        "hidden"
+      ],
+      "type": "object"
+    },
     "Compare": {
       "description": "Open one cursor per model at ``leaf`` and send each the same text (docs/TAU-SERVE.md \u00a78).",
       "properties": {
@@ -247,6 +278,32 @@
         "leaf",
         "models",
         "text",
+        "type"
+      ],
+      "type": "object"
+    },
+    "CompletePath": {
+      "description": "Complete the ``@path`` at ``offset`` in ``text`` against the session's cwd.",
+      "properties": {
+        "offset": {
+          "type": "integer"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "complete_path"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "text",
+        "offset",
         "type"
       ],
       "type": "object"
@@ -371,6 +428,58 @@
       ],
       "type": "object"
     },
+    "EnumerateDomain": {
+      "description": "The values legal for a domain right now (RPC ``enumerate_domain``).",
+      "properties": {
+        "domain": {
+          "type": "string"
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "type": "integer"
+        },
+        "query": {
+          "type": "string"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "enum": [
+                "in_session",
+                "ancestors_of_cursor",
+                "descendants_of_cursor"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "enumerate_domain"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "domain",
+        "type"
+      ],
+      "type": "object"
+    },
     "Error": {
       "description": "Why a request failed. ``code`` is stable; ``message`` is for a human.",
       "properties": {
@@ -438,6 +547,112 @@
       ],
       "type": "object"
     },
+    "ExtensionInfo": {
+      "description": "One loaded extension and what it registered, as RPC ``get_extension_state`` lists it.",
+      "properties": {
+        "commands": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "content_hash": {
+          "type": "string"
+        },
+        "hooks": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "shortcuts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "subjects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "tools",
+        "commands",
+        "shortcuts",
+        "hooks",
+        "content_hash",
+        "subjects"
+      ],
+      "type": "object"
+    },
+    "ForkSession": {
+      "description": "Copy a session into a new one in the same cwd; answered with ``{session_id}``.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "fork_session"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "at",
+        "type"
+      ],
+      "type": "object"
+    },
+    "GetTree": {
+      "description": "Every entry of a session's tree as a browser row, seen from one cursor.",
+      "properties": {
+        "cursor_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "get_tree"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id",
+        "type"
+      ],
+      "type": "object"
+    },
     "Hello": {
       "description": "The first request on every connection; nothing else is served before it.",
       "properties": {
@@ -484,6 +699,42 @@
       ],
       "type": "object"
     },
+    "ModelRecord": {
+      "description": "One model the daemon's config defines, as RPC ``get_models`` lists it.",
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/ModelSpec"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "model"
+      ],
+      "type": "object"
+    },
+    "ModelSpec": {
+      "description": "What a config model name resolves to.",
+      "properties": {
+        "context_window": {
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "provider": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "provider",
+        "context_window"
+      ],
+      "type": "object"
+    },
     "MoveCursor": {
       "description": "Move a cursor to ``leaf``. Writes nothing.",
       "properties": {
@@ -513,6 +764,49 @@
         "session_id",
         "cursor_id",
         "leaf",
+        "type"
+      ],
+      "type": "object"
+    },
+    "NextStep": {
+      "description": "The next argument a flow needs, or the mutation it is ready for (RPC ``next_step``).",
+      "properties": {
+        "bound": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "flow": {
+          "type": "string"
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "next_step"
+          ]
+        }
+      },
+      "required": [
+        "session_id",
+        "flow",
         "type"
       ],
       "type": "object"
@@ -560,11 +854,14 @@
       "type": "object"
     },
     "Perform": {
-      "description": "Call one of the session backend's operations on the head cursor's tree.",
+      "description": "Call one of the session backend's operations, acting at ``cursor_id``.",
       "properties": {
         "arguments": {
           "additionalProperties": {},
           "type": "object"
+        },
+        "cursor_id": {
+          "type": "string"
         },
         "method": {
           "type": "string"
@@ -580,6 +877,7 @@
       },
       "required": [
         "session_id",
+        "cursor_id",
         "method",
         "type"
       ],
@@ -786,7 +1084,7 @@
       "type": "object"
     },
     "Surface": {
-      "description": "What a session's loaded extensions add, which a head reads without a round trip.",
+      "description": "What a session answers beyond its tree, which a head reads without a round trip.",
       "properties": {
         "command_args": {
           "additionalProperties": {
@@ -803,10 +1101,7 @@
         },
         "commands": {
           "items": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
+            "$ref": "#/$defs/CommandInfo"
           },
           "type": "array"
         },
@@ -814,6 +1109,21 @@
           "items": {
             "items": {},
             "type": "array"
+          },
+          "type": "array"
+        },
+        "load_errors": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "loaded": {
+          "items": {
+            "$ref": "#/$defs/ExtensionInfo"
           },
           "type": "array"
         },
@@ -831,7 +1141,118 @@
         "commands",
         "command_args",
         "shortcuts",
-        "extensions"
+        "extensions",
+        "loaded",
+        "load_errors"
+      ],
+      "type": "object"
+    },
+    "TreeRow": {
+      "description": "One :class:`GetTree` row: RPC ``get_tree``'s node, with ``is_cursor`` named ``is_leaf``.",
+      "properties": {
+        "copyable": {
+          "type": "boolean"
+        },
+        "entry_id": {
+          "type": "string"
+        },
+        "estimated_tokens": {
+          "type": "integer"
+        },
+        "first_kept_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "from_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "is_leaf": {
+          "type": "boolean"
+        },
+        "is_system": {
+          "type": "boolean"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preview": {
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "timestamp": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tool_call_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entry_id",
+        "parent_id",
+        "kind",
+        "role",
+        "preview",
+        "is_leaf",
+        "timestamp",
+        "first_kept_id",
+        "from_id",
+        "is_system",
+        "tool_call_ids",
+        "tool_call_id",
+        "copyable",
+        "estimated_tokens"
       ],
       "type": "object"
     }
@@ -1126,6 +1547,96 @@
         "required": [
           "id"
         ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/NextStep"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/EnumerateDomain"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/CompletePath"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/GetTree"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
+      },
+      {
+        "allOf": [
+          {
+            "$ref": "#/$defs/ForkSession"
+          },
+          {
+            "properties": {
+              "id": {
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "required": [
+          "id"
+        ]
       }
     ]
   },
@@ -1139,5 +1650,5 @@
       }
     ]
   },
-  "title": "tau serve protocol 0.1"
+  "title": "tau serve protocol 0.2"
 }

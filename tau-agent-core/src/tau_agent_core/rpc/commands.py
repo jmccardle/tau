@@ -205,8 +205,8 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Liter
 from uuid import uuid4
 
 from tau_agent_core.agent_session_runtime import DEFAULT_SWAP_TIMEOUT_S
-from tau_agent_core.commands import FRONTEND_COMMANDS
 from tau_agent_core.flows import Dispatched, FlowStep, Performed, Ready, View
+from tau_agent_core.projections import MODEL_CATALOG_ATTR, resolver_error_message
 from tau_agent_core.rpc import capabilities
 from tau_agent_core.rpc.schema import params_schema_for, result_schema_for
 from tau_agent_core.session_log import (
@@ -1240,40 +1240,9 @@ async def _handle_get_messages(
 async def _handle_get_commands(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    vocabulary = handler.session.vocabulary
-    listed: list[dict[str, Any]] = [
-        {
-            "name": name,
-            "description": description,
-            "origin": "builtin",
-            "flow": name not in vocabulary.views,
-            "hidden": False,
-        }
-        for name, description in FRONTEND_COMMANDS.items()
-    ]
-    for name, description in handler.session.get_extension_commands():
-        if name in FRONTEND_COMMANDS:
-            continue
-        listed.append(
-            {
-                "name": name,
-                "description": description,
-                "origin": "extension",
-                "flow": vocabulary.is_extension_flow(name),
-                "hidden": False,
-            }
-        )
-    for name, description in handler.session.get_qualified_commands():
-        listed.append(
-            {
-                "name": name,
-                "description": description,
-                "origin": "extension",
-                "flow": vocabulary.is_extension_flow(name),
-                "hidden": True,
-            }
-        )
-    return {"commands": listed}
+    from tau_agent_core.projections import command_vocabulary
+
+    return {"commands": command_vocabulary(handler.session)}
 
 
 @command(
@@ -2142,22 +2111,9 @@ COMPLETE_PATH_RESULT_SCHEMA: dict[str, Any] = result_schema_for("complete_path")
 async def _handle_complete_path(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from tau_agent_core.attachments import complete_attachment
+    from tau_agent_core.projections import path_completion
 
-    completion = complete_attachment(params["text"], params["cursor"], cwd=Path.cwd())
-    if completion is None:
-        return {"completion": None}
-    return {
-        "completion": {
-            "start": completion.start,
-            "end": completion.end,
-            "token": completion.token,
-            "matches": [
-                {"name": m.name, "detail": m.detail, "is_dir": m.is_dir} for m in completion.matches
-            ],
-            "total": completion.total,
-        }
-    }
+    return path_completion(params["text"], params["cursor"], Path.cwd())
 
 
 ### end tier-b:complete_path
@@ -2205,7 +2161,7 @@ async def _handle_get_last_assistant_text(
 
 GET_MODELS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_models")
 
-_MODEL_CATALOG_ATTR = "model_names"
+_MODEL_CATALOG_ATTR = MODEL_CATALOG_ATTR
 
 
 @command(
@@ -2267,43 +2223,9 @@ _MODEL_CATALOG_ATTR = "model_names"
 async def _handle_get_models(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    session = handler.session
-    resolver = session.model_resolver
-    if resolver is None:
-        raise RuntimeError(
-            "get_models: no model resolver is bound to this AgentSession, so there is "
-            "no set of names to enumerate — the frontend binds one at startup "
-            "(set_model_resolver, a closure over config 'models'; rpc_mode.py does "
-            "this before RPCHandler.run()). set_model would raise here too."
-        )
-    model_names = getattr(resolver, _MODEL_CATALOG_ATTR, None)
-    if model_names is None:
-        raise RuntimeError(
-            f"get_models: the bound model resolver ({type(resolver).__name__}) does not "
-            f"declare {_MODEL_CATALOG_ATTR}(), so the names it accepts cannot be listed "
-            "— refusing rather than answering with an empty catalogue a host would read "
-            "as 'set_model has no valid argument' (backends.ConfigModelResolver is the "
-            "resolver every shipped frontend binds)"
-        )
-    listed: list[dict[str, Any]] = []
-    for name in model_names():
-        try:
-            model = resolver(name)
-        except (KeyError, ValueError) as exc:
-            raise RuntimeError(
-                f"get_models: config model {name!r} does not build: {_resolver_error_message(exc)}"
-            ) from exc
-        listed.append(
-            {
-                "name": name,
-                "model": {
-                    "id": model.id,
-                    "provider": model.provider,
-                    "context_window": model.context_window,
-                },
-            }
-        )
-    return {"models": listed}
+    from tau_agent_core.projections import model_catalog
+
+    return {"models": model_catalog(handler.session.model_resolver)}
 
 
 ### end tier-b:get_models
@@ -2591,29 +2513,7 @@ SET_MODEL_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
 SET_MODEL_RESULT_SCHEMA: dict[str, Any] = result_schema_for("set_model")
 
 
-def _resolver_error_message(exc: KeyError | ValueError) -> str:
-    """The model resolver's own prose, rendered for the wire without
-    `KeyError.__str__`'s quotes (finding 10 of the Tier B review).
-
-    `KeyError.__str__` is `repr(args[0])`, not the message — so a resolver
-    that raises `KeyError("unknown model 'nope'; configured models: fake,
-    fake-alt")` (`backends.make_model_resolver`, backends.py:631) reached the
-    wire as `"unknown model 'nope'; configured models: fake, fake-alt"`,
-    quotes included, inside a JSON string that quotes it again. Unwrapping
-    the single argument is the ONLY difference: nothing is reworded,
-    truncated or replaced, because the resolver is the component that knows
-    which names exist and this layer must not paraphrase it.
-
-    `ValueError` — `set_model`'s other documented "no such name" shape — has
-    a plain `__str__` and passes through untouched. A `KeyError` carrying
-    anything other than exactly one argument has no single message to
-    unwrap: `KeyError.__str__` is then the args tuple's own repr, which IS
-    the whole of what the raiser said, so `str(exc)` is the honest rendering
-    rather than a fallback covering a case this function declined to handle.
-    """
-    if isinstance(exc, KeyError) and len(exc.args) == 1:
-        return str(exc.args[0])
-    return str(exc)
+_resolver_error_message = resolver_error_message
 
 
 @command(
@@ -2900,22 +2800,15 @@ NEXT_STEP_RESULT_SCHEMA: dict[str, Any] = {
 async def _handle_next_step(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from dataclasses import asdict
-
-    from tau_agent_core.flows import Ready, UnknownFlowError, next_step
+    from tau_agent_core.flows import UnknownFlowError
+    from tau_agent_core.projections import flow_next_step
 
     try:
-        outcome = next_step(
-            params["flow"],
-            params.get("bound"),
-            params.get("cursor"),
-            vocabulary=handler.session.vocabulary,
+        return flow_next_step(
+            params["flow"], params.get("bound"), params.get("cursor"), handler.session.vocabulary
         )
     except UnknownFlowError as exc:
         raise RuntimeError(str(exc)) from exc
-    if isinstance(outcome, Ready):
-        return {"status": "ready", "ready": asdict(outcome), "step": None}
-    return {"status": "step", "step": asdict(outcome), "ready": None}
 
 
 ### end tier-c:next_step
@@ -3026,9 +2919,9 @@ ENUMERATE_DOMAIN_RESULT_SCHEMA: dict[str, Any] = {
 async def _handle_enumerate_domain(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from tau_agent_core.flows import enumerate_domain
+    from tau_agent_core.projections import domain_listing
 
-    found = enumerate_domain(
+    return domain_listing(
         params["domain"],
         session=handler.session,
         runtime=handler._runtime,
@@ -3036,13 +2929,7 @@ async def _handle_enumerate_domain(
         cursor=params.get("cursor"),
         query=params.get("query", ""),
         limit=params.get("limit", 50),
-        vocabulary=handler.session.vocabulary,
     )
-    return {
-        "domain": found.domain,
-        "values": [{"value": v.value, "label": v.label} for v in found.values],
-        "total": found.total,
-    }
 
 
 ### end tier-c:enumerate_domain
@@ -3280,25 +3167,11 @@ GET_TREE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_tree")
 async def _handle_get_tree(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    tree = handler.session.cursor.tree()
+    from tau_agent_core.projections import browse_rows
+
     nodes = [
-        {
-            "entry_id": node.entry_id,
-            "parent_id": node.parent_id,
-            "kind": node.kind,
-            "role": node.role,
-            "preview": node.preview,
-            "is_cursor": node.is_cursor,
-            "timestamp": node.timestamp,
-            "first_kept_id": node.first_kept_id,
-            "from_id": node.from_id,
-            "is_system": node.is_system,
-            "tool_call_ids": list(node.tool_call_ids),
-            "tool_call_id": node.tool_call_id,
-            "copyable": node.copyable,
-            "estimated_tokens": node.estimated_tokens,
-        }
-        for node in tree.browse()
+        {("is_cursor" if key == "is_leaf" else key): value for key, value in row.items()}
+        for row in browse_rows(handler.session.cursor.tree())
     ]
     return {"nodes": nodes, "cursor": handler.session.cursor.leaf, "count": len(nodes)}
 
@@ -3564,25 +3437,9 @@ GET_EXTENSION_STATE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_exten
 async def _handle_get_extension_state(
     handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from tau_agent_core.sdk import summarize_extensions
+    from tau_agent_core.projections import extension_state
 
-    state = handler.session.get_extension_state()
-    return {
-        "extensions": [
-            {
-                "name": info.name,
-                "path": info.path,
-                "tools": list(info.tools),
-                "commands": list(info.commands),
-                "shortcuts": list(info.shortcuts),
-                "hooks": list(info.hooks),
-                "content_hash": info.content_hash,
-                "subjects": list(info.subjects),
-            }
-            for info in summarize_extensions(state)
-        ],
-        "errors": [{"path": err.path, "error": err.error} for err in state.errors],
-    }
+    return extension_state(handler.session.get_extension_state())
 
 
 ### end tier-c:get_extension_state

@@ -6,9 +6,9 @@
 >
 > Design of record: `docs/TAU-SERVE.md` §5–§7.
 
-- **Protocol version:** `0.1`
+- **Protocol version:** `0.2`
 - **Default port:** `8256`
-- **Counts:** 16 requests, 9 event kinds. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 21 requests, 9 event kinds. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12).
 
 ## Framing
@@ -150,7 +150,7 @@ Answer an extension request written in the tree (docs/EXTENSION-LOCKS.md §3).
 
 ### `perform`
 
-Call one of the session backend's operations on the head cursor's tree.
+Call one of the session backend's operations, acting at ``cursor_id``.
 
 The TUI's commands reach the backend by method name; under ``--connect`` that
 backend is the daemon's. Answered with a :class:`Performed`-shaped record or a
@@ -159,6 +159,7 @@ plain value, tagged by ``kind``.
 | Field | Type | Required |
 |---|---|---|
 | `session_id` | string | yes |
+| `cursor_id` | string | yes |
 | `method` | string | yes |
 | `arguments` | object | no |
 
@@ -182,6 +183,75 @@ Answered at once with the opened cursors; the turns run on.
 | `leaf` | string \| null | yes |
 | `models` | list of string | yes |
 | `text` | string | yes |
+
+### `next_step`
+
+The next argument a flow needs, or the mutation it is ready for (RPC ``next_step``).
+
+Answered with ``{status: "step"|"ready", step, ready}``: ``step`` is a
+``FlowStep`` as JSON ``{flow, argument, domain, cursor, bound}``, ``ready`` a
+``Ready`` ``{flow, mutation, arguments}``.
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | string | yes |
+| `flow` | string | yes |
+| `bound` | object \| null | no |
+| `leaf` | string \| null | no |
+
+### `enumerate_domain`
+
+The values legal for a domain right now (RPC ``enumerate_domain``).
+
+Answered with ``{domain, values: [{value, label}], total}``; ``total`` counts
+past ``limit``. ``path`` and ``session_id`` are read in the session's cwd.
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | string | yes |
+| `domain` | string | yes |
+| `scope` | `"in_session"` \| `"ancestors_of_cursor"` \| `"descendants_of_cursor"` \| null | no |
+| `leaf` | string \| null | no |
+| `query` | string | no |
+| `limit` | integer | no |
+
+### `complete_path`
+
+Complete the ``@path`` at ``offset`` in ``text`` against the session's cwd.
+
+Answered as RPC ``complete_path``: ``{completion: null}`` outside an ``@``
+token, else ``{completion: {start, end, token, matches: [{name, detail,
+is_dir}], total}}``. The paths are on the daemon's machine.
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | string | yes |
+| `text` | string | yes |
+| `offset` | integer | yes |
+
+### `get_tree`
+
+Every entry of a session's tree as a browser row, seen from one cursor.
+
+Answered with ``{nodes: [TreeRow, ...], leaf, count}``: ``leaf`` is the
+cursor's, and the one row whose ``is_leaf`` is true.
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | string | yes |
+| `cursor_id` | string | yes |
+
+### `fork_session`
+
+Copy a session into a new one in the same cwd; answered with ``{session_id}``.
+
+The source is unchanged and the client stays attached to it; it attaches to
+the new session to continue there.
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | string | yes |
+| `at` | string \| null | yes |
 
 ## Responses
 
@@ -239,7 +309,7 @@ events that follow (``seq > since``) are a replay.
 | `cursors` | list of CursorState | yes |
 | `head_cursor_id` | string | yes |
 | `cwd` | string | yes |
-| `models` | list of string | yes |
+| `models` | list of ModelRecord | yes |
 | `surface` | Surface | yes |
 
 ### `CursorState`
@@ -279,3 +349,83 @@ How a submission ended; a refusal is an answer, not an error.
 | `submission_id` | string | yes |
 | `reason` | string \| null | no |
 | `command` | object \| null | no |
+
+### `Surface`
+
+What a session answers beyond its tree, which a head reads without a round trip.
+
+| Field | Type | Required |
+|---|---|---|
+| `commands` | list of CommandInfo | yes |
+| `command_args` | object | yes |
+| `shortcuts` | list of list of string | yes |
+| `extensions` | list of list of any | yes |
+| `loaded` | list of ExtensionInfo | yes |
+| `load_errors` | list of list of string | yes |
+
+### `CommandInfo`
+
+One slash command a session answers, as RPC ``get_commands`` lists it.
+
+| Field | Type | Required |
+|---|---|---|
+| `name` | string | yes |
+| `description` | string | yes |
+| `origin` | `"builtin"` \| `"extension"` | yes |
+| `flow` | boolean | yes |
+| `hidden` | boolean | yes |
+
+### `ExtensionInfo`
+
+One loaded extension and what it registered, as RPC ``get_extension_state`` lists it.
+
+| Field | Type | Required |
+|---|---|---|
+| `name` | string | yes |
+| `path` | string | yes |
+| `tools` | list of string | yes |
+| `commands` | list of string | yes |
+| `shortcuts` | list of string | yes |
+| `hooks` | list of string | yes |
+| `content_hash` | string | yes |
+| `subjects` | list of string | yes |
+
+### `ModelRecord`
+
+One model the daemon's config defines, as RPC ``get_models`` lists it.
+
+| Field | Type | Required |
+|---|---|---|
+| `name` | string | yes |
+| `model` | ModelSpec | yes |
+
+### `ModelSpec`
+
+What a config model name resolves to.
+
+| Field | Type | Required |
+|---|---|---|
+| `id` | string | yes |
+| `provider` | string | yes |
+| `context_window` | integer | yes |
+
+### `TreeRow`
+
+One :class:`GetTree` row: RPC ``get_tree``'s node, with ``is_cursor`` named ``is_leaf``.
+
+| Field | Type | Required |
+|---|---|---|
+| `entry_id` | string | yes |
+| `parent_id` | string \| null | yes |
+| `kind` | string | yes |
+| `role` | string \| null | yes |
+| `preview` | string | yes |
+| `is_leaf` | boolean | yes |
+| `timestamp` | integer \| null | yes |
+| `first_kept_id` | string \| null | yes |
+| `from_id` | string \| null | yes |
+| `is_system` | boolean | yes |
+| `tool_call_ids` | list of string | yes |
+| `tool_call_id` | string \| null | yes |
+| `copyable` | boolean | yes |
+| `estimated_tokens` | integer | yes |

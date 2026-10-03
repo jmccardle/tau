@@ -204,6 +204,57 @@ Built note (M2):
 `entry_id` from its first version. The RPC rename (ROADMAP, "RPC says `cursor`
 where it means an entry id") follows it before the release.
 
+Built note (protocol 0.2), 2026-10-03. tau-code's move from RPC to `tau serve`
+listed what the serve protocol lacked that RPC has. `PROTOCOL_VERSION` is `0.2`,
+so a 0.1 client is refused at `hello`. What changed:
+
+- **One derivation per read.** The reads RPC and the daemon both answer are in
+  `tau_agent_core/projections.py`: `command_vocabulary`, `flow_next_step`,
+  `domain_listing`, `path_completion`, `browse_rows`, `model_catalog` and
+  `extension_state`. The RPC handlers call them, and `docs/RPC-PROTOCOL.md`
+  regenerates unchanged.
+- **`Surface`** carries the whole command vocabulary as `CommandInfo`
+  (`name`, `description`, `origin`, `flow`, `hidden`), built-ins included. It
+  also carries `loaded` (`ExtensionInfo` per loaded extension) and
+  `load_errors` (`[path, error]`), so the TUI's `/extensions` view under
+  `--connect` shows what the local one shows. `command_args`, `shortcuts` and
+  `extensions` stay, because `RemoteBackend` reads them.
+- **`Attached.models`** is a list of `ModelRecord` (`name`, `model: {id,
+  provider, context_window}`), the shape of RPC `get_models`.
+- **Six new requests.** `next_step` and `enumerate_domain` answer with the RPC
+  result shapes. `complete_path {session_id, text, offset}` resolves against the
+  session's cwd on the daemon's machine. The caret is named `offset`, because
+  in this protocol `cursor` means a cursor. `get_tree {session_id, cursor_id}`
+  answers `{nodes, leaf, count}`. Each node is a `TreeRow`, which is RPC's row
+  with `is_cursor` renamed to `is_leaf`. `fork_session {session_id, at}` forks
+  through the daemon's catalog into the session's cwd and answers
+  `{session_id}`. It refuses with `busy` when the copy would carry an entry that
+  is still being written.
+- **A command missing an argument answers its `FlowStep`.** The `submit` answer
+  serializes the step, and `remote.dispatched_from_wire` rebuilds it with its
+  `Argument` and `Domain`. Under `--connect` the TUI asks one argument per form.
+  It enumerates select values with `enumerate_domain` and steps with
+  `next_step`, both on the daemon, because only the daemon holds the session's
+  extension flows. The local TUI still asks every argument in one form.
+- **`/fork` and `/resume REF` answer `Ready`, unperformed.** The daemon cannot
+  move a client to another session, so `daemon.SWITCHING` hands those two
+  mutations back for the client to perform. The TUI forks with `fork_session`
+  and then attaches, and resumes by attaching.
+- **`perform` takes a required `cursor_id`.** The daemon sets `TURN_CURSOR` to
+  that cursor around the call. `TauBackend`'s tree edits, `rollback_turn` and
+  `apply_session_name` now act on `AgentSession._turn_cursor()`, so the
+  operation runs at the named cursor and never at the head by default. No
+  performable method had to be refused for a non-head cursor: the rest are
+  session-wide, or already read `_turn_cursor()`. A command a `submit` performs
+  runs at the submit's cursor in the same way. A `/model NAME` sent on a
+  non-head cursor sets that cursor's frame, as `set_model` does.
+- `set_model` left `PERFORMABLE`. The `set_model` request is the only way to
+  call it.
+
+Not built: the TUI's keystroke completions (`@path` and argument values) still
+run locally and synchronously under `--connect`. They are not round trips to the
+daemon.
+
 ## 6. `tau serve`
 
 ```

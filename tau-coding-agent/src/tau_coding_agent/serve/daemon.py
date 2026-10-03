@@ -16,11 +16,22 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, TextIO, cast
 
+from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.cursor import TURN_CURSOR, Cursor, TurnFrame
 from tau_agent_core.extension_types import form_headless_value, validate_form_spec
-from tau_agent_core.flows import Performed, Ready
+from tau_agent_core.flows import Performed, Ready, UnknownFlowError
+from tau_agent_core.projections import (
+    browse_rows,
+    command_vocabulary,
+    domain_listing,
+    extension_state,
+    flow_next_step,
+    model_catalog,
+    path_completion,
+)
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.session_log import SessionLog, is_incomplete
 from tau_agent_core.submission import Submission
@@ -35,6 +46,13 @@ REPLAY_BOUND = 50_000
 
 SLOW_CLIENT_CLOSE = 4000
 """The WebSocket close code for a dropped slow client; it reconnects with ``since``."""
+
+SWITCHING = ("fork", "switch_session")
+"""Mutations that move a client onto another session; a ``submit`` answers them as ``Ready``.
+
+The daemon cannot move a client, so the client performs them: ``fork`` by
+:class:`~protocol.ForkSession` then ``attach``, ``switch_session`` by ``attach``.
+"""
 
 
 class RequestError(Exception):
@@ -97,6 +115,14 @@ def value_to_wire(value: Any) -> dict[str, Any]:
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {"kind": type(value).__name__, "fields": _json_safe(dataclasses.asdict(value))}
     return {"kind": "value", "value": _json_safe(value)}
+
+
+@dataclasses.dataclass(frozen=True)
+class SessionScope:
+    """The ``runtime`` :func:`~tau_agent_core.flows.enumerate_domain` reads: a catalog and a cwd."""
+
+    catalog: SessionCatalog
+    cwd: str
 
 
 class Client:
@@ -270,10 +296,14 @@ class SessionHost:
             if not client.push(frame):
                 self.daemon.drop(client)
         if kind != "cursors":
-            states = self.cursor_states()
-            if states != self._cursors_seen:
-                self._cursors_seen = states
-                self.publish("cursors", {"cursors": states})
+            self.sync_cursors()
+
+    def sync_cursors(self) -> None:
+        """Publish the cursor set if it changed since it was last published."""
+        states = self.cursor_states()
+        if states != self._cursors_seen:
+            self._cursors_seen = states
+            self.publish("cursors", {"cursors": states})
 
     def attach(self, client: Client, epoch: str | None, since: int | None) -> dict[str, Any]:
         """Register ``client`` and return its :class:`~protocol.Attached`, queueing any replay.
@@ -290,8 +320,8 @@ class SessionHost:
             entries=None if replay else self.log.entries(),
             cursors=[p.CursorState(**c) for c in self.cursor_states()],
             head_cursor_id=self.agent_session.cursor.id,
-            cwd=str(self.log.header.get("cwd", "")),
-            models=sorted(self.daemon.config.get("models", {})),
+            cwd=self.cwd,
+            models=self.models(),
             surface=self.surface(),
         )
         self.clients.add(client)
@@ -300,15 +330,32 @@ class SessionHost:
         return p.to_wire(attached)
 
     def surface(self) -> p.Surface:
-        """The session's extension commands, shortcuts and managed extensions, read now."""
+        """The session's command vocabulary and extension state, read now."""
         session = self.agent_session
-        commands = session.get_extension_commands()
+        state = extension_state(session.get_extension_state())
         return p.Surface(
-            commands=[list(c) for c in commands],
-            command_args={name: session.get_extension_command_args(name) for name, _ in commands},
+            commands=[p.CommandInfo(**c) for c in command_vocabulary(session)],
+            command_args={
+                name: session.get_extension_command_args(name)
+                for name, _ in session.get_extension_commands()
+            },
             shortcuts=[list(s) for s in session.get_extension_shortcuts()],
             extensions=[list(e) for e in session.list_managed_extensions()],
+            loaded=[p.ExtensionInfo(**info) for info in state["extensions"]],
+            load_errors=[[err["path"], err["error"]] for err in state["errors"]],
         )
+
+    def models(self) -> list[p.ModelRecord]:
+        """Every model the session's resolver accepts, as ``get_models`` lists them."""
+        return [
+            p.ModelRecord(name=m["name"], model=p.ModelSpec(**m["model"]))
+            for m in model_catalog(self.agent_session.model_resolver)
+        ]
+
+    @property
+    def cwd(self) -> str:
+        """The session's directory on this machine."""
+        return str(self.log.header.get("cwd", ""))
 
     def replay(self, client: Client, since: int) -> None:
         """Queue every kept event after ``since`` for ``client``."""
@@ -659,6 +706,36 @@ class Daemon:
             return p.to_wire(host.surface())
         if isinstance(request, p.Compare):
             return await self._compare(host, request)
+        if isinstance(request, p.NextStep):
+            try:
+                return flow_next_step(request.flow, request.bound, request.leaf, session.vocabulary)
+            except UnknownFlowError as exc:
+                raise RequestError("not_found", str(exc.args[0])) from exc
+        if isinstance(request, p.EnumerateDomain):
+            if request.domain not in session.vocabulary.domains:
+                raise RequestError("not_found", f"no domain {request.domain!r}")
+            try:
+                return domain_listing(
+                    request.domain,
+                    session=session,
+                    runtime=SessionScope(self.catalog, host.cwd),
+                    scope=request.scope,
+                    cursor=request.leaf,
+                    query=request.query,
+                    limit=request.limit,
+                )
+            except KeyError as exc:
+                raise RequestError("not_found", str(exc.args[0])) from exc
+            except ValueError as exc:
+                raise RequestError("bad_request", str(exc)) from exc
+        if isinstance(request, p.CompletePath):
+            return path_completion(request.text, request.offset, Path(host.cwd))
+        if isinstance(request, p.GetTree):
+            cursor = host.cursor(request.cursor_id)
+            nodes = browse_rows(cursor.tree())
+            return {"nodes": nodes, "leaf": cursor.leaf, "count": len(nodes)}
+        if isinstance(request, p.ForkSession):
+            return self._fork_session(host, request.at)
         raise RequestError("bad_request", f"unhandled request {type(request).__name__}")
 
     async def _list_sessions(self) -> dict[str, Any]:
@@ -720,8 +797,12 @@ class Daemon:
         )
         result = await host.agent_session.submit(submission, cursor=cursor)
         command = result.command
-        if isinstance(command, Ready):
-            command = await self._perform_ready(host, command)
+        if isinstance(command, Ready) and command.mutation not in SWITCHING:
+            token = TURN_CURSOR.set(cursor)
+            try:
+                command = await self._perform_ready(host, cursor, command)
+            finally:
+                TURN_CURSOR.reset(token)
         return p.to_wire(
             p.SubmitResult(
                 accepted=result.accepted,
@@ -731,19 +812,23 @@ class Daemon:
             )
         )
 
-    async def _perform_ready(self, host: SessionHost, ready: Ready) -> Performed:
-        """Perform a command whose arguments are all bound, as a local head would.
-
-        The session-switching mutations are a client's to make, by attaching
-        elsewhere, so they are refused here rather than performed for everyone.
+    async def _perform_ready(self, host: SessionHost, cursor: Cursor, ready: Ready) -> Performed:
+        """Perform a command whose arguments are all bound, at ``cursor``, as a local head would.
 
         Raises:
-            RequestError: a session-switching mutation, or one the backend lacks.
+            RequestError: a mutation the backend lacks, or one that answers no ``Performed``.
         """
-        if ready.mutation in ("fork", "switch_session", "new_session"):
-            raise RequestError(
-                "bad_request",
-                f"/{ready.flow} switches sessions; under --connect, pick the session instead",
+        if ready.mutation == "set_model" and cursor is not host.agent_session.cursor:
+            answer = await self._set_model(
+                host,
+                p.SetModel(
+                    session_id=host.session_id, cursor_id=cursor.id, model=ready.arguments["name"]
+                ),
+            )
+            return Performed(
+                flow=ready.flow,
+                mutation="set_model",
+                data={"model": {"id": answer["model"], "name": ready.arguments["name"]}},
             )
         if ready.flow in host.agent_session.vocabulary.extension_flows:
             bound = " ".join(str(value) for value in ready.arguments.values())
@@ -791,20 +876,49 @@ class Daemon:
     async def _perform(
         self, client: Client, host: SessionHost, request: p.Perform
     ) -> dict[str, Any]:
-        """Run a :data:`~protocol.PERFORMABLE` backend operation for a client."""
+        """Run a :data:`~protocol.PERFORMABLE` backend operation for a client, at its cursor.
+
+        The backend acts on ``AgentSession._turn_cursor()``, which is
+        :data:`~tau_agent_core.cursor.TURN_CURSOR` while it is set.
+        """
         if request.method not in p.PERFORMABLE:
             raise RequestError("bad_request", f"{request.method!r} is not performable")
         method = getattr(host.backend, request.method, None)
         if method is None:
             raise RequestError("not_found", f"the session backend has no {request.method!r}")
-        self.log(f"{host.tag} client {client.id} performs {request.method}")
+        cursor = host.cursor(request.cursor_id)
+        self.log(f"{host.tag} client {client.id} performs {request.method} at cursor {cursor.id}")
+        token = TURN_CURSOR.set(cursor)
         try:
             result = method(**request.arguments)
             if asyncio.iscoroutine(result):
                 result = await result
         except (ValueError, KeyError, TypeError) as exc:
             raise RequestError("bad_request", f"{request.method}: {exc}") from exc
+        finally:
+            TURN_CURSOR.reset(token)
+        host.sync_cursors()
         return value_to_wire(result)
+
+    def _fork_session(self, host: SessionHost, at: str | None) -> dict[str, Any]:
+        """Copy ``host``'s session, whole or up to ``at``, into a new one in its cwd.
+
+        Raises:
+            RequestError: ``at`` names no entry, or the copy would carry an entry a
+                turn is still writing.
+        """
+        entries = host.log.entries()
+        if at is not None and not any(e["id"] == at for e in entries):
+            raise RequestError("not_found", f"{host.tag} has no entry {at!r}")
+        copied = ConversationTree(entries, at).path() if at is not None else entries
+        writing = [e["id"] for e in copied if is_incomplete(e)]
+        if writing:
+            raise RequestError(
+                "busy", f"entry {writing[0]} is still being written; fork when its turn ends"
+            )
+        forked = self.catalog.fork(host.log, host.cwd, at=at)
+        self.log(f"{host.tag} forked into session {forked.id[:8]}" + (f" at {at}" if at else ""))
+        return {"session_id": forked.id}
 
     async def _compare(self, host: SessionHost, request: p.Compare) -> dict[str, Any]:
         raise RequestError("bad_request", "compare is not built yet (docs/TAU-SERVE.md §8, M5)")

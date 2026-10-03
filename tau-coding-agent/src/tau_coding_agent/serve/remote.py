@@ -25,11 +25,12 @@ from types import SimpleNamespace
 from typing import Any
 
 from tau_agent_core.agent_session import ExtensionCommandResult
+from tau_agent_core.capabilities import Argument, Domain
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.extension_locks import ExtensionRequest, request_at
-from tau_agent_core.flows import Performed, View
-from tau_agent_core.sdk import LoadExtensionsResult
+from tau_agent_core.flows import DomainValue, DomainValues, FlowStep, Performed, Ready, View
+from tau_agent_core.sdk import ExtensionInfo, ExtensionLoadError, LoadExtensionsResult
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
 from tau_agent_core.session_log import config_at, default_leaf, session_name
 from tau_agent_core.submission import Submission, SubmissionResult
@@ -398,15 +399,31 @@ def submission_result_from_wire(result: dict[str, Any], submission_id: str) -> S
     )
 
 
+def flow_step_from_wire(fields: dict[str, Any]) -> FlowStep:
+    """A ``FlowStep`` as JSON back into the record, its argument and domain included."""
+    argument = dict(fields["argument"])
+    domain = dict(fields["domain"])
+    if domain["values"] is not None:
+        domain["values"] = tuple(domain["values"])
+    return FlowStep(
+        flow=fields["flow"],
+        argument=Argument(**argument),
+        domain=Domain(**domain),
+        cursor=fields["cursor"],
+        bound=dict(fields["bound"]),
+    )
+
+
 def dispatched_from_wire(command: dict[str, Any] | None) -> Any:
     """Rebuild a dispatched arm the TUI can act on from the daemon's ``{"arm": ...}``.
 
-    ``Performed`` and ``View`` come back whole. The daemon performs a ``Ready``
-    itself before answering, and a ``FlowStep`` (a command still missing an
-    argument) is refused, because its domain lives in the daemon.
+    ``Performed`` and ``View`` come back whole. A ``FlowStep`` is a command
+    still missing an argument, which the TUI asks for and steps through the
+    daemon. A ``Ready`` comes back only for a mutation that moves the client to
+    another session (``daemon.SWITCHING``), which the TUI performs itself.
 
     Raises:
-        RemoteUnsupportedError: an arm this head cannot act on remotely.
+        RemoteUnsupportedError: an arm this head does not know.
     """
     if command is None:
         return None
@@ -416,10 +433,11 @@ def dispatched_from_wire(command: dict[str, Any] | None) -> Any:
         return Performed(**fields)
     if arm == "View":
         return View(**fields)
-    raise RemoteUnsupportedError(
-        f"the daemon answered a command with {arm!r}; under --connect give the command "
-        "its arguments in full"
-    )
+    if arm == "FlowStep":
+        return flow_step_from_wire(fields)
+    if arm == "Ready":
+        return Ready(**fields)
+    raise RemoteUnsupportedError(f"the daemon answered a command with {arm!r}")
 
 
 def value_from_wire(answer: dict[str, Any]) -> Any:
@@ -474,9 +492,75 @@ class RemoteBackend(Backend):
 
     async def _perform(self, method: str, **arguments: Any) -> Any:
         answer = await self._remote.request(
-            p.Perform(session_id=self._session_id, method=method, arguments=arguments)
+            p.Perform(
+                session_id=self._session_id,
+                cursor_id=self._head(),
+                method=method,
+                arguments=arguments,
+            )
         )
         return value_from_wire(answer)
+
+    async def next_step(
+        self, flow: str, bound: dict[str, Any] | None, cursor: str | None
+    ) -> FlowStep | Ready:
+        """The daemon's ``next_step`` for ``flow``, which knows the session's extension flows."""
+        answer = await self._remote.request(
+            p.NextStep(session_id=self._session_id, flow=flow, bound=bound, leaf=cursor)
+        )
+        if answer["status"] == "ready":
+            return Ready(**answer["ready"])
+        return flow_step_from_wire(answer["step"])
+
+    async def enumerate_domain(
+        self,
+        domain: str,
+        *,
+        scope: str | None = None,
+        cursor: str | None = None,
+        query: str = "",
+        limit: int = 50,
+    ) -> DomainValues:
+        """The daemon's values for ``domain``, read against the session's own objects."""
+        answer = await self._remote.request(
+            p.EnumerateDomain(
+                session_id=self._session_id,
+                domain=domain,
+                scope=scope,  # type: ignore[arg-type]
+                leaf=cursor,
+                query=query,
+                limit=limit,
+            )
+        )
+        return DomainValues(
+            domain=answer["domain"],
+            values=tuple(DomainValue(value=v["value"], label=v["label"]) for v in answer["values"]),
+            total=answer["total"],
+        )
+
+    async def fork(self, at: str | None) -> str:
+        """Fork the session on the daemon, at entry ``at`` or whole; returns the new session's id."""
+        answer = await self._remote.request(p.ForkSession(session_id=self._session_id, at=at))
+        return str(answer["session_id"])
+
+    def is_extension_flow(self, name: str) -> bool:
+        """Whether ``name`` is a flow an extension of the daemon's session declared."""
+        return any(
+            c["name"] == name and c["origin"] == "extension" and c["flow"]
+            for c in self.replica.surface["commands"]
+        )
+
+    def extension_summary(self) -> tuple[list[ExtensionInfo], list[ExtensionLoadError]]:
+        """What the session's extensions registered and which failed to load, as last described."""
+        surface = self.replica.surface
+        infos = [
+            ExtensionInfo(**{**info, "subjects": tuple(info["subjects"])})
+            for info in surface["loaded"]
+        ]
+        errors = [
+            ExtensionLoadError(path=path, error=error) for path, error in surface["load_errors"]
+        ]
+        return infos, errors
 
     async def chat(self, messages: list[dict]) -> tuple[str, dict, list[dict]]:
         raise RemoteUnsupportedError("chat() is headless-only; the TUI uses submit_turn")
@@ -589,7 +673,11 @@ class RemoteBackend(Backend):
             self._delegate.notify("That form was answered from another client", "warning")
 
     def get_extension_commands(self) -> list[tuple[str, str]]:
-        return [(str(c[0]), str(c[1])) for c in self.replica.surface["commands"]]
+        return [
+            (str(c["name"]), str(c["description"]))
+            for c in self.replica.surface["commands"]
+            if c["origin"] == "extension" and not c["hidden"]
+        ]
 
     def get_extension_command_args(self, name: str) -> str | None:
         value = self.replica.surface["command_args"].get(name)

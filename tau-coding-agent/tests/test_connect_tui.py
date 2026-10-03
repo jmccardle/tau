@@ -32,7 +32,13 @@ _CONFIG: dict[str, Any] = {
             "model": "fake-model",
             "base_url": "http://127.0.0.1:1/v1",
             "api_key": "x",
-        }
+        },
+        "other": {
+            "backend": "openai",
+            "model": "other-model",
+            "base_url": "http://127.0.0.1:1/v1",
+            "api_key": "x",
+        },
     },
 }
 
@@ -143,3 +149,76 @@ async def test_a_second_client_sees_the_tui_turn_and_the_tui_resumes_any_session
         assert replica.entries == app.current_session.entries(), "both clients hold one tree"
     await remote.close()
     await other.close()
+
+
+async def test_fork_under_connect_opens_the_daemons_copy(daemon, tau_home, tmp_path):
+    served, address = daemon
+    remote = RemoteConnection(address, cwd=str(tmp_path))
+    app = build_tau_app(tau_home, remote=remote)
+    async with app.run_test() as pilot:
+        await _until(pilot, lambda: remote._ready.is_set())
+        await app.on_input_submitted(_Submit("before the fork"))
+        await _until(pilot, lambda: not app.is_generating and len(app.messages) >= 3)
+        source = app.current_session.id
+        source_entries = app.current_session.entries()
+
+        await app.on_input_submitted(_Submit("/fork"))
+        await _until(pilot, lambda: app.current_session.id != source)
+
+        assert isinstance(app.current_backend, RemoteBackend)
+        assert app.current_backend.session_id in served.hosts, "the fork lives in the daemon"
+        assert [e["id"] for e in app.current_session.entries()] == [e["id"] for e in source_entries]
+        assert served.hosts[source].log.entries() == source_entries, "the source is unchanged"
+    await remote.close()
+
+
+async def test_a_flow_step_under_connect_is_asked_and_stepped_on_the_daemon(
+    daemon, tau_home, tmp_path
+):
+    from textual.widgets import RadioButton, RadioSet
+
+    from tau_coding_agent import modals
+
+    served, address = daemon
+    remote = RemoteConnection(address, cwd=str(tmp_path))
+    app = build_tau_app(tau_home, remote=remote)
+    async with app.run_test() as pilot:
+        await _until(pilot, lambda: remote._ready.is_set())
+        await app.on_input_submitted(_Submit("hi"))
+        await _until(pilot, lambda: not app.is_generating and len(app.messages) >= 3)
+
+        await app.on_input_submitted(_Submit("/model"))
+        await _until(pilot, lambda: isinstance(app.screen, modals.ExtensionFormScreen))
+        screen = app.screen
+        names = [m["name"] for m in app.current_backend.replica.models]
+        assert names == ["fake", "other"]
+        await _until(pilot, lambda: len(screen.query(RadioButton)) == 2)
+        labels = [str(b.label) for b in screen.query_one(RadioSet).query(RadioButton)]
+        assert labels == ["fake", "other"], "the options are the daemon's enumeration"
+        screen.dismiss({"name": "other"})
+
+        (host,) = served.hosts.values()
+        await _until(pilot, lambda: host.agent_session.get_model()["id"] == "other-model")
+    await remote.close()
+
+
+async def test_the_extensions_view_under_connect_lists_the_daemons_load_errors(
+    daemon, tau_home, tmp_path
+):
+    served, address = daemon
+    extensions = tmp_path / "daemon-home" / ".tau" / "extensions"
+    extensions.mkdir(parents=True)
+    (extensions / "broken.py").write_text("raise RuntimeError('nope')\n")
+    remote = RemoteConnection(address, cwd=str(tmp_path))
+    app = build_tau_app(tau_home, remote=remote)
+    async with app.run_test() as pilot:
+        await _until(pilot, lambda: remote._ready.is_set())
+        await app.on_input_submitted(_Submit("hi"))
+        await _until(pilot, lambda: not app.is_generating and len(app.messages) >= 3)
+
+        infos, errors = app.current_backend.extension_summary()
+        listing = app._format_extension_infos(infos, errors, set())
+
+        assert infos == []
+        assert "## Load errors" in listing and "broken.py" in listing and "nope" in listing
+    await remote.close()

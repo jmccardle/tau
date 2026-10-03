@@ -119,7 +119,18 @@ def render_markdown() -> str:
         w(line)
     w("")
     w("## Records")
-    for cls in (p.Attached, p.CursorState, p.SessionRow, p.SubmitResult):
+    for cls in (
+        p.Attached,
+        p.CursorState,
+        p.SessionRow,
+        p.SubmitResult,
+        p.Surface,
+        p.CommandInfo,
+        p.ExtensionInfo,
+        p.ModelRecord,
+        p.ModelSpec,
+        p.TreeRow,
+    ):
         w("")
         w(f"### `{cls.__name__}`")
         w("")

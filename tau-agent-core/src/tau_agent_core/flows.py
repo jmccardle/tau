@@ -62,6 +62,7 @@ __all__ = [
     "flow_arguments",
     "flow_form_spec",
     "next_step",
+    "step_form_spec",
 ]
 
 
@@ -404,34 +405,62 @@ def flow_form_spec(
     have = dict(bound or {})
     supplied = options or {}
 
-    fields: list[dict[str, Any]] = []
-    for argument in declared.arguments:
-        if not argument.required or argument.name in have:
-            continue
-        domain = vocabulary.domains[argument.domain]
-        kind = domain.field_kind
-        if kind == "select" and argument.cardinality == "many":
-            kind = "multiselect"
-        field: dict[str, Any] = {
-            "name": argument.name,
-            "kind": kind,
-            "label": argument.description,
-        }
-        if kind in ("select", "multiselect"):
-            choices = supplied.get(argument.name)
-            if not choices:
-                raise ValueError(
-                    f"flow {flow!r} argument {argument.name!r} is domain "
-                    f"{domain.name!r}, which renders as {kind!r}, and no options were "
-                    f"supplied for it. Enumerate {domain.name!r} first "
-                    f"(enumerator {domain.enumerator!r}) and pass the values in."
-                )
-            field["options"] = list(choices)
-        fields.append(field)
-
+    fields = [
+        _argument_field(
+            flow, argument, vocabulary.domains[argument.domain], supplied.get(argument.name)
+        )
+        for argument in declared.arguments
+        if argument.required and argument.name not in have
+    ]
     if not fields:
         return {}
     return {"title": declared.description, "fields": fields}
+
+
+def _argument_field(
+    flow: str, argument: Argument, domain: Domain, choices: list[str] | None
+) -> dict[str, Any]:
+    """One argument as a ``ui.form`` field; a select-rendered one needs ``choices``."""
+    kind = domain.field_kind
+    if kind == "select" and argument.cardinality == "many":
+        kind = "multiselect"
+    field: dict[str, Any] = {
+        "name": argument.name,
+        "kind": kind,
+        "label": argument.description,
+    }
+    if kind in ("select", "multiselect"):
+        if not choices:
+            raise ValueError(
+                f"flow {flow!r} argument {argument.name!r} is domain "
+                f"{domain.name!r}, which renders as {kind!r}, and no options were "
+                f"supplied for it. Enumerate {domain.name!r} first "
+                f"(enumerator {domain.enumerator!r}) and pass the values in."
+            )
+        field["options"] = list(choices)
+    return field
+
+
+@agent_facing(topic="sessions")
+def step_form_spec(step: FlowStep, title: str, options: list[str] | None = None) -> dict[str, Any]:
+    """The one argument ``step`` asks for, as a ``ui.form`` spec.
+
+    For a head that holds the step but not the vocabulary it came from, such as
+    one stepping a flow in another process; :func:`flow_form_spec` asks for every
+    remaining argument at once from the vocabulary.
+
+    Args:
+        step: The step to ask for.
+        title: The form's title, the flow's description.
+        options: The legal values when the step's domain renders as a select.
+
+    Raises:
+        ValueError: The domain renders as a select and ``options`` is empty.
+    """
+    return {
+        "title": title,
+        "fields": [_argument_field(step.flow, step.argument, step.domain, options)],
+    }
 
 
 @agent_facing(topic="sessions")
