@@ -5479,6 +5479,31 @@ this returns as soon as they are started.
 - `ValueError` — no models, no text, no model resolver, or ``leaf`` names no entry. Nothing was opened.
 - `KeyError` — a model name the resolver does not know. Nothing was opened.
 
+## step_form_spec
+<!-- agent: yes -->
+
+```python
+step_form_spec(step: FlowStep, title: str, options: list[str] | None = None) -> dict[str, Any]
+```
+
+`tau_agent_core.flows.step_form_spec`
+
+The one argument ``step`` asks for, as a ``ui.form`` spec.
+
+For a head that holds the step but not the vocabulary it came from, such as
+one stepping a flow in another process; :func:`flow_form_spec` asks for every
+remaining argument at once from the vocabulary.
+
+**Parameters**
+
+- `step: FlowStep` — The step to ask for.
+- `title: str` — The form's title, the flow's description.
+- `options: list[str] | None = None` — The legal values when the step's domain renders as a select.
+
+**Raises**
+
+- `ValueError` — The domain renders as a select and ``options`` is empty.
+
 ## summarize_and_navigate
 <!-- agent: yes -->
 

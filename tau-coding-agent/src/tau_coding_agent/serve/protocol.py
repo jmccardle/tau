@@ -17,7 +17,7 @@ import typing
 from dataclasses import dataclass, field
 from typing import Any, Literal, get_args, get_origin, get_type_hints
 
-PROTOCOL_VERSION = "0.1"
+PROTOCOL_VERSION = "0.2"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256
@@ -194,18 +194,21 @@ class AnswerRequest:
 
 @dataclass
 class Perform:
-    """Call one of the session backend's operations on the head cursor's tree.
+    """Call one of the session backend's operations, acting at ``cursor_id``.
 
     The TUI's commands reach the backend by method name; under ``--connect`` that
     backend is the daemon's. Answered with a :class:`Performed`-shaped record or a
     plain value, tagged by ``kind``.
 
     Attributes:
+        cursor_id: The cursor the operation acts on: the tree edits move and
+            append at it, and ``rollback_turn`` runs its turn there.
         method: One of :data:`PERFORMABLE`.
         arguments: Its keyword arguments.
     """
 
     session_id: str
+    cursor_id: str
     method: str
     arguments: dict[str, Any] = field(default_factory=dict)
     type: Literal["perform"] = "perform"
@@ -214,7 +217,6 @@ class Perform:
 PERFORMABLE = (
     "compact",
     "set_auto_compaction",
-    "set_model",
     "set_session_name",
     "enable_extension",
     "disable_extension",
@@ -278,6 +280,102 @@ class EndCompare:
     type: Literal["end_compare"] = "end_compare"
 
 
+@dataclass
+class NextStep:
+    """The next argument a flow needs, or the mutation it is ready for (RPC ``next_step``).
+
+    Answered with ``{status: "step"|"ready", step, ready}``: ``step`` is a
+    ``FlowStep`` as JSON ``{flow, argument, domain, cursor, bound}``, ``ready`` a
+    ``Ready`` ``{flow, mutation, arguments}``.
+
+    Attributes:
+        flow: A command ``name`` whose ``flow`` is true in the :class:`Surface`.
+        bound: The arguments bound so far; ``None`` or ``{}`` is the first step.
+        leaf: The entry a scoped ``message_id`` argument is relative to, echoed back
+            as the step's ``cursor`` for :class:`EnumerateDomain`.
+    """
+
+    session_id: str
+    flow: str
+    bound: dict[str, Any] | None = None
+    leaf: str | None = None
+    type: Literal["next_step"] = "next_step"
+
+
+@dataclass
+class EnumerateDomain:
+    """The values legal for a domain right now (RPC ``enumerate_domain``).
+
+    Answered with ``{domain, values: [{value, label}], total}``; ``total`` counts
+    past ``limit``. ``path`` and ``session_id`` are read in the session's cwd.
+
+    Attributes:
+        domain: A domain name, as a step's ``domain.name`` gives it.
+        scope: For ``message_id``: which entries are candidates; ``None`` is
+            ``in_session``.
+        leaf: The entry a scoped ``message_id`` is relative to; ``None`` is the
+            head cursor's leaf.
+        query: A prefix of the value, or a substring of the label; empty matches all.
+        limit: The most values answered.
+    """
+
+    session_id: str
+    domain: str
+    scope: Literal["in_session", "ancestors_of_cursor", "descendants_of_cursor"] | None = None
+    leaf: str | None = None
+    query: str = ""
+    limit: int = 50
+    type: Literal["enumerate_domain"] = "enumerate_domain"
+
+
+@dataclass
+class CompletePath:
+    """Complete the ``@path`` at ``offset`` in ``text`` against the session's cwd.
+
+    Answered as RPC ``complete_path``: ``{completion: null}`` outside an ``@``
+    token, else ``{completion: {start, end, token, matches: [{name, detail,
+    is_dir}], total}}``. The paths are on the daemon's machine.
+
+    Attributes:
+        offset: The caret's character offset in ``text``.
+    """
+
+    session_id: str
+    text: str
+    offset: int
+    type: Literal["complete_path"] = "complete_path"
+
+
+@dataclass
+class GetTree:
+    """Every entry of a session's tree as a browser row, seen from one cursor.
+
+    Answered with ``{nodes: [TreeRow, ...], leaf, count}``: ``leaf`` is the
+    cursor's, and the one row whose ``is_leaf`` is true.
+    """
+
+    session_id: str
+    cursor_id: str
+    type: Literal["get_tree"] = "get_tree"
+
+
+@dataclass
+class ForkSession:
+    """Copy a session into a new one in the same cwd; answered with ``{session_id}``.
+
+    The source is unchanged and the client stays attached to it; it attaches to
+    the new session to continue there.
+
+    Attributes:
+        at: The entry to fork at, copying only the path to it; ``None`` copies the
+            whole tree.
+    """
+
+    session_id: str
+    at: str | None
+    type: Literal["fork_session"] = "fork_session"
+
+
 REQUESTS: tuple[type, ...] = (
     Hello,
     ListSessions,
@@ -296,6 +394,11 @@ REQUESTS: tuple[type, ...] = (
     Describe,
     Compare,
     EndCompare,
+    NextStep,
+    EnumerateDomain,
+    CompletePath,
+    GetTree,
+    ForkSession,
 )
 """Every request a client may send, by its ``type``."""
 
@@ -326,20 +429,108 @@ class CursorState:
 
 
 @dataclass
-class Surface:
-    """What a session's loaded extensions add, which a head reads without a round trip.
+class CommandInfo:
+    """One slash command a session answers, as RPC ``get_commands`` lists it.
 
     Attributes:
-        commands: ``[name, description]`` per extension command.
-        command_args: Each command's argument hint, or ``None``.
-        shortcuts: ``[key, command, args, description]`` per extension shortcut.
-        extensions: ``[path, enabled]`` per managed extension.
+        origin: ``builtin`` for τ's own, ``extension`` for one an extension registered.
+        flow: Whether :class:`NextStep` steps it.
+        hidden: A qualified extension name (``ext:pirate.speak``): it resolves,
+            and a completion list leaves it out.
     """
 
-    commands: list[list[str]]
+    name: str
+    description: str
+    origin: Literal["builtin", "extension"]
+    flow: bool
+    hidden: bool
+
+
+@dataclass
+class ExtensionInfo:
+    """One loaded extension and what it registered, as RPC ``get_extension_state`` lists it."""
+
+    name: str
+    path: str
+    tools: list[str]
+    commands: list[str]
+    shortcuts: list[str]
+    hooks: list[str]
+    content_hash: str
+    subjects: list[str]
+
+
+@dataclass
+class Surface:
+    """What a session answers beyond its tree, which a head reads without a round trip.
+
+    Attributes:
+        commands: Every command, built-in and extension, in resolution order.
+        command_args: Each extension command's argument hint, or ``None``.
+        shortcuts: ``[key, command, args, description]`` per extension shortcut.
+        extensions: ``[path, enabled]`` per managed extension.
+        loaded: Every loaded extension and what it registered.
+        load_errors: ``[path, error]`` per extension file that failed to load.
+    """
+
+    commands: list[CommandInfo]
     command_args: dict[str, str | None]
     shortcuts: list[list[str]]
     extensions: list[list[Any]]
+    loaded: list[ExtensionInfo]
+    load_errors: list[list[str]]
+
+
+@dataclass
+class ModelSpec:
+    """What a config model name resolves to."""
+
+    id: str
+    provider: str
+    context_window: int
+
+
+@dataclass
+class ModelRecord:
+    """One model the daemon's config defines, as RPC ``get_models`` lists it."""
+
+    name: str
+    model: ModelSpec
+
+
+@dataclass
+class TreeRow:
+    """One :class:`GetTree` row: RPC ``get_tree``'s node, with ``is_cursor`` named ``is_leaf``.
+
+    Attributes:
+        kind: The entry's ``type``.
+        role: The message role; ``None`` on a bookkeeping entry.
+        preview: The entry's first line.
+        is_leaf: Whether this entry is the cursor's leaf.
+        timestamp: Epoch milliseconds, or ``None``.
+        first_kept_id: On a ``compaction`` or ``elide``, the oldest entry kept.
+        from_id: On a ``branch_summary``, the branch head it summarizes.
+        is_system: Whether this is the system prompt.
+        tool_call_ids: The tool call ids an assistant message declares.
+        tool_call_id: The call a tool result answers.
+        copyable: Whether ``paste_subtree`` can take this entry as its source.
+        estimated_tokens: An estimate of the entry's tokens, 0 when it holds no message.
+    """
+
+    entry_id: str
+    parent_id: str | None
+    kind: str
+    role: str | None
+    preview: str
+    is_leaf: bool
+    timestamp: int | None
+    first_kept_id: str | None
+    from_id: str | None
+    is_system: bool
+    tool_call_ids: list[str]
+    tool_call_id: str | None
+    copyable: bool
+    estimated_tokens: int
 
 
 @dataclass
@@ -355,7 +546,7 @@ class Attached:
             holding another epoch must take a snapshot.
         seq: The newest event number folded into this answer.
         head_cursor_id: The cursor a client drives unless it opens its own.
-        models: Model names the daemon's config defines, for a picker.
+        models: Every model the daemon's config defines, for a picker.
     """
 
     session_id: str
@@ -365,7 +556,7 @@ class Attached:
     cursors: list[CursorState]
     head_cursor_id: str
     cwd: str
-    models: list[str]
+    models: list[ModelRecord]
     surface: Surface
 
 
@@ -375,7 +566,9 @@ class SubmitResult:
 
     Attributes:
         command: When the text was a command, the dispatched arm as
-            ``{"arm": "Performed"|"FlowStep"|"Ready"|"View", ...its fields}``.
+            ``{"arm": "Performed"|"FlowStep"|"Ready"|"View", ...its fields}``. The
+            daemon performs a ``Ready`` itself, except ``fork`` and
+            ``switch_session``, which move a client and are the client's to perform.
     """
 
     accepted: bool
@@ -560,6 +753,7 @@ def json_schema() -> dict[str, Any]:
         Attached,
         Surface,
         SubmitResult,
+        TreeRow,
     ):
         _schema_of(cls, defs)
     return {

@@ -153,7 +153,7 @@ async def test_backend_rollback_turn_submits_the_rollback_strategy():
     assert sub.allow_user_input is True
     # …but command dispatch still lives in the TUI (submit() raises on True).
     assert sub.expand_commands is False
-    assert kwargs == {}
+    assert kwargs == {"cursor": backend.agent_session.cursor}, "no context=; the acting cursor"
 
 
 async def test_rollback_returns_a_refusal_verbatim():

@@ -422,12 +422,13 @@ class TestExtensionAPISession:
             await api.set_session_name("My Session")
 
     async def test_set_session_name_with_session(self):
-        """Appends a ``session_info`` at the session's cursor (``apply_session_name``)."""
+        """Appends a ``session_info`` at the acting cursor (``apply_session_name``)."""
         mock_session = MagicMock()
-        mock_session.cursor.append = AsyncMock(return_value="e1")
+        acting = mock_session._turn_cursor.return_value
+        acting.append = AsyncMock(return_value="e1")
         api = ExtensionAPI(session=mock_session)
         await api.set_session_name("new_name")
-        mock_session.cursor.append.assert_awaited_once_with("session_info", name="new_name")
+        acting.append.assert_awaited_once_with("session_info", name="new_name")
 
     def test_get_session_name_raises_without_session(self):
         """Fail-Early: a bare API has no tree to read a name from."""

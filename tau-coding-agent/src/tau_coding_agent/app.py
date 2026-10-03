@@ -55,7 +55,13 @@ from tau_agent_core.conversation_tree import summary_message_of
 from tau_agent_core.tree_surgery import plan_branch, plan_paste
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.extension_locks import ExtensionRequest, refusal_reason
-from tau_agent_core.sdk import BASE_SYSTEM_PROMPT, LoadExtensionsResult, summarize_extensions
+from tau_agent_core.sdk import (
+    BASE_SYSTEM_PROMPT,
+    ExtensionInfo,
+    ExtensionLoadError,
+    LoadExtensionsResult,
+    summarize_extensions,
+)
 from tau_agent_core.submission import Submission
 from tau_agent_core.truncation import Truncation, truncation_notice
 from tau_agent_core.capabilities import BUILTIN, FLOWS, Vocabulary
@@ -69,6 +75,7 @@ from tau_agent_core.flows import (
     flow_arguments,
     flow_form_spec,
     next_step,
+    step_form_spec,
 )
 from tau_agent_core.commands import (
     FRONTEND_COMMANDS,
@@ -671,6 +678,24 @@ class TauApp(App):
             return
         await self._remote_open(created["session_id"])
         self.notify("Started a new chat on the daemon")
+
+    async def _remote_fork(self) -> None:
+        """Ask the daemon to fork this session at the cursor's leaf, then open the fork."""
+        from tau_coding_agent.serve.client import ServeError
+        from tau_coding_agent.serve.remote import RemoteBackend
+
+        backend = self.current_backend
+        if not isinstance(backend, RemoteBackend) or self._cursor is None:
+            self.notify("No daemon session to fork", severity="warning")
+            return
+        try:
+            forked = await backend.fork(self._cursor.leaf)
+        except ServeError as exc:
+            self.notify(f"Cannot fork: {exc}", severity="error")
+            return
+        await self._remote_open(forked)
+        assert self.current_session is not None
+        self.notify(f"Forked into: {self.current_session.display_title()}")
 
     async def _remote_open(self, ref: str) -> None:
         """Attach to a daemon session and make it this head's session, cursor and backend.
@@ -1562,6 +1587,9 @@ class TauApp(App):
         if step.domain.name == "session_id":
             self.action_resume_session()
             return
+        if self._remote is not None:
+            await self._render_remote_flow_step(step)
+            return
         try:
             options = self._select_options(step)
             spec = flow_form_spec(
@@ -1595,6 +1623,68 @@ class TauApp(App):
         raise UnsupportedCommandError(
             f"/{step.flow} still needs {outcome.argument.name!r} after its form was answered"
         )
+
+    async def _render_remote_flow_step(self, step: FlowStep) -> None:
+        """Ask for a daemon session's flow arguments one form at a time, stepping on the daemon.
+
+        The daemon holds the session's vocabulary, extension flows included, so it
+        answers ``next_step`` and enumerates each domain; this head renders the one
+        argument each step names (docs/TAU-SERVE.md §5, protocol 0.2).
+
+        Args:
+            step: The step the daemon answered a command with.
+        """
+        from tau_coding_agent.serve.client import ServeError
+        from tau_coding_agent.serve.remote import RemoteBackend
+
+        backend = self.current_backend
+        assert isinstance(backend, RemoteBackend)
+        title = next(
+            (
+                c["description"]
+                for c in backend.replica.surface["commands"]
+                if c["name"] == step.flow
+            ),
+            f"/{step.flow}",
+        )
+        while True:
+            labels: dict[str, str] = {}
+            try:
+                if step.domain.field_kind == "select":
+                    found = await backend.enumerate_domain(
+                        step.domain.name, scope=step.argument.scope, cursor=step.cursor
+                    )
+                    labels = {value.label: value.value for value in found.values}
+                    if len(labels) != len(found.values):
+                        raise ValueError(
+                            f"domain {step.domain.name!r} returned two values with the same "
+                            "label; the form would not be able to say which was chosen"
+                        )
+                spec = step_form_spec(step, title, options=list(labels) or None)
+            except (ValueError, ServeError) as exc:
+                self.notify(f"/{step.flow}: {exc}", severity="error")
+                return
+            answers = await self.push_screen_wait(modals.ExtensionFormScreen(spec))
+            if answers is None:
+                return
+            value = answers[step.argument.name]
+            bound = {**step.bound, step.argument.name: labels[value] if labels else value}
+            try:
+                outcome = await backend.next_step(step.flow, bound, step.cursor)
+            except ServeError as exc:
+                self.notify(f"/{step.flow}: {exc}", severity="error")
+                return
+            if isinstance(outcome, Ready):
+                await self._perform_ready(outcome)
+                return
+            step = outcome
+
+    def _is_extension_flow(self, name: str) -> bool:
+        """Whether ``name`` is a flow an extension declared, asked of the daemon under ``--connect``."""
+        remote_check = getattr(self.current_backend, "is_extension_flow", None)
+        if remote_check is not None:
+            return bool(remote_check(name))
+        return name in self._vocabulary().extension_flows
 
     async def _perform_ready(self, ready: Ready) -> None:
         """Perform a bound flow, and report what came back.
@@ -1638,7 +1728,7 @@ class TauApp(App):
             await self.action_set_model(ready.arguments["name"])
             return
 
-        if ready.flow in self._vocabulary().extension_flows:
+        if self._is_extension_flow(ready.flow):
             bound = " ".join(str(value) for value in ready.arguments.values())
             await self._dispatch_extension_command(ready.flow, bound)
             return
@@ -2684,11 +2774,17 @@ class TauApp(App):
         message list nor persisted, so the model's input stays system prompt plus the
         linear active path (D-E5-6 is lifted without touching that invariant).
         """
+        disabled = self._disabled_extension_paths()
+        remote_summary = getattr(self.current_backend, "extension_summary", None)
         reader = getattr(self.current_backend, "get_extension_state", None)
-        if reader is None:
+        if remote_summary is not None:
+            infos, errors = remote_summary()
+            listing = self._format_extension_infos(infos, errors, disabled)
+        elif reader is not None:
+            listing = self._format_extensions_listing(reader(), disabled)
+        else:
             self.notify("Extension state is unavailable here", severity="warning")
             return
-        listing = self._format_extensions_listing(reader(), self._disabled_extension_paths())
         self.query_one(transcript.ChatDisplay).add_message("system", listing, source="markdown")
 
     def _disabled_extension_paths(self) -> set[str]:
@@ -2846,9 +2942,15 @@ class TauApp(App):
         ``disabled`` is the set of runtime-disabled extension paths (E10 §6 / S70); a
         disabled extension is tagged in its heading so the listing reflects live state.
         """
+        return TauApp._format_extension_infos(summarize_extensions(result), result.errors, disabled)
+
+    @staticmethod
+    def _format_extension_infos(
+        infos: list[ExtensionInfo], errors: list[ExtensionLoadError], disabled: set[str] | None
+    ) -> str:
+        """The ``/extensions`` listing from per-extension summaries and load errors."""
         disabled = disabled or set()
-        infos = summarize_extensions(result)
-        if not infos and not result.errors:
+        if not infos and not errors:
             return "No extensions loaded."
 
         lines: list[str] = ["# Extensions"]
@@ -2862,10 +2964,10 @@ class TauApp(App):
             shortcuts_disp = ", ".join(f"ctrl+e {k}" for k in info.shortcuts) or "(none)"
             lines.append(f"- shortcuts: {shortcuts_disp}")
 
-        if result.errors:
+        if errors:
             lines.append("")
             lines.append("## Load errors")
-            for err in result.errors:
+            for err in errors:
                 lines.append(f"- `{err.path}`: {err.error}")
 
         return "\n".join(lines)
@@ -3228,6 +3330,10 @@ class TauApp(App):
             return
 
         session = getattr(self.current_backend, "agent_session", None)
+        replica = getattr(self.current_backend, "replica", None)
+        if not name and replica is not None:
+            self.notify("Models: " + ", ".join(m["name"] for m in replica.models))
+            return
         if not name:
             try:
                 found = enumerate_domain("model_name", session=session)
@@ -3263,7 +3369,13 @@ class TauApp(App):
         there is no catalog to fork through, and this says so instead of appearing
         to work — the same refusal ``fork()`` itself makes for a session the
         catalog cannot address.
+
+        Under ``--connect`` the daemon forks at the head cursor's leaf and this head
+        opens the new session (:meth:`_remote_fork`).
         """
+        if self._remote is not None:
+            await self._remote_fork()
+            return
         if self._session_runtime is None:
             self.notify("Forking needs a persistent session", severity="warning")
             return
