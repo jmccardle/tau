@@ -13,6 +13,7 @@ and tau-code generates its TS types from that schema.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import json
 import re
@@ -40,6 +41,7 @@ from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.submission import MultitaskStrategy, SubmissionSource
 from tau_llm.types import (
     AssistantMessage,
+    Usage,
     ImageContent,
     TextContent,
     ToolResultMessage,
@@ -101,11 +103,14 @@ class Given:
 
     Attributes:
         name: The ``$defs`` key.
-        schema: The schema, used as is.
+        schema: The schema, used as is but for ``types``.
+        types: Nodes of ``schema`` it leaves open, and the type each has, as
+            :data:`RPC_TYPES` maps them.
     """
 
     name: str
     schema: dict[str, Any]
+    types: dict[str, Any] = field(default_factory=dict)
 
 
 # ─── Requests ────────────────────────────────────────────────────────────
@@ -507,6 +512,32 @@ Message = Annotated[
 ]
 
 
+class SummaryMessage(TypedDict):
+    """A compaction or branch summary as the context renders it: a user message with no timestamp.
+
+    ``conversation_tree.summary_message_of`` recognises one by its text.
+    """
+
+    role: Literal["user"]
+    content: list[TextContent]
+    timestamp: NotRequired[Never]
+
+
+ContextMessage = Annotated[
+    UserMessage
+    | SummaryMessage
+    | AssistantMessage
+    | ToolResultMessage
+    | SystemMessage
+    | CustomRoleMessage,
+    Named(
+        "ContextMessage",
+        "A message of model input: a stored message, or a summary rendered as a user "
+        "message, which alone has no `timestamp`.",
+    ),
+]
+
+
 class _EntryBase(TypedDict):
     """Every finished entry's common fields; ``status`` is absent once an entry is finished.
 
@@ -862,6 +893,186 @@ DispatchedCommand = Annotated[
 ]
 
 
+@dataclass
+class AttachmentReport:
+    """What ``Submit.expand_attachments`` did.
+
+    Attributes:
+        expanded: How many ``@`` references were sent as attachments.
+        images: How many of them were images.
+        unresolved: The ``@`` tokens that named no file, sent as written.
+        failures: One line per file that resolved and could not be read.
+    """
+
+    expanded: int
+    images: int
+    unresolved: list[str]
+    failures: list[str]
+
+
+@dataclass
+class DomainChoice:
+    """One legal value of a domain: ``value`` is what is bound, ``label`` what is shown."""
+
+    value: str
+    label: str
+
+
+@dataclass
+class MessageMatch:
+    """One entry ``complete_message_id`` offers: its id, and its first line."""
+
+    entry_id: str
+    preview: str
+
+
+@dataclass
+class PathMatch:
+    """One path an ``@`` token can complete to."""
+
+    name: str
+    detail: str
+    is_dir: bool
+
+
+@dataclass
+class AttachmentCompletion:
+    """The ``@`` token at the caret and what it completes to.
+
+    Attributes:
+        start: The token's first character offset in the text.
+        end: The offset after its last.
+        total: How many paths match, counting past the bound on ``matches``.
+    """
+
+    start: int
+    end: int
+    token: str
+    matches: list[PathMatch]
+    total: int
+
+
+@dataclass
+class CommandOutput:
+    """An extension command's completion, as RPC's ``submit`` answer names it.
+
+    Attributes:
+        name: The command that ran, which an input hook may have rewritten.
+        output: What it returned, as display text, or ``None``.
+    """
+
+    name: str | None
+    output: str | None
+
+
+@dataclass
+class ManagedExtension:
+    """One managed extension file and whether it is enabled."""
+
+    path: str
+    enabled: bool
+
+
+@dataclass
+class LoadError:
+    """An extension file that failed to load, and why."""
+
+    path: str
+    error: str
+
+
+@dataclass
+class ContextEstimate:
+    """The context's size, as ``get_session_stats`` measures it (``compaction.ContextUsageEstimate``)."""
+
+    tokens: int
+    usage_tokens: int
+    trailing_tokens: int
+    last_usage_index: int | None
+
+
+@dataclass
+class CompactionSettingsRecord:
+    """When compaction runs (``compaction.CompactionSettings``)."""
+
+    enabled: bool
+    reserve_tokens: int
+    keep_recent_tokens: int
+
+
+@dataclass
+class LastCompaction:
+    """The newest compaction entry on the path (``agent_session.CompactionRecord``).
+
+    Attributes:
+        timestamp: ISO-8601.
+    """
+
+    id: str
+    timestamp: str
+    summary: str
+    first_kept_id: str | None
+    tokens_before: int | None
+
+
+RPC_TYPES: dict[str, dict[str, Any]] = {
+    "submit": {"command": CommandOutput, "view": View, "attachments": AttachmentReport},
+    "prompt": {"command": CommandOutput, "view": View, "attachments": AttachmentReport},
+    "get_state": {"model": ModelSpec, "usage": Usage | None},
+    "get_messages": {"messages": list[ContextMessage]},
+    "get_tools": {"tools[].parameters": dict[str, Any]},
+    "get_models": {"models": list[ModelRecord]},
+    "get_session_stats": {
+        "context": ContextEstimate,
+        "compaction_settings": CompactionSettingsRecord,
+        "last_compaction": LastCompaction | None,
+        "usage": Usage | None,
+    },
+    "set_model": {"model": ModelSpec},
+    "complete_path": {"completion": AttachmentCompletion | None},
+    "next_step": {
+        "step": Annotated[dict[str, Any], Shape(FlowStep)] | None,
+        "ready": Annotated[dict[str, Any], Shape(Ready)] | None,
+    },
+    "enumerate_domain": {"values": list[DomainChoice]},
+    "complete_message_id": {"matches": list[MessageMatch]},
+    "get_entry": {"entry": Annotated[dict[str, Any], Shape(Entry)]},
+    "get_pending_request": {"request": ExtensionRequest | None},
+    "list_managed_extensions": {"extensions": list[ManagedExtension]},
+    "get_extension_state": {"extensions": list[ExtensionInfo], "errors": list[LoadError]},
+    "get_extension_config": {
+        "schema": Annotated[dict[str, Any], Shape(FormSpec)] | None,
+        "values": dict[str, Any],
+    },
+    "navigate": {"messages": list[ContextMessage]},
+    "summarize_and_navigate": {"messages": list[ContextMessage]},
+    "elide_span": {"messages": list[ContextMessage]},
+    "commit_branch": {"messages": list[ContextMessage]},
+    "paste_subtree": {"minted_ids": list[str]},
+}
+"""Where an RPC verb's result schema leaves a shape open, the type it has.
+
+RPC's result schemas describe some objects in prose; serve's schema replaces
+each such node with its record, so a client generates every field. A path
+steps into ``properties`` by name and into ``items`` by ``[]``.
+"""
+
+RPC_PARAM_TYPES: dict[str, dict[str, Any]] = {
+    "submit": {"images": list[ImageContent] | None},
+    "prompt": {"images": list[ImageContent] | None},
+    "commit_branch": {"ids": list[str]},
+}
+"""The same, for RPC params: arrays whose items its schema leaves open."""
+
+COMPACTION_END_TYPES: dict[str, Any] = {
+    "compacted_entry_ids": list[str],
+    "read_files": list[str],
+    "modified_files": list[str],
+    "usage": Usage,
+}
+"""The same, for RPC's ``compaction_end`` payload."""
+
+
 # ─── Results ─────────────────────────────────────────────────────────────
 
 
@@ -1074,23 +1285,6 @@ class RequestClosedEventData:
 
 
 @dataclass
-class AttachmentReport:
-    """What ``Submit.expand_attachments`` did.
-
-    Attributes:
-        expanded: How many ``@`` references were sent as attachments.
-        images: How many of them were images.
-        unresolved: The ``@`` tokens that named no file, sent as written.
-        failures: One line per file that resolved and could not be read.
-    """
-
-    expanded: int
-    images: int
-    unresolved: list[str]
-    failures: list[str]
-
-
-@dataclass
 class SubmissionInfo:
     """A ``Submission`` as its channel events carry it (``tau_agent_core.submission``)."""
 
@@ -1220,7 +1414,8 @@ EVENT_DATA: dict[str, Any] = {
     "request_closed": RequestClosedEventData,
     "ui": UiEventData,
     "compaction_end": Annotated[
-        dict[str, Any], Given("CompactionEnd", rpc.COMPACTION_END_PARAMS_SCHEMA)
+        dict[str, Any],
+        Given("CompactionEnd", rpc.COMPACTION_END_PARAMS_SCHEMA, COMPACTION_END_TYPES),
     ],
 }
 """What each event kind carries in ``data``.
@@ -1603,7 +1798,11 @@ class _Schema:
         if isinstance(marker, Pattern):
             return {"type": "string", "pattern": marker.regex}
         if isinstance(marker, Given):
-            return self._define(marker.name, marker.name, lambda: dict(marker.schema))
+            return self._define(
+                marker.name,
+                marker.name,
+                lambda: _typed(self, marker.schema, marker.types, marker.name),
+            )
         if isinstance(marker, Named):
             return self._define(
                 marker.name,
@@ -1699,9 +1898,9 @@ SCHEMA_DESCRIPTION = (
 """The schema's top-level ``description``."""
 
 
-def _rpc_request(verb: str) -> dict[str, Any]:
-    """An RPC verb's request: RPC's params, plus the session and the cursor it acts at."""
-    params = rpc.COMMAND_TABLE[verb].params_schema
+def _rpc_request(s: _Schema, verb: str) -> dict[str, Any]:
+    """An RPC verb's request: RPC's params, typed by :data:`RPC_PARAM_TYPES`, plus where it acts."""
+    params = _typed(s, rpc.COMMAND_TABLE[verb].params_schema, RPC_PARAM_TYPES.get(verb, {}), verb)
     how = RPC_OWN.get(verb, "The daemon runs RPC's own handler at `cursor_id`.")
     return {
         "type": "object",
@@ -1722,7 +1921,7 @@ def _rpc_result(s: _Schema, verb: str) -> dict[str, Any]:
     declared = rpc.COMMAND_TABLE[verb].result_schema
     if declared is None:
         raise TypeError(f"RPC {verb!r} declares no result schema")
-    result = dict(declared)
+    result = _typed(s, declared, RPC_TYPES.get(verb, {}), verb)
     if verb in ("submit", "prompt"):
         result["properties"] = {
             **result["properties"],
@@ -1738,6 +1937,32 @@ def _rpc_result(s: _Schema, verb: str) -> dict[str, Any]:
                 "`null` for a prompt.",
             },
         }
+    return result
+
+
+def _typed(s: _Schema, schema: dict[str, Any], types: dict[str, Any], where: str) -> dict[str, Any]:
+    """``schema`` with each node ``types`` names replaced by its type's schema, its description kept.
+
+    Raises:
+        KeyError: a path that names no node, so the table cannot outlive the schema.
+    """
+    result = copy.deepcopy(schema)
+    for path, hint in types.items():
+        parent: dict[str, Any] = result
+        steps = path.split(".")
+        for step in steps[:-1]:
+            name, _, item = step.partition("[]")
+            parent = parent["properties"][name]
+            if step.endswith("[]"):
+                parent = parent["items"]
+        last = steps[-1]
+        if last not in parent.get("properties", {}):
+            raise KeyError(f"{where}: no node {path!r} to type")
+        described = parent["properties"][last].get("description")
+        typed = dict(s.of(hint))
+        parent["properties"][last] = (
+            {**typed, "description": described} if described is not None else typed
+        )
     return result
 
 
@@ -1768,7 +1993,7 @@ def json_schema() -> dict[str, Any]:
             }
         )
     for verb in RPC_VERBS:
-        definition = _rpc_request(verb)
+        definition = _rpc_request(s, verb)
         name = _camel(verb)
         result = s.of(Annotated[dict[str, Any], Given(f"{name}Result", _rpc_result(s, verb))])
         s.defs[name] = {**definition, "x-result": result}

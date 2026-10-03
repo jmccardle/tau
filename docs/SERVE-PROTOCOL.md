@@ -8,7 +8,7 @@
 
 - **Protocol version:** `0.6`
 - **Default port:** `8256`
-- **Counts:** 49 requests (35 of them RPC verbs), 10 event kinds, 179 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 49 requests (35 of them RPC verbs), 10 event kinds, 193 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
@@ -582,6 +582,18 @@ The answer to `Attach`.
 | `surface` | [Surface](#surface) | yes |  |
 | `requests` | list of [RequestEventData](#requesteventdata) | yes | The extension forms open now, which an `Answer` closes. |
 
+### AttachmentCompletion
+
+The `@` token at the caret and what it completes to.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `start` | integer | yes | The token's first character offset in the text. |
+| `end` | integer | yes | The offset after its last. |
+| `token` | string | yes |  |
+| `matches` | list of [PathMatch](#pathmatch) | yes |  |
+| `total` | integer | yes | How many paths match, counting past the bound on `matches`. |
+
 ### AttachmentReport
 
 What `Submit.expand_attachments` did.
@@ -639,11 +651,20 @@ One slash command a session answers, as RPC `get_commands` lists it.
 | `flow` | boolean | yes | Whether `NextStep` steps it. |
 | `hidden` | boolean | yes | A qualified extension name (`ext:pirate.speak`): it resolves, and a completion list leaves it out. |
 
+### CommandOutput
+
+An extension command's completion, as RPC's `submit` answer names it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string \| null | yes | The command that ran, which an input hook may have rewritten. |
+| `output` | string \| null | yes | What it returned, as display text, or `None`. |
+
 ### CommitBranchResult
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `messages` | list of any | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
+| `messages` | list of [ContextMessage](#contextmessage) | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
 | `leaf` | ['string', 'null'] | yes | cursor.leaf after the mutation (E5 rule 1). |
 
 ### CompactResult
@@ -667,10 +688,10 @@ One slash command a session answers, as RPC `get_commands` lists it.
 | `first_kept_entry_id` | string | no | Session-log entry id of the first entry kept verbatim after the cut. |
 | `tokens_before` | integer | no | Estimated context tokens before this compaction. |
 | `tokens_saved` | integer | no | Estimated context tokens this compaction removed: the summarized prefix, less the summary that replaces it. NOT tokens_before less the summary — tokens_before includes the recent context the cut keeps. May be negative when the summary is larger than the prefix it replaced; that is reported rather than clamped to 0. |
-| `compacted_entry_ids` | list of any | no | Session-log entry ids folded into the summary. |
-| `read_files` | list of any | no | CompactionDetails.read_files ([] when details is None). |
-| `modified_files` | list of any | no | CompactionDetails.modified_files ([] when details is None). |
-| `usage` | object | no | What GENERATING this summary cost (CompactionResult.usage) — routinely the priciest single call in a session; distinct from tokens_saved, which is what compaction bought. |
+| `compacted_entry_ids` | list of string | no | Session-log entry ids folded into the summary. |
+| `read_files` | list of string | no | CompactionDetails.read_files ([] when details is None). |
+| `modified_files` | list of string | no | CompactionDetails.modified_files ([] when details is None). |
+| `usage` | [Usage](#usage) | no | What GENERATING this summary cost (CompactionResult.usage) — routinely the priciest single call in a session; distinct from tokens_saved, which is what compaction bought. |
 | `leaf` | ['string', 'null'] | yes | cursor.leaf once the compaction finished (E5/F3): the post-compaction tip when performed is true, else the unchanged tip. |
 
 ### CompactionEndEvent
@@ -706,6 +727,16 @@ A summary that replaces the path before `firstKeptId` in the context.
 | `coveredEntries` | integer | no |  |
 | `coveredTokens` | integer | no |  |
 | `configId` | string \| null | no |  |
+
+### CompactionSettingsRecord
+
+When compaction runs (`compaction.CompactionSettings`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `enabled` | boolean | yes |  |
+| `reserve_tokens` | integer | yes |  |
+| `keep_recent_tokens` | integer | yes |  |
 
 ### CompareCorrelation
 
@@ -749,14 +780,31 @@ The answer to `Compare`, sent before the turns end.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `matches` | list of any | yes | The candidates in tree order (root-most first), as [{entry_id, preview}]: `entry_id` is the value every message_id argument takes, and `preview` is the entry's first line — the row the tree browser draws. Bounded by `limit`. |
+| `matches` | list of [MessageMatch](#messagematch) | yes | The candidates in tree order (root-most first), as [{entry_id, preview}]: `entry_id` is the value every message_id argument takes, and `preview` is the entry's first line — the row the tree browser draws. Bounded by `limit`. |
 | `total` | integer | yes | How many entries matched BEFORE `limit` was applied, so a host is told it is seeing a prefix rather than shown one silently (G3, the rule complete_path already follows). |
 
 ### CompletePathResult
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `completion` | ['object', 'null'] | yes | `null` when `offset` is not inside an @reference at all — the host shows no popup. Otherwise {start, end, token, matches, total}: `start`/`end` are the character span of the whole @word, so a host replaces that span rather than guessing where the token began; `matches` is a list of {name, detail, is_dir}, `name` being the text that goes AFTER the @ (directories end in '/'); `total` is how many entries matched before the list was bounded, so a host can say '12 of 340' instead of implying it showed everything. An EMPTY `matches` with a non-null completion is the 'this names no file' warning, not an absence of information. |
+| `completion` | [AttachmentCompletion](#attachmentcompletion) \| null | yes | `null` when `offset` is not inside an @reference at all — the host shows no popup. Otherwise {start, end, token, matches, total}: `start`/`end` are the character span of the whole @word, so a host replaces that span rather than guessing where the token began; `matches` is a list of {name, detail, is_dir}, `name` being the text that goes AFTER the @ (directories end in '/'); `total` is how many entries matched before the list was bounded, so a host can say '12 of 340' instead of implying it showed everything. An EMPTY `matches` with a non-null completion is the 'this names no file' warning, not an absence of information. |
+
+### ContextEstimate
+
+The context's size, as `get_session_stats` measures it (`compaction.ContextUsageEstimate`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `tokens` | integer | yes |  |
+| `usage_tokens` | integer | yes |  |
+| `trailing_tokens` | integer | yes |  |
+| `last_usage_index` | integer \| null | yes |  |
+
+### ContextMessage
+
+A message of model input: a stored message, or a summary rendered as a user message, which alone has no `timestamp`.
+
+One of: [UserMessage](#usermessage), [SummaryMessage](#summarymessage), [AssistantMessage](#assistantmessage), [ToolResultMessage](#toolresultmessage), [SystemMessage](#systemmessage), [CustomRoleMessage](#customrolemessage).
 
 ### Correlation
 
@@ -900,6 +948,15 @@ A named type in τ's object model, and how its values are found.
 | `enumerator` | string \| null | no | The name of the `Capability` that computes the legal values, when they depend on live state. |
 | `field_kind` | string | no | Which of `tau_agent_core.extension_types.FORM_FIELD_KINDS` a head renders a SINGLE value of this domain as. `"select"` asserts the whole legal set can be put on screen at once; a domain whose set is unbounded or merely large says `"text"` and is completed against instead. A head may substitute a richer control than the kind names — the TUI answers `session_id` with its filtered picker — and may never substitute a poorer one. |
 
+### DomainChoice
+
+One legal value of a domain: `value` is what is bound, `label` what is shown.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `value` | string | yes |  |
+| `label` | string | yes |  |
+
 ### ElideEntry
 
 A splice anchor with no summary: the path before `firstKeptId` leaves the context.
@@ -921,7 +978,7 @@ A splice anchor with no summary: the path before `firstKeptId` leaves the contex
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `messages` | list of any | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
+| `messages` | list of [ContextMessage](#contextmessage) | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
 | `leaf` | ['string', 'null'] | yes | cursor.leaf after the mutation (E5 rule 1). |
 
 ### EnableExtensionResult
@@ -993,7 +1050,7 @@ A `entry_open` event.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `domain` | string | yes | The domain that was enumerated. |
-| `values` | list of any | yes | A list of {value, label}. `value` is what a host binds into `next_step`'s `bound`; `label` is what it shows. They are equal for a domain whose values already read as text. |
+| `values` | list of [DomainChoice](#domainchoice) | yes | A list of {value, label}. `value` is what a host binds into `next_step`'s `bound`; `label` is what it shows. They are equal for a domain whose values already read as text. |
 | `total` | integer | yes | How many values matched before `limit` was applied, so a host says '12 of 340' instead of implying it showed everything (G3). An empty `values` with a non-zero `total` cannot happen; an empty one with total 0 means the domain genuinely has none. |
 
 ### Error
@@ -1041,6 +1098,18 @@ An extension request at a cursor, as RPC `get_pending_request` answers it (docs/
 | `lock` | boolean | yes | Whether a submission at this cursor is refused. |
 | `ask` | [Ask](#ask) \| null | yes | What it asks, or `None` for a bare lock. |
 | `release` | string \| null | yes | A command that clears the lock, or `None`. |
+
+### FlowStep
+
+One argument a flow still needs, and everything required to ask for it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `flow` | string | yes | The flow's name. |
+| `argument` | [Argument](#argument) | yes | The argument being asked for. |
+| `domain` | [Domain](#domain) | yes | That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up. |
+| `leaf` | string \| null | yes | The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`. |
+| `bound` | object | yes | The arguments already bound, so a head redrawing a form has them. |
 
 ### FlowStepArm
 
@@ -1099,22 +1168,22 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `entry` | object | yes | The raw session-log entry, as stored: camelCase `parentId` / `firstKeptId` / `fromId`, a `type`, and whatever payload that type carries — a `message` for the message kinds, a `summary` for a compaction or a branch_summary. Handed over whole rather than projected, because the caller is a detail pane rendering ONE node and a projection would be a second message shape to keep in step with get_messages'. One node per call: get_tree carries a one-line preview per row precisely so a browser does not pull bodies it is not showing. |
+| `entry` | [Entry](#entry) | yes | The raw session-log entry, as stored: camelCase `parentId` / `firstKeptId` / `fromId`, a `type`, and whatever payload that type carries — a `message` for the message kinds, a `summary` for a compaction or a branch_summary. Handed over whole rather than projected, because the caller is a detail pane rendering ONE node and a projection would be a second message shape to keep in step with get_messages'. One node per call: get_tree carries a one-line preview per row precisely so a browser does not pull bodies it is not showing. |
 
 ### GetExtensionConfigResult
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `path` | string | yes | The managed path the token resolved to, not the token sent. |
-| `schema` | object | yes | The extension's CONFIG_SCHEMA, normalized at load into {title, fields} — the same spec shape ui.form takes, so a head that can render a form can render a settings screen with no new widget. null for an extension that declares none, which is the answer that tells a head to offer no screen rather than an empty one. |
+| `schema` | [FormSpec](#formspec) \| null | yes | The extension's CONFIG_SCHEMA, normalized at load into {title, fields} — the same spec shape ui.form takes, so a head that can render a form can render a settings screen with no new widget. null for an extension that declares none, which is the answer that tells a head to offer no screen rather than an empty one. |
 | `values` | object | yes | The live slice api.config returns for this extension, keyed by file stem: config.json's extensions.<stem> with --ext-config overrides applied, plus any set_extension_config since. {} for an unconfigured extension — never the schema's defaults, which the extension itself supplies. |
 
 ### GetExtensionStateResult
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `extensions` | list of any | yes | Every loaded extension and what it registered, as [{name, path, tools, commands, shortcuts, hooks, content_hash, subjects}] — sdk.summarize_extensions of the live registry, which is the same projection the TUI's /extensions listing draws. Read LIVE, not from the load-time snapshot, so a reload_extension is reflected here. |
-| `errors` | list of any | yes | Every discovered file that FAILED to load, as [{path, error}]. Kept from the last load_extensions call, because a failed import leaves nothing to recompute from. This is the half that makes this a read of its own rather than list_managed_extensions with more fields: a file that cannot import can never be a legal extension_name, and is exactly what a listing must show. |
+| `extensions` | list of [ExtensionInfo](#extensioninfo) | yes | Every loaded extension and what it registered, as [{name, path, tools, commands, shortcuts, hooks, content_hash, subjects}] — sdk.summarize_extensions of the live registry, which is the same projection the TUI's /extensions listing draws. Read LIVE, not from the load-time snapshot, so a reload_extension is reflected here. |
+| `errors` | list of [LoadError](#loaderror) | yes | Every discovered file that FAILED to load, as [{path, error}]. Kept from the last load_extensions call, because a failed import leaves nothing to recompute from. This is the half that makes this a read of its own rather than list_managed_extensions with more fields: a file that cannot import can never be a legal extension_name, and is exactly what a listing must show. |
 
 ### GetLastAssistantTextResult
 
@@ -1126,19 +1195,19 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `messages` | list of object | yes | AgentSession.messages — the terminal, flat message array (E2's pull side). |
+| `messages` | list of [ContextMessage](#contextmessage) | yes | AgentSession.messages — the terminal, flat message array (E2's pull side). |
 
 ### GetModelsResult
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `models` | list of any | yes | Every config model NAME this child can switch to, sorted, as [{name, model}]: `name` is the exact string set_model's `name` param takes, and `model` is the SAME projection get_state publishes for the active model — {id, provider, context_window} — obtained by resolving `name` through the session's bound model resolver, i.e. by asking the one component set_model itself would ask. Empty only when the child's config declares no models; a resolver that cannot be enumerated is an INTERNAL_ERROR, never an empty list. |
+| `models` | list of [ModelRecord](#modelrecord) | yes | Every config model NAME this child can switch to, sorted, as [{name, model}]: `name` is the exact string set_model's `name` param takes, and `model` is the SAME projection get_state publishes for the active model — {id, provider, context_window} — obtained by resolving `name` through the session's bound model resolver, i.e. by asking the one component set_model itself would ask. Empty only when the child's config declares no models; a resolver that cannot be enumerated is an INTERNAL_ERROR, never an empty list. |
 
 ### GetPendingRequestResult
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `request` | ['object', 'null'] | yes | The extension request AT THE CURSOR, or null when there is none. The cursor only, never an ancestry walk: the thing a user is looking at and the thing that refused their submission are one entry. {entry_id, extension, extension_name, sentence, label, lock, ask, release} — `label` is τ's own framing of the four states over `lock` and `ask`, `sentence` is the extension's own line, `ask` is a validated `ui.form` spec ({title, fields, actions}) or null, and `release` names a command that clears the lock (advisory: commands are exempt from a lock by placement, not by name). A host renders all four states; three of them draw something and the fourth is this verb answering null. |
+| `request` | [ExtensionRequest](#extensionrequest) \| null | yes | The extension request AT THE CURSOR, or null when there is none. The cursor only, never an ancestry walk: the thing a user is looking at and the thing that refused their submission are one entry. {entry_id, extension, extension_name, sentence, label, lock, ask, release} — `label` is τ's own framing of the four states over `lock` and `ask`, `sentence` is the extension's own line, `ask` is a validated `ui.form` spec ({title, fields, actions}) or null, and `release` names a command that clears the lock (advisory: commands are exempt from a lock by placement, not by name). A host renders all four states; three of them draw something and the fourth is this verb answering null. |
 
 ### GetSessionNameResult
 
@@ -1150,12 +1219,12 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `context` | object | yes | estimate_context_tokens(session.messages) (compaction.py) projected as {tokens, usage_tokens, trailing_tokens, last_usage_index}: tokens is the total estimate the compaction threshold is checked against; usage_tokens is the anchored provider-reported count up to the last assistant Usage, trailing_tokens the heuristic estimate for messages after it, last_usage_index that message's index (null if no assistant Usage exists yet, in which case tokens==trailing_tokens and the whole list was heuristically estimated). |
+| `context` | [ContextEstimate](#contextestimate) | yes | estimate_context_tokens(session.messages) (compaction.py) projected as {tokens, usage_tokens, trailing_tokens, last_usage_index}: tokens is the total estimate the compaction threshold is checked against; usage_tokens is the anchored provider-reported count up to the last assistant Usage, trailing_tokens the heuristic estimate for messages after it, last_usage_index that message's index (null if no assistant Usage exists yet, in which case tokens==trailing_tokens and the whole list was heuristically estimated). |
 | `context_window` | integer | yes | The active model's context_window (get_model()). |
 | `context_headroom` | integer | yes | context_window - context.tokens. Can be negative: an honest over-budget number, never clamped to zero. |
-| `compaction_settings` | object | yes | The session's EFFECTIVE CompactionSettings — {enabled, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. An RPC session is CONSTRUCTED with enabled=False (backends.py:885) — that is how a host discovers auto-compaction is off (§1.1) — and set_auto_compaction (D-4, shipped in this same tier) is the one thing that changes it, so this reports the session's LIVE effective setting at call time, never a constant. |
-| `last_compaction` | ['object', 'null'] | yes | {id, timestamp, summary, first_kept_id, tokens_before} for the most recent type=='compaction' entry in session_log.entries(), or null if this session has never compacted — an honest absence, never a fabricated entry. |
-| `usage` | ['object', 'null'] | yes | AgentSession.get_usage() — null before the first completion. |
+| `compaction_settings` | [CompactionSettingsRecord](#compactionsettingsrecord) | yes | The session's EFFECTIVE CompactionSettings — {enabled, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. An RPC session is CONSTRUCTED with enabled=False (backends.py:885) — that is how a host discovers auto-compaction is off (§1.1) — and set_auto_compaction (D-4, shipped in this same tier) is the one thing that changes it, so this reports the session's LIVE effective setting at call time, never a constant. |
+| `last_compaction` | [LastCompaction](#lastcompaction) \| null | yes | {id, timestamp, summary, first_kept_id, tokens_before} for the most recent type=='compaction' entry in session_log.entries(), or null if this session has never compacted — an honest absence, never a fabricated entry. |
+| `usage` | [Usage](#usage) \| null | yes | AgentSession.get_usage() — null before the first completion. |
 
 ### GetStateResult
 
@@ -1164,8 +1233,8 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 | `session_id` | string | yes | AgentSession.state.session_id. |
 | `status` | `"idle"` \| `"running"` | yes | AgentSession.state.status. |
 | `is_streaming` | boolean | yes | AgentSession.is_streaming. |
-| `model` | object | yes | AgentSession.get_model(): {id, provider, context_window}. |
-| `usage` | ['object', 'null'] | yes | AgentSession.get_usage() — null before the first completion. |
+| `model` | [ModelSpec](#modelspec) | yes | AgentSession.get_model(): {id, provider, context_window}. |
+| `usage` | [Usage](#usage) \| null | yes | AgentSession.get_usage() — null before the first completion. |
 | `message_count` | integer | yes | len(AgentSession.messages). |
 | `leaf` | ['string', 'null'] | yes | cursor.leaf (F3: no host may cache 'the tip'). |
 | `addressable` | boolean | yes | Whether the CURRENT session is persisted: true if list_sessions returns it and switch_session can reach it later. The same predicate new_session/fork/switch_session publish on their session tuple, asked about the session this connection is on right now. False means the appending verbs (set_model, set_session_name, compact — D-7) will refuse with -32004 SESSION_NOT_PERSISTED, and nothing this connection does is written to the store. Reachable without a respawn: new_session {"persist": true} moves onto a persisted session. |
@@ -1218,11 +1287,41 @@ An entry opened and not yet finalized (docs/TAU-SERVE.md §4).
 | `timestamp` | string | yes |  |
 | `status` | `"incomplete"` | yes |  |
 
+### LastCompaction
+
+The newest compaction entry on the path (`agent_session.CompactionRecord`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `timestamp` | string | yes | ISO-8601. |
+| `summary` | string | yes |  |
+| `first_kept_id` | string \| null | yes |  |
+| `tokens_before` | integer \| null | yes |  |
+
 ### ListManagedExtensionsResult
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `extensions` | list of any | yes | Every file extension under management, in load order, as [{path, enabled}]. `path` is the exact string every extension_name argument takes (enable_extension, disable_extension, reload_extension); `enabled` is false exactly when the extension is loaded but its bucket has been removed from the runner, so its hooks, tools and slash commands are not offered. |
+| `extensions` | list of [ManagedExtension](#managedextension) | yes | Every file extension under management, in load order, as [{path, enabled}]. `path` is the exact string every extension_name argument takes (enable_extension, disable_extension, reload_extension); `enabled` is false exactly when the extension is loaded but its bucket has been removed from the runner, so its hooks, tools and slash commands are not offered. |
+
+### LoadError
+
+An extension file that failed to load, and why.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | yes |  |
+| `error` | string | yes |  |
+
+### ManagedExtension
+
+One managed extension file and whether it is enabled.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `path` | string | yes |  |
+| `enabled` | boolean | yes |  |
 
 ### Message
 
@@ -1243,6 +1342,15 @@ A message on the conversation path.
 | `copiedFrom` | string | no |  |
 | `type` | `"message"` | yes |  |
 | `message` | [Message](#message) | yes |  |
+
+### MessageMatch
+
+One entry `complete_message_id` offers: its id, and its first line.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `entry_id` | string | yes |  |
+| `preview` | string | yes |  |
 
 ### ModelChangeEntry
 
@@ -1296,7 +1404,7 @@ Legacy: a recorded move to `targetId`, written before cursors (docs/CURSORS.md �
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `messages` | list of any | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
+| `messages` | list of [ContextMessage](#contextmessage) | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
 | `leaf` | ['string', 'null'] | yes | cursor.leaf after the mutation (E5 rule 1). |
 
 ### NextStepResult
@@ -1304,8 +1412,8 @@ Legacy: a recorded move to `targetId`, written before cursors (docs/CURSORS.md �
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `status` | `"step"` \| `"ready"` | yes | `step` — one required argument is still unbound and `step` describes it. `ready` — every required argument is bound and `ready` names the mutation to perform and what to perform it with. The two are mutually exclusive and exactly one is present. |
-| `step` | ['object', 'null'] | no | {flow, argument, domain, leaf, bound}. `argument` is {name, domain, description, cardinality, required, scope}; `domain` is the resolved domain record {name, description, free, values, enumerator}, included so a host can render the field without a second call — `values` is non-null for a small fixed set, and `enumerator` non-null means call `enumerate_domain` for the live set. |
-| `ready` | ['object', 'null'] | no | {flow, mutation, arguments}. `mutation` is the capability to perform — the named flow's, always, so a host that already knows which flow it stepped can dispatch before this returns. `arguments` is what to perform it with, keyed by the mutation's own parameter names. This is a commitment: τ does not ask a second time, and a host that wants a confirmation renders one from this. |
+| `step` | [FlowStep](#flowstep) \| null | no | {flow, argument, domain, leaf, bound}. `argument` is {name, domain, description, cardinality, required, scope}; `domain` is the resolved domain record {name, description, free, values, enumerator}, included so a host can render the field without a second call — `values` is non-null for a small fixed set, and `enumerator` non-null means call `enumerate_domain` for the live set. |
+| `ready` | [Ready](#ready) \| null | no | {flow, mutation, arguments}. `mutation` is the capability to perform — the named flow's, always, so a host that already knows which flow it stepped can dispatch before this returns. `arguments` is what to perform it with, keyed by the mutation's own parameter names. This is a commitment: τ does not ask a second time, and a host that wants a confirmation renders one from this. |
 
 ### PanelAction
 
@@ -1365,8 +1473,18 @@ A panel body of text.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `minted_ids` | list of any | yes | The ids minted, in the order they were appended. The first is the copy of `source_id` itself. Ids rather than messages because a paste edits the TREE and never moves the leaf: the current context is unchanged, so there is nothing to re-render until someone navigates onto the copy. |
+| `minted_ids` | list of string | yes | The ids minted, in the order they were appended. The first is the copy of `source_id` itself. Ids rather than messages because a paste edits the TREE and never moves the leaf: the current context is unchanged, so there is nothing to re-render until someone navigates onto the copy. |
 | `leaf` | ['string', 'null'] | yes | cursor.leaf after the paste — E5 rule 1, and here it is the UNCHANGED tip, present because absence is never a signal (rule 3), not because anything moved. |
+
+### PathMatch
+
+One path an `@` token can complete to.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `detail` | string | yes |  |
+| `is_dir` | boolean | yes |  |
 
 ### PerformedArm
 
@@ -1387,9 +1505,9 @@ What a capability produced. The past tense of `Ready`.
 | `accepted` | boolean | yes | Always true here — a rejected submission is an RPCError, not this shape. |
 | `submission_id` | string | yes | Echoes the request's submission_id (caller-supplied, or a minted uuid4 for prompt). |
 | `rejection_reason` | null | yes | Always null on this success shape; a real rejection is SUBMISSION_REJECTED instead. |
-| `command` | object | no | Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} — `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn — poll get_messages / watch for agent_end instead. |
-| `view` | object | no | Present ONLY when this submission resolved to a VIEW command — /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. τ projects no view state yet (docs/VSCODE-HEAD.md §6), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host. |
-| `attachments` | object | no | Present exactly when the request set expand_attachments: true — absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error="…"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one. |
+| `command` | [CommandOutput](#commandoutput) | no | Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} — `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn — poll get_messages / watch for agent_end instead. |
+| `view` | [View](#view) | no | Present ONLY when this submission resolved to a VIEW command — /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. τ projects no view state yet (docs/VSCODE-HEAD.md §6), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host. |
+| `attachments` | [AttachmentReport](#attachmentreport) | no | Present exactly when the request set expand_attachments: true — absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error="…"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one. |
 | `admitted` | boolean | no | Whether a turn was admitted for this submission, so a `submission_end` channel event with its id will follow. False for a steer delivered into another turn, and for a command. |
 | `dispatched` | [DispatchedCommand](#dispatchedcommand) \| null | no | What a command resolved to, after the daemon performed it; `null` for a prompt. |
 
@@ -1583,7 +1701,7 @@ A loaded session, as RPC's session tuple names it.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `model` | object | yes | AgentSession.get_model() after the switch: {id, provider, context_window}. |
+| `model` | [ModelSpec](#modelspec) | yes | AgentSession.get_model() after the switch: {id, provider, context_window}. |
 | `leaf` | ['string', 'null'] | yes | cursor.leaf immediately after the model_change entry this call appended (E5) — that entry's own id, since the append is the last write this handler makes. |
 
 ### SetSessionNameResult
@@ -1659,9 +1777,9 @@ A submission admitted to run a turn.
 | `accepted` | boolean | yes | Always true here — a rejected submission is an RPCError, not this shape. |
 | `submission_id` | string | yes | Echoes the request's submission_id (caller-supplied, or a minted uuid4 for prompt). |
 | `rejection_reason` | null | yes | Always null on this success shape; a real rejection is SUBMISSION_REJECTED instead. |
-| `command` | object | no | Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} — `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn — poll get_messages / watch for agent_end instead. |
-| `view` | object | no | Present ONLY when this submission resolved to a VIEW command — /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. τ projects no view state yet (docs/VSCODE-HEAD.md §6), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host. |
-| `attachments` | object | no | Present exactly when the request set expand_attachments: true — absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error="…"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one. |
+| `command` | [CommandOutput](#commandoutput) | no | Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} — `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn — poll get_messages / watch for agent_end instead. |
+| `view` | [View](#view) | no | Present ONLY when this submission resolved to a VIEW command — /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. τ projects no view state yet (docs/VSCODE-HEAD.md §6), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host. |
+| `attachments` | [AttachmentReport](#attachmentreport) | no | Present exactly when the request set expand_attachments: true — absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error="…"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one. |
 | `admitted` | boolean | no | Whether a turn was admitted for this submission, so a `submission_end` channel event with its id will follow. False for a steer delivered into another turn, and for a command. |
 | `dispatched` | [DispatchedCommand](#dispatchedcommand) \| null | no | What a command resolved to, after the daemon performed it; `null` for a prompt. |
 
@@ -1669,8 +1787,18 @@ A submission admitted to run a turn.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `messages` | list of any | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
+| `messages` | list of [ContextMessage](#contextmessage) | yes | ConversationTree.context_for(cursor) after the mutation — the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between. |
 | `leaf` | ['string', 'null'] | yes | cursor.leaf after the mutation (E5 rule 1). |
+
+### SummaryMessage
+
+A compaction or branch summary as the context renders it: a user message with no timestamp.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `role` | `"user"` | yes |  |
+| `content` | list of [TextContent](#textcontent) | yes |  |
+| `timestamp` | absent | no |  |
 
 ### Surface
 
@@ -1827,6 +1955,16 @@ A user message.
 | `role` | `"user"` | yes |  |
 | `content` | string \| list of [TextContent](#textcontent) \| [ImageContent](#imagecontent) | yes |  |
 | `timestamp` | integer | yes |  |
+
+### View
+
+A named surface only a head can open.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | The view's name, a key of `tau_agent_core.capabilities.VIEW_COMMANDS`. |
+| `state` | object \| null | no | What a head draws the view from. `None` everywhere today — no capability projects the session tree yet (docs/VSCODE-HEAD.md §6), and this is the spot that payload lands in when one does, with no change to the union. |
+| `unavailable_because` | string \| null | no | Why no `state` rides with this, in a sentence a head can print. A head that has its own view of that name ignores it and opens it; a head that has none prints it and does nothing else. Not a fallback: it is the same idiom the RPC table's seven `declined_because` entries already use. |
 
 ### ViewArm
 

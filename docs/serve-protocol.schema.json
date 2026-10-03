@@ -492,6 +492,40 @@
       ],
       "type": "object"
     },
+    "AttachmentCompletion": {
+      "description": "The `@` token at the caret and what it completes to.",
+      "properties": {
+        "end": {
+          "description": "The offset after its last.",
+          "type": "integer"
+        },
+        "matches": {
+          "items": {
+            "$ref": "#/$defs/PathMatch"
+          },
+          "type": "array"
+        },
+        "start": {
+          "description": "The token's first character offset in the text.",
+          "type": "integer"
+        },
+        "token": {
+          "type": "string"
+        },
+        "total": {
+          "description": "How many paths match, counting past the bound on `matches`.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "token",
+        "matches",
+        "total"
+      ],
+      "type": "object"
+    },
     "AttachmentReport": {
       "description": "What `Submit.expand_attachments` did.",
       "properties": {
@@ -680,6 +714,38 @@
       ],
       "type": "object"
     },
+    "CommandOutput": {
+      "description": "An extension command's completion, as RPC's `submit` answer names it.",
+      "properties": {
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The command that ran, which an input hook may have rewritten."
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What it returned, as display text, or `None`."
+        }
+      },
+      "required": [
+        "name",
+        "output"
+      ],
+      "type": "object"
+    },
     "CommitBranch": {
       "additionalProperties": false,
       "description": "RPC `commit_branch` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
@@ -694,6 +760,9 @@
         },
         "ids": {
           "description": "The marked entry ids, in any order \u2014 tree_surgery puts them into tree order. The longest run that is already an ancestor chain is kept in place; the rest are minted as copies parented under it, so nothing is re-parented and nothing is erased.",
+          "items": {
+            "type": "string"
+          },
           "type": "array"
         },
         "session_id": {
@@ -726,6 +795,9 @@
         },
         "messages": {
           "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+          "items": {
+            "$ref": "#/$defs/ContextMessage"
+          },
           "type": "array"
         }
       },
@@ -789,6 +861,9 @@
         },
         "compacted_entry_ids": {
           "description": "Session-log entry ids folded into the summary.",
+          "items": {
+            "type": "string"
+          },
           "type": "array"
         },
         "compaction_id": {
@@ -819,6 +894,9 @@
         },
         "modified_files": {
           "description": "CompactionDetails.modified_files ([] when details is None).",
+          "items": {
+            "type": "string"
+          },
           "type": "array"
         },
         "performed": {
@@ -827,6 +905,9 @@
         },
         "read_files": {
           "description": "CompactionDetails.read_files ([] when details is None).",
+          "items": {
+            "type": "string"
+          },
           "type": "array"
         },
         "request_id": {
@@ -849,8 +930,8 @@
           "type": "integer"
         },
         "usage": {
-          "description": "What GENERATING this summary cost (CompactionResult.usage) \u2014 routinely the priciest single call in a session; distinct from tokens_saved, which is what compaction bought.",
-          "type": "object"
+          "$ref": "#/$defs/Usage",
+          "description": "What GENERATING this summary cost (CompactionResult.usage) \u2014 routinely the priciest single call in a session; distinct from tokens_saved, which is what compaction bought."
         }
       },
       "required": [
@@ -963,6 +1044,26 @@
         "summary",
         "firstKeptId",
         "tokensBefore"
+      ],
+      "type": "object"
+    },
+    "CompactionSettingsRecord": {
+      "description": "When compaction runs (`compaction.CompactionSettings`).",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "keep_recent_tokens": {
+          "type": "integer"
+        },
+        "reserve_tokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "enabled",
+        "reserve_tokens",
+        "keep_recent_tokens"
       ],
       "type": "object"
     },
@@ -1148,6 +1249,9 @@
       "properties": {
         "matches": {
           "description": "The candidates in tree order (root-most first), as [{entry_id, preview}]: `entry_id` is the value every message_id argument takes, and `preview` is the entry's first line \u2014 the row the tree browser draws. Bounded by `limit`.",
+          "items": {
+            "$ref": "#/$defs/MessageMatch"
+          },
           "type": "array"
         },
         "total": {
@@ -1200,17 +1304,75 @@
     "CompletePathResult": {
       "properties": {
         "completion": {
-          "description": "`null` when `offset` is not inside an @reference at all \u2014 the host shows no popup. Otherwise {start, end, token, matches, total}: `start`/`end` are the character span of the whole @word, so a host replaces that span rather than guessing where the token began; `matches` is a list of {name, detail, is_dir}, `name` being the text that goes AFTER the @ (directories end in '/'); `total` is how many entries matched before the list was bounded, so a host can say '12 of 340' instead of implying it showed everything. An EMPTY `matches` with a non-null completion is the 'this names no file' warning, not an absence of information.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AttachmentCompletion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`null` when `offset` is not inside an @reference at all \u2014 the host shows no popup. Otherwise {start, end, token, matches, total}: `start`/`end` are the character span of the whole @word, so a host replaces that span rather than guessing where the token began; `matches` is a list of {name, detail, is_dir}, `name` being the text that goes AFTER the @ (directories end in '/'); `total` is how many entries matched before the list was bounded, so a host can say '12 of 340' instead of implying it showed everything. An EMPTY `matches` with a non-null completion is the 'this names no file' warning, not an absence of information."
         }
       },
       "required": [
         "completion"
       ],
       "type": "object"
+    },
+    "ContextEstimate": {
+      "description": "The context's size, as `get_session_stats` measures it (`compaction.ContextUsageEstimate`).",
+      "properties": {
+        "last_usage_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tokens": {
+          "type": "integer"
+        },
+        "trailing_tokens": {
+          "type": "integer"
+        },
+        "usage_tokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tokens",
+        "usage_tokens",
+        "trailing_tokens",
+        "last_usage_index"
+      ],
+      "type": "object"
+    },
+    "ContextMessage": {
+      "description": "A message of model input: a stored message, or a summary rendered as a user message, which alone has no `timestamp`.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/UserMessage"
+        },
+        {
+          "$ref": "#/$defs/SummaryMessage"
+        },
+        {
+          "$ref": "#/$defs/AssistantMessage"
+        },
+        {
+          "$ref": "#/$defs/ToolResultMessage"
+        },
+        {
+          "$ref": "#/$defs/SystemMessage"
+        },
+        {
+          "$ref": "#/$defs/CustomRoleMessage"
+        }
+      ]
     },
     "Correlation": {
       "additionalProperties": true,
@@ -1679,6 +1841,22 @@
       ],
       "type": "object"
     },
+    "DomainChoice": {
+      "description": "One legal value of a domain: `value` is what is bound, `label` what is shown.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "label"
+      ],
+      "type": "object"
+    },
     "ElideEntry": {
       "description": "A splice anchor with no summary: the path before `firstKeptId` leaves the context.",
       "properties": {
@@ -1780,6 +1958,9 @@
         },
         "messages": {
           "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+          "items": {
+            "$ref": "#/$defs/ContextMessage"
+          },
           "type": "array"
         }
       },
@@ -2127,6 +2308,9 @@
         },
         "values": {
           "description": "A list of {value, label}. `value` is what a host binds into `next_step`'s `bound`; `label` is what it shows. They are equal for a domain whose values already read as text.",
+          "items": {
+            "$ref": "#/$defs/DomainChoice"
+          },
           "type": "array"
         }
       },
@@ -2354,6 +2538,47 @@
         "lock",
         "ask",
         "release"
+      ],
+      "type": "object"
+    },
+    "FlowStep": {
+      "description": "One argument a flow still needs, and everything required to ask for it.",
+      "properties": {
+        "argument": {
+          "$ref": "#/$defs/Argument",
+          "description": "The argument being asked for."
+        },
+        "bound": {
+          "additionalProperties": {},
+          "description": "The arguments already bound, so a head redrawing a form has them.",
+          "type": "object"
+        },
+        "domain": {
+          "$ref": "#/$defs/Domain",
+          "description": "That argument's `tau_agent_core.capabilities.Domain`, resolved here so a head need not look it up."
+        },
+        "flow": {
+          "description": "The flow's name.",
+          "type": "string"
+        },
+        "leaf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The entry a scoped `message_id` argument is relative to, carried through from the `next_step` call so the head hands it straight back to `enumerate_domain`."
+        }
+      },
+      "required": [
+        "flow",
+        "argument",
+        "domain",
+        "leaf",
+        "bound"
       ],
       "type": "object"
     },
@@ -2630,8 +2855,8 @@
     "GetEntryResult": {
       "properties": {
         "entry": {
-          "description": "The raw session-log entry, as stored: camelCase `parentId` / `firstKeptId` / `fromId`, a `type`, and whatever payload that type carries \u2014 a `message` for the message kinds, a `summary` for a compaction or a branch_summary. Handed over whole rather than projected, because the caller is a detail pane rendering ONE node and a projection would be a second message shape to keep in step with get_messages'. One node per call: get_tree carries a one-line preview per row precisely so a browser does not pull bodies it is not showing.",
-          "type": "object"
+          "$ref": "#/$defs/Entry",
+          "description": "The raw session-log entry, as stored: camelCase `parentId` / `firstKeptId` / `fromId`, a `type`, and whatever payload that type carries \u2014 a `message` for the message kinds, a `summary` for a compaction or a branch_summary. Handed over whole rather than projected, because the caller is a detail pane rendering ONE node and a projection would be a second message shape to keep in step with get_messages'. One node per call: get_tree carries a one-line preview per row precisely so a browser does not pull bodies it is not showing."
         }
       },
       "required": [
@@ -2676,10 +2901,18 @@
           "type": "string"
         },
         "schema": {
-          "description": "The extension's CONFIG_SCHEMA, normalized at load into {title, fields} \u2014 the same spec shape ui.form takes, so a head that can render a form can render a settings screen with no new widget. null for an extension that declares none, which is the answer that tells a head to offer no screen rather than an empty one.",
-          "type": "object"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FormSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The extension's CONFIG_SCHEMA, normalized at load into {title, fields} \u2014 the same spec shape ui.form takes, so a head that can render a form can render a settings screen with no new widget. null for an extension that declares none, which is the answer that tells a head to offer no screen rather than an empty one."
         },
         "values": {
+          "additionalProperties": {},
           "description": "The live slice api.config returns for this extension, keyed by file stem: config.json's extensions.<stem> with --ext-config overrides applied, plus any set_extension_config since. {} for an unconfigured extension \u2014 never the schema's defaults, which the extension itself supplies.",
           "type": "object"
         }
@@ -2720,10 +2953,16 @@
       "properties": {
         "errors": {
           "description": "Every discovered file that FAILED to load, as [{path, error}]. Kept from the last load_extensions call, because a failed import leaves nothing to recompute from. This is the half that makes this a read of its own rather than list_managed_extensions with more fields: a file that cannot import can never be a legal extension_name, and is exactly what a listing must show.",
+          "items": {
+            "$ref": "#/$defs/LoadError"
+          },
           "type": "array"
         },
         "extensions": {
           "description": "Every loaded extension and what it registered, as [{name, path, tools, commands, shortcuts, hooks, content_hash, subjects}] \u2014 sdk.summarize_extensions of the live registry, which is the same projection the TUI's /extensions listing draws. Read LIVE, not from the load-time snapshot, so a reload_extension is reflected here.",
+          "items": {
+            "$ref": "#/$defs/ExtensionInfo"
+          },
           "type": "array"
         }
       },
@@ -2803,35 +3042,7 @@
         "messages": {
           "description": "AgentSession.messages \u2014 the terminal, flat message array (E2's pull side).",
           "items": {
-            "properties": {
-              "content": {
-                "description": "A plain string on a system message; elsewhere a list of content blocks, each carrying its own `type` \u2014 text, image, thinking or toolCall.",
-                "type": [
-                  "string",
-                  "array"
-                ]
-              },
-              "role": {
-                "description": "'system', 'user', 'assistant' or 'toolResult'. An extension-injected node carries 'custom' and the loop remaps it to 'user' before a provider sees it.",
-                "type": "string"
-              },
-              "timestamp": {
-                "description": "Epoch MILLISECONDS at the moment the message happened: a user message's send, a toolResult's collection, an assistant message's end (or its cancellation, for a partial). null means no clock applies \u2014 a synthetic message an extension built, or a system message. Never 0; a session written before \u03c4 fixed this carries 0 on disk and every store maps it to null on load, so a host never sees one (docs/MESSAGE-TIMESTAMPS.md). Consecutive timestamps are what let a host compute per-call latency and whether a prompt cache entry had expired, and they read identically live and after a reload.",
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "usage": {
-                "description": "Present on assistant messages: the ONE completion that produced this message, as {input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_reported, total_tokens, extra}. Per-completion, never cumulative \u2014 each prompt already contains every earlier one, so summing total_tokens over a conversation counts turn 1 once per turn. cache_reported false means the server accounts for no prompt cache, so its cache_read_tokens of 0 is silence and not a miss; cache_read_tokens at 0 WITH cache_reported true is the signal described in docs/PROMPT-CACHING.md \u00a77.",
-                "type": "object"
-              }
-            },
-            "required": [
-              "role",
-              "content"
-            ],
-            "type": "object"
+            "$ref": "#/$defs/ContextMessage"
           },
           "type": "array"
         }
@@ -2870,6 +3081,9 @@
       "properties": {
         "models": {
           "description": "Every config model NAME this child can switch to, sorted, as [{name, model}]: `name` is the exact string set_model's `name` param takes, and `model` is the SAME projection get_state publishes for the active model \u2014 {id, provider, context_window} \u2014 obtained by resolving `name` through the session's bound model resolver, i.e. by asking the one component set_model itself would ask. Empty only when the child's config declares no models; a resolver that cannot be enumerated is an INTERNAL_ERROR, never an empty list.",
+          "items": {
+            "$ref": "#/$defs/ModelRecord"
+          },
           "type": "array"
         }
       },
@@ -2906,11 +3120,15 @@
     "GetPendingRequestResult": {
       "properties": {
         "request": {
-          "description": "The extension request AT THE CURSOR, or null when there is none. The cursor only, never an ancestry walk: the thing a user is looking at and the thing that refused their submission are one entry. {entry_id, extension, extension_name, sentence, label, lock, ask, release} \u2014 `label` is \u03c4's own framing of the four states over `lock` and `ask`, `sentence` is the extension's own line, `ask` is a validated `ui.form` spec ({title, fields, actions}) or null, and `release` names a command that clears the lock (advisory: commands are exempt from a lock by placement, not by name). A host renders all four states; three of them draw something and the fourth is this verb answering null.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExtensionRequest"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The extension request AT THE CURSOR, or null when there is none. The cursor only, never an ancestry walk: the thing a user is looking at and the thing that refused their submission are one entry. {entry_id, extension, extension_name, sentence, label, lock, ask, release} \u2014 `label` is \u03c4's own framing of the four states over `lock` and `ask`, `sentence` is the extension's own line, `ask` is a validated `ui.form` spec ({title, fields, actions}) or null, and `release` names a command that clears the lock (advisory: commands are exempt from a lock by placement, not by name). A host renders all four states; three of them draw something and the fourth is this verb answering null."
         }
       },
       "required": [
@@ -2986,12 +3204,12 @@
     "GetSessionStatsResult": {
       "properties": {
         "compaction_settings": {
-          "description": "The session's EFFECTIVE CompactionSettings \u2014 {enabled, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. An RPC session is CONSTRUCTED with enabled=False (backends.py:885) \u2014 that is how a host discovers auto-compaction is off (\u00a71.1) \u2014 and set_auto_compaction (D-4, shipped in this same tier) is the one thing that changes it, so this reports the session's LIVE effective setting at call time, never a constant.",
-          "type": "object"
+          "$ref": "#/$defs/CompactionSettingsRecord",
+          "description": "The session's EFFECTIVE CompactionSettings \u2014 {enabled, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. An RPC session is CONSTRUCTED with enabled=False (backends.py:885) \u2014 that is how a host discovers auto-compaction is off (\u00a71.1) \u2014 and set_auto_compaction (D-4, shipped in this same tier) is the one thing that changes it, so this reports the session's LIVE effective setting at call time, never a constant."
         },
         "context": {
-          "description": "estimate_context_tokens(session.messages) (compaction.py) projected as {tokens, usage_tokens, trailing_tokens, last_usage_index}: tokens is the total estimate the compaction threshold is checked against; usage_tokens is the anchored provider-reported count up to the last assistant Usage, trailing_tokens the heuristic estimate for messages after it, last_usage_index that message's index (null if no assistant Usage exists yet, in which case tokens==trailing_tokens and the whole list was heuristically estimated).",
-          "type": "object"
+          "$ref": "#/$defs/ContextEstimate",
+          "description": "estimate_context_tokens(session.messages) (compaction.py) projected as {tokens, usage_tokens, trailing_tokens, last_usage_index}: tokens is the total estimate the compaction threshold is checked against; usage_tokens is the anchored provider-reported count up to the last assistant Usage, trailing_tokens the heuristic estimate for messages after it, last_usage_index that message's index (null if no assistant Usage exists yet, in which case tokens==trailing_tokens and the whole list was heuristically estimated)."
         },
         "context_headroom": {
           "description": "context_window - context.tokens. Can be negative: an honest over-budget number, never clamped to zero.",
@@ -3002,18 +3220,26 @@
           "type": "integer"
         },
         "last_compaction": {
-          "description": "{id, timestamp, summary, first_kept_id, tokens_before} for the most recent type=='compaction' entry in session_log.entries(), or null if this session has never compacted \u2014 an honest absence, never a fabricated entry.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LastCompaction"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "{id, timestamp, summary, first_kept_id, tokens_before} for the most recent type=='compaction' entry in session_log.entries(), or null if this session has never compacted \u2014 an honest absence, never a fabricated entry."
         },
         "usage": {
-          "description": "AgentSession.get_usage() \u2014 null before the first completion.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "AgentSession.get_usage() \u2014 null before the first completion."
         }
       },
       "required": [
@@ -3073,8 +3299,8 @@
           "type": "integer"
         },
         "model": {
-          "description": "AgentSession.get_model(): {id, provider, context_window}.",
-          "type": "object"
+          "$ref": "#/$defs/ModelSpec",
+          "description": "AgentSession.get_model(): {id, provider, context_window}."
         },
         "session_id": {
           "description": "AgentSession.state.session_id.",
@@ -3089,11 +3315,15 @@
           "type": "string"
         },
         "usage": {
-          "description": "AgentSession.get_usage() \u2014 null before the first completion.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "AgentSession.get_usage() \u2014 null before the first completion."
         }
       },
       "required": [
@@ -3148,6 +3378,7 @@
                 "type": "string"
               },
               "parameters": {
+                "additionalProperties": {},
                 "description": "The tool's own JSON Schema, passed to the provider unchanged \u2014 this table's supported-keyword rule does not govern it.",
                 "type": "object"
               }
@@ -3443,6 +3674,49 @@
       ],
       "type": "object"
     },
+    "LastCompaction": {
+      "description": "The newest compaction entry on the path (`agent_session.CompactionRecord`).",
+      "properties": {
+        "first_kept_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "timestamp": {
+          "description": "ISO-8601.",
+          "type": "string"
+        },
+        "tokens_before": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "timestamp",
+        "summary",
+        "first_kept_id",
+        "tokens_before"
+      ],
+      "type": "object"
+    },
     "ListManagedExtensions": {
       "additionalProperties": false,
       "description": "RPC `list_managed_extensions` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
@@ -3472,6 +3746,9 @@
       "properties": {
         "extensions": {
           "description": "Every file extension under management, in load order, as [{path, enabled}]. `path` is the exact string every extension_name argument takes (enable_extension, disable_extension, reload_extension); `enabled` is false exactly when the extension is loaded but its bucket has been removed from the runner, so its hooks, tools and slash commands are not offered.",
+          "items": {
+            "$ref": "#/$defs/ManagedExtension"
+          },
           "type": "array"
         }
       },
@@ -3495,6 +3772,38 @@
       "x-result": {
         "$ref": "#/$defs/SessionList"
       }
+    },
+    "LoadError": {
+      "description": "An extension file that failed to load, and why.",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "error"
+      ],
+      "type": "object"
+    },
+    "ManagedExtension": {
+      "description": "One managed extension file and whether it is enabled.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "enabled"
+      ],
+      "type": "object"
     },
     "Message": {
       "description": "A message as the log stores it, told apart by `role`.",
@@ -3552,6 +3861,22 @@
         "timestamp",
         "type",
         "message"
+      ],
+      "type": "object"
+    },
+    "MessageMatch": {
+      "description": "One entry `complete_message_id` offers: its id, and its first line.",
+      "properties": {
+        "entry_id": {
+          "type": "string"
+        },
+        "preview": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry_id",
+        "preview"
       ],
       "type": "object"
     },
@@ -3769,6 +4094,9 @@
         },
         "messages": {
           "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+          "items": {
+            "$ref": "#/$defs/ContextMessage"
+          },
           "type": "array"
         }
       },
@@ -3865,11 +4193,15 @@
     "NextStepResult": {
       "properties": {
         "ready": {
-          "description": "{flow, mutation, arguments}. `mutation` is the capability to perform \u2014 the named flow's, always, so a host that already knows which flow it stepped can dispatch before this returns. `arguments` is what to perform it with, keyed by the mutation's own parameter names. This is a commitment: \u03c4 does not ask a second time, and a host that wants a confirmation renders one from this.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ready"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "{flow, mutation, arguments}. `mutation` is the capability to perform \u2014 the named flow's, always, so a host that already knows which flow it stepped can dispatch before this returns. `arguments` is what to perform it with, keyed by the mutation's own parameter names. This is a commitment: \u03c4 does not ask a second time, and a host that wants a confirmation renders one from this."
         },
         "status": {
           "description": "`step` \u2014 one required argument is still unbound and `step` describes it. `ready` \u2014 every required argument is bound and `ready` names the mutation to perform and what to perform it with. The two are mutually exclusive and exactly one is present.",
@@ -3880,11 +4212,15 @@
           "type": "string"
         },
         "step": {
-          "description": "{flow, argument, domain, leaf, bound}. `argument` is {name, domain, description, cardinality, required, scope}; `domain` is the resolved domain record {name, description, free, values, enumerator}, included so a host can render the field without a second call \u2014 `values` is non-null for a small fixed set, and `enumerator` non-null means call `enumerate_domain` for the live set.",
-          "type": [
-            "object",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlowStep"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "{flow, argument, domain, leaf, bound}. `argument` is {name, domain, description, cardinality, required, scope}; `domain` is the resolved domain record {name, description, free, values, enumerator}, included so a host can render the field without a second call \u2014 `values` is non-null for a small fixed set, and `enumerator` non-null means call `enumerate_domain` for the live set."
         }
       },
       "required": [
@@ -4103,12 +4439,35 @@
         },
         "minted_ids": {
           "description": "The ids minted, in the order they were appended. The first is the copy of `source_id` itself. Ids rather than messages because a paste edits the TREE and never moves the leaf: the current context is unchanged, so there is nothing to re-render until someone navigates onto the copy.",
+          "items": {
+            "type": "string"
+          },
           "type": "array"
         }
       },
       "required": [
         "minted_ids",
         "leaf"
+      ],
+      "type": "object"
+    },
+    "PathMatch": {
+      "description": "One path an `@` token can complete to.",
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "is_dir": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "detail",
+        "is_dir"
       ],
       "type": "object"
     },
@@ -4217,11 +4576,18 @@
           "type": "boolean"
         },
         "images": {
-          "description": "Optional list of image content blocks.",
-          "type": [
-            "array",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ImageContent"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional list of image content blocks."
         },
         "multitask_strategy": {
           "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
@@ -4297,12 +4663,12 @@
           "type": "boolean"
         },
         "attachments": {
-          "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one.",
-          "type": "object"
+          "$ref": "#/$defs/AttachmentReport",
+          "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one."
         },
         "command": {
-          "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} \u2014 `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead.",
-          "type": "object"
+          "$ref": "#/$defs/CommandOutput",
+          "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} \u2014 `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead."
         },
         "dispatched": {
           "anyOf": [
@@ -4324,8 +4690,8 @@
           "type": "string"
         },
         "view": {
-          "description": "Present ONLY when this submission resolved to a VIEW command \u2014 /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. \u03c4 projects no view state yet (docs/VSCODE-HEAD.md \u00a76), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host.",
-          "type": "object"
+          "$ref": "#/$defs/View",
+          "description": "Present ONLY when this submission resolved to a VIEW command \u2014 /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. \u03c4 projects no view state yet (docs/VSCODE-HEAD.md \u00a76), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host."
         }
       },
       "required": [
@@ -5008,8 +5374,8 @@
           ]
         },
         "model": {
-          "description": "AgentSession.get_model() after the switch: {id, provider, context_window}.",
-          "type": "object"
+          "$ref": "#/$defs/ModelSpec",
+          "description": "AgentSession.get_model() after the switch: {id, provider, context_window}."
         }
       },
       "required": [
@@ -5306,11 +5672,18 @@
           "type": "boolean"
         },
         "images": {
-          "description": "Optional list of image content blocks.",
-          "type": [
-            "array",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ImageContent"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional list of image content blocks."
         },
         "multitask_strategy": {
           "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
@@ -5389,12 +5762,12 @@
           "type": "boolean"
         },
         "attachments": {
-          "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one.",
-          "type": "object"
+          "$ref": "#/$defs/AttachmentReport",
+          "description": "Present exactly when the request set expand_attachments: true \u2014 absent is 'expansion did not run', which is a different statement from 'expansion found nothing'. {expanded: int, images: int, unresolved: [str], failures: [str]}. `unresolved` names the @words that matched no file and were therefore left in the text as prose. `failures` names the ones that resolved but could not be sent, each with the reason; the model is told the same thing through a <reference error=\"\u2026\"> block, so neither side is left believing an attachment landed when it did not. A host that shows neither list turns a visible failure back into a silent one."
         },
         "command": {
-          "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} \u2014 `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead.",
-          "type": "object"
+          "$ref": "#/$defs/CommandOutput",
+          "description": "Present ONLY when this acceptance is also the submission's only completion: a core (extension-registered) slash command resolved synchronously with no turn started, so there is no later agent_end to carry it. {name, output} \u2014 `name` is the command that ran, which an input hook may have rewritten. Only an extension-registered command reaches this shape; a built-in resolves to a step, a ready flow or a view, each of which this wire refuses with COMMAND_NOT_SUPPORTED. Absent for an ordinary turn \u2014 poll get_messages / watch for agent_end instead."
         },
         "dispatched": {
           "anyOf": [
@@ -5416,8 +5789,8 @@
           "type": "string"
         },
         "view": {
-          "description": "Present ONLY when this submission resolved to a VIEW command \u2014 /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. \u03c4 projects no view state yet (docs/VSCODE-HEAD.md \u00a76), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host.",
-          "type": "object"
+          "$ref": "#/$defs/View",
+          "description": "Present ONLY when this submission resolved to a VIEW command \u2014 /tree or /extensions. {name, state, unavailable_because}: `name` is the view asked for, `state` is what a head draws it from, and `unavailable_because` is a sentence saying why no state rides along. Exactly one of the last two is non-null, never both and never neither. \u03c4 projects no view state yet (docs/VSCODE-HEAD.md \u00a76), so today every one of these carries the reason; a host with its own browser opens it from its own reads, and a host without one prints the reason. This is a SUCCESS response, not the COMMAND_NOT_SUPPORTED a view used to raise: the wire says what was asked for and what it can supply, and the payload lands in `state` when there is one, with no shape change for a host."
         }
       },
       "required": [
@@ -5472,12 +5845,35 @@
         },
         "messages": {
           "description": "ConversationTree.context_for(cursor) after the mutation \u2014 the same flat message array get_messages returns, for the path this call just produced. Returned rather than left for a follow-up get_messages because the mutation's whole product is a different context, and a host that had to fetch it separately could render the old one in between.",
+          "items": {
+            "$ref": "#/$defs/ContextMessage"
+          },
           "type": "array"
         }
       },
       "required": [
         "messages",
         "leaf"
+      ],
+      "type": "object"
+    },
+    "SummaryMessage": {
+      "description": "A compaction or branch summary as the context renders it: a user message with no timestamp.",
+      "properties": {
+        "content": {
+          "items": {
+            "$ref": "#/$defs/TextContent"
+          },
+          "type": "array"
+        },
+        "role": {
+          "const": "user"
+        },
+        "timestamp": false
+      },
+      "required": [
+        "role",
+        "content"
       ],
       "type": "object"
     },
@@ -5950,6 +6346,42 @@
         "content",
         "timestamp",
         "role"
+      ],
+      "type": "object"
+    },
+    "View": {
+      "description": "A named surface only a head can open.",
+      "properties": {
+        "name": {
+          "description": "The view's name, a key of `tau_agent_core.capabilities.VIEW_COMMANDS`.",
+          "type": "string"
+        },
+        "state": {
+          "anyOf": [
+            {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What a head draws the view from. `None` everywhere today \u2014 no capability projects the session tree yet (docs/VSCODE-HEAD.md \u00a76), and this is the spot that payload lands in when one does, with no change to the union."
+        },
+        "unavailable_because": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why no `state` rides with this, in a sentence a head can print. A head that has its own view of that name ignores it and opens it; a head that has none prints it and does nothing else. Not a fallback: it is the same idiom the RPC table's seven `declined_because` entries already use."
+        }
+      },
+      "required": [
+        "name"
       ],
       "type": "object"
     },
@@ -6834,11 +7266,18 @@
             "type": "integer"
           },
           "images": {
-            "description": "Optional list of image content blocks.",
-            "type": [
-              "array",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/ImageContent"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional list of image content blocks."
           },
           "multitask_strategy": {
             "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
@@ -6937,11 +7376,18 @@
             "type": "integer"
           },
           "images": {
-            "description": "Optional list of image content blocks.",
-            "type": [
-              "array",
-              "null"
-            ]
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/$defs/ImageContent"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional list of image content blocks."
           },
           "multitask_strategy": {
             "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
@@ -8002,6 +8448,9 @@
           },
           "ids": {
             "description": "The marked entry ids, in any order \u2014 tree_surgery puts them into tree order. The longest run that is already an ancestor chain is kept in place; the rest are minted as copies parented under it, so nothing is re-parented and nothing is erased.",
+            "items": {
+              "type": "string"
+            },
             "type": "array"
           },
           "session_id": {

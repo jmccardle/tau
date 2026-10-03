@@ -411,10 +411,22 @@ Two defects surfaced on the way. RPC answered an unknown flow or domain with
 `INVALID_PARAMS` now. And no entry shape declared `copiedFrom`, the field
 `paste_subtree` writes, which the schema test found the first time it drove
 every verb against a real daemon. `test_serve_schema.py` now answers every
-request and every RPC verb, and validates each answer. It validates the
-answers of `RPC_RUN` verbs without `strict`, because RPC's result schemas
-describe a message by some of its fields; declaring all of them is RPC's
-follow-up. Under `--connect` the picker searches a session's bounded `title`,
+request and every RPC verb, and validates each answer with `strict` on.
+
+RPC's result schemas leave shapes as prose: `messages: array` with no
+`items`, `model: object`, `values: unknown[]`. Embedded verbatim, they made
+0.6's answers less typed than 0.4's `$defs`, and tau-code would have had to
+hand-type them (tau-code-d7's report). `RPC_TYPES` names each such node and
+the record it holds, and `json_schema` puts the record there, keeping RPC's
+description; `RPC_PARAM_TYPES` does the same for two request arrays, and
+`compaction_end` gets the same treatment. A path that names no node raises,
+so the table cannot outlive RPC's schema, and
+`test_every_answer_and_event_payload_is_typed_to_its_leaves` refuses an
+array without `items` or an object with neither fields nor a value type.
+Strict validation then found one more shape: the context renders a
+compaction or branch summary as a user message with no `timestamp`, which
+no stored message matches, so a context is a list of `ContextMessage`,
+whose `SummaryMessage` arm alone has no `timestamp`. Under `--connect` the picker searches a session's bounded `title`,
 since the listing no longer carries `first_message`.
 
 ## 6. `tau serve`

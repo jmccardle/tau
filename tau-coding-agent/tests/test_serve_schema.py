@@ -156,11 +156,7 @@ class Recorder:
         await asyncio.gather(self._reader, return_exceptions=True)
 
     def check(self) -> set[str]:
-        """Validate every frame both ways; return the result and event types covered.
-
-        An answer from RPC's own handler is checked against RPC's result schema
-        without ``strict``: those schemas describe a message by some of its fields.
-        """
+        """Validate every frame both ways; return the result and event types covered."""
         covered = set()
         for frame in self.sent:
             validate(frame, SCHEMA["ClientFrame"], SCHEMA)
@@ -170,8 +166,7 @@ class Recorder:
                 covered.add(f"event:{frame['kind']}")
         for kind, response in self.answers:
             if response["ok"]:
-                strict = kind not in p.RPC_RUN
-                validate(response["result"], SCHEMA["Results"][kind], SCHEMA, strict=strict)
+                validate(response["result"], SCHEMA["Results"][kind], SCHEMA, strict=True)
                 covered.add(f"result:{kind}")
         return covered
 
@@ -558,6 +553,33 @@ def test_every_request_names_its_result_and_every_kind_its_data():
     assert set(p.EVENT_KINDS) == set(get_args(get_type_hints(p.Event)["kind"]))
     assert SCHEMA["x-protocol-version"] == p.PROTOCOL_VERSION
     assert SCHEMA["x-default-port"] == p.DEFAULT_PORT
+
+
+def _open_nodes(node: Any, path: str) -> list[str]:
+    """Each array without ``items``, and object with neither fields nor a value type, under ``node``."""
+    if not isinstance(node, dict) or "$ref" in node:
+        return []
+    kinds = node.get("type")
+    kinds = kinds if isinstance(kinds, list) else [kinds]
+    found = []
+    if "array" in kinds and "items" not in node:
+        found.append(path + "[]")
+    if "object" in kinds and "properties" not in node and "additionalProperties" not in node:
+        found.append(path + "{}")
+    for name, sub in node.get("properties", {}).items():
+        found += _open_nodes(sub, f"{path}.{name}")
+    found += _open_nodes(node.get("items"), path + "[]")
+    for key in ("anyOf", "oneOf"):
+        for sub in node.get(key, []):
+            found += _open_nodes(sub, path)
+    return found
+
+
+def test_every_answer_and_event_payload_is_typed_to_its_leaves():
+    """A client generates its types from this schema: no answer may leave a shape as prose."""
+    defs = SCHEMA["$defs"]
+    named = [f"{p._camel(verb)}Result" for verb in p.RPC_VERBS] + ["CompactionEnd"]
+    assert [path for name in named for path in _open_nodes(defs[name], name)] == []
 
 
 def test_tau_serve_schema_prints_the_checked_in_schema(capsys):
