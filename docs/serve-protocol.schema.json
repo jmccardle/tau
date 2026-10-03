@@ -4982,6 +4982,36 @@
       ],
       "type": "object"
     },
+    "ServeStopped": {
+      "description": "What `tau serve --stop --json` prints. Not a frame.",
+      "properties": {
+        "address": {
+          "description": "`HOST:PORT` or `unix:/PATH`.",
+          "type": "string"
+        },
+        "pid": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The process id of the daemon that stopped, or `None` when none answered."
+        },
+        "stopped": {
+          "description": "Whether this call stopped one; false when no daemon answered there.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "address",
+        "pid",
+        "stopped"
+      ],
+      "type": "object"
+    },
     "SessionInfoEntry": {
       "description": "The session's display name from here on; the model never sees it.",
       "properties": {
@@ -5438,6 +5468,22 @@
         "leaf"
       ],
       "type": "object"
+    },
+    "Shutdown": {
+      "additionalProperties": false,
+      "description": "Stop the daemon: it answers, then stops as it does on SIGTERM, closing every connection.",
+      "properties": {
+        "type": {
+          "const": "shutdown"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object",
+      "x-result": {
+        "type": "null"
+      }
     },
     "SubmissionEndChannel": {
       "description": "The `submission_end` channel.",
@@ -7159,6 +7205,23 @@
       },
       {
         "additionalProperties": false,
+        "description": "A `shutdown` request with its id.",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "type": {
+            "const": "shutdown"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
         "description": "A `compare` request with its id.",
         "properties": {
           "id": {
@@ -8658,6 +8721,9 @@
     "set_session_name": {
       "$ref": "#/$defs/SetSessionNameResult"
     },
+    "shutdown": {
+      "type": "null"
+    },
     "submit": {
       "$ref": "#/$defs/SubmitResult"
     },
@@ -8676,7 +8742,7 @@
     ]
   },
   "description": "The tau serve WebSocket protocol (docs/SERVE-PROTOCOL.md). Request records are closed (`additionalProperties: false`), because the daemon refuses an unknown field. Everything the daemon sends is open: a client must ignore a field it does not know, so a minor version may add one. Each request $def names its answer in `x-result`, and `Results` maps every request `type` to it; `Event`'s `x-data` maps every `kind` to its data.",
-  "title": "tau serve protocol 0.6",
+  "title": "tau serve protocol 0.7",
   "x-default-port": 8256,
-  "x-protocol-version": "0.6"
+  "x-protocol-version": "0.7"
 }

@@ -6,9 +6,9 @@
 >
 > Design of record: `docs/TAU-SERVE.md` §5–§7.
 
-- **Protocol version:** `0.6`
+- **Protocol version:** `0.7`
 - **Default port:** `8256`
-- **Counts:** 49 requests (35 of them RPC verbs), 10 event kinds, 193 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 50 requests (35 of them RPC verbs), 10 event kinds, 195 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
@@ -168,6 +168,17 @@ Re-read a session's extension surface, after an extension was enabled or reloade
 | `session_id` | string | yes |  |
 
 **Answered with:** [Surface](#surface).
+
+### `shutdown`
+
+Stop the daemon: it answers, then stops as it does on SIGTERM, closing every connection.
+
+`tau serve --stop` sends it. Every client shares the daemon, so a client
+asks its user before sending it.
+
+No fields.
+
+**Answered with:** null.
 
 ### `compare`
 
@@ -482,6 +493,16 @@ Not a frame. `tau serve -d` starts no second daemon where one answers a hello.
 | `pid` | integer | yes | The daemon's process id. |
 | `started` | boolean | yes | Whether this call started it. |
 | `log` | string | yes | The background log a daemon started by `-d` writes. |
+
+## `tau serve --stop --json`
+
+What `tau serve --stop --json` prints. Not a frame.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `address` | string | yes | `HOST:PORT` or `unix:/PATH`. |
+| `pid` | integer \| null | yes | The process id of the daemon that stopped, or `None` when none answered. |
+| `stopped` | boolean | yes | Whether this call stopped one; false when no daemon answered there. |
 
 ## Definitions
 
@@ -1607,6 +1628,16 @@ What `tau serve -d --json` prints: the one daemon at `address`.
 | `pid` | integer | yes | The daemon's process id. |
 | `started` | boolean | yes | Whether this call started it. |
 | `log` | string | yes | The background log a daemon started by `-d` writes. |
+
+### ServeStopped
+
+What `tau serve --stop --json` prints. Not a frame.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `address` | string | yes | `HOST:PORT` or `unix:/PATH`. |
+| `pid` | integer \| null | yes | The process id of the daemon that stopped, or `None` when none answered. |
+| `stopped` | boolean | yes | Whether this call stopped one; false when no daemon answered there. |
 
 ### SessionInfoEntry
 

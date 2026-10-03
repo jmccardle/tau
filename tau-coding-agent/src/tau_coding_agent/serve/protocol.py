@@ -49,7 +49,7 @@ from tau_agent_core.rpc.records import (
 from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.submission import MultitaskStrategy, SubmissionSource
 
-PROTOCOL_VERSION = "0.6"
+PROTOCOL_VERSION = "0.7"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256
@@ -215,6 +215,17 @@ class Describe:
 
 
 @dataclass
+class Shutdown:
+    """Stop the daemon: it answers, then stops as it does on SIGTERM, closing every connection.
+
+    ``tau serve --stop`` sends it. Every client shares the daemon, so a client
+    asks its user before sending it.
+    """
+
+    type: Literal["shutdown"] = "shutdown"
+
+
+@dataclass
 class Compare:
     """Open one cursor per model at ``leaf`` and send each the same text (docs/TAU-SERVE.md §8).
 
@@ -264,6 +275,7 @@ REQUESTS: tuple[type, ...] = (
     Answer,
     PerformReady,
     Describe,
+    Shutdown,
     Compare,
     EndCompare,
 )
@@ -578,6 +590,7 @@ RESULTS: dict[type, Any] = {
     Answer: None,
     PerformReady: DispatchedCommand,
     Describe: Surface,
+    Shutdown: None,
     Compare: CompareStarted,
     EndCompare: CompareEnded,
 }
@@ -854,6 +867,21 @@ class ServeStarted:
     pid: int
     started: bool
     log: str
+
+
+@dataclass
+class ServeStopped:
+    """What ``tau serve --stop --json`` prints. Not a frame.
+
+    Attributes:
+        address: ``HOST:PORT`` or ``unix:/PATH``.
+        pid: The process id of the daemon that stopped, or ``None`` when none answered.
+        stopped: Whether this call stopped one; false when no daemon answered there.
+    """
+
+    address: str
+    pid: int | None
+    stopped: bool
 
 
 # ─── Building and checking frames ────────────────────────────────────────
@@ -1143,6 +1171,7 @@ def json_schema() -> dict[str, Any]:
         "x-data": variants,
     }
     s.of(ServeStarted)
+    s.of(ServeStopped)
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": f"tau serve protocol {PROTOCOL_VERSION}",

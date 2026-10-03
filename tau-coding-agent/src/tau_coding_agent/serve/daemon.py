@@ -82,6 +82,9 @@ RPC_CODES: dict[int, str] = {
 ANSWERED = object()
 """What a dispatch returns when it already pushed its own response, as an admitted ``submit`` does."""
 
+ANSWER_FLUSH_S = 2.0
+"""How long a ``shutdown`` waits for its answer to reach the client before the daemon stops."""
+
 
 def watch_writes(log: SessionLog, listener: Callable[[str, dict[str, Any]], None]) -> None:
     """Call ``listener(kind, entry)`` after every write to ``log``.
@@ -230,9 +233,12 @@ class Client:
         """Write queued frames in order until the queue yields ``None`` or the socket closes."""
         while True:
             frame = await self.queue.get()
-            if frame is None:
-                return
-            await self.ws.send(frame)
+            try:
+                if frame is None:
+                    return
+                await self.ws.send(frame)
+            finally:
+                self.queue.task_done()
 
 
 class ServeUI:
@@ -611,6 +617,7 @@ class Daemon:
         self._numbers = 0
         self.cwd = os.getcwd()
         self.store = resolve_backend_name(config, None)
+        self.stopping = asyncio.Event()
 
     def log(self, line: str) -> None:
         """One foreground log line, timestamped (docs/TAU-SERVE.md §6.1)."""
@@ -749,6 +756,21 @@ class Daemon:
         if attached.entries is None and request.since is not None:
             host.replay(client, request.since)
 
+    def _shutdown(self, client: Client, request_id: int) -> object:
+        """Answer a :class:`~protocol.Shutdown`, then set :attr:`stopping` once the answer is written."""
+        self.log(f"client {client.id} ({client.name}) asked the daemon to stop")
+        client.push(self._ok(request_id, None))
+
+        async def stop_after_answer() -> None:
+            try:
+                await asyncio.wait_for(client.queue.join(), ANSWER_FLUSH_S)
+            except TimeoutError:
+                self.log(f"client {client.id} did not take the stop answer; stopping anyway")
+            self.stopping.set()
+
+        asyncio.get_running_loop().create_task(stop_after_answer())
+        return ANSWERED
+
     async def load(self, ref: str) -> SessionHost:
         """The host for session ``ref`` (an id or unambiguous prefix), loading it if needed.
 
@@ -796,6 +818,8 @@ class Daemon:
         return host
 
     async def _dispatch(self, client: Client, request_id: int, request: Any) -> Any:
+        if isinstance(request, p.Shutdown):
+            return self._shutdown(client, request_id)
         if isinstance(request, p.ListSessions):
             return await self._list_sessions()
         if isinstance(request, p.NewSession):

@@ -4,7 +4,8 @@
 stdout. ``-d`` starts it in the background, logging to ``~/.tau/serve.log``,
 and returns once it answers a hello; where a daemon already answers, it starts
 none. ``--tail`` is a client: it attaches to a session and prints what happens
-to it. ``--schema`` prints the protocol's JSON Schema.
+to it. ``--stop`` asks the daemon at the address to stop. ``--schema`` prints
+the protocol's JSON Schema.
 """
 
 from __future__ import annotations
@@ -57,6 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"run in the background, logging to ~/.tau/{LOG_FILE}",
     )
     parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="stop the daemon at the address, waiting until it no longer accepts connections",
+    )
+    parser.add_argument(
         "--tail",
         nargs="?",
         const="",
@@ -74,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="with -d: print one ServeStarted JSON object instead of the line",
+        help="with -d or --stop: print one ServeStarted or ServeStopped JSON object",
     )
     parser.add_argument(
         "--schema",
@@ -108,8 +114,8 @@ def run_serve(argv: list[str]) -> int:
 
         sys.stdout.write(render_schema())
         return 0
-    if args.json and not args.daemon:
-        print("tau serve: --json reports what -d started; use it with -d", file=sys.stderr)
+    if args.json and not (args.daemon or args.stop):
+        print("tau serve: --json reports what -d or --stop did; use it with one", file=sys.stderr)
         return 2
     config = load_config()
     try:
@@ -121,6 +127,9 @@ def run_serve(argv: list[str]) -> int:
         target = parse_address(args.connect) if args.connect else address
         return asyncio.run(tail(target, args.tail or None))
     settings = serve_settings(args.web_root, config)
+    if args.stop:
+        token = os.environ.get("TAUD_TOKEN") or settings.get("token")
+        return stop_daemon(address, json_output=args.json, token=str(token) if token else None)
     if args.daemon:
         child_argv = [a for a in argv if a not in ("-d", "--daemon", "--json")]
         token = os.environ.get("TAUD_TOKEN") or settings.get("token")
@@ -144,7 +153,7 @@ async def serve(address: Address, config: dict[str, Any]) -> int:
         return 2
     catalog = build_session_catalog(config, None, None, persist=True)
     daemon = Daemon(config, catalog)
-    stop = asyncio.Event()
+    stop = daemon.stopping
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -246,6 +255,47 @@ def start_background(
     return 1
 
 
+STOP_TIMEOUT_S = 30.0
+"""How long ``--stop`` waits for the daemon to stop accepting connections."""
+
+
+def stop_daemon(address: Address, *, json_output: bool = False, token: str | None = None) -> int:
+    """Ask the daemon at ``address`` to stop, and return once it no longer accepts connections.
+
+    No daemon answering is not a failure: there is nothing to stop, and the
+    report says ``stopped: false``.
+
+    Args:
+        address: The daemon's address.
+        json_output: Print a :class:`~protocol.ServeStopped` object rather than a line.
+        token: The hello token, for a daemon that requires one.
+    """
+    try:
+        running = hello_probe(address, token, then=p.Shutdown())
+    except RuntimeError as exc:
+        print(f"tau serve: {exc}", file=sys.stderr)
+        return 1
+    pid = int(running["pid"]) if running is not None else None
+    if pid is not None:
+        deadline = time.monotonic() + STOP_TIMEOUT_S
+        while accepts(address):
+            if time.monotonic() >= deadline:
+                print(
+                    f"tau serve: the daemon on {address} (pid {pid}) still accepts "
+                    f"connections after {STOP_TIMEOUT_S:.0f}s",
+                    file=sys.stderr,
+                )
+                return 1
+            time.sleep(0.1)
+    if json_output:
+        print(json.dumps(p.to_wire(p.ServeStopped(str(address), pid, pid is not None))))
+    elif pid is None:
+        print(f"tau serve: no daemon on {address}")
+    else:
+        print(f"tau serve: stopped the daemon on {address} (pid {pid})")
+    return 0
+
+
 RACE_GRACE_S = 3.0
 """How long ``-d`` keeps probing after its child exits, for a daemon that won the bind."""
 
@@ -279,14 +329,20 @@ def _report(address: Address, pid: int, started: bool, log_path: Path, json_outp
         print(f"tau serve: listening on {address} (pid {pid}, log {log_path})")
 
 
-def hello_probe(address: Address, token: str | None) -> dict[str, Any] | None:
+def hello_probe(address: Address, token: str | None, *, then: Any = None) -> dict[str, Any] | None:
     """The :class:`~protocol.HelloResult` of the τ daemon at ``address``, or ``None``.
 
     A real hello, so a WebSocket server that is not τ reads as no daemon.
 
+    Args:
+        address: Where to probe.
+        token: The hello token, for a daemon that requires one.
+        then: A request to send after the hello is accepted, on the same
+            connection; its answer must be ``ok``.
+
     Raises:
         RuntimeError: a τ daemon answers there and refuses this hello (another
-            protocol version, or the token).
+            protocol version, or the token), or refuses ``then``.
     """
     try:
         if address.path is not None:
@@ -297,26 +353,46 @@ def hello_probe(address: Address, token: str | None) -> dict[str, Any] | None:
         return None
     hello = p.Hello(protocol=p.PROTOCOL_VERSION, client="probe", token=token)
     try:
-        ws.send(json.dumps({"id": 1, **p.to_wire(hello)}))
-        raw = ws.recv(timeout=PROBE_TIMEOUT_S)
-    except (OSError, TimeoutError, ConnectionClosed):
-        return None
+        frame = _exchange(ws, 1, hello)
+        if frame is None:
+            return None
+        _require_ok(address, frame, "this client")
+        result = frame.get("result")
+        if then is not None:
+            answer = _exchange(ws, 2, then)
+            if answer is None:
+                raise RuntimeError(f"the tau daemon at {address} did not answer {_type_of(then)}")
+            _require_ok(address, answer, _type_of(then))
     finally:
         ws.close()
+    return result if isinstance(result, dict) else None
+
+
+def _type_of(request: Any) -> str:
+    """A request's ``type``, for a message."""
+    return str(p.to_wire(request)["type"])
+
+
+def _exchange(ws: Any, request_id: int, request: Any) -> dict[str, Any] | None:
+    """Send ``request`` and read its response, or ``None`` if nothing like one came back."""
     try:
+        ws.send(json.dumps({"id": request_id, **p.to_wire(request)}))
+        raw = ws.recv(timeout=PROBE_TIMEOUT_S)
         frame = json.loads(raw)
-    except (TypeError, ValueError):
+    except (OSError, TimeoutError, ConnectionClosed, TypeError, ValueError):
         return None
-    if not isinstance(frame, dict) or frame.get("type") != "response" or frame.get("id") != 1:
+    if not isinstance(frame, dict) or frame.get("type") != "response":
         return None
+    return frame if frame.get("id") == request_id else None
+
+
+def _require_ok(address: Address, frame: dict[str, Any], what: str) -> None:
+    """Raise unless ``frame`` is a successful response."""
     if not frame.get("ok"):
         error = frame.get("error") or {}
         raise RuntimeError(
-            f"a tau daemon at {address} refused this client: "
-            f"{error.get('code')}: {error.get('message')}"
+            f"a tau daemon at {address} refused {what}: {error.get('code')}: {error.get('message')}"
         )
-    result = frame.get("result")
-    return result if isinstance(result, dict) else None
 
 
 def accepts(address: Address) -> bool:

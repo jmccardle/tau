@@ -302,6 +302,8 @@ async def test_every_frame_a_session_produces_validates_against_the_schema(daemo
     host.ui.set_status("k", "text")
     host.ui.panel("k", {"title": "P", "body": {"kind": "list", "items": ["a"]}, "actions": []})
     await client.request(p.Detach(session_id=sid))
+    assert await client.request(p.Shutdown()) is None
+    await _until(daemon.daemon.stopping.is_set)
     await client.close()
 
     covered = client.check()
@@ -703,3 +705,29 @@ async def test_a_long_reply_streams_bounded_deltas_that_rebuild_the_answer(daemo
     assert big_max <= small_max + 8, "a frame grows by its seq's digits, not by the reply"
     assert big_total < 12 * small_total, "ten times the reply is about ten times the bytes"
     assert big_kept < 12 * small_kept, "the replay history holds bounded items"
+
+
+async def test_stop_stops_the_daemon_and_reports_it(tmp_path, monkeypatch, capsys):
+    """``--stop`` returns once the daemon no longer accepts connections, and says which one."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    address = serve_cli.Address(None, None, str(tmp_path / "s.sock"))
+    config = {**_CONFIG, "sessions_dir": str(tmp_path / "sessions")}
+    serving = asyncio.create_task(serve_cli.serve(address, config))
+    for _ in range(100):
+        if await asyncio.to_thread(serve_cli.accepts, address):
+            break
+        await asyncio.sleep(0.05)
+
+    code = await asyncio.to_thread(serve_cli.stop_daemon, address, json_output=True)
+
+    assert code == 0 and await asyncio.wait_for(serving, 5) == 0
+    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    validate(printed, SCHEMA["$defs"]["ServeStopped"], SCHEMA, strict=True)
+    assert printed == {"address": str(address), "pid": os.getpid(), "stopped": True}
+
+
+def test_stop_with_no_daemon_stops_nothing_and_says_so(tmp_path, capsys):
+    address = serve_cli.Address(None, None, str(tmp_path / "none.sock"))
+    assert serve_cli.stop_daemon(address, json_output=True) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed == {"address": str(address), "pid": None, "stopped": False}

@@ -447,6 +447,7 @@ since the listing no longer carries `first_message`.
 ```
 tau serve                      # foreground; one log line per event
 tau serve -d                   # daemonize, log to ~/.tau/serve.log, give the terminal back
+tau serve --stop [--json]      # ask the daemon at the address to stop (protocol 0.7)
 tau serve --listen 0.0.0.0:PORT
 tau serve --listen unix:/path  # only if it stays a one-branch addition (§6.3)
 ```
@@ -536,6 +537,16 @@ assistant entry with `"status": "incomplete"`, and a head cursor on the user
 message. The restarted daemon logged `message entry da76943b left incomplete`,
 and a `--tail` client that was attached through the kill reconnected and kept
 printing.
+
+Built 2026-10-03 (protocol 0.7): `tau serve --stop` dials the address `-d`
+would (`--listen`, else `serve.listen`), sends `hello` and then `shutdown`, and
+returns once the address no longer accepts a handshake. The daemon answers
+first, waits up to 2 s for that answer to reach the client, and then stops
+through the same path as SIGTERM. With `--json` it prints a `ServeStopped`,
+`{address, pid, stopped}`; with no daemon answering it prints `stopped: false`
+and exits 0, because there was nothing to stop. Before this, the only way to
+stop a daemon was `kill PID`, and an editor extension that brought its own τ
+had no way to replace one started from PATH (tau-code-d7's report).
 
 ### 6.5 What runs in the daemon
 
