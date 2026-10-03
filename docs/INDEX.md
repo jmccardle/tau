@@ -60,7 +60,7 @@ exempt from the prose scans, because rewriting a measurement falsifies it.
 
 ## The rest of `docs/` (manifest)
 
-The other 35. Open one when something here names your problem; do not add
+The other 36. Open one when something here names your problem; do not add
 findings-length lines to it. A doc that has grown a real trap gets promoted to
 Findings, which means writing the finding rather than lengthening the clause.
 
@@ -87,6 +87,7 @@ Findings, which means writing the finding rather than lengthening the clause.
 `NATS-BUS-EXTENSION.md`.
 
 **Research and unbuilt** — each states its own status header, and several are stale:
+`TAU-SERVE.md` (the 0.12.0 plan: durable writes, `tau serve`, `--connect`, cursor compare; nothing built) ·
 `CONSTRAINED-GEN-AND-BRANCHING-PLAN.md` · `JMFTS-INTEGRATION-PLAN.md` ·
 `RESEARCH-INTEGRATION-EVALUATION.md` · `ALPHA-SELECTOR-SPEC.md` ·
 `M2-RESULTS.md` · `M3-DESIGN.md` · `WORKSTREAM-CROSSWALK.md` (the status index across the four vocabularies).

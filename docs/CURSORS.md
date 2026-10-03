@@ -374,9 +374,10 @@ touched, and the remainder landed last. After it, "lane" survives in the five
 
 - **Durable writes.** Writing an entry as incomplete, finalizing it, the audit, and
   removing the made-up `stop_reason="stop"` (`agent_loop.py:927-940`) all belong to
-  the next record, which uses the vocabulary set here.
+  the next record, which uses the vocabulary set here. That record is now
+  `docs/TAU-SERVE.md` §4 (planned 2026-10-02).
 - **The web head and cursor sharing between clients.** Equal control is the
-  default. That is the third record. RPC gets only the rename in §9.
+  default. That is the third record, now `docs/TAU-SERVE.md` §5–§7. RPC gets only the rename in §9.
 - **Cursor persistence.** Cursors are not durable, by decision.
 - **A cross-process lock.** It is out of scope (§3).
 - **Hooks in sub-agents by default.** They are opt-in (§6).
