@@ -550,3 +550,12 @@ async def test_a_busy_cursor_enqueues_a_second_prompt_with_the_cores_own_strateg
             }
         )
     await client.close()
+
+
+async def test_a_client_that_vanishes_without_a_close_frame_is_one_log_line(served):
+    """A killed client (a reloaded VS Code window) logs one line, not a traceback."""
+    client = await served.client(name="vanishing")
+    client._ws.transport.abort()
+    await _until(lambda: "dropped (no close frame)" in served.out.getvalue())
+    assert "Traceback" not in served.out.getvalue()
+    assert not served.daemon.clients

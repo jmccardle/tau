@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, TextIO, cast
 
 from tau_agent_core.conversation_tree import ConversationTree
+from websockets.exceptions import ConnectionClosedError
+
 from tau_agent_core.cursor import TURN_CURSOR, Cursor, TurnFrame
 from tau_agent_core.extension_locks import request_at
 from tau_agent_core.extension_types import form_headless_value, validate_form_spec
@@ -560,6 +562,10 @@ class Daemon:
                 task = asyncio.create_task(self._serve(client, request_id, request))
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
+        except ConnectionClosedError:
+            if client in self.clients:
+                self.log(f"client {client.id} ({client.name}) dropped (no close frame)")
+                self.clients.discard(client)
         finally:
             if client in self.clients:
                 self.log(f"client {client.id} ({client.name}) closed")
