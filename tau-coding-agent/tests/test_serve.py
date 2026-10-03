@@ -177,7 +177,9 @@ async def test_a_reconnect_replays_what_it_missed(served, tmp_path):
 
     driver = await served.client()
     replica = await driver.attach(session_id)
-    await driver.request(p.Submit(session_id=session_id, cursor_id=replica.head_cursor_id, text="x"))
+    await driver.request(
+        p.Submit(session_id=session_id, cursor_id=replica.head_cursor_id, text="x")
+    )
 
     again = await served.client()
     again.replicas[session_id] = held
@@ -207,9 +209,9 @@ async def test_two_cursors_stream_at_once_to_one_client(served, tmp_path):
     session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
     replica = await client.attach(session_id)
     head = replica.head_cursor_id
-    other = (
-        await client.request(p.OpenCursor(session_id=session_id, leaf=None, label="side"))
-    )["cursor_id"]
+    other = (await client.request(p.OpenCursor(session_id=session_id, leaf=None, label="side")))[
+        "cursor_id"
+    ]
     await client.request(p.SetModel(session_id=session_id, cursor_id=other, model="other"))
 
     await asyncio.gather(
@@ -231,7 +233,9 @@ async def test_two_cursors_stream_at_once_to_one_client(served, tmp_path):
 
 async def test_a_form_goes_to_clients_and_the_first_answer_wins(served, tmp_path):
     requests: list[dict[str, Any]] = []
-    client = await served.client(on_event=lambda e: requests.append(e) if e["kind"] == "request" else None)
+    client = await served.client(
+        on_event=lambda e: requests.append(e) if e["kind"] == "request" else None
+    )
     session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
     await client.attach(session_id)
     host = served.daemon.hosts[session_id]
@@ -502,5 +506,47 @@ async def test_perform_acts_at_the_named_cursor_not_the_head(served, tmp_path):
     with pytest.raises(ServeError, match="bad_request"):
         await client.request(
             p.Perform(session_id=session_id, cursor_id=head, method="set_model", arguments={})
+        )
+    await client.close()
+
+
+async def test_a_busy_cursor_enqueues_a_second_prompt_with_the_cores_own_strategy(served, tmp_path):
+    """A prompt to a busy cursor waits for the turn and runs after it (docs/TAU-SERVE.md §7.3).
+
+    The strategy is the core's ``MultitaskStrategy``; 0.3 offered a ``follow_up``
+    that ``AgentSession.submit`` has no branch for, so every such prompt failed.
+    """
+    client = await served.client()
+    session_id = (await client.request(p.CreateSession(cwd=str(tmp_path))))["session_id"]
+    replica = await client.attach(session_id)
+    head = replica.head_cursor_id
+
+    first, second = await asyncio.gather(
+        client.request(p.Submit(session_id=session_id, cursor_id=head, text="one")),
+        client.request(
+            p.Submit(
+                session_id=session_id, cursor_id=head, text="two", multitask_strategy="enqueue"
+            )
+        ),
+    )
+
+    assert first["accepted"] and second["accepted"]
+    await _until(lambda: replica.seq == served.daemon.hosts[session_id].seq)
+    users = [
+        e["message"]["content"][0]["text"]
+        for e in replica.entries
+        if e.get("message", {}).get("role") == "user"
+    ]
+    assert users == ["one", "two"], "the second prompt ran after the first, on the same path"
+    with pytest.raises(ValueError, match="multitask_strategy|follow_up"):
+        p.parse_request(
+            {
+                "id": 1,
+                "type": "submit",
+                "session_id": session_id,
+                "cursor_id": head,
+                "text": "x",
+                "multitask_strategy": "follow_up",
+            }
         )
     await client.close()

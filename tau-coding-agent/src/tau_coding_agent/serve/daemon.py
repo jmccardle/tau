@@ -828,9 +828,6 @@ class Daemon:
 
     async def _submit(self, host: SessionHost, request: p.Submit) -> p.SubmitResult:
         cursor = host.cursor(request.cursor_id)
-        strategy = (
-            "followUp" if request.multitask_strategy == "follow_up" else request.multitask_strategy
-        )
         text, images = request.text, request.images
         submission_id = request.submission_id or uuid.uuid4().hex
         if request.expand_attachments:
@@ -842,7 +839,7 @@ class Daemon:
             source="interactive",
             submitter="human",
             submission_id=submission_id,
-            multitask_strategy=strategy,  # type: ignore[arg-type]
+            multitask_strategy=request.multitask_strategy,
             expand_commands=request.expand_commands,
             allow_user_input=True,
         )

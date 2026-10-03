@@ -4125,10 +4125,11 @@
         "multitask_strategy": {
           "description": "What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md).",
           "enum": [
-            "enqueue",
             "reject",
+            "enqueue",
             "steer",
-            "follow_up"
+            "rollback",
+            "fork"
           ]
         },
         "session_id": {
@@ -5117,10 +5118,11 @@
           "multitask_strategy": {
             "description": "What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md).",
             "enum": [
-              "enqueue",
               "reject",
+              "enqueue",
               "steer",
-              "follow_up"
+              "rollback",
+              "fork"
             ]
           },
           "session_id": {
@@ -5840,7 +5842,7 @@
     ]
   },
   "description": "The tau serve WebSocket protocol (docs/SERVE-PROTOCOL.md). Request records are closed (`additionalProperties: false`), because the daemon refuses an unknown field. Everything the daemon sends is open: a client must ignore a field it does not know, so a minor version may add one. Each request $def names its answer in `x-result`, and `Results` maps every request `type` to it; `Event`'s `x-data` maps every `kind` to its data.",
-  "title": "tau serve protocol 0.3",
+  "title": "tau serve protocol 0.4",
   "x-default-port": 8256,
-  "x-protocol-version": "0.3"
+  "x-protocol-version": "0.4"
 }

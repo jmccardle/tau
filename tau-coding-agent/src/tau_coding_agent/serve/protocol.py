@@ -47,7 +47,7 @@ from tau_llm.types import (
     UserMessage,
 )
 
-PROTOCOL_VERSION = "0.3"
+PROTOCOL_VERSION = "0.4"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256
@@ -183,7 +183,7 @@ class Submit:
     session_id: str
     cursor_id: str
     text: str
-    multitask_strategy: Literal["enqueue", "reject", "steer", "follow_up"] = "enqueue"
+    multitask_strategy: MultitaskStrategy = "enqueue"
     expand_commands: bool = True
     submission_id: str | None = None
     images: list[dict[str, Any]] | None = None
@@ -1626,7 +1626,41 @@ def _build(cls: type, fields: dict[str, Any], where: str) -> Any:
             if not isinstance(value, dict):
                 raise ValueError(f"{where}: {name!r} must be an object")
             built[name] = _build(nested, value, f"{where}.{name}")
+        elif not _fits(value, nested):
+            raise ValueError(f"{where}: {name!r} = {value!r} does not fit {nested}")
     return cls(**built)
+
+
+def _fits(value: Any, hint: Any) -> bool:
+    """Whether a JSON value fits an annotation, as the generated schema would judge it.
+
+    Checks the shapes requests use: scalars, ``Literal``, unions, ``list[...]`` and
+    ``dict[str, ...]``; anything else (``Any``, a record) is left to its own reader.
+    """
+    origin = get_origin(hint)
+    if hint is Any:
+        return True
+    if hint is type(None):
+        return value is None
+    if hint is bool:
+        return isinstance(value, bool)
+    if hint is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if hint is float:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if hint is str:
+        return isinstance(value, str)
+    if origin is Literal:
+        return value in get_args(hint)
+    if origin in (typing.Union, types.UnionType):
+        return any(_fits(value, arg) for arg in get_args(hint))
+    if origin is list:
+        (item,) = get_args(hint)
+        return isinstance(value, list) and all(_fits(v, item) for v in value)
+    if origin is dict:
+        _, item = get_args(hint)
+        return isinstance(value, dict) and all(_fits(v, item) for v in value.values())
+    return True
 
 
 def _type_tag(cls: type) -> str:

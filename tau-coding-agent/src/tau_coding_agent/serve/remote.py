@@ -585,17 +585,12 @@ class RemoteBackend(Backend):
         self, submission: Submission, context: list[dict] | None
     ) -> SubmissionResult:
         """Send the submission to the head cursor; ``context`` is the daemon's, so it is unused."""
-        strategy = (
-            "follow_up"
-            if submission.multitask_strategy == "followUp"
-            else submission.multitask_strategy
-        )
         result = await self._remote.request(
             p.Submit(
                 session_id=self._session_id,
                 cursor_id=self._head(),
                 text=submission.text,
-                multitask_strategy=strategy,  # type: ignore[arg-type]
+                multitask_strategy=submission.multitask_strategy,
                 expand_commands=submission.expand_commands,
                 submission_id=submission.submission_id,
                 images=submission.images,

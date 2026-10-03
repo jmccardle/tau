@@ -488,6 +488,16 @@ is sent to a busy cursor, it is now queued as a follow-up. That replaces
 wants a parallel turn opens another cursor instead. tau-code ships a release
 alongside 0.12.0.
 
+Built note (protocol 0.4, 2026-10-03): "queued as a follow-up" is the core's
+`enqueue` strategy: the prompt waits for the running turn and runs as its own
+turn. Protocols 0.1–0.3 offered a `follow_up` strategy that the daemon passed
+to `AgentSession.submit` as `"followUp"`, which the core has no branch for, so
+every such prompt failed with `NotImplementedError`. tau-code found it from the
+schema while porting. `Submit.multitask_strategy` is now the core's own
+`MultitaskStrategy` Literal. `parse_request` also checks every field's value
+against its annotation, as the schema does, so a value outside an enum is a
+`bad_request` at the door. Before, it reached the daemon's handlers.
+
 ### 7.4 RPC stays
 
 `tau --mode rpc` is the stdio head: a process that wants an exclusive agent

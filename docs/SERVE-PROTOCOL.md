@@ -6,7 +6,7 @@
 >
 > Design of record: `docs/TAU-SERVE.md` §5–§7.
 
-- **Protocol version:** `0.3`
+- **Protocol version:** `0.4`
 - **Default port:** `8256`
 - **Counts:** 23 requests, 9 event kinds, 140 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
@@ -89,7 +89,7 @@ carries what `expand_attachments` did, at acceptance.
 | `session_id` | string | yes |  |
 | `cursor_id` | string | yes |  |
 | `text` | string | yes |  |
-| `multitask_strategy` | `"enqueue"` \| `"reject"` \| `"steer"` \| `"follow_up"` | no | What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md). |
+| `multitask_strategy` | `"reject"` \| `"enqueue"` \| `"steer"` \| `"rollback"` \| `"fork"` | no | What to do when the cursor is busy (docs/SUBMISSION-LIFECYCLE.md). |
 | `expand_commands` | boolean | no |  |
 | `submission_id` | string \| null | no | The id the events of this submission carry; the daemon mints one when `None`. A client that renders its own streams sends it. |
 | `images` | list of object \| null | no | Image content blocks to send with the text. |
