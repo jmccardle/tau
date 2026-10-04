@@ -43,6 +43,15 @@ exception out of the iterator, `AgentLoop._stream_failed`:
    through the same `_aborted_batch` an abort uses. Every provider rejects a
    tool call with no result, so without this the session could not continue.
 
+**Built note (2026-10-03, found by tau-code against a stub server).** The OpenAI
+SSE transport never reached this path in two cases. It skipped a mid-stream
+`data: {"error": {...}}` frame, which has no `choices` and is what OpenAI,
+OpenRouter and vLLM send when they fail after the 200. And it finalized a stream
+that closed with neither a `finish_reason` nor `[DONE]` as `stop_reason:
+"stop"`, so the model read a half sentence as a whole answer. Both now yield an
+`ErrorEvent` (`_stream_transport`). Either end marker alone is still a complete
+stream, because servers differ in which they send.
+
 The message is not filtered out of the next request. An interrupted message is a
 valid message, and the model reads what it said. No provider drops a
 `stop_reason: "error"` message on replay, so nothing in `tau-llm` changes.

@@ -75,6 +75,15 @@ _TRUNCATION_HINT = (
 )
 
 
+def _error_frame_text(error: Any) -> str:
+    """The message in an SSE ``{"error": ...}`` frame, with its code when it has one."""
+    if isinstance(error, dict):
+        message = str(error.get("message") or "") or _truncate_error_text(json.dumps(error))
+        code = error.get("code") or error.get("type")
+        return f"{message} (code {code})" if code else message
+    return _truncate_error_text(str(error))
+
+
 def _truncate_error_text(text: str, max_chars: int = _MAX_ERROR_BODY_CHARS) -> str:
     """Bound an error body, saying how much was dropped rather than eliding silently."""
     if len(text) <= max_chars:
@@ -181,6 +190,7 @@ class _TransportState:
     usage_data: dict[str, Any] = field(default_factory=dict)
     timings_data: dict[str, Any] = field(default_factory=dict)
     stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"] | None = None
+    saw_done: bool = False
     # The transport already yielded an ErrorEvent and there is nothing to finalize.
     failed: bool = False
 
@@ -1712,6 +1722,7 @@ class OpenAICompletionsProvider(Provider):
                     continue
                 data_str = line[5:].strip()
                 if data_str == "[DONE]":
+                    state.saw_done = True
                     break
 
                 try:
@@ -1727,6 +1738,18 @@ class OpenAICompletionsProvider(Provider):
                         data_str,
                     )
                     continue
+
+                if "error" in chunk:
+                    yield ErrorEvent(
+                        type="error",
+                        message=(
+                            f"model {model.id!r} at {self.base_url!r} failed mid-stream: "
+                            f"{_error_frame_text(chunk['error'])}"
+                        ),
+                        is_error=True,
+                    )
+                    state.failed = True
+                    return
 
                 if chunk.get("id"):
                     accum.response_id = chunk["id"]
@@ -1790,6 +1813,17 @@ class OpenAICompletionsProvider(Provider):
 
                 if finish_reason:
                     state.stop_reason = self._map_finish_reason(finish_reason)
+
+        if state.stop_reason is None and not state.saw_done:
+            yield ErrorEvent(
+                type="error",
+                message=(
+                    f"the stream from model {model.id!r} at {self.base_url!r} closed with "
+                    "no finish_reason and no [DONE], so the response is cut short"
+                ),
+                is_error=True,
+            )
+            state.failed = True
 
     async def _complete_transport(
         self,

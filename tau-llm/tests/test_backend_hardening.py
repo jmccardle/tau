@@ -494,11 +494,7 @@ def test_the_answer_is_labelled_with_the_vendor_that_gave_it() -> None:
     every export. The multi-vendor work widened the types; this is the provider
     honouring them."""
     src = (
-        pathlib.Path(__file__).resolve().parents[1]
-        / "src"
-        / "tau_llm"
-        / "providers"
-        / "openai.py"
+        pathlib.Path(__file__).resolve().parents[1] / "src" / "tau_llm" / "providers" / "openai.py"
     ).read_text()
     assert src.count('api="openai-completions",\n            provider="openai",') == 0
     assert "api=model.api," in src and "provider=model.provider," in src
@@ -783,3 +779,54 @@ def test_a_stated_schema_leaves_openai_shaped_calls_alone():
     assert [(c.id, c.name, c.arguments) for c in calls] == [
         ("call_ok", "get_weather", {"city": "Rome"})
     ]
+
+
+def _text_chunk(text: str, finish: str | None = None) -> dict:
+    return {"id": "r1", "choices": [{"delta": {"content": text}, "finish_reason": finish}]}
+
+
+def test_an_error_frame_after_200_is_a_failure_not_a_skipped_chunk():
+    """OpenAI, OpenRouter and vLLM send ``{"error": ...}`` when a stream fails after 200.
+
+    It has no ``choices``, so it was skipped like a keepalive, and the half answer
+    before it was finalized as a complete one (docs/TURN-FAILURES.md §2).
+    """
+    lines = [
+        "data: " + json.dumps(_text_chunk("The answer ")),
+        "data: " + json.dumps({"error": {"message": "upstream overloaded", "code": 503}}),
+        "data: " + json.dumps(_text_chunk("never read")),
+    ]
+    events = _run_stream(_provider(), _FakeClient(_FakeResponse(lines)))
+
+    assert not any(isinstance(e, DoneEvent) for e in events)
+    error = events[-1]
+    assert isinstance(error, ErrorEvent)
+    assert "upstream overloaded (code 503)" in error.message
+    assert "test-model" in error.message
+    assert events[-2].partial.content[0].text == "The answer "
+
+
+def test_a_stream_closed_with_no_finish_reason_and_no_done_is_cut_short():
+    """A clean close with neither end marker is not ``stop``: the answer is a prefix."""
+    lines = ["data: " + json.dumps(_text_chunk("eight words and then the connection"))]
+    events = _run_stream(_provider(), _FakeClient(_FakeResponse(lines)))
+
+    assert not any(isinstance(e, DoneEvent) for e in events)
+    assert isinstance(events[-1], ErrorEvent)
+    assert "no finish_reason and no [DONE]" in events[-1].message
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ["data: " + json.dumps(_text_chunk("done", finish="stop"))],
+        ["data: " + json.dumps(_text_chunk("done")), "data: [DONE]"],
+    ],
+    ids=["finish_reason only", "[DONE] only"],
+)
+def test_either_end_marker_alone_is_a_complete_stream(lines):
+    """Servers differ in which marker they send; one is enough."""
+    events = _run_stream(_provider(), _FakeClient(_FakeResponse(lines)))
+
+    assert isinstance(events[-1], DoneEvent)
+    assert events[-1].final.stop_reason == "stop"
