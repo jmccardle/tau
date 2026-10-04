@@ -93,10 +93,10 @@ pytest tau-coding-agent/tests/test_packaging.py
 git commit -am "release: version 0.9.3"
 ```
 
-The version lives in fifteen places — five `__version__` literals, one in the root
-`pyproject.toml`, and nine in-repo `ffwf-tau…==<version>` pins. This document and
-the script's own header both said *thirteen* through 0.9.7, and the pin count was
-already nine there, so the number was stale rather than newly wrong. The script
+The version lives in sixteen places at 0.12.0 — five `__version__` literals, one
+in the root `pyproject.toml`, and ten in-repo `ffwf-tau…==<version>` pins. This
+document said *thirteen* through 0.9.7 and *fifteen* through 0.11.0, each time
+after the count had already moved, so the number goes stale rather than wrong. The script
 prints every location it wrote; read that list rather than either number. It
 refuses to run on a dirty tree, ignoring untracked files. Do not add a
 `version = "..."` literal to a package `pyproject.toml` to fix a mismatch — a test
@@ -679,6 +679,7 @@ takes.
 | release | tagline |
 |---|---|
 | — | 0.11.0 and earlier carried none |
+| 0.12.0 | I think, therefore I raise |
 
 Create it as a **draft** while the publisher registration is still outstanding:
 
@@ -792,3 +793,30 @@ the first one's finding actionable rather than anecdotal.
 matrix (per the 0.10.3 note above) and then discarded and rebuilt after the test
 fix, because the gated sha had changed. `git status --porcelain` says the tree
 is clean; it does not say the tree is the one the tag will name.
+
+## What 0.12.0 learned
+
+**A clean matrix is `0 failed` and the same skip count as the local run.** The
+matrix read 6432 passed and 171 skipped on all four versions; the local 3.11 run
+read 6446 and 157. The totals agree (6603), so 14 tests moved from passed to
+skipped, and `-rs` on one container named them: every one is in
+`test_nats_bus_extension.py`, which needs Docker to start a real nats-server and
+skips inside the matrix's container. That file was changed in this release.
+`publish.yml`'s runners have Docker, and CI read 6446 passed on all four, so CI
+covered what the matrix could not — but the matrix alone never ran a changed
+test on 3.12–3.14. Diff the skip reasons, not just the failure line; the
+matrix command does not pass `-rs`, so that took a second container run.
+
+**The matrix ran before the bump, and the bump was gated alone.** The matrix
+gated `df7652e`; the release commit `bebdedf` changes only the sixteen version
+locations, and `test_packaging.py` (39 passed) and the pre-commit hook gated it.
+CI's four-version run on the tag is the full gate of the tagged sha.
+
+**The tagline procedure's step 1 fired on its first use.** `7705a93` had already
+appended seven entries after 0.11.0, so the release drew one from stock and
+wrote none.
+
+**Smoke the headline over its own wire.** `tau serve` from the installed
+`ffwf-tau[serve]` wheel, from an unrelated directory with a sandbox `HOME`,
+answered `hello` with `version: 0.12.0`, created a session, answered an unknown
+method with `-32601`, and stopped on `tau serve --stop`.

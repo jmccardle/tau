@@ -6,13 +6,11 @@ this file. Older entries cite pi as "the source of truth"; that stopped being th
 arrangement on 2026-09-03 (`CLAUDE.md`, "Parity with pi is not an objective") and
 those citations are provenance now.
 
-**State (2026-10-03), 0.12.0 progress:** 37 commits sit on local `master`
-past `origin/master` (`git log --oneline origin/master..master | wc -l`), and
-none is pushed, by decision: the push comes with the release. `docs/TAU-SERVE.md`
-§9 is the plan. M0–M5 are built, with M4 built in tau-code. M6 is half done; see
-"0.12.0 cycle" under "Shipped". Suite at `2f3d493`: **6424 passed, 157 skipped,
-6 deselected, 0 failed**. Docs coverage: **600/1068 (56.2%), 0 drift**. The version
-literal is still `0.11.0`.
+**State (2026-10-04): 0.12.0 shipped.** Tag `v0.12.0` → `bebdedf`, all five
+distributions on PyPI (`publish.yml` run 37225374694). Local, `origin` and
+`github` agreed at `bebdedf` before the tag. CI on the tag: **6446 passed,
+157 skipped, 6 deselected, 0 failed** on 3.11–3.14. tau-code's matching release
+is still open.
 
 **State (2026-09-27):** the three modified files the 09-24 header left alone
 (untouched since 2026-09-18) are committed as `7705a93`. They add the release
@@ -446,10 +444,10 @@ and predicted/billed stays within 0.917–0.989 over eight requests, median 0.96
 
 ---
 
-### 0.12.0 cycle — cursors and `tau serve` — built 2026-10-02 → 10-03, unreleased
+### 0.12.0 — cursors and `tau serve` — built 2026-10-02 → 10-03, released 2026-10-04
 
 Plan: `docs/CURSORS.md` (steps 1–6) and then `docs/TAU-SERVE.md` (M0–M6).
-Nothing listed here is pushed.
+Released as `v0.12.0` → `bebdedf`.
 
 | Milestone | Commits | State |
 |---|---|---|
@@ -473,8 +471,8 @@ leaves, with `$defs` (`f90ac66`); a cursor names its model by config name
 - ~~`HEADS-AND-MULTIPLEXER.md` §5 and `REMOTE-CONTROL.md` still describe the hub as
   the multiplexer~~ — amended 2026-10-03: both carry dated notes naming
   `tau serve` as the multiplexer and RPC as the stdio head.
-- The release matrix (`docs/RELEASING.md`), the version bump, the tag, and the
-  push. tau-code's matching release is open too.
+- ~~The release matrix, the version bump, the tag, and the push~~ — released
+  2026-10-04. tau-code's matching release is still open.
 - ~~John's decision on how to record a turn that raises~~ — built,
   `docs/TURN-FAILURES.md`.
 - ~~Whether serve's envelope becomes JSON-RPC 2.0~~ — built, protocol 0.8
