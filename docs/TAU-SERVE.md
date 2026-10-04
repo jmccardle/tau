@@ -1,7 +1,7 @@
 # τ serves its trees: the 0.12.0 plan
 
-Plan and cost record (2026-10-02). M0–M3 and M5 built 2026-10-03; M4 and M6
-not written here. This record continues
+Plan and cost record (2026-10-02). M0–M3 and M5 built here 2026-10-03, and M4
+built in tau-code. M6's rename is built; its docs and release are not. This record continues
 `docs/CURSORS.md` and replaces two of the records its §11 named: durable writes
 (§4 here) and the web head (§6–§7 here). It plans one development pass, which
 ends when the scenario in §2 runs.

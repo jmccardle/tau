@@ -6,6 +6,14 @@ this file. Older entries cite pi as "the source of truth"; that stopped being th
 arrangement on 2026-09-03 (`CLAUDE.md`, "Parity with pi is not an objective") and
 those citations are provenance now.
 
+**State (2026-10-03), 0.12.0 progress:** 37 commits sit on local `master`
+past `origin/master` (`git log --oneline origin/master..master | wc -l`), and
+none is pushed, by decision: the push comes with the release. `docs/TAU-SERVE.md`
+§9 is the plan. M0–M5 are built, with M4 built in tau-code. M6 is half done; see
+"0.12.0 cycle" under "Shipped". Suite at `2f3d493`: **6424 passed, 157 skipped,
+6 deselected, 0 failed**. Docs coverage: **600/1068 (56.2%), 0 drift**. The version
+literal is still `0.11.0`.
+
 **State (2026-09-27):** the three modified files the 09-24 header left alone
 (untouched since 2026-09-18) are committed as `7705a93`. They add the release
 tagline: `docs/RELEASING.md` §"The tagline" plus seven `TAGLINES` entries, and
@@ -438,6 +446,40 @@ and predicted/billed stays within 0.917–0.989 over eight requests, median 0.96
 
 ---
 
+### 0.12.0 cycle — cursors and `tau serve` — built 2026-10-02 → 10-03, unreleased
+
+Plan: `docs/CURSORS.md` (steps 1–6) and then `docs/TAU-SERVE.md` (M0–M6).
+Nothing listed here is pushed.
+
+| Milestone | Commits | State |
+|---|---|---|
+| Cursors, steps 1–6 | `9b0095d` `64dca80` `b275de0` `27565b9` `b418524` | Built. Every writer is a `Cursor`; config lives in the tree. |
+| M0: schema generator, concurrent cursors | `7e9e6d6` | Built. RPC counts are generated, which closes defect 5. |
+| M1: durable writes | `0c373a9` | Built. |
+| M2: `tau serve` | `836a0d4`, then protocol 0.2–0.7 | Built. Serve protocol is now **0.7**. |
+| M3: `tau --connect`, autostart | `8ff102f` | Built. |
+| M4: tau-code on `tau serve` | tau-code `a738df6` … `26499fc` | Built and verified live by the tau-code session. 20 tau-code commits are unpushed, and its version is still 0.5.2. |
+| M5: `/compare` | `ff1f62a` | Built. |
+| M6: rename, docs, release | `5ce48db` (RPC 2.0), `f90ac66` (RPC 2.1) | The rename is done. The docs and the release are open (`TAU-SERVE.md` §10). |
+
+Follow-ups after the milestones: the Origin check and `serve.web_root`
+(`4a432f4`); RPC handlers act at `AgentSession.acting_cursor` (`7a8c457`); serve
+0.6 is RPC plus addressing (`663f7f2`); RPC 2.1 publishes schemas typed to their
+leaves, with `$defs` (`f90ac66`); a cursor names its model by config name
+(`1c505d8`); `tau serve --stop` (`2f3d493`).
+
+**Still open before 0.12.0** (`TAU-SERVE.md` §10, checked 2026-10-03):
+
+- `HEADS-AND-MULTIPLEXER.md` §5 and `REMOTE-CONTROL.md` still describe the hub as
+  the multiplexer. Neither mentions `tau serve` (`grep -c` returns 0 for both).
+- The release matrix (`docs/RELEASING.md`), the version bump, the tag, and the
+  push. tau-code's matching release is open too.
+- John's decision on how to record a turn that raises (see "Open work").
+- Whether serve's envelope becomes JSON-RPC 2.0. This is unanswered and does not
+  block the release.
+
+---
+
 ## Open work
 
 Confirmed still-unbuilt by direct code inspection (not doc-trusting) on
@@ -509,6 +551,10 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   `get_models` row is running (`get_models`' own notes call this known gap 1).
   `AgentSession.model_name` holds the config name and serve's `CursorState.model`
   carries it; `get_state` could add it as `model_name`.
+- **A turn that fails by raising leaves no entry** (found 2026-10-03, by
+  tau-code). Anyone who reloads sees an unanswered prompt. Two options wait for
+  John: (a) append an assistant message with `stop_reason: "error"` and leave it
+  out of model input, or (b) append a `customEntry` `turn_error`.
 - **RPC's result schemas leave shapes as prose** — **done 2026-10-03, RPC
   2.1** (`docs/TAU-SERVE.md` §5 built note). The records and the schema
   generator are in core; `get_capabilities` and `docs/RPC-PROTOCOL.md` are
