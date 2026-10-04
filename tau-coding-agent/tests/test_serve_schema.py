@@ -799,3 +799,11 @@ def test_every_error_code_carries_its_dialect_name():
     assert sorted(int(c) for c in code["x-names"]) == sorted(code["enum"])
     for number, name in code["x-names"].items():
         assert getattr(dialect, name) == int(number)
+
+
+async def test_attaching_an_unknown_session_is_not_found_in_plain_words(daemon):
+    """The catalog raises ``LookupError``; it is a refusal, not a daemon failure."""
+    attach = json.dumps(p.request_frame(2, p.Attach(session_id="no-such-session")))
+    _, answer = await _answers(daemon, _hello(1), attach)
+    assert answer["error"]["code"] == dialect.NOT_FOUND
+    assert answer["error"]["message"].startswith("no session matches 'no-such-session'")

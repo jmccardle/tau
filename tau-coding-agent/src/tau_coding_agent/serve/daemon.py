@@ -774,8 +774,9 @@ class Daemon:
                 return host
         try:
             log = await asyncio.to_thread(self.catalog.resolve_ref, ref)
-        except (KeyError, ValueError, FileNotFoundError) as exc:
-            raise RequestError(dialect.NOT_FOUND, str(exc)) from exc
+        except (LookupError, ValueError, FileNotFoundError) as exc:
+            message = str(exc.args[0]) if len(exc.args) == 1 else str(exc)
+            raise RequestError(dialect.NOT_FOUND, message) from exc
         lock = self._loading.setdefault(log.id, asyncio.Lock())
         async with lock:
             if log.id in self.hosts:
