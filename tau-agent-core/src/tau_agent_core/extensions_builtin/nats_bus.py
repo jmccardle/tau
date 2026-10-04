@@ -186,6 +186,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from tau_agent_core.tools.base import ToolError
+
 try:
     import nats
     import nats.errors
@@ -614,7 +616,7 @@ def register(api: Any) -> None:
                 raise asyncio.CancelledError("effector: aborted while awaiting the effector's ack")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(
+                raise ToolError(
                     f"effector: no ack on {ack_sub.subject!r} within {ack_timeout_s}s "
                     "— treating this mutation as unconfirmed rather than silently "
                     "reporting success (tau-002: zero orphans)"
@@ -670,7 +672,7 @@ def register(api: Any) -> None:
             for field in spec.non_empty:
                 value = params.get(field)
                 if not isinstance(value, str) or not value.strip():
-                    raise ValueError(
+                    raise ToolError(
                         f"{verb}: {field!r} must be a non-empty string "
                         f"(got {value!r}) — an empty one publishes cleanly and "
                         "is acked cleanly, which is worse than failing here"
@@ -721,7 +723,7 @@ def register(api: Any) -> None:
                 )
             failure = _ack_failure(ack_payload)
             if failure is not None:
-                raise RuntimeError(
+                raise ToolError(
                     f"{verb}: effector did not complete the mutation "
                     f"(binding_id={binding_id}): {failure}"
                 )

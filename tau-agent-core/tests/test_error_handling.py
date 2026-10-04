@@ -84,7 +84,7 @@ from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.session_log import InMemorySessionLog
-from tau_agent_core.tools.base import AgentTool, ToolDefinition
+from tau_agent_core.tools.base import INTERNAL_TOOL_ERROR, AgentTool, ToolDefinition
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
 _TS = 1_700_000_000_000
@@ -313,9 +313,8 @@ def test_provider_error_event_paints_the_turn_then_raises_with_the_bracket_close
     """Drives a real ``ErrorEvent`` through ``AgentLoop._stream_response``.
 
     Never done anywhere else in the suite: ``test_agent_loop.py`` imports
-    ``ErrorEvent`` but never instantiates one. Running it showed the error text IS
-    rendered as a message_start/message_end pair (an "Error: …" assistant bubble)
-    before the raise — and that ``agent_end`` never fired, because it was only
+    ``ErrorEvent`` but never instantiates one. Running it showed that
+    ``agent_end`` never fired, because it was only
     reachable by falling out of the while loop. That was the leak
     ``tau-coding-agent/backends.py``'s ``on_branch_end`` docstring describes ("a
     branch whose turn raises... emits no agent_end at all"), and it also left
@@ -327,6 +326,10 @@ def test_provider_error_event_paints_the_turn_then_raises_with_the_bracket_close
     assert a turn completed with no tools, which is a claim rather than an
     observation. pi does emit one, but only because a provider error is a value
     there and it has a real final message to attach (agent-loop.ts:342-353).
+
+    No message bracket either: nothing streamed, so there is no message, and the
+    made-up "Error: …" bubble that used to be emitted here is gone
+    (docs/TURN-FAILURES.md §2). The error rides ``agent_end``.
     """
     events: list[AgentEvent] = []
 
@@ -348,15 +351,7 @@ def test_provider_error_event_paints_the_turn_then_raises_with_the_bracket_close
             )
 
     types_seen = [e.type for e in events]
-    assert types_seen == [
-        "agent_start",
-        "turn_start",
-        "message_start",
-        "message_end",
-        "agent_end",
-    ]
-    assert events[3].message["content"][0]["text"] == "Error: Connection refused"
-    assert "turn_end" not in types_seen
+    assert types_seen == ["agent_start", "turn_start", "agent_end"]
 
     closing = events[-1]
     assert closing.is_error is True
@@ -397,8 +392,7 @@ def test_an_empty_provider_error_message_still_raises_something_attributable():
     assert raised.strip()
     assert "empty message" in raised
     assert "gpt-4o" in raised
-    message_ends = [e for e in events if e.type == "message_end"]
-    assert message_ends[-1].message["content"][0]["text"] == f"Error: {raised}"
+    assert events[-1].error == f"RuntimeError: {raised}"
 
 
 def test_a_normal_close_carries_no_error_so_the_two_are_distinguishable():
@@ -483,6 +477,9 @@ def test_provider_error_propagates_uncaught_through_session_prompt():
     any assistant message completes has produced nothing else;
     ``test_abort_persistence.py`` covers the case where a tool result exists to
     keep.
+
+    The turn then ends with a display-only ``turn_error`` message, so a reload
+    shows why the prompt has no answer (docs/TURN-FAILURES.md §1).
     """
     with patch(
         "tau_agent_core.agent_loop.stream_simple",
@@ -492,7 +489,11 @@ def test_provider_error_propagates_uncaught_through_session_prompt():
         with pytest.raises(RuntimeError, match="upstream 503"):
             asyncio.run(session.prompt("hello"))
         roles = [m.get("role") if isinstance(m, dict) else m.role for m in session.messages]
-        assert roles == ["user"]
+        assert roles == ["user", "custom"]
+        marker = session.messages[-1]
+        assert marker["customType"] == "turn_error"
+        assert marker["visibleToModel"] is False
+        assert marker["details"] == {"exception": "RuntimeError: upstream 503"}
 
 
 def test_tool_error_result_is_the_exact_payload_the_next_llm_call_receives():
@@ -526,7 +527,9 @@ def test_tool_error_result_is_the_exact_payload_the_next_llm_call_receives():
     assert len(tool_result_messages) == 1
     result = tool_result_messages[0]
     assert result["is_error"] is True
-    assert "disk full" in result["content"][0]["text"]
+    assert result["content"] == [{"type": "text", "text": INTERNAL_TOOL_ERROR}]
+    # The exception rides ``details``, which no provider puts on the wire.
+    assert result["details"] == {"exception": "RuntimeError: disk full"}
 
 
 def test_failing_tool_result_is_persisted_to_the_session_log_as_an_error():
@@ -547,7 +550,7 @@ def test_failing_tool_result_is_persisted_to_the_session_log_as_an_error():
     tool_results = [m for m in messages if m.get("role") == "toolResult"]
     assert len(tool_results) == 1
     assert tool_results[0]["is_error"] is True
-    assert "permission denied" in tool_results[0]["content"][0]["text"]
+    assert "permission denied" in tool_results[0]["details"]["exception"]
     # And it is durably on the session, not just in the return value.
     persisted_tool_results = [m for m in session.messages if m.get("role") == "toolResult"]
     assert persisted_tool_results == tool_results

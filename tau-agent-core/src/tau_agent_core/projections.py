@@ -30,6 +30,7 @@ __all__ = [
     "path_completion",
     "request_payload",
     "resolver_error_message",
+    "tool_result_for_user",
 ]
 
 
@@ -239,6 +240,18 @@ def browse_rows(tree: ConversationTree) -> list[dict[str, Any]]:
 
 MODEL_CATALOG_ATTR = "model_names"
 """The method a model resolver lists its accepted names with."""
+
+
+def tool_result_for_user(text: str, details: Any) -> str:
+    """A tool result's text as the user reads it (docs/TURN-FAILURES.md §3).
+
+    That is the text the model read, plus ``details["exception"]`` when a tool
+    raised something other than a ``ToolError``, which the model never reads.
+    """
+    exception = details.get("exception") if isinstance(details, dict) else None
+    if not exception:
+        return text
+    return f"{text}\n\nNot shown to the model: {exception}"
 
 
 def resolver_error_message(exc: KeyError | ValueError) -> str:

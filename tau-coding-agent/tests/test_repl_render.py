@@ -374,7 +374,7 @@ class TestReplay:
                 {
                     "role": "toolResult",
                     "tool_name": "read",
-                    "toolCallId": "t1",
+                    "tool_call_id": "t1",
                     "content": [{"type": "text", "text": "line one\nline two"}],
                     "timestamp": _TS + 3000,
                 },

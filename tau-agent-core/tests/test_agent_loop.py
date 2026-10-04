@@ -52,6 +52,7 @@ from tau_agent_core.agent_loop_types import (
 )
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.tools.base import (
+    INTERNAL_TOOL_ERROR,
     AgentTool,
     AgentToolResult,
     ToolBatchResult,
@@ -730,7 +731,8 @@ class TestToolErrorHandling:
         error_events = [e for e in events if e.type == "tool_execution_end" and e.is_error]
         assert len(error_events) == 1
         assert error_events[0].tool_name == "failing_tool"
-        assert "simulated failure" in str(error_events[0].result)
+        assert INTERNAL_TOOL_ERROR in str(error_events[0].result)
+        assert "simulated failure" in error_events[0].details["exception"]
 
     @pytest.mark.asyncio
     async def test_tool_error_in_parallel_mode(self):
@@ -1228,7 +1230,9 @@ class TestExecuteTool:
 
         assert isinstance(result, AgentToolResult)
         assert result.is_error
-        assert result.error_message == "something broke"
+        assert result.error_message == "Exception: something broke"
+        assert result.content == [{"type": "text", "text": INTERNAL_TOOL_ERROR}]
+        assert result.details == {"exception": "Exception: something broke"}
 
 
 class TestEventEmission:
@@ -1548,11 +1552,14 @@ class TestBlockedCallAndErrorCall:
         assert blocked.error == "Validation failed"
 
     def test_error_call(self):
-        """ErrorCall holds a call and error message."""
+        """ErrorCall's result hides an unexpected exception from the model."""
         call = PreparedToolCall(id="c2", name="ls", arguments={})
-        error_call = ErrorCall(call, "Unexpected error")
+        error_call = ErrorCall(call, KeyError("Unexpected error"))
+        result = error_call.result()
         assert error_call.call.id == "c2"
-        assert error_call.error == "Unexpected error"
+        assert result.tool_call_id == "c2"
+        assert result.content == [{"type": "text", "text": INTERNAL_TOOL_ERROR}]
+        assert result.details == {"exception": "KeyError: 'Unexpected error'"}
 
 
 class TestSequentialTermination:

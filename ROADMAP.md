@@ -475,7 +475,8 @@ leaves, with `$defs` (`f90ac66`); a cursor names its model by config name
   `tau serve` as the multiplexer and RPC as the stdio head.
 - The release matrix (`docs/RELEASING.md`), the version bump, the tag, and the
   push. tau-code's matching release is open too.
-- John's decision on how to record a turn that raises (see "Open work").
+- ~~John's decision on how to record a turn that raises~~ — built,
+  `docs/TURN-FAILURES.md`.
 - Whether serve's envelope becomes JSON-RPC 2.0. This is unanswered and does not
   block the release.
 
@@ -553,9 +554,10 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   `AgentSession.model_name` holds the config name and serve's `CursorState.model`
   carries it; `get_state` could add it as `model_name`.
 - **A turn that fails by raising leaves no entry** (found 2026-10-03, by
-  tau-code). Anyone who reloads sees an unanswered prompt. Two options wait for
-  John: (a) append an assistant message with `stop_reason: "error"` and leave it
-  out of model input, or (b) append a `customEntry` `turn_error`.
+  tau-code) — **built 2026-10-03** (`docs/TURN-FAILURES.md`). A failed stream is
+  finalized with `stop_reason: "error"` and stays in model input; every raised
+  turn ends with a display-only `turn_error`; tools raise `ToolError`/`ToolHalt`
+  for the model and anything else is shown only to the user.
 - **RPC's result schemas leave shapes as prose** — **done 2026-10-03, RPC
   2.1** (`docs/TAU-SERVE.md` §5 built note). The records and the schema
   generator are in core; `get_capabilities` and `docs/RPC-PROTOCOL.md` are

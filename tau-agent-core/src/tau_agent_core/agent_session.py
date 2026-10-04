@@ -46,7 +46,12 @@ from tau_agent_core.extension_locks import (
     refusal_reason,
     request_at,
 )
-from tau_agent_core.messages import CUSTOM_ROLE, create_custom_message, last_assistant_text
+from tau_agent_core.messages import (
+    CUSTOM_ROLE,
+    create_custom_message,
+    last_assistant_text,
+    turn_error_message,
+)
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.extensions.runner import (
     MESSAGE_POSITION_BEFORE_USER,
@@ -3374,6 +3379,9 @@ class AgentSession:
                 prompts=[*pre_user_messages, user_msg, *queued, *post_user_messages],
                 context=context_messages,
             )
+        except Exception as exc:
+            await writer.append(turn_error_message(exc))
+            raise
         finally:
             self.acting_cursor.turn_writer = None
             self.acting_cursor.in_flight_context = None
@@ -3518,7 +3526,11 @@ class AgentSession:
                 steer_queue=cur.steer_queue,
                 writer=writer,
             )
-            await loop.run_continue(context=context_messages)
+            try:
+                await loop.run_continue(context=context_messages)
+            except Exception as exc:
+                await writer.append(turn_error_message(exc))
+                raise
             return writer.messages
 
         finally:

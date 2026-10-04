@@ -20,6 +20,7 @@ pi messages.ts ``convertToLlm`` (custom→user), ``createCustomMessage``.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from tau_llm.docs import agent_facing
@@ -144,6 +145,25 @@ def is_displayed(message: dict[str, Any]) -> bool:
     if message.get("role") != CUSTOM_ROLE:
         return True
     return message.get("display", True) is not False
+
+
+TURN_ERROR_TYPE = "turn_error"
+
+
+def turn_error_message(exc: BaseException) -> dict[str, Any]:
+    """The display-only ``turn_error`` message that ends a turn that raised.
+
+    The user sees it, and :func:`convert_to_llm` drops it, so the model never
+    does (docs/TURN-FAILURES.md §1). ``details["exception"]`` is ``"Type: message"``.
+    """
+    detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    return create_custom_message(
+        TURN_ERROR_TYPE,
+        f"The turn failed: {detail}",
+        details={"exception": detail},
+        visible_to_model=False,
+        timestamp=int(time.time() * 1000),
+    )
 
 
 def convert_to_llm(messages: list[Any]) -> list[Any]:

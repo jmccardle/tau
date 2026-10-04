@@ -30,6 +30,7 @@ from tau_coding_agent.chat_widgets import (
 from tau_agent_core.conversation_tree import TreeNode, summary_message_of
 from tau_agent_core.extension_locks import ExtensionRequest
 from tau_agent_core.messages import is_displayed
+from tau_agent_core.projections import tool_result_for_user
 from tau_coding_agent import extension_ui
 from dataclasses import dataclass
 from textual.containers import VerticalScroll
@@ -321,7 +322,9 @@ class MessageList(VerticalScroll):
         role = msg.get("role", "")
 
         if role == "toolResult":
-            result_text = _join_text_blocks(msg.get("content", []))
+            result_text = tool_result_for_user(
+                _join_text_blocks(msg.get("content", [])), msg.get("details")
+            )
             box = self.add_message(
                 "toolResult",
                 format_tool_result_body(
@@ -1925,7 +1928,9 @@ class ChatDisplay(MessageList):
             elif role == "toolResult":
                 tc_id = msg.get("tool_call_id", "") or ""
                 target = routes.get(tc_id)
-                result_text = _join_text_blocks(msg.get("content", []))
+                result_text = tool_result_for_user(
+                    _join_text_blocks(msg.get("content", [])), msg.get("details")
+                )
                 if target is not None:
                     target.set_result(result_text, bool(msg.get("is_error", False)))
                 else:

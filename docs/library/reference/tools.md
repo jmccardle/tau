@@ -104,6 +104,27 @@ Create a failure result.
 - `error_message: str` — *(no description)*
 - `tool_call_id: str | None = None` — *(no description)*
 
+### from_exception
+
+```python
+from_exception(tool_name: str, exc: BaseException, tool_call_id: str | None = None) -> 'AgentToolResult'
+```
+
+`tau_agent_core.tools.base.AgentToolResult.from_exception`
+
+The result for a call that raised ``exc`` (docs/TURN-FAILURES.md §3).
+
+A :class:`ToolError` message goes to the model, and a :class:`ToolHalt`
+also sets ``terminate``. Any other exception gives the model
+:data:`INTERNAL_TOOL_ERROR` and puts ``"Type: message"`` in
+``details["exception"]``, which heads show and the model never reads.
+
+**Parameters**
+
+- `tool_name: str` — *(no description)*
+- `exc: BaseException` — *(no description)*
+- `tool_call_id: str | None = None` — *(no description)*
+
 ### is_error
 
 `tau_agent_core.tools.base.AgentToolResult.is_error: bool`
@@ -283,6 +304,29 @@ Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
 `tau_llm.tools.ToolDefinition.prompt_snippet: str | None`
 
 *No description. This object is marked but undocumented.*
+
+## ToolError
+<!-- agent: yes -->
+
+`tau_agent_core.tools.base.ToolError`
+
+Raise from a tool to report a failure the model should read.
+
+The message becomes the tool result's text, marked as an error, and the
+turn goes on. Any other exception is treated as a bug: the model reads
+:data:`INTERNAL_TOOL_ERROR` and only the user sees the exception
+(docs/TURN-FAILURES.md §3).
+
+## ToolHalt
+<!-- agent: yes -->
+
+`tau_agent_core.tools.base.ToolHalt`
+
+Raise from a tool to stop the turn and tell the user why.
+
+The message becomes the tool result's text, marked as an error. The loop ends
+once the calls in the same batch have finished, with ``end_reason`` set to
+``"terminate"``.
 
 ## ToolSpec
 <!-- agent: yes -->

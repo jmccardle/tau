@@ -29,6 +29,7 @@ from typing import Any
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.capabilities import Argument, Domain
 from tau_agent_core.compaction import CompactionDetails, CompactionResult
+from tau_agent_core.projections import tool_result_for_user
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extension_locks import ExtensionRequest, request_at
 from tau_agent_core.flows import DomainValue, DomainValues, FlowStep, Performed, Ready, View
@@ -555,7 +556,7 @@ class WireJoin:
                     self._args[str(block.get("id"))] = block.get("arguments") or {}
         elif role == "toolResult":
             call_id = str(message.get("tool_call_id"))
-            text = result_text(message.get("content"))
+            text = tool_result_for_user(result_text(message.get("content")), message.get("details"))
             wire = self._ended.pop(call_id, None)
             if wire is None:
                 if call_id in self._running:

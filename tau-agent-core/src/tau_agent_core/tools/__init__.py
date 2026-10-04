@@ -21,6 +21,8 @@ from tau_agent_core.tools.base import (
     ExtensionToolDefinition,
     ToolBatchResult,
     ToolDefinition,
+    ToolError,
+    ToolHalt,
 )
 from tau_agent_core.tools.read import ReadTool
 from tau_agent_core.tools.write import WriteTool
@@ -70,6 +72,8 @@ __all__ = [
     "ExtensionToolDefinition",
     "ToolBatchResult",
     "ToolDefinition",
+    "ToolError",
+    "ToolHalt",
     # Tool classes
     "ReadTool",
     "WriteTool",

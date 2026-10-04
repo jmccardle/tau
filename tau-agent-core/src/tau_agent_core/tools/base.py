@@ -44,6 +44,33 @@ class _WalkAborted(Exception):
 
 
 @agent_facing(topic="tools")
+class ToolError(Exception):
+    """Raise from a tool to report a failure the model should read.
+
+    The message becomes the tool result's text, marked as an error, and the
+    turn goes on. Any other exception is treated as a bug: the model reads
+    :data:`INTERNAL_TOOL_ERROR` and only the user sees the exception
+    (docs/TURN-FAILURES.md §3).
+    """
+
+
+@agent_facing(topic="tools")
+class ToolHalt(ToolError):
+    """Raise from a tool to stop the turn and tell the user why.
+
+    The message becomes the tool result's text, marked as an error. The loop ends
+    once the calls in the same batch have finished, with ``end_reason`` set to
+    ``"terminate"``.
+    """
+
+
+INTERNAL_TOOL_ERROR = (
+    "The tool failed with an internal error. The user can see the details; they are not shown here."
+)
+"""What the model reads when a tool raises something other than a :class:`ToolError`."""
+
+
+@agent_facing(topic="tools")
 class ToolDefinition(LlmToolDefinition):
     """The runtime tool definition: :class:`tau_llm.tools.ToolDefinition` plus
     name-based identity.
@@ -234,6 +261,31 @@ class AgentToolResult(BaseModel):
             content=[{"type": "text", "text": error_message}],
             is_error=True,
             error_message=error_message,
+        )
+
+    @classmethod
+    def from_exception(
+        cls, tool_name: str, exc: BaseException, tool_call_id: str | None = None
+    ) -> "AgentToolResult":
+        """The result for a call that raised ``exc`` (docs/TURN-FAILURES.md §3).
+
+        A :class:`ToolError` message goes to the model, and a :class:`ToolHalt`
+        also sets ``terminate``. Any other exception gives the model
+        :data:`INTERNAL_TOOL_ERROR` and puts ``"Type: message"`` in
+        ``details["exception"]``, which heads show and the model never reads.
+        """
+        if isinstance(exc, ToolError):
+            result = cls.from_error(tool_name, str(exc), tool_call_id)
+            result.terminate = isinstance(exc, ToolHalt)
+            return result
+        detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        return cls(
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            content=[{"type": "text", "text": INTERNAL_TOOL_ERROR}],
+            details={"exception": detail},
+            is_error=True,
+            error_message=detail,
         )
 
 

@@ -207,17 +207,27 @@ stay a generic errored result rather than the "⛔ blocked by <ext>" render.
 <!-- agent: yes -->
 
 ```python
-class ErrorCall(call: PreparedToolCall, error: str)
+class ErrorCall(call: PreparedToolCall, exception: Exception)
 ```
 
 `tau_agent_core.agent_loop.ErrorCall`
 
-A tool call that raised an error during preparation.
+A tool call whose preparation raised ``exception``.
 
 **Constructor parameters**
 
 - `call: PreparedToolCall` — *(no description)*
-- `error: str` — *(no description)*
+- `exception: Exception` — *(no description)*
+
+### result
+
+```python
+result() -> AgentToolResult
+```
+
+`tau_agent_core.agent_loop.ErrorCall.result`
+
+The call's result, by :meth:`AgentToolResult.from_exception`.
 
 ## FinalizedToolCall
 <!-- agent: yes -->

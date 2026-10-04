@@ -17,9 +17,9 @@ transport.
 
 > **Amended 2026-10-03.** This is still the design of record for `tau --mode rpc`, and RPC is not legacy: it is the stdio head for a process that wants one exclusive agent (`docs/TAU-SERVE.md` §7.4). It is not the multiplexer. Several heads on one session, sessions that outlive their head, sockets, and a reverse channel were built in 0.12.0 as a second protocol, `tau serve` (`docs/TAU-SERVE.md` §5–§6; reference `docs/SERVE-PROTOCOL.md`), which runs RPC's verbs through RPC's own handlers rather than extending this wire. tau-code's hub, which relayed one RPC child to several clients, is deleted (§7.3 there). So §1's three deferrals still hold for RPC. The notes in §1, §7.1 and §7.3 say where each was met instead. Since RPC 2.0 the session tuple's entry id is `leaf`, not `cursor` (`TAU-SERVE.md` §7.4), and RPC is at 2.1. The verb and test counts in the status above are as of 2026-08-07: the current counts are the "Counts" line of the generated `docs/RPC-PROTOCOL.md`.
 
-**Relationship to existing docs.** `RPC-PROTOCOL.md` documents the protocol
-`rpc.py` speaks *today* — six methods, JSON-RPC 2.0, and no way to reach it from
-the CLI. This document states what that surface must become to be a product, and
+**Relationship to existing docs.** When this was written (2026-08),
+`RPC-PROTOCOL.md` documented six methods, JSON-RPC 2.0, and no way to reach it
+from the CLI. It is now generated, and `tau --mode rpc` reaches it. This document states what that surface must become to be a product, and
 supersedes `RPC-PROTOCOL.md` as the design of record; that file becomes the
 generated reference once §6 lands. `docs/PI-RPC-REPLACEMENT.md` is the
 complementary half: what one consumer (tectum) needs. This is what τ should

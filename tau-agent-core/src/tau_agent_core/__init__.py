@@ -44,6 +44,8 @@ from tau_agent_core.tools.base import (
     AgentTool,
     AgentToolResult,
     ToolBatchResult,
+    ToolError,
+    ToolHalt,
 )
 from tau_agent_core.agent_session import AgentSession, ExtensionCommandResult
 from tau_agent_core.conversation_tree import ConversationTree, TreeNode
@@ -133,6 +135,8 @@ __all__ = [
     "AgentTool",
     "AgentToolResult",
     "ToolBatchResult",
+    "ToolError",
+    "ToolHalt",
     # Compaction
     "CompactionSettings",
     "CompactionResult",

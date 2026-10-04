@@ -557,8 +557,9 @@ to it. A session with no client attached keeps running its turns.
 An extension UI request (a confirm, a select) is sent to every attached client,
 and the first answer wins. With no client attached, the request gets its
 declared default when it is made. That is `HEADS-AND-MULTIPLEXER.md` §5.3's
-recommendation, re-evaluating `allow_user_input` at the moment of the ask, and it
-is the one core change this section needs.
+recommendation, re-evaluating `allow_user_input` at the moment of the ask.
+**Built note (2026-10-03):** it shipped in the daemon, as `ServeUI` filling in
+each field's declared default, and needed no core change.
 
 ## 7. The clients
 

@@ -102,14 +102,30 @@ class BlockedCall:
 
 @agent_facing(topic="agent-loop")
 class ErrorCall:
-    """A tool call that raised an error during preparation."""
+    """A tool call whose preparation raised ``exception``."""
 
-    def __init__(self, call: PreparedToolCall, error: str) -> None:
+    def __init__(self, call: PreparedToolCall, exception: Exception) -> None:
         self.call = call
-        self.error = error
+        self.exception = exception
+
+    def result(self) -> AgentToolResult:
+        """The call's result, by :meth:`AgentToolResult.from_exception`."""
+        return AgentToolResult.from_exception(self.call.name, self.exception, self.call.id)
 
 
 ABORTED_TOOL_RESULT = "Operation aborted"
+
+UNRUN_TOOL_RESULT = "Not run: the response stream failed before the turn could run its tools"
+
+
+STREAM_RECORDED_ATTR = "tau_stream_recorded"
+"""Set on the exception a failed stream raises: the messages written for it.
+
+Empty when nothing streamed, and otherwise the partial assistant message plus an
+error result for each of its tool calls (docs/TURN-FAILURES.md §2). The exception
+keeps its own type, so a caller catching it specifically keeps working.
+"""
+
 
 COMPLETED_MESSAGES_ATTR = "tau_completed_messages"
 
@@ -366,6 +382,7 @@ class AgentLoop:
                 end_reason = "max_turns"
 
         except BaseException as exc:
+            final_messages.extend(getattr(exc, STREAM_RECORDED_ATTR, []))
             setattr(exc, COMPLETED_MESSAGES_ATTR, list(final_messages))
             await self._emit_agent_end(final_messages, exc)
             raise
@@ -538,6 +555,7 @@ class AgentLoop:
                 end_reason = "max_turns"
 
         except BaseException as exc:
+            final_messages.extend(getattr(exc, STREAM_RECORDED_ATTR, []))
             setattr(exc, COMPLETED_MESSAGES_ATTR, list(final_messages))
             await self._emit_agent_end(final_messages, exc)
             raise
@@ -841,6 +859,7 @@ class AgentLoop:
         partial_content_blocks: list[dict[str, Any]] = []
         started = False
         handle: Any = None
+        latest: AssistantMessage | None = None
 
         async def start_once(content: list[Any]) -> None:
             """Emit ``message_start`` for this completion, at most once.
@@ -873,106 +892,147 @@ class AgentLoop:
                 )
             )
 
-        async for event in stream:
-            if isinstance(event, TextDeltaEvent):
-                partial_text += event.delta
-                partial_content_blocks = [{"type": "text", "text": partial_text}]
-                await start_once(partial_content_blocks)
-                await self._emit(
-                    AgentEvent(
-                        type="message_update",
-                        timestamp=int(time.time() * 1000),
-                        message={
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": partial_text}],
-                        },
+        try:
+            async for event in stream:
+                if isinstance(event, TextDeltaEvent):
+                    latest = event.partial
+                    partial_text += event.delta
+                    partial_content_blocks = [{"type": "text", "text": partial_text}]
+                    await start_once(partial_content_blocks)
+                    await self._emit(
+                        AgentEvent(
+                            type="message_update",
+                            timestamp=int(time.time() * 1000),
+                            message={
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": partial_text}],
+                            },
+                        )
                     )
-                )
-            elif isinstance(event, ThinkingDeltaEvent):
-                partial_reasoning += event.delta
-                thinking_blocks = [{"type": "thinking", "thinking": partial_reasoning}]
-                await start_once(thinking_blocks)
-                await self._emit(
-                    AgentEvent(
-                        type="message_update",
-                        timestamp=int(time.time() * 1000),
-                        message={
-                            "role": "assistant",
-                            "content": thinking_blocks,
-                        },
+                elif isinstance(event, ThinkingDeltaEvent):
+                    latest = event.partial
+                    partial_reasoning += event.delta
+                    thinking_blocks = [{"type": "thinking", "thinking": partial_reasoning}]
+                    await start_once(thinking_blocks)
+                    await self._emit(
+                        AgentEvent(
+                            type="message_update",
+                            timestamp=int(time.time() * 1000),
+                            message={
+                                "role": "assistant",
+                                "content": thinking_blocks,
+                            },
+                        )
                     )
-                )
-            elif isinstance(event, ToolCallDeltaEvent):
-                partial = event.partial
-                if partial is not None:
-                    partial_content_blocks = [c.model_dump() for c in partial.content]
+                elif isinstance(event, ToolCallDeltaEvent):
+                    latest = event.partial
+                    partial = event.partial
+                    if partial is not None:
+                        partial_content_blocks = [c.model_dump() for c in partial.content]
 
-                await start_once(partial_content_blocks)
-                await self._emit(
-                    AgentEvent(
-                        type="message_update",
-                        timestamp=int(time.time() * 1000),
-                        message={
-                            "role": "assistant",
-                            "content": partial_content_blocks,
-                        },
+                    await start_once(partial_content_blocks)
+                    await self._emit(
+                        AgentEvent(
+                            type="message_update",
+                            timestamp=int(time.time() * 1000),
+                            message={
+                                "role": "assistant",
+                                "content": partial_content_blocks,
+                            },
+                        )
                     )
-                )
-            elif isinstance(event, DoneEvent):
-                final_msg = event.final
-                final_blocks = [
-                    c.model_dump() if hasattr(c, "model_dump") else c for c in final_msg.content
-                ]
-                await start_once(final_blocks)
-                if self._writer is not None:
-                    await self._writer.finalize(handle, final_msg)
-                await self._emit(
-                    AgentEvent(
-                        type="message_end",
-                        timestamp=int(time.time() * 1000),
-                        message={
-                            "role": "assistant",
-                            "content": final_blocks,
-                            "usage": final_msg.usage.model_dump(),
-                            "model": final_msg.model,
-                            "stop_reason": final_msg.stop_reason,
-                        },
+                elif isinstance(event, DoneEvent):
+                    final_msg = event.final
+                    final_blocks = [
+                        c.model_dump() if hasattr(c, "model_dump") else c for c in final_msg.content
+                    ]
+                    await start_once(final_blocks)
+                    if self._writer is not None:
+                        await self._writer.finalize(handle, final_msg)
+                    await self._emit(
+                        AgentEvent(
+                            type="message_end",
+                            timestamp=int(time.time() * 1000),
+                            message={
+                                "role": "assistant",
+                                "content": final_blocks,
+                                "usage": final_msg.usage.model_dump(),
+                                "model": final_msg.model,
+                                "stop_reason": final_msg.stop_reason,
+                            },
+                        )
                     )
-                )
-                return final_msg
-            elif isinstance(event, ErrorEvent):
-                detail = (event.message or "").strip()
-                if not detail:
-                    model_label = getattr(model, "id", model)
-                    detail = (
-                        f"provider emitted an error event with an empty message "
-                        f"(model {model_label!r}); the upstream failure is unreported"
-                    )
-                error_msg = {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": f"Error: {detail}"}],
-                }
-                await self._emit(
-                    AgentEvent(
-                        type="message_start",
-                        timestamp=int(time.time() * 1000),
-                        message=error_msg,
-                    )
-                )
-                await self._emit(
-                    AgentEvent(
-                        type="message_end",
-                        timestamp=int(time.time() * 1000),
-                        message=error_msg,
-                    )
-                )
-                raise RuntimeError(detail)
+                    return final_msg
+                elif isinstance(event, ErrorEvent):
+                    detail = (event.message or "").strip()
+                    if not detail:
+                        model_label = getattr(model, "id", model)
+                        detail = (
+                            f"provider emitted an error event with an empty message "
+                            f"(model {model_label!r}); the upstream failure is unreported"
+                        )
+                    failure = RuntimeError(detail)
+                    await self._stream_failed(failure, handle, latest, detail)
+                    raise failure
+        except Exception as exc:
+            if not hasattr(exc, STREAM_RECORDED_ATTR):
+                detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+                await self._stream_failed(exc, handle, latest, detail)
+            raise
 
-        raise RuntimeError(
+        detail = (
             f"the stream for model {getattr(model, 'id', model)!r} ended without a "
-            "DoneEvent; the message is incomplete and its ending is not made up "
-            "(docs/TAU-SERVE.md §4.4)"
+            "DoneEvent, so the message is cut short where the stream stopped"
         )
+        failure = RuntimeError(detail)
+        await self._stream_failed(failure, handle, latest, detail)
+        raise failure
+
+    async def _stream_failed(
+        self, failure: Exception, handle: Any, partial: AssistantMessage | None, detail: str
+    ) -> None:
+        """Record what a failed stream produced, onto ``failure``'s ``STREAM_RECORDED_ATTR``.
+
+        Nothing streamed means nothing to record. Otherwise the opened entry is
+        finalized as the provider's last partial message with ``stop_reason``
+        ``"error"``, and each tool call in it gets an error result, because a call
+        with no result makes the next request invalid (docs/TURN-FAILURES.md §2).
+        """
+        setattr(failure, STREAM_RECORDED_ATTR, [])
+        if handle is None and partial is None:
+            return
+        if partial is None:
+            raise RuntimeError(f"a message entry was opened with no partial message: {detail}")
+        message = partial.model_copy(
+            update={
+                "stop_reason": "error",
+                "error_message": detail,
+                "timestamp": int(time.time() * 1000),
+            }
+        )
+        if self._writer is not None:
+            await self._writer.finalize(handle, message)
+        blocks = [c.model_dump() if hasattr(c, "model_dump") else c for c in message.content]
+        await self._emit(
+            AgentEvent(
+                type="message_end",
+                timestamp=int(time.time() * 1000),
+                message={
+                    "role": "assistant",
+                    "content": blocks,
+                    "usage": message.usage.model_dump(),
+                    "model": message.model,
+                    "stop_reason": "error",
+                    "error_message": detail,
+                },
+            )
+        )
+        recorded: list[Any] = [message]
+        tool_calls = message.get_tool_calls()
+        if tool_calls:
+            batch = await self._aborted_batch(tool_calls, prior=[], text=UNRUN_TOOL_RESULT)
+            recorded.extend(batch.messages)
+        setattr(failure, STREAM_RECORDED_ATTR, recorded)
 
     async def _execute_tool_calls(
         self,
@@ -1037,8 +1097,9 @@ class AgentLoop:
         self,
         tool_calls: list[ToolCall],
         prior: list[AgentToolResult],
+        text: str = ABORTED_TOOL_RESULT,
     ) -> ToolBatchResult:
-        """Answer every tool call the abort left outstanding (docs/PLAN-0.9.4.md §3).
+        """Answer every outstanding tool call with an error ``text`` (docs/PLAN-0.9.4.md §3).
 
         The defect this replaces: the sequential executor simply ``break``\\ed on
         abort and synthesized nothing. That was invisible while an aborted turn
@@ -1079,11 +1140,11 @@ class AgentLoop:
                     timestamp=int(time.time() * 1000),
                     tool_call_id=tc.id,
                     tool_name=tc.name,
-                    result=ABORTED_TOOL_RESULT,
+                    result=text,
                     is_error=True,
                 )
             )
-            aborted = AgentToolResult.from_error(tc.name, ABORTED_TOOL_RESULT, tc.id)
+            aborted = AgentToolResult.from_error(tc.name, text, tc.id)
             await self._record(aborted)
             results.append(aborted)
         return self._build_batch_result(results)
@@ -1162,20 +1223,17 @@ class AgentLoop:
                 all_results.append(blocked)
                 continue
             elif isinstance(prepared, ErrorCall):
+                errored = prepared.result()
                 await self._emit(
                     AgentEvent(
                         type="tool_execution_end",
                         timestamp=int(time.time() * 1000),
-                        tool_call_id=prepared.call.id,
-                        tool_name=prepared.call.name,
-                        result=prepared.error,
+                        tool_call_id=errored.tool_call_id,
+                        tool_name=errored.tool_name,
+                        result=errored.content,
+                        details=errored.details,
                         is_error=True,
                     )
-                )
-                errored = AgentToolResult.from_error(
-                    prepared.call.name,
-                    prepared.error,
-                    prepared.call.id,
                 )
                 await self._record(errored)
                 all_results.append(errored)
@@ -1249,16 +1307,16 @@ class AgentLoop:
                     flushed += 1
 
         def _raised(pc: Any, exc: BaseException) -> AgentToolResult:
-            return AgentToolResult(
-                tool_name=pc.name if isinstance(pc, PreparedToolCall) else pc.call.name,
-                tool_call_id=pc.id if isinstance(pc, PreparedToolCall) else pc.call.id,
-                content=[{"type": "text", "text": str(exc)}],
-                is_error=True,
-                error_message=str(exc),
+            return AgentToolResult.from_exception(
+                pc.name if isinstance(pc, PreparedToolCall) else pc.call.name,
+                exc,
+                pc.id if isinstance(pc, PreparedToolCall) else pc.call.id,
             )
 
         async def _run_tool(index: int, pc: Any) -> AgentToolResult:
-            if isinstance(pc, (BlockedCall, ErrorCall)):
+            if isinstance(pc, ErrorCall):
+                result = pc.result()
+            elif isinstance(pc, BlockedCall):
                 result = AgentToolResult.from_error(pc.call.name, pc.error, pc.call.id)
             else:
                 try:
@@ -1289,7 +1347,8 @@ class AgentLoop:
                         timestamp=int(time.time() * 1000),
                         tool_call_id=error_result.tool_call_id,
                         tool_name=error_result.tool_name,
-                        result=str(res),
+                        result=error_result.content,
+                        details=error_result.details,
                         is_error=True,
                     )
                 )
@@ -1436,7 +1495,7 @@ class AgentLoop:
                     name=tool_call.name,
                     arguments={},
                 ),
-                error=str(e),
+                exception=e,
             )
 
     async def _execute_tool(self, call: PreparedToolCall) -> AgentToolResult:
@@ -1499,7 +1558,7 @@ class AgentLoop:
                     is_error=False,
                 )
         except Exception as e:
-            return AgentToolResult.from_error(call.name, str(e), call.id)
+            return AgentToolResult.from_exception(call.name, e, call.id)
 
     async def _apply_after_hooks(
         self,

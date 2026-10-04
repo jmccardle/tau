@@ -31,6 +31,7 @@ from tau_agent_core.messages import CUSTOM_ROLE
 from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.rpc.wire_events import project_event
 from tau_agent_core.flows import Performed
+from tau_agent_core.projections import tool_result_for_user
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.prompt_cache import (
     CONVERSATION_PREFIX,
@@ -182,7 +183,9 @@ class EventDetail:
         return cls(
             message=event.message if event.type in ("message_start", "message_end") else None,
             args=event.args,
-            result=result_text(event.result) if event.type == "tool_execution_end" else None,
+            result=tool_result_for_user(result_text(event.result), event.details)
+            if event.type == "tool_execution_end"
+            else None,
             model=(event.message or {}).get("model")
             if event.type == "side_completion_start"
             else None,
@@ -807,9 +810,9 @@ def replay_render_events(
             yield {
                 "kind": "tool_result",
                 "stream": stream,
-                "id": message.get("toolCallId", ""),
+                "id": message.get("tool_call_id", ""),
                 "name": message.get("tool_name", ""),
-                "result": _replay_text(message),
+                "result": tool_result_for_user(_replay_text(message), message.get("details")),
                 "is_error": bool(message.get("is_error", False)),
                 "blocked": bool(message.get("blocked", False)),
                 "blocked_by": message.get("blocked_by"),
