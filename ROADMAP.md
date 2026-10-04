@@ -553,6 +553,19 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   `get_models` row is running (`get_models`' own notes call this known gap 1).
   `AgentSession.model_name` holds the config name and serve's `CursorState.model`
   carries it; `get_state` could add it as `model_name`.
+- **`tau serve` as an MCP server** (idea, 2026-10-03, after 0.12; not
+  scheduled). Once serve speaks JSON-RPC 2.0 (protocol 0.8), the remaining gap
+  to a valid MCP server is two additions, not a reshape: MCP's Streamable HTTP
+  transport (POST plus SSE) beside the WebSocket, and MCP's methods beside serve's
+  own (`initialize`/`notifications/initialized`, `tools/list` and `tools/call` to
+  run a turn, `resources/*` for sessions, `notifications/progress` for streaming,
+  `elicitation/create` for extension forms, which are already JSON-schema forms).
+  The names do not collide, checked 2026-10-03: every serve request and RPC verb
+  is snake_case with no `/`, and none is `initialize` or `ping`. The payoff is that
+  any system that accepts an MCP server can drive τ with no τ-specific client.
+  What MCP cannot carry (cursors, the tree, fork, compare, the entry stream) stays
+  on serve's own methods. This reverses `docs/TAU-SERVE.md` §11 "MCP: not a
+  priority" only for after 0.12.
 - **A turn that fails by raising leaves no entry** (found 2026-10-03, by
   tau-code) — **built 2026-10-03** (`docs/TURN-FAILURES.md`). A failed stream is
   finalized with `stop_reason: "error"` and stays in model input; every raised
