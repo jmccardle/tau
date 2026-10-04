@@ -510,7 +510,7 @@ class TestLocalSummarizerPolicy:
 
     def test_without_a_policy_the_summariser_is_the_session_model(self):
         session = _session()
-        model, key = session._summarizer()
+        model, key = session.summarizer()
         assert model is session._model
         assert key == "session-key"
 
@@ -519,7 +519,7 @@ class TestLocalSummarizerPolicy:
         session = _session()
         session.set_model_resolver(lambda name: other)
         session.set_model("other")
-        assert session._summarizer()[0] is other
+        assert session.summarizer()[0] is other
 
 
 class TestShippedCompactionBehaviourIsUnchanged:

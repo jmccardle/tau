@@ -201,6 +201,14 @@ NOT_EXPOSED: dict[str, str] = {
         "Serve's CursorState.model reads it. RPC's get_state does not carry it "
         "yet, so a stdio host cannot mark the active get_models row (ROADMAP)."
     ),
+    "resolve_model": (
+        "Returns an API key, which never goes on a wire; set_model is the verb "
+        "that uses it."
+    ),
+    "summarizer": (
+        "Returns the summary model's API key, which never goes on a wire; "
+        "compact and navigate are the verbs that use it."
+    ),
     "acting_cursor": (
         "The cursor a call acts on: the head over stdio, the named cursor under "
         "tau serve. A host addresses it by `cursor_id`, never reads the object."

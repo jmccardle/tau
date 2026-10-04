@@ -1169,6 +1169,17 @@ class ConfigModelResolver:
             raise KeyError(f"unknown model {name!r}; configured models: {known}")
         return build_model_from_config({**entry, "config_name": name})
 
+    def api_key(self, name: str) -> str | None:
+        """The ``api_key`` config gives ``name``; ``None`` leaves it to the provider's env var.
+
+        Raises:
+            KeyError: ``name`` is not a configured model.
+        """
+        if name not in self._models:
+            raise KeyError(f"unknown model {name!r}")
+        key = self._models[name].get("api_key")
+        return None if key is None else str(key)
+
 
 def make_model_resolver(models: dict[str, Any]) -> ConfigModelResolver:
     """The ``name -> Model`` resolver a frontend binds onto a live ``AgentSession``
@@ -1387,8 +1398,6 @@ class TauBackend(Backend):
         reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
 
         model = build_model_from_config(config)
-        self._model = model
-        self._api_key = api_key
 
         cwd = config.get("cwd")
         tool_names = resolve_tool_names(config)
@@ -1828,14 +1837,15 @@ class TauBackend(Backend):
         cursor = self.agent_session.acting_cursor
         if target_id == cursor.leaf or not summarize:
             return tree_ops.navigate(cursor, target_id)
+        model, api_key = self.agent_session.summarizer()
         async with self.agent_session.watch_side_completion(
-            "branch_summary", "navigate", self._model.id
+            "branch_summary", "navigate", model.id
         ) as watch:
             messages, summary_usage = await tree_ops.summarize_and_navigate(
                 cursor,
                 target_id,
-                self._model,
-                api_key=self._api_key,
+                model,
+                api_key=api_key,
                 custom_instructions=custom_instructions,
                 on_text_delta=watch.delta,
             )

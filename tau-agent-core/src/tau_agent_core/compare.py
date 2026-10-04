@@ -163,17 +163,16 @@ async def start_comparison(
         raise ValueError("compare needs at least one model")
     if not text.strip():
         raise ValueError("compare needs a prompt to send")
-    resolver = session.model_resolver
-    if resolver is None:
+    if session.model_resolver is None:
         raise ValueError("compare needs a model resolver bound to the session")
-    resolved = [resolver(name) for name in models]
+    resolved = [session.resolve_model(name) for name in models]
     tools = tuple(tool.name for tool in session.tools)
     comparison_id = uuid.uuid4().hex[:8]
     head = session.cursor
     cursors: list[Cursor] = []
-    for name, model in zip(models, resolved):
+    for name, (model, api_key) in zip(models, resolved):
         cursor = await session.open_cursor(leaf, owner=head, label=name)
-        cursor.frame = TurnFrame(tools=tools, model=model, hooks=True)
+        cursor.frame = TurnFrame(tools=tools, model=model, api_key=api_key, hooks=True)
         cursors.append(cursor)
     turns = []
     for index, cursor in enumerate(cursors):

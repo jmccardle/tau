@@ -1010,6 +1010,30 @@ reports it — no guessing, Fail-Early).
 
 - `token: str` — *(no description)*
 
+### resolve_model
+
+```python
+resolve_model(name: str) -> tuple[Model, str | None]
+```
+
+`tau_agent_core.agent_session.AgentSession.resolve_model`
+
+The model a config NAME resolves to, and the key it is called with.
+
+The key is the resolver's ``api_key(name)`` when it has one, as
+``ConfigModelResolver`` does, so a model brings its own key. A resolver
+that is only a ``name -> Model`` callable knows no keys, and its models
+run with the session's key.
+
+**Parameters**
+
+- `name: str` — *(no description)*
+
+**Raises**
+
+- `RuntimeError` — no resolver is bound.
+- `TypeError` — the resolver returned something other than a ``Model``.
+
 ### route_session_event
 
 ```python
@@ -1209,14 +1233,9 @@ stored on ``self._model``; because every turn rebuilds its ``AgentLoop`` with
 ``model=self._model`` (see :meth:`_run_one_turn`), the switch takes effect on
 the next completion — never mid-stream.
 
-Scope boundary (documented, not a silent fallback): this switches the
-``Model`` (id / provider / base_url / context_window) only. The session's API
-key (``self._api_key``) is unchanged, so a switch between models that share a
-provider/key — the preset and router cases this unblocks — is correct; a
-cross-provider switch to a model needing a *different* key will surface a
-loud provider auth error, not silently wrong output. It is a RUNTIME switch:
-it is not written back to the session header, so a reload resumes on the
-session's originally stored model.
+The key switches with the model, by :meth:`resolve_model`. It is a RUNTIME
+switch: it is not written back to the session header, so a reload resumes
+on the session's originally stored model.
 
 Whatever the resolver raises for an unknown ``name`` (e.g. ``KeyError`` or
 ``ValueError``) propagates unchanged — never swallowed.
@@ -1789,6 +1808,22 @@ on its public surface, and it spends tokens that something has to bank.
 **Raises**
 
 - `ValueError` — The summarizer returned nothing usable. Raised by ``session_manager.summarize_branch``, never fabricated into an empty summary here.
+
+### summarizer
+
+```python
+summarizer() -> tuple[Model, str | None]
+```
+
+`tau_agent_core.agent_session.AgentSession.summarizer`
+
+The model and key a compaction or a branch summary runs on (H5 / §16.8).
+
+Read live rather than cached at construction, so it tracks
+:meth:`set_model` exactly as the shipped behaviour does. With no declared
+policy — the default — this is ``(self._model, self._api_key)``, i.e. what
+``_perform_compaction`` already did; only a ``local_summarizer`` policy
+answers differently, and it answers with a model and key it declared.
 
 ### turn_lock
 
@@ -4472,7 +4507,7 @@ A node in the browsable session tree (pi ``SessionTreeNode``).
 <!-- agent: yes -->
 
 ```python
-class TurnFrame(tools: tuple[str, ...], model: Any = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = False)
+class TurnFrame(tools: tuple[str, ...], model: Any = None, api_key: str | None = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = False)
 ```
 
 `tau_agent_core.cursor.TurnFrame`
@@ -4487,6 +4522,7 @@ config the first time the cursor's turn appends.
 
 - `tools: tuple[str, ...]` — Names the turn may call, a subset of the session's; required, so a sub-agent never inherits ``write`` and ``bash`` by accident. ``()`` is none.
 - `model: Any = None` — The model to run, or ``None`` for the session's.
+- `api_key: str | None = None` — ``model``'s key, ``None`` for the provider's environment variable. Ignored when ``model`` is ``None``. Never recorded.
 - `system_prompt: str | None = None` — The prompt to run under, or ``None`` for the session's.
 - `max_turns: int | None = None` — The loop's turn ceiling for this cursor; ``None`` is no ceiling.
 - `hooks: bool = False` — Whether extension hooks run on this cursor's turns. Off by default: a sub-agent stays as constrained as its spawner asked.

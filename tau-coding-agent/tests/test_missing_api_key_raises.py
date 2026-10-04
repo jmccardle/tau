@@ -28,20 +28,20 @@ def _backend(config: dict) -> TauBackend:
 
 def test_an_absent_api_key_is_not_replaced_by_a_sentinel():
     backend = _backend({"backend": "openai"})
-    assert not backend._api_key, (
-        f"a missing api_key became {backend._api_key!r} — the provider's "
+    assert not backend.agent_session.summarizer()[1], (
+        f"a missing api_key became {backend.agent_session.summarizer()[1]!r} — the provider's "
         f"'No API key for provider' gate can never fire against a truthy value"
     )
 
 
 def test_an_explicit_local_sentinel_survives():
     backend = _backend({"backend": "openai", "api_key": "not-needed"})
-    assert backend._api_key == "not-needed"
+    assert backend.agent_session.summarizer()[1] == "not-needed"
 
 
 def test_a_real_key_survives():
     backend = _backend({"backend": "openai", "api_key": "sk-real"})
-    assert backend._api_key == "sk-real"
+    assert backend.agent_session.summarizer()[1] == "sk-real"
 
 
 @pytest.mark.asyncio

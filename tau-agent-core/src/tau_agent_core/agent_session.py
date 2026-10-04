@@ -1109,14 +1109,9 @@ class AgentSession:
         ``model=self._model`` (see :meth:`_run_one_turn`), the switch takes effect on
         the next completion — never mid-stream.
 
-        Scope boundary (documented, not a silent fallback): this switches the
-        ``Model`` (id / provider / base_url / context_window) only. The session's API
-        key (``self._api_key``) is unchanged, so a switch between models that share a
-        provider/key — the preset and router cases this unblocks — is correct; a
-        cross-provider switch to a model needing a *different* key will surface a
-        loud provider auth error, not silently wrong output. It is a RUNTIME switch:
-        it is not written back to the session header, so a reload resumes on the
-        session's originally stored model.
+        The key switches with the model, by :meth:`resolve_model`. It is a RUNTIME
+        switch: it is not written back to the session header, so a reload resumes
+        on the session's originally stored model.
 
         Returns:
             The new :meth:`get_model` projection.
@@ -1134,24 +1129,43 @@ class AgentSession:
                 "The frontend must call set_model_resolver(...) (a closure over the "
                 "config 'models' map) before an extension can switch models by name."
             )
-        model = self._model_resolver(name)
-        if not isinstance(model, Model):
-            raise TypeError(
-                f"set_model({name!r}): resolver returned {type(model).__name__}, "
-                "expected a tau_llm.types.Model"
-            )
+        model, api_key = self.resolve_model(name)
         cursor = self.acting_cursor
         if cursor is not self._cursor:
             frame = cursor.frame or TurnFrame(tools=tuple(t.name for t in self._tools), hooks=True)
-            cursor.frame = replace(frame, model=model)
+            cursor.frame = replace(frame, model=model, api_key=api_key)
             return self.get_model()
         if self._compaction_policy is not None:
             self._compaction_policy.bind_to(model)
         self._model = model
+        self._api_key = api_key
         return self.get_model()
 
-    def _summarizer(self) -> tuple[Model, str | None]:
-        """The model and key a compaction summarises through (H5 / §16.8).
+    def resolve_model(self, name: str) -> tuple[Model, str | None]:
+        """The model a config NAME resolves to, and the key it is called with.
+
+        The key is the resolver's ``api_key(name)`` when it has one, as
+        ``ConfigModelResolver`` does, so a model brings its own key. A resolver
+        that is only a ``name -> Model`` callable knows no keys, and its models
+        run with the session's key.
+
+        Raises:
+            RuntimeError: no resolver is bound.
+            TypeError: the resolver returned something other than a ``Model``.
+        """
+        if self._model_resolver is None:
+            raise RuntimeError(f"resolve_model({name!r}): no model resolver is bound")
+        model = self._model_resolver(name)
+        if not isinstance(model, Model):
+            raise TypeError(
+                f"resolve_model({name!r}): resolver returned {type(model).__name__}, "
+                "expected a tau_llm.types.Model"
+            )
+        key_for = getattr(self._model_resolver, "api_key", None)
+        return model, (key_for(name) if callable(key_for) else self._api_key)
+
+    def summarizer(self) -> tuple[Model, str | None]:
+        """The model and key a compaction or a branch summary runs on (H5 / §16.8).
 
         Read live rather than cached at construction, so it tracks
         :meth:`set_model` exactly as the shipped behaviour does. With no declared
@@ -1333,7 +1347,7 @@ class AgentSession:
         """
         from tau_agent_core.tree_ops import summarize_and_navigate
 
-        model, api_key = self._summarizer()
+        model, api_key = self.summarizer()
         messages, usage = await summarize_and_navigate(
             self.acting_cursor,
             target_id,
@@ -1890,6 +1904,11 @@ class AgentSession:
         """The model the running turn calls: its cursor frame's, else the session's."""
         frame = self.acting_cursor.frame
         return self._model if frame is None or frame.model is None else frame.model
+
+    def _turn_api_key(self) -> str | None:
+        """The key :meth:`_turn_model` is called with: its frame's, else the session's."""
+        frame = self.acting_cursor.frame
+        return self._api_key if frame is None or frame.model is None else frame.api_key
 
     def _turn_system_prompt(self) -> str:
         """The prompt the running turn runs under: its cursor frame's, else the session's."""
@@ -2967,6 +2986,7 @@ class AgentSession:
         cursor.frame = TurnFrame(
             tools=tuple(tools),
             model=model,
+            api_key=self._api_key,
             system_prompt=system_prompt,
             max_turns=max_turns,
             hooks=hooks,
@@ -3346,7 +3366,7 @@ class AgentSession:
             system_prompt=self._turn_system_prompt(),
             system_prompt_override=system_prompt_override,
             temperature=model.temperature,
-            api_key=self._api_key,
+            api_key=self._turn_api_key(),
             reasoning=self._reasoning,
             tool_execution_mode=self._tool_execution_mode,
             **self._turn_cap(),
@@ -3509,7 +3529,7 @@ class AgentSession:
             config = AgentLoopConfig(
                 system_prompt=self._turn_system_prompt(),
                 temperature=model.temperature,
-                api_key=self._api_key,
+                api_key=self._turn_api_key(),
                 reasoning=self._reasoning,
                 tool_execution_mode=self._tool_execution_mode,
                 **self._turn_cap(),
@@ -3621,7 +3641,7 @@ class AgentSession:
             previous_summary=None,
             compacted_entry_ids=[str(i) for i in range(last_user_idx)],
         )
-        summarizer_model, summarizer_api_key = self._summarizer()
+        summarizer_model, summarizer_api_key = self.summarizer()
         result = await run_compaction(
             preparation,
             summarizer_model,
@@ -3665,7 +3685,7 @@ class AgentSession:
         if preparation is None:
             return None
 
-        summarizer_model, summarizer_api_key = self._summarizer()
+        summarizer_model, summarizer_api_key = self.summarizer()
         async with self.watch_side_completion("compaction", reason, summarizer_model.id) as watch:
             result = await run_compaction(
                 preparation,
