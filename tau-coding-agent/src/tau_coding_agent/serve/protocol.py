@@ -625,6 +625,23 @@ ERROR_CODES: dict[int, str] = {
 """Every ``error.code`` the daemon sends; the JSON-RPC and RPC codes keep their meaning."""
 
 
+def error_code_names() -> dict[int, str]:
+    """Each of :data:`ERROR_CODES` by its constant's name in ``tau_agent_core.rpc.dialect``.
+
+    Raises:
+        RuntimeError: a code with no constant, or with two.
+    """
+    names: dict[int, list[str]] = {}
+    for name, value in vars(dialect).items():
+        if name.isupper() and isinstance(value, int) and value in ERROR_CODES:
+            names.setdefault(value, []).append(name)
+    unnamed = sorted(set(ERROR_CODES) - set(names))
+    doubled = {code: found for code, found in names.items() if len(found) > 1}
+    if unnamed or doubled:
+        raise RuntimeError(f"dialect names: unnamed {unnamed}, doubled {doubled}")
+    return {code: found[0] for code, found in names.items()}
+
+
 @dataclass
 class Error:
     """Why a request failed. ``code`` is stable; ``message`` is for a human.
@@ -1230,7 +1247,9 @@ def json_schema() -> dict[str, Any]:
         results[verb] = result
         frames.append(_request_message(verb, {"$ref": f"#/$defs/{name}"}))
     s.of(Response)
-    s.defs["Error"]["properties"]["code"]["enum"] = sorted(ERROR_CODES)
+    code = s.defs["Error"]["properties"]["code"]
+    code["enum"] = sorted(ERROR_CODES)
+    code["x-names"] = {str(c): n for c, n in sorted(error_code_names().items())}
     base = s.record(Event)
     variants = {}
     for kind, data in EVENT_DATA.items():

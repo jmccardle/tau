@@ -791,3 +791,11 @@ async def test_json_rpc_edges_are_answered_with_their_standard_codes(daemon):
         assert answer["jsonrpc"] == "2.0"
         assert ("result" in answer) != ("error" in answer), "one of the two, never both"
         validate(answer, SCHEMA["ServerFrame"], SCHEMA, strict=True)
+
+
+def test_every_error_code_carries_its_dialect_name():
+    """A client generates its code constants from `x-names`, so none may be missing."""
+    code = SCHEMA["$defs"]["Error"]["properties"]["code"]
+    assert sorted(int(c) for c in code["x-names"]) == sorted(code["enum"])
+    for number, name in code["x-names"].items():
+        assert getattr(dialect, name) == int(number)

@@ -136,12 +136,16 @@ def render_markdown() -> str:
     w("")
     w("### Error codes")
     w("")
-    w("The table RPC uses (`tau_agent_core.rpc.dialect`); a code means the same on both wires.")
+    w(
+        "The table RPC uses (`tau_agent_core.rpc.dialect`); a code means the same on both "
+        "wires. The schema carries each code's name in the `code` property's `x-names`."
+    )
     w("")
-    w("| `code` | Meaning |")
-    w("|---|---|")
+    w("| `code` | Name | Meaning |")
+    w("|---|---|---|")
+    names = p.error_code_names()
     for code in sorted(p.ERROR_CODES, reverse=True):
-        w(f"| `{code}` | {p.ERROR_CODES[code]} |")
+        w(f"| `{code}` | `{names[code]}` | {p.ERROR_CODES[code]} |")
     w("")
     w("## Events")
     w("")

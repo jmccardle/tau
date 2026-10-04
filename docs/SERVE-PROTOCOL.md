@@ -461,22 +461,22 @@ The answer to a request that failed, matched by `id`.
 
 ### Error codes
 
-The table RPC uses (`tau_agent_core.rpc.dialect`); a code means the same on both wires.
+The table RPC uses (`tau_agent_core.rpc.dialect`); a code means the same on both wires. The schema carries each code's name in the `code` property's `x-names`.
 
-| `code` | Meaning |
-|---|---|
-| `-32000` | RPC's `SUBMISSION_REJECTED`: the submission was refused. |
-| `-32001` | RPC's `COMMAND_NOT_SUPPORTED`. |
-| `-32002` | Busy: a turn is running where the request acts. |
-| `-32004` | RPC's `SESSION_NOT_PERSISTED`. |
-| `-32005` | The hello's token is missing or wrong. |
-| `-32006` | The hello names another protocol version. |
-| `-32007` | No such session, cursor, entry, form or flow. |
-| `-32600` | Not a JSON-RPC 2.0 request with an `id`, or not `hello` first, or a batch. |
-| `-32601` | No such method, or one RPC declines. |
-| `-32602` | `params` do not fit the method, or name something the daemon refuses. |
-| `-32603` | The daemon failed while answering. |
-| `-32700` | The frame is not JSON. |
+| `code` | Name | Meaning |
+|---|---|---|
+| `-32000` | `SUBMISSION_REJECTED` | RPC's `SUBMISSION_REJECTED`: the submission was refused. |
+| `-32001` | `COMMAND_NOT_SUPPORTED` | RPC's `COMMAND_NOT_SUPPORTED`. |
+| `-32002` | `TURN_STILL_RUNNING` | Busy: a turn is running where the request acts. |
+| `-32004` | `SESSION_NOT_PERSISTED` | RPC's `SESSION_NOT_PERSISTED`. |
+| `-32005` | `UNAUTHORIZED` | The hello's token is missing or wrong. |
+| `-32006` | `PROTOCOL_MISMATCH` | The hello names another protocol version. |
+| `-32007` | `NOT_FOUND` | No such session, cursor, entry, form or flow. |
+| `-32600` | `INVALID_REQUEST` | Not a JSON-RPC 2.0 request with an `id`, or not `hello` first, or a batch. |
+| `-32601` | `METHOD_NOT_FOUND` | No such method, or one RPC declines. |
+| `-32602` | `INVALID_PARAMS` | `params` do not fit the method, or name something the daemon refuses. |
+| `-32603` | `INTERNAL_ERROR` | The daemon failed while answering. |
+| `-32700` | `PARSE_ERROR` | The frame is not JSON. |
 
 ## Events
 

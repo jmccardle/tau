@@ -16,7 +16,7 @@ from typing import Any
 
 __all__ = ["SchemaError", "open_nodes", "validate"]
 
-_ANNOTATIONS = {"description", "default", "title", "$schema", "x-result", "x-data"}
+_ANNOTATIONS = {"description", "default", "title", "$schema", "x-result", "x-data", "x-names"}
 _TYPES = {
     "object": lambda v: isinstance(v, dict),
     "array": lambda v: isinstance(v, list),

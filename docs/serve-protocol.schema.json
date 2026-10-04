@@ -2246,7 +2246,21 @@
             -32001,
             -32000
           ],
-          "type": "integer"
+          "type": "integer",
+          "x-names": {
+            "-32000": "SUBMISSION_REJECTED",
+            "-32001": "COMMAND_NOT_SUPPORTED",
+            "-32002": "TURN_STILL_RUNNING",
+            "-32004": "SESSION_NOT_PERSISTED",
+            "-32005": "UNAUTHORIZED",
+            "-32006": "PROTOCOL_MISMATCH",
+            "-32007": "NOT_FOUND",
+            "-32600": "INVALID_REQUEST",
+            "-32601": "METHOD_NOT_FOUND",
+            "-32602": "INVALID_PARAMS",
+            "-32603": "INTERNAL_ERROR",
+            "-32700": "PARSE_ERROR"
+          }
         },
         "data": {
           "anyOf": [
