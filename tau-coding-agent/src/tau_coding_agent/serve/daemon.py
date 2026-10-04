@@ -62,22 +62,11 @@ The daemon cannot move a client, so the client performs them: ``fork`` by
 class RequestError(Exception):
     """A request that fails with a protocol :class:`~tau_coding_agent.serve.protocol.Error`."""
 
-    def __init__(self, code: str, message: str, data: dict[str, Any] | None = None) -> None:
+    def __init__(self, code: int, message: str, data: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.data = data
 
-
-RPC_CODES: dict[int, str] = {
-    dialect.INVALID_PARAMS: "bad_request",
-    dialect.METHOD_NOT_FOUND: "not_found",
-    dialect.INTERNAL_ERROR: "failed",
-    rpc.SUBMISSION_REJECTED: "submission_rejected",
-    rpc.COMMAND_NOT_SUPPORTED: "command_not_supported",
-    rpc.TURN_STILL_RUNNING: "busy",
-    rpc.SESSION_NOT_PERSISTED: "session_not_persisted",
-}
-"""Each code an RPC handler raises, as the serve :class:`~protocol.Error` code that means it."""
 
 ANSWERED = object()
 """What a dispatch returns when it already pushed its own response, as an admitted ``submit`` does."""
@@ -275,7 +264,7 @@ class ServeUI:
         """Resolve a form; a second answer to the same form is refused."""
         future, _ = self._forms.get(request_id, (None, None))
         if future is None or future.done():
-            raise RequestError("not_found", f"no open form {request_id!r}")
+            raise RequestError(dialect.NOT_FOUND, f"no open form {request_id!r}")
         future.set_result(value)
 
     def notify(self, message: str, level: str = "info") -> None:
@@ -360,7 +349,7 @@ class SessionHost:
         for cursor in self.agent_session.cursors:
             if cursor.id == cursor_id:
                 return cast(Cursor, cursor)
-        raise RequestError("not_found", f"{self.tag} has no cursor {cursor_id!r}")
+        raise RequestError(dialect.NOT_FOUND, f"{self.tag} has no cursor {cursor_id!r}")
 
     def cursor_model(self, cursor: Cursor) -> str:
         """The config name of the model ``cursor``'s next turn calls, read with ``cursor`` acting."""
@@ -406,7 +395,7 @@ class SessionHost:
     def publish(self, kind: str, data: dict[str, Any]) -> None:
         """Number an event, keep it for replay, and push it to every attached client."""
         self.seq += 1
-        frame = p.to_wire(
+        frame = p.event_frame(
             p.Event(
                 session_id=self.session_id,
                 epoch=self.epoch,
@@ -438,7 +427,7 @@ class SessionHost:
         Synchronous on purpose: no event can be published between the snapshot
         (or replay) and the client joining, so it misses none and sees none twice.
         """
-        oldest = self.history[0]["seq"] if self.history else self.seq + 1
+        oldest = self.history[0]["params"]["seq"] if self.history else self.seq + 1
         replay = epoch == self.epoch and since is not None and since + 1 >= oldest
         attached = p.Attached(
             session_id=self.session_id,
@@ -488,7 +477,7 @@ class SessionHost:
     def replay(self, client: Client, since: int) -> None:
         """Queue every kept event after ``since`` for ``client``."""
         for frame in self.history:
-            if frame["seq"] > since and not client.push(frame):
+            if frame["params"]["seq"] > since and not client.push(frame):
                 self.daemon.drop(client)
                 return
 
@@ -657,19 +646,18 @@ class Daemon:
                 try:
                     frame = json.loads(raw)
                 except json.JSONDecodeError as exc:
-                    client.push(self._error(-1, "bad_request", f"not JSON: {exc}"))
+                    client.push(self._error(None, dialect.PARSE_ERROR, f"not JSON: {exc}"))
                     continue
                 try:
-                    request_id, request = p.parse_request(frame if isinstance(frame, dict) else {})
-                except ValueError as exc:
-                    rid = frame.get("id", -1) if isinstance(frame, dict) else -1
-                    client.push(
-                        self._error(rid if isinstance(rid, int) else -1, "bad_request", str(exc))
-                    )
+                    request_id, request = p.parse_request(frame)
+                except p.FrameError as exc:
+                    client.push(self._error(exc.request_id, exc.code, str(exc)))
                     continue
                 if client not in self.clients:
                     if not isinstance(request, p.Hello):
-                        client.push(self._error(request_id, "bad_request", "send hello first"))
+                        client.push(
+                            self._error(request_id, dialect.INVALID_REQUEST, "send hello first")
+                        )
                         continue
                     if not self._hello(client, request_id, request):
                         break
@@ -689,19 +677,21 @@ class Daemon:
                 task.cancel()
             await asyncio.gather(sender, return_exceptions=True)
 
-    def _hello(self, client: Client, request_id: int, hello: p.Hello) -> bool:
+    def _hello(self, client: Client, request_id: p.RequestId, hello: p.Hello) -> bool:
         if hello.protocol != p.PROTOCOL_VERSION:
             client.push(
                 self._error(
                     request_id,
-                    "protocol_mismatch",
+                    dialect.PROTOCOL_MISMATCH,
                     f"daemon speaks {p.PROTOCOL_VERSION}, client {hello.protocol}",
                 )
             )
             return False
         if self.token is not None and hello.token != self.token:
             client.push(
-                self._error(request_id, "unauthorized", "token missing or wrong; set TAUD_TOKEN")
+                self._error(
+                    request_id, dialect.UNAUTHORIZED, "token missing or wrong; set TAUD_TOKEN"
+                )
             )
             self.log(f"client {client.id} ({hello.client}) refused: bad token")
             return False
@@ -719,17 +709,17 @@ class Daemon:
         return True
 
     @staticmethod
-    def _ok(request_id: int, result: Any) -> dict[str, Any]:
-        return p.to_wire(p.Response(id=request_id, ok=True, result=result))
+    def _ok(request_id: p.RequestId, result: Any) -> dict[str, Any]:
+        return p.to_wire(p.Success(id=request_id, result=result))
 
     @staticmethod
     def _error(
-        request_id: int, code: str, message: str, data: dict[str, Any] | None = None
+        request_id: p.RequestId | None, code: int, message: str, data: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        error = p.Error(code=code, message=message, data=p.json_safe(data))  # type: ignore[arg-type]
-        return p.to_wire(p.Response(id=request_id, ok=False, error=error))
+        error = p.Error(code=code, message=message, data=p.json_safe(data))
+        return p.to_wire(p.Failure(id=request_id, error=error))
 
-    async def _serve(self, client: Client, request_id: int, request: Any) -> None:
+    async def _serve(self, client: Client, request_id: p.RequestId, request: Any) -> None:
         try:
             if isinstance(request, p.Attach):
                 await self._attach(client, request_id, request)
@@ -745,18 +735,20 @@ class Daemon:
             client.push(self._error(request_id, exc.code, str(exc), exc.data))
         except Exception as exc:
             self.log(f"client {client.id} request {type(request).__name__} failed: {exc!r}")
-            client.push(self._error(request_id, "failed", f"{type(exc).__name__}: {exc}"))
+            client.push(
+                self._error(request_id, dialect.INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
+            )
         else:
             client.push(self._ok(request_id, result))
 
-    async def _attach(self, client: Client, request_id: int, request: p.Attach) -> None:
+    async def _attach(self, client: Client, request_id: p.RequestId, request: p.Attach) -> None:
         host = await self.load(request.session_id)
         attached = host.attach(client, request.epoch, request.since)
         client.push(self._ok(request_id, p.result_to_wire(request, attached)))
         if attached.entries is None and request.since is not None:
             host.replay(client, request.since)
 
-    def _shutdown(self, client: Client, request_id: int) -> object:
+    def _shutdown(self, client: Client, request_id: p.RequestId) -> object:
         """Answer a :class:`~protocol.Shutdown`, then set :attr:`stopping` once the answer is written."""
         self.log(f"client {client.id} ({client.name}) asked the daemon to stop")
         client.push(self._ok(request_id, None))
@@ -783,7 +775,7 @@ class Daemon:
         try:
             log = await asyncio.to_thread(self.catalog.resolve_ref, ref)
         except (KeyError, ValueError, FileNotFoundError) as exc:
-            raise RequestError("not_found", str(exc)) from exc
+            raise RequestError(dialect.NOT_FOUND, str(exc)) from exc
         lock = self._loading.setdefault(log.id, asyncio.Lock())
         async with lock:
             if log.id in self.hosts:
@@ -800,7 +792,9 @@ class Daemon:
 
         cwd = str(log.header.get("cwd") or os.getcwd())
         if not os.path.isdir(cwd):
-            raise RequestError("not_found", f"session cwd {cwd!r} does not exist on this machine")
+            raise RequestError(
+                dialect.NOT_FOUND, f"session cwd {cwd!r} does not exist on this machine"
+            )
         prior = log.config
         _, model_config = resolve_model_config(
             self.config,
@@ -817,7 +811,7 @@ class Daemon:
         await host.start(cwd)
         return host
 
-    async def _dispatch(self, client: Client, request_id: int, request: Any) -> Any:
+    async def _dispatch(self, client: Client, request_id: p.RequestId, request: Any) -> Any:
         if isinstance(request, p.Shutdown):
             return self._shutdown(client, request_id)
         if isinstance(request, p.ListSessions):
@@ -825,7 +819,7 @@ class Daemon:
         if isinstance(request, p.NewSession):
             return await self._new_session(request)
         if isinstance(request, p.Hello):
-            raise RequestError("bad_request", "already said hello")
+            raise RequestError(dialect.INVALID_REQUEST, "already said hello")
         host = await self.load(request.session_id)
         session = host.agent_session
         if isinstance(request, p.RpcCall):
@@ -840,24 +834,26 @@ class Daemon:
             try:
                 cursor = await session.open_cursor(request.leaf, owner=owner, label=request.label)
             except ValueError as exc:
-                raise RequestError("not_found", str(exc)) from exc
+                raise RequestError(dialect.NOT_FOUND, str(exc)) from exc
             return p.CursorOpened(cursor.id)
         if isinstance(request, p.CloseCursor):
             try:
                 await session.close_cursor(host.cursor(request.cursor_id))
             except RuntimeError as exc:
-                raise RequestError("busy", str(exc)) from exc
+                raise RequestError(dialect.TURN_STILL_RUNNING, str(exc)) from exc
             except ValueError as exc:
-                raise RequestError("bad_request", str(exc)) from exc
+                raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
             return None
         if isinstance(request, p.MoveCursor):
             cursor = host.cursor(request.cursor_id)
             if cursor.busy:
-                raise RequestError("busy", f"cursor {cursor.id} is running a turn")
+                raise RequestError(
+                    dialect.TURN_STILL_RUNNING, f"cursor {cursor.id} is running a turn"
+                )
             try:
                 cursor.move(request.leaf)
             except ValueError as exc:
-                raise RequestError("not_found", str(exc)) from exc
+                raise RequestError(dialect.NOT_FOUND, str(exc)) from exc
             host.publish_cursors()
             return None
         if isinstance(request, p.Answer):
@@ -871,10 +867,10 @@ class Daemon:
             return await self._compare(host, request)
         if isinstance(request, p.EndCompare):
             return await self._end_compare(host, request)
-        raise RequestError("bad_request", f"unhandled request {type(request).__name__}")
+        raise RequestError(dialect.INVALID_PARAMS, f"unhandled request {type(request).__name__}")
 
     async def _rpc(
-        self, client: Client, request_id: int, host: SessionHost, call: p.RpcCall
+        self, client: Client, request_id: p.RequestId, host: SessionHost, call: p.RpcCall
     ) -> Any:
         """Answer an RPC verb at its cursor: ``submit`` and ``prompt`` here, the rest by RPC's handler.
 
@@ -892,13 +888,13 @@ class Daemon:
             self.log(f"{host.tag} client {client.id} {call.verb} at cursor {cursor.id}")
         handler = rpc.COMMAND_TABLE[call.verb].handler
         if handler is None:
-            raise RequestError("not_found", f"RPC declines {call.verb!r}")
+            raise RequestError(dialect.METHOD_NOT_FOUND, f"RPC declines {call.verb!r}")
         context = RpcContext(host, client, host.rpc_states[cursor.id])
         token = TURN_CURSOR.set(cursor)
         try:
             result = await handler(cast(Any, context), request_id, dict(call.params))
         except rpc.RPCError as exc:
-            raise RequestError(RPC_CODES[exc.code], exc.message, exc.data) from exc
+            raise RequestError(exc.code, exc.message, exc.data) from exc
         finally:
             TURN_CURSOR.reset(token)
         return ANSWERED if result is None else result
@@ -930,7 +926,9 @@ class Daemon:
 
         cwd = os.path.abspath(os.path.expanduser(request.cwd))
         if not os.path.isdir(cwd):
-            raise RequestError("not_found", f"cwd {cwd!r} does not exist on the daemon's machine")
+            raise RequestError(
+                dialect.NOT_FOUND, f"cwd {cwd!r} does not exist on the daemon's machine"
+            )
         model_name, model_config = resolve_model_config(self.config, CLIArgs(model=request.model))
         if self.config.get("system_prompt"):
             model_config["system_prompt"] = self.config["system_prompt"]
@@ -947,7 +945,12 @@ class Daemon:
         return self._opened(await self.load(log.id))
 
     async def _submit(
-        self, client: Client, request_id: int, host: SessionHost, cursor: Cursor, call: p.RpcCall
+        self,
+        client: Client,
+        request_id: p.RequestId,
+        host: SessionHost,
+        cursor: Cursor,
+        call: p.RpcCall,
     ) -> Any:
         """``submit`` or ``prompt`` at ``cursor``: RPC's params and answer, with ``dispatched``.
 
@@ -994,7 +997,7 @@ class Daemon:
             return ANSWERED
         if not outcome.accepted:
             raise RequestError(
-                "submission_rejected",
+                dialect.SUBMISSION_REJECTED,
                 outcome.rejection_reason or "submission rejected",
                 rpc.rejection_data(outcome),
             )
@@ -1025,10 +1028,10 @@ class Daemon:
         ready = request.ready
         flow = host.agent_session.vocabulary.flow(ready.flow)
         if flow is None:
-            raise RequestError("not_found", f"no flow {ready.flow!r}")
+            raise RequestError(dialect.NOT_FOUND, f"no flow {ready.flow!r}")
         if flow.mutation != ready.mutation:
             raise RequestError(
-                "bad_request",
+                dialect.INVALID_PARAMS,
                 f"/{ready.flow} performs {flow.mutation!r}, not {ready.mutation!r}",
             )
         if ready.mutation in SWITCHING:
@@ -1062,14 +1065,16 @@ class Daemon:
         action = getattr(host.backend, ready.mutation, None)
         if action is None:
             raise RequestError(
-                "not_found", f"/{ready.flow} performs {ready.mutation!r}, which the daemon lacks"
+                dialect.NOT_FOUND,
+                f"/{ready.flow} performs {ready.mutation!r}, which the daemon lacks",
             )
         result = action(**ready.arguments)
         if asyncio.iscoroutine(result):
             result = await result
         if not isinstance(result, Performed):
             raise RequestError(
-                "failed", f"/{ready.flow} answered {type(result).__name__}, not a Performed"
+                dialect.INTERNAL_ERROR,
+                f"/{ready.flow} answered {type(result).__name__}, not a Performed",
             )
         return result
 
@@ -1083,12 +1088,13 @@ class Daemon:
         at = request.at if request.at is not None else host.cursor(request.cursor_id).leaf
         entries = host.log.entries()
         if at is not None and not any(e["id"] == at for e in entries):
-            raise RequestError("not_found", f"{host.tag} has no entry {at!r}")
+            raise RequestError(dialect.NOT_FOUND, f"{host.tag} has no entry {at!r}")
         copied = ConversationTree(entries, at).path() if at is not None else entries
         writing = [e["id"] for e in copied if is_incomplete(e)]
         if writing:
             raise RequestError(
-                "busy", f"entry {writing[0]} is still being written; fork when its turn ends"
+                dialect.TURN_STILL_RUNNING,
+                f"entry {writing[0]} is still being written; fork when its turn ends",
             )
         forked = self.catalog.fork(host.log, host.cwd, at=at)
         self.log(f"{host.tag} forked into session {forked.id[:8]}" + (f" at {at}" if at else ""))
@@ -1115,9 +1121,9 @@ class Daemon:
         try:
             performed: Performed = await host.backend.compare(models, text, at=leaf)
         except KeyError as exc:
-            raise RequestError("not_found", str(exc.args[0] if exc.args else exc)) from exc
+            raise RequestError(dialect.NOT_FOUND, str(exc.args[0] if exc.args else exc)) from exc
         except ValueError as exc:
-            raise RequestError("bad_request", str(exc)) from exc
+            raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
         comparison = host.backend.comparisons[performed.data["comparison_id"]]
         self.log(
             f"{host.tag} compare {comparison.id} at {comparison.leaf}: "
@@ -1141,9 +1147,9 @@ class Daemon:
         try:
             leaf = await host.backend.end_compare(request.comparison_id, request.keep)
         except KeyError as exc:
-            raise RequestError("not_found", str(exc.args[0] if exc.args else exc)) from exc
+            raise RequestError(dialect.NOT_FOUND, str(exc.args[0] if exc.args else exc)) from exc
         except RuntimeError as exc:
-            raise RequestError("busy", str(exc)) from exc
+            raise RequestError(dialect.TURN_STILL_RUNNING, str(exc)) from exc
         kept = f"kept {request.keep}" if request.keep is not None else "kept none"
         self.log(f"{host.tag} compare {request.comparison_id} ended, {kept}; head at {leaf}")
         host.publish_cursors()

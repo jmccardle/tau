@@ -6,14 +6,16 @@
 >
 > Design of record: `docs/TAU-SERVE.md` §5–§7.
 
-- **Protocol version:** `0.7`
+- **Protocol version:** `0.8`
 - **Default port:** `8256`
-- **Counts:** 50 requests (35 of them RPC verbs), 10 event kinds, 195 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 50 requests (35 of them RPC verbs), 10 event kinds, 198 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
 
-One JSON object per WebSocket text frame. A client's first request is `hello`; nothing else is served before it. Every request carries an integer `id` the client chose, and gets exactly one `response` with that `id`. Responses and events share one ordered stream per connection, so a client sees an `attach` answer before any event that follows it.
+JSON-RPC 2.0, one message per WebSocket text frame. A request is `{"jsonrpc": "2.0", "id", "method", "params"}`: `method` is a request name below and `params` its fields. The `id` is an integer or a string the client chose, and the request gets exactly one answer with that `id`. A client's first request is `hello`; nothing else is served before it. Answers and events share one ordered stream per connection, so a client sees an `attach` answer before any event that follows it.
+
+Not served: a batch (an array of requests) and a notification (a request with no `id`), each answered with `-32600`. `params` must be an object when present.
 
 ## Open and closed records
 
@@ -218,10 +220,10 @@ nothing.
 
 A request RPC answers too: its verb, at one cursor of one session (docs/TAU-SERVE.md §5, 0.6).
 
-Sent as `{"type": verb, "session_id", "cursor_id", **params}`; `params`
-are RPC's own and are checked against its `params_schema`.
+Sent as method `verb` with params `{"session_id", "cursor_id", **params}`;
+`params` are RPC's own and are checked against its `params_schema`.
 
-Each takes RPC's params as documented in `docs/RPC-PROTOCOL.md`, plus `session_id` and `cursor_id`, and answers RPC's result.
+Each takes RPC's params as documented in `docs/RPC-PROTOCOL.md`, plus `session_id` and `cursor_id` in the same `params` object, and answers RPC's result.
 
 ### `submit`
 
@@ -433,22 +435,54 @@ RPC `paste_subtree` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's 
 
 **Answered with:** [PasteSubtreeResult](#pastesubtreeresult).
 
-## Responses
+## Answers
 
-The one answer to a request, matched by `id`.
+The one answer to a request: a `result` or an `error`, never both.
+
+### `Success`
+
+The answer to a request that succeeded, matched by `id`.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | integer | yes |  |
-| `ok` | boolean | yes |  |
-| `result` | any | no | When `ok`, the request's result: `Results[request.type]` in the schema. `null` when not `ok`. |
-| `error` | [Error](#error) \| null | no |  |
+| `id` | integer \| string | yes |  |
+| `result` | any | yes | The request's result: `Results[method]` in the schema. |
+| `jsonrpc` | `"2.0"` | yes |  |
 
-Error codes: `bad_request`, `unauthorized`, `protocol_mismatch`, `not_found`, `busy`, `failed`, `submission_rejected`, `command_not_supported`, `session_not_persisted`.
+### `Failure`
+
+The answer to a request that failed, matched by `id`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | integer \| string \| null | yes | The request's `id`, or `null` when the frame had none the daemon could read. |
+| `error` | [Error](#error) | yes |  |
+| `jsonrpc` | `"2.0"` | yes |  |
+
+### Error codes
+
+The table RPC uses (`tau_agent_core.rpc.dialect`); a code means the same on both wires.
+
+| `code` | Meaning |
+|---|---|
+| `-32000` | RPC's `SUBMISSION_REJECTED`: the submission was refused. |
+| `-32001` | RPC's `COMMAND_NOT_SUPPORTED`. |
+| `-32002` | Busy: a turn is running where the request acts. |
+| `-32004` | RPC's `SESSION_NOT_PERSISTED`. |
+| `-32005` | The hello's token is missing or wrong. |
+| `-32006` | The hello names another protocol version. |
+| `-32007` | No such session, cursor, entry, form or flow. |
+| `-32600` | Not a JSON-RPC 2.0 request with an `id`, or not `hello` first, or a batch. |
+| `-32601` | No such method, or one RPC declines. |
+| `-32602` | `params` do not fit the method, or name something the daemon refuses. |
+| `-32603` | The daemon failed while answering. |
+| `-32700` | The frame is not JSON. |
 
 ## Events
 
-A push for an attached session, numbered per session within an `epoch`.
+Sent as `{"jsonrpc": "2.0", "method": "event", "params": Event}`: a notification, with no `id` and no answer.
+
+A push for an attached session, numbered per session within an `epoch`; an `event` notification's `params`.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -526,7 +560,6 @@ A `agent_event` event.
 | `seq` | integer | yes |  |
 | `kind` | `"agent_event"` | yes |  |
 | `data` | [WireEvent](#wireevent) | yes |  |
-| `type` | `"event"` | yes |  |
 
 ### AnswerRequestResult
 
@@ -652,7 +685,6 @@ A `channel` event.
 | `seq` | integer | yes |  |
 | `kind` | `"channel"` | yes |  |
 | `data` | [ChannelEventData](#channeleventdata) | yes |  |
-| `type` | `"event"` | yes |  |
 
 ### ChannelEventData
 
@@ -726,7 +758,6 @@ A `compaction_end` event.
 | `seq` | integer | yes |  |
 | `kind` | `"compaction_end"` | yes |  |
 | `data` | [CompactionEnd](#compactionend) | yes |  |
-| `type` | `"event"` | yes |  |
 
 ### CompactionEntry
 
@@ -868,7 +899,6 @@ A `cursors` event.
 | `seq` | integer | yes |  |
 | `kind` | `"cursors"` | yes |  |
 | `data` | [CursorsEventData](#cursorseventdata) | yes |  |
-| `type` | `"event"` | yes |  |
 
 ### CursorsEventData
 
@@ -1029,7 +1059,6 @@ A `entry_append` event.
 | `seq` | integer | yes |  |
 | `kind` | `"entry_append"` | yes |  |
 | `data` | [EntryEventData](#entryeventdata) | yes |  |
-| `type` | `"event"` | yes |  |
 
 ### EntryEventData
 
@@ -1051,7 +1080,6 @@ A `entry_final` event.
 | `seq` | integer | yes |  |
 | `kind` | `"entry_final"` | yes |  |
 | `data` | [EntryEventData](#entryeventdata) | yes |  |
-| `type` | `"event"` | yes |  |
 
 ### EntryOpenEvent
 
@@ -1064,7 +1092,6 @@ A `entry_open` event.
 | `seq` | integer | yes |  |
 | `kind` | `"entry_open"` | yes |  |
 | `data` | [EntryEventData](#entryeventdata) | yes |  |
-| `type` | `"event"` | yes |  |
 
 ### EnumerateDomainResult
 
@@ -1080,15 +1107,25 @@ Why a request failed. `code` is stable; `message` is for a human.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `code` | `"bad_request"` \| `"unauthorized"` \| `"protocol_mismatch"` \| `"not_found"` \| `"busy"` \| `"failed"` \| `"submission_rejected"` \| `"command_not_supported"` \| `"session_not_persisted"` | yes |  |
+| `code` | `-32700` \| `-32603` \| `-32602` \| `-32601` \| `-32600` \| `-32007` \| `-32006` \| `-32005` \| `-32004` \| `-32002` \| `-32001` \| `-32000` | yes | One of `ERROR_CODES`, the table RPC uses too (`tau_agent_core.rpc.dialect`). |
 | `message` | string | yes |  |
 | `data` | object \| null | no | RPC's `error.data` for an RPC verb's refusal (a submission's `lock`, the offending `name`), else `None`. |
 
 ### Event
 
-A push for an attached session, numbered per session within an `epoch`.
+A push for an attached session, numbered per session within an `epoch`; an `event` notification's `params`.
 
 One of: [EntryOpenEvent](#entryopenevent), [EntryFinalEvent](#entryfinalevent), [EntryAppendEvent](#entryappendevent), [AgentEventEvent](#agenteventevent), [ChannelEvent](#channelevent), [CursorsEvent](#cursorsevent), [RequestEvent](#requestevent), [RequestClosedEvent](#requestclosedevent), [UiEvent](#uievent), [CompactionEndEvent](#compactionendevent).
+
+### EventNotification
+
+An `event` notification: no `id`, and no answer.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `jsonrpc` | `"2.0"` | yes |  |
+| `method` | `"event"` | yes |  |
+| `params` | [Event](#event) | yes |  |
 
 ### ExtensionInfo
 
@@ -1119,6 +1156,16 @@ An extension request at a cursor, as `get_pending_request` answers it (docs/EXTE
 | `lock` | boolean | yes | Whether a submission at this cursor is refused. |
 | `ask` | [Ask](#ask) \| null | yes | What it asks, or `None` for a bare lock. |
 | `release` | string \| null | yes | A command that clears the lock, or `None`. |
+
+### Failure
+
+The answer to a request that failed, matched by `id`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | integer \| string \| null | yes | The request's `id`, or `null` when the frame had none the daemon could read. |
+| `error` | [Error](#error) | yes |  |
+| `jsonrpc` | `"2.0"` | yes |  |
 
 ### FlowStep
 
@@ -1574,7 +1621,6 @@ A `request_closed` event.
 | `seq` | integer | yes |  |
 | `kind` | `"request_closed"` | yes |  |
 | `data` | [RequestClosedEventData](#requestclosedeventdata) | yes |  |
-| `type` | `"event"` | yes |  |
 
 ### RequestClosedEventData
 
@@ -1595,7 +1641,6 @@ A `request` event.
 | `seq` | integer | yes |  |
 | `kind` | `"request"` | yes |  |
 | `data` | [RequestEventData](#requesteventdata) | yes |  |
-| `type` | `"event"` | yes |  |
 
 ### RequestEventData
 
@@ -1608,15 +1653,9 @@ An extension form open now: the `request` event's data, and one of `Attached`'s 
 
 ### Response
 
-The one answer to a request, matched by `id`.
+The one answer to a request: a `result` or an `error`, never both.
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `id` | integer | yes |  |
-| `ok` | boolean | yes |  |
-| `result` | any | no | When `ok`, the request's result: `Results[request.type]` in the schema. `null` when not `ok`. |
-| `error` | [Error](#error) \| null | no |  |
-| `type` | `"response"` | yes |  |
+One of: [Success](#success), [Failure](#failure).
 
 ### ServeStarted
 
@@ -1814,6 +1853,16 @@ A submission admitted to run a turn.
 | `admitted` | boolean | no | Whether a turn was admitted for this submission, so a `submission_end` channel event with its id will follow. False for a steer delivered into another turn, and for a command. |
 | `dispatched` | [DispatchedCommand](#dispatchedcommand) \| null | no | What a command resolved to, after the daemon performed it; `null` for a prompt. |
 
+### Success
+
+The answer to a request that succeeded, matched by `id`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | integer \| string | yes |  |
+| `result` | any | yes | The request's result: `Results[method]` in the schema. |
+| `jsonrpc` | `"2.0"` | yes |  |
+
 ### SummarizeAndNavigateResult
 
 | Field | Type | Required | Description |
@@ -1924,7 +1973,6 @@ A `ui` event.
 | `seq` | integer | yes |  |
 | `kind` | `"ui"` | yes |  |
 | `data` | [UiEventData](#uieventdata) | yes |  |
-| `type` | `"event"` | yes |  |
 
 ### UiEventData
 

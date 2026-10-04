@@ -132,13 +132,13 @@ class Replica:
 
 
 class ServeError(Exception):
-    """A request the daemon refused; ``code`` is the protocol's error code.
+    """A request the daemon refused; ``code`` is one of the protocol's ``ERROR_CODES``.
 
     Attributes:
         data: The error's ``data``: RPC's ``error.data`` for an RPC verb's refusal.
     """
 
-    def __init__(self, code: str, message: str, data: dict[str, Any] | None = None) -> None:
+    def __init__(self, code: int, message: str, data: dict[str, Any] | None = None) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.reason = message
@@ -211,7 +211,7 @@ class ServeClient:
         self._pending[request_id] = future
         if isinstance(message, p.Attach):
             self._attaching.add(request_id)
-        await self._ws.send(json.dumps({"id": request_id, **p.to_wire(message)}))
+        await self._ws.send(json.dumps(p.request_frame(request_id, message)))
         return await future
 
     async def submit_and_wait(
@@ -263,10 +263,11 @@ class ServeClient:
     async def _read(self) -> None:
         try:
             async for raw in self._ws:
-                frame = json.loads(raw)
-                if frame.get("type") == "response":
-                    self._resolve(frame)
-                elif frame.get("type") == "event":
+                message = json.loads(raw)
+                if "id" in message:
+                    self._resolve(message)
+                elif message.get("method") == p.EVENT_METHOD:
+                    frame = message["params"]
                     replica = self.replicas.get(frame["session_id"])
                     if replica is not None and frame["epoch"] == replica.epoch:
                         if frame["seq"] <= replica.seq:
@@ -305,13 +306,14 @@ class ServeClient:
         self._attaching.discard(frame["id"])
         if future is None or future.done():
             return
-        if frame["ok"] and attaching:
+        ok = "error" not in frame
+        if ok and attaching:
             # Before the next frame is read: the events after this answer belong to it.
             attached = frame["result"]
             if attached["entries"] is not None:
                 self.replicas[attached["session_id"]] = Replica.from_attached(attached)
-        if frame["ok"]:
-            future.set_result(frame.get("result"))
+        if ok:
+            future.set_result(frame["result"])
         else:
             error = frame.get("error") or {}
             future.set_exception(ServeError(error["code"], error["message"], error.get("data")))

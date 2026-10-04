@@ -30,6 +30,7 @@ from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.capabilities import Argument, Domain
 from tau_agent_core.compaction import CompactionDetails, CompactionResult
 from tau_agent_core.projections import tool_result_for_user
+from tau_agent_core.rpc import dialect
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extension_locks import ExtensionRequest, request_at
 from tau_agent_core.flows import DomainValue, DomainValues, FlowStep, Performed, Ready, View
@@ -771,7 +772,7 @@ class RemoteBackend(Backend):
             if answer["admitted"]:
                 await ended
         except ServeError as exc:
-            if exc.code != "submission_rejected":
+            if exc.code != dialect.SUBMISSION_REJECTED:
                 raise
             return rejection_from_wire(exc, sid)
         finally:
@@ -833,7 +834,7 @@ class RemoteBackend(Backend):
                 p.Answer(session_id=self._session_id, request_id=data["request_id"], value=answers)
             )
         except ServeError as exc:
-            if exc.code != "not_found":
+            if exc.code != dialect.NOT_FOUND:
                 raise
             self._delegate.notify("That form was answered from another client", "warning")
 
@@ -875,9 +876,9 @@ class RemoteBackend(Backend):
                 p.EndCompare(session_id=self._session_id, comparison_id=comparison_id, keep=keep)
             )
         except ServeError as exc:
-            if exc.code == "not_found":
+            if exc.code == dialect.NOT_FOUND:
                 raise KeyError(str(exc)) from exc
-            if exc.code == "busy":
+            if exc.code == dialect.TURN_STILL_RUNNING:
                 raise RuntimeError(str(exc)) from exc
             raise
         leaf = answer["leaf"]

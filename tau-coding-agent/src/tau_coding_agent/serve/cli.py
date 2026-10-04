@@ -392,26 +392,26 @@ def hello_probe(address: Address, token: str | None, *, then: Any = None) -> dic
 
 
 def _type_of(request: Any) -> str:
-    """A request's ``type``, for a message."""
-    return str(p.to_wire(request)["type"])
+    """A request's method, for a message."""
+    return p.method_of(request)
 
 
 def _exchange(ws: Any, request_id: int, request: Any) -> dict[str, Any] | None:
     """Send ``request`` and read its response, or ``None`` if nothing like one came back."""
     try:
-        ws.send(json.dumps({"id": request_id, **p.to_wire(request)}))
+        ws.send(json.dumps(p.request_frame(request_id, request)))
         raw = ws.recv(timeout=PROBE_TIMEOUT_S)
         frame = json.loads(raw)
     except (OSError, TimeoutError, ConnectionClosed, TypeError, ValueError):
         return None
-    if not isinstance(frame, dict) or frame.get("type") != "response":
+    if not isinstance(frame, dict) or ("result" not in frame and "error" not in frame):
         return None
     return frame if frame.get("id") == request_id else None
 
 
 def _require_ok(address: Address, frame: dict[str, Any], what: str) -> None:
-    """Raise unless ``frame`` is a successful response."""
-    if not frame.get("ok"):
+    """Raise unless ``frame`` is a successful answer."""
+    if "error" in frame:
         error = frame.get("error") or {}
         raise RuntimeError(
             f"a tau daemon at {address} refused {what}: {error.get('code')}: {error.get('message')}"

@@ -25,6 +25,9 @@ COMMAND_NOT_SUPPORTED = -32001
 TURN_STILL_RUNNING = -32002
 REQUEST_TOO_LARGE = -32003
 SESSION_NOT_PERSISTED = -32004
+UNAUTHORIZED = -32005  # tau serve: the hello's token is missing or wrong
+PROTOCOL_MISMATCH = -32006  # tau serve: the hello names another protocol version
+NOT_FOUND = -32007  # tau serve: no such session, cursor, entry, form or flow
 
 
 @agent_facing(topic="rpc")

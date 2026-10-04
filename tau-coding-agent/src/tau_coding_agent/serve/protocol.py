@@ -1,8 +1,9 @@
 """The ``tau serve`` wire protocol: every message, defined once (docs/TAU-SERVE.md §5).
 
-One JSON object per WebSocket text frame. A client sends requests, each with an
-``id`` it chose; the daemon answers each with one :class:`Response`, and pushes
-:class:`Event` frames for every session the client is attached to.
+JSON-RPC 2.0, one message per WebSocket text frame. A client sends requests, each
+with an ``id`` it chose; the daemon answers each with a :class:`Success` or a
+:class:`Failure`, and sends an ``event`` notification carrying an :class:`Event`
+for every session the client is attached to.
 
 The definitions here are the protocol. Dataclasses are what the daemon builds and
 sends. The shapes it shares with RPC (an entry, a message, a form, a verb's
@@ -32,7 +33,7 @@ from tau_agent_core.flows import FlowStep, Performed, Ready, View
 from tau_agent_core.json_schema import Given, SchemaBuilder, Shape, Tagged, Named, summary
 from tau_agent_core.rpc import capabilities
 from tau_agent_core.rpc import commands as rpc
-from tau_agent_core.rpc import records
+from tau_agent_core.rpc import dialect, records
 from tau_agent_core.rpc.records import (
     AttachmentReport,
     CustomRoleMessage,
@@ -49,11 +50,20 @@ from tau_agent_core.rpc.records import (
 from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.submission import MultitaskStrategy, SubmissionSource
 
-PROTOCOL_VERSION = "0.7"
+PROTOCOL_VERSION = "0.8"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256
 """The port ``tau serve`` listens on and ``tau --connect HOST`` dials ("ffwf" in base64, as decimal)."""
+
+JSONRPC = "2.0"
+"""The ``jsonrpc`` member every message carries."""
+
+EVENT_METHOD = "event"
+"""The notification method an :class:`Event` is sent under; RPC's events use the same name."""
+
+RequestId = int | str
+"""A request ``id``: JSON-RPC allows a number or a string, and the answer echoes it."""
 
 
 # ─── Requests ────────────────────────────────────────────────────────────
@@ -286,8 +296,8 @@ REQUESTS: tuple[type, ...] = (
 class RpcCall:
     """A request RPC answers too: its verb, at one cursor of one session (docs/TAU-SERVE.md §5, 0.6).
 
-    Sent as ``{"type": verb, "session_id", "cursor_id", **params}``; ``params``
-    are RPC's own and are checked against its ``params_schema``.
+    Sent as method ``verb`` with params ``{"session_id", "cursor_id", **params}``;
+    ``params`` are RPC's own and are checked against its ``params_schema``.
     """
 
     verb: str
@@ -597,49 +607,71 @@ RESULTS: dict[type, Any] = {
 """What each request is answered with; ``None`` is a ``null`` result."""
 
 
+ERROR_CODES: dict[int, str] = {
+    dialect.PARSE_ERROR: "The frame is not JSON.",
+    dialect.INVALID_REQUEST: "Not a JSON-RPC 2.0 request with an `id`, or not `hello` "
+    "first, or a batch.",
+    dialect.METHOD_NOT_FOUND: "No such method, or one RPC declines.",
+    dialect.INVALID_PARAMS: "`params` do not fit the method, or name something the daemon refuses.",
+    dialect.INTERNAL_ERROR: "The daemon failed while answering.",
+    dialect.SUBMISSION_REJECTED: "RPC's `SUBMISSION_REJECTED`: the submission was refused.",
+    dialect.COMMAND_NOT_SUPPORTED: "RPC's `COMMAND_NOT_SUPPORTED`.",
+    dialect.TURN_STILL_RUNNING: "Busy: a turn is running where the request acts.",
+    dialect.SESSION_NOT_PERSISTED: "RPC's `SESSION_NOT_PERSISTED`.",
+    dialect.UNAUTHORIZED: "The hello's token is missing or wrong.",
+    dialect.PROTOCOL_MISMATCH: "The hello names another protocol version.",
+    dialect.NOT_FOUND: "No such session, cursor, entry, form or flow.",
+}
+"""Every ``error.code`` the daemon sends; the JSON-RPC and RPC codes keep their meaning."""
+
+
 @dataclass
 class Error:
     """Why a request failed. ``code`` is stable; ``message`` is for a human.
 
-    An RPC verb's refusal keeps its meaning: ``submission_rejected``,
-    ``command_not_supported`` and ``session_not_persisted`` are RPC's codes of
-    those names, ``busy`` is ``TURN_STILL_RUNNING``, ``bad_request`` is
-    ``INVALID_PARAMS``.
-
     Attributes:
+        code: One of :data:`ERROR_CODES`, the table RPC uses too
+            (``tau_agent_core.rpc.dialect``).
         data: RPC's ``error.data`` for an RPC verb's refusal (a submission's
             ``lock``, the offending ``name``), else ``None``.
     """
 
-    code: Literal[
-        "bad_request",
-        "unauthorized",
-        "protocol_mismatch",
-        "not_found",
-        "busy",
-        "failed",
-        "submission_rejected",
-        "command_not_supported",
-        "session_not_persisted",
-    ]
+    code: int
     message: str
     data: dict[str, Any] | None = None
 
 
 @dataclass
-class Response:
-    """The one answer to a request, matched by ``id``.
+class Success:
+    """The answer to a request that succeeded, matched by ``id``.
 
     Attributes:
-        result: When ``ok``, the request's result: ``Results[request.type]`` in
-            the schema. ``null`` when not ``ok``.
+        result: The request's result: ``Results[method]`` in the schema.
     """
 
-    id: int
-    ok: bool
-    result: Any = None
-    error: Error | None = None
-    type: Literal["response"] = "response"
+    id: RequestId
+    result: Any
+    jsonrpc: Literal["2.0"] = "2.0"
+
+
+@dataclass
+class Failure:
+    """The answer to a request that failed, matched by ``id``.
+
+    Attributes:
+        id: The request's ``id``, or ``null`` when the frame had none the daemon
+            could read.
+    """
+
+    id: RequestId | None
+    error: Error
+    jsonrpc: Literal["2.0"] = "2.0"
+
+
+Response = Annotated[
+    Success | Failure,
+    Named("Response", "The one answer to a request: a `result` or an `error`, never both."),
+]
 
 
 # ─── Events ──────────────────────────────────────────────────────────────
@@ -829,7 +861,7 @@ EVENT_KINDS = tuple(EVENT_DATA)
 
 @dataclass
 class Event:
-    """A push for an attached session, numbered per session within an ``epoch``."""
+    """A push for an attached session, numbered per session within an ``epoch``; an ``event`` notification's ``params``."""
 
     session_id: str
     epoch: str
@@ -847,7 +879,6 @@ class Event:
         "compaction_end",
     ]
     data: dict[str, Any] = field(default_factory=dict)
-    type: Literal["event"] = "event"
 
 
 @dataclass
@@ -888,15 +919,37 @@ class ServeStopped:
 
 
 def to_wire(message: Any) -> dict[str, Any]:
-    """A protocol dataclass as the JSON object it is sent as; an :class:`RpcCall` flat."""
-    if isinstance(message, RpcCall):
-        return {
-            "type": message.verb,
-            "session_id": message.session_id,
-            "cursor_id": message.cursor_id,
-            **message.params,
-        }
+    """A protocol dataclass as the JSON object it is sent as."""
     return dataclasses.asdict(message)
+
+
+def method_of(request: Any) -> str:
+    """The JSON-RPC ``method`` a request is sent under."""
+    return request.verb if isinstance(request, RpcCall) else _type_tag(type(request))
+
+
+def request_frame(request_id: RequestId, request: Any) -> dict[str, Any]:
+    """A request as the JSON-RPC message a client sends."""
+    if isinstance(request, RpcCall):
+        params = {"session_id": request.session_id, "cursor_id": request.cursor_id}
+        params.update(request.params)
+    else:
+        params = {k: v for k, v in dataclasses.asdict(request).items() if k != "type"}
+    return {"jsonrpc": JSONRPC, "id": request_id, "method": method_of(request), "params": params}
+
+
+def event_frame(event: Event) -> dict[str, Any]:
+    """An event as the ``event`` notification the daemon sends."""
+    return {"jsonrpc": JSONRPC, "method": EVENT_METHOD, "params": to_wire(event)}
+
+
+class FrameError(ValueError):
+    """A client frame the daemon answers with an error; ``id`` is ``None`` when unreadable."""
+
+    def __init__(self, code: int, message: str, request_id: RequestId | None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.request_id = request_id
 
 
 def json_safe(value: Any) -> Any:
@@ -957,34 +1010,55 @@ def result_to_wire(request: Any, result: Any) -> Any:
     return to_wire(result)
 
 
-def parse_request(raw: dict[str, Any]) -> tuple[int, Any]:
+def parse_request(raw: Any) -> tuple[RequestId, Any]:
     """Read a client frame into its request dataclass.
 
     Returns:
         The request ``id`` and the dataclass instance.
 
     Raises:
-        ValueError: no integer ``id``, an unknown ``type``, or fields that do not fit.
+        FrameError: ``INVALID_REQUEST`` for a frame that is not a JSON-RPC 2.0
+            request with an ``id`` (a batch, a notification), ``METHOD_NOT_FOUND``
+            for an unknown method, ``INVALID_PARAMS`` for params that do not fit.
     """
+    if isinstance(raw, list):
+        raise FrameError(dialect.INVALID_REQUEST, "batches are not supported", None)
+    if not isinstance(raw, dict):
+        raise FrameError(dialect.INVALID_REQUEST, "a request is a JSON object", None)
     request_id = raw.get("id")
-    if not isinstance(request_id, int) or isinstance(request_id, bool):
-        raise ValueError("a request needs an integer 'id'")
-    kind = raw.get("type")
-    if kind in RPC_VERBS:
-        return request_id, _rpc_call(str(kind), {k: v for k, v in raw.items() if k != "id"})
-    for cls in REQUESTS:
-        if _type_tag(cls) == kind:
-            fields = {k: v for k, v in raw.items() if k != "id"}
-            try:
-                return request_id, _build(cls, fields, str(kind))
-            except TypeError as exc:
-                raise ValueError(f"{kind}: {exc}") from None
-    raise ValueError(f"unknown request type {kind!r}")
+    if not isinstance(request_id, (int, str)) or isinstance(request_id, bool):
+        raise FrameError(
+            dialect.INVALID_REQUEST,
+            "a request needs an integer or string 'id'; notifications are not served",
+            None,
+        )
+    if raw.get("jsonrpc") != JSONRPC:
+        raise FrameError(dialect.INVALID_REQUEST, "'jsonrpc' must be \"2.0\"", request_id)
+    unknown = sorted(set(raw) - {"jsonrpc", "id", "method", "params"})
+    if unknown:
+        raise FrameError(dialect.INVALID_REQUEST, f"unknown member(s) {unknown}", request_id)
+    method = raw.get("method")
+    params = raw.get("params", {})
+    if not isinstance(method, str):
+        raise FrameError(dialect.INVALID_REQUEST, "'method' must be a string", request_id)
+    if not isinstance(params, dict):
+        raise FrameError(dialect.INVALID_PARAMS, "'params' must be an object", request_id)
+    try:
+        if method in RPC_VERBS:
+            return request_id, _rpc_call(method, params)
+        for cls in REQUESTS:
+            if _type_tag(cls) == method:
+                if "type" in params:
+                    raise ValueError(f"{method}: unknown field(s) ['type']")
+                return request_id, _build(cls, params, method)
+    except (TypeError, ValueError) as exc:
+        raise FrameError(dialect.INVALID_PARAMS, str(exc), request_id) from None
+    raise FrameError(dialect.METHOD_NOT_FOUND, f"unknown method {method!r}", request_id)
 
 
 def _rpc_call(verb: str, fields: dict[str, Any]) -> RpcCall:
-    """An RPC verb's frame as an :class:`RpcCall`, its params checked by RPC's own schema."""
-    params = {k: v for k, v in fields.items() if k not in ("type", "session_id", "cursor_id")}
+    """An RPC verb's params as an :class:`RpcCall`, checked by RPC's own schema."""
+    params = {k: v for k, v in fields.items() if k not in ("session_id", "cursor_id")}
     for name in ("session_id", "cursor_id"):
         if not isinstance(fields.get(name), str):
             raise ValueError(f"{verb}: {name!r} must be a string")
@@ -1066,9 +1140,10 @@ RECORD_RULE = (
 """Which records are closed, stated once for the schema and the Markdown."""
 
 SCHEMA_DESCRIPTION = (
-    f"The tau serve WebSocket protocol (docs/SERVE-PROTOCOL.md). {RECORD_RULE} Each "
-    "request $def names its answer in `x-result`, and `Results` maps every request "
-    "`type` to it; `Event`'s `x-data` maps every `kind` to its data."
+    f"The tau serve protocol, JSON-RPC 2.0 over WebSocket (docs/SERVE-PROTOCOL.md). "
+    f"{RECORD_RULE} Each request $def is its method's `params` and names its answer "
+    "in `x-result`, and `Results` maps every method to it; `Event`'s `x-data` maps "
+    "every `kind` to its data."
 )
 """The schema's top-level ``description``."""
 
@@ -1080,12 +1155,11 @@ def _rpc_request(s: SchemaBuilder, verb: str) -> dict[str, Any]:
     return {
         "type": "object",
         "properties": {
-            "type": {"const": verb},
             "session_id": {"type": "string"},
             "cursor_id": {"type": "string", "description": "The cursor the verb acts at."},
             **params.get("properties", {}),
         },
-        "required": ["type", "session_id", "cursor_id", *params.get("required", [])],
+        "required": ["session_id", "cursor_id", *params.get("required", [])],
         "additionalProperties": False,
         "description": f"RPC `{verb}` (docs/RPC-PROTOCOL.md) at one cursor. {how}",
     }
@@ -1112,11 +1186,27 @@ def _rpc_result(s: SchemaBuilder, verb: str) -> dict[str, Any]:
     return result
 
 
+def _request_message(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    """The JSON-RPC request a client sends for ``method``, with ``params`` as its params."""
+    return {
+        "type": "object",
+        "properties": {
+            "jsonrpc": {"const": JSONRPC},
+            "id": {"type": ["integer", "string"]},
+            "method": {"const": method},
+            "params": params,
+        },
+        "required": ["jsonrpc", "id", "method"],
+        "additionalProperties": False,
+        "description": f"A `{method}` request.",
+    }
+
+
 def json_schema() -> dict[str, Any]:
     """The whole protocol as one JSON Schema document.
 
-    ``ClientFrame`` is any request plus its ``id``; ``ServerFrame`` is a response
-    or an event. Every named type is under ``$defs``.
+    ``ClientFrame`` is any request; ``ServerFrame`` is an answer or an ``event``
+    notification. Every named type is under ``$defs``.
     """
     s = capabilities.schema_builder()
     frames = []
@@ -1125,34 +1215,22 @@ def json_schema() -> dict[str, Any]:
         s.request(cls)
     for cls in REQUESTS:
         definition = s.defs[cls.__name__]
+        definition["properties"].pop("type")
+        definition["required"] = [r for r in definition["required"] if r != "type"]
         result = s.of(RESULTS[cls] if RESULTS[cls] is not None else type(None))
         definition["x-result"] = result
         tag = _type_tag(cls)
         results[tag] = result
-        frames.append(
-            {
-                "type": "object",
-                "properties": {"id": {"type": "integer"}, **definition["properties"]},
-                "required": ["id", *definition["required"]],
-                "additionalProperties": False,
-                "description": f"A `{tag}` request with its id.",
-            }
-        )
+        frames.append(_request_message(tag, {"$ref": f"#/$defs/{cls.__name__}"}))
     for verb in RPC_VERBS:
         definition = _rpc_request(s, verb)
         name = _camel(verb)
         result = s.of(Annotated[dict[str, Any], Given(f"{name}Result", _rpc_result(s, verb))])
         s.defs[name] = {**definition, "x-result": result}
         results[verb] = result
-        frames.append(
-            {
-                **definition,
-                "properties": {"id": {"type": "integer"}, **definition["properties"]},
-                "required": ["id", *definition["required"]],
-                "description": f"A `{verb}` request with its id.",
-            }
-        )
+        frames.append(_request_message(verb, {"$ref": f"#/$defs/{name}"}))
     s.of(Response)
+    s.defs["Error"]["properties"]["code"]["enum"] = sorted(ERROR_CODES)
     base = s.record(Event)
     variants = {}
     for kind, data in EVENT_DATA.items():
@@ -1170,6 +1248,16 @@ def json_schema() -> dict[str, Any]:
         "description": summary(Event),
         "x-data": variants,
     }
+    s.defs["EventNotification"] = {
+        "type": "object",
+        "properties": {
+            "jsonrpc": {"const": JSONRPC},
+            "method": {"const": EVENT_METHOD},
+            "params": {"$ref": "#/$defs/Event"},
+        },
+        "required": ["jsonrpc", "method", "params"],
+        "description": "An `event` notification: no `id`, and no answer.",
+    }
     s.of(ServeStarted)
     s.of(ServeStopped)
     return {
@@ -1180,6 +1268,8 @@ def json_schema() -> dict[str, Any]:
         "x-default-port": DEFAULT_PORT,
         "$defs": s.defs,
         "ClientFrame": {"oneOf": frames},
-        "ServerFrame": {"oneOf": [{"$ref": "#/$defs/Response"}, {"$ref": "#/$defs/Event"}]},
+        "ServerFrame": {
+            "oneOf": [{"$ref": "#/$defs/Response"}, {"$ref": "#/$defs/EventNotification"}]
+        },
         "Results": results,
     }

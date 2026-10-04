@@ -10,13 +10,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "abort"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -65,9 +61,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "event"
         }
       },
       "required": [
@@ -75,7 +68,6 @@
         "epoch",
         "seq",
         "kind",
-        "type",
         "data"
       ],
       "type": "object"
@@ -89,9 +81,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "answer"
         },
         "value": {
           "anyOf": [
@@ -109,8 +98,7 @@
       "required": [
         "session_id",
         "request_id",
-        "value",
-        "type"
+        "value"
       ],
       "type": "object",
       "x-result": {
@@ -136,9 +124,6 @@
         "session_id": {
           "type": "string"
         },
-        "type": {
-          "const": "answer_request"
-        },
         "values": {
           "additionalProperties": {},
           "description": "The filled fields, keyed by field name. Omitted is the empty dict, which is what an ask declaring no fields takes. Checked against the ask's declared fields before anything is appended: nothing is coerced and no partial answer is persisted.",
@@ -146,7 +131,6 @@
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "request_id",
@@ -407,14 +391,10 @@
             }
           ],
           "description": "The last `seq` the client applied under that epoch."
-        },
-        "type": {
-          "const": "attach"
         }
       },
       "required": [
-        "session_id",
-        "type"
+        "session_id"
       ],
       "type": "object",
       "x-result": {
@@ -628,9 +608,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "event"
         }
       },
       "required": [
@@ -638,7 +615,6 @@
         "epoch",
         "seq",
         "kind",
-        "type",
         "data"
       ],
       "type": "object"
@@ -666,15 +642,11 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "close_cursor"
         }
       },
       "required": [
         "session_id",
-        "cursor_id",
-        "type"
+        "cursor_id"
       ],
       "type": "object",
       "x-result": {
@@ -768,13 +740,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "commit_branch"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "ids",
@@ -822,13 +790,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "compact"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -961,9 +925,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "event"
         }
       },
       "required": [
@@ -971,7 +932,6 @@
         "epoch",
         "seq",
         "kind",
-        "type",
         "data"
       ],
       "type": "object"
@@ -1096,16 +1056,12 @@
         "text": {
           "description": "The prompt every cursor receives, never expanded as a command.",
           "type": "string"
-        },
-        "type": {
-          "const": "compare"
         }
       },
       "required": [
         "session_id",
         "models",
-        "text",
-        "type"
+        "text"
       ],
       "type": "object",
       "x-result": {
@@ -1231,13 +1187,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "complete_message_id"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -1285,13 +1237,9 @@
         "text": {
           "description": "The editor's contents as typed, NOT just the @word.",
           "type": "string"
-        },
-        "type": {
-          "const": "complete_path"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "text",
@@ -1474,9 +1422,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "event"
         }
       },
       "required": [
@@ -1484,7 +1429,6 @@
         "epoch",
         "seq",
         "kind",
-        "type",
         "data"
       ],
       "type": "object"
@@ -1670,14 +1614,10 @@
       "properties": {
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "describe"
         }
       },
       "required": [
-        "session_id",
-        "type"
+        "session_id"
       ],
       "type": "object",
       "x-result": {
@@ -1690,14 +1630,10 @@
       "properties": {
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "detach"
         }
       },
       "required": [
-        "session_id",
-        "type"
+        "session_id"
       ],
       "type": "object",
       "x-result": {
@@ -1718,13 +1654,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "disable_extension"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "path"
@@ -1932,13 +1864,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "elide_span"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "anchor_id",
@@ -1986,13 +1914,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "enable_extension"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "path"
@@ -2062,16 +1986,12 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "end_compare"
         }
       },
       "required": [
         "session_id",
         "comparison_id",
-        "keep",
-        "type"
+        "keep"
       ],
       "type": "object",
       "x-result": {
@@ -2136,9 +2056,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "event"
         }
       },
       "required": [
@@ -2146,7 +2063,6 @@
         "epoch",
         "seq",
         "kind",
-        "type",
         "data"
       ],
       "type": "object"
@@ -2192,9 +2108,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "event"
         }
       },
       "required": [
@@ -2202,7 +2115,6 @@
         "epoch",
         "seq",
         "kind",
-        "type",
         "data"
       ],
       "type": "object"
@@ -2224,9 +2136,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "event"
         }
       },
       "required": [
@@ -2234,7 +2143,6 @@
         "epoch",
         "seq",
         "kind",
-        "type",
         "data"
       ],
       "type": "object"
@@ -2282,13 +2190,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "enumerate_domain"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "domain"
@@ -2327,17 +2231,22 @@
       "description": "Why a request failed. `code` is stable; `message` is for a human.",
       "properties": {
         "code": {
+          "description": "One of `ERROR_CODES`, the table RPC uses too (`tau_agent_core.rpc.dialect`).",
           "enum": [
-            "bad_request",
-            "unauthorized",
-            "protocol_mismatch",
-            "not_found",
-            "busy",
-            "failed",
-            "submission_rejected",
-            "command_not_supported",
-            "session_not_persisted"
-          ]
+            -32700,
+            -32603,
+            -32602,
+            -32601,
+            -32600,
+            -32007,
+            -32006,
+            -32005,
+            -32004,
+            -32002,
+            -32001,
+            -32000
+          ],
+          "type": "integer"
         },
         "data": {
           "anyOf": [
@@ -2362,7 +2271,7 @@
       "type": "object"
     },
     "Event": {
-      "description": "A push for an attached session, numbered per session within an `epoch`.",
+      "description": "A push for an attached session, numbered per session within an `epoch`; an `event` notification's `params`.",
       "oneOf": [
         {
           "$ref": "#/$defs/EntryOpenEvent"
@@ -2427,6 +2336,26 @@
           "$ref": "#/$defs/UiEventData"
         }
       }
+    },
+    "EventNotification": {
+      "description": "An `event` notification: no `id`, and no answer.",
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event"
+        },
+        "params": {
+          "$ref": "#/$defs/Event"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ],
+      "type": "object"
     },
     "ExtensionInfo": {
       "description": "One loaded extension and what it registered, as `get_extension_state` lists it.",
@@ -2540,6 +2469,37 @@
         "lock",
         "ask",
         "release"
+      ],
+      "type": "object"
+    },
+    "Failure": {
+      "description": "The answer to a request that failed, matched by `id`.",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/Error"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The request's `id`, or `null` when the frame had none the daemon could read."
+        },
+        "jsonrpc": {
+          "const": "2.0"
+        }
+      },
+      "required": [
+        "id",
+        "error",
+        "jsonrpc"
       ],
       "type": "object"
     },
@@ -2686,15 +2646,11 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "fork"
         }
       },
       "required": [
         "session_id",
-        "cursor_id",
-        "type"
+        "cursor_id"
       ],
       "type": "object",
       "x-result": {
@@ -2761,13 +2717,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_commands"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -2838,13 +2790,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_entry"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "entry_id"
@@ -2880,13 +2828,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_extension_config"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "path"
@@ -2936,13 +2880,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_extension_state"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -2984,13 +2924,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_last_assistant_text"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -3024,13 +2960,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_messages"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -3064,13 +2996,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_models"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -3104,13 +3032,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_pending_request"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -3148,13 +3072,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_session_name"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -3188,13 +3108,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_session_stats"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -3264,13 +3180,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_state"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -3350,13 +3262,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_tools"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -3410,13 +3318,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "get_tree"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -3570,15 +3474,11 @@
             }
           ],
           "description": "The shared secret, required only when the daemon's config sets `serve.token`. A client reads it from `TAUD_TOKEN`."
-        },
-        "type": {
-          "const": "hello"
         }
       },
       "required": [
         "protocol",
-        "client",
-        "type"
+        "client"
       ],
       "type": "object",
       "x-result": {
@@ -3729,13 +3629,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "list_managed_extensions"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id"
       ],
@@ -3762,14 +3658,8 @@
     "ListSessions": {
       "additionalProperties": false,
       "description": "Every session in the daemon's store, across every cwd, newest first (RPC `list_sessions`).",
-      "properties": {
-        "type": {
-          "const": "list_sessions"
-        }
-      },
-      "required": [
-        "type"
-      ],
+      "properties": {},
+      "required": [],
       "type": "object",
       "x-result": {
         "$ref": "#/$defs/SessionList"
@@ -3993,16 +3883,12 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "move_cursor"
         }
       },
       "required": [
         "session_id",
         "cursor_id",
-        "leaf",
-        "type"
+        "leaf"
       ],
       "type": "object",
       "x-result": {
@@ -4023,13 +3909,9 @@
         "target_id": {
           "description": "The entry to move the cursor onto \u2014 an `entry_id` from complete_message_id. The abandoned branch drops out of context via the parentId walk but stays on disk and stays browsable; nothing is erased.",
           "type": "string"
-        },
-        "type": {
-          "const": "navigate"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "target_id"
@@ -4137,14 +4019,10 @@
             }
           ],
           "description": "A session name, or `None`."
-        },
-        "type": {
-          "const": "new_session"
         }
       },
       "required": [
-        "cwd",
-        "type"
+        "cwd"
       ],
       "type": "object",
       "x-result": {
@@ -4177,13 +4055,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "next_step"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "flow"
@@ -4260,15 +4134,11 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "open_cursor"
         }
       },
       "required": [
         "session_id",
-        "leaf",
-        "type"
+        "leaf"
       ],
       "type": "object",
       "x-result": {
@@ -4414,13 +4284,9 @@
         "target_id": {
           "description": "The entry the copy hangs from. May not be inside the source's own subtree.",
           "type": "string"
-        },
-        "type": {
-          "const": "paste_subtree"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "source_id",
@@ -4487,16 +4353,12 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "perform_ready"
         }
       },
       "required": [
         "session_id",
         "cursor_id",
-        "ready",
-        "type"
+        "ready"
       ],
       "type": "object",
       "x-result": {
@@ -4639,13 +4501,9 @@
         "text": {
           "description": "The prompt text.",
           "type": "string"
-        },
-        "type": {
-          "const": "prompt"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "text"
@@ -4771,13 +4629,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "reload_extension"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "path"
@@ -4845,9 +4699,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "event"
         }
       },
       "required": [
@@ -4855,7 +4706,6 @@
         "epoch",
         "seq",
         "kind",
-        "type",
         "data"
       ],
       "type": "object"
@@ -4889,9 +4739,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "event"
         }
       },
       "required": [
@@ -4899,7 +4746,6 @@
         "epoch",
         "seq",
         "kind",
-        "type",
         "data"
       ],
       "type": "object"
@@ -4922,37 +4768,15 @@
       "type": "object"
     },
     "Response": {
-      "description": "The one answer to a request, matched by `id`.",
-      "properties": {
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Error"
-            },
-            {
-              "type": "null"
-            }
-          ]
+      "description": "The one answer to a request: a `result` or an `error`, never both.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Success"
         },
-        "id": {
-          "type": "integer"
-        },
-        "ok": {
-          "type": "boolean"
-        },
-        "result": {
-          "description": "When `ok`, the request's result: `Results[request.type]` in the schema. `null` when not `ok`."
-        },
-        "type": {
-          "const": "response"
+        {
+          "$ref": "#/$defs/Failure"
         }
-      },
-      "required": [
-        "id",
-        "ok",
-        "type"
-      ],
-      "type": "object"
+      ]
     },
     "ServeStarted": {
       "description": "What `tau serve -d --json` prints: the one daemon at `address`.",
@@ -5256,13 +5080,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "set_auto_compaction"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "enabled"
@@ -5307,9 +5127,6 @@
         "session_id": {
           "type": "string"
         },
-        "type": {
-          "const": "set_extension_config"
-        },
         "values": {
           "additionalProperties": {},
           "description": "The complete new slice, keyed by the field names get_extension_config's `schema` declares. Every declared field must be present: missing is not empty, and nothing is filled in for you.",
@@ -5317,7 +5134,6 @@
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "path",
@@ -5383,13 +5199,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "set_model"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "name"
@@ -5433,13 +5245,9 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "set_session_name"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "name"
@@ -5472,14 +5280,8 @@
     "Shutdown": {
       "additionalProperties": false,
       "description": "Stop the daemon: it answers, then stops as it does on SIGTERM, closing every connection.",
-      "properties": {
-        "type": {
-          "const": "shutdown"
-        }
-      },
-      "required": [
-        "type"
-      ],
+      "properties": {},
+      "required": [],
       "type": "object",
       "x-result": {
         "type": "null"
@@ -5783,13 +5585,9 @@
         "text": {
           "description": "The prompt text.",
           "type": "string"
-        },
-        "type": {
-          "const": "submit"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "text",
@@ -5851,6 +5649,33 @@
       ],
       "type": "object"
     },
+    "Success": {
+      "description": "The answer to a request that succeeded, matched by `id`.",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "result": {
+          "description": "The request's result: `Results[method]` in the schema."
+        }
+      },
+      "required": [
+        "id",
+        "result",
+        "jsonrpc"
+      ],
+      "type": "object"
+    },
     "SummarizeAndNavigate": {
       "additionalProperties": false,
       "description": "RPC `summarize_and_navigate` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
@@ -5869,13 +5694,9 @@
         "target_id": {
           "description": "The branch point. The subtree BELOW it is what gets summarized, and the branch_summary entry is parented at it.",
           "type": "string"
-        },
-        "type": {
-          "const": "summarize_and_navigate"
         }
       },
       "required": [
-        "type",
         "session_id",
         "cursor_id",
         "target_id"
@@ -6217,9 +6038,6 @@
         },
         "session_id": {
           "type": "string"
-        },
-        "type": {
-          "const": "event"
         }
       },
       "required": [
@@ -6227,7 +6045,6 @@
         "epoch",
         "seq",
         "kind",
-        "type",
         "data"
       ],
       "type": "object"
@@ -6810,1770 +6627,1351 @@
     "oneOf": [
       {
         "additionalProperties": false,
-        "description": "A `hello` request with its id.",
+        "description": "A `hello` request.",
         "properties": {
-          "client": {
-            "description": "What the client is, for the daemon's log (`tui`, `tail`, `web`).",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "protocol": {
-            "description": "The client's `PROTOCOL_VERSION`; a different one is refused.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "token": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The shared secret, required only when the daemon's config sets `serve.token`. A client reads it from `TAUD_TOKEN`."
-          },
-          "type": {
+          "method": {
             "const": "hello"
+          },
+          "params": {
+            "$ref": "#/$defs/Hello"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "protocol",
-          "client",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `list_sessions` request with its id.",
+        "description": "A `list_sessions` request.",
         "properties": {
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "type": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "method": {
             "const": "list_sessions"
+          },
+          "params": {
+            "$ref": "#/$defs/ListSessions"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `new_session` request with its id.",
+        "description": "A `new_session` request.",
         "properties": {
-          "cwd": {
-            "description": "The directory its tools run in; the create fails if it does not exist.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "A model name from the daemon's config, or `None` for its default."
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "A session name, or `None`."
-          },
-          "type": {
+          "method": {
             "const": "new_session"
+          },
+          "params": {
+            "$ref": "#/$defs/NewSession"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "cwd",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `fork` request with its id.",
+        "description": "A `fork` request.",
         "properties": {
-          "at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The entry to fork at instead of the cursor's leaf."
-          },
-          "cursor_id": {
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "fork"
+          },
+          "params": {
+            "$ref": "#/$defs/Fork"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "session_id",
-          "cursor_id",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `attach` request with its id.",
+        "description": "A `attach` request.",
         "properties": {
-          "epoch": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The `epoch` of an earlier attach, to resume rather than re-read."
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "description": "The session, or an unambiguous prefix of its id.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "since": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The last `seq` the client applied under that epoch."
-          },
-          "type": {
+          "method": {
             "const": "attach"
+          },
+          "params": {
+            "$ref": "#/$defs/Attach"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "session_id",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `detach` request with its id.",
+        "description": "A `detach` request.",
         "properties": {
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "detach"
+          },
+          "params": {
+            "$ref": "#/$defs/Detach"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "session_id",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `open_cursor` request with its id.",
+        "description": "A `open_cursor` request.",
         "properties": {
           "id": {
-            "type": "integer"
-          },
-          "label": {
-            "type": "string"
-          },
-          "leaf": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "type": [
+              "integer",
+              "string"
             ]
           },
-          "owner_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ]
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "open_cursor"
+          },
+          "params": {
+            "$ref": "#/$defs/OpenCursor"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "session_id",
-          "leaf",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `close_cursor` request with its id.",
+        "description": "A `close_cursor` request.",
         "properties": {
-          "cursor_id": {
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
-            "const": "close_cursor"
-          }
-        },
-        "required": [
-          "id",
-          "session_id",
-          "cursor_id",
-          "type"
-        ],
-        "type": "object"
-      },
-      {
-        "additionalProperties": false,
-        "description": "A `move_cursor` request with its id.",
-        "properties": {
-          "cursor_id": {
-            "type": "string"
-          },
-          "id": {
-            "type": "integer"
-          },
-          "leaf": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "type": [
+              "integer",
+              "string"
             ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
-            "const": "move_cursor"
+          "method": {
+            "const": "close_cursor"
+          },
+          "params": {
+            "$ref": "#/$defs/CloseCursor"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "session_id",
-          "cursor_id",
-          "leaf",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `answer` request with its id.",
+        "description": "A `move_cursor` request.",
         "properties": {
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "request_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
+          "method": {
+            "const": "move_cursor"
           },
-          "type": {
+          "params": {
+            "$ref": "#/$defs/MoveCursor"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `answer` request.",
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "method": {
             "const": "answer"
           },
-          "value": {
-            "anyOf": [
-              {
-                "additionalProperties": {},
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The `{field: value}` answers, or `None` to cancel the form."
+          "params": {
+            "$ref": "#/$defs/Answer"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "session_id",
-          "request_id",
-          "value",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `perform_ready` request with its id.",
+        "description": "A `perform_ready` request.",
         "properties": {
-          "cursor_id": {
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "ready": {
-            "$ref": "#/$defs/Ready",
-            "description": "What `NextStep` answered once every argument was bound. Its `mutation` must be its flow's."
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "perform_ready"
+          },
+          "params": {
+            "$ref": "#/$defs/PerformReady"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "session_id",
-          "cursor_id",
-          "ready",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `describe` request with its id.",
+        "description": "A `describe` request.",
         "properties": {
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "describe"
+          },
+          "params": {
+            "$ref": "#/$defs/Describe"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "session_id",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `shutdown` request with its id.",
+        "description": "A `shutdown` request.",
         "properties": {
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "type": {
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "method": {
             "const": "shutdown"
+          },
+          "params": {
+            "$ref": "#/$defs/Shutdown"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `compare` request with its id.",
+        "description": "A `compare` request.",
         "properties": {
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "leaf": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The entry the cursors start from; `None` is the head cursor's leaf."
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "models": {
-            "description": "Model names from the daemon's config, one cursor each; one may repeat.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "text": {
-            "description": "The prompt every cursor receives, never expanded as a command.",
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "compare"
+          },
+          "params": {
+            "$ref": "#/$defs/Compare"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "session_id",
-          "models",
-          "text",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `end_compare` request with its id.",
+        "description": "A `end_compare` request.",
         "properties": {
-          "comparison_id": {
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
-          },
-          "keep": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "type": [
+              "integer",
+              "string"
             ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "end_compare"
+          },
+          "params": {
+            "$ref": "#/$defs/EndCompare"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "session_id",
-          "comparison_id",
-          "keep",
-          "type"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `submit` request with its id.",
+        "description": "A `submit` request.",
         "properties": {
-          "allow_user_input": {
-            "description": "Whether this submission's turn may open a blocking dialog.",
-            "type": "boolean"
-          },
-          "correlation": {
-            "$ref": "#/$defs/Correlation",
-            "description": "Free-form origin detail (bus subject, cron id, HTTP request id)."
-          },
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
-          "depth": {
-            "description": "Self-submission depth floor; submit() may raise it further.",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "expand_attachments": {
-            "description": "Whether `@file` references in `text` are resolved into <attachment>/<reference> blocks before the Submission is built, the way the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72). Defaults to False, which sends `@notes.txt` to the model as those eleven literal characters. NOT a Submission field: expansion happens HERE, so what is persisted and what the model saw are the same string. Attached images are appended to `images`. Files are read at this moment, not when the host composed the text. See the `attachments` key on the result for what expansion did.",
-            "type": "boolean"
-          },
-          "expand_commands": {
-            "description": "Whether a leading '/' is command-dispatched. Defaults to False.",
-            "type": "boolean"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "images": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/$defs/ImageContent"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Optional list of image content blocks."
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "multitask_strategy": {
-            "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
-            "enum": [
-              "reject",
-              "enqueue",
-              "steer",
-              "rollback",
-              "fork"
-            ],
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "silent": {
-            "description": "Folds into store_history=False; NOT otherwise implemented \u2014 AgentSession.submit() raises NotImplementedError if True.",
-            "type": "boolean"
-          },
-          "source": {
-            "description": "Who originated this submission (Submission.source).",
-            "enum": [
-              "interactive",
-              "rpc",
-              "extension",
-              "bus",
-              "timer",
-              "webhook",
-              "voice",
-              "agent"
-            ],
-            "type": "string"
-          },
-          "store_history": {
-            "description": "Whether this turn is persisted to the session log. Defaults to True.",
-            "type": "boolean"
-          },
-          "submission_id": {
-            "description": "Caller-assigned correlation id for this submission (uuid4 recommended).",
-            "type": "string"
-          },
-          "submitter": {
-            "description": "WHO submitted \u2014 an extension name, 'human', a channel id.",
-            "type": "string"
-          },
-          "text": {
-            "description": "The prompt text.",
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "submit"
+          },
+          "params": {
+            "$ref": "#/$defs/Submit"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "text",
-          "source",
-          "submitter",
-          "submission_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `prompt` request with its id.",
+        "description": "A `prompt` request.",
         "properties": {
-          "allow_user_input": {
-            "description": "Whether this submission's turn may open a blocking dialog.",
-            "type": "boolean"
-          },
-          "correlation": {
-            "$ref": "#/$defs/Correlation",
-            "description": "Free-form origin detail (bus subject, cron id, HTTP request id)."
-          },
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
-          "depth": {
-            "description": "Self-submission depth floor; submit() may raise it further.",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "expand_attachments": {
-            "description": "Whether `@file` references in `text` are resolved into <attachment>/<reference> blocks before the Submission is built, the way the TUI's editor does (docs/FILE-ATTACHMENTS.md \u00a72). Defaults to False, which sends `@notes.txt` to the model as those eleven literal characters. NOT a Submission field: expansion happens HERE, so what is persisted and what the model saw are the same string. Attached images are appended to `images`. Files are read at this moment, not when the host composed the text. See the `attachments` key on the result for what expansion did.",
-            "type": "boolean"
-          },
-          "expand_commands": {
-            "description": "Whether a leading '/' is command-dispatched. Defaults to False.",
-            "type": "boolean"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "images": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/$defs/ImageContent"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Optional list of image content blocks."
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "multitask_strategy": {
-            "description": "Concurrency policy against an in-flight turn. Defaults to 'reject'. 'fork' is a recognized value but currently REJECTED at submission time (-32602, phase-2 review S3) \u2014 it runs on its own cursor, whose events this handler does not forward (docs/CURSORS.md \u00a76).",
-            "enum": [
-              "reject",
-              "enqueue",
-              "steer",
-              "rollback",
-              "fork"
-            ],
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "silent": {
-            "description": "Folds into store_history=False; NOT otherwise implemented \u2014 AgentSession.submit() raises NotImplementedError if True.",
-            "type": "boolean"
-          },
-          "source": {
-            "description": "Who originated this submission (Submission.source).",
-            "enum": [
-              "interactive",
-              "rpc",
-              "extension",
-              "bus",
-              "timer",
-              "webhook",
-              "voice",
-              "agent"
-            ],
-            "type": "string"
-          },
-          "store_history": {
-            "description": "Whether this turn is persisted to the session log. Defaults to True.",
-            "type": "boolean"
-          },
-          "submission_id": {
-            "description": "Caller-assigned correlation id for this submission (uuid4 recommended).",
-            "type": "string"
-          },
-          "submitter": {
-            "description": "WHO submitted \u2014 an extension name, 'human', a channel id.",
-            "type": "string"
-          },
-          "text": {
-            "description": "The prompt text.",
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "prompt"
+          },
+          "params": {
+            "$ref": "#/$defs/Prompt"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "text"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `abort` request with its id.",
+        "description": "A `abort` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "abort"
+          },
+          "params": {
+            "$ref": "#/$defs/Abort"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `compact` request with its id.",
+        "description": "A `compact` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
-          "custom_instructions": {
-            "description": "Optional extra focus for the generated summary, threaded unchanged to AgentSession.compact(custom_instructions=...).",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "compact"
+          },
+          "params": {
+            "$ref": "#/$defs/Compact"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_state` request with its id.",
+        "description": "A `get_state` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_state"
+          },
+          "params": {
+            "$ref": "#/$defs/GetState"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_messages` request with its id.",
+        "description": "A `get_messages` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_messages"
+          },
+          "params": {
+            "$ref": "#/$defs/GetMessages"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_commands` request with its id.",
+        "description": "A `get_commands` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_commands"
+          },
+          "params": {
+            "$ref": "#/$defs/GetCommands"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_tools` request with its id.",
+        "description": "A `get_tools` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_tools"
+          },
+          "params": {
+            "$ref": "#/$defs/GetTools"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_models` request with its id.",
+        "description": "A `get_models` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_models"
+          },
+          "params": {
+            "$ref": "#/$defs/GetModels"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_session_name` request with its id.",
+        "description": "A `get_session_name` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_session_name"
+          },
+          "params": {
+            "$ref": "#/$defs/GetSessionName"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_session_stats` request with its id.",
+        "description": "A `get_session_stats` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_session_stats"
+          },
+          "params": {
+            "$ref": "#/$defs/GetSessionStats"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_last_assistant_text` request with its id.",
+        "description": "A `get_last_assistant_text` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_last_assistant_text"
+          },
+          "params": {
+            "$ref": "#/$defs/GetLastAssistantText"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `set_model` request with its id.",
+        "description": "A `set_model` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "name": {
-            "description": "A config model NAME (a key in ~/.tau/config.json's 'models' map), resolved through AgentSession's bound model resolver (set_model_resolver) \u2014 the same name --model NAME accepts headlessly. NOT a model id; a config key may alias one.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "set_model"
+          },
+          "params": {
+            "$ref": "#/$defs/SetModel"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "name"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `set_auto_compaction` request with its id.",
+        "description": "A `set_auto_compaction` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
-          "enabled": {
-            "description": "Desired auto-compaction state. RPC sessions are constructed with CompactionSettings(enabled=False) (backends.py:885, RPC-TIER-B.md \u00a71.1), so a host that wants it on says so here; AgentSession.set_auto_compaction is the same setter in process.",
-            "type": "boolean"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "set_auto_compaction"
+          },
+          "params": {
+            "$ref": "#/$defs/SetAutoCompaction"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "enabled"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `set_session_name` request with its id.",
+        "description": "A `set_session_name` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "name": {
-            "description": "The session's new durable display name. Must be non-empty.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "set_session_name"
+          },
+          "params": {
+            "$ref": "#/$defs/SetSessionName"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "name"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `complete_path` request with its id.",
+        "description": "A `complete_path` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "offset": {
-            "description": "The caret's character offset into `text`. Which @reference is being completed is decided from this, so a host that sends the @word alone with offset 0 gets `completion: null` rather than a listing \u2014 the offset is not optional and is not defaulted.",
-            "minimum": 0,
-            "type": "integer"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "text": {
-            "description": "The editor's contents as typed, NOT just the @word.",
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "complete_path"
+          },
+          "params": {
+            "$ref": "#/$defs/CompletePath"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "text",
-          "offset"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `next_step` request with its id.",
+        "description": "A `next_step` request.",
         "properties": {
-          "bound": {
-            "additionalProperties": {},
-            "description": "The arguments bound so far, keyed by argument name. Omit it, or send {}, for the flow's first step. Only REQUIRED arguments block, so a flow whose arguments are all optional is `ready` on the first call.",
-            "type": "object"
-          },
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
-          "flow": {
-            "description": "The flow's name \u2014 one of the `name`s `get_commands` lists. An unknown name is an error, not an empty answer: a host that believes a flow exists must be told it does not.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
-          },
-          "leaf": {
-            "description": "The entry a scoped `message_id` argument is relative to. A parameter rather than the live tip, so a host stepping a sub-agent's flow scopes to THAT agent's leaf. It is echoed back on the step so the host hands it straight to `enumerate_domain`.",
             "type": [
-              "string",
-              "null"
+              "integer",
+              "string"
             ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "next_step"
+          },
+          "params": {
+            "$ref": "#/$defs/NextStep"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "flow"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `enumerate_domain` request with its id.",
+        "description": "A `enumerate_domain` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
-          "domain": {
-            "description": "The domain's name, as a `next_step` step reported it. A domain that is `free` returns no values and total 0 \u2014 that is the answer, not a failure.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
-          },
-          "leaf": {
-            "description": "For a scoped `message_id`: the entry the scope is relative to. Null uses the live tip. An id that names no entry is an error, not an empty listing.",
             "type": [
-              "string",
-              "null"
+              "integer",
+              "string"
             ]
           },
-          "limit": {
-            "description": "How many values to return at most. Defaults to 50.",
-            "minimum": 1,
-            "type": "integer"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "query": {
-            "description": "Filter text. A value matches on a case-sensitive PREFIX of the value itself, or a case-insensitive SUBSTRING of its label \u2014 completion and search, because an id and its text are looked for differently. Empty matches everything in scope.",
-            "type": "string"
-          },
-          "scope": {
-            "description": "For `message_id` only: which entries are candidates. Defaults to `in_session`.",
-            "enum": [
-              "in_session",
-              "ancestors_of_leaf",
-              "descendants_of_leaf",
-              null
-            ],
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "enumerate_domain"
+          },
+          "params": {
+            "$ref": "#/$defs/EnumerateDomain"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "domain"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `complete_message_id` request with its id.",
+        "description": "A `complete_message_id` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "leaf": {
-            "description": "The entry the two scoped variants are relative to. Omitted uses the session cursor's leaf (get_state's `leaf`). An id that names no entry is INVALID_PARAMS, never an empty match list.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "limit": {
-            "description": "How many matches to return at most. Omitted means 50.",
-            "minimum": 1,
-            "type": "integer"
-          },
-          "query": {
-            "description": "Filter text. Matches a case-sensitive PREFIX of an entry id, or a case-insensitive SUBSTRING of its preview \u2014 completion and search in one field. Omitted or empty matches everything in scope.",
-            "type": "string"
-          },
-          "scope": {
-            "description": "Which entries are candidates. 'in_session' is every entry in the log; 'ancestors_of_leaf' is the parent chain from the root to `leaf` inclusive; 'descendants_of_leaf' is the subtree below it, excluding `leaf` itself. Omitted means 'in_session'.",
-            "enum": [
-              "in_session",
-              "ancestors_of_leaf",
-              "descendants_of_leaf"
-            ],
-            "type": "string"
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "complete_message_id"
+          },
+          "params": {
+            "$ref": "#/$defs/CompleteMessageId"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_tree` request with its id.",
+        "description": "A `get_tree` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_tree"
+          },
+          "params": {
+            "$ref": "#/$defs/GetTree"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_entry` request with its id.",
+        "description": "A `get_entry` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
-          "entry_id": {
-            "description": "The entry to read \u2014 an `entry_id` from get_tree or complete_message_id. An id naming no entry is INVALID_PARAMS, never a null entry.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_entry"
+          },
+          "params": {
+            "$ref": "#/$defs/GetEntry"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "entry_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_pending_request` request with its id.",
+        "description": "A `get_pending_request` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_pending_request"
+          },
+          "params": {
+            "$ref": "#/$defs/GetPendingRequest"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `answer_request` request with its id.",
+        "description": "A `answer_request` request.",
         "properties": {
-          "action": {
-            "description": "The pressed action's `label` \u2014 one of the labels in the ask's `actions`. The label, not the command it names: the label is what a person chose and what the ask's own table is keyed by.",
-            "type": "string"
-          },
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "request_id": {
-            "description": "The request's `entry_id`, as get_pending_request reported it or as a SUBMISSION_REJECTED refusal carried it.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "answer_request"
           },
-          "values": {
-            "additionalProperties": {},
-            "description": "The filled fields, keyed by field name. Omitted is the empty dict, which is what an ask declaring no fields takes. Checked against the ask's declared fields before anything is appended: nothing is coerced and no partial answer is persisted.",
-            "type": "object"
+          "params": {
+            "$ref": "#/$defs/AnswerRequest"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "request_id",
-          "action"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `list_managed_extensions` request with its id.",
+        "description": "A `list_managed_extensions` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "list_managed_extensions"
+          },
+          "params": {
+            "$ref": "#/$defs/ListManagedExtensions"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_extension_state` request with its id.",
+        "description": "A `get_extension_state` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "get_extension_state"
+          },
+          "params": {
+            "$ref": "#/$defs/GetExtensionState"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `get_extension_config` request with its id.",
+        "description": "A `get_extension_config` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "path": {
-            "description": "The managed extension to read \u2014 a `path` from list_managed_extensions, or a unique file stem.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "get_extension_config"
+          },
+          "params": {
+            "$ref": "#/$defs/GetExtensionConfig"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "path"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `set_extension_config` request with its id.",
+        "description": "A `set_extension_config` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "path": {
-            "description": "The managed extension to configure \u2014 a `path` from list_managed_extensions, or a unique file stem.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "set_extension_config"
           },
-          "values": {
-            "additionalProperties": {},
-            "description": "The complete new slice, keyed by the field names get_extension_config's `schema` declares. Every declared field must be present: missing is not empty, and nothing is filled in for you.",
-            "type": "object"
+          "params": {
+            "$ref": "#/$defs/SetExtensionConfig"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "path",
-          "values"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `enable_extension` request with its id.",
+        "description": "A `enable_extension` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "path": {
-            "description": "The managed extension to enable \u2014 a `path` from list_managed_extensions, or a unique file stem.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "enable_extension"
+          },
+          "params": {
+            "$ref": "#/$defs/EnableExtension"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "path"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `disable_extension` request with its id.",
+        "description": "A `disable_extension` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "path": {
-            "description": "The managed extension to disable \u2014 a `path` from list_managed_extensions, or a unique file stem.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "disable_extension"
+          },
+          "params": {
+            "$ref": "#/$defs/DisableExtension"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "path"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `reload_extension` request with its id.",
+        "description": "A `reload_extension` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "path": {
-            "description": "The managed extension to re-import \u2014 a `path` from list_managed_extensions, or a unique file stem.",
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "reload_extension"
+          },
+          "params": {
+            "$ref": "#/$defs/ReloadExtension"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "path"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `navigate` request with its id.",
+        "description": "A `navigate` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "target_id": {
-            "description": "The entry to move the cursor onto \u2014 an `entry_id` from complete_message_id. The abandoned branch drops out of context via the parentId walk but stays on disk and stays browsable; nothing is erased.",
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "navigate"
+          },
+          "params": {
+            "$ref": "#/$defs/Navigate"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "target_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `summarize_and_navigate` request with its id.",
+        "description": "A `summarize_and_navigate` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
-          "custom_instructions": {
-            "description": "Extra guidance for the summarizer's SYSTEM prompt. Omitted runs the default summarizer prompt.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "target_id": {
-            "description": "The branch point. The subtree BELOW it is what gets summarized, and the branch_summary entry is parented at it.",
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "summarize_and_navigate"
+          },
+          "params": {
+            "$ref": "#/$defs/SummarizeAndNavigate"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "target_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `elide_span` request with its id.",
+        "description": "A `elide_span` request.",
         "properties": {
-          "anchor_id": {
-            "description": "The entry the fold jumps FROM. The elide entry is appended as its child, so the anchor becomes the end of the kept region and the new tip.",
-            "type": "string"
-          },
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
-          "first_kept_id": {
-            "description": "The entry the fold resumes at \u2014 the anchor itself or one of its ANCESTORS, never a descendant. Everything on the path before it is the elided span. A resume point the fold's scan cannot reach would empty the context silently, which is why the wrong direction is refused rather than tolerated.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "type": {
+          "method": {
             "const": "elide_span"
+          },
+          "params": {
+            "$ref": "#/$defs/ElideSpan"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "anchor_id",
-          "first_kept_id"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `commit_branch` request with its id.",
+        "description": "A `commit_branch` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
-          "drop_context": {
-            "description": "Whether the branch keeps ONLY the selection. true appends an elide resuming at the root-most mark, so the context becomes the system prompt plus the branch; false leaves everything above the attach point in context.",
-            "type": "boolean"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "ids": {
-            "description": "The marked entry ids, in any order \u2014 tree_surgery puts them into tree order. The longest run that is already an ancestor chain is kept in place; the rest are minted as copies parented under it, so nothing is re-parented and nothing is erased.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "session_id": {
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "commit_branch"
+          },
+          "params": {
+            "$ref": "#/$defs/CommitBranch"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "ids",
-          "drop_context"
+          "method"
         ],
         "type": "object"
       },
       {
         "additionalProperties": false,
-        "description": "A `paste_subtree` request with its id.",
+        "description": "A `paste_subtree` request.",
         "properties": {
-          "cursor_id": {
-            "description": "The cursor the verb acts at.",
-            "type": "string"
-          },
           "id": {
-            "type": "integer"
+            "type": [
+              "integer",
+              "string"
+            ]
           },
-          "session_id": {
-            "type": "string"
+          "jsonrpc": {
+            "const": "2.0"
           },
-          "source_id": {
-            "description": "The copied node \u2014 the root of the subtree.",
-            "type": "string"
-          },
-          "target_id": {
-            "description": "The entry the copy hangs from. May not be inside the source's own subtree.",
-            "type": "string"
-          },
-          "type": {
+          "method": {
             "const": "paste_subtree"
+          },
+          "params": {
+            "$ref": "#/$defs/PasteSubtree"
           }
         },
         "required": [
+          "jsonrpc",
           "id",
-          "type",
-          "session_id",
-          "cursor_id",
-          "source_id",
-          "target_id"
+          "method"
         ],
         "type": "object"
       }
@@ -8737,12 +8135,12 @@
         "$ref": "#/$defs/Response"
       },
       {
-        "$ref": "#/$defs/Event"
+        "$ref": "#/$defs/EventNotification"
       }
     ]
   },
-  "description": "The tau serve WebSocket protocol (docs/SERVE-PROTOCOL.md). Request records are closed (`additionalProperties: false`), because the daemon refuses an unknown field. Everything the daemon sends is open: a client must ignore a field it does not know, so a minor version may add one. Each request $def names its answer in `x-result`, and `Results` maps every request `type` to it; `Event`'s `x-data` maps every `kind` to its data.",
-  "title": "tau serve protocol 0.7",
+  "description": "The tau serve protocol, JSON-RPC 2.0 over WebSocket (docs/SERVE-PROTOCOL.md). Request records are closed (`additionalProperties: false`), because the daemon refuses an unknown field. Everything the daemon sends is open: a client must ignore a field it does not know, so a minor version may add one. Each request $def is its method's `params` and names its answer in `x-result`, and `Results` maps every method to it; `Event`'s `x-data` maps every `kind` to its data.",
+  "title": "tau serve protocol 0.8",
   "x-default-port": 8256,
-  "x-protocol-version": "0.7"
+  "x-protocol-version": "0.8"
 }

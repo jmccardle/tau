@@ -8,6 +8,8 @@ stops on its abort signal.
 
 from __future__ import annotations
 
+from tau_agent_core.rpc import dialect
+
 import asyncio
 import io
 from pathlib import Path
@@ -189,11 +191,11 @@ async def test_an_unknown_model_fails_before_anything_opens(served, tmp_path):
     client = await ServeClient.connect(address, client="test")
     session_id, replica = await _session(client, tmp_path)
 
-    with pytest.raises(ServeError, match="not_found.*nope"):
+    with pytest.raises(ServeError, match=f"{dialect.NOT_FOUND}.*nope"):
         await client.request(p.Compare(session_id=session_id, models=["a", "nope"], text="hi"))
 
     assert len(daemon.hosts[session_id].agent_session.cursors) == 1
-    with pytest.raises(ServeError, match="not_found"):
+    with pytest.raises(ServeError, match=f"{dialect.NOT_FOUND}"):
         await client.request(
             p.EndCompare(session_id=session_id, comparison_id="missing", keep=None)
         )
@@ -235,7 +237,7 @@ async def test_keeping_one_aborts_the_others_and_waits_for_the_kept_one(served, 
     comparison = host.backend.comparisons[answer["comparison_id"]]
     await until(lambda: comparison.turns[0].done() and comparison.cursors[1].busy)
 
-    with pytest.raises(ServeError, match="busy.*still running"):
+    with pytest.raises(ServeError, match=f"{dialect.TURN_STILL_RUNNING}.*still running"):
         await client.request(
             p.EndCompare(
                 session_id=session_id, comparison_id=answer["comparison_id"], keep=cursors["slow"]

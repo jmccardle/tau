@@ -68,11 +68,19 @@ def render_markdown() -> str:
     w("## Framing")
     w("")
     w(
-        "One JSON object per WebSocket text frame. A client's first request is "
-        "`hello`; nothing else is served before it. Every request carries an integer "
-        "`id` the client chose, and gets exactly one `response` with that `id`. "
-        "Responses and events share one ordered stream per connection, so a client "
-        "sees an `attach` answer before any event that follows it."
+        "JSON-RPC 2.0, one message per WebSocket text frame. A request is "
+        '`{"jsonrpc": "2.0", "id", "method", "params"}`: `method` is a request name '
+        "below and `params` its fields. The `id` is an integer or a string the client "
+        "chose, and the request gets exactly one answer with that `id`. A client's "
+        "first request is `hello`; nothing else is served before it. Answers and "
+        "events share one ordered stream per connection, so a client sees an `attach` "
+        "answer before any event that follows it."
+    )
+    w("")
+    w(
+        "Not served: a batch (an array of requests) and a notification (a request "
+        "with no `id`), each answered with `-32600`. `params` must be an object when "
+        "present."
     )
     w("")
     w("## Open and closed records")
@@ -93,7 +101,7 @@ def render_markdown() -> str:
         w("")
         w(_doc(cls))
         w("")
-        out.extend(_table(defs[cls.__name__], skip=("type",)))
+        out.extend(_table(defs[cls.__name__]))
         w("")
         w(f"**Answered with:** {_type_text(schema['Results'][tag])}.")
     w("")
@@ -103,7 +111,8 @@ def render_markdown() -> str:
     w("")
     w(
         "Each takes RPC's params as documented in `docs/RPC-PROTOCOL.md`, plus "
-        "`session_id` and `cursor_id`, and answers RPC's result."
+        "`session_id` and `cursor_id` in the same `params` object, and answers RPC's "
+        "result."
     )
     for verb in p.RPC_VERBS:
         name = p._camel(verb)
@@ -114,23 +123,36 @@ def render_markdown() -> str:
         w("")
         w(f"**Answered with:** {_type_text(schema['Results'][verb])}.")
     w("")
-    w("## Responses")
+    w("## Answers")
     w("")
-    w(_doc(p.Response))
+    w(_cell(defs["Response"]["description"]))
+    for cls in (p.Success, p.Failure):
+        w("")
+        w(f"### `{cls.__name__}`")
+        w("")
+        w(_doc(cls))
+        w("")
+        out.extend(_table(defs[cls.__name__]))
     w("")
-    out.extend(_table(defs["Response"], skip=("type",)))
+    w("### Error codes")
     w("")
-    w(
-        "Error codes: "
-        + ", ".join(f"`{c}`" for c in defs["Error"]["properties"]["code"]["enum"])
-        + "."
-    )
+    w("The table RPC uses (`tau_agent_core.rpc.dialect`); a code means the same on both wires.")
+    w("")
+    w("| `code` | Meaning |")
+    w("|---|---|")
+    for code in sorted(p.ERROR_CODES, reverse=True):
+        w(f"| `{code}` | {p.ERROR_CODES[code]} |")
     w("")
     w("## Events")
     w("")
+    w(
+        f'Sent as `{{"jsonrpc": "2.0", "method": "{p.EVENT_METHOD}", "params": Event}}`: '
+        "a notification, with no `id` and no answer."
+    )
+    w("")
     w(_doc(p.Event))
     w("")
-    out.extend(_table(defs["EntryOpenEvent"], skip=("type", "kind", "data")))
+    out.extend(_table(defs["EntryOpenEvent"], skip=("kind", "data")))
     w("")
     w("| `kind` | `data` |")
     w("|---|---|")

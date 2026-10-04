@@ -117,6 +117,25 @@ _ERROR_ORDER: list[tuple[int, str, str]] = [
         "first request, so the answer is available before any write is "
         "attempted.",
     ),
+    (
+        dialect.UNAUTHORIZED,
+        "UNAUTHORIZED",
+        "`tau serve` only; RPC never sends it. The hello's token is missing or "
+        "wrong (`docs/SERVE-PROTOCOL.md`).",
+    ),
+    (
+        dialect.PROTOCOL_MISMATCH,
+        "PROTOCOL_MISMATCH",
+        "`tau serve` only; RPC never sends it. The hello names a protocol "
+        "version the daemon does not speak.",
+    ),
+    (
+        dialect.NOT_FOUND,
+        "NOT_FOUND",
+        "`tau serve` only; RPC never sends it. No such session, cursor, entry, "
+        "form or flow. The codes share one table so a code means one thing on "
+        "both wires.",
+    ),
 ]
 
 

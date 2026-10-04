@@ -17,6 +17,7 @@ from typing import Any, get_args, get_type_hints
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tau_agent_core.rpc import dialect
 from tau_agent_core.testing.schema_check import SchemaError, open_nodes, validate
 from test_serve import _CONFIG, _fake_stream, _serve, _until
 from websockets.asyncio.client import connect
@@ -91,25 +92,25 @@ class Recorder:
         async for raw in self.ws:
             frame = json.loads(raw)
             self.received.append(frame)
-            if frame["type"] == "response" and frame["id"] in self._pending:
+            if "id" in frame and frame["id"] in self._pending:
                 kind, future = self._pending.pop(frame["id"])
                 self.answers.append((kind, frame))
                 future.set_result(frame)
 
     async def frame(self, frame: dict[str, Any]) -> dict[str, Any]:
-        """Send one raw request frame and return its response frame."""
+        """Send one raw request frame, given its own ``id`` here, and return its answer."""
         self._ids += 1
         frame = {**frame, "id": self._ids}
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
-        self._pending[self._ids] = (str(frame.get("type")), future)
+        self._pending[self._ids] = (str(frame.get("method")), future)
         self.sent.append(frame)
         await self.ws.send(json.dumps(frame))
         return await asyncio.wait_for(future, 10)
 
     async def request(self, message: Any) -> Any:
         """Send a request dataclass and return its result, failing on an error answer."""
-        response = await self.frame(p.to_wire(message))
-        assert response["ok"], response["error"]
+        response = await self.frame(p.request_frame(0, message))
+        assert "error" not in response, response["error"]
         return response["result"]
 
     async def rpc(self, verb: str, session_id: str, cursor_id: str, **params: Any) -> Any:
@@ -136,15 +137,19 @@ class Recorder:
             )
         return answer
 
-    async def refused(self, message: Any) -> str:
+    async def refused(self, message: Any) -> int:
         """Send a request the daemon must refuse, and return the error code."""
-        response = await self.frame(p.to_wire(message))
-        assert not response["ok"]
-        return str(response["error"]["code"])
+        response = await self.frame(p.request_frame(0, message))
+        assert "result" not in response
+        return int(response["error"]["code"])
 
     def events(self, kind: str) -> list[dict[str, Any]]:
         """Every event of ``kind`` received so far."""
-        return [f for f in self.received if f["type"] == "event" and f["kind"] == kind]
+        return [
+            f["params"]
+            for f in self.received
+            if f.get("method") == p.EVENT_METHOD and f["params"]["kind"] == kind
+        ]
 
     def channel(self, name: str) -> list[dict[str, Any]]:
         """Every channel event's payload named ``name``."""
@@ -162,10 +167,10 @@ class Recorder:
             validate(frame, SCHEMA["ClientFrame"], SCHEMA)
         for frame in self.received:
             validate(frame, SCHEMA["ServerFrame"], SCHEMA, strict=True)
-            if frame["type"] == "event":
-                covered.add(f"event:{frame['kind']}")
+            if frame.get("method") == p.EVENT_METHOD:
+                covered.add(f"event:{frame['params']['kind']}")
         for kind, response in self.answers:
-            if response["ok"]:
+            if "result" in response:
                 validate(response["result"], SCHEMA["Results"][kind], SCHEMA, strict=True)
                 covered.add(f"result:{kind}")
         return covered
@@ -424,11 +429,11 @@ async def test_perform_ready_checks_the_mutation_and_hands_a_fork_back(daemon, t
         await client.refused(
             p.PerformReady(session_id=session_id, cursor_id=head, ready=mismatched)
         )
-        == "bad_request"
+        == dialect.INVALID_PARAMS
     )
     assert (
         await client.refused(p.PerformReady(session_id=session_id, cursor_id=head, ready=unknown))
-        == "not_found"
+        == dialect.NOT_FOUND
     )
     await client.close()
     client.check()
@@ -477,9 +482,9 @@ async def test_the_hello_names_the_daemon(daemon):
 )
 def test_the_schema_and_parse_request_refuse_the_same_bad_frames(frame):
     with pytest.raises(SchemaError):
-        validate({**frame, "id": 1}, SCHEMA["ClientFrame"], SCHEMA)
-    with pytest.raises(ValueError):
-        p.parse_request({**frame, "id": 1})
+        validate(_message(frame), SCHEMA["ClientFrame"], SCHEMA)
+    with pytest.raises(p.FrameError):
+        p.parse_request(_message(frame))
 
 
 @pytest.mark.parametrize(
@@ -508,8 +513,14 @@ def test_the_schema_and_parse_request_refuse_the_same_bad_frames(frame):
     ],
 )
 def test_the_schema_and_parse_request_accept_the_same_good_frames(frame):
-    validate({**frame, "id": 1}, SCHEMA["ClientFrame"], SCHEMA)
-    p.parse_request({**frame, "id": 1})
+    validate(_message(frame), SCHEMA["ClientFrame"], SCHEMA)
+    p.parse_request(_message(frame))
+
+
+def _message(flat: dict[str, Any]) -> dict[str, Any]:
+    """A request written flat, ``{"type": method, **params}``, as the JSON-RPC request it means."""
+    params = {k: v for k, v in flat.items() if k != "type"}
+    return {"jsonrpc": "2.0", "id": 1, "method": flat["type"], "params": params}
 
 
 def test_strict_validation_refuses_a_key_the_schema_does_not_declare():
@@ -696,7 +707,7 @@ async def test_a_long_reply_streams_bounded_deltas_that_rebuild_the_answer(daemo
         measured[chunks] = (
             max(len(json.dumps(f)) for f in updates),
             sum(len(json.dumps(f)) for f in frames),
-            sum(len(json.dumps(f)) for f in host.history if f["kind"] == "agent_event"),
+            sum(len(json.dumps(f)) for f in host.history if f["params"]["kind"] == "agent_event"),
         )
     (small_max, small_total, small_kept), (big_max, big_total, big_kept) = (
         measured[200],
@@ -731,3 +742,52 @@ def test_stop_with_no_daemon_stops_nothing_and_says_so(tmp_path, capsys):
     assert serve_cli.stop_daemon(address, json_output=True) == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed == {"address": str(address), "pid": None, "stopped": False}
+
+
+async def _answers(daemon, *raws: str) -> list[dict[str, Any]]:
+    """Send each raw text frame on a fresh connection and return the answer to each."""
+    async with connect(daemon.address.url, max_size=None) as ws:
+        out = []
+        for raw in raws:
+            await ws.send(raw)
+            out.append(json.loads(await asyncio.wait_for(ws.recv(), 10)))
+        return out
+
+
+def _hello(request_id: Any) -> str:
+    return json.dumps(
+        p.request_frame(request_id, p.Hello(protocol=p.PROTOCOL_VERSION, client="edges"))
+    )
+
+
+async def test_json_rpc_edges_are_answered_with_their_standard_codes(daemon):
+    """What JSON-RPC 2.0 lets a client send that serve does not serve, and how it says so."""
+    request = {"jsonrpc": "2.0", "id": 7, "method": "list_sessions"}
+    answers = await _answers(
+        daemon,
+        "{not json",
+        json.dumps([request]),
+        json.dumps({"jsonrpc": "2.0", "method": "list_sessions"}),
+        json.dumps({"id": 8, "method": "list_sessions"}),
+        json.dumps({**request, "params": [1]}),
+        json.dumps({**request, "method": "no_such_method"}),
+        json.dumps(request),
+        _hello("a-string-id"),
+        json.dumps({**request, "params": {}}),
+    )
+    codes = [(a.get("id"), a.get("error", {}).get("code")) for a in answers]
+    assert codes == [
+        (None, dialect.PARSE_ERROR),
+        (None, dialect.INVALID_REQUEST),
+        (None, dialect.INVALID_REQUEST),
+        (8, dialect.INVALID_REQUEST),
+        (7, dialect.INVALID_PARAMS),
+        (7, dialect.METHOD_NOT_FOUND),
+        (7, dialect.INVALID_REQUEST),
+        ("a-string-id", None),
+        (7, None),
+    ]
+    for answer in answers:
+        assert answer["jsonrpc"] == "2.0"
+        assert ("result" in answer) != ("error" in answer), "one of the two, never both"
+        validate(answer, SCHEMA["ServerFrame"], SCHEMA, strict=True)

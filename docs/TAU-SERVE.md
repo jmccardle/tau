@@ -442,6 +442,19 @@ The five verbs serve does not run, `get_capabilities` and the session
 lifecycle, are typed and strictly validated in core's tests. Under `--connect` the picker searches a session's bounded `title`,
 since the listing no longer carries `first_message`.
 
+**Built note (2026-10-03, protocol 0.8):** serve's envelope is JSON-RPC 2.0, the
+envelope RPC already used. A request is `{"jsonrpc", "id", "method", "params"}`
+with `session_id` and `cursor_id` inside `params`. An answer is a `result` or an
+`error`, never both, and an event is an `event` notification whose `params` is the
+old event body. Error codes are integers from RPC's `dialect` table, which gained
+three serve codes (`UNAUTHORIZED`, `PROTOCOL_MISMATCH`, `NOT_FOUND`). So an RPC
+handler's refusal now reaches a serve client unchanged, and the daemon's string
+table that translated it (`RPC_CODES`) is gone. An `id` may be a string, as
+JSON-RPC allows. A batch and a notification from a client are refused with
+`-32600`. The alternative, keeping serve's own envelope, left two envelopes and
+two error vocabularies for one set of verbs. ROADMAP records the step this makes
+cheaper: MCP's methods and its HTTP transport beside serve's own, after 0.12.
+
 ## 6. `tau serve`
 
 ```

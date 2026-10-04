@@ -238,7 +238,7 @@ if TYPE_CHECKING:
 Tier = Literal["A", "B", "C", "D"]
 
 CommandHandlerFn = Callable[
-    ["RPCHandler", "int | None", dict[str, Any]], Awaitable["dict[str, Any] | None"]
+    ["RPCHandler", "int | str | None", dict[str, Any]], Awaitable["dict[str, Any] | None"]
 ]
 
 
@@ -932,7 +932,7 @@ def rejection_data(outcome: "SubmissionResult") -> dict[str, Any]:
 
 async def _submit_and_acknowledge(
     handler: "RPCHandler",
-    msg_id: int | None,
+    msg_id: int | str | None,
     method: str,
     sub: Submission,
     attachments: dict[str, Any] | None = None,
@@ -1057,7 +1057,7 @@ async def _submit_and_acknowledge(
     result_schema=SUBMIT_RESULT_SCHEMA,
 )
 async def _handle_submit(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any] | None:
     _reject_unsupported_multitask_strategy(params)
     sub, attachments = submission_from_params(params, handler.session.cwd)
@@ -1079,7 +1079,7 @@ async def _handle_submit(
     result_schema=SUBMIT_RESULT_SCHEMA,
 )
 async def _handle_prompt(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any] | None:
     _reject_unsupported_multitask_strategy(params)
     sub, attachments = submission_from_params(params, handler.session.cwd)
@@ -1128,7 +1128,7 @@ async def _handle_prompt(
     result_schema=ABORT_RESULT_SCHEMA,
 )
 async def _handle_abort(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     handler.session.abort()
     return {"status": "aborted", "compaction_id": handler.abort_compaction()}
@@ -1170,7 +1170,7 @@ async def _handle_abort(
     result_schema=GET_STATE_RESULT_SCHEMA,
 )
 async def _handle_get_state(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     session = handler.session
     cursor = session.acting_cursor
@@ -1195,7 +1195,7 @@ async def _handle_get_state(
     result_schema=GET_MESSAGES_RESULT_SCHEMA,
 )
 async def _handle_get_messages(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     return {"messages": handler.session.messages}
 
@@ -1223,7 +1223,7 @@ async def _handle_get_messages(
     result_schema=GET_COMMANDS_RESULT_SCHEMA,
 )
 async def _handle_get_commands(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core.projections import command_vocabulary
 
@@ -1239,7 +1239,7 @@ async def _handle_get_commands(
     result_schema=GET_TOOLS_RESULT_SCHEMA,
 )
 async def _handle_get_tools(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     tools = handler.session.tools
     return {
@@ -1271,7 +1271,7 @@ async def _handle_get_tools(
     result_schema=GET_CAPABILITIES_RESULT_SCHEMA,
 )
 async def _handle_get_capabilities(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     return capabilities.build_capabilities()
 
@@ -1408,7 +1408,7 @@ NEW_SESSION_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
     result_schema=result_schema_for("new_session"),
 )
 async def _handle_new_session(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     runtime = _require_runtime(handler)
     outcome = await runtime.new_session(persist=params.get("persist", True))
@@ -1436,7 +1436,7 @@ async def _handle_new_session(
     result_schema=result_schema_for("fork"),
 )
 async def _handle_fork(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     runtime = _require_runtime(handler)
     outcome = await runtime.fork()
@@ -1464,7 +1464,7 @@ async def _handle_fork(
     result_schema=result_schema_for("switch_session"),
 )
 async def _handle_switch_session(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     runtime = _require_runtime(handler)
     try:
@@ -1901,7 +1901,7 @@ def _compaction_outcome(result: "CompactionResult | None", leaf: str | None) -> 
     result_schema=COMPACT_RESULT_SCHEMA,
 )
 async def _handle_compact(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any] | None:
     """Start a compaction in the background and acknowledge it (C3).
 
@@ -2095,7 +2095,7 @@ COMPLETE_PATH_RESULT_SCHEMA: dict[str, Any] = result_schema_for("complete_path")
     result_schema=COMPLETE_PATH_RESULT_SCHEMA,
 )
 async def _handle_complete_path(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core.projections import path_completion
 
@@ -2138,7 +2138,7 @@ GET_LAST_ASSISTANT_TEXT_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_l
     result_schema=GET_LAST_ASSISTANT_TEXT_RESULT_SCHEMA,
 )
 async def _handle_get_last_assistant_text(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     return {"text": handler.session.get_last_assistant_text()}
 
@@ -2207,7 +2207,7 @@ _MODEL_CATALOG_ATTR = MODEL_CATALOG_ATTR
     result_schema=GET_MODELS_RESULT_SCHEMA,
 )
 async def _handle_get_models(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core.projections import model_catalog
 
@@ -2262,7 +2262,7 @@ GET_SESSION_STATS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session
     result_schema=GET_SESSION_STATS_RESULT_SCHEMA,
 )
 async def _handle_get_session_stats(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     stats = handler.session.get_session_stats()
     last = stats.last_compaction
@@ -2375,7 +2375,7 @@ def listed_session(info: "SessionInfo") -> dict[str, Any]:
     result_schema=LIST_SESSIONS_RESULT_SCHEMA,
 )
 async def _handle_list_sessions(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     runtime = _require_runtime(handler)
     catalog: SessionCatalog = runtime.catalog
@@ -2469,7 +2469,7 @@ SET_AUTO_COMPACTION_RESULT_SCHEMA: dict[str, Any] = result_schema_for("set_auto_
     result_schema=SET_AUTO_COMPACTION_RESULT_SCHEMA,
 )
 async def _handle_set_auto_compaction(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     session = handler.session
     async with turn_safety_guard(session):
@@ -2559,7 +2559,7 @@ _resolver_error_message = resolver_error_message
     result_schema=SET_MODEL_RESULT_SCHEMA,
 )
 async def _handle_set_model(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     session = handler.session
     name = params["name"]
@@ -2634,7 +2634,7 @@ GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session_
     result_schema=SET_SESSION_NAME_RESULT_SCHEMA,
 )
 async def _handle_set_session_name(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     session = handler.session
     name = params["name"]
@@ -2673,7 +2673,7 @@ async def _handle_set_session_name(
     result_schema=GET_SESSION_NAME_RESULT_SCHEMA,
 )
 async def _handle_get_session_name(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     return {"name": handler.session.get_session_name()}
 
@@ -2784,7 +2784,7 @@ NEXT_STEP_RESULT_SCHEMA: dict[str, Any] = {
     result_schema=NEXT_STEP_RESULT_SCHEMA,
 )
 async def _handle_next_step(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core.flows import UnknownFlowError
     from tau_agent_core.projections import flow_next_step
@@ -2903,7 +2903,7 @@ ENUMERATE_DOMAIN_RESULT_SCHEMA: dict[str, Any] = {
     result_schema=ENUMERATE_DOMAIN_RESULT_SCHEMA,
 )
 async def _handle_enumerate_domain(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core.projections import domain_listing
 
@@ -3091,7 +3091,7 @@ COMPLETE_MESSAGE_ID_RESULT_SCHEMA: dict[str, Any] = result_schema_for("complete_
     result_schema=COMPLETE_MESSAGE_ID_RESULT_SCHEMA,
 )
 async def _handle_complete_message_id(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     tree = handler.session.acting_cursor.tree()
     try:
@@ -3158,7 +3158,7 @@ GET_TREE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_tree")
     result_schema=GET_TREE_RESULT_SCHEMA,
 )
 async def _handle_get_tree(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core.projections import browse_rows
 
@@ -3210,7 +3210,7 @@ GET_ENTRY_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_entry")
     result_schema=GET_ENTRY_RESULT_SCHEMA,
 )
 async def _handle_get_entry(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     tree = handler.session.acting_cursor.tree()
     entry_id = params["entry_id"]
@@ -3249,7 +3249,7 @@ GET_PENDING_REQUEST_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_pendi
     result_schema=GET_PENDING_REQUEST_RESULT_SCHEMA,
 )
 async def _handle_get_pending_request(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     request = handler.session.pending_request
     return {"request": None if request is None else request_payload(request)}
@@ -3329,7 +3329,7 @@ ANSWER_REQUEST_RESULT_SCHEMA: dict[str, Any] = result_schema_for("answer_request
     result_schema=ANSWER_REQUEST_RESULT_SCHEMA,
 )
 async def _handle_answer_request(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     try:
         result = await handler.session.answer_request(
@@ -3371,7 +3371,7 @@ LIST_MANAGED_EXTENSIONS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("list_
     result_schema=LIST_MANAGED_EXTENSIONS_RESULT_SCHEMA,
 )
 async def _handle_list_managed_extensions(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     return {
         "extensions": [
@@ -3406,7 +3406,7 @@ GET_EXTENSION_STATE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_exten
     result_schema=GET_EXTENSION_STATE_RESULT_SCHEMA,
 )
 async def _handle_get_extension_state(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core.projections import extension_state
 
@@ -3500,7 +3500,7 @@ TREE_CONTEXT_RESULT_SCHEMA: dict[str, Any] = result_schema_for("navigate")
     result_schema=result_schema_for("navigate"),
 )
 async def _handle_navigate(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core import tree_ops
 
@@ -3552,7 +3552,7 @@ SUMMARIZE_AND_NAVIGATE_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
     result_schema=result_schema_for("summarize_and_navigate"),
 )
 async def _handle_summarize_and_navigate(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     async with tree_mutation_guard(
         handler,
@@ -3612,7 +3612,7 @@ ELIDE_SPAN_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
     result_schema=result_schema_for("elide_span"),
 )
 async def _handle_elide_span(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core import tree_ops
 
@@ -3668,7 +3668,7 @@ COMMIT_BRANCH_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
     result_schema=result_schema_for("commit_branch"),
 )
 async def _handle_commit_branch(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core import tree_ops
 
@@ -3720,7 +3720,7 @@ PASTE_SUBTREE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("paste_subtree")
     result_schema=PASTE_SUBTREE_RESULT_SCHEMA,
 )
 async def _handle_paste_subtree(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     from tau_agent_core import tree_ops
 
@@ -3794,7 +3794,7 @@ def _extension_action_result(
     result_schema=result_schema_for("enable_extension"),
 )
 async def _handle_enable_extension(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     session = handler.session
     async with turn_safety_guard(session):
@@ -3831,7 +3831,7 @@ async def _handle_enable_extension(
     result_schema=result_schema_for("disable_extension"),
 )
 async def _handle_disable_extension(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     session = handler.session
     async with turn_safety_guard(session):
@@ -3870,7 +3870,7 @@ async def _handle_disable_extension(
     result_schema=result_schema_for("reload_extension"),
 )
 async def _handle_reload_extension(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     session = handler.session
     async with turn_safety_guard(session):
@@ -3909,7 +3909,7 @@ async def _handle_reload_extension(
     result_schema=result_schema_for("get_extension_config"),
 )
 async def _handle_get_extension_config(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     try:
         return handler.session.get_extension_config(params["path"])
@@ -3964,7 +3964,7 @@ async def _handle_get_extension_config(
     result_schema=result_schema_for("set_extension_config"),
 )
 async def _handle_set_extension_config(
-    handler: "RPCHandler", msg_id: int | None, params: dict[str, Any]
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
     session = handler.session
     async with turn_safety_guard(session):

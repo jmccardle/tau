@@ -6,6 +6,8 @@ The daemon runs in this process on an ephemeral port with a file store under
 
 from __future__ import annotations
 
+from tau_agent_core.rpc import dialect
+
 import asyncio
 import io
 from pathlib import Path
@@ -192,7 +194,7 @@ async def test_listing_spans_every_cwd(served, tmp_path):
     assert {row["cwd"] for row in rows} == {str(tmp_path / "a"), str(tmp_path / "b")}
     assert {row["title"] for row in rows} == {"a", "b"}
     assert listing["scope"] == {"store": "file", "cwd": None}
-    with pytest.raises(ServeError, match="not_found"):
+    with pytest.raises(ServeError, match=f"{dialect.NOT_FOUND}"):
         await client.request(p.NewSession(cwd=str(tmp_path / "missing")))
     await client.close()
 
@@ -222,7 +224,7 @@ async def test_a_reconnect_replays_what_it_missed(served, tmp_path):
 async def test_a_token_is_required_only_when_configured(tmp_path, provider, extensions_off):
     server, served = await _serve(tmp_path, {**_CONFIG, "serve": {"token": "s3cret"}})
     try:
-        with pytest.raises(ServeError, match="unauthorized"):
+        with pytest.raises(ServeError, match=f"{dialect.UNAUTHORIZED}"):
             await served.client(token="wrong")
         client = await served.client(token="s3cret")
         assert (await client.request(p.ListSessions()))["sessions"] == []
@@ -274,7 +276,7 @@ async def test_a_form_goes_to_clients_and_the_first_answer_wins(served, tmp_path
     request_id = requests[0]["data"]["request_id"]
     await client.request(p.Answer(session_id=session_id, request_id=request_id, value={"n": "x"}))
     assert await asking == {"n": "x"}
-    with pytest.raises(ServeError, match="not_found"):
+    with pytest.raises(ServeError, match=f"{dialect.NOT_FOUND}"):
         await client.request(p.Answer(session_id=session_id, request_id=request_id, value=None))
 
     await client.request(p.Detach(session_id=session_id))
@@ -404,11 +406,11 @@ async def test_next_step_and_enumerate_domain_answer_as_rpc_does(served, tmp_pat
         "mutation": "set_model",
         "arguments": {"name": "other"},
     }
-    with pytest.raises(ServeError, match="bad_request"):
+    with pytest.raises(ServeError, match=f"{dialect.INVALID_PARAMS}"):
         await _rpc(client, "next_step", session_id, head, flow="no-such-flow")
-    with pytest.raises(ServeError, match="bad_request"):
+    with pytest.raises(ServeError, match=f"{dialect.INVALID_PARAMS}"):
         await _rpc(client, "enumerate_domain", session_id, head, domain="no-such-domain")
-    with pytest.raises(ServeError, match="bad_request"):
+    with pytest.raises(ServeError, match=f"{dialect.INVALID_PARAMS}"):
         await _rpc(client, "next_step", session_id, head, flw="model")
     await client.close()
 
@@ -443,7 +445,7 @@ async def test_submit_requires_rpcs_provenance_and_records_it(served, tmp_path):
     client = await served.client()
     session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
     replica = await client.attach(session_id)
-    with pytest.raises(ServeError, match="bad_request"):
+    with pytest.raises(ServeError, match=f"{dialect.INVALID_PARAMS}"):
         await _rpc(client, "submit", session_id, replica.head_cursor_id, text="x")
 
     starts: list[dict[str, Any]] = []
@@ -510,7 +512,7 @@ async def test_fork_copies_the_path_to_a_cursor_and_leaves_the_source(served, tm
     assert cut.entries[-1]["id"] == user == at_user["leaf"]
     assert len(cut.entries) < len(before)
     assert [e["id"] for e in replica.entries] == before, "the source is unchanged"
-    with pytest.raises(ServeError, match="not_found"):
+    with pytest.raises(ServeError, match=f"{dialect.NOT_FOUND}"):
         await client.request(p.Fork(session_id=session_id, cursor_id=head, at="no-such-entry"))
     rows = (await client.request(p.ListSessions()))["sessions"]
     assert {whole, cut_id} <= {row["session_id"] for row in rows}
@@ -566,7 +568,7 @@ async def test_an_rpc_verb_acts_at_the_named_cursor_not_the_head(served, tmp_pat
         TURN_CURSOR.reset(token)
     assert model["model"]["id"] == "other-model"
     assert state["model"]["id"] == "fake-model" and state["leaf"] == head_leaf
-    with pytest.raises(ServeError, match="bad_request"):
+    with pytest.raises(ServeError, match=f"{dialect.INVALID_PARAMS}"):
         await _rpc(client, "set_model", session_id, head)
     await client.close()
 
@@ -618,15 +620,18 @@ async def test_a_busy_cursor_enqueues_a_second_prompt_with_the_cores_own_strateg
     with pytest.raises(ValueError, match="multitask_strategy|follow_up"):
         p.parse_request(
             {
+                "jsonrpc": "2.0",
                 "id": 1,
-                "type": "submit",
-                "session_id": session_id,
-                "cursor_id": head,
-                "text": "x",
-                "source": "rpc",
-                "submitter": "test",
-                "submission_id": "s",
-                "multitask_strategy": "follow_up",
+                "method": "submit",
+                "params": {
+                    "session_id": session_id,
+                    "cursor_id": head,
+                    "text": "x",
+                    "source": "rpc",
+                    "submitter": "test",
+                    "submission_id": "s",
+                    "multitask_strategy": "follow_up",
+                },
             }
         )
     await client.close()
