@@ -470,8 +470,9 @@ leaves, with `$defs` (`f90ac66`); a cursor names its model by config name
 
 **Still open before 0.12.0** (`TAU-SERVE.md` §10, checked 2026-10-03):
 
-- `HEADS-AND-MULTIPLEXER.md` §5 and `REMOTE-CONTROL.md` still describe the hub as
-  the multiplexer. Neither mentions `tau serve` (`grep -c` returns 0 for both).
+- ~~`HEADS-AND-MULTIPLEXER.md` §5 and `REMOTE-CONTROL.md` still describe the hub as
+  the multiplexer~~ — amended 2026-10-03: both carry dated notes naming
+  `tau serve` as the multiplexer and RPC as the stdio head.
 - The release matrix (`docs/RELEASING.md`), the version bump, the tag, and the
   push. tau-code's matching release is open too.
 - John's decision on how to record a turn that raises (see "Open work").

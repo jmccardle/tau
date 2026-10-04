@@ -782,8 +782,9 @@ CURSORS step 2. These sizes are estimates (`assumed`). Nothing has been measured
 - ~~The `cursor` → leaf/entry-id rename on the RPC wire~~ — built, RPC 2.0 (§7.4).
 - Correct the verb counts in ROADMAP and in tau-code's ARCHITECTURE.md (defect 5,
   closed by M0).
-- Amend `HEADS-AND-MULTIPLEXER.md` §5 and `REMOTE-CONTROL.md`, both of which
-  describe the hub as the multiplexer.
+- ~~Amend `HEADS-AND-MULTIPLEXER.md` §5 and `REMOTE-CONTROL.md`, both of which
+  describe the hub as the multiplexer~~ — done 2026-10-03, as dated built notes
+  in each that point here.
 - A full `pytest` run, a run of `scripts/check_docs_coverage.py`, and the release
   matrix in `docs/RELEASING.md`.
 

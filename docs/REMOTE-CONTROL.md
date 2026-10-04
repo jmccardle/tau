@@ -15,6 +15,8 @@ transport.
 
 > **Amended 2026-10-02.** F1 and F2 are restated by `docs/CURSORS.md`. Multi-agent-on-one-tree ships as cursors in one process, not lanes; the session tuple is `{store, session_id, cursor_id, cursor}` and `WireEvent` carries `cursor_id` (protocol 1.8).
 
+> **Amended 2026-10-03.** This is still the design of record for `tau --mode rpc`, and RPC is not legacy: it is the stdio head for a process that wants one exclusive agent (`docs/TAU-SERVE.md` §7.4). It is not the multiplexer. Several heads on one session, sessions that outlive their head, sockets, and a reverse channel were built in 0.12.0 as a second protocol, `tau serve` (`docs/TAU-SERVE.md` §5–§6; reference `docs/SERVE-PROTOCOL.md`), which runs RPC's verbs through RPC's own handlers rather than extending this wire. tau-code's hub, which relayed one RPC child to several clients, is deleted (§7.3 there). So §1's three deferrals still hold for RPC. The notes in §1, §7.1 and §7.3 say where each was met instead. Since RPC 2.0 the session tuple's entry id is `leaf`, not `cursor` (`TAU-SERVE.md` §7.4), and RPC is at 2.1. The verb and test counts in the status above are as of 2026-08-07: the current counts are the "Counts" line of the generated `docs/RPC-PROTOCOL.md`.
+
 **Relationship to existing docs.** `RPC-PROTOCOL.md` documents the protocol
 `rpc.py` speaks *today* — six methods, JSON-RPC 2.0, and no way to reach it from
 the CLI. This document states what that surface must become to be a product, and
@@ -46,6 +48,11 @@ that may be written in any language.
   stays cheaply reachable if the precondition is ever revisited. §7.2.
 - **Sockets, TCP, multiplexed sessions.** stdio is the interface. §7.3 records
   the two places a later transport would touch, so that it stays an adjustment.
+
+Built note (2026-10-03): all three out-of-scope items stay out of scope for RPC.
+Sockets, TCP, multiplexed sessions and the reverse channel were built in
+`tau serve`, a daemon with its own WebSocket protocol (`docs/TAU-SERVE.md` §5,
+§6). The daemon is the single writing process, so the second item is untouched.
 
 **Non-goal.** Faithful agent reconstruction from the wire. Same position as
 `NODE-ADDRESSABLE-AGENTS.md` §5: the tree owns what was said, the invoker owns
@@ -816,6 +823,14 @@ this role — it already has a bus and channels that reach a human, so
 natural first implementation. The channel is deferred, not hypothetical, and it
 should be designed against that consumer when it is built.
 
+Built note (2026-10-03): on RPC the channel is still deferred: `ui_methods` is
+`[]`, and a host reads an open extension request by polling
+`get_pending_request` (since 0.10.1). The channel was built on the `tau serve`
+wire instead, and not against Tectum. A form is published to every attached
+client as a `request` event, the first `answer` wins, and with no client attached
+each field takes its declared default (`docs/TAU-SERVE.md` §6.5,
+`serve/daemon.py`'s `ServeUI`). RC3's "never hang" holds there.
+
 ### 7.2 Several agents at different points on one tree
 
 `NODE-ADDRESSABLE-AGENTS.md` decision 6 already settles this, and its statement
@@ -876,6 +891,16 @@ places, and only stays cheap if they are kept clean now:
 Multiplexed sessions over one connection are a *different* change — it makes
 session identity part of every message, and F2 is what would make that additive.
 One process per session remains the model.
+
+Built note (2026-10-03): neither change was made to RPC. `rpc/transport.py` is
+still stdio-only, and one RPC process still holds one session. The multiplexed
+case is `tau serve` (`docs/TAU-SERVE.md` §5, §6): one daemon holds many sessions,
+one WebSocket connection may attach several, and every request names
+`session_id` and, where it acts at a cursor, `cursor_id`. Its transport is a new
+module tree (`tau_coding_agent/serve/`), not a second implementation of block
+[1], so X1 and X2 were never exercised. Its backpressure differs from T3: the
+daemon drops a client that falls behind and the client resumes by sequence
+number, where RPC stalls the loop for its one host.
 
 ---
 

@@ -1,13 +1,19 @@
 # Spec: heads and the multiplexer — τ is headless, the TUI is one head
 
-**Status:** position and cost record, written 2026-08-30. **Nothing in §4, §5 or
-§6 is built.** §1 through §3 are measurements of the tree at `dfc77f0`; every
-file:line below was read, not remembered. This document exists so that the work
-already in flight (image paste, `docs/TECTUM-NO-TOOLS-MIGRATION.md`) is done in
-a shape a second head does not have to undo, and so the multiplexer's price is
-recorded before anyone pays part of it by accident.
+**Status:** position and cost record, written 2026-08-30. **§5's multiplexer was
+built 2026-10-03 as `tau serve`** (`docs/TAU-SERVE.md`), on a WebSocket protocol
+of its own rather than on RPC over a socket; the dated notes in §5 say where the
+build diverged from these prices. §4.1's head was built in tau-code, as a client
+of the daemon. Nothing in §6 is built. §1 through §3 are measurements of the
+tree at `dfc77f0`; every file:line below was read, not remembered. This document
+exists so that the work already in flight (image paste,
+`docs/TECTUM-NO-TOOLS-MIGRATION.md`) is done in a shape a second head does not
+have to undo, and so the multiplexer's price is recorded before anyone pays part
+of it by accident.
 
 > **Amended 2026-10-02.** Where this says "lane", read `docs/CURSORS.md`: the TUI routes events into streams keyed by `submission_id`, and the session tuple's `lane` is now `cursor_id`.
+
+> **Amended 2026-10-03.** The multiplexer is the `tau serve` daemon (`docs/TAU-SERVE.md` §3, §5, §6). It owns sessions, runs their turns with or without a client attached, and streams each session's entries to every attached head: the TUI under `tau --connect` (§7.1), and tau-code's browser and VS Code heads (§7.3), which deleted their own hub and runner. `tau --mode rpc` is not the multiplexer and is not legacy: it stays the stdio head for one exclusive agent (`TAU-SERVE.md` §7.4). The wires are generated in `docs/SERVE-PROTOCOL.md` and `docs/RPC-PROTOCOL.md`.
 
 **Relationship to existing docs.** `docs/REMOTE-CONTROL.md` is the design of
 record for the RPC surface and is not restated here; this document depends on
@@ -53,6 +59,11 @@ This is already true in the code, in five places.
 Every head that is not written in Python needs its own client anyway (that is
 goal G2 — "the host need not be Python"), so the missing piece matters only for
 a head written in Python that wants to drive a τ in another process.
+
+Built note (2026-10-03): the Python client that was built speaks the serve
+protocol, not RPC. `tau_coding_agent/serve/client.py` and `remote.py` are what
+`tau --connect` and `tau serve --tail` use (`docs/TAU-SERVE.md` §7.1.1). τ still
+has no RPC client.
 
 ---
 
@@ -129,6 +140,14 @@ the dialect is JSON-RPC 2.0, and the protocol reference is machine-generated
 - **Unverified:** I did not survey the VS Code webview API for image paste
   specifics. The claim here is only that a webview can display an image.
 
+Built note (2026-10-03): tau-code built this head, and a web head beside it, but
+not on a `tau --mode rpc` child. It first relayed one RPC child to several
+clients through a hub of its own; in 0.12.0 it deleted that hub and runner and
+speaks `tau serve` directly (`docs/TAU-SERVE.md` §7.3). "Cost to τ: none" held
+only while one head drove one conversation; several heads on one session, and a
+session that outlives its head, are what the daemon cost. `docs/VSCODE-HEAD.md`
+is the survey this entry lacked.
+
 ### 4.2 `textual-serve` / `textual-web`
 
 Textualize ships tooling to serve a Textual app over the browser. Cost to τ is
@@ -169,6 +188,14 @@ detach; a session with no head attached keeps running.** Today the agent's
 lifetime is the client's lifetime, because stdin EOF is what ends it
 (`rpc/handler.py`, "the peer is gone").
 
+Built note (2026-10-03): this is `tau serve` (`docs/TAU-SERVE.md` §6), and the
+shape above is what shipped. A session with no client attached keeps running its
+turns (§6.5 there). Under `tau serve`, then, the agent's lifetime is the
+daemon's. Under `tau --mode rpc` it is still the client's, by design (§7.4
+there). The multiplexer is not RPC with a second transport, which is what §5.2
+priced: it is a second protocol, in `tau_coding_agent/serve/`, that runs RPC's
+verbs through RPC's own handlers (§5, "serve is RPC plus addressing").
+
 ### 5.1 Decision 6 survives, and this is the load-bearing argument
 
 `docs/NODE-ADDRESSABLE-AGENTS.md` decision 6: *a conversation has exactly one
@@ -185,6 +212,10 @@ agents on one tree".
 
 So the multiplexer is a transport and fan-out change. It is not a concurrency
 change to the tree, and it must not become one.
+
+Built note (2026-10-03): held unchanged. `docs/TAU-SERVE.md` §3 cites this
+section and adds no cross-process lock: two processes on one session file is
+misuse, and the daemon is how a user gets one writer.
 
 ### 5.2 The four costs
 
@@ -211,6 +242,24 @@ change to the tree, and it must not become one.
    every read (F3: no host may cache the tip). This is a client-side sequence
    — pull state, then subscribe — not a new core capability.
 
+Built note (2026-10-03), the four costs as `tau serve` paid them:
+
+1. **Transport.** WebSocket, in the `[serve]` extra, with `--listen unix:` as one
+   branch (`docs/TAU-SERVE.md` §6.2, §6.4). `rpc/transport.py` was not
+   refactored and stays stdio-only, so X1 and X2 were never exercised.
+2. **Per-client output.** Each client has its own bounded queue, and the policy
+   is **drop the slow head**: at `QUEUE_BOUND` frames the daemon closes it with
+   code 4000, and it reconnects and resumes by sequence number. The agent never
+   stalls for a reader, and a dropped reader misses no entry (`TAU-SERVE.md` §5).
+   This answers §9 question 2. G4's stall still holds for RPC's one host.
+3. **Session identity.** Every request names `session_id`, and a cursor-scoped
+   one names `cursor_id`; one connection can attach several sessions.
+4. **Replay on attach.** Not a pull-then-subscribe sequence. The client keeps a
+   replica of the session's entries. Each event carries a per-session sequence
+   number. Attaching with `since` replays the events after it from the daemon's
+   in-memory history, and an `epoch` from another daemon run, or a `since` older
+   than `REPLAY_BOUND`, gets a snapshot (`TAU-SERVE.md` §5, built note M2).
+
 ### 5.3 The reverse channel stops being a footnote
 
 `docs/REMOTE-CONTROL.md` §7.1 defers the reverse channel (extension → host UI)
@@ -227,6 +276,15 @@ re-evaluated at the moment of the ask, not at admission, and a detached session
 takes the declared default. That is a change to the core, and it is the one item
 in §5 that is not purely transport.
 
+Built note (2026-10-03): the outcome shipped, but not as a core change.
+`allow_user_input` is still stamped at admission. The decision at the ask is the
+daemon's UI delegate (`serve/daemon.py`, `ServeUI`): a form goes to every
+attached client and the first answer wins, and with no client attached each
+field takes its declared default and the daemon logs it (`docs/TAU-SERVE.md`
+§6.5, `test_serve.py`). So the reverse channel exists on the serve wire, as the
+`request` event and the `answer` request. RPC's `ui_methods` is still `[]`
+(`docs/REMOTE-CONTROL.md` §7.1).
+
 ### 5.4 What does not need to change: images on the wire
 
 `prompt.images` is already a declared RPC parameter (`rpc/commands.py:441`), and
@@ -234,6 +292,9 @@ in §5 that is not purely transport.
 2000×2000 by `resize_image` (`tools/image_resize.py`, pi's default and τ's)
 base64-encodes to well under that. A head captures an image locally and sends it
 as `images` on a `prompt` or `submit`. No protocol change, no new verb.
+
+Built note (2026-10-03): the serve protocol's `submit` and `prompt` take RPC's
+params, `images` included (`docs/TAU-SERVE.md` §5, protocol 0.6).
 
 ---
 
@@ -277,6 +338,10 @@ not an awkward configuration — it is a head that owns capture (voice) and disp
 it as the reverse channel's natural first consumer. If the multiplexer is built,
 Tectum is the design target, not a later port.
 
+Built note (2026-10-03): the multiplexer was built against tau-code and the TUI,
+not Tectum (`docs/TAU-SERVE.md` §2, §7). Tectum still drives `tau --mode rpc`,
+the head §7.4 there keeps for one exclusive agent.
+
 ---
 
 ## 7. Decisions taken
@@ -297,6 +362,12 @@ Tectum is the design target, not a later port.
 7. **Detached sessions force the reverse-channel question.** `allow_user_input`
    must be evaluated at the ask, not at admission. §5.3.
 
+Built note (2026-10-03), against `tau serve`: decisions 1, 2 and 5 hold. Decision
+4 holds with the daemon as the wire a graphical head speaks, not `tau --mode
+rpc`. Decision 6 is answered: drop the slow head (§5.2's note). Decision 7 is
+answered at the ask by the daemon's UI delegate, with `allow_user_input`
+unchanged (§5.3's note). Decision 3 is not built.
+
 ---
 
 ## 8. Deliberately absent
@@ -315,6 +386,12 @@ Tectum is the design target, not a later port.
 - **A τ-native Python RPC client.** Needed only by a Python head in another
   process, which nothing today is.
 
+Built note (2026-10-03): `docs/TAU-SERVE.md` built the multiplexer; its §11 is
+the scope boundary now. The lane verbs became cursors (`docs/CURSORS.md`), and
+the daemon has the three cursor requests (`docs/SERVE-PROTOCOL.md`). The TUI under
+`tau --connect` is a Python head in another process, and its client speaks the
+serve protocol (§1's note), so an RPC client is still absent and still unneeded.
+
 ---
 
 ## 9. Open questions for the owner
@@ -326,6 +403,11 @@ Tectum is the design target, not a later port.
 3. Does a detached session run at all, or does detaching pause it? "Keeps
    running" is what makes §5.3 urgent; "pauses" makes the reverse channel stay a
    footnote.
+
+Built note (2026-10-03): 2 and 3 are answered by `docs/TAU-SERVE.md`. A slow head
+is dropped and catches up (§5 there), and a detached session keeps running
+(§6.5 there). Question 1 is answered in practice by tau-code's web and VS Code
+heads.
 
 ---
 
@@ -346,3 +428,16 @@ Following the repo idiom that a contract is executable, and mirroring
   equal to the one a client attached from the start would hold.
 - **H-T5** An extension UI request under a detached session takes the declared
   default and is recorded, and never hangs (RC3).
+
+Built note (2026-10-03), where each obligation landed under `tau serve`:
+
+- **H-T1** Moot: the multiplexer is not RPC on a socket. RPC's conformance suite
+  still runs over stdio, and serve validates every request and event against its
+  own generated schema (`test_serve_schema.py`).
+- **H-T2** `test_serve.py` (every client's replica after a turn) and
+  `test_connect_tui.py` (a second client's replica equals the daemon's file);
+  provenance by `test_submit_requires_rpcs_provenance_and_records_it`.
+- **H-T3** `test_a_client_that_falls_behind_is_dropped`: the head is dropped.
+- **H-T4** `test_a_reconnect_replays_what_it_missed`.
+- **H-T5** `test_a_form_goes_to_clients_and_the_first_answer_wins`, whose last
+  assertion is the no-client default.
