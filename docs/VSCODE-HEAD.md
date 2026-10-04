@@ -1,6 +1,11 @@
 # Research: a VS Code / VSCodium head for τ
 
-**Status:** research record, written 2026-08-31. **Nothing is built.** This
+**Status:** research record, written 2026-08-31. **The head is built, in
+tau-code** (`github.com/jmccardle/tau-code`, `packages/vscode`), as a client of
+`tau serve` (`docs/TAU-SERVE.md` §7.3) rather than of a `tau --mode rpc` child;
+§6's tree verbs and reverse channel are built in τ, §6.1's file-change records
+are half built, and the editor integrations are not built. The dated notes below
+say where the build diverged. This
 document fills the gap `docs/HEADS-AND-MULTIPLEXER.md` §4.1 left open, where the
 recommendation to build a VS Code head carried the line "Unverified: I did not
 survey the VS Code webview API". Every platform claim below was read from a
@@ -8,6 +13,8 @@ vendor page or a repository this session; every claim I could not check is
 marked in §9.
 
 > **Amended 2026-10-02.** §5.1's "lanes" are cursors in `docs/CURSORS.md` terms: one per sub-agent, identified by `cursor_id` on every wire event.
+
+> **Amended 2026-10-03.** The VS Code head was built on `tau serve`, not on a `tau --mode rpc` child. tau-code first relayed one RPC child to its clients through a hub and runner of its own; it deleted both (tau-code `a738df6`) and its sidebar view, its editor-tab panel and its standalone web client now speak the serve WebSocket protocol, at 0.7 (`docs/TAU-SERVE.md` §5, §6, §7.3; reference `docs/SERVE-PROTOCOL.md`). The extension host runs `tau serve -d --json` where the workspace is and relays the webview's frames to the daemon. `tau --mode rpc` stays the stdio head for one exclusive agent (`TAU-SERVE.md` §7.4). Lanes are cursors (`docs/CURSORS.md`). Where this record says RPC child, lane or "before any multiplexer exists", the built notes in §2.2, §4, §6 and §8 say what shipped.
 
 **Provenance.** Platform sources are web pages fetched 2026-08-31, listed at the
 end. I did not run VS Code, did not build an extension, and did not read the
@@ -119,6 +126,14 @@ Two lessons, and the second is the important one:
    it urgent too, before any multiplexer exists: an extension that wants to show
    a diff, open a file, or ask a question has no verb for it in τ's 27.
 
+Built note (2026-10-03): the multiplexer now exists, as `tau serve`
+(`docs/TAU-SERVE.md`), and the graphical head arrived with it rather than
+before it. Lesson 1's mapping moved with the build: Cline's standalone server
+corresponds to `tau serve`, not to `tau --mode rpc`. Lesson 2 was met in part:
+the serve wire carries an extension's form as a `request` event and its reply
+as `answer`, first answer wins (`TAU-SERVE.md` §6.5), and tau-code draws it as a
+panel. "Show a diff" and "open a file" still have no verb (§6.3 item 3).
+
 ### 2.3 Continue — core, gui, extension, and a strict message rule
 
 Continue names three parts. `core` holds the business logic. `gui` renders and
@@ -173,6 +188,14 @@ over its stdio, and renders into a `WebviewViewProvider` in the sidebar.
 - **This is the recommendation.** It is what Claude Code, Cline and Continue all
   ship.
 
+Built note (2026-10-03): built as a webview head, over `tau serve` rather than a
+`tau --mode rpc` child. The extension host runs `tau serve -d --json`, which
+reports a running daemon or starts one, and relays the webview's frames to it
+over a WebSocket (tau-code `docs/ARCHITECTURE.md` §2, §2.3). The client is
+TypeScript generated from the serve schema. A sidebar `WebviewView` and an
+editor-tab `WebviewPanel` share one render layer with the standalone web client,
+which is §4.3's rule kept.
+
 #### 4.1 Correction: the clipboard claim in `HEADS-AND-MULTIPLEXER.md` §4.1
 
 That section says a VS Code head gets image paste because "the editor's own
@@ -218,6 +241,12 @@ in descending order of how hard they are to reproduce.
    forwards one, authenticates, or handles CORS. **This is §5.2's socket
    transport cost, paid by the host, for this one head.** A standalone web app
    must build every part of it.
+
+   Built note (2026-10-03): holds, with the daemon in place of the child. The
+   extension host starts `tau serve -d` beside the repository and dials it from
+   Node, so the webview never binds or dials a port. The socket transport this
+   item said a standalone web app must build was built once, in `tau serve`
+   (`docs/TAU-SERVE.md` §6.2), and the web client uses it directly.
 
 2. **Editor context as a submission source.** The current selection, the active
    file, the workspace folders, opening a file at a line, the native diff view,
@@ -352,9 +381,20 @@ This is the real cost column, and none of it is extension work.
    ("fail fast with the declared default, never hang") is survivable, but it
    means the head cannot host a permission prompt, which is the single most
    visible feature of every extension in §2.
+
+   Built note (2026-10-03): built on the serve wire, not on RPC. An extension's
+   form reaches every attached head as a `request` event, the first `answer`
+   wins, and with no head attached each field takes its declared default
+   (`docs/TAU-SERVE.md` §6.5). RPC's `ui_methods` is still `[]`. The intents in
+   §6.3 item 3 (`reveal`, `show_diff`) are not built.
 3. **Lane verbs.** `HEADS-AND-MULTIPLEXER.md` §8 lists `open_lane`,
    `list_lanes`, `close_lane` as Tier C and absent. A webview showing several
    lanes side by side wants them. A single-pane head does not.
+
+   Built note (2026-10-03): lanes were removed. Several writers on one tree are
+   cursors (`docs/CURSORS.md`), and the serve wire has `open_cursor`,
+   `close_cursor` and `move_cursor` (`docs/SERVE-PROTOCOL.md`). A tau-code head
+   drives one cursor at a time and can open another.
 4. **The tree is not on the wire at all.** Measured in this checkout by
    importing `COMMAND_TABLE`: it holds 27 entries, of which **20 have a handler
    and 7 are formally declined** (`bash`, `cycle_model`, `cycle_thinking_level`,
@@ -470,6 +510,13 @@ because no head has ever been given one.**
 So `EditTool` runs `_generate_diff` on every call and the result is immediately
 unreachable. Under "Fail Early" that is work done and discarded without a word.
 
+Built note (2026-09-04, `0bddfb3`): the discard is closed. `AgentToolResult`
+carries `details`, and it reaches the persisted `toolResult` message, the
+`tool_execution_end` event and the `tool_result` hook. It is not pushed on the
+RPC stream, because `edit` puts a whole diff in it; a head pulls it with the
+message. The "nothing computes a line number" row and §6.2's defects still
+hold, so no head can yet jump to an edit or draw a diff.
+
 ### 6.2 The diff τ computes would not drive a diff view anyway
 
 `EditTool._generate_diff` (`edit.py:224`) has two defects, and they matter
@@ -548,6 +595,17 @@ Build Option A with Option C's tree. That is: a webview head in the sidebar for
 the transcript and the editor, a native `TreeView` for the conversation tree,
 both driving one `tau --mode rpc` child process. Defer Option B until A ships and
 skip Option D until `chatSessions` finalizes.
+
+Built note (2026-10-03): tau-code built Option A, and it differs from this
+recommendation in two places. The views drive `tau serve`, not a `tau --mode rpc`
+child: the session belongs to the daemon, so it outlives a window reload and is
+shared with the web client and `tau --connect` (`docs/TAU-SERVE.md` §7.3). The
+tree is drawn in the webview, not a native `TreeView`, because a `TreeItem`
+cannot show the zone colours and a `TreeView` would not reach the web client
+(tau-code `docs/ARCHITECTURE.md` §12.1). Option B is not built. Of the
+prerequisites below, item 2 is built (§6 item 4), item 3 is built as the serve
+`request`/`answer` pair without the intents, and item 1 is half built: §6.1's
+note.
 
 Three prerequisites are τ's work, not the extension's. The first two block; the
 third does not.
