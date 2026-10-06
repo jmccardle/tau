@@ -1,6 +1,6 @@
 # docs/ index
 
-83 design records live at the top level of `docs/`. Each opens with its status
+84 design records live at the top level of `docs/`. Each opens with its status
 in the first three lines, so what a file claims to describe is checkable before
 reading it. `.claude/skills/feature-doc` is how one is written and how a line
 below is added.
@@ -61,7 +61,7 @@ exempt from the prose scans, because rewriting a measurement falsifies it.
 
 ## The rest of `docs/` (manifest)
 
-The other 38. Open one when something here names your problem; do not add
+The other 39. Open one when something here names your problem; do not add
 findings-length lines to it. A doc that has grown a real trap gets promoted to
 Findings, which means writing the finding rather than lengthening the clause.
 
@@ -90,6 +90,7 @@ Findings, which means writing the finding rather than lengthening the clause.
 
 **Research and unbuilt** — each states its own status header, and several are stale:
 `TAU-SERVE.md` (the 0.12.0 plan: durable writes, `tau serve`, `--connect`, cursor compare; M0–M5 built, M6's rename built) ·
+`CODE-MODE.md` (a Python script calling every extension's tools in a sandbox; the seams, interpreter candidates and lifetime; nothing built) ·
 `CONSTRAINED-GEN-AND-BRANCHING-PLAN.md` · `JMFTS-INTEGRATION-PLAN.md` ·
 `RESEARCH-INTEGRATION-EVALUATION.md` · `ALPHA-SELECTOR-SPEC.md` ·
 `M2-RESULTS.md` · `M3-DESIGN.md` · `WORKSTREAM-CROSSWALK.md` (the status index across the four vocabularies).
