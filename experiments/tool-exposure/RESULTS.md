@@ -3,6 +3,11 @@ not released. It builds the seams `docs/CODE-MODE.md` §5 names, before any
 interpreter: nested tool calls, discovery, exposure, typed returns, and output
 capture. Every new public name is marked experimental in its docstring.
 
+Reworked 2026-10-06: the declared `tools` block no longer changes on its own.
+Loading a deferred tool and masking a tool now leave it byte-identical, and the
+prompt cache holds across both (measured, §4). Changing the block takes an
+explicit `redeclare_tools`. The RPC wire is now 2.2 and the serve wire 0.9.
+
 Each claim below is marked **ran** (measured or tested here), **read** (from the
 code), or **inferred**.
 
@@ -28,12 +33,17 @@ ctx.find_extension(name) -> ExtensionInfo | None
 
 ```python
 session.describe_tools(*, include_hidden=False) -> list[ToolDescription]
-await session.set_tool_exposure(name, exposure) -> None
+await session.set_tool_exposure(name, exposure) -> None   # never changes the tools block
+session.preview_redeclare(changes: dict[str, bool]) -> ToolBlockChange
+await session.redeclare_tools(changes: dict[str, bool]) -> ToolBlockChange  # user action only
 session.list_extensions() -> list[ExtensionInfo]
 await session.execute_tool(name, args, *, parent_tool_call_id=None) -> NestedToolResult
 ```
 
-All four are triaged `NOT_EXPOSED` in the RPC capability audit, each with a reason.
+`describe_tools`, `execute_tool`, `list_extensions` and `set_tool_exposure` are
+triaged `NOT_EXPOSED` in the RPC capability audit, each with a reason.
+`redeclare_tools` and `preview_redeclare` are not on `ctx`, because changing the
+block is a user's decision, made through a head.
 
 ### Types
 
@@ -50,9 +60,19 @@ AgentToolResult.value: Any = None                # structured value; never sent,
 
 # tau_agent_core.tool_catalog
 @dataclass(frozen=True) class ToolDescription:
-    name, label, description, namespace, exposure, declared_exposure,
+    name, label, description, namespace, exposure, declared, declared_exposure,
     tags, parameters, output_schema, execution_mode
-    declared_to_model: bool; callable: bool; def stub() -> str
+    model_may_call: bool; callable: bool; def stub() -> str
+
+# tau_agent_core.tool_dispatch — deferred tools reached without a block change
+tool_search_definition() -> dict       # model-only; returns stubs, declares nothing
+call_tool_definition() -> dict         # model-only; call_tool(name, arguments)
+search_deferred(descriptions, query, limit=8) -> list[ToolDescription]
+
+# tau_agent_core.prompt_cache — pure, for every head
+@dataclass(frozen=True) class ToolBlockChange:
+    added, removed, changed: tuple[str, ...]; reordered: bool; invalidates_cache: bool
+tool_block_change(before, after) -> ToolBlockChange
 @dataclass(frozen=True) class ExtensionInfo: name, path, tools, commands
 
 # tau_agent_core.tool_pipeline
@@ -61,7 +81,7 @@ AgentToolResult.value: Any = None                # structured value; never sent,
     text: str; def as_type(tp) -> Any            # validate value as a TypedDict/dataclass/model
 class NestedCallError(ToolError): result: AgentToolResult | None
 class ToolCallBlocked(NestedCallError): blocked_by: str
-prepare_tool_call(tools, dispatcher, tool_call, *, parent_tool_call_id=None)
+prepare_tool_call(tools, dispatcher, tool_call, *, parent_tool_call_id=None, gate=None)
 execute_prepared_call(tools, call, signal) -> AgentToolResult
 apply_tool_result_hooks(dispatcher, result, input_args, *, parent_tool_call_id=None)
 run_nested_call(*, tools, dispatcher, emit, signal, name, args, parent_tool_call_id=None)
@@ -88,14 +108,19 @@ GrepTool.run(pattern, path=".", *, files=None, ignore_case=False, signal=None) -
 ### Changes to existing contracts
 
 - `AgentEvent.parent_tool_call_id` and the same field on the RPC `WireEvent` and
-  the serve schema. Additive, with no protocol version bump (§6).
+  the serve schema. The RPC protocol goes from 2.1 to 2.2 and the serve protocol
+  from 0.8 to 0.9, so a client has a version from which it can rely on the field.
+  Serve's hello refuses a mismatch, so a 0.8 client, tau-code included, is refused
+  until it moves to 0.9.
 - The `tool_call` and `tool_result` hook events carry `parent_tool_call_id` for a
   nested call only. A model-issued call's event is unchanged.
 - `ExtensionRunner.emit_tool_result` also patches `value`, and its return value
   gains `patched`, the list of keys a handler set. Two runner tests that compared
   the exact dict were updated.
-- `CONFIG_KEYS` gains `tool_exposure`.
-- `AgentLoop` takes `tools_provider`, which it calls before each completion.
+- `CONFIG_KEYS` gains `tool_exposure` and `tool_declaration`.
+- `AgentLoop` takes `call_gate(name) -> reason | None`, which refuses a
+  model-issued call before validation. The first branch's `tools_provider`
+  (re-reading the declared tools before each completion) is removed.
 - `BlockedCall` and `ErrorCall` moved to `tool_pipeline`. `agent_loop` still
   exports both names.
 - `bash` runs with `stdin=/dev/null` and no longer writes an unused temp file
@@ -166,45 +191,101 @@ no extension lands in `"extension"`.
 exposure. BM25 or JMFTS ranking is CODE-MODE §7's `ToolRanker`, and it can rank
 these same descriptions.
 
-## 4. Exposure, per cursor, in the tree
+## 4. Exposure, per cursor, in the tree, with a fixed tools block
 
-| Exposure | Offered to the model | `ctx.execute_tool` |
-|---|---|---|
-| `direct` | yes | yes |
-| `model-only` | yes | no |
-| `callable` | no | yes |
-| `deferred` | no, until loaded | yes |
-| `hidden` | no | no |
+| Exposure | In the `tools` block by default | Model call | `call_tool` | `ctx.execute_tool` |
+|---|---|---|---|---|
+| `direct` | yes | yes | yes | yes |
+| `model-only` | yes | yes | no | no |
+| `callable` | no | refused | refused | yes |
+| `deferred` | no | through `call_tool` | yes | yes |
+| `hidden` | no | refused | refused | no |
 
 pi calls the third mode `codemode`. τ calls it `callable` because a tool, an
 extension or a script can reach it, not only a code-mode script.
 
-**The active set lives in the tree (ran).** `set_tool_exposure(name, exposure)`
-appends a `config` entry `{"tool_exposure": {...the whole map...}}` at the acting
-cursor's leaf. Effective exposure is that tool's entry in
-`config_at(entries, leaf)["tool_exposure"]`, or its declared default. No pending
-state is kept anywhere, because the tree is the only store. Test
-`test_masking_a_built_in_is_recorded_and_survives_resume_but_not_an_earlier_branch`
-masks `bash` and checks three things: the next turn is not offered `bash`; a
-second `AgentSession` over the same log (a resume) is not offered it either; and
-a cursor at the leaf before the entry is still offered it. Built-ins are masked
-like any other tool.
+**Two separate facts, both in the tree (ran).** Whether the model's `tools` block
+declares a tool is fixed by its author's exposure, and only an explicit
+`redeclare_tools({name: bool})` writes a `tool_declaration` config entry that
+changes it. What a tool may *do* is its effective exposure: the author's default,
+unless `set_tool_exposure` wrote a `tool_exposure` config entry. Both are read
+with `config_at(entries, leaf)`, so a resume or fork behaves the same and a
+branch taken earlier does not. No pending state is kept anywhere.
 
-**Mid-turn loading (ran, live).** `AgentLoop` re-reads its declared tools through
-`tools_provider` before every completion. A `tool_search` that loads a deferred
-tool therefore makes it callable on the model's very next step. On
-`claude-haiku-4-5` (`examples/62_tool_exposure.py`), the model called
-`tool_search("text")`. That loaded `word_stats` and returned its stub. The model
-called `word_stats` in the same turn: 3083 tokens in total.
+**Masking keeps the tool declared (ran).** A masked tool stays in the block, so
+the block is unchanged. The loop's `call_gate` refuses a model call to it before
+validation, with the reason "Tool 'bash' is not available in this conversation:
+it was set to 'hidden'. Do not call it again." The model is told in advance by an
+appended, persisted `tool_exposure` custom message, visible to the model. When no
+turn is running the message is appended at once. During a turn it goes on the
+cursor's steer queue, which delivers it after the batch's tool results. Writing
+it at once mid-turn would put a user message between a `tool_use` and its
+`tool_result`. Test
+`test_masking_keeps_the_tools_block_refuses_the_call_and_tells_the_model` covers
+four things: the block bytes are equal before and after; a call to the masked
+tool is refused; a resume over the same log refuses too; and a cursor placed
+before the entry still runs the tool.
 
-**Prompt caching (read, inferred).** Descriptions never change. `tool_search`'s
-description names no tools, and the declared list keeps registry order, so an
-unchanged set serializes the same way (test
-`test_an_unchanged_tool_set_serializes_identically_across_turns`). A load or a
-mask does change the `tools` block, and every provider renders `tools` before
-`system` (`PROMPT-CACHING.md`). So each load costs one full cache miss, paid at
-the completion after the load. pi avoids the miss by keeping the declared set
-fixed and appending a message. The trade is still open (§6).
+**Loading a deferred tool is a message, not a declaration (ran).**
+`tool_dispatch` provides two `model-only` tools with fixed descriptions.
+`tool_search(query)` returns the matching deferred tools as Python stubs in its
+result, which is an appended message. `call_tool(name, arguments)` is declared
+from the first request and runs its target through `ctx.execute_tool`, so hooks
+and vetoes apply and the call is recorded as a nested call. It refuses a target
+that is not `direct` or `deferred`; a `callable` tool is for code, not the model.
+A script in code mode calls the target directly.
+
+**Pure warning for heads (ran).** `prompt_cache.tool_block_change(before,
+after)` reports added, removed, changed and reordered tools, and whether the
+change invalidates the cache. `session.preview_redeclare(changes)` applies it to
+a pending redeclaration, so every head can warn before the user confirms.
+
+**What pi does (read, corrected).** The first version of this record said pi
+"keeps the declared set fixed and appends a message". That is wrong for tool
+search. It came from CODE-MODE §5.2, which says it of pi's code-mode tool
+description and the MCP server list. pi 1.0's `tool_search`
+(`packages/coding-agent/src/extensions/tool-search/tool.ts:209`) calls
+`tools.setActiveTools([...active, ...matches])`, which changes the declared set:
+its result text says the tools "are available from your next call". pi keeps the
+cache only at the provider layer. With Anthropic's mid-conversation tool-changes
+beta (`mid-conversation-tool-changes-2026-07-01`, `supportsMidConvoToolChanges`),
+`anthropic-messages.ts:1210-1229` keeps the request's `tools` list growing only.
+The initial tools carry the breakpoint, every later tool is sent with
+`defer_loading: true`, and a placeholder deferred tool is declared from the first
+request. The comment there says this is because the first deferred tool otherwise
+caused a measured full miss. Without that compat flag, pi sends the current set
+and misses. τ's design needs no provider feature.
+
+**Measured on `claude-haiku-4-5` (ran, `probe_cache.py`).** Per completion:
+uncached input / cache read / cache write, in tokens.
+
+| Step | As built (cache-safe) | Old behaviour (block changed) |
+|---|---|---|
+| warm | 3 / 0 / 10685 | 3 / 10685 / 0 |
+| load: first completion | 3 / **10685** / 59 (`tool_search`) | 3 / **0** / **10796** (`word_stats` declared) |
+| load: next | 6 / 10744 / 150 (`call_tool`) | 5 / 10796 / 87 |
+| load: answer | 5 / 10894 / 127 | — |
+| plain turn after the mask | 3 / **11021** / 31 | 3 / **0** / **10792** (`bash` withdrawn) |
+
+The old `warm` row read the cache entry the new run had just written, because
+the prefix was identical. Each block change re-bills about 10.8k tokens as a
+write. At Haiku 4.5's documented rates ($1/MTok input, writes 1.25× for a
+5-minute TTL and 2× for 1 hour, reads 0.1×), one miss on this prefix costs
+$0.0135 against $0.0011 for the hit it replaced. That is 12.5× per request on
+τ's 5-minute TTL, and 20× on a 1-hour TTL. The cost grows linearly with the
+prefix, so a 100k-token conversation pays about $0.125 per load or mask, against
+$0.01.
+
+**Minimum cacheable prefix (ran).** A 3488-token prompt neither wrote nor read
+the cache on two identical requests. A 4565-token prompt wrote 4565 and then
+read 4565. The minimum therefore lies between those two figures, which is
+consistent with the documented 4096 for Haiku 4.5 and with τ's
+`MIN_CACHEABLE_PROMPT_TOKENS = 4096`.
+
+**Unchanged from the first version:** the earlier live run of
+`examples/62_tool_exposure.py` (3083 tokens) used the old loading path. The
+example now uses `tool_search` and `call_tool`, and the cache probe above
+exercises it.
 
 ## 5. Typed returns, and output capture
 
@@ -293,17 +374,23 @@ or C code that writes to fd 1, bypasses it. For that the rule is per spawner.
   its cursor and is not affected (read). This bug predates the experiment and is
   separate from it.
 - **Open decisions.**
-  1. Is a load a cache miss (as built), or a message with a fixed declared set
-     (pi)?
-  2. Does `parent_tool_call_id` on the wire get an RPC/serve minor-version bump?
-     E3 allows additive fields; tau-code ignores unknown keys.
+  1. ~~Is a load a cache miss, or a message with a fixed declared set?~~ Decided
+     2026-10-06: the block never changes on its own (§4).
+  2. ~~Does `parent_tool_call_id` get a minor-version bump?~~ Done: RPC 2.2,
+     serve 0.9. tau-code must bump its hello to 0.9.
   3. Should an exposure the user set persist across sessions as a preference in
      `config.json`, beside the per-tree entry?
-  4. Should `tools` in the config entry keep listing `self._tools` filtered by
-     exposure (as built) or be dropped in favour of `tool_exposure`?
+  4. Should `tools` in the config entry keep listing the declared built-ins (as
+     built), or be dropped in favour of `tool_declaration`?
   5. Can a nested call reach a tool masked from the model only because the
      model must not see it (`callable`)? As built, yes; it is the point of
      `callable`.
+  6. An extension that calls `register_tool` mid-session, or a reload, still
+     changes the block at the next prompt. That is a user-visible event (loading
+     an extension), but no head yet uses `tool_block_change` to warn about it.
+  7. Should `tool_search` and `call_tool` be registered by core whenever any
+     deferred tool exists, rather than by an extension? That would change the
+     block when the first deferred tool appears.
 - **Not built:** `on_update` for nested calls (still never passed, CODE-MODE §4);
   a core-side reading that renders `nested_calls` for all three heads; masked
   tools still appear in the system prompt's tool list, which is built once at
@@ -324,6 +411,14 @@ or C code that writes to fd 1, bypasses it. For that the rule is per spawner.
   tests, and 7 example-contract cases are collected for `62_tool_exposure.py`.
   That is 42 against a measured delta of 41; the one-test difference was not
   traced.
+- After the 2026-10-06 rework, the experiment file collects 39 tests. The full
+  suite gave 6492 passed, 157 skipped, 6 deselected and 1 failed: the RPC
+  capability audit, because `redeclare_tools` and `preview_redeclare` were not
+  yet triaged. Once they were triaged, that file and the four generated-doc and
+  schema test files passed (87 tests). The full suite was not run again.
+- `probe_cache.py`: the cache measurements in §4, run on `claude-haiku-4-5`
+  2026-10-06. About 77k prompt tokens, nearly all of them cache reads and
+  writes, so under 5 cents.
 - Static gates on all five `src` trees: `ruff check` clean, `ruff format
   --check` clean, `mypy` no issues in 140 files, comment-block scan 0. The
   pre-commit hook passed on every commit.
