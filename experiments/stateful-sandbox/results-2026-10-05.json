@@ -1,0 +1,363 @@
+{
+  "monty_version": "1.1.0",
+  "python": "3.11.2",
+  "monty_states": {
+    "empty": {
+      "raw_bytes": 875,
+      "zlib_bytes": 550,
+      "dump_ms": 0.13,
+      "checkout_load_ms": 0.579
+    },
+    "rows_1k": {
+      "raw_bytes": 209853,
+      "zlib_bytes": 23815,
+      "dump_ms": 3.299,
+      "checkout_load_ms": 5.432
+    },
+    "functions_5": {
+      "raw_bytes": 3070,
+      "zlib_bytes": 1427,
+      "dump_ms": 0.195,
+      "checkout_load_ms": 0.658
+    },
+    "str_1MiB": {
+      "raw_bytes": 1049505,
+      "zlib_bytes": 1721,
+      "dump_ms": 3.701,
+      "checkout_load_ms": 2.396
+    },
+    "random_200k": {
+      "raw_bytes": 205529,
+      "zlib_bytes": 132560,
+      "dump_ms": 0.468,
+      "checkout_load_ms": 0.746
+    },
+    "combined": {
+      "raw_bytes": 1260742,
+      "zlib_bytes": 27303,
+      "dump_ms": 5.865,
+      "checkout_load_ms": 6.932
+    }
+  },
+  "monty_runs": {
+    "empty": {
+      "entry_line_bytes": 1305,
+      "side_file_bytes": 0,
+      "listing": {},
+      "first_run": {
+        "restore_ms": 0.419,
+        "run_ms": 0.183,
+        "listing_ms": 0.007,
+        "dump_ms": 0.137,
+        "encode_ms": 0.065,
+        "append_ms": 0.174
+      },
+      "cache_hit_restore_ms": 0.0,
+      "cache_miss_restore_ms": 0.334,
+      "overhead_ms_hit": 1.33
+    },
+    "rows_1k": {
+      "entry_line_bytes": 32850,
+      "side_file_bytes": 0,
+      "listing": {
+        "rows": "dict",
+        "i": "int"
+      },
+      "first_run": {
+        "restore_ms": 0.181,
+        "run_ms": 1.085,
+        "listing_ms": 1.147,
+        "dump_ms": 1.738,
+        "encode_ms": 4.033,
+        "append_ms": 0.321
+      },
+      "cache_hit_restore_ms": 0.0,
+      "cache_miss_restore_ms": 4.14,
+      "overhead_ms_hit": 12.403
+    },
+    "functions_5": {
+      "entry_line_bytes": 3417,
+      "side_file_bytes": 0,
+      "listing": {
+        "add": "function",
+        "mean": "function",
+        "top": "function",
+        "norm": "function",
+        "fib": "function"
+      },
+      "first_run": {
+        "restore_ms": 0.202,
+        "run_ms": 0.33,
+        "listing_ms": 0.623,
+        "dump_ms": 0.114,
+        "encode_ms": 0.165,
+        "append_ms": 0.154
+      },
+      "cache_hit_restore_ms": 0.0,
+      "cache_miss_restore_ms": 0.382,
+      "overhead_ms_hit": 1.002
+    },
+    "str_1MiB": {
+      "entry_line_bytes": 3165,
+      "side_file_bytes": 0,
+      "listing": {
+        "big": "str"
+      },
+      "first_run": {
+        "restore_ms": 0.368,
+        "run_ms": 0.39,
+        "listing_ms": 7.96,
+        "dump_ms": 1.947,
+        "encode_ms": 6.032,
+        "append_ms": 0.264
+      },
+      "cache_hit_restore_ms": 0.0,
+      "cache_miss_restore_ms": 5.781,
+      "overhead_ms_hit": 16.982
+    },
+    "random_200k": {
+      "entry_line_bytes": 1045,
+      "side_file_bytes": 132634,
+      "listing": {
+        "random": "module",
+        "noise": "str"
+      },
+      "first_run": {
+        "restore_ms": 0.188,
+        "run_ms": 84.451,
+        "listing_ms": 1.681,
+        "dump_ms": 0.466,
+        "encode_ms": 8.251,
+        "append_ms": 0.396
+      },
+      "cache_hit_restore_ms": 0.0,
+      "cache_miss_restore_ms": 3.003,
+      "overhead_ms_hit": 9.639
+    },
+    "combined": {
+      "entry_line_bytes": 38654,
+      "side_file_bytes": 0,
+      "listing": {
+        "rows": "dict",
+        "i": "int",
+        "add": "function",
+        "mean": "function",
+        "top": "function",
+        "norm": "function",
+        "fib": "function",
+        "big": "str"
+      },
+      "first_run": {
+        "restore_ms": 0.297,
+        "run_ms": 1.92,
+        "listing_ms": 8.229,
+        "dump_ms": 2.981,
+        "encode_ms": 10.588,
+        "append_ms": 0.306
+      },
+      "cache_hit_restore_ms": 0.0,
+      "cache_miss_restore_ms": 9.218,
+      "overhead_ms_hit": 27.16
+    }
+  },
+  "growth": {
+    "growing_table_entry_bytes": [
+      3962,
+      5566,
+      7299,
+      9035,
+      10607,
+      12247,
+      13847,
+      15421,
+      17006,
+      18570,
+      20203,
+      21791,
+      23367,
+      24987,
+      26559,
+      28175,
+      29779,
+      31347,
+      32979,
+      34575
+    ],
+    "growing_table_file_bytes": [
+      5801,
+      11367,
+      18666,
+      27701,
+      38308,
+      50555,
+      64402,
+      79823,
+      96829,
+      115399,
+      135602,
+      157393,
+      180760,
+      205747,
+      232306,
+      260481,
+      290260,
+      321607,
+      354586,
+      389161
+    ],
+    "small_vars_entry_bytes": [
+      1470,
+      1622,
+      1759,
+      1928,
+      2093,
+      2259,
+      2437,
+      2624,
+      2814,
+      3001,
+      3226,
+      3441,
+      3668,
+      3919,
+      4186,
+      4450,
+      4713,
+      4988,
+      5295,
+      5602
+    ]
+  },
+  "delta_compression": {
+    "sum_zlib_full": 270933,
+    "sum_lzma_full": 114932,
+    "sum_lzma_delta_vs_parent": 14368
+  },
+  "dead_future": {
+    "stored_repr": "<coroutine external_future(0)>",
+    "await_next_feed": "RuntimeError: No pending async tasks but ResolveFutures requested",
+    "session_after": "RuntimeError: this checkout has already been finished",
+    "await_after_restore": "RuntimeError: No pending async tasks but ResolveFutures requested"
+  },
+  "cpython_states": {
+    "empty": {
+      "dill": {
+        "bytes": 0,
+        "zlib_bytes": 0,
+        "dump_ms": 0.001,
+        "load_ms": null,
+        "failed": {}
+      },
+      "cloudpickle": {
+        "bytes": 0,
+        "zlib_bytes": 0,
+        "dump_ms": 0.001,
+        "load_ms": null,
+        "failed": {}
+      }
+    },
+    "rows_1k": {
+      "dill": {
+        "bytes": 44435,
+        "zlib_bytes": 9254,
+        "dump_ms": 37.102,
+        "load_ms": 0.493,
+        "failed": {}
+      },
+      "cloudpickle": {
+        "bytes": 44437,
+        "zlib_bytes": 9255,
+        "dump_ms": 0.716,
+        "load_ms": 0.464,
+        "failed": {}
+      }
+    },
+    "functions_5": {
+      "dill": {
+        "bytes": 1504,
+        "zlib_bytes": 773,
+        "dump_ms": 13.304,
+        "load_ms": 0.088,
+        "failed": {}
+      },
+      "cloudpickle": {
+        "bytes": 1613,
+        "zlib_bytes": 864,
+        "dump_ms": 0.218,
+        "load_ms": 0.035,
+        "failed": {}
+      }
+    },
+    "str_1MiB": {
+      "dill": {
+        "bytes": 1048603,
+        "zlib_bytes": 1070,
+        "dump_ms": 0.399,
+        "load_ms": 0.114,
+        "failed": {}
+      },
+      "cloudpickle": {
+        "bytes": 1048603,
+        "zlib_bytes": 1071,
+        "dump_ms": 0.617,
+        "load_ms": 0.178,
+        "failed": {}
+      }
+    },
+    "random_200k": {
+      "dill": {
+        "bytes": 200077,
+        "zlib_bytes": 127116,
+        "dump_ms": 0.143,
+        "load_ms": 0.025,
+        "failed": {}
+      },
+      "cloudpickle": {
+        "bytes": 200085,
+        "zlib_bytes": 127115,
+        "dump_ms": 0.055,
+        "load_ms": 0.022,
+        "failed": {}
+      }
+    },
+    "combined": {
+      "dill": {
+        "bytes": 1094983,
+        "zlib_bytes": 12674,
+        "dump_ms": 144.059,
+        "load_ms": 1.124,
+        "failed": {}
+      },
+      "cloudpickle": {
+        "bytes": 1094885,
+        "zlib_bytes": 12738,
+        "dump_ms": 1.544,
+        "load_ms": 0.788,
+        "failed": {}
+      }
+    }
+  },
+  "cpython_breakage": {
+    "dill": {
+      "Point": "TypeError: cannot pickle 'generator' object",
+      "p": "TypeError: cannot pickle 'generator' object",
+      "gen": "TypeError: cannot pickle 'generator' object",
+      "sock": "TypeError: cannot pickle 'socket' object",
+      "tool": "TypeError: cannot pickle 'socket' object"
+    },
+    "cloudpickle": {
+      "gen": "TypeError: cannot pickle 'generator' object",
+      "lock": "TypeError: cannot pickle '_thread.lock' object",
+      "sock": "TypeError: cannot pickle 'socket' object",
+      "tool": "TypeError: cannot pickle 'socket' object"
+    }
+  },
+  "cpython_replay": {
+    "scripts": 10,
+    "replay_ms": 1.741,
+    "heavy_loop_2e6_replay_ms": 184.582,
+    "random_reaching_a_tool": "ReplayDivergence: script 0: called fetch('0.8644971631588367',), recorded fetch('0.7056116121154892',)",
+    "random_not_reaching_a_tool_same_value": false,
+    "recorded_bytes": 783
+  }
+}
