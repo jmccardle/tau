@@ -1,6 +1,6 @@
 # docs/ index
 
-84 design records live at the top level of `docs/`. Each opens with its status
+86 design records live at the top level of `docs/`. Each opens with its status
 in the first three lines, so what a file claims to describe is checkable before
 reading it. `.claude/skills/feature-doc` is how one is written and how a line
 below is added.
@@ -59,6 +59,7 @@ exempt from the prose scans, because rewriting a measurement falsifies it.
 - `docs/TECTUM-NO-TOOLS-MIGRATION.md` — **open action item in another repo.** Making `--no-tools` and `--no-builtin-tools` distinct broke Tectum, which passes `--no-tools` and registers its whole capability (`speak`, `journal_append`, `jmfts_write`, `delegate`) through extensions — it wanted `-nbt` and had no way to say so. Six exact change sites; deliberately NOT applied (the `tectum` repo is the owner's call).
 - `docs/PI-TO-TAU-COMPATIBILITY.md`, `docs/PI-TO-TAU-MIGRATION-GUIDE.md` — what mapped from pi to τ at port time. Historical record of the port, not a contract τ owes anyone.
 - `docs/tau-llm.md`, `docs/tau-agent-core.md`, `docs/tau-coding-agent.md` — per-package design.
+- `docs/PORTABLE-HOME.md` — **built (2026-10-06).** `tau_agent_core.tau_home.resolve_tau_home` is the ONE way to find τ's home: `<$TAU_PORTABLE_BASE>/.tau` if that directory exists, else `~/.tau`. Five sites used to compute `~/.tau` themselves, so never write `Path.home() / ".tau"` again. §3: the base is passed by the bundle's launcher, because `sys.argv[0]` is not the install directory under `-m` or inside an AppImage. §5: `--mode rpc`'s `<tmp>/.tau-<uid>` session default is NOT moved by portable mode.
 
 ## The rest of `docs/` (manifest)
 

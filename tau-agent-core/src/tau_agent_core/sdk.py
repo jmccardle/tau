@@ -32,6 +32,7 @@ from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
+from tau_agent_core.tau_home import resolve_tau_home
 from tau_agent_core.tool_schema import output_schema_of
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 from tau_agent_core.tools.bash import BashTool
@@ -255,8 +256,6 @@ def _resolve_tools(
 
     return tool_objs
 
-
-_GLOBAL_EXTENSIONS_DIR = "~/.tau/extensions"
 
 _ext_load_counter = 0
 
@@ -681,7 +680,7 @@ async def _load_extensions(
         work.append((path, is_explicit))
 
     if discover:
-        discover_dir = user_dir if user_dir is not None else _GLOBAL_EXTENSIONS_DIR
+        discover_dir = user_dir if user_dir is not None else str(resolve_tau_home() / "extensions")
         for p in _discover_extension_paths(discover_dir):
             _add(p, False)
 
@@ -774,8 +773,6 @@ Style: Sardonic, dry, brief.
 
 {{tools}}"""
 
-
-_AGENT_DIR = "~/.tau"
 
 CONTEXT_FILE_NAMES: tuple[str, ...] = (
     "AGENTS.override.md",
@@ -946,7 +943,7 @@ def load_project_context_files(
     order they belong in a prompt — **general first, specific last** — because
     the nearest file is the one that should have the last word:
 
-    1. ``~/.tau``'s context file (:data:`_AGENT_DIR`), the user's global one.
+    1. τ home's context file (:func:`~tau_agent_core.tau_home.resolve_tau_home`), the user's global one.
     2. Every ancestor of ``cwd`` that has one, **root-most first**, ending with
        ``cwd``'s own — so a repo's ``AGENTS.md`` is read after ``$HOME``'s and
        a package's after its monorepo's.
@@ -964,7 +961,9 @@ def load_project_context_files(
     does not name; and by ``--no-context-files`` for a run that wants none.
     """
     resolved_cwd = _canonicalize(Path(cwd).expanduser() if cwd else Path(os.getcwd()))
-    resolved_agent_dir = _canonicalize(Path(agent_dir or _AGENT_DIR).expanduser())
+    resolved_agent_dir = _canonicalize(
+        Path(agent_dir).expanduser() if agent_dir else resolve_tau_home()
+    )
 
     context_files: list[ContextFile] = []
     seen: set[Path] = set()

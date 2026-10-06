@@ -22,7 +22,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-TAU_DIR = Path.home() / ".tau"
+from tau_agent_core.tau_home import resolve_tau_home
+
+TAU_DIR = resolve_tau_home()
 
 CONFIG_PATH = TAU_DIR / "config.json"
 

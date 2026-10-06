@@ -37,7 +37,7 @@ exactly like a model that ignored them.
 <!-- agent: yes -->
 
 ```python
-class Settings(default_model: str = 'gpt-4o', thinking_level: str = 'off', compaction_enabled: bool = True, context_margin: int = 2000, extension_dirs: list[str] = (lambda: [str(Path.home() / '.tau' / 'extensions')])(), api_keys: dict[str, str] = dict(), custom_system_prompt: str | None = None, tool_execution_mode: str = 'parallel', max_retries: int = 3, temperature: float | None = None, max_tokens: int | None = None, reasoning_level: str = 'off')
+class Settings(default_model: str = 'gpt-4o', thinking_level: str = 'off', compaction_enabled: bool = True, context_margin: int = 2000, extension_dirs: list[str] = (lambda: [str(resolve_tau_home() / 'extensions')])(), api_keys: dict[str, str] = dict(), custom_system_prompt: str | None = None, tool_execution_mode: str = 'parallel', max_retries: int = 3, temperature: float | None = None, max_tokens: int | None = None, reasoning_level: str = 'off')
 ```
 
 `tau_agent_core.settings.Settings`
@@ -50,7 +50,7 @@ class Settings(default_model: str = 'gpt-4o', thinking_level: str = 'off', compa
 - `thinking_level: str = 'off'` — Thinking mode ("off", "low", "high")
 - `compaction_enabled: bool = True` — Whether automatic session compaction is enabled
 - `context_margin: int = 2000` — Token margin before hitting context limit
-- `extension_dirs: list[str] = (lambda: [str(Path.home() / '.tau' / 'extensions')])()` — Directories to search for extension modules
+- `extension_dirs: list[str] = (lambda: [str(resolve_tau_home() / 'extensions')])()` — Directories to search for extension modules
 - `api_keys: dict[str, str] = dict()` — Mapping of provider name to API key
 - `custom_system_prompt: str | None = None` — Optional custom system prompt override
 - `tool_execution_mode: str = 'parallel'` — Default tool execution mode ("parallel", "sequential")
@@ -202,7 +202,7 @@ A port of pi's ``loadProjectContextFiles`` (``resource-loader.ts:119`` at
 order they belong in a prompt — **general first, specific last** — because
 the nearest file is the one that should have the last word:
 
-1. ``~/.tau``'s context file (:data:`_AGENT_DIR`), the user's global one.
+1. τ home's context file (:func:`~tau_agent_core.tau_home.resolve_tau_home`), the user's global one.
 2. Every ancestor of ``cwd`` that has one, **root-most first**, ending with
    ``cwd``'s own — so a repo's ``AGENTS.md`` is read after ``$HOME``'s and
    a package's after its monorepo's.
