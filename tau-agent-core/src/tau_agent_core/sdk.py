@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from tau_llm.providers import get_provider_spec
 from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
@@ -83,28 +84,39 @@ def resolve_model(
 ) -> Model:
     """Resolve a model string to a Model object.
 
+    A model not in the built-in table takes its wire protocol and default
+    endpoint from the registered provider spec, so ``provider="anthropic"``
+    yields an ``anthropic-messages`` model. An unregistered provider is a
+    free-form label for an OpenAI-compatible server and needs ``base_url``.
+
     Args:
         model: Model identifier (e.g., "gpt-4o").
-        provider: Provider name (default: "openai").
+        provider: Provider id (default: "openai").
         base_url: Optional custom API base URL.
 
     Returns:
-        Model object with provider configuration.
+        A new Model; the built-in table is never mutated.
 
     Raises:
-        KeyError: If model string is not found in defaults.
+        ValueError: ``provider`` is not registered and ``base_url`` is None.
     """
     if model in _DEFAULT_MODELS:
         m = _DEFAULT_MODELS[model]
-        if base_url:
-            m.base_url = base_url
-        return m
+        return m.model_copy(update={"base_url": base_url}) if base_url else m.model_copy()
+    spec = get_provider_spec(provider)
+    api = spec.api if spec is not None else "openai-completions"
+    url = base_url or (spec.base_url if spec is not None else None)
+    if url is None:
+        raise ValueError(
+            f"resolve_model({model!r}): provider {provider!r} is not registered "
+            "or has no default endpoint, so base_url is required"
+        )
     return Model(
         id=model,
         name=model,
-        api="openai-completions",
+        api=api,
         provider=provider,
-        base_url=base_url or "https://api.openai.com/v1",
+        base_url=url,
         context_window=128000,
         max_tokens=4096,
     )

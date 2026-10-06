@@ -235,16 +235,21 @@ resolve_model(model: str, provider: str = 'openai', base_url: str | None = None)
 
 Resolve a model string to a Model object.
 
+A model not in the built-in table takes its wire protocol and default
+endpoint from the registered provider spec, so ``provider="anthropic"``
+yields an ``anthropic-messages`` model. An unregistered provider is a
+free-form label for an OpenAI-compatible server and needs ``base_url``.
+
 **Parameters**
 
 - `model: str` — Model identifier (e.g., "gpt-4o").
-- `provider: str = 'openai'` — Provider name (default: "openai").
+- `provider: str = 'openai'` — Provider id (default: "openai").
 - `base_url: str | None = None` — Optional custom API base URL.
 
 **Returns**
 
-Model object with provider configuration.
+A new Model; the built-in table is never mutated.
 
 **Raises**
 
-- `KeyError` — If model string is not found in defaults.
+- `ValueError` — ``provider`` is not registered and ``base_url`` is None.

@@ -1674,11 +1674,26 @@ class TestSDKHelpers:
         model = resolve_model("custom-model", provider="anthropic")
         assert model.id == "custom-model"
         assert model.provider == "anthropic"
+        assert model.api == "anthropic-messages"
+        assert model.base_url == "https://api.anthropic.com"
+
+    def test_resolve_model_gemini_takes_its_wire_protocol(self):
+        """A registered provider's api reaches the Model, not openai-completions."""
+        assert resolve_model("gemini-2.5-pro", provider="gemini").api == "google-generative-ai"
+
+    def test_resolve_model_unregistered_provider_needs_base_url(self):
+        """An unregistered provider label cannot silently target api.openai.com."""
+        with pytest.raises(ValueError, match="base_url is required"):
+            resolve_model("m", provider="my-local")
+        local = resolve_model("m", provider="my-local", base_url="http://localhost:8080/v1")
+        assert local.api == "openai-completions"
+        assert local.base_url == "http://localhost:8080/v1"
 
     def test_resolve_model_custom_base_url(self):
-        """resolve_model() respects custom base_url."""
+        """resolve_model() respects custom base_url without mutating the default."""
         model = resolve_model("gpt-4o", base_url="https://custom.com/v1")
         assert model.base_url == "https://custom.com/v1"
+        assert resolve_model("gpt-4o").base_url == "https://api.openai.com/v1"
 
     def test_resolve_tools_empty(self):
         """_resolve_tools() with empty list returns empty."""
