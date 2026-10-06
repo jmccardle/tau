@@ -863,6 +863,24 @@ Inside a turn, that turn's cursor; outside one, the head's. ``ctx.cursor.leaf``
 is "where am I": a cursor is not durable, so it cannot be recovered from
 :meth:`entries` (docs/CURSORS.md §4, §7).
 
+### describe_tool
+
+```python
+describe_tool(name: str) -> ToolDescription
+```
+
+`tau_agent_core.extension_types.ExtensionContext.describe_tool`
+
+One tool's description, ``hidden`` ones included (experimental).
+
+**Parameters**
+
+- `name: str` — *(no description)*
+
+**Raises**
+
+- `KeyError` — no tool is named ``name`` on this cursor.
+
 ### emit_veto_record
 
 ```python
@@ -899,6 +917,47 @@ The bound session log's raw, append-only entries (all kinds).
 Thin pass-through to ``SessionLog.entries()`` — the same entry list a
 ``ConversationTree`` folds into context. Read-only: a copy per the log's
 contract, so mutating the returned list does not touch the log.
+
+### execute_tool
+
+```python
+async execute_tool(name: str, args: dict[str, Any] | None = None, *, parent_tool_call_id: str | None = None) -> NestedToolResult
+```
+
+`tau_agent_core.extension_types.ExtensionContext.execute_tool`
+
+Call another tool through the hooks, as the model's calls go (experimental).
+
+Inside a tool, the call is recorded on that tool's result as
+``details["nested_calls"]`` and its events carry its id as
+``parent_tool_call_id``. The tool must be ``direct``, ``callable`` or
+``deferred`` on this cursor.
+
+**Parameters**
+
+- `name: str` — *(no description)*
+- `args: dict[str, Any] | None = None` — *(no description)*
+- `parent_tool_call_id: str | None = None` — *(no description)*
+
+**Raises**
+
+- `ToolCallBlocked` — a ``tool_call`` hook vetoed it.
+- `NestedCallError` — it is unreachable, its arguments were invalid, or it reported an error; the message is the tool's text.
+- `ToolHalt` — it asked to stop the turn.
+
+### find_extension
+
+```python
+find_extension(name: str) -> ExtensionInfo | None
+```
+
+`tau_agent_core.extension_types.ExtensionContext.find_extension`
+
+The loaded extension called ``name``, or ``None`` (experimental).
+
+**Parameters**
+
+- `name: str` — *(no description)*
 
 ### fork
 
@@ -994,6 +1053,40 @@ a ``message_end`` handler instead of pulling ``event.message["usage"]``.
 **Raises**
 
 - `RuntimeError` — if no session is bound (Fail-Early — nothing to measure).
+
+### list_extensions
+
+```python
+list_extensions(pattern: str | None = None) -> list[ExtensionInfo]
+```
+
+`tau_agent_core.extension_types.ExtensionContext.list_extensions`
+
+Loaded, enabled extensions whose name matches the glob ``pattern`` (experimental).
+
+**Parameters**
+
+- `pattern: str | None = None` — *(no description)*
+
+### list_tools
+
+```python
+list_tools(pattern: str | None = None, *, namespace: str | None = None, tag: str | None = None, exposure: str | None = None, include_hidden: bool = False) -> list[ToolDescription]
+```
+
+`tau_agent_core.extension_types.ExtensionContext.list_tools`
+
+The tools on this cursor, filtered (experimental; :func:`match_tools`).
+
+Metadata only: the way to run one is :meth:`execute_tool`.
+
+**Parameters**
+
+- `pattern: str | None = None` — A glob over tool names.
+- `namespace: str | None = None` — A glob over namespaces (``"core"``, an extension's name).
+- `tag: str | None = None` — A tag the tool must carry.
+- `exposure: str | None = None` — The effective exposure it must have.
+- `include_hidden: bool = False` — Include ``hidden`` tools.
 
 ### navigate
 
@@ -1168,6 +1261,23 @@ JSON stream instead of a stderr line (anchor G10).
 
 - `sink: Callable[[dict[str, Any]], None] | None` — *(no description)*
 
+### set_tool_exposure
+
+```python
+async set_tool_exposure(name: str, exposure: str) -> None
+```
+
+`tau_agent_core.extension_types.ExtensionContext.set_tool_exposure`
+
+Override a tool's exposure from this cursor's leaf on, recorded in the tree.
+
+See :meth:`~tau_agent_core.agent_session.AgentSession.set_tool_exposure`.
+
+**Parameters**
+
+- `name: str` — *(no description)*
+- `exposure: str` — *(no description)*
+
 ### set_ui_delegate
 
 ```python
@@ -1285,7 +1395,7 @@ hook and every ``register_command`` handler is called as
 removed ``confirm``, ``select`` and ``input``; a question now goes through
 :meth:`ExtensionAPI.request_user_action`, which every head can answer.
 
-## ExtensionInfo
+## tau_agent_core.sdk.ExtensionInfo
 <!-- agent: yes -->
 
 ```python
@@ -1317,6 +1427,24 @@ extension that does not touch the bus). This is the pair
 - `hooks: list[str]` — *(no description)*
 - `content_hash: str = ''` — *(no description)*
 - `subjects: tuple[str, ...] = ()` — *(no description)*
+
+## tau_agent_core.tool_catalog.ExtensionInfo
+<!-- agent: yes -->
+
+```python
+class ExtensionInfo(name: str, path: str, tools: tuple[str, ...], commands: tuple[str, ...])
+```
+
+`tau_agent_core.tool_catalog.ExtensionInfo`
+
+One loaded extension as discovery reports it.
+
+**Constructor parameters**
+
+- `name: str` — The extension's name (its file stem, or an inline factory's name).
+- `path: str` — Its path label.
+- `tools: tuple[str, ...]` — The tool names it registered.
+- `commands: tuple[str, ...]` — The qualified command names it registered.
 
 ## ExtensionLoadError
 <!-- agent: yes -->
@@ -1753,6 +1881,52 @@ partition key).
 - `touches_bus: bool = False` — *(no description)*
 - `config_schema: dict[str, Any] | None = None` — *(no description)*
 
+## ToolDescription
+<!-- agent: yes -->
+
+```python
+class ToolDescription(name: str, label: str, description: str, namespace: str, exposure: str, declared_exposure: str, tags: tuple[str, ...], parameters: dict[str, Any], output_schema: dict[str, Any] | None, execution_mode: str)
+```
+
+`tau_agent_core.tool_catalog.ToolDescription`
+
+One tool as discovery reports it.
+
+**Constructor parameters**
+
+- `name: str` — What the model and ``ctx.execute_tool`` call it.
+- `label: str` — The human label.
+- `description: str` — What the model reads.
+- `namespace: str` — ``"core"``, or the extension (``<ext>`` / ``<ext>.<sub>``) that declared it.
+- `exposure: str` — The effective exposure on the asking cursor.
+- `declared_exposure: str` — The author's default.
+- `tags: tuple[str, ...]` — Discovery labels.
+- `parameters: dict[str, Any]` — The argument JSON Schema.
+- `output_schema: dict[str, Any] | None` — The structured value's JSON Schema, or ``None``.
+- `execution_mode: str` — ``"parallel"`` or ``"sequential"``.
+
+### callable
+
+`tau_agent_core.tool_catalog.ToolDescription.callable: bool`
+
+Whether ``ctx.execute_tool`` may run this tool.
+
+### declared_to_model
+
+`tau_agent_core.tool_catalog.ToolDescription.declared_to_model: bool`
+
+Whether the model is offered this tool.
+
+### stub
+
+```python
+stub() -> str
+```
+
+`tau_agent_core.tool_catalog.ToolDescription.stub`
+
+This tool as a Python stub (:func:`~tau_agent_core.tool_schema.render_stub`).
+
 ## apply_session_name
 <!-- agent: yes -->
 
@@ -1822,6 +1996,25 @@ policy the form raises instead of fabricating an answer.
 **Parameters**
 
 - `field: dict[str, Any]` — *(no description)*
+
+## match_tools
+<!-- agent: yes -->
+
+```python
+match_tools(descriptions: list[ToolDescription], pattern: str | None = None, *, namespace: str | None = None, tag: str | None = None, exposure: str | None = None) -> list[ToolDescription]
+```
+
+`tau_agent_core.tool_catalog.match_tools`
+
+Filter ``descriptions``; every filter given must match, in registry order.
+
+**Parameters**
+
+- `descriptions: list[ToolDescription]` — What to filter.
+- `pattern: str | None = None` — A glob over the tool name (``"git_*"``); an exact name is a glob too.
+- `namespace: str | None = None` — A glob over the namespace (``"mcp.*"``, ``"core"``).
+- `tag: str | None = None` — A tag the tool must carry.
+- `exposure: str | None = None` — The effective exposure the tool must have.
 
 ## read_session_name
 <!-- agent: yes -->

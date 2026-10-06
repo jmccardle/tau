@@ -31,6 +31,7 @@ from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
+from tau_agent_core.tool_schema import output_schema_of
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 from tau_agent_core.tools.bash import BashTool
 from tau_agent_core.tools.edit import EditTool
@@ -223,6 +224,7 @@ def _resolve_tools(
         kwargs: dict[str, Any] = {"cwd": cwd} if cwd is not None else {}
         kwargs.update(options.get(name, {}))
         tool_obj = _BUILTIN_TOOL_CLASSES[name](**kwargs)
+        typed_run = getattr(tool_obj, "run", None)
         tool_objs.append(
             AgentTool(
                 definition=ToolDefinition(
@@ -233,6 +235,8 @@ def _resolve_tools(
                     execute=tool_obj.execute,
                     prompt_snippet=f"{tool_obj.name}: {tool_obj.label}",
                     execution_mode=tool_obj.execution_mode,
+                    namespace="core",
+                    output_schema=None if typed_run is None else output_schema_of(typed_run),
                 )
             )
         )

@@ -295,6 +295,23 @@ than discarded. Supervised: :meth:`emit_session_shutdown` cancels it, and
 
 - `ValueError` — ``cursor`` is the head's, or this session did not open it.
 
+### describe_tools
+
+```python
+describe_tools(*, include_hidden: bool = False) -> list[ToolDescription]
+```
+
+`tau_agent_core.agent_session.AgentSession.describe_tools`
+
+Every tool on the acting cursor, as discovery reports it (experimental).
+
+A cursor frame's allowlist applies; a ``hidden`` tool is left out unless
+``include_hidden``.
+
+**Parameters**
+
+- `include_hidden: bool = False` — *(no description)*
+
 ### disable_extension
 
 ```python
@@ -400,6 +417,26 @@ watcher re-installs. A no-op (unknown / already enabled) returns ``ok=False``.
 **Parameters**
 
 - `path: str` — *(no description)*
+
+### execute_tool
+
+```python
+async execute_tool(name: str, args: dict[str, Any], *, parent_tool_call_id: str | None = None) -> NestedToolResult
+```
+
+`tau_agent_core.agent_session.AgentSession.execute_tool`
+
+Run tool ``name`` through the pipeline a model-issued call takes (experimental).
+
+See :func:`~tau_agent_core.tool_pipeline.run_nested_call`; the tools it may
+reach are the acting cursor's callable ones, and the hooks are the ones
+that cursor's turns run.
+
+**Parameters**
+
+- `name: str` — *(no description)*
+- `args: dict[str, Any]` — *(no description)*
+- `parent_tool_call_id: str | None = None` — *(no description)*
 
 ### extension_runner
 
@@ -682,6 +719,16 @@ changes it under a reader's feet, exactly as the active model does.
 `tau_agent_core.agent_session.AgentSession.is_streaming: bool`
 
 Whether the agent loop is currently streaming.
+
+### list_extensions
+
+```python
+list_extensions() -> list[ExtensionInfo]
+```
+
+`tau_agent_core.agent_session.AgentSession.list_extensions`
+
+The extensions loaded and enabled now, in load order (experimental).
 
 ### list_managed_extensions
 
@@ -1289,6 +1336,31 @@ Name this session: a ``session_info`` entry at the cursor, never model input.
 **Raises**
 
 - `ValueError` — ``name`` is empty.
+
+### set_tool_exposure
+
+```python
+async set_tool_exposure(name: str, exposure: str) -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.set_tool_exposure`
+
+Override ``name``'s exposure from the acting cursor's leaf on (experimental).
+
+Written as a ``tool_exposure`` config entry, so the change is on the path:
+a branch taken before it does not see it, and a resume or fork does.
+Loading a ``deferred`` tool is setting it to ``"direct"``; masking a
+built-in is setting it to ``"hidden"``. Inside a turn the model is
+offered the new set from its next completion.
+
+**Parameters**
+
+- `name: str` — *(no description)*
+- `exposure: str` — *(no description)*
+
+**Raises**
+
+- `ValueError` — ``exposure`` is not one of :data:`~tau_llm.tools.ToolExposure`, or no tool is named ``name``.
 
 ### set_ui_delegate
 

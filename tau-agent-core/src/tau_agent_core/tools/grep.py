@@ -12,7 +12,24 @@ import os
 import re
 from typing import Any, Callable, Literal
 
+from typing_extensions import TypedDict
+
 from tau_agent_core.tools.base import AgentToolResult, _WalkAborted
+
+
+class GrepMatch(TypedDict):
+    """One matching line: its file relative to the search root, 1-based line, and text."""
+
+    path: str
+    line: int
+    text: str
+
+
+class GrepResult(TypedDict):
+    """What the grep tool returns to a nested caller."""
+
+    matches: list[GrepMatch]
+    files_searched: int
 
 
 class GrepTool:
@@ -89,8 +106,13 @@ class GrepTool:
             ).model_dump()
 
         try:
-            flags = re.IGNORECASE if args.get("ignore_case", False) else 0
-            compiled = re.compile(pattern, flags)
+            value = await self.run(
+                pattern,
+                args.get("path", "."),
+                files=args.get("files"),
+                ignore_case=bool(args.get("ignore_case", False)),
+                signal=signal,
+            )
         except re.error as e:
             return AgentToolResult.from_error(
                 tool_name=self.name,
@@ -98,25 +120,11 @@ class GrepTool:
                 tool_call_id=tool_call_id,
             ).model_dump()
 
-        target_path = args.get("path", ".")
-        files_list = args.get("files")
-
-        if target_path:
-            if not os.path.isabs(target_path):
-                target_path = os.path.join(self.cwd, target_path)
-            target_path = os.path.abspath(target_path)
-
-        try:
-            matches, files_searched = await asyncio.to_thread(
-                self._collect, compiled, target_path, files_list, signal
-            )
-        except _WalkAborted:
-            raise asyncio.CancelledError("Grep aborted") from None
-
+        matches = value["matches"]
         if not matches:
-            result_text = f"No matches found in {files_searched} file(s)"
+            result_text = f"No matches found in {value['files_searched']} file(s)"
         else:
-            result_text = "\n".join(matches)
+            result_text = "\n".join(f"{m['path']}:{m['line']}:{m['text']}" for m in matches)
 
         result = AgentToolResult(
             tool_name=self.name,
@@ -126,9 +134,39 @@ class GrepTool:
         result_dict = result.model_dump()
         result_dict["details"] = {
             "matches": len(matches),
-            "files_searched": files_searched,
+            "files_searched": value["files_searched"],
         }
+        result_dict["value"] = value
         return result_dict
+
+    async def run(
+        self,
+        pattern: str,
+        path: str = ".",
+        *,
+        files: list[str] | None = None,
+        ignore_case: bool = False,
+        signal: Any = None,
+    ) -> GrepResult:
+        """Search for ``pattern`` and return the matches as data.
+
+        Raises:
+            re.error: ``pattern`` is not a valid regex.
+            asyncio.CancelledError: ``signal`` aborted the walk.
+        """
+        compiled = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
+        target_path = path
+        if target_path:
+            if not os.path.isabs(target_path):
+                target_path = os.path.join(self.cwd, target_path)
+            target_path = os.path.abspath(target_path)
+        try:
+            matches, files_searched = await asyncio.to_thread(
+                self._collect, compiled, target_path, files, signal
+            )
+        except _WalkAborted:
+            raise asyncio.CancelledError("Grep aborted") from None
+        return GrepResult(matches=matches, files_searched=files_searched)
 
     def _collect(
         self,
@@ -136,7 +174,7 @@ class GrepTool:
         target_path: str,
         files_list: list[str] | None,
         signal: Any,
-    ) -> tuple[list[str], int]:
+    ) -> tuple[list[GrepMatch], int]:
         """Walk and search, off the event loop. Returns ``(matches, files_searched)``.
 
         Runs entirely in a worker thread, so it must not touch the event loop.
@@ -152,13 +190,13 @@ class GrepTool:
             signal: Optional ``AbortSignal``, polled once per file.
 
         Returns:
-            The match lines (``path:line:text``) and the number of files read.
+            The matches and the number of files read.
 
         Raises:
             _WalkAborted: if ``signal`` reports an abort mid-walk.
         """
         files_searched = 0
-        matches: list[str] = []
+        matches: list[GrepMatch] = []
 
         def check_abort() -> None:
             if signal is not None and signal.is_aborted():
@@ -203,7 +241,7 @@ class GrepTool:
     @staticmethod
     def _search_file(
         file_path: str, pattern: re.Pattern, base_path: str | None = None
-    ) -> list[str] | None:
+    ) -> list[GrepMatch] | None:
         """Search a single file for pattern matches.
 
         Returns the matching lines, or ``None`` if the file could not be read as
@@ -226,6 +264,6 @@ class GrepTool:
         for i, line in enumerate(lines, 1):
             line_content = line.rstrip("\n\r")
             if pattern.search(line_content):
-                results.append(f"{rel_path}:{i}:{line_content}")
+                results.append(GrepMatch(path=rel_path, line=i, text=line_content))
 
         return results

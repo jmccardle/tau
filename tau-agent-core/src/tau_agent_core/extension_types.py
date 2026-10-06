@@ -14,6 +14,7 @@ The ui property is a no-op in headless mode (RPC, SDK).
 from __future__ import annotations
 
 import concurrent.futures
+import fnmatch
 from pathlib import Path
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
@@ -28,6 +29,8 @@ from tau_agent_core.commands import (
 )
 from tau_agent_core.compaction import estimate_context_tokens
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_data
+from tau_agent_core.tool_catalog import ExtensionInfo, ToolDescription, match_tools
+from tau_agent_core.tool_pipeline import NestedToolResult
 from tau_agent_core.tools.base import ExtensionToolDefinition
 from tau_agent_core.submission import (
     MultitaskStrategy,
@@ -1134,6 +1137,94 @@ class ExtensionContext:
             return None
         return await session.compact(custom_instructions=custom_instructions)
 
+    def list_tools(
+        self,
+        pattern: str | None = None,
+        *,
+        namespace: str | None = None,
+        tag: str | None = None,
+        exposure: str | None = None,
+        include_hidden: bool = False,
+    ) -> list[ToolDescription]:
+        """The tools on this cursor, filtered (experimental; :func:`match_tools`).
+
+        Metadata only: the way to run one is :meth:`execute_tool`.
+
+        Args:
+            pattern: A glob over tool names.
+            namespace: A glob over namespaces (``"core"``, an extension's name).
+            tag: A tag the tool must carry.
+            exposure: The effective exposure it must have.
+            include_hidden: Include ``hidden`` tools.
+        """
+        session = self._require_session()
+        return match_tools(
+            session.describe_tools(include_hidden=include_hidden),
+            pattern,
+            namespace=namespace,
+            tag=tag,
+            exposure=exposure,
+        )
+
+    def describe_tool(self, name: str) -> ToolDescription:
+        """One tool's description, ``hidden`` ones included (experimental).
+
+        Raises:
+            KeyError: no tool is named ``name`` on this cursor.
+        """
+        found: list[ToolDescription] = self._require_session().describe_tools(include_hidden=True)
+        for d in found:
+            if d.name == name:
+                return d
+        raise KeyError(f"describe_tool: no tool named {name!r} on this cursor")
+
+    async def execute_tool(
+        self,
+        name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        parent_tool_call_id: str | None = None,
+    ) -> NestedToolResult:
+        """Call another tool through the hooks, as the model's calls go (experimental).
+
+        Inside a tool, the call is recorded on that tool's result as
+        ``details["nested_calls"]`` and its events carry its id as
+        ``parent_tool_call_id``. The tool must be ``direct``, ``callable`` or
+        ``deferred`` on this cursor.
+
+        Raises:
+            ToolCallBlocked: a ``tool_call`` hook vetoed it.
+            NestedCallError: it is unreachable, its arguments were invalid, or it
+                reported an error; the message is the tool's text.
+            ToolHalt: it asked to stop the turn.
+        """
+        result: NestedToolResult = await self._require_session().execute_tool(
+            name, dict(args or {}), parent_tool_call_id=parent_tool_call_id
+        )
+        return result
+
+    async def set_tool_exposure(self, name: str, exposure: str) -> None:
+        """Override a tool's exposure from this cursor's leaf on, recorded in the tree.
+
+        See :meth:`~tau_agent_core.agent_session.AgentSession.set_tool_exposure`.
+        """
+        await self._require_session().set_tool_exposure(name, exposure)
+
+    def list_extensions(self, pattern: str | None = None) -> list[ExtensionInfo]:
+        """Loaded, enabled extensions whose name matches the glob ``pattern`` (experimental)."""
+        found = self._require_session().list_extensions()
+        if pattern is None:
+            return list(found)
+        return [e for e in found if fnmatch.fnmatchcase(e.name, pattern)]
+
+    def find_extension(self, name: str) -> ExtensionInfo | None:
+        """The loaded extension called ``name``, or ``None`` (experimental)."""
+        loaded: list[ExtensionInfo] = self._require_session().list_extensions()
+        for info in loaded:
+            if info.name == name:
+                return info
+        return None
+
     @property
     def cursor(self) -> Any:
         """The :class:`~tau_agent_core.cursor.Cursor` this handler acts on.
@@ -1954,10 +2045,32 @@ class ExtensionAPI:
             raise TypeError("register_tool: 'execute' must be callable")
 
         fields["_source"] = "extension"
+        fields["namespace"] = self._tool_namespace(fields["name"], fields.get("namespace"))
         resolved = ExtensionToolDefinition.model_validate(fields)
         self._registry.register_tool(resolved)
         if self._hook_handlers is not None:
             self._hook_handlers.tools.append(resolved.name)
+
+    def _tool_namespace(self, tool: str, requested: str | None) -> str:
+        """The namespace a tool registered here lands in (experimental).
+
+        The extension's own name, or ``<name>.<sub>`` when the tool asks for a
+        sub-namespace (one MCP server of several, say). An api bound to no
+        extension has no name, so its tools are in ``"extension"``.
+
+        Raises:
+            ValueError: ``requested`` is outside this extension's namespace —
+                an extension cannot file a tool under ``core`` or another's name.
+        """
+        if self._hook_handlers is None:
+            return requested or "extension"
+        own = self.extension_name
+        if requested is None or requested == own or requested.startswith(own + "."):
+            return requested or own
+        raise ValueError(
+            f"register_tool({tool!r}): namespace {requested!r} is not {own!r} or "
+            f"{own!r}.<sub>; an extension declares tools only in its own namespace"
+        )
 
     def get_all_tools(self) -> list[Any]:
         """Get all registered tools.

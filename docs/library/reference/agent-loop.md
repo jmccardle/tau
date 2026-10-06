@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None)
+class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, tools_provider: Callable[[], list[AgentTool]] | None = None)
 ```
 
 `tau_agent_core.agent_loop.AgentLoop`
@@ -29,6 +29,7 @@ Reference: SUBPHASE-0.0.md, "5. Agent Events" section.
 - `steer_queue: list[Any] | None = None` — *(no description)*
 - `mid_turn_compactor: MidTurnCompactor | None = None` — *(no description)*
 - `writer: TurnWriter | None = None` — *(no description)*
+- `tools_provider: Callable[[], list[AgentTool]] | None = None` — *(no description)*
 
 ### add_tool
 
@@ -188,7 +189,7 @@ How tools are executed
 class BlockedCall(call: PreparedToolCall, error: str, blocked_by_extension: str | None = None)
 ```
 
-`tau_agent_core.agent_loop.BlockedCall`
+`tau_agent_core.tool_pipeline.BlockedCall`
 
 A tool call that was blocked (e.g., argument validation failed).
 
@@ -210,7 +211,7 @@ stay a generic errored result rather than the "⛔ blocked by <ext>" render.
 class ErrorCall(call: PreparedToolCall, exception: Exception)
 ```
 
-`tau_agent_core.agent_loop.ErrorCall`
+`tau_agent_core.tool_pipeline.ErrorCall`
 
 A tool call whose preparation raised ``exception``.
 
@@ -225,7 +226,7 @@ A tool call whose preparation raised ``exception``.
 result() -> AgentToolResult
 ```
 
-`tau_agent_core.agent_loop.ErrorCall.result`
+`tau_agent_core.tool_pipeline.ErrorCall.result`
 
 The call's result, by :meth:`AgentToolResult.from_exception`.
 
@@ -350,6 +351,30 @@ Record that an assistant message has started; return a handle for :meth:`finaliz
 
 - `message: dict[str, Any]` — *(no description)*
 
+## apply_tool_result_hooks
+<!-- agent: yes -->
+
+```python
+async apply_tool_result_hooks(dispatcher: ExtensionRunner | None, result: AgentToolResult, input_args: dict[str, Any] | None = None, *, parent_tool_call_id: str | None = None) -> AgentToolResult
+```
+
+`tau_agent_core.tool_pipeline.apply_tool_result_hooks`
+
+Apply the ``tool_result`` mutating hook to ``result``.
+
+A patched-to-``None`` field keeps its original value, so a handler clears
+``details`` by patching ``{}``. The event carries ``value`` when the tool
+returned one, and a handler that rewrites ``content`` without rewriting
+``value`` drops it: a value that no longer matches the text it came with
+would let a redaction leak to a nested caller.
+
+**Parameters**
+
+- `dispatcher: ExtensionRunner | None` — *(no description)*
+- `result: AgentToolResult` — *(no description)*
+- `input_args: dict[str, Any] | None = None` — *(no description)*
+- `parent_tool_call_id: str | None = None` — *(no description)*
+
 ## completed_messages
 <!-- agent: yes -->
 
@@ -370,3 +395,49 @@ persists these before re-raising — the requirement in docs/PLAN-0.9.4.md §3:
 **Parameters**
 
 - `exc: BaseException` — *(no description)*
+
+## execute_prepared_call
+<!-- agent: yes -->
+
+```python
+async execute_prepared_call(tools: Mapping[str, AgentTool], call: PreparedToolCall, signal: Any) -> AgentToolResult
+```
+
+`tau_agent_core.tool_pipeline.execute_prepared_call`
+
+Run a prepared call; any exception becomes an error result.
+
+While the tool runs, :data:`CURRENT_TOOL_CALL` names it and its prints are
+captured. Nested calls it made land in ``details["nested_calls"]`` and its
+output in ``details["captured_output"]``.
+
+**Parameters**
+
+- `tools: Mapping[str, AgentTool]` — *(no description)*
+- `call: PreparedToolCall` — *(no description)*
+- `signal: Any` — *(no description)*
+
+## prepare_tool_call
+<!-- agent: yes -->
+
+```python
+async prepare_tool_call(tools: Mapping[str, AgentTool], dispatcher: ExtensionRunner | None, tool_call: ToolCall, *, parent_tool_call_id: str | None = None) -> PreparedToolCall | BlockedCall | ErrorCall
+```
+
+`tau_agent_core.tool_pipeline.prepare_tool_call`
+
+Validate ``tool_call``'s arguments and run the ``tool_call`` hook.
+
+A nested call's hook event carries ``parent_tool_call_id``; a model-issued
+call's event has no such key.
+
+**Parameters**
+
+- `tools: Mapping[str, AgentTool]` — *(no description)*
+- `dispatcher: ExtensionRunner | None` — *(no description)*
+- `tool_call: ToolCall` — *(no description)*
+- `parent_tool_call_id: str | None = None` — *(no description)*
+
+**Returns**
+
+The prepared call, a :class:`BlockedCall` (validation failed, a handler vetoed, or a handler raised: fail-closed), or an :class:`ErrorCall`.

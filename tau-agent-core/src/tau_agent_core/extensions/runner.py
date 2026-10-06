@@ -310,10 +310,13 @@ class ExtensionRunner:
         pi ``runner.ts:812-860``. Clone the event once, then let each handler patch
         ``content`` / ``details`` / ``is_error`` (whole-value replace, no deep
         merge). Returns the patched fields when anything changed, else ``None`` so
-        the call-site passes the original result through unchanged.
+        the call-site passes the original result through unchanged. ``value``
+        (the structured result, when the event carries one) is patchable too, and
+        ``patched`` names the keys a handler set, so the call-site can tell a
+        rewritten ``content`` from an untouched ``value``.
         """
         current = dict(event)
-        modified = False
+        patched: set[str] = set()
         for ext in self._extensions:
             handlers = ext.handlers.get("tool_result")
             if not handlers:
@@ -326,23 +329,21 @@ class ExtensionRunner:
                     continue
                 if not handler_result:
                     continue
-                # pi checks `!== undefined`: a present key patches (even to None).
-                if "content" in handler_result:
-                    current["content"] = handler_result["content"]
-                    modified = True
-                if "details" in handler_result:
-                    current["details"] = handler_result["details"]
-                    modified = True
-                if "is_error" in handler_result:
-                    current["is_error"] = handler_result["is_error"]
-                    modified = True
-        if not modified:
+                for key in ("content", "details", "is_error", "value"):
+                    if key in handler_result:
+                        current[key] = handler_result[key]
+                        patched.add(key)
+        if not patched:
             return None
-        return {
+        out = {
             "content": current.get("content"),
             "details": current.get("details"),
             "is_error": current.get("is_error"),
+            "patched": sorted(patched),
         }
+        if "value" in current:
+            out["value"] = current["value"]
+        return out
 
     async def emit_before_agent_start(
         self,

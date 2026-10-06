@@ -30,7 +30,6 @@ from tau_llm.streaming import (
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
-from tau_llm.tools import validate_tool_arguments
 from tau_llm.types import (
     AssistantMessage,
     ToolCall,
@@ -43,6 +42,13 @@ from tau_agent_core.agent_loop_types import (
 )
 from tau_agent_core.events import AgentEndReason, AgentEvent
 from tau_agent_core.messages import convert_to_llm, create_custom_message
+from tau_agent_core.tool_pipeline import (
+    BlockedCall,
+    ErrorCall,
+    apply_tool_result_hooks,
+    execute_prepared_call,
+    prepare_tool_call,
+)
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolBatchResult
 from tau_llm.docs import agent_facing
 
@@ -80,37 +86,6 @@ class TurnWriter(Protocol):
     async def append(self, message: Any) -> None:
         """Write a message that is finished when it exists: a tool result, a steer, a node."""
         ...
-
-
-@agent_facing(topic="agent-loop")
-class BlockedCall:
-    """A tool call that was blocked (e.g., argument validation failed).
-
-    ``blocked_by_extension`` names the extension that VETOED the call via a
-    ``tool_call`` hook (S50, anchor G11); it is ``None`` for a block that is NOT an
-    extension veto (argument-validation failure, fail-closed handler throw) — those
-    stay a generic errored result rather than the "⛔ blocked by <ext>" render.
-    """
-
-    def __init__(
-        self, call: PreparedToolCall, error: str, blocked_by_extension: str | None = None
-    ) -> None:
-        self.call = call
-        self.error = error
-        self.blocked_by_extension = blocked_by_extension
-
-
-@agent_facing(topic="agent-loop")
-class ErrorCall:
-    """A tool call whose preparation raised ``exception``."""
-
-    def __init__(self, call: PreparedToolCall, exception: Exception) -> None:
-        self.call = call
-        self.exception = exception
-
-    def result(self) -> AgentToolResult:
-        """The call's result, by :meth:`AgentToolResult.from_exception`."""
-        return AgentToolResult.from_exception(self.call.name, self.exception, self.call.id)
 
 
 ABORTED_TOOL_RESULT = "Operation aborted"
@@ -160,6 +135,9 @@ class AgentLoop:
         _hook_dispatcher: The return-collecting extension hook dispatcher
             (an :class:`~tau_agent_core.extensions.runner.ExtensionRunner`),
             injected by :class:`~tau_agent_core.agent_session.AgentSession`.
+        _tools_provider: Re-reads the declared tools before each completion, so
+            a tool a ``tool_search`` loaded mid-turn is offered on the next call;
+            ``None`` keeps the constructor's list (experimental).
             Unlike ``emit`` (fire-and-forget), its ``emit_*`` methods return
             results that the mutating-hook call-sites thread forward. ``None``
             when the loop runs standalone (no session / no extensions).
@@ -187,6 +165,7 @@ class AgentLoop:
         steer_queue: list[Any] | None = None,
         mid_turn_compactor: MidTurnCompactor | None = None,
         writer: TurnWriter | None = None,
+        tools_provider: Callable[[], list[AgentTool]] | None = None,
     ) -> None:
         self.config = config
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
@@ -200,6 +179,7 @@ class AgentLoop:
         self._steer_queue: list[Any] | None = steer_queue
         self._mid_turn_compactor: MidTurnCompactor | None = mid_turn_compactor
         self._writer: TurnWriter | None = writer
+        self._tools_provider = tools_provider
         self._recorded: dict[int, dict[str, Any]] = {}
 
     @staticmethod
@@ -811,6 +791,8 @@ class AgentLoop:
             The final AssistantMessage.
         """
 
+        if self._tools_provider is not None:
+            self._tools = {t.name: t for t in self._tools_provider()}
         messages = convert_to_llm(list(context))
         opens_with_system = (
             bool(messages)
@@ -1424,192 +1406,17 @@ class AgentLoop:
     async def _prepare_tool_call(
         self, tool_call: ToolCall
     ) -> PreparedToolCall | BlockedCall | ErrorCall:
-        """Prepare a tool call: validate args, run before hooks.
-
-        Args:
-            tool_call: ToolCall from the LLM response.
-
-        Returns:
-            PreparedToolCall if ready, BlockedCall if validation failed,
-            or ErrorCall if an error occurred during preparation.
-        """
-        try:
-            call_name = tool_call.name
-            call_args = tool_call.arguments
-
-            if call_name in self._tools:
-                tool = self._tools[call_name]
-                validate_tool_arguments(tool, call_args)
-
-            input_args = call_args if isinstance(call_args, dict) else {}
-
-            dispatcher = self._hook_dispatcher
-            if dispatcher is not None and dispatcher.has_handlers("tool_call"):
-                event: dict[str, Any] = {
-                    "type": "tool_call",
-                    "tool_call_id": tool_call.id,
-                    "tool_name": call_name,
-                    "input": input_args,
-                }
-                try:
-                    hook_result = await dispatcher.emit_tool_call(event)
-                except Exception as hook_err:
-                    return BlockedCall(
-                        call=PreparedToolCall(
-                            id=tool_call.id,
-                            name=call_name,
-                            arguments={},
-                        ),
-                        error=f"Extension failed, blocking execution: {hook_err}",
-                    )
-                if hook_result and hook_result.get("block"):
-                    return BlockedCall(
-                        call=PreparedToolCall(
-                            id=tool_call.id,
-                            name=call_name,
-                            arguments={},
-                        ),
-                        error=hook_result.get("reason") or "Tool execution was blocked",
-                        blocked_by_extension=hook_result.get("extension"),
-                    )
-                input_args = event["input"]
-
-            return PreparedToolCall(
-                id=tool_call.id,
-                name=call_name,
-                arguments=input_args,
-            )
-        except ValueError as e:
-            return BlockedCall(
-                call=PreparedToolCall(
-                    id=tool_call.id,
-                    name=tool_call.name,
-                    arguments={},
-                ),
-                error=str(e),
-            )
-        except Exception as e:
-            return ErrorCall(
-                call=PreparedToolCall(
-                    id=tool_call.id,
-                    name=tool_call.name,
-                    arguments={},
-                ),
-                exception=e,
-            )
+        """Validate args and run the ``tool_call`` hook (:func:`prepare_tool_call`)."""
+        return await prepare_tool_call(self._tools, self._hook_dispatcher, tool_call)
 
     async def _execute_tool(self, call: PreparedToolCall) -> AgentToolResult:
-        """Execute a single tool with error handling.
-
-        Args:
-            call: The PreparedToolCall to execute.
-
-        Returns:
-            AgentToolResult with the tool's result.
-        """
-        try:
-            tool = self._tools.get(call.name)
-            if tool is None:
-                return AgentToolResult.from_error(
-                    call.name,
-                    f"Unknown tool: {call.name}",
-                    call.id,
-                )
-
-            result = await tool.execute(
-                tool_call_id=call.id,
-                args=call.arguments,
-                signal=self._abort_signal,
-            )
-
-            # If the tool returned an AgentToolResult, preserve its terminate flag
-            if isinstance(result, AgentToolResult):
-                result.tool_name = call.name
-                result.tool_call_id = call.id
-                return result
-
-            # Otherwise wrap the raw result (dict from tool.model_dump(), etc.)
-            if isinstance(result, dict):
-                # Extract content from the result dict
-                content = result.get("content", "")
-                is_error = result.get("is_error", False)
-                details = result.get("details")
-                content_list = (
-                    content
-                    if isinstance(content, list)
-                    else [{"type": "text", "text": str(content)}]
-                )
-                return AgentToolResult(
-                    tool_name=call.name,
-                    tool_call_id=call.id,
-                    content=content_list,
-                    details=details if isinstance(details, dict) else None,
-                    is_error=is_error,
-                    terminate=result.get("terminate", False),
-                )
-            else:
-                content_list = (
-                    result if isinstance(result, list) else [{"type": "text", "text": str(result)}]
-                )
-                return AgentToolResult(
-                    tool_name=call.name,
-                    tool_call_id=call.id,
-                    content=content_list,
-                    is_error=False,
-                )
-        except Exception as e:
-            return AgentToolResult.from_exception(call.name, e, call.id)
+        """Execute one prepared call (:func:`execute_prepared_call`)."""
+        return await execute_prepared_call(self._tools, call, self._abort_signal)
 
     async def _apply_after_hooks(
         self,
         result: AgentToolResult,
         input_args: dict[str, Any] | None = None,
     ) -> AgentToolResult:
-        """Apply the ``tool_result`` mutating hook (E2 / step S12) to ``result``.
-
-        pi wires this at agent-session's ``afterToolCall`` (agent-session.ts:427-452),
-        applied in agent-loop's ``finalizeExecutedToolCall`` (agent-loop.ts:682-707).
-        Gated on ``has_handlers`` for the zero-extension fast path.
-
-        The dispatcher clones the event once and lets each handler field-patch
-        ``content`` / ``details`` / ``is_error`` (whole-value replace, later handler
-        sees the earlier handler's patch); it returns those fields only when
-        something changed, else ``None`` (pass the result through unchanged). Each
-        handler's exception is swallowed-and-continued but surfaced via the runner's
-        ``emit_error`` (never silently dropped, pi runner.ts:754-763).
-
-        All three patchable fields map back onto the result. ``?? existing``
-        semantics (agent-loop.ts:697-701): a patched-to-``None`` field falls back
-        to the original value, so a handler cannot clear ``details`` by patching
-        it to ``None`` — it must patch an empty dict.
-
-        Args:
-            result: The tool execution result.
-            input_args: The args the tool executed with (the ``input`` the event
-                carries so handlers can correlate the result to its call).
-
-        Returns:
-            The (possibly patched) result.
-        """
-        dispatcher = self._hook_dispatcher
-        if dispatcher is None or not dispatcher.has_handlers("tool_result"):
-            return result
-
-        event: dict[str, Any] = {
-            "type": "tool_result",
-            "tool_name": result.tool_name,
-            "tool_call_id": result.tool_call_id,
-            "input": input_args if input_args is not None else {},
-            "content": result.content,
-            "details": result.details,
-            "is_error": result.is_error,
-        }
-        patch = await dispatcher.emit_tool_result(event)
-        if patch is not None:
-            if patch.get("content") is not None:
-                result.content = patch["content"]
-            if patch.get("details") is not None:
-                result.details = patch["details"]
-            if patch.get("is_error") is not None:
-                result.is_error = patch["is_error"]
-        return result
+        """Apply the ``tool_result`` hook (:func:`apply_tool_result_hooks`)."""
+        return await apply_tool_result_hooks(self._hook_dispatcher, result, input_args)

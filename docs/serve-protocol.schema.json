@@ -6465,6 +6465,18 @@
           "default": null,
           "description": "Count of messages produced this turn, on agent_end (E2). The messages themselves are pulled via get_messages, never pushed. None for all other event types."
         },
+        "parent_tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On a tool_execution_* event for a call a tool made, the calling tool's call id; None for a call the model made. Experimental."
+        },
         "purpose": {
           "anyOf": [
             {

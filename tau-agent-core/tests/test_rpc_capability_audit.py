@@ -86,6 +86,21 @@ EXPOSED: dict[str, str] = {
 }
 
 NOT_EXPOSED: dict[str, str] = {
+    "describe_tools": (
+        "Experimental tool discovery for extensions (experiments/tool-exposure). A wire "
+        "verb waits on the decision whether a host may see callable and deferred tools."
+    ),
+    "execute_tool": (
+        "Experimental nested tool call, meant for code running inside a tool. A host "
+        "running a tool outside any turn has no parent call, and that case is undecided."
+    ),
+    "list_extensions": (
+        "Experimental; `list_managed_extensions` already gives a host the loaded extensions."
+    ),
+    "set_tool_exposure": (
+        "Experimental; a host verb for masking tools waits on the exposure vocabulary "
+        "being settled (experiments/tool-exposure/RESULTS.md)."
+    ),
     "context_estimate": (
         "The session's own reading of how big its context is, counted with its "
         "own tokenizer and its own online fit (docs/TOKEN-ACCOUNTING.md). A host "
