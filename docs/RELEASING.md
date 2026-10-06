@@ -139,8 +139,8 @@ address is the measurement.
 
 #### Run the matrix BEFORE the tag push, not after
 
-The local gate is 3.11 only, and `publish.yml` tests 3.11, 3.12, 3.13 and 3.14
-with `fail-fast: true`. So the first time a release learns about the other
+The local gate is 3.11 only, and `publish.yml` tests 3.11, 3.12, 3.13, 3.14 and
+3.14t (free-threaded) with `fail-fast: true`. So the first time a release learns about the other
 three is the tag push — and a tag push is the one step that cannot be taken
 back. 0.9.3 was tagged, went red on 3.13, and had to be recut.
 
@@ -157,10 +157,26 @@ for v in 3.11 3.12 3.13 3.14; do
     pip install -q -e ./tau-meta &&
     python -m pytest -q -rf --tb=line' | tail -40
 done
+
+# 3.14t: there is no official python:3.14t image, so uv fetches the
+# free-threaded interpreter inside the 3.14 one. --seed gives the venv the same
+# pip the loop above uses, so both install the same set the same way.
+echo "=== python 3.14t ==="
+docker run --rm -v /tmp/src.tar:/src.tar:ro python:3.14-bookworm bash -c '
+  pip install -q uv && uv python install 3.14t && uv venv -q --seed -p 3.14t /ft &&
+  . /ft/bin/activate && python -c "import sys; assert not sys._is_gil_enabled()" &&
+  mkdir /work && tar -xf /src.tar -C /work && cd /work &&
+  pip install -q -e ./tau-llm -e "./tau-agent-core[dev]" \
+                 -e "./tau-coding-agent[dev]" -e ./tau-jmfts &&
+  pip install -q -e ./tau-meta &&
+  python -m pytest -q -rf --tb=line' | tail -40
 ```
 
-**A version is clean at zero failures.** All four must agree, and they must
+**A version is clean at zero failures.** All five must agree, and they must
 agree on `0 failed`. Anything else is a real difference and blocks the tag.
+3.14t also runs one test the others skip, `test_free_threading_gil.py`, so its
+passed count is one higher and its skip count one lower; that is the only
+difference allowed.
 
 **Three details of that command are load-bearing. 0.9.7 paid for two of them
 and 0.10.0 for the third.**

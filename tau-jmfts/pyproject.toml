@@ -6,6 +6,8 @@ name = "ffwf-tau-jmfts"
 dynamic = ["version"]
 description = "τ-jmfts: JMFTS (Fusion Tree Search) session store backend and REST client"
 requires-python = ">=3.11"
+# Held against publish.yml's "t" matrix entry by tests/test_packaging.py.
+classifiers = ["Programming Language :: Python :: Free Threading :: 3 - Stable"]
 readme = "README.md"
 # SPDX expression + the file itself (PEP 639), which is why build-system below
 # needs setuptools >= 77.0.3: earlier versions ignore `license-files` and the

@@ -13,6 +13,8 @@ name = "ffwf-tau"
 dynamic = ["version"]
 description = "τ: the guessable name. The `tau` command with its TUI, all three wire protocols, and image support."
 requires-python = ">=3.11"
+# Held against publish.yml's "t" matrix entry by tests/test_packaging.py.
+classifiers = ["Programming Language :: Python :: Free Threading :: 3 - Stable"]
 readme = "README.md"
 # SPDX expression + the file itself (PEP 639), which is why build-system below
 # needs setuptools >= 77.0.3: earlier versions ignore `license-files` and the
