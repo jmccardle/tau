@@ -735,7 +735,10 @@ async def test_stop_stops_the_daemon_and_reports_it(tmp_path, monkeypatch, capsy
     code = await asyncio.to_thread(serve_cli.stop_daemon, address, json_output=True)
 
     assert code == 0 and await asyncio.wait_for(serving, 5) == 0
-    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    # The in-process daemon's own log lines may land after the report, so find it, not the last line.
+    reports = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("{")]
+    assert len(reports) == 1, reports
+    printed = json.loads(reports[0])
     validate(printed, SCHEMA["$defs"]["ServeStopped"], SCHEMA, strict=True)
     assert printed == {"address": str(address), "pid": os.getpid(), "stopped": True}
 
