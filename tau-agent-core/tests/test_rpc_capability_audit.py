@@ -94,6 +94,14 @@ NOT_EXPOSED: dict[str, str] = {
         "Experimental nested tool call, meant for code running inside a tool. A host "
         "running a tool outside any turn has no parent call, and that case is undecided."
     ),
+    "preview_redeclare": (
+        "Experimental; a host verb for changing the declared tools waits on that "
+        "user action getting a command (experiments/tool-exposure/RESULTS.md)."
+    ),
+    "redeclare_tools": (
+        "Experimental; it re-bills the prompt cache, so it must arrive as a user "
+        "command with a warning, and that command does not exist yet."
+    ),
     "list_extensions": (
         "Experimental; `list_managed_extensions` already gives a host the loaded extensions."
     ),

@@ -7,10 +7,10 @@ Three tools, each showing one seam from experiments/tool-exposure/RESULTS.md:
   ``tool_result`` hooks a model-issued call does, and it is recorded on
   ``todo_scan``'s result as ``details["nested_calls"]``. It reads ``grep``'s
   structured value, not its text.
-- ``tool_search`` (``model-only``) finds ``deferred`` tools by keyword and loads
-  them by setting their exposure to ``direct``. The change is a config entry on
-  the tree, so a resumed session still has the tool. Its own description never
-  changes, which keeps the prompt cache intact until a load happens.
+- ``tool_search`` and ``call_tool`` (both ``model-only``, from
+  ``tau_agent_core.tool_dispatch``) reach ``deferred`` tools without changing the
+  declared ``tools`` block. ``tool_search`` returns the matches' stubs in its
+  result, and the model calls one through ``call_tool``. The prompt cache holds.
 - ``word_stats`` (``deferred``) is built by ``tool_from_function`` from an
   annotated function: its parameters come from the signature and its output
   schema from the return annotation.
@@ -39,6 +39,7 @@ from typing import Any
 
 from typing_extensions import TypedDict
 
+from tau_agent_core.tool_dispatch import call_tool_definition, tool_search_definition
 from tau_agent_core.tool_schema import tool_from_function
 
 
@@ -74,45 +75,9 @@ def word_stats(text: str) -> WordStats:
     }
 
 
-async def tool_search(
-    tool_call_id: str, params: dict, signal: Any, on_update: Any, ctx: Any
-) -> dict:
-    """Load every deferred tool whose name, description or tags mention the query."""
-    query = str(params["query"]).lower()
-    hits = [
-        d
-        for d in ctx.list_tools(exposure="deferred")
-        if query in d.name.lower()
-        or query in d.description.lower()
-        or query in map(str.lower, d.tags)
-    ]
-    for d in hits:
-        await ctx.set_tool_exposure(d.name, "direct")
-    if not hits:
-        return {"content": [{"type": "text", "text": f"No deferred tool matches {query!r}."}]}
-    stubs = "\n\n".join(d.stub() for d in hits)
-    return {"content": [{"type": "text", "text": f"Loaded {len(hits)} tool(s):\n\n{stubs}"}]}
-
-
-TOOL_SEARCH = {
-    "name": "tool_search",
-    "label": "Tool search",
-    "description": (
-        "Find and load additional tools by keyword. Loaded tools can be called "
-        "from your next step; the result shows their signatures."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {"query": {"type": "string", "description": "A keyword, e.g. 'text'"}},
-        "required": ["query"],
-    },
-    "execute": tool_search,
-    "exposure": "model-only",
-}
-
-
 def register(api: Any) -> None:
-    """Register ``todo_scan``, ``tool_search`` and the deferred ``word_stats``."""
+    """Register ``todo_scan``, ``tool_search``, ``call_tool`` and the deferred ``word_stats``."""
     api.register_tool(tool_from_function(todo_scan, tags=["code"]))
-    api.register_tool(TOOL_SEARCH)
+    api.register_tool(tool_search_definition())
+    api.register_tool(call_tool_definition())
     api.register_tool(tool_from_function(word_stats, exposure="deferred", tags=["text"]))

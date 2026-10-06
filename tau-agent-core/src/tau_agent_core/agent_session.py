@@ -106,8 +106,11 @@ from tau_agent_core.prompt_cache import prompt_tokens
 from tau_agent_core.usage import add_usage, zero_usage
 from tau_llm.tokens import ZERO_TOKENS, ContextCalibrator, TextCounter, counter_for
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
+from tau_agent_core.prompt_cache import ToolBlockChange, tool_block_change
 from tau_agent_core.tool_catalog import (
     CALLABLE_EXPOSURES,
+    EXPOSURE_NOTICE_TYPE,
+    EXPOSURE_NOTICES,
     DECLARED_EXPOSURES,
     ExtensionInfo,
     ToolDescription,
@@ -698,6 +701,7 @@ class AgentSession:
         ]
         frame = self.acting_cursor.frame
         model = self._turn_model()
+        declared = {t.name for t in self._turn_tools()}
         return {
             "model_spec": {
                 "id": model.id,
@@ -705,7 +709,7 @@ class AgentSession:
                 "context_window": model.context_window,
             },
             "thinking": self._reasoning,
-            "tools": [t.name for t in self._tools if self._exposure_of(t) in DECLARED_EXPOSURES]
+            "tools": [t.name for t in self._tools if t.name in declared]
             if frame is None
             else [t.name for t in self._turn_tools()],
             "extensions": [_extension_factory_label(ext) for ext in self._extensions]
@@ -1928,36 +1932,67 @@ class AgentSession:
         return frame.system_prompt
 
     def _turn_tools(self) -> list[AgentTool]:
-        """The tools the running turn offers the model: declared exposure, narrowed by the frame."""
-        return self._tools_where(DECLARED_EXPOSURES)
+        """The tools the running turn declares to the model, narrowed by the frame.
+
+        Only an explicit :meth:`redeclare_tools` changes this list; an exposure
+        override never does, so nothing a model or extension does on its own
+        changes the request's ``tools`` block (experiments/tool-exposure/RESULTS.md).
+        """
+        declaration = self._declaration_overrides()
+        return self._narrowed(
+            [
+                t
+                for t in self._build_turn_tools()
+                if declaration.get(t.name, t.exposure in DECLARED_EXPOSURES)
+            ]
+        )
 
     def _callable_tools(self) -> list[AgentTool]:
         """The tools ``ctx.execute_tool`` may reach on the acting cursor (experimental)."""
-        return self._tools_where(CALLABLE_EXPOSURES)
-
-    def _tools_where(self, exposures: frozenset[str]) -> list[AgentTool]:
-        """Every tool whose effective exposure is in ``exposures``, narrowed by the cursor's frame."""
         overrides = self._exposure_overrides()
-        tools = [
-            t for t in self._build_turn_tools() if overrides.get(t.name, t.exposure) in exposures
-        ]
+        return self._narrowed(
+            [
+                t
+                for t in self._build_turn_tools()
+                if overrides.get(t.name, t.exposure) in CALLABLE_EXPOSURES
+            ]
+        )
+
+    def _narrowed(self, tools: list[AgentTool]) -> list[AgentTool]:
+        """``tools`` narrowed by the acting cursor's frame allowlist, if it has one."""
         frame = self.acting_cursor.frame
         if frame is None:
             return tools
         allowed = set(frame.tools)
         return [t for t in tools if t.name in allowed]
 
-    def _exposure_overrides(self) -> dict[str, str]:
-        """The ``tool_exposure`` map on the acting cursor's path; ``{}`` if none was recorded."""
+    def _config_map(self, key: str) -> dict[str, Any]:
+        """The ``key`` map folded on the acting cursor's path; ``{}`` if none was recorded."""
         cursor = self.acting_cursor
-        overrides: dict[str, str] = (
-            config_at(cursor.entries(), cursor.leaf).get("tool_exposure") or {}
-        )
-        return overrides
+        found: dict[str, Any] = config_at(cursor.entries(), cursor.leaf).get(key) or {}
+        return found
 
-    def _exposure_of(self, tool: AgentTool) -> str:
-        """``tool``'s effective exposure on the acting cursor."""
-        return self._exposure_overrides().get(tool.name, tool.exposure)
+    def _exposure_overrides(self) -> dict[str, str]:
+        """The ``tool_exposure`` map on the acting cursor's path."""
+        return self._config_map("tool_exposure")
+
+    def _declaration_overrides(self) -> dict[str, bool]:
+        """The ``tool_declaration`` map on the acting cursor's path."""
+        return self._config_map("tool_declaration")
+
+    def _model_call_refusal(self, name: str) -> str | None:
+        """Why a model-issued call to declared tool ``name`` is refused, or ``None``.
+
+        A masked tool stays declared, to keep the prompt cache, and is refused
+        here instead (experiments/tool-exposure/RESULTS.md).
+        """
+        exposure = self._exposure_overrides().get(name)
+        if exposure is None or exposure in DECLARED_EXPOSURES:
+            return None
+        return (
+            f"Tool {name!r} is not available in this conversation: it was set to "
+            f"{exposure!r}. Do not call it again."
+        )
 
     @agent_facing(topic="extensions")
     def describe_tools(self, *, include_hidden: bool = False) -> list[ToolDescription]:
@@ -1967,27 +2002,24 @@ class AgentSession:
         ``include_hidden``.
         """
         overrides = self._exposure_overrides()
-        frame = self.acting_cursor.frame
-        allowed = None if frame is None else set(frame.tools)
+        declared = {t.name for t in self._turn_tools()}
         found = []
-        for tool in self._build_turn_tools():
-            if allowed is not None and tool.name not in allowed:
-                continue
+        for tool in self._narrowed(self._build_turn_tools()):
             exposure = overrides.get(tool.name, tool.exposure)
             if exposure == "hidden" and not include_hidden:
                 continue
-            found.append(describe_tool(tool, exposure))
+            found.append(describe_tool(tool, exposure, tool.name in declared))
         return found
 
     @agent_facing(topic="extensions")
     async def set_tool_exposure(self, name: str, exposure: str) -> None:
         """Override ``name``'s exposure from the acting cursor's leaf on (experimental).
 
-        Written as a ``tool_exposure`` config entry, so the change is on the path:
-        a branch taken before it does not see it, and a resume or fork does.
-        Loading a ``deferred`` tool is setting it to ``"direct"``; masking a
-        built-in is setting it to ``"hidden"``. Inside a turn the model is
-        offered the new set from its next completion.
+        The declared ``tools`` block does not change, so the prompt cache holds.
+        The override is a ``tool_exposure`` config entry, and the model is told by
+        an appended ``tool_exposure`` message on the path: now when no turn is
+        running, before the next completion when one is. A masked tool stays
+        declared and a model call to it is refused with the reason.
 
         Raises:
             ValueError: ``exposure`` is not one of :data:`~tau_llm.tools.ToolExposure`,
@@ -2002,7 +2034,66 @@ class AgentSession:
             return
         overrides[name] = exposure
         await self._record_config()
-        await self.acting_cursor.append_config(tool_exposure=overrides)
+        cursor = self.acting_cursor
+        await cursor.append_config(tool_exposure=overrides)
+        text = EXPOSURE_NOTICES[exposure].format(name=name)
+        if cursor.is_streaming:
+            cursor.steer_queue.append(
+                create_custom_message(
+                    custom_type=EXPOSURE_NOTICE_TYPE,
+                    content=text,
+                    visible_to_model=True,
+                    timestamp=self._timestamp(),
+                )
+            )
+        else:
+            await self._append_custom_message(
+                {"customType": EXPOSURE_NOTICE_TYPE, "content": text},
+                {"visible_to_model": True},
+            )
+
+    @agent_facing(topic="extensions")
+    def preview_redeclare(self, changes: dict[str, bool]) -> ToolBlockChange:
+        """What :meth:`redeclare_tools` with ``changes`` would do to the ``tools`` block.
+
+        A head calls this to warn the user before a change that re-bills the
+        prompt (:func:`~tau_agent_core.prompt_cache.tool_block_change`).
+        """
+        before = self._turn_tools()
+        declaration = {**self._declaration_overrides(), **changes}
+        after = self._narrowed(
+            [
+                t
+                for t in self._build_turn_tools()
+                if declaration.get(t.name, t.exposure in DECLARED_EXPOSURES)
+            ]
+        )
+        return tool_block_change(before, after)
+
+    @agent_facing(topic="extensions")
+    async def redeclare_tools(self, changes: dict[str, bool]) -> ToolBlockChange:
+        """Declare (``True``) or withdraw (``False``) tools from the model's ``tools`` block.
+
+        A user action, never something a tool or extension does on its own: any
+        change here costs a full prompt-cache miss on the next request. Recorded as
+        a ``tool_declaration`` config entry, so a resume declares the same set.
+
+        Returns:
+            The change, as :meth:`preview_redeclare` reported it.
+
+        Raises:
+            ValueError: a name is not a tool here.
+        """
+        known = {t.name for t in self._build_turn_tools()}
+        unknown = sorted(set(changes) - known)
+        if unknown:
+            raise ValueError(f"redeclare_tools: no tool named {unknown}")
+        change = self.preview_redeclare(changes)
+        declaration = {**self._declaration_overrides(), **changes}
+        if declaration != self._declaration_overrides():
+            await self._record_config()
+            await self.acting_cursor.append_config(tool_declaration=declaration)
+        return change
 
     @agent_facing(topic="extensions")
     def list_extensions(self) -> list[ExtensionInfo]:
@@ -3497,7 +3588,7 @@ class AgentSession:
             steer_queue=self.acting_cursor.steer_queue,
             mid_turn_compactor=self._compact_mid_turn,
             writer=writer,
-            tools_provider=self._turn_tools,
+            call_gate=self._model_call_refusal,
         )
 
         # The inputs are written before the loop runs, so a crash mid-turn keeps the prompt.
@@ -3660,7 +3751,7 @@ class AgentSession:
                 hook_dispatcher=self._hooks(),
                 steer_queue=cur.steer_queue,
                 writer=writer,
-                tools_provider=self._turn_tools,
+                call_gate=self._model_call_refusal,
             )
             try:
                 await loop.run_continue(context=context_messages)

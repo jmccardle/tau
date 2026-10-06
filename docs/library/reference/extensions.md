@@ -1910,7 +1910,7 @@ partition key).
 <!-- agent: yes -->
 
 ```python
-class ToolDescription(name: str, label: str, description: str, namespace: str, exposure: str, declared_exposure: str, tags: tuple[str, ...], parameters: dict[str, Any], output_schema: dict[str, Any] | None, execution_mode: str)
+class ToolDescription(name: str, label: str, description: str, namespace: str, exposure: str, declared: bool, declared_exposure: str, tags: tuple[str, ...], parameters: dict[str, Any], output_schema: dict[str, Any] | None, execution_mode: str)
 ```
 
 `tau_agent_core.tool_catalog.ToolDescription`
@@ -1924,6 +1924,7 @@ One tool as discovery reports it.
 - `description: str` — What the model reads.
 - `namespace: str` — ``"core"``, or the extension (``<ext>`` / ``<ext>.<sub>``) that declared it.
 - `exposure: str` — The effective exposure on the asking cursor.
+- `declared: bool` — Whether the model's ``tools`` block declares it; only an explicit redeclaration changes this, never an exposure override.
 - `declared_exposure: str` — The author's default.
 - `tags: tuple[str, ...]` — Discovery labels.
 - `parameters: dict[str, Any]` — The argument JSON Schema.
@@ -1936,11 +1937,11 @@ One tool as discovery reports it.
 
 Whether ``ctx.execute_tool`` may run this tool.
 
-### declared_to_model
+### model_may_call
 
-`tau_agent_core.tool_catalog.ToolDescription.declared_to_model: bool`
+`tau_agent_core.tool_catalog.ToolDescription.model_may_call: bool`
 
-Whether the model is offered this tool.
+Whether a model call to it, direct or through ``call_tool``, would run.
 
 ### stub
 

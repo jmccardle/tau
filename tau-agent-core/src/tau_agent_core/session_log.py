@@ -176,6 +176,7 @@ CONFIG_KEYS: frozenset[str] = frozenset(
         "model_spec",
         "system_prompt_digest",
         "tool_exposure",
+        "tool_declaration",
     }
 )
 """What a config entry may set. Each key is optional; a later entry on a path
@@ -191,6 +192,9 @@ overrides an earlier one key by key.
 - ``tool_exposure``: ``{tool name: exposure}`` overriding each tool's declared
   exposure; always the whole map, because the fold replaces a key wholesale.
   Experimental (experiments/tool-exposure/RESULTS.md).
+- ``tool_declaration``: ``{tool name: bool}``, whether the model's ``tools``
+  block declares it, overriding the default from its exposure. Written only by
+  an explicit redeclaration, because any change re-bills the prompt cache.
 """
 
 

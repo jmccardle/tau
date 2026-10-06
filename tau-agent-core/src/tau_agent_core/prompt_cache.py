@@ -20,8 +20,12 @@ for good the first time any completion reads a cached token.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, NamedTuple
+
+from tau_llm.docs import agent_facing
 
 #: The highest minimum cacheable prefix of any current model (Haiku 4.5).
 MIN_CACHEABLE_PROMPT_TOKENS = 4096
@@ -31,6 +35,58 @@ CACHE_TTL_SECONDS = 300
 
 #: The prefix key for the session's own conversation, as opposed to a sub-agent's.
 CONVERSATION_PREFIX = "conversation"
+
+
+@agent_facing(topic="sessions")
+@dataclass(frozen=True)
+class ToolBlockChange:
+    """How a change to the declared tools would alter the request's ``tools`` block.
+
+    Every provider renders ``tools`` before ``system`` and the messages
+    (docs/PROMPT-CACHING.md), so any difference here re-bills the whole prompt
+    at the cache-write price on the next request.
+
+    Attributes:
+        added: Names declared after and not before.
+        removed: Names declared before and not after.
+        changed: Names in both whose description or parameters differ.
+        reordered: The common names appear in a different order.
+    """
+
+    added: tuple[str, ...]
+    removed: tuple[str, ...]
+    changed: tuple[str, ...]
+    reordered: bool
+
+    @property
+    def invalidates_cache(self) -> bool:
+        """Whether the next request misses the prompt cache because of this change."""
+        return bool(self.added or self.removed or self.changed or self.reordered)
+
+
+def _tool_key(tool: Any) -> tuple[str, str]:
+    """The serialized form a provider sends for ``tool``: its description and parameters."""
+    return (tool.description, json.dumps(tool.parameters, sort_keys=True))
+
+
+@agent_facing(topic="sessions")
+def tool_block_change(before: Sequence[Any], after: Sequence[Any]) -> ToolBlockChange:
+    """Compare two declared tool lists, each item having ``name``/``description``/``parameters``.
+
+    Pure, so every head reaches the same verdict before it applies a change
+    and can warn the user that it costs a cache miss (experimental;
+    experiments/tool-exposure/RESULTS.md).
+    """
+    old = {t.name: _tool_key(t) for t in before}
+    new = {t.name: _tool_key(t) for t in after}
+    common_old = [t.name for t in before if t.name in new]
+    common_new = [t.name for t in after if t.name in old]
+    return ToolBlockChange(
+        added=tuple(n for n in new if n not in old),
+        removed=tuple(n for n in old if n not in new),
+        changed=tuple(n for n in common_new if old[n] != new[n]),
+        reordered=common_old != common_new,
+    )
 
 
 def prompt_tokens(usage: dict[str, Any]) -> int:

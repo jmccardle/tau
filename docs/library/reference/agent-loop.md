@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, tools_provider: Callable[[], list[AgentTool]] | None = None)
+class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, call_gate: Callable[[str], str | None] | None = None)
 ```
 
 `tau_agent_core.agent_loop.AgentLoop`
@@ -29,7 +29,7 @@ Reference: SUBPHASE-0.0.md, "5. Agent Events" section.
 - `steer_queue: list[Any] | None = None` — *(no description)*
 - `mid_turn_compactor: MidTurnCompactor | None = None` — *(no description)*
 - `writer: TurnWriter | None = None` — *(no description)*
-- `tools_provider: Callable[[], list[AgentTool]] | None = None` — *(no description)*
+- `call_gate: Callable[[str], str | None] | None = None` — *(no description)*
 
 ### add_tool
 
@@ -421,7 +421,7 @@ output in ``details["captured_output"]``.
 <!-- agent: yes -->
 
 ```python
-async prepare_tool_call(tools: Mapping[str, AgentTool], dispatcher: ExtensionRunner | None, tool_call: ToolCall, *, parent_tool_call_id: str | None = None) -> PreparedToolCall | BlockedCall | ErrorCall
+async prepare_tool_call(tools: Mapping[str, AgentTool], dispatcher: ExtensionRunner | None, tool_call: ToolCall, *, parent_tool_call_id: str | None = None, gate: Callable[[str], str | None] | None = None) -> PreparedToolCall | BlockedCall | ErrorCall
 ```
 
 `tau_agent_core.tool_pipeline.prepare_tool_call`
@@ -429,7 +429,8 @@ async prepare_tool_call(tools: Mapping[str, AgentTool], dispatcher: ExtensionRun
 Validate ``tool_call``'s arguments and run the ``tool_call`` hook.
 
 A nested call's hook event carries ``parent_tool_call_id``; a model-issued
-call's event has no such key.
+call's event has no such key. ``gate``, given the tool name, returns a reason
+to refuse the call before validation, or ``None``.
 
 **Parameters**
 
@@ -437,6 +438,7 @@ call's event has no such key.
 - `dispatcher: ExtensionRunner | None` — *(no description)*
 - `tool_call: ToolCall` — *(no description)*
 - `parent_tool_call_id: str | None = None` — *(no description)*
+- `gate: Callable[[str], str | None] | None = None` — *(no description)*
 
 **Returns**
 

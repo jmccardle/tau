@@ -6,7 +6,7 @@
 >
 > Design of record: `docs/TAU-SERVE.md` §5–§7.
 
-- **Protocol version:** `0.8`
+- **Protocol version:** `0.9`
 - **Default port:** `8256`
 - **Counts:** 50 requests (35 of them RPC verbs), 10 event kinds, 198 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.

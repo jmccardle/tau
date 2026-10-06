@@ -16,7 +16,7 @@
 
 ## Version negotiation
 
-- **Protocol version:** `2.1`
+- **Protocol version:** `2.2`
 - **Dialect:** `jsonrpc-2.0`
 - **Counts:** 40 live verbs, 7 declined verbs, 13 event types, 62 type definitions. Cite this line; never copy the numbers into hand-written prose.
 
