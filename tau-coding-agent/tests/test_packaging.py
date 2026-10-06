@@ -78,6 +78,7 @@ PROVIDES = {
     "typer": "typer",
     "pytest": "pytest",  # tau_agent_core.testing, via the [testing] extra
     "PIL": "pillow",  # tools/image_resize.py, via the [images] extra
+    "pydantic_monty": "pydantic-monty",  # codemode/monty.py, via [codemode-monty]
 }
 
 
