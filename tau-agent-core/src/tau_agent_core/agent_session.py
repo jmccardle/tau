@@ -73,6 +73,7 @@ from tau_agent_core.commands import (
     CommandInvocation,
     UnsupportedCommandError,
     dispatch_builtin,
+    extension_owner,
     resolve_command,
 )
 from tau_agent_core.flows import Dispatched, Performed, Ready
@@ -105,6 +106,15 @@ from tau_agent_core.prompt_cache import prompt_tokens
 from tau_agent_core.usage import add_usage, zero_usage
 from tau_llm.tokens import ZERO_TOKENS, ContextCalibrator, TextCounter, counter_for
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
+from tau_agent_core.tool_catalog import (
+    CALLABLE_EXPOSURES,
+    DECLARED_EXPOSURES,
+    ExtensionInfo,
+    ToolDescription,
+    describe_tool,
+)
+from tau_agent_core.tool_pipeline import NestedToolResult, run_nested_call
+from tau_llm.tools import TOOL_EXPOSURES
 from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
@@ -695,7 +705,7 @@ class AgentSession:
                 "context_window": model.context_window,
             },
             "thinking": self._reasoning,
-            "tools": [t.name for t in self._tools]
+            "tools": [t.name for t in self._tools if self._exposure_of(t) in DECLARED_EXPOSURES]
             if frame is None
             else [t.name for t in self._turn_tools()],
             "extensions": [_extension_factory_label(ext) for ext in self._extensions]
@@ -1918,13 +1928,117 @@ class AgentSession:
         return frame.system_prompt
 
     def _turn_tools(self) -> list[AgentTool]:
-        """The tools the running turn offers: the session's, narrowed by its cursor's frame."""
-        tools = self._build_turn_tools()
+        """The tools the running turn offers the model: declared exposure, narrowed by the frame."""
+        return self._tools_where(DECLARED_EXPOSURES)
+
+    def _callable_tools(self) -> list[AgentTool]:
+        """The tools ``ctx.execute_tool`` may reach on the acting cursor (experimental)."""
+        return self._tools_where(CALLABLE_EXPOSURES)
+
+    def _tools_where(self, exposures: frozenset[str]) -> list[AgentTool]:
+        """Every tool whose effective exposure is in ``exposures``, narrowed by the cursor's frame."""
+        overrides = self._exposure_overrides()
+        tools = [
+            t for t in self._build_turn_tools() if overrides.get(t.name, t.exposure) in exposures
+        ]
         frame = self.acting_cursor.frame
         if frame is None:
             return tools
         allowed = set(frame.tools)
         return [t for t in tools if t.name in allowed]
+
+    def _exposure_overrides(self) -> dict[str, str]:
+        """The ``tool_exposure`` map on the acting cursor's path; ``{}`` if none was recorded."""
+        cursor = self.acting_cursor
+        overrides: dict[str, str] = (
+            config_at(cursor.entries(), cursor.leaf).get("tool_exposure") or {}
+        )
+        return overrides
+
+    def _exposure_of(self, tool: AgentTool) -> str:
+        """``tool``'s effective exposure on the acting cursor."""
+        return self._exposure_overrides().get(tool.name, tool.exposure)
+
+    @agent_facing(topic="extensions")
+    def describe_tools(self, *, include_hidden: bool = False) -> list[ToolDescription]:
+        """Every tool on the acting cursor, as discovery reports it (experimental).
+
+        A cursor frame's allowlist applies; a ``hidden`` tool is left out unless
+        ``include_hidden``.
+        """
+        overrides = self._exposure_overrides()
+        frame = self.acting_cursor.frame
+        allowed = None if frame is None else set(frame.tools)
+        found = []
+        for tool in self._build_turn_tools():
+            if allowed is not None and tool.name not in allowed:
+                continue
+            exposure = overrides.get(tool.name, tool.exposure)
+            if exposure == "hidden" and not include_hidden:
+                continue
+            found.append(describe_tool(tool, exposure))
+        return found
+
+    @agent_facing(topic="extensions")
+    async def set_tool_exposure(self, name: str, exposure: str) -> None:
+        """Override ``name``'s exposure from the acting cursor's leaf on (experimental).
+
+        Written as a ``tool_exposure`` config entry, so the change is on the path:
+        a branch taken before it does not see it, and a resume or fork does.
+        Loading a ``deferred`` tool is setting it to ``"direct"``; masking a
+        built-in is setting it to ``"hidden"``. Inside a turn the model is
+        offered the new set from its next completion.
+
+        Raises:
+            ValueError: ``exposure`` is not one of :data:`~tau_llm.tools.ToolExposure`,
+                or no tool is named ``name``.
+        """
+        if exposure not in TOOL_EXPOSURES:
+            raise ValueError(f"set_tool_exposure: {exposure!r} is not one of {TOOL_EXPOSURES}")
+        if name not in {t.name for t in self._build_turn_tools()}:
+            raise ValueError(f"set_tool_exposure: no tool named {name!r}")
+        overrides = dict(self._exposure_overrides())
+        if overrides.get(name) == exposure:
+            return
+        overrides[name] = exposure
+        await self._record_config()
+        await self.acting_cursor.append_config(tool_exposure=overrides)
+
+    @agent_facing(topic="extensions")
+    def list_extensions(self) -> list[ExtensionInfo]:
+        """The extensions loaded and enabled now, in load order (experimental)."""
+        found = []
+        for bucket in self._extension_runner._extensions:
+            found.append(
+                ExtensionInfo(
+                    name=extension_owner(bucket.path),
+                    path=bucket.path,
+                    tools=tuple(bucket.tools),
+                    commands=tuple(bucket.commands),
+                )
+            )
+        return found
+
+    @agent_facing(topic="extensions")
+    async def execute_tool(
+        self, name: str, args: dict[str, Any], *, parent_tool_call_id: str | None = None
+    ) -> NestedToolResult:
+        """Run tool ``name`` through the pipeline a model-issued call takes (experimental).
+
+        See :func:`~tau_agent_core.tool_pipeline.run_nested_call`; the tools it may
+        reach are the acting cursor's callable ones, and the hooks are the ones
+        that cursor's turns run.
+        """
+        cursor = self.acting_cursor
+        return await run_nested_call(
+            tools={t.name: t for t in self._callable_tools()},
+            dispatcher=self._hooks(),
+            emit=self._emit_stamped,
+            signal=cursor.abort_signal,
+            name=name,
+            args=args,
+            parent_tool_call_id=parent_tool_call_id,
+        )
 
     def _hooks(self) -> ExtensionRunner:
         """The runner the running turn dispatches hooks through.
@@ -3383,6 +3497,7 @@ class AgentSession:
             steer_queue=self.acting_cursor.steer_queue,
             mid_turn_compactor=self._compact_mid_turn,
             writer=writer,
+            tools_provider=self._turn_tools,
         )
 
         # The inputs are written before the loop runs, so a crash mid-turn keeps the prompt.
@@ -3545,6 +3660,7 @@ class AgentSession:
                 hook_dispatcher=self._hooks(),
                 steer_queue=cur.steer_queue,
                 writer=writer,
+                tools_provider=self._turn_tools,
             )
             try:
                 await loop.run_continue(context=context_messages)

@@ -106,6 +106,14 @@ Message data (agent_start/end, message_*)
 
 List of messages produced (agent_end)
 
+### parent_tool_call_id
+
+`tau_agent_core.events.AgentEvent.parent_tool_call_id: str | None`
+
+On a ``tool_execution_*`` event for a call a tool
+made (``ctx.execute_tool``), the calling tool's call id. ``None`` for
+a call the model made. Experimental.
+
 ### purpose
 
 `tau_agent_core.events.AgentEvent.purpose: SideCompletionPurpose | None`

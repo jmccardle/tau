@@ -43,6 +43,7 @@ class _Tool:
         self.description = f"the {name} tool"
         self.parameters = {"type": "object", "properties": {}}
         self.execution_mode = "parallel"
+        self.exposure = "direct"
         self.calls: list[dict] = []
 
     async def execute(self, tool_call_id, args, signal=None, on_update=None):

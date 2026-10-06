@@ -175,6 +175,7 @@ CONFIG_KEYS: frozenset[str] = frozenset(
         "extensions",
         "model_spec",
         "system_prompt_digest",
+        "tool_exposure",
     }
 )
 """What a config entry may set. Each key is optional; a later entry on a path
@@ -187,6 +188,9 @@ overrides an earlier one key by key.
 - ``tools`` / ``extensions``: names offered to the model, and extensions bound.
 - ``model_spec``: ``{id, provider, context_window}`` of the model that ran.
 - ``system_prompt_digest``: a sha256 of the prompt text, never the text.
+- ``tool_exposure``: ``{tool name: exposure}`` overriding each tool's declared
+  exposure; always the whole map, because the fold replaces a key wholesale.
+  Experimental (experiments/tool-exposure/RESULTS.md).
 """
 
 
