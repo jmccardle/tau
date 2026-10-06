@@ -48,6 +48,13 @@ dependencies = [
 [project.optional-dependencies]
 serve = ["ffwf-tau-coding-agent[tui,serve]==0.12.0"]
 
+# The same two commands ffwf-tau-coding-agent declares. `uv tool install ffwf-tau`
+# and `pipx install ffwf-tau` link only the NAMED package's scripts, so without
+# these that install fails with "No executables are provided by package ffwf-tau".
+[project.scripts]
+tau = "tau_coding_agent.cli:main"
+ffwf-tau = "tau_coding_agent.cli:main"
+
 # The PUBLIC repository only. This tree has a second, private git remote whose
 # history is unfiltered; its hostname must never reach this file or a README,
 # because both are uploaded verbatim (pyproject.toml ships inside the sdist).

@@ -279,6 +279,18 @@ def test_the_metapackage_resolves_to_the_completionist_install_and_nothing_else(
     )
 
 
+def test_the_metapackage_declares_the_coding_agents_commands():
+    """``uv tool install ffwf-tau`` links only the named package's scripts.
+
+    Without its own ``[project.scripts]`` that install failed with "No executables
+    are provided by package ffwf-tau". The table must equal the coding agent's, so
+    both distributions write the same ``tau`` and neither can drift.
+    """
+    meta = tomllib.loads((REPO / "tau-meta/pyproject.toml").read_text())["project"]
+    agent = tomllib.loads((REPO / "tau-coding-agent/pyproject.toml").read_text())["project"]
+    assert meta["scripts"] == agent["scripts"]
+
+
 def test_the_metapackage_ships_no_functional_code():
     """It is a name, not a library. ``tau_meta`` holds the version literal so that
     the wheel reads its number from a package attribute like the other four; the
