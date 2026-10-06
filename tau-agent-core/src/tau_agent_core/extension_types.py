@@ -926,6 +926,21 @@ class ExtensionContext:
         return self._is_idle
 
     @property
+    def session_id(self) -> str:
+        """The id of the conversation this context's session is on right now.
+
+        ``new_session``, ``fork`` and ``switch_session`` swap the log under a live
+        session and fire no lifecycle hook, so reading this before and after an
+        ``await`` is how an extension learns whether it is still in the same
+        conversation.
+
+        Raises:
+            RuntimeError: if no session is bound.
+        """
+        session_id: str = self._require_session().session_log.id
+        return session_id
+
+    @property
     def ui(self) -> ExtensionUI:
         """UI surfaces: TUI-only, and no-ops or headless policy elsewhere.
 
@@ -1234,6 +1249,16 @@ class ExtensionContext:
         :meth:`entries` (docs/CURSORS.md §4, §7).
         """
         return self._require_session().acting_cursor
+
+    @property
+    def cursors(self) -> tuple[Any, ...]:
+        """Every live cursor on the bound session, the head's included, oldest first.
+
+        A cursor absent from here was closed: a finished sub-agent, a client's
+        cursor under ``tau serve``, or a head cursor a swap retired.
+        """
+        cursors: tuple[Any, ...] = self._require_session().cursors
+        return cursors
 
     def entries(self) -> list[dict[str, Any]]:
         """The bound session log's raw, append-only entries (all kinds).
@@ -1781,6 +1806,7 @@ class ExtensionAPI:
         images: list[dict[str, Any]] | None = None,
         correlation: dict[str, Any] | None = None,
         allow_user_input: bool = False,
+        cursor: Any = None,
     ) -> SubmissionResult:
         """Originate an agent turn as THIS extension (docs/SUBMISSION-LIFECYCLE.md).
 
@@ -1832,6 +1858,10 @@ class ExtensionAPI:
                 policy they raise :class:`HeadlessDialogError` instead of putting a
                 modal in front of whoever happens to be at the terminal. Pass
                 ``True`` only when a human really is expecting to be asked.
+            cursor: The live cursor the turn extends (``ctx.cursors``), so a
+                strategy acts on that cursor's lock and queues. ``None`` is the
+                head's cursor, which is not the cursor of the turn that called
+                this unless the head ran it.
 
         ``depth`` is likewise not a parameter: :meth:`AgentSession.submit` derives it
         (decision 3). A self-continuing extension — one whose ``turn_end`` hook spawns
@@ -1863,16 +1893,18 @@ class ExtensionAPI:
                 "AgentSession's extension load path (each factory is handed a "
                 "session-bound api)."
             )
-        result: SubmissionResult = await self._session.submit(
-            self._build_submission(
-                text,
-                multitask_strategy=multitask_strategy,
-                images=images,
-                correlation=correlation,
-                allow_user_input=allow_user_input,
-                submitter=submitter,
-            )
+        sub = self._build_submission(
+            text,
+            multitask_strategy=multitask_strategy,
+            images=images,
+            correlation=correlation,
+            allow_user_input=allow_user_input,
+            submitter=submitter,
         )
+        if cursor is None:
+            result: SubmissionResult = await self._session.submit(sub)
+        else:
+            result = await self._session.submit(sub, cursor=cursor)
         return result
 
     def _build_submission(
