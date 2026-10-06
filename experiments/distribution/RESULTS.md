@@ -1,5 +1,16 @@
-Experiment record (2026-10-05). τ 0.12.0 as a self-contained OS application: a relocatable
-python-build-standalone (PBS) tree, wrapped per platform. Built and measured on Linux x86_64 only.
+Experiment record (2026-10-05), with a follow-up on 2026-10-06 (§11). τ 0.12.0 as a
+self-contained OS application: a relocatable python-build-standalone (PBS) tree, wrapped per
+platform. Built and measured on Linux x86_64. Windows, macOS and linux-arm64 trees are
+cross-built and checked structurally.
+
+§§1–10 are the first pass, kept as measured. §11 is what John's answers changed:
+- **free-threaded by default**, with a gate that fails the build if the GIL comes back on;
+- **one runtime builder in this repo**, `scripts/build_runtime.py`, which tau-code is to consume;
+- **three variants**;
+- **the portable `.tau/` home**.
+
+Where §§1–10 say "recommended" and §11 disagrees, §11 is current. `build_portable.sh` is gone;
+`scripts/build_runtime.py` replaces it, and git history keeps the old script.
 
 Evidence tags: **ran** = executed here, numbers are from that run; **read** = from a file, an API
 response or a release listing; **inferred** = reasoning or prior knowledge, not checked here;
@@ -408,35 +419,320 @@ notary API key, Windows signing identity. PyPI stays tokenless.
   (`-W error::RuntimeWarning` + `sys._is_gil_enabled()`) must gate the `-ft` artifact.
 - **Terminal variant:** a second upstream to sign, track and support. Keep it optional.
 
-## 10. Open decisions for John
+## 10. Open decisions for John (as asked on 2026-10-05; answers in §11.0)
 
-1. **Unify with tau-code's runtime build?** One builder, one interpreter version, τ's release
-   publishes the trees and tau-code downloads them. Recommended yes.
-2. **Default interpreter for the bundle:** 3.14 GIL with a parallel `-ft` artifact (recommended), or
-   3.14t only?
-3. **Formats for the first release:** tar.gz/zip + AppImage + deb/rpm (nfpm) first, with macOS and
-   Windows installers gated on getting signing identities (Apple Developer ID, about $99/yr;
-   Windows Trusted Signing).
-4. **Bundle contents:** keep the full `ffwf-tau` extras (anthropic, google, pillow), or ship a
-   lighter local-model build?
-5. **Terminal variant:** Rio vs WezTerm-nightly, and whether it ships at all in v1.
-6. **`ffwf-tau` should be `uv tool install`-able:** give the metapackage its own `tau` script entry
-   (a small change to `tau-meta/pyproject.toml`, outside this experiment).
-7. **Native code:** a separate `ffwf-tau-accel` distribution as a hard dependency, and which hot path
-   goes first (measure before choosing).
+1. Unify with tau-code's runtime build? **Answered:** yes, at least partially (§11.2).
+2. Default interpreter? **Answered:** free-threaded, 3.14t and 3.15t (§11.1).
+3. Formats for the first release. Still open.
+4. Bundle contents, full vs lighter? **Answered:** three variants (§11.3).
+5. Terminal variant? **Answered:** Rio (§11.3c).
+6. `ffwf-tau` should be `uv tool install`-able. Still open.
+7. Native code. Still open.
+
+## 11. Follow-up (2026-10-06): John's answers, built
+
+### 11.0 The answers this section implements
+
+1. Standalone builds are free-threaded by default (3.14t, 3.15t). Extensions may bring the GIL
+   back; the base framework must not, so the build fails if it does.
+2. Upstream tau-code's runtime-building techniques into one builder here, and describe the
+   tau-code change without editing tau-code.
+3. Three variants: (a) full; (b) headless (CLI, `-p`, rpc, with no Textual); (c) standalone on Rio.
+4. A portable install checks a `.tau/` beside it, resolved in `tau_agent_core`, so τ runs from a
+   flash drive.
+
+### 11.1 The GIL gate (ran)
+
+`scripts/build_runtime.py` defaults to `--flavor freethreaded`. On a native build, `verify()`
+does the following in the finished tree, with `-I -B`:
+1. imports τ's entry modules for the variant (cli, headless, rpc_mode, repl, serve.cli, and `app`
+   when the TUI is present);
+2. imports the lazily-loaded SDKs (anthropic, google.genai, PIL.Image, websockets, prompt_toolkit);
+3. imports **every compiled extension module in site-packages**, derived from the `.so`/`.pyd`
+   files rather than from a list;
+4. then reads `sys._is_gil_enabled()`.
+
+If any import fails, or the GIL is on, the build exits 1 and nothing is archived.
+
+- **Positive (ran):** 3.14.8t and 3.15.0rc3t, all variants: "imported 26 modules … GIL off after
+  every import".
+- **Negative (ran):** `gil_gate_negative.sh` compiles `gilneeder.c`, a module with no
+  `Py_MOD_GIL_NOT_USED` declaration, into a built tree and re-runs `build_runtime.py --verify-only`.
+  The result is exit 1: "free-threaded runtime has the GIL ON after importing τ and its default
+  dependencies". Remove the module and it is exit 0 again.
+- **The gate caught a real dead file on its first run (ran):** `PIL._imagingtk` failed to import,
+  because tkinter is pruned. It is now pruned with it, the same "a file that exists and fails"
+  rule tau-code wrote for `_tkinter`.
+- **Cross targets can't execute.** For them the gate is structural: every extension filename in a
+  free-threaded tree must carry a `t` ABI tag, `cp314t`/`cpython-314t`. Only a native runner can
+  catch a `cp314t` wheel that still forgets `Py_MOD_GIL_NOT_USED`, so CI must build each
+  free-threaded target on its own OS and CPU, or at least re-run `--verify-only` there.
+
+### 11.2 One runtime builder: `scripts/build_runtime.py`
+
+**Interface:**
+
+```
+python scripts/build_runtime.py --target {linux-x64,linux-arm64,alpine-x64,alpine-arm64,
+    darwin-x64,darwin-arm64,win32-x64,win32-arm64} [--variant full|headless|standalone]
+    [--flavor freethreaded|gil] [--python 3.14.8|3.15.0rc3] [--pbs-tag 20261003]
+    [--wheels DIR] --out OUT [--portable-home] [--no-bytecode] [--archive] [--verify-only] [--list]
+```
+
+The output is `OUT/tau/{bin, python, terminal?, .tau?, manifest.json, LICENSE}`, plus
+`tau-<ver>-<target>-<variant>-py<XY>[t].tar.gz`, or `.zip` for Windows. The script is stdlib-only
+and runs on the host's Python 3.11. It needs `uv`.
+
+**What it took from tau-code's `build-payload.mjs` (read, all 1000 lines):**
+- the VS Code target names, kept identical so that `--target` passes straight through;
+- the `manifest.json` shape, `apiVersion: 1`, with the same `target`, `interpreter`, `shim`, `args`,
+  `pythonVersion`, `tauVersion`, `pbsRelease` and `builtAt` keys. τ adds `variant`,
+  `freeThreaded`, `wheelPlatform`, `requirements`, `portableHome`, `bytecode`, `terminal` and
+  `checks`;
+- reading the τ version back off the installed dist-info;
+- deleting by **referrer evidence**, not by name. The Tcl sweep and the libpython drop both
+  byte-scan every binary for the library's name first. On win32-x64 that kept
+  `DLLs/sqlite3.dll` because `_sqlite3.cp314t-win_amd64.pyd` names it, which is the exact
+  regression tau-code paid for (ran);
+- `_tkinter` deleted along with Tcl;
+- `bin/` collapsed to one interpreter, so vsce doesn't triple it through symlinks;
+- `ensurepip/_bundled`, `include/`, `share/`, `libs/` and `*.a` dropped;
+- pip **kept**, because `python -m pip` is how an extension's dependencies get installed;
+- `--only-binary :all:` always;
+- a launcher that follows symlinks, and a `.cmd` launcher on Windows;
+- structural checks for cross targets, with an honest "structural only" line in the output.
+
+**What it does differently, and why:**
+- **uv, with a host interpreter of the same version and flavor, instead of `pip --target
+  --python-version 311`.** pip's `--python-version` can't ask for free-threaded wheels. uv given
+  a free-threaded *host* interpreter plus `--python-platform x86_64-pc-windows-msvc` resolves
+  `_pydantic_core.cp314t-win_amd64.pyd` and `jiter.cp314t-win_amd64.pyd` (ran). The builder
+  fetches that host PBS itself.
+- **Bytecode on by default**, compiled `unchecked-hash` with `-s <root> -p <tau>`. That strips the
+  build machine's path from `co_filename`, which was tau-code's reason for `--no-compile`, while
+  read-only installs (AppImage, `/opt` as root) still write nothing (§3.3 #3). It costs 46 MB
+  unpacked and 16 MB in the tar.gz (headless: 173.7 vs 127.3 MB, 55.9 vs 39.8 MB, ran). A VSIX
+  lives in a writable directory, so tau-code should pass `--no-bytecode`.
+- **The glibc floor is explicit:** `manylinux_2_28` through uv's `--python-platform`, where
+  tau-code listed manylinux tags.
+- **linux-armhf is dropped:** uv has no armv7 `--python-platform` (read: `uv pip install --help`).
+  tau-code ships it today, so that is an open decision (§11.6).
+
+**Cross builds from this Linux host (ran):**
+
+| target | variant | archive | unpacked | note |
+|---|---|---|---|---|
+| win32-x64 | full | 58.4 MB zip | 158.3 MB | `sqlite3.dll` kept by referrer |
+| win32-x64 | standalone | 68.7 MB zip | 181.8 MB | `rio.exe` (portable build) + `tau-window.cmd` |
+| darwin-arm64 | headless | 54.8 MB | 164.1 MB | structural only |
+| linux-arm64 | full | 53.6 MB | 173.3 MB | structural only |
+
+**What tau-code would delete or change to consume it (read: tau-code `packages/runtime/`; not
+edited):**
+
+1. **Delete** nearly all of `packages/runtime/scripts/build-payload.mjs`: `TARGETS`, `PRUNE_DIRS`,
+   `TCL_PATTERN`, `referrers`/`namedBy`/`prune`/`dropTcl`/`dropUnreferencedLibpython`/`collapseBin`,
+   `download`, `installedVersion`, `tauSpec`/`withoutExtras`/`requirements`, `writeShim`, and the
+   prune half of `build`. About 750 of the 1000 lines.
+2. **Keep** `verify()`, `generatedProtocol()` and `freePort()`, about 120 lines, as a post-step.
+   They say `hello` to the payload's `tau serve` with tau-code's own generated protocol version.
+   That check is client-specific, so it belongs to the client, and τ's builder doesn't do it. Its
+   result goes into a separate `protocolVersion` field, or a sidecar file. τ's manifest has no
+   such key.
+3. **Replace** the build step with one of these:
+   - **(A)** download τ's release asset `tau-<ver>-<target>-headless-py314t.tar.gz`, check it
+     against `SHA256SUMS`, and unpack it to `runtime/`. This needs the CI in §7 to publish runtime
+     archives.
+   - **(B)** for an unreleased τ, run `python <tau checkout>/scripts/build_runtime.py --target
+     <t> --variant headless --no-bytecode --wheels <dir> --out <tmp>`, then move `<tmp>/tau` to
+     `runtime/`. This replaces today's `TAU_WHEELS`/`TAU_SPEC` path.
+
+   Recommended: A for releases, B for release candidates.
+4. **`package.json`:** `tauSpec` becomes `{ "tau": "0.12.0", "variant": "headless" }`. The
+   requirement list moves into τ's `VARIANTS["headless"]`, which is tau-code's current spec plus
+   `[repl]` (prompt_toolkit, about 3 MB). If that 3 MB matters, add a `serve` variant to the
+   builder, which is a one-line table entry.
+5. **Never pass `--portable-home`.** A VS Code extension directory is replaced on every update,
+   so a `.tau/` inside it would delete the user's sessions at the next upgrade.
+6. **`src/extension.ts` needs no change.** It reads `interpreter`, `shim`, `args`,
+   `pythonVersion`, `tauVersion` and `target` from the manifest (read: `extension.ts:47-56`), all
+   relative paths with the same names. The interpreter becomes `python/bin/python3.14t`, which it
+   gets from the manifest rather than from a literal.
+7. **`.github/workflows/release.yml`:** the matrix comes from
+   `python scripts/build_runtime.py --list`, or from τ's release, instead of
+   `build-payload.mjs --list`. The cache key hashes τ's version rather than `build-payload.mjs`.
+   linux-armhf leaves the matrix unless decision §11.6 says otherwise.
+8. **`docs/ARCHITECTURE.md` §14:** the runtime's Python version (3.11.16 → 3.14.8t) and its
+   provenance (τ's builder) change. Sizes go up: headless `--no-bytecode` zips to 45.2 MB decimal (43.1 MiB), vs the
+   36.0 MB VSIX today, because the 3.14t interpreter is larger and prompt_toolkit is added
+   (ran: `zip -9` of the tree).
+
+### 11.3 The three variants (ran; linux-x64, 3.14.8t, bytecode on)
+
+| variant | requirements | unpacked | tar.gz | AppImage | .deb |
+|---|---|---|---|---|---|
+| (a) full | `ffwf-tau` + `coding-agent[tui,repl,serve]` | 180.9 MB | 58.1 MB | 53.6 MB | 40.0 MB |
+| (b) headless | `coding-agent[repl,serve]` + `llm[anthropic,google]` + `agent-core[images]` | 173.7 MB | 55.9 MB | 51.6 MB | 38.6 MB |
+| (c) standalone | full + Rio 0.5.28 (x11 build) | 203.0 MB | 67.9 MB | 62.7 MB | 46.7 MB |
+| full, `--flavor gil` | as (a) | 180.4 MB | 57.9 MB | — | — |
+| full, 3.15.0rc3t | as (a) | 186.1 MB | 59.7 MB | — | — |
+
+MB here is MiB. The .deb and AppImage byte counts are in the build logs.
+
+**(b) Headless saves only 7 MB (4%).** Textual and its share of rich are small next to the
+interpreter (~48 MB after pruning), the bytecode (46 MB) and the cloud SDKs plus cryptography
+(~56 MB). Its value is the missing *dependency*, not the size:
+- `find_spec("textual")` is None in the tree, and the builder fails if Textual is ever pulled in.
+- Bare `tau` answers "the interactive TUI needs the 'tui' extra (textual is missing) …", exit 2.
+
+**`tau --mode repl` and Textual (read + ran).** CLAUDE.md's "shares the TUI's path" is about the
+*prompt* path, not imports. `repl.py` imports rich at module scope and prompt_toolkit lazily, and
+pyproject's `[repl]` extra says outright that "the whole point of this head is that it needs no
+Textual". So the headless variant includes repl, with no change and no fallback:
+- In the headless tree, `import tau_coding_agent.cli, tau_coding_agent.repl` loads no `textual*`
+  module.
+- `tau --mode repl` in a pty, typing `ping` against the stub, prints `pong`, exit 0.
+- `tau -p` prints `pong`.
+- `tau --mode rpc` with a JSON-RPC `prompt` produces `agent_end` on stdout.
+
+`smoke_headless.sh` runs all four.
+
+**Finding: the full variant had no repl before (read).** The `ffwf-tau` metapackage pulls
+`coding-agent[tui]` only, so the first pass's bundle (§3), and `pip install ffwf-tau`, have no
+prompt_toolkit, and `tau --mode repl` fails there. The builder's full variant adds
+`[repl,serve]`. Whether `ffwf-tau` on PyPI should too is a one-line `tau-meta/pyproject.toml`
+decision (§11.6).
+
+**(c) Standalone on Rio:**
+- `terminal/rio` is unpacked from `rioterm_0.5.28_amd64_x11.deb` by the builder's own `ar`
+  reader, so it needs no dpkg. Windows uses `rio-portable-x86_64.exe`.
+- `terminal/config/config.toml` pins `confirm-before-quit = false` and
+  `env-vars = ["COLORTERM=truecolor"]`. Both keys were read from `rio-backend/src/config/mod.rs`.
+- `bin/tau-window` runs
+  `RIO_CONFIG_HOME=<tree>/terminal/config rio --app-id tau --title-placeholder tau -e <tree>/bin/tau "$@"`.
+
+Checked without a display (ran, `smoke_standalone.sh`):
+- `rioterm 0.5.28` runs from the tree under `env -i`.
+- `RIO_CONFIG_HOME` is honoured: `--write-config` lands in the pointed-at directory.
+- The launcher parses.
+- **Rio needs `GLIBC_2.35`** (objdump), so the standalone .deb declares `libc6 (>= 2.35)`.
+  debian:10 refuses it (ran), and the variant's floor is Ubuntu 22.04 / Debian 12.
+
+Desktop integration:
+- The .deb ships `/usr/bin/tau-window`, with a desktop entry `Exec=tau-window`, `Terminal=false`.
+- The standalone AppImage's `AppRun` opens Rio only when started with no arguments and no tty
+  (from a file manager or launcher); from a shell it is the CLI.
+
+**Not run:** an actual Rio window. There is no Xvfb here, and the host display is John's desktop.
+
+**Not wired:** macOS standalone. Rio ships only a `.dmg`, which needs `hdiutil` on a macOS runner.
+
+### 11.4 Portable install (built in `tau_agent_core`; ran end to end)
+
+**Where `~/.tau` was resolved before (grep, read): five places, none shared.**
+- `tau_coding_agent/config.py:25`, `TAU_DIR = Path.home() / ".tau"`. Sessions, themes, exports,
+  the REPL history and the serve log all hang off it.
+- `tau_agent_core/settings.py:42,70`: the extension_dirs default and the global `settings.json`.
+- `tau_agent_core/sdk.py:243,762`: `_GLOBAL_EXTENSIONS_DIR` and `_AGENT_DIR`, the global
+  `AGENTS.md`.
+
+All five now call `tau_agent_core.tau_home.resolve_tau_home()`. Your reading is right: when the
+portable `.tau/` exists it is the **whole** home. **One exception:** `--mode rpc`'s default
+session base is `<tmp>/.tau-<uid>/sessions` (D-6, a deliberate ephemeral default), still on the
+host. Moving it would turn "ephemeral" into durable state on the drive without anyone deciding
+that, so it is recorded and left (`docs/PORTABLE-HOME.md` §5). A host that wants portable rpc
+sessions passes `--session-dir`.
+
+**Deviations from the literal spec (§3 of the design record):**
+- The launcher passes `TAU_PORTABLE_BASE=<tree root>` (bin/tau, tau.cmd), or
+  `dirname($APPIMAGE)` (AppRun). It doesn't use `sys.argv[0]`, which is `site-packages/…/cli.py`
+  under `-m` and a squashfs path inside an AppImage.
+- The switch is `.tau/` existing, not `.tau/config.json`. The shipped `.tau/` is empty, and a
+  `config.json` check would send the first run to look on the host.
+
+Unit tests:
+- `tau-agent-core/tests/test_tau_home.py`, 6 tests. Unset, empty, portable wins, a base without
+  `.tau` is an ordinary install, a non-directory raises, and `Settings.load()` reads the drive.
+- `tau-coding-agent/tests/test_portable_home.py`, 2 tests. These run a fresh interpreter, because
+  `TAU_DIR` is fixed at import time.
+
+**End to end (ran, `smoke_portable_home.sh`)** on the full archive, unpacked to
+`<work>/media/USBSTICK/`, with `env -i`, an empty HOME, an empty TMPDIR and an empty cwd:
+
+```
+== drive layout: bin LICENSE manifest.json python .tau
+== tau -p, config only on the drive
+pong
+== the session landed on the drive:
+<drive>/tau/.tau/sessions/--tmp-tmp.y4lJOr6ri6-cwd--/2026-10-06T05-04-05-565Z_….jsonl
+<drive>/tau/.tau/config.json
+== TUI for 6 s in a pty
+== files written outside the drive (HOME, TMPDIR, cwd); expected none:
+== [end of list]
+== same bundle, .tau/ removed: an ordinary install
+pong
+<work>/home/.tau/sessions/--tmp-…-cwd--/….jsonl
+== AppImage on a drive with .tau/ beside it
+pong
+<work>/media/STICK2/.tau/sessions/--tmp-…-cwd--/….jsonl
+== files written outside the drive; expected none:
+<work>/tmp/.mount_tau.ApHlFBIj
+```
+
+That last line is the AppImage *runtime's* FUSE mountpoint directory. It is empty and left behind
+in TMPDIR; it isn't τ's.
+
+**.deb (ran, debian:10 container):**
+- `/opt/tau` ships no `.tau/`.
+- `tau -p` with a config in `/root/.tau` writes its session to
+  `/root/.tau/sessions/--tmp--/….jsonl`.
+- The runtime writes zero `.pyc` after install.
+
+**Known limit:** session directories are keyed by the host's absolute cwd, so a drive mounted at
+another path on another machine sees different `--continue` keys (`docs/PORTABLE-HOME.md` §5).
+
+### 11.5 Things that suck, found on the way (ran)
+
+- `tau --mode rpc > file` → `ValueError: Pipe transport is only for pipes, sockets and character
+  devices` with a traceback. **Bit sucky:** a host that logs the wire to a file can't, without
+  `| cat`. This is pre-existing (`rpc_mode`'s asyncio pipe transport), not caused by the bundle.
+- In the headless bundle, bare `tau` says "pip install 'ffwf-tau-coding-agent[tui]'". **Bit
+  sucky:** there is no pip workflow for a bundle; it should say "use the full or standalone
+  build". That needs the launcher to tell τ what channel it is (the §9 "channel" item).
+- In a `--portable-home` tree, `~/.tau/config.json` is ignored *by design*. A user who unpacks the
+  tar.gz into `~/opt` and expects their existing config gets "no default_model". The error names
+  `~/.tau/config.json`, which is the wrong path in that case. **Bit sucky:** the error should name
+  the home it actually resolved. `config.py` builds the message; a one-line fix, not made here.
+
+### 11.6 Still open
+
+1. **linux-armhf:** uv can't target armv7. Either drop it from tau-code's nine targets or keep
+   one `pip --target` path for it.
+2. **`ffwf-tau` on PyPI:** add `[repl,serve]` to the metapackage, and a `tau` script so that
+   `uv tool install ffwf-tau` works (§5).
+3. **The rpc session default in portable mode** (§11.4): keep the tmp default, or move it to
+   `<portable>/.tau/rpc-sessions`.
+4. **Formats for release 1, and signing** (§10.3).
+5. **A `serve` variant for tau-code** (headless minus prompt_toolkit), if 3 MB matters.
 
 ## Reproduce
 
 ```bash
-# needs: uv on hand (UV=...), curl, tar, docker (distro matrix), appimagetool (AppImage)
-OUT="$SCRATCH/exp-dist"
-UV=$UV experiments/distribution/build_portable.sh "$OUT" gil
-UV=$UV experiments/distribution/build_portable.sh "$OUT" freethreaded
-UV=$UV PY_VERSION=3.15.0rc3 experiments/distribution/build_portable.sh "$OUT/py315" freethreaded
-experiments/distribution/smoke_portable.sh "$OUT/tau-0.12.0-linux-x86_64-ft.tar.gz"
-mkdir -p "$OUT/gil" && tar -xzf "$OUT/tau-0.12.0-linux-x86_64.tar.gz" -C "$OUT/gil"
-experiments/distribution/smoke_tui.sh "$OUT/gil/tau"
-experiments/distribution/distro_matrix.sh "$OUT/gil"
+# needs: uv (UV=... or on PATH), curl, tar, docker (distro matrix), appimagetool (AppImage), gcc (gate negative test)
+OUT="$SCRATCH/rt"
+for v in full headless standalone; do
+  python3 scripts/build_runtime.py --target linux-x64 --variant $v --portable-home --archive --out "$OUT/$v"
+done
+python3 scripts/build_runtime.py --target linux-x64 --python 3.15.0rc3 --archive --out "$OUT/full-315t"
+python3 scripts/build_runtime.py --target win32-x64 --variant standalone --portable-home --archive --out "$OUT/win"
+experiments/distribution/smoke_portable.sh "$OUT/full/tau-0.12.0-linux-x64-full-py314t.tar.gz"
+experiments/distribution/smoke_tui.sh "$OUT/full/tau"
+experiments/distribution/smoke_headless.sh "$OUT/headless"
+experiments/distribution/smoke_standalone.sh "$OUT/standalone"
+experiments/distribution/distro_matrix.sh "$OUT/full" debian:10 rockylinux:8 ubuntu:18.04 archlinux:latest
+UV=$UV experiments/distribution/gil_gate_negative.sh "$OUT/full" "$PBS_314T/python"
 APPIMAGETOOL=$APPIMAGETOOL experiments/distribution/build_linux_packages.sh \
-    "$OUT/tau-0.12.0-linux-x86_64.tar.gz" "$OUT/pkg"
+    "$OUT/full/tau-0.12.0-linux-x64-full-py314t.tar.gz" "$OUT/pkg"
+experiments/distribution/smoke_portable_home.sh "$OUT/full/tau-0.12.0-linux-x64-full-py314t.tar.gz" \
+    "$OUT/pkg/tau-0.12.0-linux-x64-full-py314t.AppImage"
 ```
