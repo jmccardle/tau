@@ -30,7 +30,7 @@ from tau_agent_core import rpc_event_schema
 from tau_agent_core.json_schema import SchemaBuilder, typed
 from tau_agent_core.rpc import records
 
-PROTOCOL_VERSION = "2.1"
+PROTOCOL_VERSION = "2.2"
 
 DIALECT = "jsonrpc-2.0"
 

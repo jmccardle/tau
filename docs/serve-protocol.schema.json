@@ -8166,7 +8166,7 @@
     ]
   },
   "description": "The tau serve protocol, JSON-RPC 2.0 over WebSocket (docs/SERVE-PROTOCOL.md). Request records are closed (`additionalProperties: false`), because the daemon refuses an unknown field. Everything the daemon sends is open: a client must ignore a field it does not know, so a minor version may add one. Each request $def is its method's `params` and names its answer in `x-result`, and `Results` maps every method to it; `Event`'s `x-data` maps every `kind` to its data.",
-  "title": "tau serve protocol 0.8",
+  "title": "tau serve protocol 0.9",
   "x-default-port": 8256,
-  "x-protocol-version": "0.8"
+  "x-protocol-version": "0.9"
 }

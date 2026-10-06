@@ -50,7 +50,7 @@ from tau_agent_core.rpc.records import (
 from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.submission import MultitaskStrategy, SubmissionSource
 
-PROTOCOL_VERSION = "0.8"
+PROTOCOL_VERSION = "0.9"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256

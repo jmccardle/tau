@@ -455,6 +455,14 @@ JSON-RPC allows. A batch and a notification from a client are refused with
 two error vocabularies for one set of verbs. ROADMAP records the step this makes
 cheaper: MCP's methods and its HTTP transport beside serve's own, after 0.12.
 
+**Built note (2026-10-06, RPC 2.2, protocol 0.9):** both wires gained
+`parent_tool_call_id` on events. It is set on a `tool_execution_*` event for a call
+that a tool made through `ctx.execute_tool`, and is `null` for a call the model
+made (experiments/tool-exposure/RESULTS.md). The field is additive, but it is a
+minor bump on both wires so that a client has a version from which it can rely on
+the field. Serve's hello still refuses a mismatched version, so a 0.8 client is
+refused by a 0.9 daemon.
+
 ## 6. `tau serve`
 
 ```
