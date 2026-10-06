@@ -94,7 +94,15 @@ jobs:
         #
         # 3.14 additionally warns that `asyncio.iscoroutinefunction` goes away
         # in 3.16. It is a warning, in a test file, not in any shipped tree.
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        #
+        # 3.14t is the free-threaded build the standalone distributions ship
+        # on, and the only entry where test_free_threading_gil.py runs rather
+        # than skips: it fails if importing tau or its dependencies turns the
+        # GIL back on. Measured 2026-10-05, same counts as 3.14
+        # (experiments/freethreading/RESULTS.md). 3.15t is not here yet: the
+        # newest stable pydantic pins a pydantic-core with no cp315t wheel, so
+        # it would compile from source and CI has no Rust toolchain.
+        python-version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
     steps:
       - uses: actions/checkout@v4
 

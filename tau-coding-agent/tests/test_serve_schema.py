@@ -182,6 +182,8 @@ async def daemon(tmp_path, monkeypatch):
     (home / ".tau" / "extensions").mkdir(parents=True)
     (home / ".tau" / "extensions" / "gate.py").write_text(_GATE)
     monkeypatch.setenv("HOME", str(home))
+    # TAU_DIR is bound at import, so HOME alone left `-d` appending to the real ~/.tau/serve.log.
+    monkeypatch.setattr(serve_cli, "TAU_DIR", home / ".tau")
     with (
         patch("tau_agent_core.agent_loop.stream_simple", side_effect=_fake_stream),
         patch("tau_agent_core.compaction.complete_simple", side_effect=_summary),
@@ -621,6 +623,7 @@ async def test_dash_d_that_loses_the_bind_reports_the_winner(daemon, capsys):
     assert code == 0
     printed = json.loads(capsys.readouterr().out)
     assert printed["started"] is False and printed["pid"] == os.getpid()
+    assert (serve_cli.TAU_DIR / serve_cli.LOG_FILE).is_relative_to(os.environ["HOME"])
 
 
 def test_web_root_flag_overrides_the_config_and_a_file_is_refused(tmp_path, capsys, monkeypatch):
@@ -732,7 +735,10 @@ async def test_stop_stops_the_daemon_and_reports_it(tmp_path, monkeypatch, capsy
     code = await asyncio.to_thread(serve_cli.stop_daemon, address, json_output=True)
 
     assert code == 0 and await asyncio.wait_for(serving, 5) == 0
-    printed = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    # The in-process daemon's own log lines may land after the report, so find it, not the last line.
+    reports = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("{")]
+    assert len(reports) == 1, reports
+    printed = json.loads(reports[0])
     validate(printed, SCHEMA["$defs"]["ServeStopped"], SCHEMA, strict=True)
     assert printed == {"address": str(address), "pid": os.getpid(), "stopped": True}
 

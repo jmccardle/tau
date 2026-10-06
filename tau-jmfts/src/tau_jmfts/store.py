@@ -254,6 +254,8 @@ class JmftsSessionLog:
         self._next_seq = next_seq
         self._seqs: dict[str, int] = dict(seqs or {})
         self._append_lock = threading.Lock()
+        # Guards the mirror only, never held across I/O, so loop-thread readers never wait on a POST.
+        self._mirror_lock = threading.Lock()
 
     # --- identity / header --------------------------------------------------
 
@@ -291,7 +293,8 @@ class JmftsSessionLog:
         """Unspliced ``message`` entries on the path to the default leaf, root first."""
         from tau_agent_core.conversation_tree import ConversationTree
 
-        path = ConversationTree(self._entries, default_leaf(self._entries)).path()
+        entries = self._snapshot()
+        path = ConversationTree(entries, default_leaf(entries)).path()
         return [e["message"] for e in path if e.get("type") == "message"]
 
     @property
@@ -299,12 +302,14 @@ class JmftsSessionLog:
         """The folded context at the default leaf."""
         from tau_agent_core.conversation_tree import ConversationTree
 
-        return ConversationTree(self.entries(), default_leaf(self._entries)).context_for()
+        entries = copy.deepcopy(self._snapshot())
+        return ConversationTree(entries, default_leaf(entries)).context_for()
 
     @property
     def config(self) -> dict[str, Any]:
         """The folded config at the default leaf (``session_log.config_at``)."""
-        return config_at(self._entries, default_leaf(self._entries))
+        entries = self._snapshot()
+        return config_at(entries, default_leaf(entries))
 
     @property
     def model(self) -> str:
@@ -318,7 +323,7 @@ class JmftsSessionLog:
 
     def display_title(self) -> str:
         """A short human label: the name, else the first user message, else model."""
-        name = session_name(self._entries)
+        name = session_name(self._snapshot())
         if name:
             return name
         for message in self.messages:
@@ -334,7 +339,12 @@ class JmftsSessionLog:
         deepcopy: the nested payload must not be shared with the live mirror --
         see InMemorySessionLog/Session's identical docstring; the contract suite
         (``test_entries_returns_a_deep_copy``) pins this."""
-        return copy.deepcopy(self._entries)
+        return copy.deepcopy(self._snapshot())
+
+    def _snapshot(self) -> list[dict[str, Any]]:
+        """One consistent shallow copy of the mirror; entries are replaced, never mutated."""
+        with self._mirror_lock:
+            return list(self._entries)
 
     # --- construction ---------------------------------------------------------
 
@@ -502,9 +512,10 @@ class JmftsSessionLog:
         if at is not None:
             from tau_agent_core.conversation_tree import ConversationTree
 
-            if at not in source._ids:
+            source_entries = source._snapshot()
+            if at not in {e["id"] for e in source_entries}:
                 raise ValueError(f"fork point {at!r} not found")
-            on_path = {int(e["id"]) for e in ConversationTree(source._entries, at).path()}
+            on_path = {int(e["id"]) for e in ConversationTree(source_entries, at).path()}
             descendants = [d for d in descendants if d["id"] in on_path]
         old_to_new: dict[int, int] = {}
         for doc in descendants:
@@ -558,7 +569,9 @@ class JmftsSessionLog:
         §4). The POST runs on a worker thread, because it is synchronous HTTP and
         froze a head's screen on its own loop (docs/BLOCKING-PERSISTENCE.md §1).
         """
-        if parent_id is not None and parent_id not in self._ids:
+        with self._mirror_lock:
+            known = parent_id is None or parent_id in self._ids
+        if not known:
             raise ValueError(f"append parent {parent_id!r} not found")
         return await asyncio.to_thread(self._append_now, parent_id, entry_type, payload)
 
@@ -591,7 +604,8 @@ class JmftsSessionLog:
                 structured_content={"tau": tau_payload, "seq": seq},
                 re_embed=False,
             )
-            self._entries[index] = final
+            with self._mirror_lock:
+                self._entries[index] = final
 
     # --- internals -------------------------------------------------------
 
@@ -623,8 +637,9 @@ class JmftsSessionLog:
                 sequential=True,
             )
             entry_id = str(doc["id"])
-            self._entries.append({**tau_payload, "id": entry_id, "parentId": parent_id})
-            self._ids.add(entry_id)
+            with self._mirror_lock:
+                self._entries.append({**tau_payload, "id": entry_id, "parentId": parent_id})
+                self._ids.add(entry_id)
             self._seqs[entry_id] = seq
         if kind == "session_info":
             self._client.update_document(self._root_doc_id, title=payload["name"], re_embed=False)

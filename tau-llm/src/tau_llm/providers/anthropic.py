@@ -50,6 +50,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from tau_llm.models import clamp_thinking_level
+from tau_llm.once import OnceSet
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.streaming import (
     DoneEvent,
@@ -90,8 +91,8 @@ _STOP_REASONS: dict[str, str] = {
 
 _CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
 
-_WARNED_REPLAY_OVERRIDE: set[str] = set()
-_WARNED_UNSIGNED_THINKING: set[str] = set()
+_WARNED_REPLAY_OVERRIDE = OnceSet()
+_WARNED_UNSIGNED_THINKING = OnceSet()
 
 _INTERNAL_OPTION_KEYS = frozenset(
     {
@@ -259,8 +260,7 @@ class AnthropicMessagesProvider(Provider):
                 f"{detail}. Refusing to continue because "
                 "models.<name>.strict_reasoning_formats is set."
             )
-        if model.id not in _WARNED_REPLAY_OVERRIDE:
-            _WARNED_REPLAY_OVERRIDE.add(model.id)
+        if _WARNED_REPLAY_OVERRIDE.first(model.id):
             _logger.warning("%s (docs/ANTHROPIC-GOOGLE-CLIENTS.md S1).", detail)
 
     def _on_unsigned_thinking(self, model: Model) -> None:
@@ -282,8 +282,7 @@ class AnthropicMessagesProvider(Provider):
                 f"{detail}. Refusing to continue because "
                 "models.<name>.strict_reasoning_formats is set."
             )
-        if model.id not in _WARNED_UNSIGNED_THINKING:
-            _WARNED_UNSIGNED_THINKING.add(model.id)
+        if _WARNED_UNSIGNED_THINKING.first(model.id):
             _logger.warning("%s (docs/ANTHROPIC-GOOGLE-CLIENTS.md S2).", detail)
 
     def _convert_messages(self, messages: list, model: Model) -> tuple[str, list[dict[str, Any]]]:

@@ -400,8 +400,29 @@ def test_ci_runs_the_oldest_python_the_packages_claim_to_support():
         f"publish.yml tests {matrix} but the packages claim to support {floor} and up. "
         f"Either test {floor}, or raise requires-python to what is actually tested."
     )
-    below = [v for v in matrix if tuple(map(int, v.split("."))) < tuple(map(int, floor.split(".")))]
+    below = [
+        v
+        for v in matrix
+        if tuple(map(int, v.removesuffix("t").split("."))) < tuple(map(int, floor.split(".")))
+    ]
     assert not below, f"publish.yml tests {below}, which requires-python={floor} excludes"
+
+
+FREE_THREADING_CLASSIFIER = "Programming Language :: Python :: Free Threading :: 3 - Stable"
+
+
+@pytest.mark.parametrize("pkg", sorted(DISTRIBUTIONS))
+def test_the_free_threading_claim_is_backed_by_a_free_threaded_ci_run(pkg):
+    """The classifier tells PyPI τ runs without the GIL; a ``3.Nt`` matrix entry
+    is the only evidence, and the only place test_free_threading_gil.py does not
+    skip. Same promise-versus-evidence rule as the floor above."""
+    project = tomllib.loads((REPO / pkg / "pyproject.toml").read_text())["project"]
+    assert FREE_THREADING_CLASSIFIER in project.get("classifiers", []), (
+        f"{pkg} does not declare {FREE_THREADING_CLASSIFIER!r}"
+    )
+    assert any(v.endswith("t") for v in _ci_python_matrix()), (
+        "the packages claim free-threading support but publish.yml runs no free-threaded build"
+    )
 
 
 def test_the_release_pipeline_never_downgrades_a_failure():
