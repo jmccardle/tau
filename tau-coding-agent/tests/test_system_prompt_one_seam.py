@@ -22,6 +22,7 @@ import asyncio
 from typing import Any
 
 import pytest
+from print_fakes import BoundPrintFake
 
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import run_print
@@ -35,7 +36,7 @@ CONFIG: dict[str, Any] = {
 }
 
 
-class _Recorder:
+class _Recorder(BoundPrintFake):
     """A backend double that records the model config it was built from.
 
     Composes its ``system_prompt`` the way ``TauBackend`` does — via the shared
@@ -68,9 +69,9 @@ class _Recorder:
     ):
         from tau_agent_core.submission import SubmissionResult
 
-        self.context = context
         callback("ok")
         new_messages = [{"role": "assistant", "content": "ok"}]
+        self.context = await self.persist_turn(submission, new_messages)
         result = SubmissionResult(
             accepted=True, submission_id=submission.submission_id, messages=new_messages
         )

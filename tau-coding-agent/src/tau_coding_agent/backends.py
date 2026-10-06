@@ -1237,7 +1237,7 @@ class Backend(ABC):
     async def stream_submission(
         self,
         submission: Submission,
-        context: list[dict],
+        context: list[dict] | None,
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
         on_json_event: Callable[[dict], None] | None = None,
@@ -2158,7 +2158,7 @@ class TauBackend(Backend):
     async def stream_submission(
         self,
         submission: Submission,
-        context: list[dict],
+        context: list[dict] | None,
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
         on_json_event: Callable[[dict], None] | None = None,

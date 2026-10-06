@@ -131,9 +131,9 @@ Mirrors rpc_mode's order (R:221–288), which binds, with run_print's flag handl
 
 **Bind, do not append.** The TUI binds (RT:461–464 or A:2137–2139) and contains no `append_message`
 call: the core persists the user message at S:2899–2908 and the loop's messages at S:3442–3447
-once a log is bound. Print mode appends by hand (H:799–805, 849–851, and `_apply_resume_metadata`
-H:361–372) precisely because it never binds (H:622–626), and that is why `/compact` is refused
-there (H:620–631). A REPL is long-lived and wants `/compact`, `/fork` and `/model` (a `Performed`
+once a log is bound. Print mode appended by hand until 2026-10-06, because it never bound; it
+copied only messages, so an extension's `append_entry` written during `tau -p` was lost and
+`--continue` resumed without it. It now binds the same way (`test_headless_binds_cursor.py`). A REPL is long-lived and wants `/compact`, `/fork` and `/model` (a `Performed`
 from `backend.set_model`, which the TUI cannot use because it recreates the backend, A:2330), so
 it binds, passes `context=None` to `submit_turn` (§2 change 1), and appends NOTHING itself — a
 rename and a model change on resume go through `set_session_name` and `record_model_change`

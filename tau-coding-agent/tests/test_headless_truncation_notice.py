@@ -11,6 +11,7 @@ Reference: docs/TRUNCATED-TOOL-CALLS.md §3.
 from __future__ import annotations
 
 import pytest
+from print_fakes import BoundPrintFake
 
 import tau_coding_agent.session_store as store
 from tau_agent_core.submission import SubmissionResult
@@ -46,7 +47,7 @@ def _assistant(stop_reason: str, dropped: int | None = None) -> dict:
     }
 
 
-class _Backend:
+class _Backend(BoundPrintFake):
     """A backend whose turn produced ``messages``, and nothing else."""
 
     def __init__(self, config, messages):
@@ -59,6 +60,7 @@ class _Backend:
         return LoadExtensionsResult()
 
     async def stream_submission(self, submission, context, callback, **kwargs):
+        await self.persist_turn(submission, self._messages)
         callback("ANSWER")
         return (
             "ANSWER",
