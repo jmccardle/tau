@@ -10,10 +10,33 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-import tempfile
 from typing import Any, Callable, Literal
 
+from typing_extensions import TypedDict
+
 from tau_agent_core.tools.base import AgentToolResult
+
+
+class BashResult(TypedDict):
+    """What the bash tool returns to a nested caller.
+
+    Attributes:
+        output: The combined text the model reads: stdout, then ``stderr:`` and stderr.
+        stdout: Standard output, cut to 10000 characters when ``truncated``.
+        stderr: Standard error, likewise; a timeout notice leads it.
+        exit_code: The shell's exit status; ``None`` when aborted.
+        truncated: Output passed the line cap, or the command timed out.
+        timed_out: The timeout killed the process group.
+        aborted: The abort signal stopped the command.
+    """
+
+    output: str
+    stdout: str
+    stderr: str
+    exit_code: int | None
+    truncated: bool
+    timed_out: bool
+    aborted: bool
 
 
 async def _terminate_process_group(
@@ -105,7 +128,7 @@ class BashTool:
         signal: Any = None,
         on_update: Callable | None = None,
     ) -> dict:
-        """Execute the bash tool.
+        """Execute the bash tool: :meth:`run`, rendered as the model reads it.
 
         Args:
             tool_call_id: Unique identifier for the tool call
@@ -114,7 +137,7 @@ class BashTool:
             on_update: Optional callback for progress updates
 
         Returns:
-            Dict with 'content' list of content blocks and 'details' dict
+            Dict with 'content', 'details', and the :class:`BashResult` as 'value'.
         """
         command = args.get("command")
         if not command:
@@ -123,182 +146,161 @@ class BashTool:
                 error_message='Missing required argument: "command"',
                 tool_call_id=tool_call_id,
             ).model_dump()
-
-        timeout_ms = args.get("timeout", self.DEFAULT_TIMEOUT_MS)
-        timeout_secs = timeout_ms / 1000.0 if timeout_ms else self.DEFAULT_TIMEOUT_MS / 1000.0
-
-        # Check if already aborted before starting
-        if signal and signal.is_aborted():
-            return AgentToolResult(
-                tool_name=self.name,
-                tool_call_id=tool_call_id,
-                content=[{"type": "text", "text": "Command was aborted"}],
-            ).model_dump()
-
-        # Create temp file for large output
-        output_fd, output_path = tempfile.mkstemp(prefix="bash_output_", suffix=".txt")
-
         try:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self.cwd,
-                start_new_session=True,
-            )
-
-            # Collect output
-            stdout_chunks = []
-            stderr_chunks = []
-            truncated = False
-            line_count = 0
-            aborted = False
-
-            async def check_abort():
-                """Periodically check signal and abort if needed."""
-                nonlocal aborted
-                while True:
-                    if signal and signal.is_aborted():
-                        aborted = True
-                        await _terminate_process_group(process)
-                        raise asyncio.CancelledError("Command aborted")
-                    await asyncio.sleep(self.POLL_INTERVAL)
-
-            async def read_stream(stream, chunks, is_stderr):
-                """Read from a subprocess stream."""
-                nonlocal truncated, line_count
-                while True:
-                    if signal and signal.is_aborted():
-                        raise asyncio.CancelledError("Command aborted")
-                    try:
-                        line = await asyncio.wait_for(stream.readline(), timeout=0.1)
-                        if not line:
-                            break
-                        text = line.decode("utf-8", errors="replace")
-                        if is_stderr:
-                            stderr_chunks.append(text)
-                        else:
-                            stdout_chunks.append(text)
-                        line_count += text.count("\n")
-                        if line_count > self.MAX_OUTPUT_LINES and not truncated:
-                            truncated = True
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        raise
-
-            try:
-                # Run the abort checker in the background
-                abort_task = asyncio.create_task(check_abort())
-                try:
-                    # Read both streams concurrently with timeout
-                    await asyncio.wait_for(
-                        asyncio.gather(
-                            read_stream(process.stdout, stdout_chunks, False),
-                            read_stream(process.stderr, stderr_chunks, True),
-                        ),
-                        timeout=timeout_secs,
-                    )
-                    # Wait for process to fully finish to get exit code
-                    await process.wait()
-                except asyncio.TimeoutError:
-                    await _terminate_process_group(process)
-                    truncated = True
-                    stderr_chunks.insert(0, f"[Command timed out after {timeout_secs}s]\n")
-                    await process.wait()
-                finally:
-                    abort_task.cancel()
-                    try:
-                        await abort_task
-                    except asyncio.CancelledError:
-                        pass
-
-            except asyncio.CancelledError:
-                await _terminate_process_group(process)
-                try:
-                    await process.wait()
-                except Exception:
-                    pass
-                return AgentToolResult(
-                    tool_name=self.name,
-                    tool_call_id=tool_call_id,
-                    content=[{"type": "text", "text": "Command was aborted"}],
-                ).model_dump()
-
-            exit_code = process.returncode
-
-            stdout_text = "".join(stdout_chunks)
-            stderr_text = "".join(stderr_chunks)
-
-            # Truncate large output
-            if truncated:
-                stdout_text = stdout_text[:10000] + "\n... [output truncated]"
-                stderr_text = stderr_text[:10000] + "\n... [output truncated]"
-
-            # Combine output
-            output_parts = []
-            if stdout_text:
-                output_parts.append(stdout_text)
-            if stderr_text:
-                output_parts.append(f"stderr:\n{stderr_text}")
-
-            full_output = "\n".join(output_parts) if output_parts else ""
-
-            # Write output to temp file for reference
-            try:
-                with os.fdopen(output_fd, "w") as f:
-                    f.write(full_output)
-            except OSError:
-                pass
-
-            # Determine if it was an error
-            if exit_code != 0 and stderr_text.strip():
-                result = AgentToolResult(
-                    tool_name=self.name,
-                    tool_call_id=tool_call_id,
-                    content=[{"type": "text", "text": full_output or "Command failed"}],
-                    is_error=True,
-                )
-            elif exit_code != 0:
-                result = AgentToolResult(
-                    tool_name=self.name,
-                    tool_call_id=tool_call_id,
-                    content=[
-                        {
-                            "type": "text",
-                            "text": full_output or f"Command exited with code {exit_code}",
-                        }
-                    ],
-                )
-            else:
-                result = AgentToolResult(
-                    tool_name=self.name,
-                    tool_call_id=tool_call_id,
-                    content=[{"type": "text", "text": full_output}],
-                )
-
-            result_dict = result.model_dump()
-            result_dict["details"] = {
-                "exit_code": exit_code,
-                "truncated": truncated,
-                "bytes_written": len(full_output.encode("utf-8", errors="replace")),
-            }
-            return result_dict
-
+            value = await self.run(command, args.get("timeout"), signal=signal)
         except Exception as e:
-            try:
-                os.close(output_fd)
-            except OSError:
-                pass
             return AgentToolResult.from_error(
                 tool_name=self.name,
                 error_message=f"Error executing command: {e}",
                 tool_call_id=tool_call_id,
             ).model_dump()
 
-        finally:
-            # Clean up temp file
+        exit_code = value["exit_code"]
+        if value["aborted"]:
+            text, is_error = "Command was aborted", False
+        elif exit_code != 0 and value["stderr"].strip():
+            text, is_error = value["output"] or "Command failed", True
+        elif exit_code != 0:
+            text, is_error = value["output"] or f"Command exited with code {exit_code}", False
+        else:
+            text, is_error = value["output"], False
+        result_dict = AgentToolResult(
+            tool_name=self.name,
+            tool_call_id=tool_call_id,
+            content=[{"type": "text", "text": text}],
+            is_error=is_error,
+        ).model_dump()
+        if not value["aborted"]:
+            result_dict["details"] = {
+                "exit_code": exit_code,
+                "truncated": value["truncated"],
+                "bytes_written": len(value["output"].encode("utf-8", errors="replace")),
+            }
+        result_dict["value"] = value
+        return result_dict
+
+    async def run(
+        self, command: str, timeout: int | None = None, *, signal: Any = None
+    ) -> BashResult:
+        """Run ``command`` in ``cwd`` and return what happened, as data.
+
+        Args:
+            command: The shell command.
+            timeout: Milliseconds before the process group is killed; ``None`` or
+                ``0`` is :attr:`DEFAULT_TIMEOUT_MS`.
+            signal: Optional AbortSignal, polled while the command runs.
+
+        The command's stdin is ``/dev/null``: inherited, it would read the
+        head's own input, which under ``tau --mode rpc`` is the protocol stream.
+
+        Raises:
+            OSError: the shell could not be started.
+        """
+        timeout_ms = timeout or self.DEFAULT_TIMEOUT_MS
+        timeout_secs = timeout_ms / 1000.0
+
+        def aborted_result() -> BashResult:
+            return BashResult(
+                output="",
+                stdout="",
+                stderr="",
+                exit_code=None,
+                truncated=False,
+                timed_out=False,
+                aborted=True,
+            )
+
+        if signal and signal.is_aborted():
+            return aborted_result()
+
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=self.cwd,
+            start_new_session=True,
+        )
+
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        truncated = False
+        timed_out = False
+        line_count = 0
+
+        async def check_abort() -> None:
+            """Periodically check signal and abort if needed."""
+            while True:
+                if signal and signal.is_aborted():
+                    await _terminate_process_group(process)
+                    raise asyncio.CancelledError("Command aborted")
+                await asyncio.sleep(self.POLL_INTERVAL)
+
+        async def read_stream(stream: Any, chunks: list[str]) -> None:
+            """Read from a subprocess stream."""
+            nonlocal truncated, line_count
+            while True:
+                if signal and signal.is_aborted():
+                    raise asyncio.CancelledError("Command aborted")
+                try:
+                    line = await asyncio.wait_for(stream.readline(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace")
+                chunks.append(text)
+                line_count += text.count("\n")
+                if line_count > self.MAX_OUTPUT_LINES:
+                    truncated = True
+
+        try:
+            abort_task = asyncio.create_task(check_abort())
             try:
-                os.unlink(output_path)
-            except OSError:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        read_stream(process.stdout, stdout_chunks),
+                        read_stream(process.stderr, stderr_chunks),
+                    ),
+                    timeout=timeout_secs,
+                )
+                await process.wait()
+            except asyncio.TimeoutError:
+                await _terminate_process_group(process)
+                truncated = True
+                timed_out = True
+                stderr_chunks.insert(0, f"[Command timed out after {timeout_secs}s]\n")
+                await process.wait()
+            finally:
+                abort_task.cancel()
+                try:
+                    await abort_task
+                except asyncio.CancelledError:
+                    pass
+        except asyncio.CancelledError:
+            await _terminate_process_group(process)
+            try:
+                await process.wait()
+            except Exception:
                 pass
+            return aborted_result()
+
+        stdout_text = "".join(stdout_chunks)
+        stderr_text = "".join(stderr_chunks)
+        if truncated:
+            stdout_text = stdout_text[:10000] + "\n... [output truncated]"
+            stderr_text = stderr_text[:10000] + "\n... [output truncated]"
+        output_parts = []
+        if stdout_text:
+            output_parts.append(stdout_text)
+        if stderr_text:
+            output_parts.append(f"stderr:\n{stderr_text}")
+        return BashResult(
+            output="\n".join(output_parts),
+            stdout=stdout_text,
+            stderr=stderr_text,
+            exit_code=process.returncode,
+            truncated=truncated,
+            timed_out=timed_out,
+            aborted=False,
+        )
