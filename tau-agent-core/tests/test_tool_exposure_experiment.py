@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import sys
 from typing import Any, Callable
 from unittest.mock import patch
@@ -27,6 +28,8 @@ from tau_agent_core.cursor import Cursor
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.sdk import _resolve_tools
 from tau_agent_core.session_log import InMemorySessionLog, config_at
+from tau_agent_core.prompt_cache import tool_block_change
+from tau_agent_core.tool_dispatch import call_tool_definition, tool_search_definition
 from tau_agent_core.tool_output import MAX_CAPTURED_CHARS, capture_tool_output
 from tau_agent_core.tool_pipeline import (
     MAX_NESTING_DEPTH,
@@ -98,9 +101,16 @@ class ScriptedModel:
     def __init__(self, *script: list[tuple[str, str, dict[str, Any]]]) -> None:
         self.script = list(script)
         self.offered: list[list[str]] = []
+        self.blocks: list[str] = []
+        self.contexts: list[list[Any]] = []
 
     def __call__(self, model: Any, context: Any, options: Any = None) -> _Stream:
-        self.offered.append([t.name for t in (context.get("tools") or [])])
+        tools = context.get("tools") or []
+        self.offered.append([t.name for t in tools])
+        self.blocks.append(
+            json.dumps([[t.name, t.description, t.parameters] for t in tools], sort_keys=True)
+        )
+        self.contexts.append(list(context.get("messages", [])))
         n = len(self.offered) - 1
         if n < len(self.script):
             calls = [
@@ -477,63 +487,139 @@ async def test_only_direct_and_model_only_tools_are_offered_to_the_model(tmp_pat
     assert [n for n in model.offered[0] if n.startswith("t_")] == ["t_direct", "t_model_only"]
 
 
-async def test_masking_a_built_in_is_recorded_and_survives_resume_but_not_an_earlier_branch(
-    tmp_path,
-):
+def _roles(messages: list[Any]) -> list[str]:
+    return [m.get("role") if isinstance(m, dict) else m.role for m in messages]
+
+
+async def test_masking_keeps_the_tools_block_refuses_the_call_and_tells_the_model(tmp_path):
     log = InMemorySessionLog()
     session = _session(tmp_path, log=log)
-    await _prompt(session, ScriptedModel())
+    first = ScriptedModel()
+    await _prompt(session, first)
     before = session.cursor.leaf
     await session.set_tool_exposure("bash", "hidden")
     assert config_at(log.entries(), session.cursor.leaf)["tool_exposure"] == {"bash": "hidden"}
-    model = ScriptedModel()
-    await _prompt(session, model)
-    assert "bash" not in model.offered[0] and "grep" in model.offered[0]
+    notice = [e for e in log.entries() if e.get("customType") == "tool_exposure"]
+    assert len(notice) == 1 and "`bash` is no longer available" in str(notice[0])
+
+    model = ScriptedModel([("b", "bash", {"command": "echo hi"})])
+    messages = await _prompt(session, model)
+    assert model.blocks[0] == first.blocks[0]
+    assert "it was set to 'hidden'" in _text(_results(messages)["b"])
+    assert _results(messages)["b"]["is_error"]
 
     resumed = _session(tmp_path, log=log)
-    model = ScriptedModel()
-    await _prompt(resumed, model)
-    assert "bash" not in model.offered[0]
+    model = ScriptedModel([("b2", "bash", {"command": "echo hi"})])
+    messages = await _prompt(resumed, model)
+    assert model.blocks[0] == first.blocks[0]
+    assert _results(messages)["b2"]["is_error"]
 
     earlier = AgentSession(
         cursor=Cursor(log, before),
         model=_MODEL,
         tools=_resolve_tools(["read", "bash", "grep", "ls"], cwd=str(tmp_path)),
     )
-    model = ScriptedModel()
-    await _prompt(earlier, model)
-    assert "bash" in model.offered[0]
+    model = ScriptedModel([("b3", "bash", {"command": "echo hi"})])
+    messages = await _prompt(earlier, model)
+    assert not _results(messages)["b3"]["is_error"]
 
 
-async def test_a_deferred_tool_loaded_mid_turn_is_offered_on_the_next_completion(tmp_path):
-    async def tool_search(tool_call_id, params, signal, on_update, ctx):
-        found = ctx.list_tools(exposure="deferred", tag=params["tag"])
-        for d in found:
-            await ctx.set_tool_exposure(d.name, "direct")
-        return {"content": [{"type": "text", "text": "\n".join(d.stub() for d in found)}]}
-
-    async def secret(tool_call_id, params, signal, on_update, ctx):
-        return {"content": [{"type": "text", "text": "the secret"}]}
+async def test_a_mask_set_mid_turn_is_announced_after_the_tool_results(tmp_path):
+    async def masker(tool_call_id, params, signal, on_update, ctx):
+        await ctx.set_tool_exposure("bash", "hidden")
+        return {"content": [{"type": "text", "text": "masked"}]}
 
     def ext(api):
+        api.register_tool(_tool("masker", masker))
+
+    session = _session(tmp_path, ext)
+    model = ScriptedModel([("m", "masker", {})])
+    await _prompt(session, model)
+    assert model.blocks[0] == model.blocks[1]
+    assert _roles(model.contexts[1])[-2:] == ["toolResult", "user"]
+    assert "`bash` is no longer available" in json.dumps(model.contexts[1][-1], default=str)
+
+
+async def test_a_deferred_tool_is_found_and_called_without_changing_the_tools_block(tmp_path):
+    async def secret(tool_call_id, params, signal, on_update, ctx):
+        return {"content": [{"type": "text", "text": "the secret " + params["key"]}]}
+
+    def ext(api):
+        api.register_tool(tool_search_definition())
+        api.register_tool(call_tool_definition())
         api.register_tool(
             {
-                **_tool("tool_search", tool_search, exposure="model-only"),
+                **_tool("secret", secret, exposure="deferred", tags=["vault"]),
                 "parameters": {
                     "type": "object",
-                    "properties": {"tag": {"type": "string"}},
-                    "required": ["tag"],
+                    "properties": {"key": {"type": "string"}},
+                    "required": ["key"],
                 },
             }
         )
-        api.register_tool(_tool("secret", secret, exposure="deferred", tags=["vault"]))
 
     session = _session(tmp_path, ext)
-    model = ScriptedModel([("s", "tool_search", {"tag": "vault"})], [("u", "secret", {})])
+    model = ScriptedModel(
+        [("s", "tool_search", {"query": "vault"})],
+        [("u", "call_tool", {"name": "secret", "arguments": {"key": "k"}})],
+    )
     messages = await _prompt(session, model)
-    assert "secret" not in model.offered[0] and "secret" in model.offered[1]
-    assert _text(_results(messages)["u"]) == "the secret"
-    assert "async def secret() -> str:" in _text(_results(messages)["s"])
+    assert "secret" not in model.offered[0]
+    assert len(set(model.blocks)) == 1
+    assert "async def secret(key: str) -> str:" in _text(_results(messages)["s"])
+    called = _results(messages)["u"]
+    assert _text(called) == "the secret k"
+    assert called["details"]["nested_calls"][0]["tool_name"] == "secret"
+
+
+@pytest.mark.parametrize("exposure", ["callable", "hidden"])
+async def test_call_tool_refuses_what_the_model_may_not_reach(tmp_path, exposure):
+    async def inner(tool_call_id, params, signal, on_update, ctx):
+        return {"content": [{"type": "text", "text": "ran"}]}
+
+    def ext(api):
+        api.register_tool(call_tool_definition())
+        api.register_tool(_tool("inner", inner, exposure=exposure))
+
+    session = _session(tmp_path, ext)
+    model = ScriptedModel([("u", "call_tool", {"name": "inner", "arguments": {}})])
+    result = _results(await _prompt(session, model))["u"]
+    assert result["is_error"] and "ran" not in _text(result)
+
+
+async def test_only_an_explicit_redeclaration_changes_the_block_and_it_is_reported(tmp_path):
+    async def extra(tool_call_id, params, signal, on_update, ctx):
+        return {"content": []}
+
+    def ext(api):
+        api.register_tool(_tool("extra", extra, exposure="deferred"))
+
+    session = _session(tmp_path, ext)
+    first = ScriptedModel()
+    await _prompt(session, first)
+    preview = session.preview_redeclare({"extra": True})
+    assert preview.added == ("extra",) and preview.invalidates_cache
+    assert not session.preview_redeclare({}).invalidates_cache
+    await session.redeclare_tools({"extra": True})
+    model = ScriptedModel()
+    await _prompt(session, model)
+    assert model.blocks[0] != first.blocks[0] and "extra" in model.offered[0]
+    with pytest.raises(ValueError, match="no tool named"):
+        await session.redeclare_tools({"nope": True})
+
+
+def test_tool_block_change_is_pure_and_names_each_kind_of_change():
+    @dataclasses.dataclass
+    class T:
+        name: str
+        description: str = "d"
+        parameters: dict = dataclasses.field(default_factory=dict)
+
+    a, b, c = T("a"), T("b"), T("c")
+    assert not tool_block_change([a, b], [T("a"), T("b")]).invalidates_cache
+    change = tool_block_change([a, b], [b, T("a", "new"), c])
+    assert change.added == ("c",) and change.changed == ("a",) and change.reordered
+    assert tool_block_change([a, b], [a]).removed == ("b",)
 
 
 async def test_an_unchanged_tool_set_serializes_identically_across_turns(tmp_path):

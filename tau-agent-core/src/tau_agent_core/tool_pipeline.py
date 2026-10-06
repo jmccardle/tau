@@ -226,11 +226,13 @@ async def prepare_tool_call(
     tool_call: ToolCall,
     *,
     parent_tool_call_id: str | None = None,
+    gate: Callable[[str], str | None] | None = None,
 ) -> PreparedToolCall | BlockedCall | ErrorCall:
     """Validate ``tool_call``'s arguments and run the ``tool_call`` hook.
 
     A nested call's hook event carries ``parent_tool_call_id``; a model-issued
-    call's event has no such key.
+    call's event has no such key. ``gate``, given the tool name, returns a reason
+    to refuse the call before validation, or ``None``.
 
     Returns:
         The prepared call, a :class:`BlockedCall` (validation failed, a handler
@@ -239,6 +241,9 @@ async def prepare_tool_call(
     try:
         call_name = tool_call.name
         call_args = tool_call.arguments
+        refusal = gate(call_name) if gate is not None else None
+        if refusal is not None:
+            return _blocked(tool_call, refusal)
         if call_name in tools:
             validate_tool_arguments(tools[call_name], call_args)
         input_args = call_args if isinstance(call_args, dict) else {}

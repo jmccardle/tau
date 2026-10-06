@@ -540,6 +540,17 @@ read-only properties so an object exposing them as properties — which
 
 *No description. This object is marked but undocumented.*
 
+## call_tool_definition
+<!-- agent: yes -->
+
+```python
+call_tool_definition() -> dict[str, Any]
+```
+
+`tau_agent_core.tool_dispatch.call_tool_definition`
+
+The ``register_tool`` dict for ``call_tool``, the fixed dispatcher to deferred tools.
+
 ## capture_tool_output
 <!-- agent: yes -->
 
@@ -716,6 +727,26 @@ The tool's structured value, content and details.
 - `NestedCallError` — the tool is not reachable from here, its arguments failed validation, nesting is too deep, or it reported an error.
 - `ValueError` — ``parent_tool_call_id`` contradicts the running tool.
 
+## search_deferred
+<!-- agent: yes -->
+
+```python
+search_deferred(descriptions: list[ToolDescription], query: str, limit: int = 8) -> list[ToolDescription]
+```
+
+`tau_agent_core.tool_dispatch.search_deferred`
+
+The deferred tools whose name, description or tags contain a word of ``query``.
+
+Ranked by how many query words match, then registry order. A plain keyword
+match; a BM25 or JMFTS ranker can replace it behind the same signature.
+
+**Parameters**
+
+- `descriptions: list[ToolDescription]` — *(no description)*
+- `query: str` — *(no description)*
+- `limit: int = 8` — *(no description)*
+
 ## suspend_capture
 <!-- agent: yes -->
 
@@ -772,6 +803,17 @@ or the value as compact JSON when ``render`` is ``None``::
 
 - `TypeError` — a parameter or the return is unannotated, or a type has no JSON Schema.
 - `ValueError` — there is no description to give the model.
+
+## tool_search_definition
+<!-- agent: yes -->
+
+```python
+tool_search_definition() -> dict[str, Any]
+```
+
+`tau_agent_core.tool_dispatch.tool_search_definition`
+
+The ``register_tool`` dict for ``tool_search``; its description never changes.
 
 ## validate_tool_arguments
 <!-- agent: yes -->

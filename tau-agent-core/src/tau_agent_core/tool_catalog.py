@@ -7,7 +7,10 @@ found here is a way around a permission gate.
 
 A tool's *effective* exposure is its declared ``exposure`` unless the cursor's
 path carries a ``tool_exposure`` config entry naming it (docs/CURSORS.md §5),
-so a resumed or forked conversation declares what it declared before.
+so a resumed or forked conversation behaves as it did before. Whether the
+model's ``tools`` block declares a tool is a separate fact, changed only by an
+explicit ``tool_declaration`` entry, so that the block stays byte-stable and
+the prompt cache holds.
 """
 
 from __future__ import annotations
@@ -24,6 +27,9 @@ from tau_agent_core.tools.base import AgentTool
 __all__ = [
     "CALLABLE_EXPOSURES",
     "DECLARED_EXPOSURES",
+    "DISPATCHABLE_EXPOSURES",
+    "EXPOSURE_NOTICES",
+    "EXPOSURE_NOTICE_TYPE",
     "ExtensionInfo",
     "ToolDescription",
     "describe_tool",
@@ -35,6 +41,21 @@ DECLARED_EXPOSURES = frozenset({"direct", "model-only"})
 
 CALLABLE_EXPOSURES = frozenset({"direct", "callable", "deferred"})
 """Exposures a tool, extension or script may call through ``ctx.execute_tool``."""
+
+DISPATCHABLE_EXPOSURES = frozenset({"direct", "deferred"})
+"""Exposures the model may reach through the ``call_tool`` dispatcher."""
+
+EXPOSURE_NOTICE_TYPE = "tool_exposure"
+"""The ``customType`` of the message that tells the model a tool's exposure changed."""
+
+EXPOSURE_NOTICES: dict[str, str] = {
+    "direct": "Tool `{name}` is available again.",
+    "model-only": "Tool `{name}` is available again.",
+    "callable": "Tool `{name}` is no longer available to you; calls to it will be refused.",
+    "deferred": "Tool `{name}` is now reachable only through `call_tool`.",
+    "hidden": "Tool `{name}` is no longer available; calls to it will be refused.",
+}
+"""What the model is told, per new exposure, by :meth:`AgentSession.set_tool_exposure`."""
 
 
 @agent_facing(topic="extensions")
@@ -48,6 +69,8 @@ class ToolDescription:
         description: What the model reads.
         namespace: ``"core"``, or the extension (``<ext>`` / ``<ext>.<sub>``) that declared it.
         exposure: The effective exposure on the asking cursor.
+        declared: Whether the model's ``tools`` block declares it; only an
+            explicit redeclaration changes this, never an exposure override.
         declared_exposure: The author's default.
         tags: Discovery labels.
         parameters: The argument JSON Schema.
@@ -60,6 +83,7 @@ class ToolDescription:
     description: str
     namespace: str
     exposure: str
+    declared: bool
     declared_exposure: str
     tags: tuple[str, ...]
     parameters: dict[str, Any]
@@ -67,9 +91,11 @@ class ToolDescription:
     execution_mode: str
 
     @property
-    def declared_to_model(self) -> bool:
-        """Whether the model is offered this tool."""
-        return self.exposure in DECLARED_EXPOSURES
+    def model_may_call(self) -> bool:
+        """Whether a model call to it, direct or through ``call_tool``, would run."""
+        if self.declared and self.exposure in DECLARED_EXPOSURES:
+            return True
+        return self.exposure in DISPATCHABLE_EXPOSURES
 
     @property
     def callable(self) -> bool:
@@ -99,7 +125,7 @@ class ExtensionInfo:
     commands: tuple[str, ...]
 
 
-def describe_tool(tool: AgentTool, exposure: str) -> ToolDescription:
+def describe_tool(tool: AgentTool, exposure: str, declared: bool) -> ToolDescription:
     """Describe ``tool`` with ``exposure`` as its effective exposure."""
     d = tool.definition
     return ToolDescription(
@@ -108,6 +134,7 @@ def describe_tool(tool: AgentTool, exposure: str) -> ToolDescription:
         description=d.description,
         namespace=d.namespace or "core",
         exposure=exposure,
+        declared=declared,
         declared_exposure=d.exposure,
         tags=tuple(d.tags),
         parameters=d.parameters,

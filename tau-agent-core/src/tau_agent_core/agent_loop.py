@@ -135,9 +135,9 @@ class AgentLoop:
         _hook_dispatcher: The return-collecting extension hook dispatcher
             (an :class:`~tau_agent_core.extensions.runner.ExtensionRunner`),
             injected by :class:`~tau_agent_core.agent_session.AgentSession`.
-        _tools_provider: Re-reads the declared tools before each completion, so
-            a tool a ``tool_search`` loaded mid-turn is offered on the next call;
-            ``None`` keeps the constructor's list (experimental).
+        _call_gate: Given a model-issued call's tool name, the reason to refuse
+            it, or ``None`` to let it run. How a masked tool stays declared, so
+            the ``tools`` block and the prompt cache hold (experimental).
             Unlike ``emit`` (fire-and-forget), its ``emit_*`` methods return
             results that the mutating-hook call-sites thread forward. ``None``
             when the loop runs standalone (no session / no extensions).
@@ -165,7 +165,7 @@ class AgentLoop:
         steer_queue: list[Any] | None = None,
         mid_turn_compactor: MidTurnCompactor | None = None,
         writer: TurnWriter | None = None,
-        tools_provider: Callable[[], list[AgentTool]] | None = None,
+        call_gate: Callable[[str], str | None] | None = None,
     ) -> None:
         self.config = config
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
@@ -179,7 +179,7 @@ class AgentLoop:
         self._steer_queue: list[Any] | None = steer_queue
         self._mid_turn_compactor: MidTurnCompactor | None = mid_turn_compactor
         self._writer: TurnWriter | None = writer
-        self._tools_provider = tools_provider
+        self._call_gate = call_gate
         self._recorded: dict[int, dict[str, Any]] = {}
 
     @staticmethod
@@ -791,8 +791,6 @@ class AgentLoop:
             The final AssistantMessage.
         """
 
-        if self._tools_provider is not None:
-            self._tools = {t.name: t for t in self._tools_provider()}
         messages = convert_to_llm(list(context))
         opens_with_system = (
             bool(messages)
@@ -1407,7 +1405,9 @@ class AgentLoop:
         self, tool_call: ToolCall
     ) -> PreparedToolCall | BlockedCall | ErrorCall:
         """Validate args and run the ``tool_call`` hook (:func:`prepare_tool_call`)."""
-        return await prepare_tool_call(self._tools, self._hook_dispatcher, tool_call)
+        return await prepare_tool_call(
+            self._tools, self._hook_dispatcher, tool_call, gate=self._call_gate
+        )
 
     async def _execute_tool(self, call: PreparedToolCall) -> AgentToolResult:
         """Execute one prepared call (:func:`execute_prepared_call`)."""

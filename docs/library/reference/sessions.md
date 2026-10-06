@@ -901,6 +901,23 @@ It cannot deadlock against the T3 credit pool: persistence emits no
 events of its own, so nothing it does needs a credit the blocked writer
 would have to release.
 
+### preview_redeclare
+
+```python
+preview_redeclare(changes: dict[str, bool]) -> ToolBlockChange
+```
+
+`tau_agent_core.agent_session.AgentSession.preview_redeclare`
+
+What :meth:`redeclare_tools` with ``changes`` would do to the ``tools`` block.
+
+A head calls this to warn the user before a change that re-bills the
+prompt (:func:`~tau_agent_core.prompt_cache.tool_block_change`).
+
+**Parameters**
+
+- `changes: dict[str, bool]` — *(no description)*
+
 ### prompt
 
 ```python
@@ -979,6 +996,32 @@ before/after DELTA to attribute the spend to a particular exchange.
 **Parameters**
 
 - `usage: dict[str, int]` — *(no description)*
+
+### redeclare_tools
+
+```python
+async redeclare_tools(changes: dict[str, bool]) -> ToolBlockChange
+```
+
+`tau_agent_core.agent_session.AgentSession.redeclare_tools`
+
+Declare (``True``) or withdraw (``False``) tools from the model's ``tools`` block.
+
+A user action, never something a tool or extension does on its own: any
+change here costs a full prompt-cache miss on the next request. Recorded as
+a ``tool_declaration`` config entry, so a resume declares the same set.
+
+**Parameters**
+
+- `changes: dict[str, bool]` — *(no description)*
+
+**Returns**
+
+The change, as :meth:`preview_redeclare` reported it.
+
+**Raises**
+
+- `ValueError` — a name is not a tool here.
 
 ### reload_extension
 
@@ -1347,11 +1390,11 @@ async set_tool_exposure(name: str, exposure: str) -> None
 
 Override ``name``'s exposure from the acting cursor's leaf on (experimental).
 
-Written as a ``tool_exposure`` config entry, so the change is on the path:
-a branch taken before it does not see it, and a resume or fork does.
-Loading a ``deferred`` tool is setting it to ``"direct"``; masking a
-built-in is setting it to ``"hidden"``. Inside a turn the model is
-offered the new set from its next completion.
+The declared ``tools`` block does not change, so the prompt cache holds.
+The override is a ``tool_exposure`` config entry, and the model is told by
+an appended ``tool_exposure`` message on the path: now when no turn is
+running, before the next completion when one is. A masked tool stays
+declared and a model call to it is refused with the reason.
 
 **Parameters**
 
@@ -4497,6 +4540,34 @@ which covers messages appended since that completion.
 - `last_compaction: CompactionRecord | None` — The newest compaction entry, or ``None`` if this session has never compacted.
 - `usage: dict[str, Any] | None` — :meth:`AgentSession.get_usage` — ``None`` before the first completion.
 
+## ToolBlockChange
+<!-- agent: yes -->
+
+```python
+class ToolBlockChange(added: tuple[str, ...], removed: tuple[str, ...], changed: tuple[str, ...], reordered: bool)
+```
+
+`tau_agent_core.prompt_cache.ToolBlockChange`
+
+How a change to the declared tools would alter the request's ``tools`` block.
+
+Every provider renders ``tools`` before ``system`` and the messages
+(docs/PROMPT-CACHING.md), so any difference here re-bills the whole prompt
+at the cache-write price on the next request.
+
+**Constructor parameters**
+
+- `added: tuple[str, ...]` — Names declared after and not before.
+- `removed: tuple[str, ...]` — Names declared before and not after.
+- `changed: tuple[str, ...]` — Names in both whose description or parameters differ.
+- `reordered: bool` — The common names appear in a different order.
+
+### invalidates_cache
+
+`tau_agent_core.prompt_cache.ToolBlockChange.invalidates_cache: bool`
+
+Whether the next request misses the prompt cache because of this change.
+
 ## ToolResultEntry
 <!-- agent: yes -->
 
@@ -5745,6 +5816,26 @@ and the two would drift the first time the wrapper changed.
 **Returns**
 
 ``(purpose, body)`` — ``"compaction"`` or ``"branch_summary"``, and the summary with the marker stripped — or ``None`` for an ordinary message.
+
+## tool_block_change
+<!-- agent: yes -->
+
+```python
+tool_block_change(before: Sequence[Any], after: Sequence[Any]) -> ToolBlockChange
+```
+
+`tau_agent_core.prompt_cache.tool_block_change`
+
+Compare two declared tool lists, each item having ``name``/``description``/``parameters``.
+
+Pure, so every head reaches the same verdict before it applies a change
+and can warn the user that it costs a cache miss (experimental;
+experiments/tool-exposure/RESULTS.md).
+
+**Parameters**
+
+- `before: Sequence[Any]` — *(no description)*
+- `after: Sequence[Any]` — *(no description)*
 
 ## tool_group
 <!-- agent: yes -->
