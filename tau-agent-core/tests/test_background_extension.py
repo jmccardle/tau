@@ -215,7 +215,7 @@ class TestElecting:
         defn = bg.backgroundable(
             "slow",
             reg,
-            lambda c, r: delivered.append(bg.completion_text(c, r, current_session_id=_SID)),
+            lambda c, r: delivered.append(bg.completion_text(c, r)),
             definition=_definition(execute=_exec),
         )
         result = await defn["execute"]("call-1", {bg.BACKGROUND_KEY: True})
@@ -231,7 +231,7 @@ class TestElecting:
             handle="bg-slow-1", tool="slow", args={}, started_at_ms=1, origin_session_id=_SID
         )
         failed = {"content": [{"type": "text", "text": "no such host"}], "is_error": True}
-        text = bg.completion_text(call, failed, current_session_id=_SID)
+        text = bg.completion_text(call, failed)
         assert "failed" in text
         assert "finished" not in text
         assert "no such host" in text
@@ -240,13 +240,13 @@ class TestElecting:
         call = bg.BackgroundCall(
             handle="bg-slow-1", tool="slow", args={}, started_at_ms=1, origin_session_id=_SID
         )
-        assert "42" in bg.completion_text(call, 42, current_session_id=_SID)
+        assert "42" in bg.completion_text(call, 42)
 
 
 class TestErrors:
-    """A failure on the completion path reaches the error sink, never the transcript."""
+    """A raising tool is delivered as failed; only the delivery path reaches the error sink."""
 
-    async def test_a_failing_tool_reaches_the_error_sink_not_the_transcript(self):
+    async def test_a_raising_tool_is_delivered_as_a_failed_result(self):
         async def _exec(tool_call_id, params, signal=None, on_update=None, ctx=None):
             raise RuntimeError("the tool broke")
 
@@ -256,14 +256,30 @@ class TestErrors:
         defn = bg.backgroundable(
             "slow",
             reg,
-            lambda c, r: delivered.append(r),
+            lambda c, r: delivered.append(bg.completion_text(c, r)),
             definition=_definition(execute=_exec),
         )
         await defn["execute"]("call-1", {bg.BACKGROUND_KEY: True})
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        assert delivered == []
-        assert [str(e) for e in errors] == ["the tool broke"]
+        assert errors == []
+        assert len(delivered) == 1
+        assert "slow failed" in delivered[0]
+        assert "RuntimeError: the tool broke" in delivered[0]
+
+    async def test_a_raising_delivery_reaches_the_error_sink_and_parks(self):
+        errors: list[BaseException] = []
+        reg = _registry(on_error=errors.append)
+
+        def _deliver(call, result):
+            raise RuntimeError("delivery broke")
+
+        defn = bg.backgroundable("slow", reg, _deliver, definition=_definition())
+        await defn["execute"]("call-1", {bg.BACKGROUND_KEY: True})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert [str(e) for e in errors] == ["delivery broke"]
+        assert reg.jobs()[0].state == bg.PARKED
 
     def test_the_default_error_sink_raises_rather_than_dropping(self):
         reg = _registry()
@@ -395,13 +411,51 @@ class TestFailEarly:
             bg.backgroundable("slow", reg, lambda c, r: None, definition=defn)
 
 
+class _FakeCursor:
+    """The cursor surface ``CursorDelivery`` reads, with no tree behind it."""
+
+    def __init__(self, session_id: str = _SID, cursor_id: str = "c-head") -> None:
+        """A cursor on ``session_id`` at no leaf."""
+        self.id = cursor_id
+        self.leaf = None
+        self.owner = None
+        self.label = ""
+        self.session_id = session_id
+        self.turn_lock = asyncio.Lock()
+        self.steer_queue: list[Any] = []
+        self.next_turn_queue: list[str] = []
+
+    @property
+    def busy(self) -> bool:
+        """Whether the fake turn lock is held."""
+        return self.turn_lock.locked()
+
+    def entries(self) -> list[dict[str, Any]]:
+        """No entries."""
+        return []
+
+
 class _FakeContext:
-    """The two ``ExtensionContext`` reads ``register_backgrounding`` makes."""
+    """The ``ExtensionContext`` reads ``register_backgrounding`` makes."""
 
     def __init__(self) -> None:
-        """Start on session :data:`_SID` in ``/tmp``."""
+        """Start on session :data:`_SID` in ``/tmp``, with one live cursor."""
         self.session_id = _SID
         self.cwd = "/tmp"
+        self.cursor = _FakeCursor()
+        self.cursors: tuple[Any, ...] = (self.cursor,)
+
+
+class _FakeUI:
+    """Captures notifications."""
+
+    def __init__(self) -> None:
+        """Start empty."""
+        self.notes: list[tuple[str, str]] = []
+
+    def notify(self, message: str, level: str = "info") -> None:
+        """Capture one notification."""
+        self.notes.append((message, level))
 
 
 class _FakeAPI:
@@ -415,39 +469,26 @@ class _FakeAPI:
         """
         self.config = config
         self.context = _FakeContext()
+        self.ui = _FakeUI()
         self.registered: list[dict[str, Any]] = []
         self.hooks: dict[str, Any] = {}
         self.submitted: list[dict[str, Any]] = []
 
     def register_tool(self, definition: dict[str, Any]) -> None:
-        """Capture a registration.
-
-        Args:
-            definition: The tool definition.
-        """
+        """Capture a registration."""
         self.registered.append(definition)
 
     def on(self, event: str, handler: Any) -> Any:
-        """Capture a hook binding.
-
-        Args:
-            event: Hook name.
-            handler: The handler.
-
-        Returns:
-            A no-op unsubscribe.
-        """
+        """Capture a hook binding; returns a no-op unsubscribe."""
         self.hooks[event] = handler
         return lambda: None
 
-    async def submit(self, text: str, **kwargs: Any) -> None:
-        """Capture a submission.
+    async def submit(self, text: str, **kwargs: Any) -> Any:
+        """Capture a submission and report it as a turn that ran."""
+        from types import SimpleNamespace
 
-        Args:
-            text: The utterance.
-            **kwargs: The submission options.
-        """
         self.submitted.append({"text": text, **kwargs})
+        return SimpleNamespace(accepted=True, messages=[{"role": "user"}], rejection_reason=None)
 
 
 class TestRegisterBackgrounding:
@@ -456,8 +497,8 @@ class TestRegisterBackgrounding:
     def test_wraps_every_tool_named_in_config(self):
         api = _FakeAPI({"tools": ["read", "ls"]})
         bg.register_backgrounding(api)
-        assert [d["name"] for d in api.registered] == ["read", "ls"]
-        for defn in api.registered:
+        assert [d["name"] for d in api.registered] == ["read", "ls", "bg"]
+        for defn in api.registered[:2]:
             assert bg.BACKGROUND_KEY in defn["parameters"]["properties"]
 
     def test_binds_only_the_shutdown_hook(self):
@@ -481,7 +522,7 @@ class TestRegisterBackgrounding:
     def test_definitions_are_merged_with_names(self):
         api = _FakeAPI({"tools": ["read"]})
         bg.register_backgrounding(api, definitions={"recall": _definition("recall")})
-        assert [d["name"] for d in api.registered] == ["read", "recall"]
+        assert [d["name"] for d in api.registered] == ["read", "recall", "bg"]
 
     async def test_a_completion_submits_with_steer_and_correlation(self):
         api = _FakeAPI({})
@@ -498,6 +539,8 @@ class TestRegisterBackgrounding:
         assert sent["correlation"]["tool"] == "recall"
         assert sent["correlation"]["origin_session_id"] == _SID
         assert sent["correlation"]["crossed_session"] is False
+        assert sent["correlation"]["route"] == "origin"
+        assert sent["cursor"] is api.context.cursor
         assert reg.outstanding() == []
 
     async def test_a_completion_after_the_session_changed_is_labelled(self):
@@ -513,6 +556,8 @@ class TestRegisterBackgrounding:
         )
         await api.registered[0]["execute"]("call-1", {"q": "x", bg.BACKGROUND_KEY: True})
         api.context.session_id = "session-b"
+        api.context.cursor = _FakeCursor("session-b", "c-new")
+        api.context.cursors = (api.context.cursor,)
         gate.set()
         for _ in range(4):
             await asyncio.sleep(0)
@@ -524,6 +569,7 @@ class TestRegisterBackgrounding:
         assert _SID in sent["text"]
         assert '{"q": "x"}' in sent["text"]
         assert "the late answer" in sent["text"]
+        assert sent["cursor"] is None
 
     async def test_the_shutdown_hook_cancels(self):
         api = _FakeAPI({})
@@ -663,17 +709,19 @@ class TestRealSessionBoundary:
         assert texts[0].startswith("[background bg-recall-1] recall finished:")
         assert "earlier session" not in texts[0]
 
-    async def test_a_result_queued_into_a_turn_the_swap_aborts_is_lost(self):
-        """Pinned defect, not desired behaviour: ROADMAP "A queued steer is lost".
+    async def test_a_result_queued_into_a_turn_the_swap_aborts_survives(self):
+        """Was a pinned loss (ROADMAP "A queued steer is lost"); now it is followed.
 
         The completion lands while a turn is in flight, so ``steer`` queues it. The
-        swap's ``abort()`` and reset then clear the queue, and nothing reports it.
-        Fixing it needs the steer queue to carry provenance, which is core work
-        outside this extension (docs/BACKGROUND-TOOLS.md §6.2).
+        swap's ``abort()`` clears the queue. The delivery follows the queued steer
+        until the old cursor is idle, finds it on no path, and re-routes it: to the
+        old cursor's next turn if that cursor is still open (``deliver_queued``
+        runs it on the old tree), else to the new head, labelled
+        (docs/BACKGROUND-TOOLS.md §6).
         """
         from unittest.mock import patch
 
-        from test_agent_session_runtime import _Stream
+        from test_agent_session_runtime import _Stream, _sub
 
         gate = asyncio.Event()
         turn_gate = asyncio.Event()
@@ -683,6 +731,7 @@ class TestRealSessionBoundary:
             return _text_result("the late answer")
 
         session, runtime, holder = self._session(_later)
+        old_cursor = session.cursor
 
         async def _gated(model, context, options=None):
             await turn_gate.wait()
@@ -691,7 +740,6 @@ class TestRealSessionBoundary:
         with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_gated):
             defn = [d for d in _registered(session) if d.name == "recall"][0]
             await defn.execute("call-1", {"q": "x", bg.BACKGROUND_KEY: True})
-            from test_agent_session_runtime import _sub
 
             turn = asyncio.create_task(session.submit(_sub("hello", "t-1")))
             await asyncio.sleep(0)
@@ -701,16 +749,41 @@ class TestRealSessionBoundary:
             for _ in range(10):
                 await asyncio.sleep(0)
             assert holder["registry"].outstanding() == []
-            assert len(session._pending_steer_messages) == 1
+            assert len(old_cursor.steer_queue) == 1
 
             swap = asyncio.create_task(runtime.new_session(persist=False))
             await asyncio.sleep(0)
             turn_gate.set()
             await asyncio.wait_for(turn, timeout=5.0)
             await asyncio.wait_for(swap, timeout=5.0)
+            for _ in range(200):
+                await asyncio.sleep(0.001)
+                if not holder["registry"]._tasks:
+                    break
+            await session.wait_for_deliveries()
 
-        assert session._pending_steer_messages == []
-        assert self._user_texts(session) == []
+        call = holder["registry"].jobs()[0]
+        assert call.state in (bg.DELIVERED, bg.HELD_OVER), (call.state, call.note)
+        old_texts = [
+            t for t in _texts_of(old_cursor.log) if "[background bg-recall-1" in t
+        ]
+        new_texts = [t for t in self._user_texts(session) if "[background bg-recall-1" in t]
+        assert len(old_texts) + len(new_texts) == 1, (old_texts, new_texts)
+        if new_texts:
+            assert "from an earlier session" in new_texts[0]
+
+
+def _texts_of(log: Any) -> list[str]:
+    """Every user message's text in ``log``, in log order."""
+    texts = []
+    for entry in log.entries():
+        message = entry.get("message") or {}
+        if entry.get("type") == "message" and message.get("role") == "user":
+            content = message.get("content")
+            if isinstance(content, list):
+                content = "".join(b.get("text", "") for b in content if isinstance(b, dict))
+            texts.append(content)
+    return texts
 
 
 def _registered(session: Any) -> list[Any]:

@@ -562,7 +562,7 @@ Name the session (:func:`apply_session_name`, shared with the RPC verb).
 ### submit
 
 ```python
-async submit(text: str, *, multitask_strategy: MultitaskStrategy = 'reject', images: list[dict[str, Any]] | None = None, correlation: dict[str, Any] | None = None, allow_user_input: bool = False) -> SubmissionResult
+async submit(text: str, *, multitask_strategy: MultitaskStrategy = 'reject', images: list[dict[str, Any]] | None = None, correlation: dict[str, Any] | None = None, allow_user_input: bool = False, cursor: Any = None) -> SubmissionResult
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.submit`
@@ -609,6 +609,7 @@ stays at depth 0 however much traffic it delivers mid-turn.
 - `images: list[dict[str, Any]] | None = None` — Optional image dicts for a multimodal submission.
 - `correlation: dict[str, Any] | None = None` — Free-form origin detail — bus subject + binding id, cron id, HTTP request id — carried onto every event this turn emits so a renderer can fan out to the right consumer. Validated JSON-safe at :class:`~tau_agent_core.submission.Submission` construction (decision 4): a live object here raises HERE, naming the key, rather than detonating in a JSON renderer three hops downstream.
 - `allow_user_input: bool = False` — Jupyter ``allow_stdin`` — whether code running under THIS submission may prompt a human. Default ``False``: a bus- or timer-driven turn has nobody at a keyboard. ENFORCED: for the whole of the admitted turn, :class:`ExtensionUI`'s blocking dialogs (``confirm``/``select``/``input``/``form``) bypass the TUI delegate and take the headless-answer route, so with no ``--ui-defaults`` policy they raise :class:`HeadlessDialogError` instead of putting a modal in front of whoever happens to be at the terminal. Pass ``True`` only when a human really is expecting to be asked.
+- `cursor: Any = None` — The live cursor the turn extends (``ctx.cursors``), so a strategy acts on that cursor's lock and queues. ``None`` is the head's cursor, which is not the cursor of the turn that called this unless the head ran it.
 
 **Returns**
 
@@ -862,6 +863,15 @@ The :class:`~tau_agent_core.cursor.Cursor` this handler acts on.
 Inside a turn, that turn's cursor; outside one, the head's. ``ctx.cursor.leaf``
 is "where am I": a cursor is not durable, so it cannot be recovered from
 :meth:`entries` (docs/CURSORS.md §4, §7).
+
+### cursors
+
+`tau_agent_core.extension_types.ExtensionContext.cursors: tuple[Any, ...]`
+
+Every live cursor on the bound session, the head's included, oldest first.
+
+A cursor absent from here was closed: a finished sub-agent, a client's
+cursor under ``tau serve``, or a head cursor a swap retired.
 
 ### emit_veto_record
 
