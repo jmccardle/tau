@@ -521,6 +521,29 @@ def _extract_reasoning(delta: dict) -> tuple[str, str]:
     return "", ""
 
 
+def _split_content_chunks(chunks: list) -> tuple[str, str]:
+    """Return ``(text, thinking)`` from a list-valued ``content`` delta.
+
+    Mistral's reasoning models (e.g. ``mistral-large-4``) stream ``content`` as
+    ``[{"type": "thinking", "thinking": [{"type": "text", "text": ...}]}]`` or
+    ``[{"type": "text", "text": ...}]`` instead of a string.
+    """
+    text: list[str] = []
+    thinking: list[str] = []
+    for c in chunks:
+        if isinstance(c, str):
+            text.append(c)
+        elif isinstance(c, dict) and c.get("type") == "text":
+            text.append(c.get("text") or "")
+        elif isinstance(c, dict) and c.get("type") == "thinking":
+            inner = c.get("thinking")
+            if isinstance(inner, str):
+                thinking.append(inner)
+            elif isinstance(inner, list):
+                thinking.extend(i.get("text") or "" if isinstance(i, dict) else str(i) for i in inner)
+    return "".join(text), "".join(thinking)
+
+
 def _consolidate_text_and_thinking(accum: _Accumulator) -> list[Any]:
     """Return ``[thinking?, text?]`` — each a SINGLE consolidated block.
 
@@ -1760,8 +1783,18 @@ class OpenAICompletionsProvider(Provider):
                 if choice_usage:
                     state.usage_data = choice_usage
 
-                # Process text delta
+                # Process text delta. Mistral's reasoning models stream `content` as a list of
+                # chunks ({"type": "text"} / {"type": "thinking", "thinking": [text chunks]})
+                # rather than a string; split it into text and thinking.
                 text = delta.get("content", "") or ""
+                if isinstance(text, list):
+                    text, chunk_thinking = _split_content_chunks(text)
+                    if chunk_thinking:
+                        # no signature: there is no request field to replay it under
+                        accum.thinking_parts.append(chunk_thinking)
+                        accum.has_thinking = True
+                        partial = self._build_partial_message(accum, model)
+                        yield self._make_thinking_event(chunk_thinking, accum, partial)
                 if text:
                     accum.text_parts.append(text)
                     accum.has_text = True
