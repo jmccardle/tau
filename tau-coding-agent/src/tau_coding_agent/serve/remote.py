@@ -28,6 +28,7 @@ from typing import Any
 
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.capabilities import Argument, Domain
+from tau_agent_core.commands import CommandCompletion
 from tau_agent_core.compaction import CompactionDetails, CompactionResult
 from tau_agent_core.projections import tool_result_for_user
 from tau_agent_core.rpc import dialect
@@ -844,6 +845,14 @@ class RemoteBackend(Backend):
             for c in self.replica.surface["commands"]
             if c["origin"] == "extension" and not c["hidden"]
         ]
+
+    def get_prompt_commands(self) -> tuple[CommandCompletion, ...]:
+        """The daemon session's template and skill command words, from its surface."""
+        return tuple(
+            CommandCompletion(str(c["name"]), str(c["description"]), c["origin"])
+            for c in self.replica.surface["commands"]
+            if c["origin"] in ("template", "skill")
+        )
 
     def get_extension_command_args(self, name: str) -> str | None:
         value = self.replica.surface["command_args"].get(name)

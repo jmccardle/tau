@@ -414,7 +414,9 @@ class CommandInfo:
     """One slash command a session answers, as RPC ``get_commands`` lists it.
 
     Attributes:
-        origin: ``builtin`` for τ's own, ``extension`` for one an extension registered.
+        origin: ``builtin`` for τ's own, ``extension`` for one an extension
+            registered, ``template`` or ``skill`` for one the session expands into
+            a prompt (docs/PROMPT-TEMPLATES-AND-SKILLS.md).
         flow: Whether :class:`NextStep` steps it.
         hidden: A qualified extension name (``ext:pirate.speak``): it resolves,
             and a completion list leaves it out.
@@ -422,7 +424,7 @@ class CommandInfo:
 
     name: str
     description: str
-    origin: Literal["builtin", "extension"]
+    origin: Literal["builtin", "extension", "template", "skill"]
     flow: bool
     hidden: bool
 

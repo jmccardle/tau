@@ -30,7 +30,7 @@ from tau_coding_agent.backends import (
     prompt_tokens,
 )
 from tau_coding_agent.tagline import pick_tagline
-from tau_coding_agent.headless import resolve_extensions_config
+from tau_coding_agent.headless import apply_resource_flags, resolve_extensions_config
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.compare import COMPARE_KEY
 from tau_agent_core.cursor import Cursor
@@ -240,6 +240,10 @@ class TauApp(App):
         self._append_system_prompt: list[str] = list(run_config.get("append_system_prompt", []))
         self._bus_available: bool = bool(run_config.get("bus", False))
         self._no_context_files: bool = bool(run_config.get("no_context_files", False))
+        self._prompt_templates: list[str] = list(run_config.get("prompt_templates", []))
+        self._no_prompt_templates: bool = bool(run_config.get("no_prompt_templates", False))
+        self._skills: list[str] = list(run_config.get("skills", []))
+        self._no_skills: bool = bool(run_config.get("no_skills", False))
         self._max_turns: Optional[int] = run_config.get("max_turns")
         self._ext_config_overrides: dict[str, dict[str, Any]] = dict(
             run_config.get("ext_config", {})
@@ -1278,7 +1282,9 @@ class TauApp(App):
 
     def _command_completions(self, text: str) -> CommandCompletions | None:
         """Candidate commands for ``text``, for the editor's Tab cycle and popup."""
-        return complete_command(text, self._extension_command_table())
+        lister = getattr(self.current_backend, "get_prompt_commands", None)
+        prompt_commands = lister() if lister is not None else ()
+        return complete_command(text, self._extension_command_table(), prompt_commands)
 
     def _vocabulary(self) -> Vocabulary:
         """τ's flow registry, plus whatever this session's extensions declared.
@@ -2577,6 +2583,7 @@ class TauApp(App):
             or self._bus_available
             or self._no_context_files
             or resolved_max_turns is not None
+            or self._resource_flags_apply(model_config)
         ):
             return model_config
         mc = dict(model_config)
@@ -2599,7 +2606,26 @@ class TauApp(App):
             mc["no_context_files"] = True
         if resolved_max_turns is not None:
             mc["max_turns"] = resolved_max_turns
+        apply_resource_flags(
+            mc,
+            self.config,
+            prompt_templates=self._prompt_templates,
+            no_prompt_templates=self._no_prompt_templates,
+            skills=self._skills,
+            no_skills=self._no_skills,
+        )
         return mc
+
+    def _resource_flags_apply(self, model_config: dict) -> bool:
+        """Whether a template or skill flag or config list would change ``model_config``."""
+        return bool(
+            self._prompt_templates
+            or self._no_prompt_templates
+            or self._skills
+            or self._no_skills
+            or any(key in self.config for key in ("prompt_templates", "skills"))
+            or any(key in model_config for key in ("prompt_templates", "skills"))
+        )
 
     async def _load_backend_extensions(self) -> None:
         """Load file-path extensions into the current backend's live session (E5 §2.2).

@@ -700,7 +700,7 @@ One slash command a session answers, as RPC `get_commands` lists it.
 |---|---|---|---|
 | `name` | string | yes |  |
 | `description` | string | yes |  |
-| `origin` | `"builtin"` \| `"extension"` | yes | `builtin` for τ's own, `extension` for one an extension registered. |
+| `origin` | `"builtin"` \| `"extension"` \| `"template"` \| `"skill"` | yes | `builtin` for τ's own, `extension` for one an extension registered, `template` or `skill` for one the session expands into a prompt (docs/PROMPT-TEMPLATES-AND-SKILLS.md). |
 | `flow` | boolean | yes | Whether `NextStep` steps it. |
 | `hidden` | boolean | yes | A qualified extension name (`ext:pirate.speak`): it resolves, and a completion list leaves it out. |
 

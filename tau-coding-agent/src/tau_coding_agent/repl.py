@@ -1169,7 +1169,9 @@ class ReplCompleter:
         word = text[lead:]
         if not word.startswith("/") or " " in word:
             return []
-        found = complete_command(text, self._extension_commands())
+        lister = getattr(self._backend, "get_prompt_commands", None)
+        prompt_commands = lister() if lister is not None else ()
+        found = complete_command(text, self._extension_commands(), prompt_commands)
         if found is None:
             return []
         if not found.matches:

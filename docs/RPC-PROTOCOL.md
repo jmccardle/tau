@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 165,928 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 166,066 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -264,10 +264,12 @@ what rides on top of this on every response):
             "type": "string"
           },
           "origin": {
-            "description": "Where the NAME came from: 'builtin' is \u03c4's own vocabulary, 'extension' is one a loaded extension registered. Built-ins resolve first, so an extension cannot shadow one. It does NOT say who runs the command \u2014 that is which arm the dispatch returns.",
+            "description": "Where the NAME came from: 'builtin' is \u03c4's own vocabulary, 'extension' is one a loaded extension registered, 'template' is a prompt template and 'skill' is a skill (`skill:<name>`). Resolution is in that order, so nothing shadows a built-in. A template or skill is not dispatched: the core expands it into the prompt and a turn runs (docs/PROMPT-TEMPLATES-AND-SKILLS.md).",
             "enum": [
               "builtin",
-              "extension"
+              "extension",
+              "template",
+              "skill"
             ],
             "type": "string"
           }

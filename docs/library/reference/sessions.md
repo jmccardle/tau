@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentSession(*, model: Model, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None)
+class AgentSession(*, model: Model, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS)
 ```
 
 `tau_agent_core.agent_session.AgentSession`
@@ -39,6 +39,8 @@ position someone already holds.
 - `bus_available: bool = False` — *(no description)*
 - `no_tools: Literal['all', 'builtin'] | None = None` — *(no description)*
 - `cwd: str | None = None` — *(no description)*
+- `prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES` — *(no description)*
+- `skills: SkillCatalog = EMPTY_SKILLS` — *(no description)*
 
 ### abort
 
@@ -584,6 +586,19 @@ price, or gauge a context window — keeping the extension API decoupled from
 the full model schema). Read at call time, so it reflects a prior
 :meth:`set_model`. It is the acting cursor's model: its frame's, else the
 session's.
+
+### get_prompt_commands
+
+```python
+get_prompt_commands() -> tuple[CommandCompletion, ...]
+```
+
+`tau_agent_core.agent_session.AgentSession.get_prompt_commands`
+
+The template and skill command words, as a completion list offers them.
+
+Leaves out a template whose name a built-in or an extension command holds,
+since dispatch reaches those first; lists a broken one with its error.
 
 ### get_qualified_commands
 

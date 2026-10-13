@@ -70,6 +70,10 @@ class CLIArgs:
     append_system_prompt: list[str] = field(default_factory=list)  # repeatable
     system_prompt: str | None = None
     no_context_files: bool = False
+    prompt_templates: list[str] = field(default_factory=list)  # --prompt-template (repeatable)
+    no_prompt_templates: bool = False
+    skills: list[str] = field(default_factory=list)  # --skill (repeatable)
+    no_skills: bool = False
     thinking: str | None = None  # off|minimal|low|medium|high|xhigh
     continue_session: bool = False  # --continue/-c → most-recent session
     resume: bool = False
@@ -298,6 +302,35 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip project context discovery (AGENTS.md, CLAUDE.md, .tau/SYSTEM.md) for this run",
     )
+    parser.add_argument(
+        "--prompt-template",
+        dest="prompt_templates",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="load prompt templates from PATH, a .md file or a directory (repeatable)",
+    )
+    parser.add_argument(
+        "--no-prompt-templates",
+        dest="no_prompt_templates",
+        action="store_true",
+        help="skip prompt template discovery (~/.tau/prompts, .tau/prompts); "
+        "--prompt-template paths still load",
+    )
+    parser.add_argument(
+        "--skill",
+        dest="skills",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="load a skill directory, a SKILL.md, or a directory of skills (repeatable)",
+    )
+    parser.add_argument(
+        "--no-skills",
+        dest="no_skills",
+        action="store_true",
+        help="skip skill discovery (~/.tau/skills); --skill paths still load",
+    )
     sess = parser.add_mutually_exclusive_group()
     sess.add_argument(
         "--continue",
@@ -427,6 +460,10 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         append_system_prompt=list(ns.append_system_prompt or []),
         system_prompt=ns.system_prompt,
         no_context_files=ns.no_context_files,
+        prompt_templates=list(ns.prompt_templates or []),
+        no_prompt_templates=ns.no_prompt_templates,
+        skills=list(ns.skills or []),
+        no_skills=ns.no_skills,
         thinking=ns.thinking,
         continue_session=ns.continue_session,
         resume=ns.resume,
@@ -477,6 +514,10 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         "no_tools": resolve_no_tools(args),
         "append_system_prompt": list(args.append_system_prompt or []),
         "no_context_files": args.no_context_files,
+        "prompt_templates": list(args.prompt_templates),
+        "no_prompt_templates": args.no_prompt_templates,
+        "skills": list(args.skills),
+        "no_skills": args.no_skills,
         "max_turns": args.max_turns,
         "ext_config": ext_config_overrides,
         "store": args.store,
@@ -518,6 +559,10 @@ _LOCAL_ONLY_FLAGS: tuple[tuple[str, str], ...] = (
     ("append_system_prompt", "--append-system-prompt"),
     ("system_prompt", "--system-prompt"),
     ("no_context_files", "--no-context-files"),
+    ("prompt_templates", "--prompt-template"),
+    ("no_prompt_templates", "--no-prompt-templates"),
+    ("skills", "--skill"),
+    ("no_skills", "--no-skills"),
     ("max_turns", "--max-turns"),
     ("ext_config", "--ext-config"),
     ("provider", "--provider"),

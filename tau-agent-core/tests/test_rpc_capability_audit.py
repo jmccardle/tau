@@ -49,6 +49,7 @@ EXPOSED: dict[str, str] = {
     "get_usage": "get_state",
     "get_extension_commands": "get_commands",
     "get_qualified_commands": "get_commands",
+    "get_prompt_commands": "get_commands",
     # AgentSessionRuntime (phase 3, H1) — one verb per method, 1:1.
     "new_session": "new_session",
     "fork": "fork",
@@ -86,6 +87,16 @@ EXPOSED: dict[str, str] = {
 }
 
 NOT_EXPOSED: dict[str, str] = {
+    "prompt_templates": (
+        "The loaded template catalog, bodies and file paths included. A host needs "
+        "the names and descriptions, which `get_commands` lists with origin "
+        "'template'; it never expands one itself, because `submit` with "
+        "expand_commands=true does (docs/PROMPT-TEMPLATES-AND-SKILLS.md §6)."
+    ),
+    "skills": (
+        "The loaded skill catalog. Same reason as `prompt_templates`: `get_commands` "
+        "lists each as `skill:<name>`, and `submit` expands it."
+    ),
     "context_estimate": (
         "The session's own reading of how big its context is, counted with its "
         "own tokenizer and its own online fit (docs/TOKEN-ACCOUNTING.md). A host "
