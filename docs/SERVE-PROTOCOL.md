@@ -2012,7 +2012,7 @@ An extension's status-line text under `key`; `None` clears it.
 
 ### Usage
 
-Token usage information for an LLM response.
+Token usage for one LLM response. Frozen: use ``model_copy(update=...)``.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
