@@ -1,13 +1,18 @@
 """Typed provider failures, so a caller can branch on a status instead of a message.
 
-See docs/PROVIDER-HTTP-ERRORS.md.
+See docs/PROVIDER-HTTP-ERRORS.md, and docs/PROVIDER-RETRY.md for which of them
+:mod:`tau_llm.retry` retries.
 """
 
 from __future__ import annotations
 
+import email.utils
 import json
 import sys
+import time
 from typing import Any
+
+import httpx
 
 from tau_llm.docs import agent_facing
 
@@ -35,6 +40,8 @@ class ProviderHttpError(RuntimeError):
         body: The raw response body, bounded to ``MAX_ERROR_BODY_CHARS``.
         model_id: The requested model id.
         base_url: The endpoint the request went to.
+        retry_after: Seconds the server asked the client to wait, from a
+            ``retry-after-ms`` or ``retry-after`` header; None when it sent neither.
     """
 
     def __init__(
@@ -45,16 +52,98 @@ class ProviderHttpError(RuntimeError):
         body: str,
         model_id: str,
         base_url: str,
+        retry_after: float | None = None,
     ) -> None:
         self.status_code = status_code
         self.message = message
         self.body = truncate_error_text(body)
         self.model_id = model_id
         self.base_url = base_url
+        self.retry_after = retry_after
         super().__init__(
             f"HTTP {status_code} from model {model_id!r} at {base_url!r}: "
             f"{message or '(empty response body)'}"
         )
+
+
+@agent_facing(topic="providers")
+class ProviderConnectionError(RuntimeError):
+    """The connection failed before the provider produced any event.
+
+    Refused, reset, or closed by the server before a response. Raised only while
+    nothing has streamed, so the caller has received nothing from this request
+    (docs/PROVIDER-RETRY.md §3). A timeout waiting for the response is NOT one
+    of these: the server may still be working on the request.
+
+    Attributes:
+        model_id: The requested model id.
+        base_url: The endpoint the request went to.
+    """
+
+    def __init__(self, message: str, *, model_id: str, base_url: str) -> None:
+        self.model_id = model_id
+        self.base_url = base_url
+        super().__init__(message)
+
+
+_HTTPX_CONNECTION_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.WriteError,
+)
+
+
+def connection_error_from(
+    exc: BaseException, *, message: str, model_id: str, base_url: str
+) -> ProviderConnectionError | None:
+    """The ProviderConnectionError for a pre-response transport failure; None otherwise.
+
+    The caller must only ask while nothing has been yielded. ``anthropic``'s
+    ``APIConnectionError`` is looked up, not imported, as in
+    :func:`http_error_from_anthropic`; its ``APITimeoutError`` subclass is excluded.
+    """
+    sdk = sys.modules.get("anthropic")
+    is_sdk_connection = (
+        sdk is not None
+        and isinstance(exc, sdk.APIConnectionError)
+        and not isinstance(exc, sdk.APITimeoutError)
+    )
+    if not (is_sdk_connection or isinstance(exc, _HTTPX_CONNECTION_ERRORS)):
+        return None
+    return ProviderConnectionError(message, model_id=model_id, base_url=base_url)
+
+
+def retry_after_seconds(headers: Any) -> float | None:
+    """Seconds a response asked the client to wait, or None when it did not say.
+
+    Reads ``retry-after-ms`` first, then ``retry-after`` as seconds or as an
+    HTTP-date. A value that parses to neither is None, as if absent.
+    """
+    if headers is None:
+        return None
+    try:
+        millis = headers.get("retry-after-ms")
+        value = headers.get("retry-after")
+    except Exception:
+        return None
+    if millis is not None:
+        try:
+            return max(0.0, float(millis) / 1000.0)
+        except ValueError:
+            pass
+    if value is None:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(str(value))
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, when.timestamp() - time.time())
 
 
 def http_error_from_anthropic(
@@ -77,6 +166,7 @@ def http_error_from_anthropic(
         body=_body_text(exc.response, payload),
         model_id=model_id,
         base_url=base_url,
+        retry_after=retry_after_seconds(getattr(exc.response, "headers", None)),
     )
 
 
@@ -93,6 +183,7 @@ def http_error_from_google(
         body=_body_text(exc.response, exc.details),
         model_id=model_id,
         base_url=base_url,
+        retry_after=retry_after_seconds(getattr(exc.response, "headers", None)),
     )
 
 

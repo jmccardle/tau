@@ -110,6 +110,8 @@ class CompareScreen(TauDialog[str | None]):
             state.status = "running"
         elif kind == "reasoning_delta":
             state.status = "thinking"
+        elif kind == "provider_retry":
+            state.status = f"retrying in {float(event.get('delay_seconds') or 0.0):.0f}s"
         elif kind == "tool_call":
             name = str(event.get("name") or "?")
             state.tools[str(event.get("id"))] = name

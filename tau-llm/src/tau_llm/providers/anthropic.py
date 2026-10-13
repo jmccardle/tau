@@ -49,7 +49,7 @@ import time
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from tau_llm.errors import http_error_from_anthropic
+from tau_llm.errors import connection_error_from, http_error_from_anthropic
 from tau_llm.models import clamp_thinking_level
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.streaming import (
@@ -213,6 +213,7 @@ class AnthropicMessagesProvider(Provider):
                 api_key=self.api_key,
                 base_url=self.base_url,
                 timeout=self.request_timeout,
+                max_retries=0,
             )
         return self._client
 
@@ -647,9 +648,11 @@ class AnthropicMessagesProvider(Provider):
 
         async def event_generator() -> AsyncIterator[Any]:
             state = _StreamState(model=model, provider=self)
+            started = False
             try:
                 async with client.messages.stream(**request) as stream:
                     async for event in stream:
+                        started = True
                         if abort_signal is not None and abort_signal.is_aborted():
                             yield DoneEvent(
                                 final=state.build_message(stop_reason="aborted"),
@@ -691,12 +694,17 @@ class AnthropicMessagesProvider(Provider):
                 )
                 if http_error is not None:
                     raise http_error from exc
-                yield ErrorEvent(
-                    message=(
-                        f"Streaming error from model {model.id!r} at "
-                        f"{self.base_url!r}: {type(exc).__name__}: {exc}"
-                    )
+                message = (
+                    f"Streaming error from model {model.id!r} at "
+                    f"{self.base_url!r}: {type(exc).__name__}: {exc}"
                 )
+                if not started:
+                    connection_error = connection_error_from(
+                        exc, message=message, model_id=model.id, base_url=self.base_url
+                    )
+                    if connection_error is not None:
+                        raise connection_error from exc
+                yield ErrorEvent(message=message)
                 return
 
         return event_generator()

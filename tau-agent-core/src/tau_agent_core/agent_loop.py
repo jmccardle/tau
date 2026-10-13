@@ -26,6 +26,7 @@ from tau_llm.client import stream_simple
 from tau_llm.streaming import (
     DoneEvent,
     ErrorEvent,
+    RetryEvent,
     TextDeltaEvent,
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
@@ -42,6 +43,7 @@ from tau_agent_core.agent_loop_types import (
     PreparedToolCall,
 )
 from tau_agent_core.events import AgentEndReason, AgentEvent
+from tau_agent_core.provider_retry import provider_retry_event
 from tau_agent_core.messages import convert_to_llm, create_custom_message
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolBatchResult
 from tau_llm.docs import agent_facing
@@ -894,7 +896,9 @@ class AgentLoop:
 
         try:
             async for event in stream:
-                if isinstance(event, TextDeltaEvent):
+                if isinstance(event, RetryEvent):
+                    await self._emit(provider_retry_event(event))
+                elif isinstance(event, TextDeltaEvent):
                     latest = event.partial
                     partial_text += event.delta
                     partial_content_blocks = [{"type": "text", "text": partial_text}]

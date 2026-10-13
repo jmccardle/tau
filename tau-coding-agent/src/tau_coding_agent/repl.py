@@ -516,6 +516,10 @@ class ReplRenderer:
         if self._steer_hook is not None:
             self._steer_hook()
 
+    def _on_provider_retry(self, event: dict[str, Any]) -> None:
+        """A request failed before any output and will be re-sent (docs/PROVIDER-RETRY.md)."""
+        self.line("system", str(event.get("text") or ""))
+
     def _on_reasoning_delta(self, event: dict[str, Any]) -> None:
         stream = event["stream"]
         self._reasoning[stream] = self._reasoning.get(stream, "") + (event.get("delta") or "")

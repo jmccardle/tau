@@ -84,7 +84,7 @@ class TestEventTypesReflectAgentEvent:
     def test_returns_a_tuple_not_a_set(self):
         assert isinstance(event_types(), tuple)
 
-    def test_thirteen_known_event_types_present(self):
+    def test_the_known_event_types_are_present(self):
         assert set(event_types()) == {
             "agent_start",
             "agent_end",
@@ -99,6 +99,7 @@ class TestEventTypesReflectAgentEvent:
             "side_completion_start",
             "side_completion_update",
             "side_completion_end",
+            "provider_retry",
         }
 
     def test_raises_if_agent_event_type_is_no_longer_a_literal(self, monkeypatch):

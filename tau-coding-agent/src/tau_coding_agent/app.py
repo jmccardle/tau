@@ -2289,6 +2289,10 @@ class TauApp(App):
             return
         if kind == "completion_end" and event.get("stop_reason") == "length":
             self._report_truncation(display, int(event.get("dropped_tool_calls", 0) or 0))
+        if kind == "provider_retry":
+            delay = float(event.get("delay_seconds") or 0.0)
+            self.notify(str(event.get("text") or ""), severity="warning", timeout=max(5.0, delay))
+            return
         if kind == "tool_call":
             self._flush_pending_steer(at_tool_call=True)
         await display.handle_stream_event(event)

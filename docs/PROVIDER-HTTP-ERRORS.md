@@ -80,7 +80,9 @@ body may not have been read when the error is raised.
 
 - **No retry policy.** τ reports the status. Deciding that a 503 is worth a
   retry belongs to the caller (JMFTS #32 does it), because τ cannot know the
-  caller's budget.
+  caller's budget. **Superseded the same day by `PROVIDER-RETRY.md`:** τ now
+  retries a transient status by default, and a caller with its own budget passes
+  `retry=False`.
 - **No classification of in-band errors.** An SSE `{"error": …}` frame after a 200
   has no HTTP status to carry. It stays an `ErrorEvent` with `exception=None`.
 - **No "context too long" subtype.** Servers phrase it differently, and a
