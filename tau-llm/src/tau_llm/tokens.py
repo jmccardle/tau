@@ -139,7 +139,16 @@ class TextCounter(Protocol):
         ...
 
     def count(self, text: str, *, role: str | None = None) -> TokenCount:
-        """Tokens for ``text``, optionally hinted by the message ``role``."""
+        """Tokens for ``text``, optionally hinted by the message ``role``.
+
+        Args:
+            text: The text to count.
+            role: The message role the text belongs to, for counters that weigh
+                roles differently.
+
+        Returns:
+            The count, labelled with this counter's provenance.
+        """
         ...
 
 
@@ -159,6 +168,16 @@ class TokenizerCounter:
     """
 
     def __init__(self, tokenizer: Any, *, name: str = "<tokenizer>") -> None:
+        """Wrap an already-loaded tokenizer.
+
+        Args:
+            tokenizer: A ``tokenizers.Tokenizer``, or anything with a compatible
+                ``.encode(text, add_special_tokens=False).ids``.
+            name: Where it came from, for :attr:`name`.
+
+        Raises:
+            TypeError: ``tokenizer`` has no ``encode`` method.
+        """
         if not hasattr(tokenizer, "encode"):
             raise TypeError(f"tokenizer must have .encode(); got {type(tokenizer).__name__}")
         self._tokenizer = tokenizer
@@ -171,15 +190,23 @@ class TokenizerCounter:
 
     @property
     def source(self) -> TokenSource:
+        """Always ``"tokenizer"``."""
         return "tokenizer"
 
     @property
     def exact(self) -> bool:
+        """Always True: counts are exact for the text given."""
         return True
 
     @classmethod
     def from_file(cls, path: str) -> TokenizerCounter:
         """Load a ``tokenizer.json`` off disk.
+
+        Args:
+            path: Path to the ``tokenizer.json`` file.
+
+        Returns:
+            A counter named after ``path``.
 
         Raises:
             TokenizerUnavailable: the ``tokenizers`` package is not installed.
@@ -196,6 +223,12 @@ class TokenizerCounter:
         because where a downloaded file lands is a policy question this module has
         no business answering.
 
+        Args:
+            repo_id: The hub repository id, e.g. ``"Qwen/Qwen3-8B"``.
+
+        Returns:
+            A counter named after ``repo_id``.
+
         Raises:
             TokenizerUnavailable: the ``tokenizers`` package is not installed.
             Exception: whatever the hub call raises, unchanged.
@@ -204,7 +237,15 @@ class TokenizerCounter:
         return cls(tokenizers.Tokenizer.from_pretrained(repo_id), name=repo_id)
 
     def count(self, text: str, *, role: str | None = None) -> TokenCount:
-        """Exact token count for ``text``. ``role`` is accepted and ignored."""
+        """Exact token count for ``text``, without special tokens.
+
+        Args:
+            text: The text to encode.
+            role: Accepted for :class:`TextCounter` compatibility and ignored.
+
+        Returns:
+            An exact count with ``includes_template=False``.
+        """
         if not text:
             return ZERO_TOKENS
         n = len(self._tokenizer.encode(text, add_special_tokens=False).ids)
@@ -275,6 +316,17 @@ class CharClassCounter:
     """
 
     def __init__(self, coefficients: dict[str, tuple[float, ...]] | None = None) -> None:
+        """Validate and adopt a weight table.
+
+        Args:
+            coefficients: Role name to seven weights in :data:`CLASS_FEATURES`
+                order. Must include a ``"default"`` row. ``None`` uses
+                :data:`CLASS_COEFFICIENTS`.
+
+        Raises:
+            ValueError: no ``"default"`` row, a row of the wrong length, or a
+                negative weight.
+        """
         table = dict(CLASS_COEFFICIENTS if coefficients is None else coefficients)
         if "default" not in table:
             raise ValueError("coefficients must contain a 'default' row")
@@ -294,14 +346,26 @@ class CharClassCounter:
 
     @property
     def source(self) -> TokenSource:
+        """Always ``"classes"``."""
         return "classes"
 
     @property
     def exact(self) -> bool:
+        """Always False: every count is an estimate."""
         return False
 
     def count(self, text: str, *, role: str | None = None) -> TokenCount:
-        """Estimated token count for ``text`` under ``role``'s weights."""
+        """Estimated token count for ``text`` under ``role``'s weights.
+
+        Args:
+            text: The text to estimate.
+            role: Selects a weight row; an unknown or absent role uses
+                ``"default"``.
+
+        Returns:
+            An inexact count of at least 1 for non-empty text, with
+            ``includes_template=False``. Empty text is :data:`ZERO_TOKENS`.
+        """
         if not text:
             return ZERO_TOKENS
         w = self._coefficients.get(role or "", self._coefficients["default"])
@@ -331,6 +395,15 @@ class CalibrationState:
     Serializable so a session can resume a fit instead of paying the three-turn
     warm-up again. Sums, not samples: the fit is a 2x2 normal-equation solve, so
     the whole history compresses to this regardless of how many turns fed it.
+    With ``n`` messages, ``p`` payload tokens and ``r`` billed tokens per turn:
+
+    Attributes:
+        nn: Sum of ``n*n``.
+        npay: Sum of ``n*p``.
+        pp: Sum of ``p*p``.
+        nr: Sum of ``n*r``.
+        pr: Sum of ``p*r``.
+        count: Turns observed.
     """
 
     nn: float = 0.0
@@ -341,7 +414,11 @@ class CalibrationState:
     count: int = 0
 
     def to_dict(self) -> dict[str, float | int]:
-        """Plain-dict form for persistence."""
+        """Plain-dict form for persistence.
+
+        Returns:
+            The six fields keyed by name; :meth:`from_dict` reverses it.
+        """
         return {
             "nn": self.nn,
             "npay": self.npay,
@@ -353,7 +430,17 @@ class CalibrationState:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CalibrationState:
-        """Rebuild from :meth:`to_dict`. Missing keys are a hard error."""
+        """Rebuild from :meth:`to_dict` output.
+
+        Args:
+            data: A mapping with all six field names; extra keys are ignored.
+
+        Returns:
+            The restored state.
+
+        Raises:
+            ValueError: any of the six keys is missing.
+        """
         missing = {"nn", "npay", "pp", "nr", "pr", "count"} - set(data)
         if missing:
             raise ValueError(f"CalibrationState is missing {sorted(missing)}")
@@ -389,6 +476,12 @@ class ContextCalibrator:
     """
 
     def __init__(self, state: CalibrationState | None = None) -> None:
+        """Start a fit, or resume one.
+
+        Args:
+            state: Sums from a previous calibrator's :attr:`state`; ``None``
+                starts empty. Adopted, not copied: :meth:`observe` mutates it.
+        """
         self._state = state or CalibrationState()
 
     @property
@@ -437,10 +530,13 @@ class ContextCalibrator:
     def solve(self) -> tuple[float, float] | None:
         """The fitted ``(a, r)``, or None while the fit is unusable.
 
-        None means one of: fewer than :data:`CALIBRATION_MIN_OBSERVATIONS` turns
-        seen, a singular system (every observed turn had the same shape), or a
-        multiplier outside :data:`CALIBRATION_SCALE_BOUNDS`. A caller that gets
-        None uses the uncalibrated payload and says so.
+        A negative ``a`` is clamped to 0 and ``r`` refit alone.
+
+        Returns:
+            ``(a, r)``: tokens per message and the payload multiplier. ``None``
+            when fewer than :data:`CALIBRATION_MIN_OBSERVATIONS` turns were seen,
+            the system is singular (every turn had the same shape), or ``r``
+            falls outside :data:`CALIBRATION_SCALE_BOUNDS`.
         """
         s = self._state
         if s.count < CALIBRATION_MIN_OBSERVATIONS:
@@ -462,9 +558,17 @@ class ContextCalibrator:
     def predict(self, *, messages: int, payload: TokenCount) -> TokenCount:
         """What the endpoint will bill for ``messages`` messages costing ``payload``.
 
-        Returns ``payload`` unchanged, with its own provenance, when the fit is not
-        ready — an uncalibrated number that says it is uncalibrated, rather than a
-        calibrated-looking number with nothing behind it.
+        Args:
+            messages: How many messages the request will carry.
+            payload: What a :class:`TextCounter` said those messages cost.
+
+        Returns:
+            A ``"calibrated"`` count including template framing; or ``payload``
+            unchanged, with its own provenance, when the fit is not ready or
+            ``messages`` is 0.
+
+        Raises:
+            ValueError: ``messages`` is negative.
         """
         if messages < 0:
             raise ValueError(f"messages must be >= 0, got {messages}")
@@ -499,6 +603,11 @@ def counter_for(model: Any, *, fallback: bool = False) -> TextCounter:
             silently substituting an estimate would hide a typo in a path behind
             a plausible number. True downgrades to the class counter, for a
             display that must render something rather than crash a UI thread.
+
+    Returns:
+        A :class:`TokenizerCounter` (memoized per tokenizer spec; a ``.json``
+        suffix loads a file, anything else the hub), else a
+        :class:`CharClassCounter`.
 
     Raises:
         TokenizerUnavailable: ``model.tokenizer`` is set, ``fallback`` is False,

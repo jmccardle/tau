@@ -225,7 +225,11 @@ class AssistantMessageEventStream:
         self._collector_task: asyncio.Task[None] | None = None
 
     def __aiter__(self) -> "AssistantMessageEventStream":
-        """Return self as the async iterator."""
+        """Return self as the async iterator.
+
+        Returns:
+            This stream; events come from :meth:`__anext__`.
+        """
         return self
 
     async def _ensure_collector(self) -> None:
