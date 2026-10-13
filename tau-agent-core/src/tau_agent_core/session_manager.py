@@ -78,10 +78,17 @@ class SessionInfo:
 
 @agent_facing(topic="sessions")
 class SessionManager:
-    """File-level session management.
+    """File-level session management: JSONL persistence of one active session's tree.
 
-    Handles JSONL session persistence with tree structure,
-    entry types, and session operations.
+    Holds a position (the active entry) that appends parent to by default.
+
+    Args:
+        cwd: Working directory recorded in new sessions; ``None`` uses the
+            process's current directory.
+        sessions_dir: Where session files go; ``None`` uses ``<cwd>/.tau/sessions``.
+
+    Attributes:
+        cwd: The working directory recorded in sessions this manager creates.
     """
 
     def __init__(
@@ -101,15 +108,29 @@ class SessionManager:
 
     @classmethod
     def in_memory(cls, cwd: str | None = None) -> SessionManager:
-        """Create an in-memory session manager (no file persistence)."""
+        """Create an in-memory session manager (no file persistence).
+
+        Args:
+            cwd: As for the constructor.
+
+        Returns:
+            A manager whose entries live in one in-memory list.
+        """
         mgr = cls(cwd)
         mgr._memory_store = []
         return mgr
 
     def new_session(self, model_id: str | None = None) -> str:
-        """Create a new session file. Returns session path.
+        """Start a new session whose root is a ``session`` entry, and make it active.
 
-        Creates a JSONL file with a single session entry as the root.
+        Creates the sessions directory if needed. In in-memory mode no file is
+        written; the returned path is a label only.
+
+        Args:
+            model_id: Model identifier recorded on the root entry.
+
+        Returns:
+            The new session's path.
         """
         if not os.path.exists(self._sessions_dir):
             os.makedirs(self._sessions_dir, exist_ok=True)
@@ -141,7 +162,19 @@ class SessionManager:
     def load(self, session_path: str) -> SessionState:
         """Load a session from a JSONL file.
 
-        Reads all entries from the file and returns a SessionState.
+        When the first entry is a ``session`` entry, the file becomes the active
+        session and its metadata is copied into the state. The active entry is
+        then that root entry, not the newest one.
+
+        Args:
+            session_path: The JSONL file to read.
+
+        Returns:
+            The session's entries and metadata.
+
+        Raises:
+            OSError: The file cannot be read.
+            json.JSONDecodeError: A line is not JSON.
         """
         entries = self._read_file(session_path)
         state = SessionState(
@@ -165,16 +198,31 @@ class SessionManager:
         return state
 
     def save(self, state: SessionState) -> None:
-        """Save session state — append new entries to the session file."""
+        """Append every entry in ``state.entries`` to ``state.session_path``.
+
+        Not a diff: entries already in the file are written again. Does nothing
+        when ``session_path`` is empty.
+
+        Args:
+            state: The entries to write and the file to write them to.
+        """
         if state.session_path:
             with open(state.session_path, "a") as f:
                 for entry in state.entries:
                     f.write(json.dumps(entry) + "\n")
 
     def append_entry(self, entry: dict) -> str:
-        """Append a JSONL entry to the current session file.
+        """Append an entry to the active session and make it the active entry.
 
-        Returns the entry's id.
+        Fills a missing ``id`` (UUID hex), ``timestamp`` (ms since epoch) and
+        ``parent_id`` (the current active entry), mutating ``entry``. With no
+        active session and no in-memory store, nothing is written.
+
+        Args:
+            entry: The entry dict to append.
+
+        Returns:
+            The entry's id.
         """
         entry_id: str = entry.get("id", uuid.uuid4().hex)
         entry["id"] = entry_id
@@ -195,9 +243,12 @@ class SessionManager:
     def get_active_messages(self) -> list[dict]:
         """Get messages for the current active path (tree-aware).
 
-        Returns messages by following the parent_id chain from the
-        current active_entry_id back to root, skipping compacted entries
-        and including compaction summaries.
+        Follows the ``parent_id`` chain from the active entry back to the root.
+
+        Returns:
+            The ``message`` entries' payloads, root first. If the path holds a
+            compaction, the newest one leads as a user message carrying its
+            summary, followed by the path from its ``first_kept_id`` on.
         """
         entries = self._get_entries()
         if not entries:
@@ -279,17 +330,24 @@ class SessionManager:
         )
 
     def list_sessions(self) -> list[SessionInfo]:
-        """List sessions for the current working directory.
+        """List the sessions in this manager's sessions directory.
 
-        Returns sessions sorted by creation timestamp (newest first).
+        Named ``list_sessions`` rather than ``list`` so it does not shadow the
+        builtin in this module's annotations.
 
-        Note: named ``list_sessions`` rather than ``list`` so it does not
-        shadow the builtin ``list`` in this module's annotations.
+        Returns:
+            Sessions newest first by creation time; unreadable files are skipped.
         """
         return self._list_sessions_from_dir(self._sessions_dir)
 
     def list_all(self) -> list[SessionInfo]:
-        """List all sessions across all directories."""
+        """List sessions; currently identical to :meth:`list_sessions`.
+
+        Despite the name it reads only this manager's sessions directory.
+
+        Returns:
+            Sessions newest first by creation time.
+        """
         return self._list_sessions_from_dir(self._sessions_dir)
 
     def _list_sessions_from_dir(self, sessions_dir: str) -> list[SessionInfo]:
@@ -428,10 +486,20 @@ class SessionManager:
         return new_session_path
 
     def clone(self, entry_id: str) -> str:
-        """Duplicate the active path at entry_id into a new session.
+        """Duplicate the path to ``entry_id`` into a new session file.
+
+        Only ``message`` and ``compaction`` entries on the path are copied, under
+        a fresh root ``session`` entry. The active session is unchanged.
+
+        Args:
+            entry_id: The entry whose path (root to it) is copied.
 
         Returns:
             Path to the new session file.
+
+        Raises:
+            RuntimeError: There is no active session.
+            ValueError: ``entry_id`` is not in the active session.
         """
         if not self._active_session_path:
             raise RuntimeError("No active session")
@@ -466,10 +534,17 @@ class SessionManager:
         return new_session_path
 
     def navigate(self, entry_id: str | None) -> SessionState:
-        """Navigate to a specific entry in the tree.
+        """Make ``entry_id`` the active entry, where later appends will parent.
 
-        Updates the active entry ID and returns the session state
-        at that position.
+        Args:
+            entry_id: The entry to move to; ``None`` clears the position.
+
+        Returns:
+            All entries plus the first ``session`` entry's metadata, with
+            ``active_entry_id`` set to ``entry_id``.
+
+        Raises:
+            KeyError: ``entry_id`` is not in a non-empty session.
         """
         entries = self._get_entries()
 
@@ -705,24 +780,28 @@ async def summarize_branch(
 ) -> tuple[str, dict[str, int]]:
     """Summarize an abandoned branch's text into a concise summary.
 
-    The summarizer engine behind the tree-browser's "Summarize" modes. ``branch_text``
-    is produced by ``ConversationTree.subtree_text`` (§2.1) and passed in; the caller
-    (``tree_ops.summarize_and_navigate``, §3.3) then persists the result as a
-    ``branch_summary`` entry. Mode 3's ``custom_instructions`` are threaded into the
-    summarizer's SYSTEM prompt.
+    The engine behind the tree-browser's "Summarize" modes; the caller
+    (``tree_ops.summarize_and_navigate``) persists the result as a
+    ``branch_summary`` entry. Fail-Early: a failed, aborted or empty response
+    raises; no summary is fabricated from raw text.
 
-    Fail-Early (§3.1): the previous truncated-raw-text fallback is GONE — a failed,
-    aborted, or empty LLM response RAISES rather than fabricating a summary from raw
-    text. No branch-summary is ever silently invented.
-
-    ``on_text_delta`` is called with each fragment as the summary arrives, so a head
-    can show the wait instead of a frozen modal (docs/STREAMING-SIDE-WORK.md). ``None``
-    keeps the collapsed path.
+    Args:
+        branch_text: The branch as text, from ``ConversationTree.subtree_text``.
+        model: The ``Model`` to summarize with; a bare name raises, since no
+            resolver is passed.
+        api_key: API key for the call; ``None`` passes no key option.
+        custom_instructions: Extra focus appended to the system prompt (mode 3).
+        on_text_delta: Called with each fragment as the summary streams, so a head
+            can show progress (docs/STREAMING-SIDE-WORK.md); ``None`` for none.
 
     Returns:
-        ``(summary, usage)`` — the text AND what producing it cost. This is a real LLM
-        call made outside the agent loop, so nothing else can observe its tokens; if it
-        does not report them, they go uncounted (see :mod:`tau_agent_core.usage`).
+        ``(summary, usage)``. The call runs outside the agent loop, so this usage
+        is the only record of its tokens (see :mod:`tau_agent_core.usage`).
+
+    Raises:
+        ValueError: ``branch_text`` is empty or whitespace.
+        RuntimeError: ``model`` is a name, or the completion failed or returned
+            no text.
 
     Reference: SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3.
     """

@@ -41,7 +41,11 @@ class SessionLog(Protocol):
         ...
 
     def entries(self) -> list[dict[str, Any]]:
-        """Every entry of every branch, in append order; a copy the caller may mutate."""
+        """Every entry of every branch, in append order.
+
+        Returns:
+            A copy the caller may mutate.
+        """
         ...
 
     async def append_at(
@@ -53,6 +57,14 @@ class SessionLog(Protocol):
         """Write one entry parented at ``parent_id`` and return its new id.
 
         The entry's ``timestamp`` is :func:`event_iso` of ``payload``.
+
+        Args:
+            parent_id: The parent entry's id; ``None`` starts a new root.
+            entry_type: The entry's ``type``.
+            payload: The entry's remaining fields, merged into it.
+
+        Returns:
+            The new entry's id.
 
         Raises:
             ValueError: ``parent_id`` is not ``None`` and names no entry.
@@ -67,6 +79,10 @@ class SessionLog(Protocol):
         entry's ``timestamp`` becomes :func:`event_iso` of it. A store that appends
         lines writes a second line with the same id, and its loader keeps the last.
 
+        Args:
+            entry_id: The incomplete entry to finalize.
+            payload: Its finished fields, replacing the old payload.
+
         Raises:
             ValueError: ``entry_id`` names no entry, or one that is not incomplete.
         """
@@ -79,7 +95,14 @@ INCOMPLETE = "incomplete"
 
 @agent_facing(topic="sessions")
 def is_incomplete(entry: dict[str, Any]) -> bool:
-    """Whether ``entry`` was opened and never finalized: an interrupted message."""
+    """Whether ``entry`` was opened and never finalized: an interrupted message.
+
+    Args:
+        entry: A log entry.
+
+    Returns:
+        True when its ``status`` is :data:`INCOMPLETE`.
+    """
     return entry.get("status") == INCOMPLETE
 
 
@@ -154,6 +177,12 @@ def session_name(entries: list[dict[str, Any]]) -> str | None:
 
     Append order, not ancestry: a name belongs to the session, not to a position
     in it, so renaming from any branch renames the whole session.
+
+    Args:
+        entries: A log's entries in append order.
+
+    Returns:
+        The name, or ``None`` if never named or the newest name is empty.
     """
     for entry in reversed(entries):
         if entry.get("type") == "session_info":
@@ -262,8 +291,15 @@ def config_entry_at(entries: list[dict[str, Any]], leaf_id: str | None) -> str |
     """The id of the nearest config-setting entry on ``leaf_id``'s path, or ``None``.
 
     What a splice anchor's ``configId`` records (TREE-BROWSER-AS-EDITOR.md §8.3):
-    the frame in force over the span it covers. ``None`` is a real answer — a log
-    no head configured has no such entry.
+    the frame in force over the span it covers.
+
+    Args:
+        entries: A log's entries.
+        leaf_id: The position to read at; ``None`` reads nothing.
+
+    Returns:
+        The entry id, or ``None`` — a real answer: a log no head configured has
+        no config entry.
     """
     for entry in reversed(_ancestry(entries, leaf_id)):
         if _config_of(entry):
@@ -424,6 +460,9 @@ class InMemorySessionLog:
     Entries are byte-shaped like the file store's (camelCase ``parentId``,
     8-hex ids), so :class:`~tau_agent_core.conversation_tree.ConversationTree`
     folds both the same way. A fresh log has no entries.
+
+    Args:
+        id: The session id; ``None`` mints a random UUID hex.
     """
 
     def __init__(self, id: str | None = None) -> None:
@@ -433,9 +472,15 @@ class InMemorySessionLog:
 
     @property
     def id(self) -> str:
+        """The session id given at construction, or the one minted then."""
         return self._id
 
     def entries(self) -> list[dict[str, Any]]:
+        """Every entry of every branch, in append order.
+
+        Returns:
+            A deep copy the caller may mutate.
+        """
         return copy.deepcopy(self._entries)
 
     async def append_at(
@@ -444,6 +489,19 @@ class InMemorySessionLog:
         entry_type: str,
         payload: dict[str, Any],
     ) -> str:
+        """Write one entry parented at ``parent_id``; :meth:`append_at_now` as a coroutine.
+
+        Args:
+            parent_id: The parent entry's id; ``None`` starts a new root.
+            entry_type: The entry's ``type``.
+            payload: The entry's remaining fields, merged into it.
+
+        Returns:
+            The new entry's 8-hex id.
+
+        Raises:
+            ValueError: ``parent_id`` is not ``None`` and names no entry.
+        """
         return self.append_at_now(parent_id, entry_type, payload)
 
     def append_at_now(self, parent_id: str | None, entry_type: str, payload: dict[str, Any]) -> str:
@@ -451,6 +509,17 @@ class InMemorySessionLog:
 
         A catalog's synchronous ``create`` writes a new session's opening chain
         through this; nothing else should need it.
+
+        Args:
+            parent_id: The parent entry's id; ``None`` starts a new root.
+            entry_type: The entry's ``type``.
+            payload: The entry's remaining fields, merged into it.
+
+        Returns:
+            The new entry's 8-hex id.
+
+        Raises:
+            ValueError: ``parent_id`` is not ``None`` and names no entry.
         """
         if parent_id is not None and parent_id not in self._ids:
             raise ValueError(f"append parent {parent_id!r} not found")
@@ -466,6 +535,16 @@ class InMemorySessionLog:
         return str(entry["id"])
 
     async def finalize(self, entry_id: str, payload: dict[str, Any]) -> None:
+        """Replace an incomplete entry's payload in place (see :meth:`SessionLog.finalize`).
+
+        Args:
+            entry_id: The incomplete entry to finalize.
+            payload: Its finished fields, replacing the old payload.
+
+        Raises:
+            ValueError: ``entry_id`` names no entry, the entry is not incomplete,
+                or ``payload`` sets a ``status``.
+        """
         for index, entry in enumerate(self._entries):
             if entry["id"] == entry_id:
                 self._entries[index] = finalized_entry(entry, payload, _now_iso)

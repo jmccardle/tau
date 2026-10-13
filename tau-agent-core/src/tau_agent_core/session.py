@@ -49,13 +49,12 @@ class SessionState(BaseModel):
 
 @agent_facing(topic="sessions")
 class SessionInfo(BaseModel):
-    """Session metadata and info.
-
-    Lightweight info about a session, used for listing and display.
-    Does not include the full session contents.
+    """Lightweight session metadata for listing and display; no session contents.
 
     Attributes:
-        id: Session identifier (optional, auto-generated if not provided)
+        model_config: Pydantic config: unknown fields are accepted and kept.
+        id: Session identifier; empty when not given (nothing generates one).
+        name: Human-readable session name, or ``None``.
         session_path: Path to the JSONL session file
         cwd: Working directory for this session
         model: Model identifier used for this session
@@ -85,9 +84,20 @@ class SessionInfo(BaseModel):
 
 @agent_facing(topic="sessions")
 class SessionEntry(BaseModel):
-    """Root session entry.
+    """Root session entry: the first line of a ``SessionManager`` JSONL file.
 
     Reference: SUBPHASE-0.0.md, "6. Session Entry JSON Schema" section.
+
+    Attributes:
+        id: Entry id.
+        type: The entry kind discriminator, fixed for this class.
+        timestamp: Write time, ms since epoch.
+        parent_id: The parent entry's id; ``None`` at the root.
+        model: Model identifier the session was created with.
+        model_name: Human-readable model name.
+        cwd: Working directory the session was created in.
+        system_prompt: System prompt text.
+        session_name: Human-readable session name.
     """
 
     id: str
@@ -106,6 +116,13 @@ class MessageEntry(BaseModel):
     """Message entry: stores a single message.
 
     Reference: SUBPHASE-0.0.md, "6. Session Entry JSON Schema" section.
+
+    Attributes:
+        id: Entry id.
+        type: The entry kind discriminator, fixed for this class.
+        timestamp: Write time, ms since epoch.
+        parent_id: The parent entry's id; ``None`` at the root.
+        message: The message dict (``role``, ``content``, ...).
     """
 
     id: str
@@ -120,6 +137,16 @@ class ToolResultEntry(BaseModel):
     """Tool result entry: stores tool execution result.
 
     Reference: SUBPHASE-0.0.md, "6. Session Entry JSON Schema" section.
+
+    Attributes:
+        id: Entry id.
+        type: The entry kind discriminator, fixed for this class.
+        timestamp: Write time, ms since epoch.
+        parent_id: The parent entry's id; ``None`` at the root.
+        tool_call_id: Id of the tool call this result answers.
+        tool_name: Name of the tool that ran.
+        content: The result's content blocks.
+        is_error: Whether the tool reported failure.
     """
 
     id: str
@@ -137,6 +164,14 @@ class CustomMessageEntry(BaseModel):
     """Custom message entry: extension-generated messages.
 
     Reference: SUBPHASE-0.0.md, "6. Session Entry JSON Schema" section.
+
+    Attributes:
+        id: Entry id.
+        type: The entry kind discriminator, fixed for this class.
+        timestamp: Write time, ms since epoch.
+        parent_id: The parent entry's id; ``None`` at the root.
+        custom_type: The extension-defined kind of message.
+        message: The message dict.
     """
 
     id: str
@@ -152,6 +187,17 @@ class CompactionEntry(BaseModel):
     """Compaction entry: records session compaction.
 
     Reference: SUBPHASE-0.0.md, "6. Session Entry JSON Schema" section.
+
+    Attributes:
+        id: Entry id.
+        type: The entry kind discriminator, fixed for this class.
+        timestamp: Write time, ms since epoch.
+        parent_id: The parent entry's id; ``None`` at the root.
+        first_kept_id: Id of the first entry kept in full; the path before it
+            is replaced by ``summary`` when read.
+        summary: The summary text standing in for the compacted prefix.
+        tokens_saved: Estimated tokens saved; metadata only.
+        compacted_entries: Ids the summary replaced; metadata only.
     """
 
     id: str
