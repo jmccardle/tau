@@ -37,7 +37,12 @@ from tau_agent_core.events import (
     SideCompletionPurpose,
     SideCompletionReason,
 )
-from tau_agent_core.extension_types import BranchResult, ExtensionAPI, validate_form_values
+from tau_agent_core.extension_types import (
+    BranchResult,
+    ExtensionAPI,
+    ExtensionContext,
+    validate_form_values,
+)
 from tau_agent_core.extension_locks import (
     RESPONSE_ENTRY_TYPE,
     ExtensionRequest,
@@ -4348,6 +4353,9 @@ class AgentSession:
         Returns:
             An ExtensionAPI bound to this session, its event bus, and registry.
         """
+        if context is None:
+            # The session's cwd, where built-in tools resolve paths; "." is the process cwd.
+            context = ExtensionContext(cwd=self._cwd)
         return ExtensionAPI(
             session=self,
             event_bus=self._events,
