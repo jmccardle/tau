@@ -76,21 +76,29 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 class PromptLatencySample:
     """One ``prompt()`` call, timed and classified.
 
-    Durations come from ``AgentEvent.timestamp`` (milliseconds, stamped by the
-    emitting site) rather than from a clock read in this module, so the sample is
-    measured on the same time base as every other agent-tier stage §9 asks for.
+    Times are ``AgentEvent.timestamp`` values (milliseconds, stamped by the
+    emitting site), not a clock read here, so the sample shares the time base of
+    every other agent-tier stage §9 asks for.
+
+    Attributes:
+        index: Position of this sample in its collector, from 0.
+        started_ms: Timestamp of the first event seen inside the prompt window.
+        ended_ms: Timestamp of the last event seen inside the prompt window.
+        total_ms: Wall span of the whole ``prompt()``, first event to last.
+        bare_bracket_ms: How much of ``total_ms`` sits inside bare brackets.
+        bare_brackets: Bare ``agent_start``/``agent_end`` pairs seen during this
+            prompt; may exceed 1 (see the module docstring).
+        compactions_committed: ``compaction`` entries the session log gained
+            during this prompt.
+        event_types: ``AgentEvent.type`` of every event in the window, in order.
     """
 
     index: int
     started_ms: int
     ended_ms: int
-    #: Wall span of the whole ``prompt()``, first event to last.
     total_ms: int
-    #: How much of ``total_ms`` sits inside bare brackets.
     bare_bracket_ms: int
-    #: Bare ``agent_start``/``agent_end`` pairs seen during this prompt.
     bare_brackets: int
-    #: ``compaction`` entries the session log gained during this prompt.
     compactions_committed: int
     event_types: tuple[str, ...]
 
@@ -115,8 +123,14 @@ def _nearest_rank(sorted_values: list[int], quantile: float) -> int:
 def summarize(values: list[int]) -> dict[str, Any]:
     """§9's shape: ``median/p90/p99/max, never a single number``.
 
-    An empty population reports ``{"n": 0}`` and nothing else. A fabricated zero
-    median for a population with no members is a value that reads as a measurement.
+    Quantiles are nearest-rank, so every figure is an observed value.
+
+    Args:
+        values: The population, in milliseconds; order does not matter.
+
+    Returns:
+        ``{"n", "median", "p90", "p99", "max"}``, or just ``{"n": 0}`` for an
+        empty population — a zero median there would read as a measurement.
     """
     if not values:
         return {"n": 0}
@@ -170,6 +184,14 @@ class PromptLatencyCollector:
 
     The collector subscribes for its lifetime; call :meth:`close` (or use it as a
     context manager) to unsubscribe.
+
+    Args:
+        session: The session to subscribe to; its ``session_log`` is read for
+            committed ``compaction`` entries.
+
+    Attributes:
+        bare_brackets_outside_prompt: Bare bracket pairs seen while no
+            :meth:`prompt` window was open; counted, never sampled.
     """
 
     def __init__(self, session: AgentSession) -> None:
@@ -190,9 +212,20 @@ class PromptLatencyCollector:
             self._unsubscribe = None  # type: ignore[assignment]
 
     def __enter__(self) -> PromptLatencyCollector:
+        """Enter the context; the subscription already began in ``__init__``.
+
+        Returns:
+            This collector.
+        """
         return self
 
     def __exit__(self, *exc: object) -> None:
+        """Unsubscribe via :meth:`close`.
+
+        Args:
+            exc: The exception triple, ignored; an exception in the block
+                propagates.
+        """
         self.close()
 
     # ── the event side ────────────────────────────────────────────────────
@@ -245,10 +278,16 @@ class PromptLatencyCollector:
     def prompt(self) -> Iterator[None]:
         """Bracket one ``prompt()`` call. Records a sample even if it raises.
 
-        A prompt that raised still consumed time and may still have carried a
-        compaction (``_maybe_auto_compact`` emits its ``agent_end`` from a
-        ``finally`` and then propagates), so dropping the sample would delete
-        exactly the observations the exclusion exists to catch.
+        A prompt that raised may still have carried a compaction
+        (``_maybe_auto_compact`` emits its ``agent_end`` from a ``finally``), so
+        dropping its sample would delete what the exclusion exists to catch. A
+        window that saw no events at all records no sample.
+
+        Returns:
+            A context manager yielding ``None``; the sample is appended on exit.
+
+        Raises:
+            RuntimeError: a window is already open on this collector.
         """
         if self._window is not None:
             raise RuntimeError(
@@ -305,10 +344,16 @@ class PromptLatencyCollector:
     def to_latency_json(self) -> dict[str, Any]:
         """The ``latency.json`` fragment for §5.2's headline number.
 
-        Two named populations and no union. There is deliberately no ``"all"`` key
-        and no method that computes one: a pooled assembled-turn-latency figure over
-        compacting and non-compacting prompts is the §9 rule 1 failure this module
-        exists to make unavailable.
+        Deliberately has no ``"all"`` key: a pooled figure over compacting and
+        non-compacting prompts is the §9 rule 1 failure this module exists to
+        make unavailable.
+
+        Returns:
+            ``unit``; ``assembled_turn_latency``, a :func:`summarize` block for the
+            clean prompts and for the compaction-bearing ones (all, committed,
+            uncommitted); ``counts`` per population plus
+            ``bare_brackets_outside_prompt``; ``compaction_bearing_prompt_indexes``;
+            and ``marker``, describing the rule and its known error modes.
 
         Raises:
             RuntimeError: the bracket marker did not hold on this stream. The
