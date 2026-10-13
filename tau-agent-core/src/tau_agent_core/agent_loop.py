@@ -72,15 +72,31 @@ class TurnWriter(Protocol):
     """
 
     async def open(self, message: dict[str, Any]) -> Any:
-        """Record that an assistant message has started; return a handle for :meth:`finalize`."""
+        """Record that an assistant message has started.
+
+        Args:
+            message: The empty assistant message dict, before any content streams.
+
+        Returns:
+            An opaque handle the loop passes back to :meth:`finalize`.
+        """
         ...
 
     async def finalize(self, handle: Any, message: Any) -> None:
-        """Complete the message :meth:`open` started."""
+        """Complete the message :meth:`open` started.
+
+        Args:
+            handle: What :meth:`open` returned for this message.
+            message: The finished assistant message.
+        """
         ...
 
     async def append(self, message: Any) -> None:
-        """Write a message that is finished when it exists: a tool result, a steer, a node."""
+        """Write a message that is finished when it exists: a tool result, a steer, a node.
+
+        Args:
+            message: The finished message, a dict or a pydantic message model.
+        """
         ...
 
 
@@ -88,10 +104,13 @@ class TurnWriter(Protocol):
 class BlockedCall:
     """A tool call that was blocked (e.g., argument validation failed).
 
-    ``blocked_by_extension`` names the extension that VETOED the call via a
-    ``tool_call`` hook (S50, anchor G11); it is ``None`` for a block that is NOT an
-    extension veto (argument-validation failure, fail-closed handler throw) — those
-    stay a generic errored result rather than the "⛔ blocked by <ext>" render.
+    Attributes:
+        call: The prepared call that will not run.
+        error: Why it was blocked; becomes the call's error result text.
+        blocked_by_extension: The extension that vetoed the call via a
+            ``tool_call`` hook (S50, anchor G11). ``None`` for any other block
+            (argument-validation failure, fail-closed handler throw), which
+            renders as a generic errored result, not "⛔ blocked by <ext>".
     """
 
     def __init__(
@@ -104,14 +123,24 @@ class BlockedCall:
 
 @agent_facing(topic="agent-loop")
 class ErrorCall:
-    """A tool call whose preparation raised ``exception``."""
+    """A tool call whose preparation raised ``exception``.
+
+    Attributes:
+        call: The prepared call that failed.
+        exception: What its preparation raised.
+    """
 
     def __init__(self, call: PreparedToolCall, exception: Exception) -> None:
         self.call = call
         self.exception = exception
 
     def result(self) -> AgentToolResult:
-        """The call's result, by :meth:`AgentToolResult.from_exception`."""
+        """Build the call's error result.
+
+        Returns:
+            :meth:`AgentToolResult.from_exception` over the call's name, id and
+            ``exception``.
+        """
         return AgentToolResult.from_exception(self.call.name, self.exception, self.call.id)
 
 
@@ -136,46 +165,50 @@ COMPLETED_MESSAGES_ATTR = "tau_completed_messages"
 def completed_messages(exc: BaseException) -> list[Any]:
     """The messages an agent-loop run had already completed when *exc* ended it.
 
-    Empty for any other exception, so a caller can ask unconditionally. The
-    caller that matters is
+    The caller that matters is
     :meth:`~tau_agent_core.agent_session.AgentSession._run_one_turn`, which
-    persists these before re-raising — the requirement in docs/PLAN-0.9.4.md §3:
-    *every complete message or tool result should be persisted*.
+    persists these before re-raising (docs/PLAN-0.9.4.md §3).
+
+    Args:
+        exc: Any exception; only one raised out of an agent-loop run carries
+            messages.
+
+    Returns:
+        A copy of the completed messages, or an empty list for any other
+        exception, so a caller can ask unconditionally.
     """
     return list(getattr(exc, COMPLETED_MESSAGES_ATTR, []))
 
 
 @agent_facing(topic="agent-loop")
 class AgentLoop:
-    """The core agent loop.
-
-    Drives conversations, executes tools, and emits events.
+    """The core agent loop: drives conversations, executes tools, emits events.
 
     Reference: PHASE-2-SUBPHASE-1.md, "Implementation Outline" section.
     Reference: SUBPHASE-0.0.md, "5. Agent Events" section.
 
-    Attributes:
+    Args:
         config: Agent loop configuration.
-        emit: Callback to emit AgentEvents (fire-and-forget; returns None).
-        _turn_index: Current turn counter.
-        _tools: Mapping of tool names to AgentTool instances.
-        _hook_dispatcher: The return-collecting extension hook dispatcher
-            (an :class:`~tau_agent_core.extensions.runner.ExtensionRunner`),
-            injected by :class:`~tau_agent_core.agent_session.AgentSession`.
-            Unlike ``emit`` (fire-and-forget), its ``emit_*`` methods return
-            results that the mutating-hook call-sites thread forward. ``None``
-            when the loop runs standalone (no session / no extensions).
-        _steer_queue: The session's live steering queue — the delivery point for
-            ``multitask_strategy="steer"`` (docs/SUBMISSION-LIFECYCLE.md phase 4;
-            pi ``agent-loop.ts:166-186``). The LIST OBJECT itself is shared with
-            :class:`~tau_agent_core.agent_session.AgentSession` rather than a
-            drain callback, deliberately: the loop must both PEEK (to decide
-            whether a would-be-final turn takes one more LLM call) and DRAIN
-            (immediately before the call that carries the content), and a
-            drain-only seam forces the loop to hold drained content in a local
-            that a ``max_turns`` exit would strand. Sharing the list means
-            nothing leaves the queue until the very statement that delivers it.
-            ``None`` when the loop runs standalone (no session).
+        emit: Awaited with each AgentEvent; ``None`` emits nothing.
+        tools: The tools the model may call, keyed by name (a later duplicate
+            name wins).
+        model: Overrides ``config.model`` when truthy.
+        abort_signal: Checked between turns and passed to the stream and tools;
+            ``None`` means the run cannot be aborted.
+        hook_dispatcher: The return-collecting extension hook dispatcher, whose
+            ``emit_*`` results the mutating-hook call-sites thread forward.
+            ``None`` when standalone: no hook work at all.
+        steer_queue: The session's live steering queue (docs/SUBMISSION-LIFECYCLE.md
+            phase 4). The list object itself is shared, not a drain callback, so
+            the loop can peek before a would-be-final turn and drain only in the
+            statement that delivers; a ``max_turns`` exit strands nothing.
+        mid_turn_compactor: Offered the context at each turn boundary; see
+            :data:`MidTurnCompactor`. ``None`` never compacts mid-turn.
+        writer: Where each message is written as it exists; ``None`` writes
+            nothing and the loop only returns what it produced.
+
+    Attributes:
+        config: The configuration passed in.
     """
 
     def __init__(
@@ -220,10 +253,14 @@ class AgentLoop:
     def has_hook_handlers(self, event: str) -> bool:
         """Whether any extension has a handler for the mutating hook ``event``.
 
-        The zero-extension fast path (pi ``agent-session.ts:407-411``): the four
-        hook call-sites (S11-S14) call this before dispatching so a session with
-        no extensions — or a standalone loop with no injected dispatcher — does
-        no hook work at all. Returns ``False`` when no dispatcher was injected.
+        The zero-extension fast path: the hook call-sites (S11-S14) check this
+        before dispatching, so a loop with no extensions does no hook work.
+
+        Args:
+            event: The hook name.
+
+        Returns:
+            True if a dispatcher was injected and has a handler for ``event``.
         """
         return self._hook_dispatcher is not None and self._hook_dispatcher.has_handlers(event)
 

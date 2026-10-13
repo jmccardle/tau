@@ -289,25 +289,23 @@ class ExtensionCapabilityError(Exception):
 class LoadedExtension:
     """A successfully loaded extension.
 
-    Narrowed port of pi's ``Extension`` record (coding-agent types.ts:1577) to
-    what S1 needs: the source ``path``, the module-level ``register`` factory
-    that was invoked, and the ``ExtensionAPI`` it registered against.
+    Narrowed port of pi's ``Extension`` record (coding-agent types.ts:1577).
+    The hash and bus fields are H7/H8's addition (SIM_SPEC_v2 §16.6/§16.10).
 
-    ``config_schema`` is the extension's own ``CONFIG_SCHEMA`` module attribute,
-    normalized by :func:`~tau_agent_core.extension_types.validate_form_spec` at
-    load — the declaration that lets a head render a settings screen for keys
-    only the extension knows. ``None`` means the module declared none, which is
-    every extension written before the attribute existed.
-
-    ``content_hash``, ``subjects`` and ``touches_bus`` are H7/H8's addition
-    (SIM_SPEC_v2 §16.6/§16.10): the file's identity at load time, and its
-    declared bus subjects, if any. ``content_hash`` is a sha256 of the exact
-    bytes compiled — the same source read used to ``exec`` the module — so two
-    loads of the same path at different contents produce different hashes and
-    are never mistaken for one condition (the pattern §15.1's ``producer``,
-    ``Trace.arm``, and H5's compaction policy already established for this
-    program: a configuration that changes what a number means is a mandatory
-    partition key).
+    Attributes:
+        path: The source file it was loaded from.
+        register: The module-level ``register`` function that was invoked.
+        api: The ``ExtensionAPI`` it registered against.
+        content_hash: Hex sha256 of the exact bytes compiled, so two loads of
+            one path at different contents are never mistaken for one
+            condition.
+        subjects: The bus subjects the module's ``SUBJECTS`` declared; ``()``
+            unless ``touches_bus``.
+        touches_bus: The module's ``TOUCHES_BUS`` declaration.
+        config_schema: The module's ``CONFIG_SCHEMA`` normalized by
+            :func:`~tau_agent_core.extension_types.validate_form_spec` to
+            ``{"title", "fields"}``, so a head can render a settings screen.
+            ``None`` if the module declared none.
     """
 
     path: str
@@ -322,7 +320,12 @@ class LoadedExtension:
 @agent_facing(topic="extensions")
 @dataclass
 class ExtensionLoadError:
-    """A discovered extension that failed to load (pi types.ts:1590 errors[])."""
+    """A discovered extension that failed to load (pi types.ts:1590 errors[]).
+
+    Attributes:
+        path: The extension file that failed.
+        error: The exception's message.
+    """
 
     path: str
     error: str
@@ -335,6 +338,11 @@ class LoadExtensionsResult:
 
     Reference: pi agent/../types.ts:1590. The ``runtime`` field is intentionally
     omitted until the API is bound to the live session (E1/S3).
+
+    Attributes:
+        extensions: The extensions that loaded, in load order.
+        errors: The extensions that failed to load and were collected rather
+            than raised.
     """
 
     extensions: list[LoadedExtension] = field(default_factory=list)
@@ -346,16 +354,19 @@ class LoadExtensionsResult:
 class ExtensionInfo:
     """Read-only summary of one loaded extension for the ``/extensions`` surface.
 
-    Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). Carries an extension's
-    display ``name``, source ``path``, and the ``tools`` / ``commands`` /
-    ``shortcuts`` / ``hooks`` it registered — everything the palette listing shows
-    for a loaded extension (shortcuts E10 §6 / S69).
+    Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34); shortcuts E10 §6 / S69.
 
-    ``content_hash`` and ``subjects`` are H7's addition (SIM_SPEC_v2 §16.6): the
-    file's identity at load time and its declared bus subjects (``()`` for an
-    extension that does not touch the bus). This is the pair
-    :func:`~tau_agent_core.run_manifest.build_run_manifest` emits into
-    ``manifest.json`` beside ``harness`` and ``compaction``.
+    Attributes:
+        name: The display name: the file's stem.
+        path: The source file.
+        tools: Names of the tools it registered.
+        commands: Names of the commands it registered.
+        shortcuts: The shortcuts it registered.
+        hooks: The hook events it handles, sorted.
+        content_hash: Hex sha256 of the source at load time (H7, SIM_SPEC_v2
+            §16.6); :func:`~tau_agent_core.run_manifest.build_run_manifest`
+            writes it, with ``subjects``, into ``manifest.json``.
+        subjects: Its declared bus subjects; ``()`` if it does not touch the bus.
     """
 
     name: str
@@ -370,19 +381,23 @@ class ExtensionInfo:
 
 @agent_facing(topic="extensions")
 def summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]:
-    """Per-extension name/path/tools/commands/hooks from a ``LoadExtensionsResult``.
+    """Summarize each loaded extension for the ``/extensions`` listing.
 
-    Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). The palette (``/extensions``)
-    reads this to list each loaded extension; ``result.errors`` is surfaced
-    alongside by the caller (load failures).
+    Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). Registrations are read
+    from each extension's runner bucket
+    (:class:`~tau_agent_core.extensions.runner.ExtensionHandlers`), the only
+    record of which extension registered what.
 
-    Each loaded extension's ``api`` is bound to its own runner bucket
-    (:class:`~tau_agent_core.extensions.runner.ExtensionHandlers`, labelled by the
-    extension's file path — see ``AgentSession._bind_extension_api`` /
-    ``_standalone_api_factory``), which is the ONLY place that records which
-    extension registered which tool/command/hook. A loaded extension whose api has
-    no bucket is a construction bug, so this raises rather than fabricating an empty
-    listing (Fail-Early).
+    Args:
+        result: The load result. Its ``errors`` are not summarized; the caller
+            surfaces them alongside.
+
+    Returns:
+        One :class:`ExtensionInfo` per loaded extension, in load order.
+
+    Raises:
+        RuntimeError: An extension's api has no runner bucket, a construction
+            bug (Fail-Early, not an empty listing).
     """
     infos: list[ExtensionInfo] = []
     for ext in result.extensions:
@@ -801,7 +816,12 @@ class ContextFileError(RuntimeError):
 @agent_facing(topic="sdk")
 @dataclass(frozen=True)
 class ContextFile:
-    """One discovered context file: its resolved path and its text."""
+    """One discovered context file.
+
+    Attributes:
+        path: The file's canonicalized path.
+        content: Its text, decoded as UTF-8 with any leading BOM dropped.
+    """
 
     path: Path
     content: str
@@ -949,15 +969,20 @@ def load_project_context_files(
     3. ``cwd``'s ``.tau/SYSTEM.md``, τ's own slot (see :data:`TAU_SYSTEM_FILE`).
 
     Deduplicated by resolved path, so running τ from ``~`` does not load the
-    same file as both the agent-dir entry and an ancestor.
+    same file as both the agent-dir entry and an ancestor. The walk to ``/`` is
+    deliberate ("standing instructions in ``~/AGENTS.md``" is a real workflow);
+    :func:`_build_system_prompt` labels every block with its absolute path, and
+    ``--no-context-files`` skips discovery.
 
-    On walking all the way to ``/``: this is pi's behaviour and it is kept
-    deliberately, because "put your standing instructions in ``~/AGENTS.md``" is
-    a real workflow. The cost is a handful of ``stat`` calls per ancestor, once
-    per session — not per turn. The *surprise* is answered by
-    :func:`_build_system_prompt`, which labels every block with the absolute
-    path it came from, so a prompt can never carry instructions whose origin it
-    does not name; and by ``--no-context-files`` for a run that wants none.
+    Args:
+        cwd: Where the ancestor walk starts; ``None`` means the process cwd.
+        agent_dir: The global context directory; ``None`` means ``~/.tau``.
+
+    Returns:
+        The context files in prompt order, weakest first.
+
+    Raises:
+        ContextFileError: A found file could not be read or is not valid UTF-8.
     """
     resolved_cwd = _canonicalize(Path(cwd).expanduser() if cwd else Path(os.getcwd()))
     resolved_agent_dir = _canonicalize(Path(agent_dir or _AGENT_DIR).expanduser())
@@ -1008,14 +1033,18 @@ def append_system_prompt(base: str, sections: list[str] | None) -> str:
     """Append ``--append-system-prompt`` sections to a base system prompt.
 
     Sections augment rather than replace the base (pi ``appendSystemPrompt``,
-    system-prompt.ts:48), joined by blank lines. An empty/absent list returns the
-    base unchanged; an empty base with sections yields just the sections.
+    system-prompt.ts:48). This composes only the base-text slot of
+    :func:`_build_system_prompt`, so the sections land ahead of the project
+    context and the tool list. ``tau_coding_agent.headless`` re-exports it.
 
-    Lives here, beside :func:`_build_system_prompt`, because it composes the
-    *base text* slot and nothing else — the appended sections land ahead of the
-    project context and the tool list, not after them. It was previously a
-    private helper in ``tau_coding_agent.headless`` that three frontends reached
-    across for; ``headless`` re-exports this name so those imports keep working.
+    Args:
+        base: The base system prompt; may be empty.
+        sections: The sections to append, in order; ``None`` or empty appends
+            nothing.
+
+    Returns:
+        ``base`` and the sections joined by blank lines: ``base`` unchanged with
+        no sections, just the sections with an empty ``base``.
     """
     if not sections:
         return base
