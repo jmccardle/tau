@@ -120,6 +120,10 @@ __aiter__() -> 'AssistantMessageEventStream'
 
 Return self as the async iterator.
 
+**Returns**
+
+This stream; events come from :meth:`__anext__`.
+
 ### __anext__
 
 ```python
@@ -198,19 +202,22 @@ Set per-model in ``~/.tau/config.json`` (``models.<name>.compat``).
 
 `tau_llm.compat.Compat.max_tokens_field: MaxTokensField | None`
 
-*No description. This object is marked but undocumented.*
+Which request field carries the completion-token cap.
 
 ### supports_usage_in_streaming
 
 `tau_llm.compat.Compat.supports_usage_in_streaming: bool | None`
 
-*No description. This object is marked but undocumented.*
+Whether to send
+``stream_options.include_usage`` on a streaming request.
 
 ### tool_call_schema
 
 `tau_llm.compat.Compat.tool_call_schema: ToolCallSchema | None`
 
-*No description. This object is marked but undocumented.*
+``"anthropic"`` translates tool calls an
+OpenAI-compatible gateway returns in the Anthropic shape. Never
+detected; only an operator can state it.
 
 ## DoneEvent
 <!-- agent: yes -->
@@ -413,19 +420,19 @@ First non-empty value among ``api_key_env``, or None if none is set.
 
 `tau_llm.compat.ResolvedCompat.max_tokens_field: MaxTokensField`
 
-*No description. This object is marked but undocumented.*
+As :attr:`Compat.max_tokens_field`.
 
 ### supports_usage_in_streaming
 
 `tau_llm.compat.ResolvedCompat.supports_usage_in_streaming: bool`
 
-*No description. This object is marked but undocumented.*
+As :attr:`Compat.supports_usage_in_streaming`.
 
 ### tool_call_schema
 
 `tau_llm.compat.ResolvedCompat.tool_call_schema: ToolCallSchema`
 
-*No description. This object is marked but undocumented.*
+As :attr:`Compat.tool_call_schema`.
 
 ## RetryEvent
 <!-- agent: yes -->
@@ -798,11 +805,14 @@ The compat τ will actually use for ``model``.
 Detection first, then the operator's stated :class:`Compat` over the top,
 field by field — an unset field falls through to the detected value rather
 than to a type default, so stating one quirk never silently resets another.
-Mirrors pi's ``getCompat`` (``openai-completions.ts:1631``).
 
 **Parameters**
 
-- `model: Model` — *(no description)*
+- `model: Model` — The model whose ``base_url`` is detected and whose ``compat`` is applied over the result.
+
+**Returns**
+
+The merged compat; exactly the detected one when ``model.compat`` is ``None``.
 
 ## split_tool_result_content
 <!-- agent: yes -->

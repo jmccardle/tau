@@ -28,7 +28,7 @@ context manager) to unsubscribe.
 
 **Constructor parameters**
 
-- `session: AgentSession` — *(no description)*
+- `session: AgentSession` — The session to subscribe to; its ``session_log`` is read for committed ``compaction`` entries.
 
 ### __enter__
 
@@ -38,7 +38,11 @@ __enter__() -> PromptLatencyCollector
 
 `tau_agent_core.latency.PromptLatencyCollector.__enter__`
 
-*No description. This object is marked but undocumented.*
+Enter the context; the subscription already began in ``__init__``.
+
+**Returns**
+
+This collector.
 
 ### __exit__
 
@@ -48,11 +52,11 @@ __exit__(*exc: object) -> None
 
 `tau_agent_core.latency.PromptLatencyCollector.__exit__`
 
-*No description. This object is marked but undocumented.*
+Unsubscribe via :meth:`close`.
 
 **Parameters**
 
-- `*exc: object` — *(no description)*
+- `*exc: object` — The exception triple, ignored; an exception in the block propagates.
 
 ### anomalies
 
@@ -64,7 +68,8 @@ Structural violations of the bracket marker seen on this stream.
 
 `tau_agent_core.latency.PromptLatencyCollector.bare_brackets_outside_prompt`
 
-*No description. This object is marked but undocumented.*
+Bare bracket pairs seen while no
+:meth:`prompt` window was open; counted, never sampled.
 
 ### close
 
@@ -86,10 +91,18 @@ prompt() -> Iterator[None]
 
 Bracket one ``prompt()`` call. Records a sample even if it raises.
 
-A prompt that raised still consumed time and may still have carried a
-compaction (``_maybe_auto_compact`` emits its ``agent_end`` from a
-``finally`` and then propagates), so dropping the sample would delete
-exactly the observations the exclusion exists to catch.
+A prompt that raised may still have carried a compaction
+(``_maybe_auto_compact`` emits its ``agent_end`` from a ``finally``), so
+dropping its sample would delete what the exclusion exists to catch. A
+window that saw no events at all records no sample.
+
+**Returns**
+
+A context manager yielding ``None``; the sample is appended on exit.
+
+**Raises**
+
+- `RuntimeError` — a window is already open on this collector.
 
 ### samples
 
@@ -107,10 +120,13 @@ to_latency_json() -> dict[str, Any]
 
 The ``latency.json`` fragment for §5.2's headline number.
 
-Two named populations and no union. There is deliberately no ``"all"`` key
-and no method that computes one: a pooled assembled-turn-latency figure over
-compacting and non-compacting prompts is the §9 rule 1 failure this module
-exists to make unavailable.
+Deliberately has no ``"all"`` key: a pooled figure over compacting and
+non-compacting prompts is the §9 rule 1 failure this module exists to
+make unavailable.
+
+**Returns**
+
+``unit``; ``assembled_turn_latency``, a :func:`summarize` block for the clean prompts and for the compaction-bearing ones (all, committed, uncommitted); ``counts`` per population plus ``bare_brackets_outside_prompt``; ``compaction_bearing_prompt_indexes``; and ``marker``, describing the rule and its known error modes.
 
 **Raises**
 
@@ -127,20 +143,20 @@ class PromptLatencySample(index: int, started_ms: int, ended_ms: int, total_ms: 
 
 One ``prompt()`` call, timed and classified.
 
-Durations come from ``AgentEvent.timestamp`` (milliseconds, stamped by the
-emitting site) rather than from a clock read in this module, so the sample is
-measured on the same time base as every other agent-tier stage §9 asks for.
+Times are ``AgentEvent.timestamp`` values (milliseconds, stamped by the
+emitting site), not a clock read here, so the sample shares the time base of
+every other agent-tier stage §9 asks for.
 
 **Constructor parameters**
 
-- `index: int` — *(no description)*
-- `started_ms: int` — *(no description)*
-- `ended_ms: int` — *(no description)*
-- `total_ms: int` — *(no description)*
-- `bare_bracket_ms: int` — *(no description)*
-- `bare_brackets: int` — *(no description)*
-- `compactions_committed: int` — *(no description)*
-- `event_types: tuple[str, ...]` — *(no description)*
+- `index: int` — Position of this sample in its collector, from 0.
+- `started_ms: int` — Timestamp of the first event seen inside the prompt window.
+- `ended_ms: int` — Timestamp of the last event seen inside the prompt window.
+- `total_ms: int` — Wall span of the whole ``prompt()``, first event to last.
+- `bare_bracket_ms: int` — How much of ``total_ms`` sits inside bare brackets.
+- `bare_brackets: int` — Bare ``agent_start``/``agent_end`` pairs seen during this prompt; may exceed 1 (see the module docstring).
+- `compactions_committed: int` — ``compaction`` entries the session log gained during this prompt.
+- `event_types: tuple[str, ...]` — ``AgentEvent.type`` of every event in the window, in order.
 
 ### compaction_bearing
 
@@ -168,7 +184,11 @@ option "leave the default" is removed by there not being one.
 - `harness: str = HARNESS` — the harness identity §5.2 partitions latency by. Defaults to :data:`HARNESS`; a pi-era run records ``"pi"`` and the two are different populations that must never be pooled.
 - `compaction_policy: CompactionPolicy` — the run's declared policy.
 - `extensions: Sequence[Any] | None = None` — the run's loaded extensions, as returned by ``sdk.summarize_extensions()`` (H7, §16.6). ``None`` omits the ``extensions`` key entirely rather than writing an empty list, so a manifest built by a caller that hasn't threaded this through yet is visibly missing the key rather than silently claiming zero extensions loaded.
-- `**extra: Any` — *(no description)*
+- `**extra: Any` — further top-level manifest keys the caller owns (seed, run id, clock origin, DB snapshot id — §9's list). Passed through unchanged and refused if they would shadow a key this function owns.
+
+**Returns**
+
+``harness``, ``compaction`` (the policy's ``to_manifest()``), ``extensions`` when given, then the ``extra`` keys.
 
 **Raises**
 
@@ -183,27 +203,19 @@ extension_manifest_entries(infos: Sequence[Any]) -> list[dict[str, Any]]
 
 `tau_agent_core.run_manifest.extension_manifest_entries`
 
-The ``extensions`` manifest fragment (H7, SIM_SPEC_v2 §16.6).
+Build the ``extensions`` manifest fragment (H7, SIM_SPEC_v2 §16.6).
 
-``infos`` is whatever :func:`~tau_agent_core.sdk.summarize_extensions`
-returned — accepted structurally (``name``/``path``/``content_hash``/
-``subjects``/``tools``/``commands``/``shortcuts``/``hooks`` attributes)
-rather than by importing :class:`~tau_agent_core.sdk.ExtensionInfo`, so this
-module does not have to import ``sdk`` (which imports ``agent_session``,
-which this package's ``__init__`` already loads before ``run_manifest``).
-
-Two runs against the same extension path at different file contents
-produce different ``content_hash`` entries here — that is the entire point
-(§16.6: "two runs ... at different contents are two experimental
-conditions carrying one label").
-
-Provisional shape: §16.6 asks this be built to the same diff format as
-tectum's ``T4`` (``tectum-005``), which had not landed as of this writing.
-Coordinated through the format when it exists, not guessed at here.
+The same extension path at different file contents yields a different
+``content_hash``: §16.6 counts those as two experimental conditions.
+Provisional shape, pending tectum's ``T4`` diff format (``tectum-005``).
 
 **Parameters**
 
-- `infos: Sequence[Any]` — *(no description)*
+- `infos: Sequence[Any]` — What :func:`~tau_agent_core.sdk.summarize_extensions` returned, read structurally (``name``, ``path``, ``content_hash``, ``subjects``, ``tools``, ``commands``, ``shortcuts``, ``hooks``) so this module need not import ``sdk``.
+
+**Returns**
+
+One dict per info, in order, with those eight keys; the sequences as lists.
 
 ## require_compaction_policy
 <!-- agent: yes -->
@@ -223,7 +235,11 @@ guess §16.8 exists to prevent.
 
 **Parameters**
 
-- `manifest: dict[str, Any]` — *(no description)*
+- `manifest: dict[str, Any]` — A run manifest, as :func:`build_run_manifest` builds it.
+
+**Returns**
+
+``manifest["compaction"]``, the mapping ``CompactionPolicy.to_manifest()`` produced.
 
 **Raises**
 
@@ -241,12 +257,15 @@ summarize(values: list[int]) -> dict[str, Any]
 
 §9's shape: ``median/p90/p99/max, never a single number``.
 
-An empty population reports ``{"n": 0}`` and nothing else. A fabricated zero
-median for a population with no members is a value that reads as a measurement.
+Quantiles are nearest-rank, so every figure is an observed value.
 
 **Parameters**
 
-- `values: list[int]` — *(no description)*
+- `values: list[int]` — The population, in milliseconds; order does not matter.
+
+**Returns**
+
+``{"n", "median", "p90", "p99", "max"}``, or just ``{"n": 0}`` for an empty population — a zero median there would read as a measurement.
 
 ## write_run_manifest
 <!-- agent: yes -->
@@ -264,5 +283,14 @@ unlabelled manifest never reaches disk to be trusted later.
 
 **Parameters**
 
-- `path: str | Path` — *(no description)*
-- `manifest: dict[str, Any]` — *(no description)*
+- `path: str | Path` — The file to write; overwritten if it exists.
+- `manifest: dict[str, Any]` — The manifest; checked by :func:`require_compaction_policy`.
+
+**Returns**
+
+``path`` as a :class:`~pathlib.Path`.
+
+**Raises**
+
+- `KeyError` — ``harness`` or ``compaction`` is missing; nothing is written.
+- `ValueError` — ``compaction`` is not a policy record; nothing is written.

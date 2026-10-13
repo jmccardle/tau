@@ -32,12 +32,12 @@ class ContextFile(path: Path, content: str)
 
 `tau_agent_core.sdk.ContextFile`
 
-One discovered context file: its resolved path and its text.
+One discovered context file.
 
 **Constructor parameters**
 
-- `path: Path` — *(no description)*
-- `content: str` — *(no description)*
+- `path: Path` — The file's canonicalized path.
+- `content: str` — Its text, decoded as UTF-8 with any leading BOM dropped.
 
 ## ContextFileError
 <!-- agent: yes -->
@@ -310,19 +310,18 @@ append_system_prompt(base: str, sections: list[str] | None) -> str
 Append ``--append-system-prompt`` sections to a base system prompt.
 
 Sections augment rather than replace the base (pi ``appendSystemPrompt``,
-system-prompt.ts:48), joined by blank lines. An empty/absent list returns the
-base unchanged; an empty base with sections yields just the sections.
-
-Lives here, beside :func:`_build_system_prompt`, because it composes the
-*base text* slot and nothing else — the appended sections land ahead of the
-project context and the tool list, not after them. It was previously a
-private helper in ``tau_coding_agent.headless`` that three frontends reached
-across for; ``headless`` re-exports this name so those imports keep working.
+system-prompt.ts:48). This composes only the base-text slot of
+:func:`_build_system_prompt`, so the sections land ahead of the project
+context and the tool list. ``tau_coding_agent.headless`` re-exports it.
 
 **Parameters**
 
-- `base: str` — *(no description)*
-- `sections: list[str] | None` — *(no description)*
+- `base: str` — The base system prompt; may be empty.
+- `sections: list[str] | None` — The sections to append, in order; ``None`` or empty appends nothing.
+
+**Returns**
+
+``base`` and the sections joined by blank lines: ``base`` unchanged with no sections, just the sections with an empty ``base``.
 
 ## create_agent_session
 <!-- agent: yes -->
@@ -473,20 +472,23 @@ the nearest file is the one that should have the last word:
 3. ``cwd``'s ``.tau/SYSTEM.md``, τ's own slot (see :data:`TAU_SYSTEM_FILE`).
 
 Deduplicated by resolved path, so running τ from ``~`` does not load the
-same file as both the agent-dir entry and an ancestor.
-
-On walking all the way to ``/``: this is pi's behaviour and it is kept
-deliberately, because "put your standing instructions in ``~/AGENTS.md``" is
-a real workflow. The cost is a handful of ``stat`` calls per ancestor, once
-per session — not per turn. The *surprise* is answered by
-:func:`_build_system_prompt`, which labels every block with the absolute
-path it came from, so a prompt can never carry instructions whose origin it
-does not name; and by ``--no-context-files`` for a run that wants none.
+same file as both the agent-dir entry and an ancestor. The walk to ``/`` is
+deliberate ("standing instructions in ``~/AGENTS.md``" is a real workflow);
+:func:`_build_system_prompt` labels every block with its absolute path, and
+``--no-context-files`` skips discovery.
 
 **Parameters**
 
-- `cwd: str | Path | None = None` — *(no description)*
-- `agent_dir: str | Path | None = None` — *(no description)*
+- `cwd: str | Path | None = None` — Where the ancestor walk starts; ``None`` means the process cwd.
+- `agent_dir: str | Path | None = None` — The global context directory; ``None`` means ``~/.tau``.
+
+**Returns**
+
+The context files in prompt order, weakest first.
+
+**Raises**
+
+- `ContextFileError` — A found file could not be read or is not valid UTF-8.
 
 ## load_prompt_templates
 <!-- agent: yes -->
