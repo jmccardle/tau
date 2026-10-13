@@ -121,7 +121,11 @@ class RPCResponse:
         return cls(**data)
 
     def is_error(self) -> bool:
-        """Check if this response represents an error."""
+        """Whether this response carries an ``error``.
+
+        Returns:
+            True when ``error`` is set, so ``result`` is not meaningful.
+        """
         return self.error is not None
 
 

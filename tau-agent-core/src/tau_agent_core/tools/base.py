@@ -107,32 +107,24 @@ class ToolDefinition(LlmToolDefinition):
 class ExtensionToolDefinition(ToolDefinition):
     """A tool an extension registered, as the registry holds it.
 
-    Third and last member of the hierarchy. It used to be a bare ``dict`` passed
-    to ``api.register_tool()`` and stored as a dict, which meant the one shape
-    crossing the extension boundary was the one shape with no schema — nothing to
-    validate against, nothing to generate documentation from, and four separate
-    ``defn["key"]`` / ``defn.get("key", default)`` readers each deciding for
-    themselves what was required. A missing key surfaced as a ``KeyError`` from
-    inside the agent loop, one turn after the mistake.
+    ``api.register_tool()`` still accepts a plain dict and validates it into this
+    model at the boundary, so a missing key fails there rather than as a
+    ``KeyError`` inside the agent loop a turn later. ``label`` defaults to
+    ``name`` here only, as ``register_tool``'s contract promises.
 
-    ``api.register_tool()`` still accepts the plain dict, so pi parity and every
-    existing extension are unaffected; the dict is validated into this model at
-    the boundary instead of being carried raw.
+    ``execute`` has the EXTENSION signature, ``execute(tool_call_id, params,
+    signal, on_update, ctx)`` with the bound ``ExtensionContext`` last, not the
+    parent's four-argument loop form. Nothing can enforce that (both are
+    ``Callable``), so ``AgentSession._resolve_extension_tools`` adapts one to the
+    other.
 
-    Two differences from the parent, both real rather than cosmetic:
-
-    ``source`` — who registered it, for the ``/extensions`` surface. Default
-    ``"built-in"``, matching what :meth:`ExtensionRegistry.get_all_tools` reported
-    before; ``ExtensionAPI.register_tool`` sets ``"extension"``. Accepted under
-    its historical ``_source`` spelling too, because that is the key extensions
-    and tests already write.
-
-    ``execute`` — the EXTENSION signature, ``execute(tool_call_id, params, signal,
-    on_update, ctx)``, five arguments with the bound ``ExtensionContext`` last. The
-    parent's is the loop's four-argument form. Nothing here can enforce that
-    difference — both are ``Callable`` and a decorated or ``*args`` wrapper has no
-    inspectable arity — so ``AgentSession._resolve_extension_tools`` adapts one to
-    the other, and this docstring is where the difference is stated.
+    Attributes:
+        source: Who registered it, for the ``/extensions`` surface:
+            ``"built-in"`` by default, ``"extension"`` from
+            ``ExtensionAPI.register_tool``. Also accepted as ``_source``, the
+            name a by-alias dump writes.
+        model_config: Pydantic config; ``populate_by_name`` lets ``source`` be
+            passed by its field name as well as its alias.
     """
 
     source: str = Field(
@@ -254,7 +246,17 @@ class AgentToolResult(BaseModel):
     def from_error(
         cls, tool_name: str, error_message: str, tool_call_id: str | None = None
     ) -> "AgentToolResult":
-        """Create a failure result."""
+        """Build a failure result whose text is ``error_message``.
+
+        Args:
+            tool_name: The tool that failed.
+            error_message: Shown to the model as the content's text block and kept
+                in ``error_message``.
+            tool_call_id: The call this answers, if known.
+
+        Returns:
+            A result with ``is_error`` set and no ``details``.
+        """
         return cls(
             tool_name=tool_name,
             tool_call_id=tool_call_id,
@@ -273,6 +275,14 @@ class AgentToolResult(BaseModel):
         also sets ``terminate``. Any other exception gives the model
         :data:`INTERNAL_TOOL_ERROR` and puts ``"Type: message"`` in
         ``details["exception"]``, which heads show and the model never reads.
+
+        Args:
+            tool_name: The tool whose call raised.
+            exc: What it raised.
+            tool_call_id: The call this answers, if known.
+
+        Returns:
+            A result with ``is_error`` set.
         """
         if isinstance(exc, ToolError):
             result = cls.from_error(tool_name, str(exc), tool_call_id)

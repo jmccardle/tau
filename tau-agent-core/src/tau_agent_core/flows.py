@@ -454,6 +454,9 @@ def step_form_spec(step: FlowStep, title: str, options: list[str] | None = None)
         title: The form's title, the flow's description.
         options: The legal values when the step's domain renders as a select.
 
+    Returns:
+        ``{"title": title, "fields": [field]}`` with the step's single field.
+
     Raises:
         ValueError: The domain renders as a select and ``options`` is empty.
     """

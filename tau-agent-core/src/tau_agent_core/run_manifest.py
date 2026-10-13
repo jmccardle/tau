@@ -58,23 +58,20 @@ HARNESS = "tau"
 
 @agent_facing(topic="runs")
 def extension_manifest_entries(infos: Sequence[Any]) -> list[dict[str, Any]]:
-    """The ``extensions`` manifest fragment (H7, SIM_SPEC_v2 §16.6).
+    """Build the ``extensions`` manifest fragment (H7, SIM_SPEC_v2 §16.6).
 
-    ``infos`` is whatever :func:`~tau_agent_core.sdk.summarize_extensions`
-    returned — accepted structurally (``name``/``path``/``content_hash``/
-    ``subjects``/``tools``/``commands``/``shortcuts``/``hooks`` attributes)
-    rather than by importing :class:`~tau_agent_core.sdk.ExtensionInfo`, so this
-    module does not have to import ``sdk`` (which imports ``agent_session``,
-    which this package's ``__init__`` already loads before ``run_manifest``).
+    The same extension path at different file contents yields a different
+    ``content_hash``: §16.6 counts those as two experimental conditions.
+    Provisional shape, pending tectum's ``T4`` diff format (``tectum-005``).
 
-    Two runs against the same extension path at different file contents
-    produce different ``content_hash`` entries here — that is the entire point
-    (§16.6: "two runs ... at different contents are two experimental
-    conditions carrying one label").
+    Args:
+        infos: What :func:`~tau_agent_core.sdk.summarize_extensions` returned,
+            read structurally (``name``, ``path``, ``content_hash``, ``subjects``,
+            ``tools``, ``commands``, ``shortcuts``, ``hooks``) so this module
+            need not import ``sdk``.
 
-    Provisional shape: §16.6 asks this be built to the same diff format as
-    tectum's ``T4`` (``tectum-005``), which had not landed as of this writing.
-    Coordinated through the format when it exists, not guessed at here.
+    Returns:
+        One dict per info, in order, with those eight keys; the sequences as lists.
     """
     return [
         {
@@ -116,9 +113,13 @@ def build_run_manifest(
             manifest built by a caller that hasn't threaded this through yet is
             visibly missing the key rather than silently claiming zero
             extensions loaded.
-        **extra: further top-level manifest keys the caller owns (seed, run id,
+        extra: further top-level manifest keys the caller owns (seed, run id,
             clock origin, DB snapshot id — §9's list). Passed through unchanged and
             refused if they would shadow a key this function owns.
+
+    Returns:
+        ``harness``, ``compaction`` (the policy's ``to_manifest()``), ``extensions``
+        when given, then the ``extra`` keys.
 
     Raises:
         ValueError: ``extra`` contains ``compaction`` or ``extensions``.
@@ -148,6 +149,13 @@ def require_compaction_policy(manifest: dict[str, Any]) -> dict[str, Any]:
     recorded cannot be compared to any other run, and "probably the default" is the
     guess §16.8 exists to prevent.
 
+    Args:
+        manifest: A run manifest, as :func:`build_run_manifest` builds it.
+
+    Returns:
+        ``manifest["compaction"]``, the mapping ``CompactionPolicy.to_manifest()``
+        produced.
+
     Raises:
         KeyError: ``compaction`` is absent, or ``harness`` is absent — the two are
             reported together because a compaction policy without a harness
@@ -176,6 +184,17 @@ def write_run_manifest(path: str | Path, manifest: dict[str, Any]) -> Path:
 
     The check runs on the way out rather than being left to the reader, so an
     unlabelled manifest never reaches disk to be trusted later.
+
+    Args:
+        path: The file to write; overwritten if it exists.
+        manifest: The manifest; checked by :func:`require_compaction_policy`.
+
+    Returns:
+        ``path`` as a :class:`~pathlib.Path`.
+
+    Raises:
+        KeyError: ``harness`` or ``compaction`` is missing; nothing is written.
+        ValueError: ``compaction`` is not a policy record; nothing is written.
     """
     require_compaction_policy(manifest)
     target = Path(path)
