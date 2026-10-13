@@ -1674,6 +1674,20 @@ class TestSDKHelpers:
         model = resolve_model("custom-model", provider="anthropic")
         assert model.id == "custom-model"
         assert model.provider == "anthropic"
+        assert model.api == "anthropic-messages"
+        assert model.base_url == "https://api.anthropic.com"
+
+    def test_resolve_model_unregistered_provider_needs_a_base_url(self):
+        """No endpoint is an error, never OpenAI's (EXTENSION-PROVIDERS.md §2)."""
+        with pytest.raises(ValueError, match="'groq' is not registered"):
+            resolve_model("llama-3", provider="groq")
+        model = resolve_model("llama-3", provider="groq", base_url="https://g/v1")
+        assert (model.api, model.base_url) == ("openai-completions", "https://g/v1")
+
+    def test_resolve_model_base_url_does_not_leak_into_the_default(self):
+        """The override returns a copy; the shared default stays untouched."""
+        resolve_model("gpt-4o", base_url="https://custom.com/v1")
+        assert resolve_model("gpt-4o").base_url == "https://api.openai.com/v1"
 
     def test_resolve_model_custom_base_url(self):
         """resolve_model() respects custom base_url."""

@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
+from tau_llm.providers import get_provider_spec, registered_providers
 from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
@@ -82,28 +83,36 @@ def resolve_model(
 ) -> Model:
     """Resolve a model string to a Model object.
 
+    A built-in id (``"gpt-4o"``) returns a copy of its default. Any other id gets
+    ``provider``'s registered wire protocol and endpoint, with ``base_url``
+    taking precedence over the endpoint.
+
     Args:
         model: Model identifier (e.g., "gpt-4o").
-        provider: Provider name (default: "openai").
+        provider: Registered vendor id (default: "openai").
         base_url: Optional custom API base URL.
 
-    Returns:
-        Model object with provider configuration.
-
     Raises:
-        KeyError: If model string is not found in defaults.
+        ValueError: No ``base_url`` and ``provider`` is not registered with a
+            default endpoint (docs/EXTENSION-PROVIDERS.md §2).
     """
     if model in _DEFAULT_MODELS:
-        m = _DEFAULT_MODELS[model]
-        if base_url:
-            m.base_url = base_url
-        return m
+        default = _DEFAULT_MODELS[model]
+        return default.model_copy(update={"base_url": base_url} if base_url else {})
+    spec = get_provider_spec(provider)
+    endpoint = base_url or (spec.base_url if spec else None)
+    if not endpoint:
+        raise ValueError(
+            f"resolve_model({model!r}): provider {provider!r} is not registered with a "
+            f"default endpoint and no base_url was given. Registered providers: "
+            f"{', '.join(registered_providers())}."
+        )
     return Model(
         id=model,
         name=model,
-        api="openai-completions",
+        api=spec.api if spec else "openai-completions",
         provider=provider,
-        base_url=base_url or "https://api.openai.com/v1",
+        base_url=endpoint,
         context_window=128000,
         max_tokens=4096,
     )

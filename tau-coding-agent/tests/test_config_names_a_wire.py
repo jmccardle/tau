@@ -98,6 +98,34 @@ class TestAStatedApi:
             backends.build_model_from_config({"model": "m", "api": "not-a-protocol"})
 
 
+class TestNoEndpointIsNotOpenAIs:
+    """An unregistered vendor with no ``base_url`` used to get OpenAI's endpoint.
+
+    The vendor's spec, registered later (an extension, a plugin), then supplied
+    its key at request time — so the key went to OpenAI (EXTENSION-PROVIDERS.md §2).
+    """
+
+    def test_an_unregistered_vendor_without_base_url_raises(self):
+        with pytest.raises(ValueError, match="'groq' is not a registered provider"):
+            backends.build_model_from_config({"model": "llama-3", "backend": "groq"})
+
+    def test_the_message_names_the_registered_vendors(self):
+        with pytest.raises(ValueError, match="openai"):
+            backends.build_model_from_config({"model": "llama-3", "backend": "groq"})
+
+    def test_a_registered_vendor_supplies_the_endpoint(self):
+        from tau_llm.providers import ProviderSpec, register_provider, unregister_provider
+
+        register_provider(
+            ProviderSpec(id="probe-vendor", api="openai-completions", base_url="https://probe/v1")
+        )
+        try:
+            model = backends.build_model_from_config({"model": "m", "backend": "probe-vendor"})
+        finally:
+            unregister_provider("probe-vendor")
+        assert model.base_url == "https://probe/v1"
+
+
 class TestStrictReasoningFormats:
     def test_it_defaults_off(self):
         model = backends.build_model_from_config({"model": "gpt-4o"})

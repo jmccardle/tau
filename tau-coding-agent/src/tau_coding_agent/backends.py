@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable, Iterator, Literal, Sequence, cast
 from uuid import uuid4
 from tau_llm.compat import Compat
 from tau_llm.models import EXTENDED_THINKING_LEVELS, is_valid_thinking_level
-from tau_llm.providers import get_provider_spec, registered_apis
+from tau_llm.providers import get_provider_spec, registered_apis, registered_providers
 from tau_llm.types import Model
 from tau_agent_core.agent_session import (
     AgentSession,
@@ -990,18 +990,17 @@ def _validate_thinking_level_map(value: Any, model_id: str) -> None:
 
 
 def build_model_from_config(config: dict[str, Any]) -> Model:
-    """Build a tau-agent-core ``Model`` from a TauApp/``~/.tau/config.json`` entry.
+    """Build a ``Model`` from a ``~/.tau/config.json`` ``models`` entry or a ``--model`` dict.
 
-    The single seam that turns a config ``models`` entry (or a ``--model`` ad-hoc
-    dict) into a ``Model`` — extracted from ``TauBackend.__init__`` so
-    :func:`make_model_resolver` (S45) reproduces exactly the same construction a
-    fresh backend would. Maps the ``backend`` provider field, derives the reasoning
-    flag from a non-``off`` ``thinking`` level (or an explicit ``reasoning: true``),
-    and carries the optional ``thinking_level_map``.
+    The one construction seam: :func:`make_model_resolver` goes through it too.
+    ``api`` and ``base_url`` resolve as the stated value, then the registered
+    vendor's (``backend`` names it). ``Model.name`` is ``config_name``, the key
+    ``set_model`` takes; an ad-hoc ``--model`` id is named by its id.
 
-    ``Model.name`` is ``config_name``, the config key the entry was found under,
-    so a head can name the running model as ``set_model`` takes it; an ad-hoc
-    ``--model`` id has no key and is named by its id.
+    Raises:
+        ValueError: An unimplemented ``api``; no ``base_url`` from either source —
+            never OpenAI's endpoint, which would send this vendor's key there
+            (docs/EXTENSION-PROVIDERS.md §2); or an invalid typed field.
     """
     model_id = config.get("model", "gpt-4")
     backend_type = config.get("backend", "openai").lower()
@@ -1020,7 +1019,12 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
 
     base_url = config.get("base_url") or (spec.base_url if spec else None)
     if not base_url:
-        base_url = "https://api.openai.com/v1"
+        raise ValueError(
+            f"models.{model_id}: backend {provider!r} is not a registered provider with a "
+            f"default endpoint, and the entry sets no base_url. Set base_url, or register "
+            f"the provider before this model is built (docs/EXTENSION-PROVIDERS.md §2). "
+            f"Registered providers: {', '.join(registered_providers())}."
+        )
 
     thinking_level = config.get("thinking")
     reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
