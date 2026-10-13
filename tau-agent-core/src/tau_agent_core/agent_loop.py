@@ -621,8 +621,8 @@ class AgentLoop:
         """Close the ``agent_start`` bracket, however the loop ended.
 
         This used to be reachable only by falling out of the ``while``, so a loop
-        that RAISED — a provider ``ErrorEvent`` becomes a ``RuntimeError``
-        (:meth:`_stream_response`); a dropped connection — or one that was
+        that RAISED — a provider ``ErrorEvent`` is raised as its ``exception``, or
+        as a ``RuntimeError`` (:meth:`_stream_response`); a dropped connection — or one that was
         CANCELLED (``abort()`` cancels every forked task) emitted no ``agent_end``
         at all, leaving the bracket open for the rest of the session.
 
@@ -971,7 +971,11 @@ class AgentLoop:
                             f"provider emitted an error event with an empty message "
                             f"(model {model_label!r}); the upstream failure is unreported"
                         )
-                    failure = RuntimeError(detail)
+                    failure = (
+                        event.exception
+                        if isinstance(event.exception, Exception)
+                        else RuntimeError(detail)
+                    )
                     await self._stream_failed(failure, handle, latest, detail)
                     raise failure
         except Exception as exc:

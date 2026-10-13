@@ -26,6 +26,7 @@ import pytest
 from pydantic import ValidationError
 
 from tau_llm.constraints import DecodeConstraints
+from tau_llm.errors import ProviderHttpError
 from tau_llm.providers.openai import OpenAICompletionsProvider
 from tau_llm.streaming import (
     DoneEvent,
@@ -254,9 +255,7 @@ def test_non_streaming_produces_the_same_assistant_message_as_streaming():
 
     assert isinstance(buffered.timestamp, int)
     assert isinstance(streamed.timestamp, int)
-    assert buffered.model_dump(exclude={"timestamp"}) == streamed.model_dump(
-        exclude={"timestamp"}
-    )
+    assert buffered.model_dump(exclude={"timestamp"}) == streamed.model_dump(exclude={"timestamp"})
 
 
 def test_non_streaming_carries_text_thinking_tool_calls_usage_and_stop_reason():
@@ -499,24 +498,26 @@ def test_a_buffered_content_that_is_not_a_string_raises_rather_than_being_guesse
 
 def test_a_non_200_reads_the_same_in_both_transports():
     body = {"error": {"message": "model not found"}}
-    streamed = _run(
-        _FakeClient(
-            stream_response=_FakeResponse(
-                lines=[], body=body, status_code=404, text=json.dumps(body)
-            )
-        ),
-        _model(stream=True),
-    )
-    buffered = _run(
-        _FakeClient(post_response=_FakeResponse(body=body, status_code=404, text=json.dumps(body))),
-        _model(stream=False),
-    )
+    with pytest.raises(ProviderHttpError) as streamed:
+        _run(
+            _FakeClient(
+                stream_response=_FakeResponse(
+                    lines=[], body=body, status_code=404, text=json.dumps(body)
+                )
+            ),
+            _model(stream=True),
+        )
+    with pytest.raises(ProviderHttpError) as buffered:
+        _run(
+            _FakeClient(
+                post_response=_FakeResponse(body=body, status_code=404, text=json.dumps(body))
+            ),
+            _model(stream=False),
+        )
 
-    (streamed_error,) = [e for e in streamed if isinstance(e, ErrorEvent)]
-    (buffered_error,) = [e for e in buffered if isinstance(e, ErrorEvent)]
-    assert buffered_error.message == streamed_error.message
-    assert "HTTP 404" in buffered_error.message
-    assert "model not found" in buffered_error.message
+    assert str(buffered.value) == str(streamed.value)
+    assert buffered.value.status_code == streamed.value.status_code == 404
+    assert buffered.value.message == "model not found"
 
 
 def test_streaming_is_the_default_and_model_stream_false_switches_transport():

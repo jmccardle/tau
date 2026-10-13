@@ -569,6 +569,23 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   finalized with `stop_reason: "error"` and stays in model input; every raised
   turn ends with a display-only `turn_error`; tools raise `ToolError`/`ToolHalt`
   for the model and anything else is shown only to the user.
+- **What JMFTS needs from `tau-llm` for token discipline** (added 2026-10-12).
+  The source is JMFTS's `.archive/TOKENIZATION_REQUIREMENTS.md` Part 4. R3 and R4
+  shipped in 0.12.0 (`Model.tokenizer`, `TokenizerCounter`'s
+  `includes_template=False`). The other four have no order yet:
+  - **R1, a non-2xx raises a typed error with its status** — **built
+    2026-10-12, unreleased** (`docs/PROVIDER-HTTP-ERRORS.md`). This unblocks
+    JMFTS #8 and the τ half of #32.
+  - **R2, `Provider.count_tokens(model, messages, tools=None) -> TokenCount | None`**,
+    non-abstract, returning None on the base class. Anthropic `count_tokens` and
+    Google `countTokens` are server-counted routes. On the OpenAI provider,
+    probe `POST /tokenize` once per `(base_url, model)` and cache the probe's
+    result. Open: `TokenSource` has no server-side value yet.
+  - **R5, a live `/tokenize` conformance assertion** in
+    `tau-llm/tests/test_llama_conformance.py`: a fixed string's count, and its
+    equality with `usage.input_tokens` of a real completion. Depends on R2.
+  - **R6, `context_window` from llama.cpp `GET /props` `n_ctx`** where the
+    server offers it; `0` stays where it does not.
 - **RPC's result schemas leave shapes as prose** — **done 2026-10-03, RPC
   2.1** (`docs/TAU-SERVE.md` §5 built note). The records and the schema
   generator are in core; `get_capabilities` and `docs/RPC-PROTOCOL.md` are

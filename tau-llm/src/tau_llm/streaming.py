@@ -123,10 +123,7 @@ class DoneEvent:
 @agent_facing(topic="providers")
 @dataclass
 class ErrorEvent:
-    """An error event from the LLM stream.
-
-    Carries an error message. When the stream produces an ErrorEvent,
-    no further events will be produced.
+    """An error event from the LLM stream; no further events follow it.
 
     Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 
@@ -134,11 +131,15 @@ class ErrorEvent:
         type: Always "error".
         message: Description of the error.
         is_error: Always True.
+        exception: The exception the provider raised, e.g. a
+            :class:`~tau_llm.errors.ProviderHttpError`; None for an error the
+            provider reported in-band, such as an SSE ``error`` frame.
     """
 
     message: str
     is_error: Literal[True] = True
     type: Literal["error"] = "error"
+    exception: BaseException | None = None
 
 
 @agent_facing(topic="providers")
@@ -253,11 +254,7 @@ class AssistantMessageEventStream:
         except Exception as e:
             self._error_exc = e
             await self._event_queue.put(
-                ErrorEvent(
-                    type="error",
-                    message=str(e),
-                    is_error=True,
-                )
+                ErrorEvent(type="error", message=str(e), is_error=True, exception=e)
             )
             self._done = True
 

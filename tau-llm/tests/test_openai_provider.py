@@ -28,7 +28,14 @@ from tau_llm.providers.openai import (
     _apply_cache_control,
     _usage_from_openai,
 )
-from tau_llm.streaming import DoneEvent, ErrorEvent, TextDeltaEvent, ToolCallDeltaEvent
+from tau_llm.errors import ProviderHttpError
+from tau_llm.streaming import (
+    AssistantMessageEventStream,
+    DoneEvent,
+    ErrorEvent,
+    TextDeltaEvent,
+    ToolCallDeltaEvent,
+)
 from tau_llm.tools import ToolDefinition
 from tau_llm.types import (
     AssistantMessage,
@@ -999,8 +1006,8 @@ class TestStreamTextResponse:
         tool_calls = [c for c in done_events[0].final.content if isinstance(c, ToolCall)]
         assert len(tool_calls) == 0
 
-    def test_stream_text_response_produces_error_on_http_error(self, monkeypatch):
-        """stream_chat produces ErrorEvent on non-200 HTTP response."""
+    def test_stream_text_response_raises_on_http_error(self, monkeypatch):
+        """stream_chat raises ProviderHttpError on a non-200 HTTP response."""
         mock_response = _make_mock_error_response(status_code=401, error_msg="Invalid API key")
         monkeypatch.setattr(
             "tau_llm.providers.openai.httpx.AsyncClient",
@@ -1015,11 +1022,10 @@ class TestStreamTextResponse:
             )
         )
 
-        events = _collect_events(stream)
-        error_events = [e for e in events if isinstance(e, ErrorEvent)]
-        assert len(error_events) == 1
-        assert "Invalid API key" in error_events[0].message
-        assert error_events[0].is_error is True
+        with pytest.raises(ProviderHttpError) as excinfo:
+            _collect_events(stream)
+        assert excinfo.value.status_code == 401
+        assert excinfo.value.message == "Invalid API key"
 
 
 class TestStreamToolCallDelta:
@@ -1228,7 +1234,7 @@ class TestErrorHandling:
         return MockClient
 
     def test_error_on_invalid_api_key(self, monkeypatch):
-        """401 response produces ErrorEvent with API key error message."""
+        """A 401 raises ProviderHttpError carrying the status and the server's message."""
         mock_response = _make_mock_error_response(status_code=401, error_msg="Invalid API key")
         monkeypatch.setattr(
             "tau_llm.providers.openai.httpx.AsyncClient",
@@ -1243,14 +1249,13 @@ class TestErrorHandling:
             )
         )
 
-        events = _collect_events(stream)
-        error_events = [e for e in events if isinstance(e, ErrorEvent)]
-        assert len(error_events) == 1
-        assert "Invalid API key" in error_events[0].message
-        assert error_events[0].is_error is True
+        with pytest.raises(ProviderHttpError) as excinfo:
+            _collect_events(stream)
+        assert excinfo.value.status_code == 401
+        assert "Invalid API key" in str(excinfo.value)
 
     def test_error_on_rate_limit(self, monkeypatch):
-        """429 response produces ErrorEvent with rate limit message."""
+        """A 429 raises ProviderHttpError with status 429."""
         mock_response = _make_mock_error_response(
             status_code=429, error_msg="Rate limit exceeded. Please try again later."
         )
@@ -1267,13 +1272,13 @@ class TestErrorHandling:
             )
         )
 
-        events = _collect_events(stream)
-        error_events = [e for e in events if isinstance(e, ErrorEvent)]
-        assert len(error_events) == 1
-        assert "Rate limit" in error_events[0].message
+        with pytest.raises(ProviderHttpError) as excinfo:
+            _collect_events(stream)
+        assert excinfo.value.status_code == 429
+        assert "Rate limit" in excinfo.value.message
 
     def test_error_on_generic_http_error(self, monkeypatch):
-        """500 response produces ErrorEvent with HTTP status message."""
+        """A 500 raises ProviderHttpError whose text leads with the status."""
         mock_response = _make_mock_error_response(
             status_code=500, error_msg="Internal Server Error"
         )
@@ -1290,10 +1295,10 @@ class TestErrorHandling:
             )
         )
 
-        events = _collect_events(stream)
-        error_events = [e for e in events if isinstance(e, ErrorEvent)]
-        assert len(error_events) == 1
-        assert "500" in error_events[0].message
+        with pytest.raises(ProviderHttpError) as excinfo:
+            _collect_events(stream)
+        assert excinfo.value.status_code == 500
+        assert str(excinfo.value).startswith("HTTP 500 from model ")
 
     def test_error_on_network_error(self, monkeypatch):
         """Network error produces ErrorEvent with exception message."""
@@ -1332,47 +1337,33 @@ class TestErrorHandling:
         assert len(error_events) == 1
         assert "Connection refused" in error_events[0].message
 
-    def test_error_event_is_error_flag(self, monkeypatch):
-        """ErrorEvent has is_error=True."""
-        mock_response = _make_mock_error_response()
+    def test_the_event_stream_carries_the_http_error_and_result_raises_it(self, monkeypatch):
+        """An iterating consumer sees one ErrorEvent holding the typed error; result() raises it."""
+        mock_response = _make_mock_error_response(status_code=400, error_msg="too long")
         monkeypatch.setattr(
             "tau_llm.providers.openai.httpx.AsyncClient",
             self._make_mock_client(mock_response),
         )
-
+        model = _make_model()
         provider = OpenAICompletionsProvider(api_key="sk-test")
-        stream = asyncio.run(
-            provider.stream_chat(
-                model=_make_model(),
+
+        async def drive():
+            raw = await provider.stream_chat(
+                model=model,
                 messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
             )
-        )
+            stream = AssistantMessageEventStream(raw, model)
+            events = [e async for e in stream]
+            with pytest.raises(ProviderHttpError) as excinfo:
+                await stream.result()
+            return events, excinfo.value
 
-        events = _collect_events(stream)
-        error_events = [e for e in events if isinstance(e, ErrorEvent)]
-        assert len(error_events) == 1
-        assert error_events[0].is_error is True
-
-    def test_error_event_type_is_error(self, monkeypatch):
-        """ErrorEvent has type='error'."""
-        mock_response = _make_mock_error_response()
-        monkeypatch.setattr(
-            "tau_llm.providers.openai.httpx.AsyncClient",
-            self._make_mock_client(mock_response),
-        )
-
-        provider = OpenAICompletionsProvider(api_key="sk-test")
-        stream = asyncio.run(
-            provider.stream_chat(
-                model=_make_model(),
-                messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
-            )
-        )
-
-        events = _collect_events(stream)
-        error_events = [e for e in events if isinstance(e, ErrorEvent)]
-        assert len(error_events) == 1
-        assert error_events[0].type == "error"
+        events, raised = asyncio.run(drive())
+        (error_event,) = [e for e in events if isinstance(e, ErrorEvent)]
+        assert error_event.type == "error" and error_event.is_error is True
+        assert error_event.exception is raised
+        assert raised.status_code == 400
+        assert error_event.message == str(raised)
 
 
 class TestConvertMessagesDict:

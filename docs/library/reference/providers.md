@@ -237,15 +237,12 @@ Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 <!-- agent: yes -->
 
 ```python
-class ErrorEvent(message: str, is_error: Literal[True] = True, type: Literal['error'] = 'error')
+class ErrorEvent(message: str, is_error: Literal[True] = True, type: Literal['error'] = 'error', exception: BaseException | None = None)
 ```
 
 `tau_llm.streaming.ErrorEvent`
 
-An error event from the LLM stream.
-
-Carries an error message. When the stream produces an ErrorEvent,
-no further events will be produced.
+An error event from the LLM stream; no further events follow it.
 
 Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 
@@ -254,6 +251,7 @@ Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 - `message: str` — Description of the error.
 - `is_error: Literal[True] = True` — Always True.
 - `type: Literal['error'] = 'error'` — Always "error".
+- `exception: BaseException | None = None` — The exception the provider raised, e.g. a :class:`~tau_llm.errors.ProviderHttpError`; None for an error the provider reported in-band, such as an SSE ``error`` frame.
 
 ## Provider
 <!-- agent: yes -->
@@ -324,6 +322,29 @@ A StreamEventStream — an async iterator of typed streaming events (TextDeltaEv
 **Raises**
 
 - `NotImplementedError` — If the provider hasn't implemented this method.
+
+## ProviderHttpError
+<!-- agent: yes -->
+
+```python
+class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str)
+```
+
+`tau_llm.errors.ProviderHttpError`
+
+An endpoint answered a completion request with a non-2xx status.
+
+Every provider raises this for an HTTP refusal, and
+``AssistantMessageEventStream.result()`` re-raises it with its type intact.
+``str()`` is ``"HTTP <status> from model <id> at <base_url>: <message>"``.
+
+**Constructor parameters**
+
+- `status_code: int` — The HTTP status, e.g. 400 for an over-context prompt.
+- `message: str` — The server's own error text, or ``""`` when the body had none.
+- `body: str` — The raw response body, bounded to ``MAX_ERROR_BODY_CHARS``.
+- `model_id: str` — The requested model id.
+- `base_url: str` — The endpoint the request went to.
 
 ## ProviderSpec
 <!-- agent: yes -->

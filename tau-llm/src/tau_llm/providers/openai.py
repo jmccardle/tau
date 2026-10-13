@@ -34,6 +34,8 @@ import httpx
 from tau_llm import grammar as grammar_mod
 from tau_llm.compat import ResolvedCompat, resolve_compat
 from tau_llm.constraints import ConstraintViolation
+from tau_llm.errors import ProviderHttpError
+from tau_llm.errors import truncate_error_text as _truncate_error_text
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.json_parse import (
     parse_json_with_repair_info,
@@ -66,8 +68,6 @@ _WARNED_FOREIGN_SIGNATURES: set[str] = set()
 
 _WARNED_FOREIGN_TOOL_SIGNATURES: set[str] = set()
 
-_MAX_ERROR_BODY_CHARS = 4000
-
 _TRUNCATION_HINT = (
     "The model hit the output cap τ sent for it (max_tokens={max_tokens}); "
     "raise `max_tokens` on this model in ~/.tau/config.json, or lower the "
@@ -82,13 +82,6 @@ def _error_frame_text(error: Any) -> str:
         code = error.get("code") or error.get("type")
         return f"{message} (code {code})" if code else message
     return _truncate_error_text(str(error))
-
-
-def _truncate_error_text(text: str, max_chars: int = _MAX_ERROR_BODY_CHARS) -> str:
-    """Bound an error body, saying how much was dropped rather than eliding silently."""
-    if len(text) <= max_chars:
-        return text
-    return f"{text[:max_chars]}... [truncated {len(text) - max_chars} chars]"
 
 
 def _describe_exception(e: BaseException) -> str:
@@ -1631,7 +1624,7 @@ class OpenAICompletionsProvider(Provider):
                 )
                 return
 
-            except ConstraintViolation:
+            except (ConstraintViolation, ProviderHttpError):
                 raise
             except Exception as e:
                 described = _describe_exception(e)
@@ -1647,12 +1640,12 @@ class OpenAICompletionsProvider(Provider):
 
         return event_generator()
 
-    def _error_event_from_response(self, response: Any, model: Model) -> ErrorEvent:
-        """Build the ErrorEvent for a non-200, from an ALREADY-READ body.
+    def _http_error_from_response(self, response: Any, model: Model) -> ProviderHttpError:
+        """Build the ProviderHttpError for a non-200, from an ALREADY-READ body.
 
         Shared by both transports so a gateway's 502 reads the same either way.
-        The streaming caller must ``await response.aread()`` first (a streaming
-        response's body is not read yet); the buffered caller already has it.
+        The streaming caller must ``await response.aread()`` first; the buffered
+        caller already has the body.
         """
         error_body: Any = None
         try:
@@ -1666,15 +1659,13 @@ class OpenAICompletionsProvider(Provider):
                 error_msg = str(err.get("message") or "")
             elif isinstance(err, str):
                 error_msg = err
-        if not error_msg:
-            error_msg = _truncate_error_text(response.text.strip())
-        return ErrorEvent(
-            type="error",
-            message=(
-                f"HTTP {response.status_code} from model {model.id!r} at "
-                f"{self.base_url!r}: {error_msg or '(empty response body)'}"
-            ),
-            is_error=True,
+        body = response.text.strip()
+        return ProviderHttpError(
+            response.status_code,
+            message=error_msg or _truncate_error_text(body),
+            body=body,
+            model_id=model.id,
+            base_url=self.base_url,
         )
 
     def _apply_tool_call_schema(self, tc: dict, compat: ResolvedCompat, model: Model) -> dict:
@@ -1708,9 +1699,7 @@ class OpenAICompletionsProvider(Provider):
         ) as response:
             if response.status_code != 200:
                 await response.aread()
-                yield self._error_event_from_response(response, model)
-                state.failed = True
-                return
+                raise self._http_error_from_response(response, model)
 
             # Read SSE lines as they arrive (no full-body buffering).
             async for line in response.aiter_lines():
@@ -1863,9 +1852,7 @@ class OpenAICompletionsProvider(Provider):
 
         response = await client.post("/chat/completions", json=payload, timeout=request_timeout)
         if response.status_code != 200:
-            yield self._error_event_from_response(response, model)
-            state.failed = True
-            return
+            raise self._http_error_from_response(response, model)
 
         body = response.json()
         if not isinstance(body, dict):

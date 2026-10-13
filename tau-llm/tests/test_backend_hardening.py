@@ -34,6 +34,7 @@ from tau_llm.providers.openai import (
     _describe_exception,
     _truncate_error_text,
 )
+from tau_llm.errors import ProviderHttpError
 from tau_llm.streaming import DoneEvent, ErrorEvent
 from tau_llm.types import Model, TextContent, ToolCall, UserMessage
 
@@ -303,12 +304,11 @@ def test_a_non_json_http_error_body_is_quoted_rather_than_restating_the_status()
     """``HTTP 502: HTTP 502`` said nothing twice. A proxy's HTML error page names
     the hop that failed, which is the only clue an operator gets."""
     response = _FakeResponse([], status_code=502, json_body=None, text="<html>bad gateway</html>")
-    events = _run_stream(_provider(), _FakeClient(response))
+    with pytest.raises(ProviderHttpError) as excinfo:
+        _run_stream(_provider(), _FakeClient(response))
 
-    errors = [e for e in events if isinstance(e, ErrorEvent)]
-    assert len(errors) == 1
-    assert "502" in errors[0].message
-    assert "bad gateway" in errors[0].message
+    assert excinfo.value.status_code == 502
+    assert "bad gateway" in str(excinfo.value)
 
 
 def test_a_string_valued_error_field_does_not_become_an_opaque_streaming_error():
@@ -316,12 +316,11 @@ def test_a_string_valued_error_field_does_not_become_an_opaque_streaming_error()
     ``.get()`` on the string raised AttributeError into the broad handler, so a
     perfectly readable 400 arrived as a generic transport failure."""
     response = _FakeResponse([], status_code=400, json_body={"error": "model not deployed"})
-    events = _run_stream(_provider(), _FakeClient(response))
+    with pytest.raises(ProviderHttpError) as excinfo:
+        _run_stream(_provider(), _FakeClient(response))
 
-    errors = [e for e in events if isinstance(e, ErrorEvent)]
-    assert len(errors) == 1
-    assert "model not deployed" in errors[0].message
-    assert "Streaming error" not in errors[0].message
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.message == "model not deployed"
 
 
 @pytest.mark.parametrize("keepalive", ["[]", "42", '"ping"', "null"])

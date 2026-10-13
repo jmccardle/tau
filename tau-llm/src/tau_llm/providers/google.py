@@ -43,6 +43,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, cast
 
+from tau_llm.errors import http_error_from_google
 from tau_llm.models import clamp_thinking_level
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.streaming import (
@@ -550,6 +551,9 @@ class GoogleGenerativeAIProvider(Provider):
                 return
 
             except Exception as exc:
+                http_error = http_error_from_google(exc, model_id=model.id, base_url=self.base_url)
+                if http_error is not None:
+                    raise http_error from exc
                 yield ErrorEvent(
                     message=(
                         f"Streaming error from model {model.id!r} at "

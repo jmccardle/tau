@@ -41,6 +41,7 @@ from tau_llm.tokens import (
     counter_for,
 )
 from tau_llm.constraints import ConstraintViolation, DecodeConstraints
+from tau_llm.errors import ProviderHttpError
 from tau_llm import grammar
 from tau_llm.providers.base import Provider
 from tau_llm.client import aclose_providers, complete_simple, stream_simple
@@ -51,6 +52,8 @@ __all__ = [
     "DecodeConstraints",
     "ConstraintViolation",
     "grammar",
+    # Provider failures
+    "ProviderHttpError",
     # Types
     "UserMessage",
     "AssistantMessage",
