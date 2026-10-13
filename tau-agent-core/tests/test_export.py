@@ -1,30 +1,12 @@
 """Session export to Markdown and HTML — ``tau_agent_core.export``.
 
-This is the only suite that covers ``export.py``. It was previously named
-``test_phase6_subphase2.py``, which read as spec-era archaeology and hid that
-fact; the module is at 96% coverage and every one of those statements comes from
-here.
+The flat exporters, over a message list. ``test_export_html.py`` covers the tree
+renderer, ``render_session_html``.
 
-Consolidated from 88 hand-written tests to 24 test functions (42 parametrized
-cases), at identical coverage — 139 statements, the same 6 unreached. The old
-shape was one
-assertion per test over a shared export call — eight tests to establish that a
-user/assistant exchange renders (heading, text, heading, text, order, count,
-prefix, default config), six to assert individual CSS substrings, twelve to
-assert that imports work. Those describe one behaviour each, not eighty-eight,
-and splitting them meant a change to the export format lit up a screen of
-failures that all said the same thing.
-
-Two assertions were repaired rather than carried over:
-
-* HTML escaping was tested as ``assert "&lt;" in result or "<script>" in result``
-  — true whether or not escaping happens, so the one security-relevant behaviour
-  in this module had no test at all. It is now asserted strictly.
-* The HTML timestamp test asserted the literal ``"17:13:20"``, which is
-  ``time.localtime`` output and therefore passes only in the author's timezone.
-  It now asserts the rendered *shape*.
-
-Reference: docs/PHASE-6-SUBPHASE-2.md (the original spec); export.py.
+Escaping is asserted strictly, and timestamps by shape rather than literal,
+because ``_format_timestamp`` uses local time. Thinking blocks use the stored
+key, ``thinking``; until 2026-10-12 the fixtures used ``text``, which hid that
+both exporters rendered every reasoning block empty.
 """
 
 from __future__ import annotations
@@ -60,7 +42,7 @@ def _assistant(
 ) -> dict:
     content: list[dict] = []
     if thinking:
-        content.append({"type": "thinking", "text": thinking})
+        content.append({"type": "thinking", "thinking": thinking})
     content.append({"type": "text", "text": text})
     if tool_calls:
         content.extend(tool_calls)
@@ -168,12 +150,12 @@ def test_html_renders_a_well_formed_document():
     result = export_session(CONVERSATION, ExportConfig(format="html"))
     assert "<!DOCTYPE html>" in result
     for tag in ("html", "head", "body"):
-        assert result.count(f"<{tag}>") == 1
+        assert len(re.findall(rf"<{tag}[ >]", result)) == 1
         assert result.count(f"</{tag}>") == 1
     assert "<style>" in result
-    assert "Session Export" in result
+    assert "τ session export" in result
     for role in ("user", "assistant", "tool"):
-        assert f'class="{role}"' in result
+        assert f'class="entry {role}"' in result
     assert "What is Python?" in result
     json.dumps(result)  # the export is transportable as JSON
 
@@ -347,7 +329,8 @@ def test_repr_shows_the_settings():
 
 
 @pytest.mark.parametrize(
-    "name", ["export_session", "MarkdownExporter", "HTMLExporter", "ExportConfig"]
+    "name",
+    ["export_session", "MarkdownExporter", "HTMLExporter", "ExportConfig", "render_session_html"],
 )
 def test_the_export_api_is_public_from_the_package_root(name):
     """Twelve import-smoke tests collapsed into the property they were checking."""

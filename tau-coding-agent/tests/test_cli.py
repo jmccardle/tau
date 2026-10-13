@@ -1108,3 +1108,51 @@ def test_main_export_session_dispatches(monkeypatch, tmp_path):
     assert rc == 0
     assert seen["ref"] == "42"
     assert seen["path"] == str(tmp_path / "y.jsonl")
+
+
+# ── --export-html ───────────────────────────────────────────────────────────
+
+
+def _saved_session(tmp_path):
+    from tau_coding_agent.session_store import Session
+
+    return Session.create(
+        "/proj", "local-llm", "openai", system_prompt="be terse", base_dir=tmp_path / "sessions"
+    )
+
+
+@pytest.mark.parametrize("out", [None, "page.html", "-"])
+def test_main_export_html_writes_the_session_found_by_id_prefix(monkeypatch, tmp_path, capsys, out):
+    """The id resolves from any cwd; OUT defaults to tau-session-<id>.html; - is stdout."""
+    session = _saved_session(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    argv = ["--session-dir", str(tmp_path / "sessions"), "--export-html", session.id[:10]]
+    rc = cli.main(argv + ([out] if out else []))
+    assert rc == 0
+    printed = capsys.readouterr().out
+    if out == "-":
+        assert printed.startswith("<!DOCTYPE html>") and "be terse" in printed
+        return
+    target = tmp_path / (out or f"tau-session-{session.id}.html")
+    assert "be terse" in target.read_text(encoding="utf-8")
+    assert session.id in printed
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["-p", "hi"], ["--mode", "rpc"], ["--no-session"], ["--continue"], ["--import-session", "x"]],
+)
+def test_main_export_html_refuses_a_flag_it_would_ignore(monkeypatch, capsys, extra):
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    assert cli.main(["--export-html", "abc", *extra]) == 2
+    assert "--export-html" in capsys.readouterr().err
+
+
+def test_main_export_html_names_an_unknown_ref_and_too_many_values(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cli, "load_config", lambda: _config())
+    base = ["--session-dir", str(tmp_path / "sessions")]
+    assert cli.main(["--export-html", "nosuchid", *base]) == 2
+    assert "no session matches 'nosuchid'" in capsys.readouterr().err
+    assert cli.main(["--export-html", "a", "b", "c", *base]) == 2
+    assert "optional OUT" in capsys.readouterr().err
