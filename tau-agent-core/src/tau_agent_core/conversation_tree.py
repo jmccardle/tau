@@ -388,14 +388,27 @@ def _tools_phrase(tools: list[str]) -> str:
 @agent_facing(topic="sessions")
 @dataclass
 class TreeNode:
-    """A node in the browsable session tree (pi ``SessionTreeNode``)."""
+    """A node in the browsable session tree (pi ``SessionTreeNode``).
+
+    Attributes:
+        id: The entry's id.
+        parent_id: The id this entry hangs from; ``None`` for a root.
+        kind: The entry's ``type`` — ``message``, ``compaction``, ``branch_summary``,
+            ``navigate`` and the rest.
+        role: The message's role on a ``message``/``customMessage`` entry; ``None``
+            on every other kind.
+        preview: The entry's first line of text, ``[interrupted]``-prefixed when
+            the entry is incomplete.
+        is_leaf: Whether this entry is the tree's leaf.
+        children: The nodes parented here, oldest first by timestamp.
+    """
 
     id: str
     parent_id: str | None
-    kind: str  # message | compaction | branch_summary | navigate | …
-    role: str | None  # for message nodes
-    preview: str  # first line of text (browser row)
-    is_leaf: bool  # == the tree's leaf
+    kind: str
+    role: str | None
+    preview: str
+    is_leaf: bool
     children: list[TreeNode] = field(default_factory=list)
 
 
@@ -495,8 +508,12 @@ class MessageIdCompletion:
 class ConversationTree:
     """Pure, I/O-free view over an append-only session entry log, read at one leaf.
 
-    ``entries`` are ``session_store``-shaped dicts (camelCase ``parentId``) and are
-    never mutated. The leaf is fixed; a view at another leaf is another tree.
+    The leaf is fixed; a view at another leaf is another tree.
+
+    Args:
+        entries: ``session_store``-shaped dicts (camelCase ``parentId``), in load
+            order; never mutated.
+        leaf: The entry id this view reads from; ``None`` before the first entry.
     """
 
     def __init__(self, entries: list[dict[str, Any]], leaf: str | None) -> None:
@@ -513,11 +530,15 @@ class ConversationTree:
         return self._leaf
 
     def path(self, leaf: str | None = None) -> list[dict[str, Any]]:
-        """The raw leaf→root entry chain, reversed to root→leaf order.
+        """The raw ``parentId`` chain to ``leaf``, root first.
 
-        No splicing — every entry on the ``parentId`` chain (all kinds). A cycle
-        guard mirrors ``_build_active_path`` (``session_manager.py:571-579``).
-        ``leaf=None`` uses this tree's leaf.
+        No splicing — every entry on the chain, all kinds, with a cycle guard.
+
+        Args:
+            leaf: The chain's last entry; ``None`` uses this tree's leaf.
+
+        Returns:
+            The entries root→leaf; empty when the leaf is ``None`` or unknown.
         """
         leaf_id = self._leaf if leaf is None else leaf
         return list(self._walk(leaf_id))
@@ -525,30 +546,24 @@ class ConversationTree:
     def fork_admission_reason(self, target_id: str | None) -> str | None:
         """Whether ``target_id`` is safe to fork FROM, or the reason it is not.
 
-        docs/SUBMISSION-LIFECYCLE.md's concrete admission check for
-        ``multitask_strategy="fork"``: a fork point must be a TURN-COMPLETE entry.
-        Forking at an assistant message whose ``toolCall`` blocks have no matching
-        ``toolResult`` on this path yields a prefix most providers reject outright
-        — a chat-completions turn cannot end on an assistant message that declares
-        tool calls with no results attached, and a cursor's ancestors-only
-        walk (I1, NODE-ADDRESSABLE-AGENTS.md §2) means a toolResult appended AFTER
-        ``target_id`` (a descendant) can never rescue it — there is no "wait for
-        the rest of the turn to land" here, only "this point was, or was not,
-        already complete when it was appended".
+        docs/SUBMISSION-LIFECYCLE.md's admission check for
+        ``multitask_strategy="fork"``: a fork point must be TURN-COMPLETE. An
+        assistant message whose ``toolCall`` blocks have no ``toolResult`` on this
+        path is a prefix most providers reject, and a result appended later (a
+        descendant) cannot rescue it, since a cursor reads ancestors only
+        (I1, NODE-ADDRESSABLE-AGENTS.md §2).
 
-        ``target_id=None`` (fork before the root) is trivially safe: there is no
-        context yet, so nothing can be pending.
+        Walks the RAW chain (:meth:`path`), tracking the newest assistant message's
+        unanswered call ids. The spliced view would agree: compaction never cuts
+        mid-tool-call (``compaction.find_valid_cut_points``).
 
-        Walks the RAW root→target ancestor chain (:meth:`path`, not
-        :meth:`context_for`'s compaction/elide-spliced view — compaction never
-        cuts mid-tool-call, see ``compaction.find_valid_cut_points``'s "toolResult:
-        not a cut point", so the two views agree on this question), tracking the
-        most recently seen assistant message's outstanding tool_call ids and
-        clearing each as its ``toolResult`` is walked past. Whatever is still
-        outstanding at ``target_id`` is the gap.
+        Args:
+            target_id: The proposed fork point; ``None`` (before the root) is
+                trivially safe.
 
-        Returns a human-readable rejection reason, or ``None`` if ``target_id`` is
-        a safe fork point.
+        Returns:
+            A human-readable rejection naming the outstanding calls, or ``None``
+            if ``target_id`` is a safe fork point.
 
         Raises:
             ValueError: ``target_id`` names no entry — Fail-Early, mirroring
@@ -600,7 +615,12 @@ class ConversationTree:
         The entry-level fold is ``_build_active_path`` (anchor on the LAST summary
         in the path; drop kept-region entries whose linear order precedes the
         boundary); the entry→message conversion is ``get_active_messages``.
-        ``leaf=None`` uses this tree's leaf.
+
+        Args:
+            leaf: The position to fold at; ``None`` uses this tree's leaf.
+
+        Returns:
+            The loop messages the model receives from ``leaf``.
         """
         return entries_to_messages(self.context_entries(leaf))
 
@@ -611,7 +631,14 @@ class ConversationTree:
         to loop messages). This is exactly what ``SessionManager._build_active_path``
         returned, so it feeds ``compaction.prepare_compaction`` unchanged — the
         AgentSession compaction path builds it over the live entries instead of
-        the retired System-A manager (§2.6). ``leaf=None`` uses this tree's leaf.
+        the retired System-A manager (§2.6).
+
+        Args:
+            leaf: The position to fold at; ``None`` uses this tree's leaf.
+
+        Returns:
+            The spliced entries: system prompts carried across the fold, the last
+            splice anchor, the kept region, then everything after the anchor.
         """
         leaf_id = self._leaf if leaf is None else leaf
         return self._active_path_entries(leaf_id)
@@ -672,11 +699,15 @@ class ConversationTree:
     def entry(self, entry_id: str) -> dict[str, Any]:
         """The raw log entry ``entry_id`` names.
 
-        Exists for the tree browser's detail pane, which renders a node's FULL
-        body while :class:`TreeNode` carries only the one-line ``preview`` the
-        browser row needs. Widening ``TreeNode`` instead would push the whole
-        message onto every consumer of :meth:`tree` — the RPC surface included —
-        to serve one pane.
+        For the tree browser's detail pane: :class:`TreeNode` carries only the
+        one-line ``preview``, and widening it would push every body onto every
+        consumer of :meth:`tree`, the RPC surface included.
+
+        Args:
+            entry_id: The id to look up.
+
+        Returns:
+            The entry itself, not a copy.
 
         Raises:
             KeyError: no entry has that id. The browser builds its rows from these
@@ -822,9 +853,12 @@ class ConversationTree:
         item 2), which puts a user message back in the input to be edited — a
         preview would hand back a truncated version of what the reader typed.
 
-        ``""`` for an entry with no message at all (a ``navigate``, an
-        ``agent_spec``) — those are records, not text, and the caller asking for
-        one is asking about the wrong node rather than hitting an error.
+        Args:
+            entry_id: The entry to read.
+
+        Returns:
+            The message's text; ``""`` for an entry with no message (a ``navigate``,
+            an ``agent_spec``), which is a record, not text, rather than an error.
 
         Raises:
             KeyError: no entry has that id, same as :meth:`entry`.
@@ -837,7 +871,10 @@ class ConversationTree:
         A well-formed session has one root (first entry with ``parentId is None``);
         orphaned entries (broken parent chain) are also returned as roots. Each
         node's children are sorted by timestamp (oldest first); ``is_leaf`` marks
-        this tree's leaf. Roots keep load order.
+        this tree's leaf.
+
+        Returns:
+            The root nodes, in load order.
         """
         nodes: dict[str, TreeNode] = {}
         for entry in self._entries:
@@ -1146,28 +1183,23 @@ class ConversationTree:
         return None
 
     def subtree_text(self, from_id: str) -> str:
-        """Concatenated text of the whole SUBTREE at ``from_id`` (BFS, every descendant).
+        """Concatenated text of the whole SUBTREE at ``from_id``, breadth-first.
 
-        Verbatim port of ``_extract_branch_messages`` (``session_manager.py:627-702``)
-        with ``parent_id`` → ``parentId`` and a ``branch_summary`` case added
-        alongside ``compaction`` (§2.4). Feeds the "summarize branch" prompt.
+        Port of ``_extract_branch_messages`` (``session_manager.py:627-702``) with a
+        ``branch_summary`` case beside ``compaction`` (§2.4). Feeds the "summarize
+        branch" prompt.
 
-        **The bound is structural: descendants of the node the caller named** — nothing
-        else. It reaches down, never sideways: a sibling subtree, a concurrent branch
-        rooted elsewhere, and the path above ``from_id`` are all outside it,
-        because none of them is reachable by following ``parentId`` edges downward from
-        ``from_id``.
+        The bound is structural: ``from_id`` and everything below it, never a
+        sibling or the path above. Who wrote an entry does not matter, so a
+        sub-agent's branch under ``from_id`` is included (docs/LANE-REMOVAL.md §6.2).
+        A caller wanting one path asks for :meth:`context_for` instead.
 
-        This is deliberately NOT the lane filter it replaces (docs/LANE-REMOVAL.md §6.2).
-        That filter asked *who wrote this entry* and refused to descend from a head-written
-        entry into a sub-agent branch hanging under it; this asks *what did the caller
-        name*, and a sub-agent's subtree under ``from_id`` IS part of what happened
-        there, so it is summarized with it. The difference is visible exactly when the
-        two disagree — and when they do, write provenance is the wrong answer: an
-        extension that deliberately summarizes a region containing a sub-agent's work
-        has said which region it means, while the old rule silently returned a different
-        one. A caller that wants only the sub-agent's own work names the branch root; a
-        caller that wants only one path asks for ``context_for``, not this.
+        Args:
+            from_id: The subtree's root, itself included.
+
+        Returns:
+            One ``[role]: text`` (or ``[kind]: summary``) line per message or
+            summary entry, newline-joined; ``""`` for an unknown id or empty tree.
         """
         if not self._entries:
             return ""
