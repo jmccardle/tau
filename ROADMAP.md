@@ -590,6 +590,102 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   2.1** (`docs/TAU-SERVE.md` §5 built note). The records and the schema
   generator are in core; `get_capabilities` and `docs/RPC-PROTOCOL.md` are
   typed to their leaves, with `$defs`.
+- **Code mode: the model writes a Python script and the tools run inside it**
+  (added 2026-10-12). **Status: researched, prototyped on an unmerged branch, not
+  on master, not scheduled.** The owner calls it a strong centrepiece candidate
+  for 0.13.0, not yet its committed target. The record is `docs/CODE-MODE.md`
+  (`7303954`). The prototypes are on the local, unpushed branch
+  `feat/code-mode-experiments` (tip `1039fd8`, 2026-10-06). It merges six
+  experiments, and three of them are code mode:
+  - tool exposure, nested calls and typed returns: `9e1d1b0`, `65a162d`, then a
+    cache-safe rework in `d1fcdad` and `fc9539b` (record in
+    `experiments/tool-exposure/RESULTS.md`);
+  - sandbox providers: `3f335b9` (`experiments/sandbox-providers/RESULTS.md`);
+  - a stateful Monty sandbox whose state is kept in the tree: `51579aa`
+    (`experiments/stateful-sandbox/RESULTS.md`).
+
+  The suite on that tip was 6636 passed and 0 failed on 3.11, and 6637 and 0 on
+  3.14t.
+  - **Why τ wants it** (`CODE-MODE.md` §1): declaration cost is not the reason.
+    The seven built-ins come to about 1k tokens. The reasons are that tool
+    results make up 76.5% of stored message text, and that tool-calling runs have
+    a median length of 4 and a p90 of 33 completions. A script keeps
+    intermediate results out of the context and collapses a run into one
+    completion. Declaration cost becomes τ's problem only when τ gains an MCP
+    client.
+  - **Decided:**
+    - The script language is Python (§6.2).
+    - The interpreter is not a security boundary, because `bash` already runs
+      with the user's privileges. It buys four things (§3): a scoped bridge
+      whose calls pass through the same hooks, credentials kept in the harness,
+      results kept out of the context, and resource limits.
+    - In-process `exec` and subinterpreters are rejected as isolation (§6.2,
+      measured).
+    - **Both Monty and CPython ship**, behind a pluggable `SandboxProvider`. Each
+      provider × lifetime renders its own system-prompt section and tool
+      description, and the config can override them (owner, 2026-10-06; built in
+      `3f335b9`). This supersedes §8's "nothing here picks one".
+    - **The declared `tools` block never changes on its own** (owner,
+      2026-10-06). Loading a deferred tool appends its schema as a message, and
+      the model calls it through a fixed `call_tool` dispatcher. Masking a tool
+      keeps it declared and refuses the call. Only an explicit
+      `redeclare_tools` changes the block, and `tau_agent_core` reports the
+      cache miss that would cost. Built in `d1fcdad`; `381d594` measured it
+      holding the cache on Haiku. This replaces §5.2's "small cost, one risk".
+    - `parent_tool_call_id` bumps the wires to RPC 2.2 and serve 0.9 (`fc9539b`).
+    - The exposure vocabulary as built is `direct`, `model-only`, `callable`,
+      `deferred` and `hidden`. §5.2's `codemode` value was renamed `callable`.
+    - Typed returns are read from return type hints.
+  - **Open:**
+    - Whether to review the branch, push it or merge it. It moves serve to 0.9,
+      and tau-code still speaks 0.8, so a release cut from it would refuse every
+      tau-code client.
+    - The sandbox providers still call tools through `DirectToolInvoker`, which
+      skips the hooks: no `tool_call` veto and no events. Moving them to
+      `ctx.execute_tool` is the next integration step.
+    - The `session` lifetime is a hidden channel: its heap is keyed by cursor,
+      not by tree position. Either drop it on navigate and fork, or back it with
+      the stateful-sandbox entries. That experiment met tree-as-truth by loading
+      a dump, not by replaying scripts.
+    - Whether a code-mode section is a real `{{codemode}}` system-prompt field or
+      a `before_agent_start` append, which is last-wins.
+    - Whether core registers `tool_search` and `call_tool` when the first
+      deferred tool appears.
+    - Whether a head warns when a mid-session `register_tool` changes the block.
+    - Whether `[dev]` keeps pulling `pydantic-monty`. The release matrix has
+      never run it.
+    - Calls still running when a script ends are cancelled (§6.5).
+    - Behaviour on interruption (§8): a sequential tool called from parallel
+      script code currently runs concurrently.
+    - A core-side reading of nested calls that all three heads render.
+    - `on_update` is still never passed.
+    - The headless `tau -p --continue` bug that lost tool-written entries is
+      fixed on the branch (`3a74ed7`), not on master.
+  - **Unmeasured, and it decides default versus opt-in** (§8): whether τ's
+    default local model writes reliable scripts or uses `tool_search` reliably.
+    Every live run so far used Haiku 4.5, because the local model was down.
+  - **Depends on:**
+    - "Never bust the prompt cache automatically", which is built on the branch.
+    - The tree-as-truth rule (`EXTENSIONS-ORCHESTRATION-PLAN.md` §4), which
+      governs the active tool set, `store`/`load` and any persistent lifetime.
+    - The trust gate above. It is not a prerequisite in the record (inferred),
+      but a permission gate written as a `tool_call` hook reaches script calls
+      only once those calls go through the pipeline.
+    - R2 `count_tokens` above, which would let §1's chars/4 estimates be
+      re-measured as real tokens (inferred).
+    - An MCP client extension, which §7 sequences after the exposure modes. A
+      JMFTS `ToolRanker`, and scripts stored as searchable skills, are both
+      blocked by `customEntry` projecting to `""` (`tau_jmfts/store.py:130`).
+  - **Cost, as the record prices it:**
+    - The nested-call seam: split `_prepare_tool_call` and `_apply_after_hooks`
+      out of the loop, and a minor wire bump. Both are now built.
+    - Exposure on the definition: small.
+    - Monty: an extra pinned `>=1.1,<1.2`, with wheels on every supported
+      Python.
+    - CPython: no new dependency, about 4 ms per fresh interpreter with a
+      prewarmed spare.
+    - Monty's per-call cost measured 353 µs on a loaded machine, against
+      §6.2's 92 µs. A quiet re-run is owed before either figure is quoted.
 
 ---
 
