@@ -94,6 +94,7 @@ Findings, which means writing the finding rather than lengthening the clause.
 `CODE-MODE.md` (a Python script calling every extension's tools in a sandbox; the seams, interpreter candidates and lifetime; nothing built) ·
 `CONSTRAINED-GEN-AND-BRANCHING-PLAN.md` · `JMFTS-INTEGRATION-PLAN.md` ·
 `RESEARCH-INTEGRATION-EVALUATION.md` · `ALPHA-SELECTOR-SPEC.md` ·
+`TRUST-GATE.md` (Tier 8; research record 2026-10-12, nothing built — six open questions) ·
 `M2-RESULTS.md` · `M3-DESIGN.md` · `WORKSTREAM-CROSSWALK.md` (the status index across the four vocabularies).
 
 **Upstream llama.cpp:** `UPSTREAM-LLAMACPP-SILENT-OVERRIDES.md` (two reproduced silent constraint overrides) ·
