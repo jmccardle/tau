@@ -251,7 +251,7 @@ class CompactionPolicy:
 
         Args:
             session_model: The session's model, returned for every mode but
-                ``local_summarizer`` — the shipped behaviour, unchanged.
+                ``local_summarizer``.
 
         Returns:
             ``(summarizer_model, summarizer_api_key)`` under ``local_summarizer``;
@@ -434,7 +434,7 @@ def policy_for_scenario(
         max_tokens_per_turn: the run's declared bound on per-turn context growth.
 
     Returns:
-        The scenario's policy; every scenario currently maps to ``turn_cap``.
+        A ``turn_cap`` policy, the only mode this builder constructs.
 
     Raises:
         CompactionPolicyError: unknown scenario, or the scenario's declared mode is
