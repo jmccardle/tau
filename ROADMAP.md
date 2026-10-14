@@ -6,6 +6,19 @@ this file. Older entries cite pi as "the source of truth"; that stopped being th
 arrangement on 2026-09-03 (`CLAUDE.md`, "Parity with pi is not an objective") and
 those citations are provenance now.
 
+**State (2026-10-14): 0.13.0 in progress, not cut.** `master` = `origin/master`
+= `df6143d`; `github` was not pushed and is behind by the 50 commits of
+`354f1f0..df6143d`. Version literals still read `0.12.0`. Since 0.12.0:
+`ProviderHttpError` (R1), provider retry (`docs/PROVIDER-RETRY.md`),
+`tau --export-html` (`docs/HTML-EXPORT.md`), prompt templates and skills
+(`docs/PROMPT-TEMPLATES-AND-SKILLS.md`), the M4 library fix
+(`docs/EXTENSION-PROVIDERS.md` §2), Mistral list-valued content, `ctx.cwd`, a
+cassette contract suite (`docs/PROVIDER-COVERAGE.md`), the trust-gate research
+record (`docs/TRUST-GATE.md`, nothing built) and docstring coverage 1152/1152.
+Suite on `df6143d`: **6616 passed, 158 skipped, 6 deselected, 3 xfailed, 0
+failed**; the release matrix has not run. Open work is tracked as issues on the
+`john/tau` forgejo repo from this date (#1–#16), milestone `0.13.0`; #1 tracks the cut.
+
 **State (2026-10-04): 0.12.0 shipped.** Tag `v0.12.0` → `bebdedf`, all five
 distributions on PyPI (`publish.yml` run 37225374694). Local, `origin` and
 `github` agreed at `bebdedf` before the tag. CI on the tag: **6446 passed,
@@ -511,13 +524,12 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   rather than being displaced by it, and has `--no-context-files`/`-nc`
   (`cli.py:298`). The default config no longer sets `system_prompt` at all
   (`133e74d`). See `docs/PLAN-0.9.3.md` §1.
-- **Trust gate** (Tier 8) — still open; no `trust.json`, no `TrustGate` symbol,
-  no `--approve`/`--no-approve` flag, re-grepped 2026-08-28.
-- **`--export` HTML** (Tier 9) — still open. `tau-agent-core/.../export.py`
-  defines the format *types* (markdown and HTML, per PHASE-6-SUBPHASE-2), and
-  `cli.py`'s only export flag is `--export-session`, a JMFTS→`.jsonl` copy
-  (`cli.py:421-426`, `_run_export_session` at `cli.py:636`). No HTML exporter is
-  reachable from the CLI.
+- **Trust gate** (Tier 8) — **researched 2026-10-12, nothing built**
+  (`docs/TRUST-GATE.md`). Waits on the owner's answers in its §6; Q1 is an
+  opt-in config flag versus the full gate. Project-scope skills wait on it.
+- ~~**`--export` HTML** (Tier 9)~~ — **built 2026-10-12, unreleased**
+  (`docs/HTML-EXPORT.md`). `tau --export-html REF [OUT]`; the renderer is the
+  pure `tau_agent_core.export.render_session_html`. No image size cap (§6).
 - ~~**pi-faithful `--mode json`** (Tier 9)~~ — **struck 2026-09-17.** The
   objective was to make `--mode json` emit pi's `AgentSessionEvent` schema. It
   is retired rather than done, for two reasons measured that day. Nothing speaks
@@ -536,13 +548,14 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   486 KB for the same answer, with a linearity gate. That was τ's own bug, not a
   divergence from pi, and pi having hit it too (its regression #7290) is
   evidence it is real rather than a reason to copy anything else.
-- **Tier 10 — templates and skills legs** (the themes leg shipped 2026-08-24,
-  see above). Still absent on 2026-08-28: no `PromptTemplate` type, no
-  `$ARGUMENTS` handling, no `SKILL.md` loader, no shared resource-loader
-  abstraction. The `{{fields}}` expansion added in `bf8d2fc` is system-prompt
-  field substitution and is a different mechanism.
-- **Tier 11 M4/M5** — `registerProvider`, package manager. Deliberately
-  deferred (see "Shipped" above), not stalled.
+- ~~**Tier 10 — templates and skills legs**~~ — **built 2026-10-12, unreleased**
+  (`docs/PROMPT-TEMPLATES-AND-SKILLS.md`), user and explicit scopes; the project
+  scope for skills waits on the trust gate. Open: a colliding template name is
+  silently unreachable (§9), and `$1` cannot be escaped.
+- **Tier 11 M4/M5** — the library fix is **built 2026-10-12**: an unregistered
+  vendor no longer inherits OpenAI's endpoint (`docs/EXTENSION-PROVIDERS.md`
+  §2). An extension-API `register_provider` (§3) and a package manager (§4) are
+  researched, not built, and wait on the four decisions in §5.
 - **RPC says `cursor` where it means an entry id** — **done 2026-10-03, RPC
   2.0 / serve 0.5** (`docs/TAU-SERVE.md` §7.4). The entry id is `leaf`, the caret
   is `offset`, `is_cursor` is `is_leaf`. tau-code needs the matching update.
@@ -726,10 +739,10 @@ visible, not a real debt.
 - ~~**No repeat-tool-call detection in `agent_loop.py`**~~ (0.9.3 §4.2) —
   **fixed in 0.9.5.** `AgentLoopConfig.repeat_tool_call_limit`, default 3, `ge=2`
   (`agent_loop_types.py:83`), enforced at `agent_loop.py:322`.
-- **No retry or backoff anywhere in `tau-llm`** (0.9.3 §4.3). The seven-backend
-  probe found UnoRouter 429s that name their own retry interval, so the
-  information is on the wire and unused. **Re-checked 2026-09-13: still open**,
-  and now the oldest item on this list.
+- ~~**No retry or backoff anywhere in `tau-llm`**~~ (0.9.3 §4.3) — **built
+  2026-10-12, unreleased** (`docs/PROVIDER-RETRY.md`): retry before any output,
+  up to three times, `Retry-After` honoured, on by default. JMFTS must pass
+  `options["retry"]=False` or it retries twice.
 - ~~**A stated `--max-turns` ceiling is still reached silently**~~ — **fixed in
   0.9.5.** `"max_turns"` and `"repeat_tool_calls"` are `end_reason` values
   (`events.py:43`), set at `agent_loop.py:331` and `:483`, and documented on the
@@ -948,23 +961,14 @@ and two items promoted out of the debt list.
    it elsewhere.
 4. **Trust gate** (Tier 8) — security-ordered; Tier 10's skills leg and
    project-local extensions are gated behind it per the original plan.
-5. **Tier 9** — `--export` HTML. The other half of this tier, a pi-faithful
-   `--mode json`, was struck on 2026-09-17; see "Open work". Both seams
-   (`entries()`/`header`) are already in place, and `export.py` already defines
-   the HTML format types. Re-checked 2026-09-13: no HTML exporter is reachable
-   from `cli.py`.
-6. **Tier 10's remaining legs** — shared resource loader, templates, skills. No
-   `PromptTemplate` type, no `$ARGUMENTS` handling, no `SKILL.md` loader exists
-   in any `src` tree (re-grepped 2026-09-13). Themes shipped 2026-08-24 and did
-   not need the shared loader, so that abstraction is still unwritten and still
-   unproven.
-7. **Docstring coverage** — 441 of 958 marked objects are incomplete (54.0%
-   complete, up from 41.7% on 08-28). The gate cannot enter the pre-commit hook
-   until this moves.
-8. **Retry/backoff in `tau-llm`** (0.9.3 §4.3) — unscheduled since 2026-08-21
-   and the oldest open item on this file.
-9. **Tier 11 M4/M5** — `registerProvider`, package manager. Lowest priority;
-   deliberately deferred, no user demand signal yet.
+5. ~~**Tier 9** — `--export` HTML~~ — **built 2026-10-12** (`docs/HTML-EXPORT.md`).
+6. ~~**Tier 10's remaining legs**~~ — **built 2026-10-12**
+   (`docs/PROMPT-TEMPLATES-AND-SKILLS.md`).
+7. ~~**Docstring coverage**~~ — **1152/1152 on 2026-10-14**, 0 drift. Whether
+   `check_docs_coverage.py` now enters the pre-commit hook is open.
+8. ~~**Retry/backoff in `tau-llm`**~~ — **built 2026-10-12** (`docs/PROVIDER-RETRY.md`).
+9. **Tier 11 M4/M5** — library half built 2026-10-12; the extension API and the
+   package manager wait on `docs/EXTENSION-PROVIDERS.md` §5.
 Closed items from earlier orderings, kept so a reader can tell a finished item
 from one that was quietly dropped:
 
