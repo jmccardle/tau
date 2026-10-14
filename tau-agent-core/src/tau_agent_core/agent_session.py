@@ -478,22 +478,20 @@ class _SideCompletionWatch:
 
 @agent_facing(topic="sessions")
 class AgentSession:
-    """High-level session API. Combines agent loop, a session log, and events.
+    """One conversation: an agent loop, its events, and a cursor over a session log.
 
-    This is the primary entry point for both SDK and TUI usage.
-
-    Every turn extends one :class:`~tau_agent_core.cursor.Cursor` over a
-    :class:`~tau_agent_core.session_log.SessionLog`. Construct with ``session_log``
-    to open a cursor at the log's default leaf, or with ``cursor`` to extend a
-    position someone already holds.
+    The entry point for the SDK and every head. Every turn extends one
+    :class:`~tau_agent_core.cursor.Cursor` over a
+    :class:`~tau_agent_core.session_log.SessionLog`.
 
     Turn admission and the fork and thread-safe task registries follow
     docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 
     Args:
         model: The model the head cursor's turns call.
-        session_log: The tree to extend, from a cursor at its newest leaf.
-            Exactly one of ``session_log`` and ``cursor`` is required.
+        session_log: The tree to extend, from a new cursor at its
+            :func:`~tau_agent_core.session_log.default_leaf`. Exactly one of
+            ``session_log`` and ``cursor`` is required.
         cursor: A position someone already holds, to extend instead.
         system_prompt: The system prompt for the head cursor's turns.
         tools: The built-in tools offered to the model. Two with one name raise
@@ -1193,23 +1191,12 @@ class AgentSession:
         reason: SideCompletionReason,
         summarizer_model_id: str,
     ) -> AsyncIterator[_SideCompletionWatch]:
-        """Bracket one piece of side work with its three events.
+        """Bracket one piece of side work (a compaction or branch summary) with events.
 
-        Side work — a compaction summary, a branch summary — spends tokens and
-        produces text outside any turn, so nothing in the agent-loop vocabulary
-        reports it and a head could only show a spinner. This emits
-        ``side_completion_start``, one ``side_completion_update`` per fragment
-        through the yielded watch, and exactly one ``side_completion_end``.
-
-        **Every exit emits the end**, including an exception, which then
-        propagates. A renderer opens a box on the start and has no other way to
-        learn the work is over; a failure that emitted nothing would leave that
-        box open for the life of the session (docs/STREAMING-SIDE-WORK.md §3).
-
-        Public because the second caller is outside this class:
-        ``TauBackend.navigate_tree`` brackets a branch summary, which
-        :func:`tau_agent_core.tree_ops.summarize_and_navigate` performs against a
-        log this session does not hold.
+        Emits ``side_completion_start`` on entry, one ``side_completion_update``
+        per fragment through the yielded watch, and exactly one
+        ``side_completion_end`` on every exit. An exception still gets the end
+        (``is_error=True``) and then propagates (docs/STREAMING-SIDE-WORK.md §3).
 
         Args:
             purpose: Which side completion this is.
@@ -1410,12 +1397,10 @@ class AgentSession:
         return self._events.on("all", handler)
 
     def subscribe_channel(self, channel: str, handler: Callable[..., Any]) -> Callable[[], None]:
-        """Subscribe to one of the bus's NON-``AgentEvent`` channels.
+        """Subscribe to one of the bus's string channels, outside the ``AgentEvent`` stream.
 
-        :meth:`subscribe` covers the ``AgentEvent`` stream, whose ``type`` Literal is
-        deliberately closed (S49); lifecycle rides separate string channels.
-
-        The channels a renderer cares about (handlers take these as keywords):
+        :meth:`subscribe` covers ``AgentEvent``. The channels a renderer cares
+        about (handlers take these as keywords):
 
         - ``"submission_start"`` — ``(submission, text, images, cursor)``, once per
           admitted submission that will actually run a turn, before the loop starts.
@@ -1463,22 +1448,13 @@ class AgentSession:
         task.add_done_callback(self._session_event_tasks.discard)
 
     async def emit_session_start(self, reason: str = "startup") -> None:
-        """Fire the notify-grade ``session_start`` lifecycle hook (S41).
+        """Bind this session to the running loop, then fire ``session_start`` (S41).
 
-        Dispatched through the session's :class:`ExtensionRunner` (not the notify
-        ``EventBus``) so a handler's exception is SURFACED (S44), not swallowed.
-        Called by the frontends *after* extensions are loaded — so a
-        ``session_start`` handler can reconstruct state from ``ctx.entries()`` /
-        install watchers with its registration already in place. Returns nothing:
-        the hook has no path effect. Gated on ``has_handlers`` for the
-        zero-extension fast path (no event dict built when nobody listens).
-
-        Also claims the loop binding (:meth:`_bind_loop`), UNCONDITIONALLY — before
-        the zero-extension fast path below, because the binding is about this
-        session, not about who is listening. This is the earliest moment a frontend
-        reliably runs the session on its loop, and a ``session_start`` handler is
-        exactly where a driver opens the subscription/timer/socket whose callbacks
-        will later need :meth:`submit_threadsafe` to have somewhere to marshal to.
+        Call it after extensions are loaded, so a handler finds its registration
+        in place. The loop binding (which :meth:`submit_threadsafe` marshals to)
+        happens whether or not anything listens. Dispatched through the
+        :class:`ExtensionRunner`: a handler's exception is reported through its
+        error sink (S44) and the remaining handlers still run.
 
         Args:
             reason: Why the session began, as pi's ``SessionStartEvent.reason``:
@@ -1550,8 +1526,12 @@ class AgentSession:
             replace what :meth:`get_extension_state` reports.
 
         Raises:
-            Exception: An explicit extension's load failure, unless
-                ``collect_explicit_errors``.
+            FileNotFoundError: An explicit path names no file.
+            ExtensionCapabilityError: An explicit extension declares a capability
+                this session lacks, or an invalid ``CONFIG_SCHEMA``.
+            Exception: Whatever an explicit extension's import or ``register``
+                raises, unchanged. None of these is raised when
+                ``collect_explicit_errors`` is set.
         """
         if extensions_config is not None:
             self._extensions_config = extensions_config
@@ -1848,8 +1828,12 @@ class AgentSession:
             The outcome; ``ok=False`` only for an unknown extension.
 
         Raises:
-            Exception: The file fails to load. The extension is left torn down
-                (Fail-Early), so an import failure is never ``ok=False``.
+            FileNotFoundError: The file is gone from disk.
+            ExtensionCapabilityError: The new code declares a capability this
+                session lacks, or an invalid ``CONFIG_SCHEMA``.
+            Exception: Whatever the module's import or ``register`` raises,
+                unchanged. In every case the extension is left torn down, never
+                reported as ``ok=False``.
         """
         target = self.resolve_extension_target(path)
         if target is None:
@@ -2490,6 +2474,7 @@ class AgentSession:
             consumed input or a command.
 
         Raises:
+            ValueError: ``cursor`` was not opened by this session.
             RuntimeError: Called off the session's own event loop (use
                 :meth:`submit_threadsafe`); the derived depth exceeds
                 ``MAX_SUBMISSION_DEPTH``; or the call is reentrant, from a hook on
@@ -2722,11 +2707,12 @@ class AgentSession:
         no extension hooks unless ``hooks``. Its turn is an ordinary submission
         (``source="agent"``, ``submitter="fork:<label>"``) whose events carry its
         cursor's id. Its first append records that frame as a config entry, so the
-        sub-agent's spec is in the tree. The cursor is closed before this returns.
+        sub-agent's spec is in the tree. The cursor is closed before this returns,
+        unless a turn still holds it.
 
-        **Failure is contained, not propagated** (§9.2/5): a sub-agent that raises
-        marks its branch with a ``branch_error`` entry and returns ``ok=False``; one
-        bad evaluator in a fan-out must not kill the turn that spawned it.
+        Failure is contained, not propagated (§9.2/5): a sub-agent that raises
+        leaves a ``branch_error`` entry and returns ``ok=False``, as does a
+        refused submission (without the entry).
 
         Args:
             at: The entry to branch from; ``None`` is before the root.
@@ -3371,31 +3357,24 @@ class AgentSession:
     async def compact_messages(
         self, messages: list[dict[str, Any]], custom_instructions: str | None = None
     ) -> list[dict[str, Any]] | None:
-        """Compact a caller-supplied message list and return the shortened list.
+        """Summarize everything before the last user turn of a caller-held list.
 
-        This is the **manual** compaction path (the TUI's ``/compact``): it
-        summarizes everything before the most recent user turn and keeps that
-        turn intact, returning a new list shaped ``[<system messages>, <summary
-        as a user message>, <most recent user turn onward>]``. It is for callers
-        whose own store — not the session manager — is the authoritative context
-        they send to the model (the TUI's ``current_chat.messages`` is exactly
-        this).
-
-        The cut is **count-based** (keep the last user turn), deliberately unlike
-        auto-compaction's token-budget cut: a manual compaction should visibly do
-        something on a normal-sized chat, not no-op until the conversation
-        exceeds ``keep_recent_tokens``. The summary's tokens go to the side ledger.
+        For a caller whose own message list, not the session log, is the context
+        it sends. Unlike auto-compaction's token-budget cut, the cut is by count:
+        the most recent user turn onward is kept whole, whatever its size. The
+        summary's tokens go to the side ledger.
 
         Args:
             messages: The context to compact; not modified.
             custom_instructions: Extra guidance for the summarizer, or ``None``.
 
         Returns:
-            The shortened list, or ``None`` when there is nothing older to
-            compact (zero or one user turn), so the caller can no-op.
+            A new list ``[<system messages>, <summary as a user message>, <last
+            user turn onward>]``, or ``None`` when there is at most one user
+            turn and so nothing older to compact.
 
         Raises:
-            CompactionError: if summary generation fails. Fail-Early.
+            CompactionError: The summarizer's completion failed or was aborted.
         """
         # System messages are never summarized; set them aside and restore them.
         system_msgs = [m for m in messages if m.get("role") == "system"]
@@ -3539,21 +3518,15 @@ class AgentSession:
     ) -> ContextUsageEstimate:
         """This session's context size, counted with its own counter and fit.
 
-        The single place the harness answers "how big is the context": the header,
-        ``get_session_stats``, both compaction checks and every extension read the
-        same number from here, so a display and a trigger can never disagree.
-
-        ``messages`` defaults to the active path — or, while an agent loop is
-        mid-turn, to the context that loop is actually holding. The persisted path
-        is stale there: nothing this turn produced reaches the log until the turn
-        ends, so a bare reading during a twenty-tool-call turn would report the
-        conversation as it stood before the turn began. The loop publishes its
-        view at each turn boundary (:meth:`_compact_mid_turn`), which leaves one
-        gap: the FIRST request of a turn is still measured against the persisted
-        path, so it omits that turn's own user message.
+        The one number the header, ``get_session_stats``, both compaction checks
+        and every extension read, so a display and a trigger never disagree.
 
         Args:
-            messages: The messages to measure; ``None`` means the default above.
+            messages: The messages to measure. ``None`` means the context the
+                running turn holds (published at each turn boundary by
+                :meth:`_compact_mid_turn`), else the active path. A turn's FIRST
+                request is still measured on the persisted path, so it omits
+                that turn's own user message.
 
         Returns:
             The estimate; its ``count`` carries the provenance — whether a
@@ -4214,24 +4187,18 @@ class AgentSession:
         self._extension_api.context.set_record_sink(sink)
 
     def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
-        """Set the headless dialog-answer policy for this session (E7 §3 / S48).
+        """Set the headless dialog-answer policy for every loaded extension (E7 §3 / S48).
 
-        Threads the resolved ``--ui-defaults`` / config ``"ui_defaults"`` map onto
-        the session's ONE shared :class:`ExtensionUI` (via the context), so a
-        headless dialog opened by any loaded extension auto-answers only for the
-        methods the user explicitly opted into — every other headless dialog
-        raises :class:`HeadlessDialogError` (Fail-Early, D-E6-2). This is run-scoped
-        runtime config: it is NOT persisted onto the session tree (the policy is
-        re-sourced each run, like ``--ext-config``). The TUI path never calls this —
-        it sets a live delegate instead, so a human answers.
+        A headless dialog auto-answers only for the methods in ``policy``; any
+        other raises :class:`HeadlessDialogError`. Run-scoped: nothing is written
+        to the session tree.
 
         Args:
-            policy: Dialog method name to the answer token it auto-answers with.
+            policy: Dialog method name to the answer token it auto-answers with
+                (the resolved ``--ui-defaults`` / config ``"ui_defaults"``).
 
         Raises:
-            ValueError: an unknown method or answer token (propagated from
-                :meth:`ExtensionUI.set_headless_defaults`); the frontend renders it
-                as a clean CLI error.
+            ValueError: An unknown method or answer token.
         """
         self._extension_api.context.set_headless_ui_defaults(policy)
 
@@ -4424,7 +4391,8 @@ class AgentSession:
             display-only ``output``.
 
         Raises:
-            RuntimeError: The command has no callable ``handler`` (Fail-Early).
+            RuntimeError: The command has no callable ``handler``.
+            Exception: Whatever the handler raises, unchanged.
         """
         command = self._registry.get_command(name)
         if command is None:

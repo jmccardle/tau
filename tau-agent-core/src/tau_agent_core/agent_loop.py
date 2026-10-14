@@ -184,8 +184,7 @@ def completed_messages(exc: BaseException) -> list[Any]:
 class AgentLoop:
     """The core agent loop: drives conversations, executes tools, emits events.
 
-    Reference: PHASE-2-SUBPHASE-1.md, "Implementation Outline" section.
-    Reference: SUBPHASE-0.0.md, "5. Agent Events" section.
+    Events follow docs/SUBPHASE-0.0.md, "5. Agent Events".
 
     Args:
         config: Agent loop configuration.

@@ -330,20 +330,20 @@ class SessionManager:
         )
 
     def list_sessions(self) -> list[SessionInfo]:
-        """List the sessions in this manager's sessions directory.
-
-        Named ``list_sessions`` rather than ``list`` so it does not shadow the
-        builtin in this module's annotations.
+        """List the sessions in this manager's sessions directory, or in memory.
 
         Returns:
-            Sessions newest first by creation time; unreadable files are skipped.
+            Sessions newest first by creation time. An in-memory manager lists
+            the root ``session`` entries in its store instead of any directory.
+            An empty, unreadable or non-JSON file is skipped.
         """
         return self._list_sessions_from_dir(self._sessions_dir)
 
     def list_all(self) -> list[SessionInfo]:
         """List sessions; currently identical to :meth:`list_sessions`.
 
-        Despite the name it reads only this manager's sessions directory.
+        Despite the name it reads only this manager's sessions directory (or
+        its in-memory store).
 
         Returns:
             Sessions newest first by creation time.
@@ -778,12 +778,10 @@ async def summarize_branch(
     custom_instructions: str | None = None,
     on_text_delta: Callable[[str], Any] | None = None,
 ) -> tuple[str, dict[str, int]]:
-    """Summarize an abandoned branch's text into a concise summary.
+    """Summarize an abandoned branch's text with one model call; persists nothing.
 
-    The engine behind the tree-browser's "Summarize" modes; the caller
-    (``tree_ops.summarize_and_navigate``) persists the result as a
-    ``branch_summary`` entry. Fail-Early: a failed, aborted or empty response
-    raises; no summary is fabricated from raw text.
+    The caller (``tree_ops.summarize_and_navigate``) writes the result as a
+    ``branch_summary`` entry (docs/SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3).
 
     Args:
         branch_text: The branch as text, from ``ConversationTree.subtree_text``.
@@ -800,10 +798,8 @@ async def summarize_branch(
 
     Raises:
         ValueError: ``branch_text`` is empty or whitespace.
-        RuntimeError: ``model`` is a name, or the completion failed or returned
-            no text.
-
-    Reference: SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3.
+        RuntimeError: ``model`` is a name, or the completion failed, was
+            aborted or returned no text.
     """
     from tau_agent_core.completion import CompletionFailed, resolved_complete
     from tau_agent_core.usage import usage_of
