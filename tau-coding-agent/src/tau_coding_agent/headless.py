@@ -499,6 +499,18 @@ def report_truncation(messages: list[dict[str, Any]], max_tokens: int | None) ->
     return notice
 
 
+def report_provider_retry(event: dict[str, Any]) -> None:
+    """Say on stderr that a request failed before any output and is being re-sent.
+
+    The ``on_event`` sink for :meth:`Backend.stream_submission`; every other kind
+    is ignored. stderr for the reason :func:`report_cache_miss` gives, and in
+    both modes, because ``--mode json`` puts the event on stdout for a machine
+    and this line is for the person watching (docs/PROVIDER-RETRY.md §5).
+    """
+    if event.get("kind") == "provider_retry":
+        print(f"[τ] {event['text']}", file=sys.stderr, flush=True)
+
+
 def build_print_submission(prompt_text: str) -> Submission:
     """The record that says what ``tau -p "…"`` means (SUBMISSION-LIFECYCLE phase 3).
 
@@ -862,7 +874,11 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 pass
 
             _text, _usage, new_messages, _tcs, result = await backend.stream_submission(
-                submission, messages, noop, on_json_event=on_json_event
+                submission,
+                messages,
+                noop,
+                on_event=report_provider_retry,
+                on_json_event=on_json_event,
             )
         else:  # text
 
@@ -871,7 +887,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 sys.stdout.flush()
 
             _text, _usage, new_messages, _tcs, result = await backend.stream_submission(
-                submission, messages, emit
+                submission, messages, emit, on_event=report_provider_retry
             )
 
         if not result.accepted:

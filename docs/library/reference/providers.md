@@ -323,11 +323,33 @@ A StreamEventStream — an async iterator of typed streaming events (TextDeltaEv
 
 - `NotImplementedError` — If the provider hasn't implemented this method.
 
+## ProviderConnectionError
+<!-- agent: yes -->
+
+```python
+class ProviderConnectionError(message: str, *, model_id: str, base_url: str)
+```
+
+`tau_llm.errors.ProviderConnectionError`
+
+The connection failed before the provider produced any event.
+
+Refused, reset, or closed by the server before a response. Raised only while
+nothing has streamed, so the caller has received nothing from this request
+(docs/PROVIDER-RETRY.md §3). A timeout waiting for the response is NOT one
+of these: the server may still be working on the request.
+
+**Constructor parameters**
+
+- `message: str` — *(no description)*
+- `model_id: str` — The requested model id.
+- `base_url: str` — The endpoint the request went to.
+
 ## ProviderHttpError
 <!-- agent: yes -->
 
 ```python
-class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str)
+class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str, retry_after: float | None = None)
 ```
 
 `tau_llm.errors.ProviderHttpError`
@@ -345,6 +367,7 @@ Every provider raises this for an HTTP refusal, and
 - `body: str` — The raw response body, bounded to ``MAX_ERROR_BODY_CHARS``.
 - `model_id: str` — The requested model id.
 - `base_url: str` — The endpoint the request went to.
+- `retry_after: float | None = None` — Seconds the server asked the client to wait, from a ``retry-after-ms`` or ``retry-after`` header; None when it sent neither.
 
 ## ProviderSpec
 <!-- agent: yes -->
@@ -403,6 +426,84 @@ First non-empty value among ``api_key_env``, or None if none is set.
 `tau_llm.compat.ResolvedCompat.tool_call_schema: ToolCallSchema`
 
 *No description. This object is marked but undocumented.*
+
+## RetryEvent
+<!-- agent: yes -->
+
+```python
+class RetryEvent(attempt: int, max_retries: int, delay_seconds: float, error: Exception, type: Literal['retry'] = 'retry')
+```
+
+`tau_llm.streaming.RetryEvent`
+
+A request failed before producing anything, and is about to be sent again.
+
+Emitted by :mod:`tau_llm.retry` BEFORE it waits, so a consumer can show the
+wait. Nothing from the failed attempt was yielded, so there is nothing to
+discard. See docs/PROVIDER-RETRY.md.
+
+**Constructor parameters**
+
+- `attempt: int` — Which retry this is, from 1.
+- `max_retries: int` — The most retries this request will make.
+- `delay_seconds: float` — How long τ waits before sending it again.
+- `error: Exception` — The failure being retried: a :class:`~tau_llm.errors.ProviderHttpError` or :class:`~tau_llm.errors.ProviderConnectionError`.
+- `type: Literal['retry'] = 'retry'` — Always "retry".
+
+## RetryPolicy
+<!-- agent: yes -->
+
+```python
+class RetryPolicy(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 30.0, max_retry_after: float = 60.0, jitter: float = 0.2, statuses: frozenset[int] = RETRYABLE_STATUSES)
+```
+
+`tau_llm.retry.RetryPolicy`
+
+How :func:`retrying_stream` retries. The default is :data:`DEFAULT_RETRY_POLICY`.
+
+Pass one as ``options["retry"]`` to ``stream_simple`` or ``complete_simple``;
+pass ``False`` to send exactly once.
+
+**Constructor parameters**
+
+- `max_retries: int = 3` — Re-sends after the first attempt; 0 sends once.
+- `base_delay: float = 1.0` — Seconds before the first retry; each later one doubles it.
+- `max_delay: float = 30.0` — Ceiling on one computed backoff before jitter, in seconds.
+- `max_retry_after: float = 60.0` — The longest ``Retry-After`` honoured, in seconds. A server that asks for longer gets no retry: its error is raised at once.
+- `jitter: float = 0.2` — Each computed backoff is stretched by up to this fraction, so concurrent callers that failed together do not retry together. A ``Retry-After`` is honoured exactly.
+- `statuses: frozenset[int] = RETRYABLE_STATUSES` — The HTTP statuses retried.
+
+### delay
+
+```python
+delay(retry: int, exc: BaseException, rng: Callable[[], float]) -> float | None
+```
+
+`tau_llm.retry.RetryPolicy.delay`
+
+Seconds to wait before retry number ``retry`` (from 1); None means do not retry.
+
+A ``Retry-After`` replaces the backoff. One over ``max_retry_after`` is None.
+
+**Parameters**
+
+- `retry: int` — *(no description)*
+- `exc: BaseException` — *(no description)*
+- `rng: Callable[[], float]` — *(no description)*
+
+### retryable
+
+```python
+retryable(exc: BaseException) -> bool
+```
+
+`tau_llm.retry.RetryPolicy.retryable`
+
+Whether ``exc`` is a failure this policy re-sends for.
+
+**Parameters**
+
+- `exc: BaseException` — *(no description)*
 
 ## StreamEventStream
 <!-- agent: yes -->
@@ -540,7 +641,7 @@ every entry point here, this one included, keeps working unchanged.
 
 - `model: Any` — The Model configuration (has provider, id, etc.).
 - `context: dict[str, Any]` — Context dict (same shape as ``stream_simple``): ``messages`` and optional ``tools``. A leading ``{"role": "system", ...}`` message sets the system prompt (client.py does not read ``system_prompt``).
-- `options: dict[str, Any] | None = None` — Optional provider options (``max_tokens``, ``api_key``, ``reasoning``, ``temperature``, …).
+- `options: dict[str, Any] | None = None` — Optional provider options (``max_tokens``, ``api_key``, ``reasoning``, ``temperature``, ``retry``, …). A caller with its own retry loop passes ``retry=False``.
 - `on_text_delta: TextDeltaSink | None = None` — Called with each text fragment as it arrives, so a caller that wants the whole message can still SHOW the wait. ``None`` keeps the collapsed path exactly as it was — the stream is driven by ``result()`` alone and nothing iterates it. Sync or async; a coroutine is awaited before the next fragment is read, which paces the provider against the renderer rather than queueing deltas the screen never catches up with. See docs/STREAMING-SIDE-WORK.md.
 
 **Returns**
@@ -760,15 +861,16 @@ This is the ONLY entry point that τ-agent-core uses to talk to τ-llm.
 
 - `model: Any` — The Model configuration (has provider, id, etc.).
 - `context: dict[str, Any]` — Context dict with keys: - messages: List of message dicts (user/assistant/toolResult). - tools: Optional list of tool definitions. - system_prompt: Optional system prompt string.
-- `options: dict[str, Any] | None = None` — Optional provider-specific options (temperature, etc.). Two of them are TRANSPORT settings the provider strips from the request body rather than sending: ``request_timeout`` and ``stream`` (False = talk to a backend that does not implement SSE; the events below are produced either way — PLAN-0.9.3 §4.1).
+- `options: dict[str, Any] | None = None` — Optional provider-specific options (temperature, etc.). Two of them are TRANSPORT settings the provider strips from the request body rather than sending: ``request_timeout`` and ``stream`` (False = talk to a backend that does not implement SSE; the events below are produced either way — PLAN-0.9.3 §4.1). ``retry`` is read here and never reaches the provider: a :class:`~tau_llm.retry.RetryPolicy`, or ``False`` to send once. Absent means :data:`~tau_llm.retry.DEFAULT_RETRY_POLICY` (docs/PROVIDER-RETRY.md).
 
 **Returns**
 
-AssistantMessageEventStream yielding TextDeltaEvent, ToolCallDeltaEvent, DoneEvent, and ErrorEvent instances.
+AssistantMessageEventStream yielding TextDeltaEvent, ThinkingDeltaEvent, ToolCallDeltaEvent, RetryEvent, DoneEvent and ErrorEvent instances.
 
 **Raises**
 
 - `ValueError` — If the model names a wire protocol τ has no implementation for, contradicts its own vendor's protocol, resolves to no endpoint, or to no credential for a vendor that declares where its credential lives. See ``_resolve_request``.
+- `TypeError` — If ``options["retry"]`` is neither a RetryPolicy nor False.
 
 ## unregister_api
 <!-- agent: yes -->

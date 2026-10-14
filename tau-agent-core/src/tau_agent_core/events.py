@@ -12,6 +12,7 @@ Event types:
 - turn_start, turn_end
 - message_start, message_update, message_end
 - tool_execution_start, tool_execution_update, tool_execution_end
+- provider_retry
 
 Constraint: "fire-and-forget" here means FAILURE ISOLATION, never scheduling.
 A handler that raises does not kill its siblings or its emitter; it is surfaced
@@ -99,7 +100,9 @@ class AgentEvent(BaseModel):
         messages: List of messages produced (agent_end)
         error: Why an ``agent_end`` closed, when the loop raised rather than
             finishing (``"RuntimeError: Connection refused"``). ``None`` on a
-            normal close; always paired with ``is_error=True``.
+            normal close; always paired with ``is_error=True``. On a
+            ``provider_retry`` it is the failure being retried, with
+            ``is_error=False`` because the turn goes on.
         end_reason: How an ``agent_end`` closed, as one of ``"done"``,
             ``"terminate"``, ``"aborted"``, ``"max_turns"``,
             ``"repeat_tool_calls"`` or ``"error"``. ``None`` on every other event
@@ -144,6 +147,11 @@ class AgentEvent(BaseModel):
         usage: What a side completion SPENT, on ``side_completion_end``. This is
             the only place those tokens are observable: the work runs outside the
             agent loop, so no ``turn_end`` counts it (docs/STREAMING-SIDE-WORK.md).
+        attempt: Which retry a ``provider_retry`` announces, from 1.
+        max_retries: The most retries that request will make.
+        delay_seconds: How long τ waits before re-sending it.
+        status_code: The HTTP status being retried; ``None`` for a connection
+            failure. Set on ``provider_retry`` only (docs/PROVIDER-RETRY.md).
     """
 
     type: Literal[
@@ -160,6 +168,7 @@ class AgentEvent(BaseModel):
         "side_completion_start",
         "side_completion_update",
         "side_completion_end",
+        "provider_retry",
     ]
 
     timestamp: int = Field(ge=0)
@@ -191,6 +200,11 @@ class AgentEvent(BaseModel):
     delta: str | None = None
     text: str | None = None
     usage: dict[str, int] | None = None
+
+    attempt: int | None = None
+    max_retries: int | None = None
+    delay_seconds: float | None = None
+    status_code: int | None = None
 
 
 @agent_facing(topic="events")
@@ -239,6 +253,7 @@ class EventBus:
             "side_completion_start": [],
             "side_completion_update": [],
             "side_completion_end": [],
+            "provider_retry": [],
         }
         self._error_listeners: list[ErrorListener] = []
 

@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable
 
 from tau_llm.streaming import AssistantMessageEventStream
 from tau_llm.providers import Provider, get_api_factory, get_provider_spec
+from tau_llm.retry import resolve_retry_policy, retrying_stream
 from tau_llm.types import AssistantMessage
 from tau_llm.docs import agent_facing
 
@@ -204,35 +205,49 @@ async def stream_simple(
             them are TRANSPORT settings the provider strips from the request
             body rather than sending: ``request_timeout`` and ``stream``
             (False = talk to a backend that does not implement SSE; the events
-            below are produced either way — PLAN-0.9.3 §4.1).
+            below are produced either way — PLAN-0.9.3 §4.1). ``retry`` is
+            read here and never reaches the provider: a
+            :class:`~tau_llm.retry.RetryPolicy`, or ``False`` to send once.
+            Absent means :data:`~tau_llm.retry.DEFAULT_RETRY_POLICY`
+            (docs/PROVIDER-RETRY.md).
 
     Returns:
-        AssistantMessageEventStream yielding TextDeltaEvent, ToolCallDeltaEvent,
-        DoneEvent, and ErrorEvent instances.
+        AssistantMessageEventStream yielding TextDeltaEvent, ThinkingDeltaEvent,
+        ToolCallDeltaEvent, RetryEvent, DoneEvent and ErrorEvent instances.
 
     Raises:
         ValueError: If the model names a wire protocol τ has no implementation
             for, contradicts its own vendor's protocol, resolves to no endpoint,
             or to no credential for a vendor that declares where its credential
             lives. See ``_resolve_request``.
+        TypeError: If ``options["retry"]`` is neither a RetryPolicy nor False.
     """
-    if options is None:
-        options = {}
+    options = dict(options or {})
+    policy = resolve_retry_policy(options.pop("retry", None))
 
     provider = _get_or_create_provider(_resolve_request(model, options))
 
     messages = context.get("messages", [])
     tools = context.get("tools", None)
 
-    provider_stream = await provider.stream_chat(
-        model=model,
-        messages=messages,
-        tools=tools,
-        options=options,
-    )
+    async def open_stream() -> Any:
+        """One attempt; every attempt is built from these same arguments."""
+        return await provider.stream_chat(
+            model=model,
+            messages=messages,
+            tools=tools,
+            options=options,
+        )
 
+    first = await open_stream()
     return AssistantMessageEventStream(
-        provider_stream=provider_stream,
+        provider_stream=retrying_stream(
+            first,
+            open_stream,
+            policy,
+            model=model,
+            abort_signal=options.get("abort_signal"),
+        ),
         model=model,
     )
 
@@ -264,7 +279,8 @@ async def complete_simple(
             and optional ``tools``. A leading ``{"role": "system", ...}`` message
             sets the system prompt (client.py does not read ``system_prompt``).
         options: Optional provider options (``max_tokens``, ``api_key``,
-            ``reasoning``, ``temperature``, …).
+            ``reasoning``, ``temperature``, ``retry``, …). A caller with its
+            own retry loop passes ``retry=False``.
         on_text_delta: Called with each text fragment as it arrives, so a caller
             that wants the whole message can still SHOW the wait. ``None`` keeps
             the collapsed path exactly as it was — the stream is driven by

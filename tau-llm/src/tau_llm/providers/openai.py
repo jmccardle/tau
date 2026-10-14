@@ -34,7 +34,7 @@ import httpx
 from tau_llm import grammar as grammar_mod
 from tau_llm.compat import ResolvedCompat, resolve_compat
 from tau_llm.constraints import ConstraintViolation
-from tau_llm.errors import ProviderHttpError
+from tau_llm.errors import ProviderHttpError, connection_error_from, retry_after_seconds
 from tau_llm.errors import truncate_error_text as _truncate_error_text
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.json_parse import (
@@ -1582,6 +1582,7 @@ class OpenAICompletionsProvider(Provider):
         )
 
         async def event_generator() -> AsyncIterator[Any]:
+            started = False
             try:
                 state = _TransportState()
                 transport = (
@@ -1608,6 +1609,7 @@ class OpenAICompletionsProvider(Provider):
                     )
                 )
                 async for event in transport:
+                    started = True
                     yield event
                 if state.failed:
                     return
@@ -1667,6 +1669,12 @@ class OpenAICompletionsProvider(Provider):
                     message = (
                         f"Streaming error from model {model.id!r} at {self.base_url!r}: {described}"
                     )
+                if not started:
+                    connection_error = connection_error_from(
+                        e, message=message, model_id=model.id, base_url=self.base_url
+                    )
+                    if connection_error is not None:
+                        raise connection_error from e
                 error_event = ErrorEvent(type="error", message=message, is_error=True)
                 yield error_event
                 return
@@ -1699,6 +1707,7 @@ class OpenAICompletionsProvider(Provider):
             body=body,
             model_id=model.id,
             base_url=self.base_url,
+            retry_after=retry_after_seconds(getattr(response, "headers", None)),
         )
 
     def _apply_tool_call_schema(self, tc: dict, compat: ResolvedCompat, model: Model) -> dict:

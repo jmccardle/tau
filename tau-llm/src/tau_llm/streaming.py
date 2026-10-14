@@ -8,6 +8,7 @@ Streaming events:
     - ToolCallDeltaEvent: tool call data arriving in the stream
     - DoneEvent: stream complete with final message and usage
     - ErrorEvent: an error occurred during the stream
+    - RetryEvent: a request that failed before any output is being re-sent
 
 AssistantMessageEventStream:
     Async iterator that yields the above event types.
@@ -143,6 +144,32 @@ class ErrorEvent:
 
 
 @agent_facing(topic="providers")
+@dataclass
+class RetryEvent:
+    """A request failed before producing anything, and is about to be sent again.
+
+    Emitted by :mod:`tau_llm.retry` BEFORE it waits, so a consumer can show the
+    wait. Nothing from the failed attempt was yielded, so there is nothing to
+    discard. See docs/PROVIDER-RETRY.md.
+
+    Attributes:
+        type: Always "retry".
+        attempt: Which retry this is, from 1.
+        max_retries: The most retries this request will make.
+        delay_seconds: How long τ waits before sending it again.
+        error: The failure being retried: a
+            :class:`~tau_llm.errors.ProviderHttpError` or
+            :class:`~tau_llm.errors.ProviderConnectionError`.
+    """
+
+    attempt: int
+    max_retries: int
+    delay_seconds: float
+    error: Exception
+    type: Literal["retry"] = "retry"
+
+
+@agent_facing(topic="providers")
 class AssistantMessageEventStream:
     """Async iterator over streaming events from the LLM.
 
@@ -273,7 +300,8 @@ class AssistantMessageEventStream:
         """
         if not (
             hasattr(chunk, "type")
-            and chunk.type in ("text_delta", "thinking_delta", "toolcall_delta", "done", "error")
+            and chunk.type
+            in ("text_delta", "thinking_delta", "toolcall_delta", "done", "error", "retry")
         ):
             raise TypeError(
                 "provider stream yielded a non-event chunk "
@@ -288,6 +316,8 @@ class AssistantMessageEventStream:
         elif chunk.type == "error":
             self._error = chunk.message
             self._done = True
+        elif chunk.type == "retry":
+            return
         elif getattr(chunk, "partial", None) is not None:
             self._partial = chunk.partial
 

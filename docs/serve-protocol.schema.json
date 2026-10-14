@@ -6310,6 +6310,18 @@
     "WireEvent": {
       "description": "The wire projection of ``AgentEvent`` (D3) \u2014 REMOTE-CONTROL.md's\ndesigned shape, and (as of unit 2B) what ``rpc/handler.py`` actually\nsends: ``rpc/wire_events.py`` constructs instances of this class rather\nthan a hand-shaped dict. See the module docstring's Status note and the\nfield-by-field comment above this class.",
       "properties": {
+        "attempt": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Which retry a provider_retry announces, counting from 1. A provider_retry says a request failed before producing any output and will be sent again, byte-identical, after delay_seconds; `error` is the failure. A host renders it as a passing warning: if the retries run out, the turn's agent_end carries the final error as usual. None for all other event types. See docs/PROVIDER-RETRY.md."
+        },
         "block_type": {
           "anyOf": [
             {
@@ -6379,6 +6391,18 @@
           ],
           "default": null,
           "description": "The cursor whose turn emitted this event (docs/CURSORS.md \u00a76). Several cursors run turns on one session at once; a host routes by this. None outside a turn."
+        },
+        "delay_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Seconds \u03c4 waits before re-sending, on provider_retry: the server's Retry-After when it sent one, else an exponential backoff. None for all other event types."
         },
         "delta": {
           "anyOf": [
@@ -6453,6 +6477,18 @@
           "default": null,
           "description": "The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized \u2014 not by rpc/wire_events.py at event-projection time \u2014 because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types."
         },
+        "max_retries": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The most retries that request will make, on provider_retry. None for all other event types."
+        },
         "message_count": {
           "anyOf": [
             {
@@ -6524,6 +6560,18 @@
           ],
           "default": null,
           "description": "The submission's origin (E4). None alongside submission_id."
+        },
+        "status_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The HTTP status being retried, on provider_retry (e.g. 429, 503). None for a connection that failed before any response, and for all other event types."
         },
         "stop_reason": {
           "anyOf": [
@@ -6624,7 +6672,8 @@
             "tool_execution_end",
             "side_completion_start",
             "side_completion_update",
-            "side_completion_end"
+            "side_completion_end",
+            "provider_retry"
           ],
           "type": "string"
         }
