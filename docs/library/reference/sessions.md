@@ -39,8 +39,8 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 - `bus_available: bool = False` — Whether a bus transport backs this session. An extension declaring ``TOUCHES_BUS`` is refused at load when False.
 - `no_tools: Literal['all', 'builtin'] | None = None` — ``"all"`` offers the model no tools at all, extension tools included. ``"builtin"`` and ``None`` change nothing here: the caller omits built-ins from ``tools``.
 - `cwd: str | None = None` — Where tools and ``@path`` references resolve; ``None`` means the process cwd. Stored absolute.
-- `prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES` — *(no description)*
-- `skills: SkillCatalog = EMPTY_SKILLS` — *(no description)*
+- `prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES` — The templates ``submit`` expands for ``/name args``; none by default.
+- `skills: SkillCatalog = EMPTY_SKILLS` — The skills ``submit`` expands for ``/skill:name args``; none by default.
 
 **Raises**
 
@@ -555,6 +555,10 @@ The template and skill command words, as a completion list offers them.
 
 Leaves out a template whose name a built-in or an extension command holds,
 since dispatch reaches those first; lists a broken one with its error.
+
+**Returns**
+
+One completion per offered template and skill command.
 
 ### get_qualified_commands
 

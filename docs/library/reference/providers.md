@@ -351,7 +351,7 @@ of these: the server may still be working on the request.
 
 **Constructor parameters**
 
-- `message: str` — *(no description)*
+- `message: str` — The provider's description of the failure; becomes ``str()``.
 - `model_id: str` — The requested model id.
 - `base_url: str` — The endpoint the request went to.
 
@@ -495,15 +495,19 @@ delay(retry: int, exc: BaseException, rng: Callable[[], float]) -> float | None
 
 `tau_llm.retry.RetryPolicy.delay`
 
-Seconds to wait before retry number ``retry`` (from 1); None means do not retry.
+Compute the wait before one retry.
 
-A ``Retry-After`` replaces the backoff. One over ``max_retry_after`` is None.
+A ``Retry-After`` replaces the backoff and gets no jitter.
 
 **Parameters**
 
-- `retry: int` — *(no description)*
-- `exc: BaseException` — *(no description)*
-- `rng: Callable[[], float]` — *(no description)*
+- `retry: int` — Which retry this is, counting from 1.
+- `exc: BaseException` — The failure being retried; its ``retry_after`` is read when it is a :class:`ProviderHttpError`.
+- `rng: Callable[[], float]` — Returns a float in [0, 1) that scales the jitter.
+
+**Returns**
+
+Seconds to wait: ``min(max_delay, base_delay * 2**(retry-1))`` stretched by up to ``jitter``, or the server's ``Retry-After``. None when that ``Retry-After`` exceeds ``max_retry_after``: do not retry.
 
 ### retryable
 
@@ -513,11 +517,15 @@ retryable(exc: BaseException) -> bool
 
 `tau_llm.retry.RetryPolicy.retryable`
 
-Whether ``exc`` is a failure this policy re-sends for.
+Whether this policy re-sends after ``exc``.
 
 **Parameters**
 
-- `exc: BaseException` — *(no description)*
+- `exc: BaseException` — What the attempt raised before producing any event.
+
+**Returns**
+
+True for a :class:`ProviderHttpError` whose status is in ``statuses``, and for any :class:`ProviderConnectionError`.
 
 ## StreamEventStream
 <!-- agent: yes -->
