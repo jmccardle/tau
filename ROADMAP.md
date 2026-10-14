@@ -16,7 +16,9 @@ those citations are provenance now.
 cassette contract suite (`docs/PROVIDER-COVERAGE.md`), the trust-gate research
 record (`docs/TRUST-GATE.md`, nothing built) and docstring coverage 1152/1152.
 Suite on `df6143d`: **6616 passed, 158 skipped, 6 deselected, 3 xfailed, 0
-failed**; the release matrix has not run. Open work is tracked as issues on the
+failed**. Code mode then merged (`70ba2d4`): serve 0.9 / RPC 2.2 on master, docs
+coverage 1234/1234, suite **6805 passed, 159 skipped, 6 deselected, 3 xfailed,
+0 failed**. The release matrix has not run. Open work is tracked as issues on the
 `john/tau` forgejo repo from this date (R2/R5/R6 are #17–#19), milestone `0.13.0`; #1 tracks the cut.
 
 **State (2026-10-04): 0.12.0 shipped.** Tag `v0.12.0` → `bebdedf`, all five
@@ -604,12 +606,13 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   generator are in core; `get_capabilities` and `docs/RPC-PROTOCOL.md` are
   typed to their leaves, with `$defs`.
 - **Code mode: the model writes a Python script and the tools run inside it**
-  (added 2026-10-12). **Status: researched, prototyped on an unmerged branch, not
-  on master. Scheduled 2026-10-14 (owner) as 0.13.0's major priority**; forgejo
-  #2, and #1's cut waits on it. The record is `docs/CODE-MODE.md`
-  (`7303954`). The prototypes are on the local, unpushed branch
-  `feat/code-mode-experiments` (tip `1039fd8`, 2026-10-06). It merges six
-  experiments, and three of them are code mode:
+  (added 2026-10-12). **Status: merged to master 2026-10-14 (`70ba2d4`), the
+  owner's major priority for 0.13.0**; forgejo #2 tracks the gaps below, #20 the
+  defects the docstring pass found. Serve is 0.9 and RPC 2.2 on master, so
+  tau-code must follow before a release reaches its users. The record is `docs/CODE-MODE.md`
+  (`7303954`). The prototypes came from the branch
+  `feat/code-mode-experiments` (tip `1039fd8`, 2026-10-06), which merged six
+  experiments; three of them are code mode:
   - tool exposure, nested calls and typed returns: `9e1d1b0`, `65a162d`, then a
     cache-safe rework in `d1fcdad` and `fc9539b` (record in
     `experiments/tool-exposure/RESULTS.md`);
@@ -650,9 +653,8 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
       `deferred` and `hidden`. §5.2's `codemode` value was renamed `callable`.
     - Typed returns are read from return type hints.
   - **Open:**
-    - Whether to review the branch, push it or merge it. It moves serve to 0.9,
-      and tau-code still speaks 0.8, so a release cut from it would refuse every
-      tau-code client.
+    - tau-code still speaks serve 0.8, so a release cut from master now refuses
+      every tau-code client until tau-code moves to 0.9.
     - The sandbox providers still call tools through `DirectToolInvoker`, which
       skips the hooks: no `tool_call` veto and no events. Moving them to
       `ctx.execute_tool` is the next integration step.
@@ -673,7 +675,7 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
     - A core-side reading of nested calls that all three heads render.
     - `on_update` is still never passed.
     - The headless `tau -p --continue` bug that lost tool-written entries is
-      fixed on the branch (`3a74ed7`), not on master.
+      fixed (`3a74ed7`), on master since the merge.
   - **Unmeasured, and it decides default versus opt-in** (§8): whether τ's
     default local model writes reliable scripts or uses `tool_search` reliably.
     Every live run so far used Haiku 4.5, because the local model was down.
