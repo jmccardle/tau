@@ -235,16 +235,16 @@ resolve_model(model: str, provider: str = 'openai', base_url: str | None = None)
 
 Resolve a model string to a Model object.
 
+A built-in id (``"gpt-4o"``) returns a copy of its default. Any other id gets
+``provider``'s registered wire protocol and endpoint, with ``base_url``
+taking precedence over the endpoint.
+
 **Parameters**
 
 - `model: str` — Model identifier (e.g., "gpt-4o").
-- `provider: str = 'openai'` — Provider name (default: "openai").
+- `provider: str = 'openai'` — Registered vendor id (default: "openai").
 - `base_url: str | None = None` — Optional custom API base URL.
-
-**Returns**
-
-Model object with provider configuration.
 
 **Raises**
 
-- `KeyError` — If model string is not found in defaults.
+- `ValueError` — No ``base_url`` and ``provider`` is not registered with a default endpoint (docs/EXTENSION-PROVIDERS.md §2).
