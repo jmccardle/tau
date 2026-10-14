@@ -36,6 +36,9 @@ all three providers through each provider's real transport.
     filtered answer is presented as complete. Mistral's `model_length` (§3.3)
     takes the same path, so a truncated answer reads as finished.
 - **One of the three providers retries behind the caller's back.**
+  - **Resolved 2026-10-14** by `docs/PROVIDER-RETRY.md`: `AsyncAnthropic` is now
+    built with `max_retries=0` and τ's own retry layer decides. The contract
+    suite's 429 clause passes on all three wires. The record below is as measured.
   - `docs/PROVIDER-HTTP-ERRORS.md` §6 says "No retry policy. τ reports the status."
   - `AsyncAnthropic` is built without `max_retries` (`providers/anthropic.py:212-216`,
     read), so it keeps the SDK default of 2 (ran: `anthropic._constants.DEFAULT_MAX_RETRIES == 2`
@@ -540,7 +543,7 @@ Costs are estimates (inferred) in lines of production code plus tests.
 | # | Change | Cost | Why first |
 |---|---|---|---|
 | 1 | OpenAI stop-reason mapping matches the other two: unknown → `error`, `content_filter` → `error`, `model_length` → `length` | ~15 lines; the xfail comes off | A truncated or filtered answer is shown as complete today |
-| 2 | Decide Anthropic retries. Either `max_retries=0` (PROVIDER-HTTP-ERRORS §6 stays true), or keep the SDK's 2 and say so in both docs | 1 line + 1 doc sentence | Today the docs disagree, and a caller budgeting retries pays them up to 3× |
+| 2 | **Done (`PROVIDER-RETRY.md`).** Decide Anthropic retries. Either `max_retries=0` (PROVIDER-HTTP-ERRORS §6 stays true), or keep the SDK's 2 and say so in both docs | 1 line + 1 doc sentence | Today the docs disagree, and a caller budgeting retries pays them up to 3× |
 | 3 | Anthropic `thinking.display: "summarized"` when reasoning is on (or a `Model` knob) | ~5 lines + 1 golden | 5.x models return empty thinking text today (§4.2) |
 | 4 | Land the contract suite and record real cassettes (`scripts/record_cassette.py`) | ~200 lines + one recording session with keys | Every later provider change is checked against vendor bytes, not docs |
 | 5 | `Usage.reasoning_tokens`, read on all three wires | ~30 lines; touches persisted usage (additive) | Cost accounting and the R2 work both want the split |

@@ -214,22 +214,13 @@ class TestAnthropicMessagesContract(ProviderContract):
         )
 
     def provider(self, replay: _Replay) -> Any:
-        AsyncAnthropic = pytest.importorskip("anthropic").AsyncAnthropic
+        pytest.importorskip("anthropic")
         http = pytest.importorskip("httpx2")
         provider = AnthropicMessagesProvider(api_key="test", base_url="http://llm.test")
-        provider._client = AsyncAnthropic(
-            api_key="test",
-            base_url="http://llm.test",
-            http_client=http.AsyncClient(transport=replay.transport(http)),
+        provider._client = provider._get_client().with_options(
+            http_client=http.AsyncClient(transport=replay.transport(http))
         )
         return provider
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="AsyncAnthropic is built with the SDK default max_retries=2 (anthropic.py _get_client)",
-    )
-    def test_a_429_raises_provider_http_error_with_its_status(self) -> None:
-        super().test_a_429_raises_provider_http_error_with_its_status()
 
 
 class TestGoogleGenerativeAIContract(ProviderContract):
