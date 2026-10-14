@@ -15,12 +15,12 @@ A constrained generation did not satisfy its constraint.
 
 Raised when verification (§4.3) finds the output outside the declared constraint —
 which, on a server where llguidance died mid-generation, means the generation ran
-**unconstrained** and the result is fabricated data. Carries the offending output.
+**unconstrained** and the result is fabricated data.
 
 **Constructor parameters**
 
-- `message: str` — *(no description)*
-- `output: str` — *(no description)*
+- `message: str` — Human-readable explanation; becomes ``str(exc)``.
+- `output: str` — The generated text that failed verification.
 
 ## DecodeConstraints
 <!-- agent: yes -->
@@ -48,6 +48,10 @@ A small, display-only summary for observability (§3.3).
 Recorded on events / persisted entry payloads so *what constrained a
 generation* is inspectable after the fact. Never replayed as context.
 
+**Returns**
+
+``{"kind": ...}`` with ``kind`` one of ``"choices"``, ``"json_schema"``, ``"grammar"`` or ``"none"``, plus that kind's value under ``choices`` / ``schema`` / ``grammar``.
+
 ### extra_body
 
 `tau_llm.constraints.DecodeConstraints.extra_body: dict[str, Any]`
@@ -71,7 +75,11 @@ has_constraint() -> bool
 
 `tau_llm.constraints.DecodeConstraints.has_constraint`
 
-Whether this carries an actual decode constraint (vs only tool_choice/extra_body).
+Whether this carries an actual decode constraint.
+
+**Returns**
+
+True when ``grammar``, ``json_schema`` or ``choices`` is set; False for one that only carries ``tool_choice`` / ``extra_body``.
 
 ### json_schema
 
@@ -85,7 +93,7 @@ Schema natively — τ does not reimplement that compiler).
 
 `tau_llm.constraints.DecodeConstraints.model_config`
 
-*No description. This object is marked but undocumented.*
+Pydantic configuration; allows the ``verify`` callable.
 
 ### tool_choice
 
@@ -98,7 +106,10 @@ constraint legal alongside a declared tools array (see the provider).
 
 `tau_llm.constraints.DecodeConstraints.verify: Callable[[str], bool] | None`
 
-*No description. This object is marked but undocumented.*
+Caller-supplied output check; when set it replaces the built-in
+check for every kind. Required for a ``grammar`` that carries no
+``check`` of its own (one not built with :mod:`tau_llm.grammar`).
+Excluded from serialization.
 
 ### verify_output
 
@@ -110,23 +121,19 @@ verify_output(text: str) -> None
 
 Assert ``text`` actually satisfies this constraint; raise if it does not.
 
-**τ never trusts a constraint blindly.** The failure mode is real and observed
-(GRAMMAR_DECODING_RECON.md:36): on some tokenizers llguidance dies mid-generation,
-logs the error *server-side*, and lets generation continue **unconstrained** —
-completely invisible to the client, which receives a 200 and plausible text.
+On some tokenizers llguidance dies mid-generation and the server keeps
+generating **unconstrained** behind a 200, so a failed check raises rather
+than warns.
 
-An unconstrained result returned as a constrained one is fabricated data, so a
-failed check raises rather than warns.
-
-What can be checked per kind:
-
-- ``choices`` — exact membership. Total.
-- ``json_schema`` — the output must parse as JSON. (Full schema validation is
-  optional; a parse failure alone already catches constraint death.)
-- ``grammar`` — no general check is possible against an arbitrary grammar. The
-  caller may supply ``verify``; absent that, τ asserts non-empty output and the
-  residual risk is documented.
+The check: ``verify`` when the caller supplied one; otherwise exact
+membership for ``choices``, a JSON parse (not full schema validation) for
+``json_schema``, and the grammar's own ``check`` for ``grammar``. A
+constraint-free instance checks nothing.
 
 **Parameters**
 
-- `text: str` — *(no description)*
+- `text: str` — The generated output.
+
+**Raises**
+
+- `ConstraintViolation` — ``text`` fails the check.

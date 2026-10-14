@@ -188,21 +188,21 @@ class SessionStats:
 class ExtensionActionResult:
     """Outcome of a runtime ``/extensions`` action (E10 §6 / S70).
 
-    Runtime enable/disable/reload (lifting the D-E5-6 read-only stance) return this
-    so the frontend can report what happened as **display-only** chrome — it is never
-    appended to the active path, so the tree-as-truth invariant is untouched. ``ok``
-    distinguishes a completed action from a legitimate no-op / bad target (e.g. a name
-    that is not loaded); ``message`` is the human-readable line the listing box shows.
-    A hard failure (a broken file on reload) still raises out of the action —
-    ``ok=False`` is reserved for reportable, non-exceptional outcomes (Fail-Early).
+    Display-only chrome: never appended to the active path. A hard failure (a
+    broken file on reload) raises out of the action instead (Fail-Early).
 
-    There is no ``cursor`` field, though one action moves it: disabling an
-    extension whose lock is the cursor releases it (docs/EXTENSION-LOCKS.md §6).
-    Both projections of this record already carry the LIVE cursor — the RPC verb
-    reads ``session.cursor.leaf``, and ``AgentSession.performed`` writes it
-    and refuses a caller that hands it one — so a second copy here would be the
-    two-writers drift that method exists to remove. The move is visible in
-    ``message``.
+    There is no ``cursor`` field, though disabling an extension whose lock is
+    the cursor releases it (docs/EXTENSION-LOCKS.md §6): both projections of
+    this record already read the live cursor, so a copy here would be a second
+    writer. The move is visible in ``message``.
+
+    Attributes:
+        action: ``"enable"``, ``"disable"``, ``"reload"`` or ``"configure"``.
+        path: The resolved extension path, or the caller's token when it named
+            no loaded extension.
+        ok: False for a reportable no-op or bad target (not loaded, already in
+            that state); True for a completed action.
+        message: The human-readable line the listing shows.
     """
 
     action: str
@@ -216,32 +216,24 @@ class ExtensionActionResult:
 class ExtensionCommandResult:
     """Outcome of :meth:`AgentSession.run_extension_command` (E7 §3 / S46).
 
-    ``run_extension_command`` used to return a bare ``bool`` (handled / unknown)
-    and DISCARD the handler's return value, so an extension command could only
-    toast (G7). This carries both:
-
-    - ``handled`` — ``True`` iff a command by that name existed and ran (``False``
-      lets the caller fall through, e.g. treat the text as a prompt). This is the
-      old bool, now a named field.
-    - ``output`` — the value the handler RETURNED (a string, a renderable, or
-      ``None``). The frontends render it as a **display-only** system box (TUI) /
-      printed-or-emitted text (headless); it is chrome, never model input — it is
-      NOT appended to the active path, so the E5 §1 tree-as-truth invariant holds
-      (a command that wants a durable node uses ``ctx`` explicitly).
-
-    Unknown command → ``ExtensionCommandResult(handled=False)`` (no output).
+    Attributes:
+        handled: True iff a command by that name existed and ran; False lets
+            the caller fall through (e.g. treat the text as a prompt).
+        output: What the handler returned (a string, a renderable, or
+            ``None``). Display-only chrome, never appended to the active path
+            (E5 §1); a command that wants a durable node uses ``ctx``. ``None``
+            for an unknown command.
     """
 
     handled: bool
     output: object | None = None
 
     def output_text(self) -> str | None:
-        """Coerce ``output`` to display text, or ``None`` when there is nothing to show.
+        """Coerce ``output`` to display text.
 
-        A handler that returned ``None`` (or an empty string) has no output box.
-        Any other value is rendered as its string form — report commands return
-        markdown strings; a non-``str`` value is stringified so the text/JSON
-        channels stay honest rather than fabricating a shape. Display-only.
+        Returns:
+            ``output`` as a string (a non-``str`` value is ``str()``-ed, not
+            reshaped), or ``None`` when it is ``None`` or empty: no output box.
         """
         if self.output is None:
             return None
@@ -486,101 +478,55 @@ class _SideCompletionWatch:
 
 @agent_facing(topic="sessions")
 class AgentSession:
-    """High-level session API. Combines agent loop, a session log, and events.
+    """One conversation: an agent loop, its events, and a cursor over a session log.
 
-    This is the primary entry point for both SDK and TUI usage.
+    The entry point for the SDK and every head. Every turn extends one
+    :class:`~tau_agent_core.cursor.Cursor` over a
+    :class:`~tau_agent_core.session_log.SessionLog`.
 
-    Every turn extends one :class:`~tau_agent_core.cursor.Cursor` over a
-    :class:`~tau_agent_core.session_log.SessionLog`. Construct with ``session_log``
-    to open a cursor at the log's default leaf, or with ``cursor`` to extend a
-    position someone already holds.
+    Turn admission and the fork and thread-safe task registries follow
+    docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 
-    Attributes:
-        _cursor: The position this session's turns extend (docs/CURSORS.md).
-        _model: Model configuration for LLM calls.
-        _system_prompt: System prompt for the agent.
-        _tools: List of AgentTool instances.
-        _events: EventBus for event dispatch.
-        _extensions: List of extension factory callables.
-        _is_streaming: Whether the agent loop is currently running.
-        _abort_signal: Signal for aborting the current turn.
-        _turn_lock: The admission gate every :meth:`submit`-driven turn (and
-            :meth:`continue_conversation`) holds while running — see
-            docs/SUBMISSION-LIFECYCLE.md "The one door" step 1 and the "two
-            unguarded doors" callout.
-        _pre_turn_leaf: The log cursor immediately BEFORE the most recently
-            admitted turn's user node (or, for :meth:`continue_conversation`,
-            immediately before it ran at all) — recorded at admission for
-            provenance and, per decision 2, ``rollback``'s navigate-back target.
-        _current_turn_token: Monotonically incremented once per admitted turn
-            (:meth:`submit` OR :meth:`continue_conversation` — review fix,
-            must_fix #1: ``rollback`` used to trust a *session-level*
-            ``_pre_turn_leaf`` as if it always belonged to "whatever turn is
-            CURRENTLY running", which is false the instant that turn is a
-            ``continue_conversation()`` call (never writes it) or a rollback
-            queued FIFO-behind an "enqueue" submission (a second turn can run
-            to completion, and overwrite it, before the rollback resumes).
-            Set alongside ``_pre_turn_leaf`` and never reset to ``None`` on
-            turn end, so ``rollback`` can compare "the token I captured before
-            signalling abort" against "the token now current" and detect that
-            a DIFFERENT turn — not the one it aborted — is the one it is
-            about to navigate away from.
-        _current_submission: The ``Submission`` currently holding ``_turn_lock``
-            (``None`` when idle) — read by :meth:`_stamp_event` so every
-            ``AgentEvent`` a submission-driven turn emits carries its
-            ``submission_id``/``source``/``submitter``/``correlation``
-            (docs/SUBMISSION-LIFECYCLE.md "Provenance on events"). Its ``depth``
-            is the ADMITTED depth (:func:`~tau_agent_core.submission.next_submission_depth`),
-            not necessarily the one the submitter constructed the record with.
-            The same value is published for the duration of the turn on
-            :data:`~tau_agent_core.submission.DRIVING_SUBMISSION_DEPTH` — the
-            context var, NOT this attribute, is what a nested submission
-            inherits from, because a task spawned inside this turn must count as
-            self-submission even if it does not reach :meth:`submit` until after
-            the turn has ended (decision 3; see that constant for why an
-            attribute gets this backwards in both directions).
-        _turn_task: The ``asyncio.Task`` currently holding ``_turn_lock``
-            (``None`` when idle) — review fix, must_fix #2: a hook (``input``,
-            ``tool_call``, ``turn_end``, ``user_turn_end``) dispatched from
-            INSIDE that same task calling back into :meth:`submit` (directly,
-            or via :meth:`prompt`/``ctx.prompt``) can never be admitted —
-            every ``multitask_strategy`` here waits on or inspects a lock this
-            very task already holds — so :meth:`submit` compares
-            ``asyncio.current_task()`` against this and raises rather than
-            deadlocking silently. A DIFFERENT task submitting concurrently is
-            unaffected: that is the "enqueue" waits genuinely for.
-        _pending_steer_messages: The steering queue for
-            ``multitask_strategy="steer"`` (docs/SUBMISSION-LIFECYCLE.md phase 4).
-            Appended to by a submission that found a turn already in flight, and
-            by ``ctx.send_user_message(deliver_as="steer")``; DRAINED by the
-            running :class:`~tau_agent_core.agent_loop.AgentLoop` immediately
-            before each provider call, because "before the next LLM call" is a
-            point only the loop can name. The list object itself is passed to
-            every loop this session builds — see
-            :attr:`~tau_agent_core.agent_loop.AgentLoop._steer_queue` for why a
-            shared list and not a drain callback. Cleared by :meth:`abort` and by
-            ``rollback``'s abort signal (pi's ``abort()`` calls
-            ``clearSteeringQueue()``): the turn the content was aimed at is gone,
-            and replaying it into the turn that REPLACES it would put words into
-            a conversation the submitter rolled back past.
-        _forked_tasks: The supervised registry for ``multitask_strategy="fork"``
-            submissions (docs/SUBMISSION-LIFECYCLE.md "fork"), keyed by
-            ``submission_id`` (chosen up front — unlike the sub-agent's cursor,
-            which ``spawn_branch`` only opens once the task is already running).
-            Cancelled by :meth:`abort` and drained by :meth:`emit_session_shutdown`
-            so a forked branch cannot outlive the session that spawned it.
-        _loop: The event loop this session is BOUND to — the only one allowed to
-            call :meth:`submit` (docs/SUBMISSION-LIFECYCLE.md "Task marshalling").
-            ``None`` until something actually runs the session on a loop; see
-            :meth:`_bind_loop` for why binding is lazy rather than a constructor
-            argument, and for the one case in which the binding legitimately
-            moves (the previous loop is dead).
-        _threadsafe_tasks: The supervised registry for submissions marshalled in
-            from a foreign loop/thread by :meth:`submit_threadsafe`, keyed by
-            ``submission_id``. Same reason ``_forked_tasks`` exists: nobody on
-            this loop is awaiting them, so without a strong reference asyncio may
-            garbage-collect a running task, and without a registry a submission
-            admitted a millisecond before shutdown would outlive the session.
+    Args:
+        model: The model the head cursor's turns call.
+        session_log: The tree to extend, from a new cursor at its
+            :func:`~tau_agent_core.session_log.default_leaf`. Exactly one of
+            ``session_log`` and ``cursor`` is required.
+        cursor: A position someone already holds, to extend instead.
+        system_prompt: The system prompt for the head cursor's turns.
+        tools: The built-in tools offered to the model. Two with one name raise
+            when the tool list is next assembled.
+        extensions: Inline extension factories, each called at construction
+            with an api bound to its own runner bucket.
+        api_key: The key ``model`` is called with; ``None`` passes no key.
+        reasoning: Requested thinking level for every turn and compaction, or
+            ``None``.
+        compaction_settings: Settings when no ``compaction_policy`` is given;
+            ``None`` means the defaults.
+        compaction_policy: A declared policy that supplies its own settings and
+            summarizer. Mutually exclusive with ``compaction_settings``.
+        extensions_config: Per-extension config keyed by file stem; each
+            extension's ``api.config`` is its slice.
+        model_resolver: Turns a config model name into a ``Model`` for
+            :meth:`set_model`; see :meth:`set_model_resolver`.
+        max_turns: The loop's turn ceiling, at least 1; ``None`` is no ceiling.
+        tool_execution_mode: Whether one response's tool calls run in
+            parallel or one at a time.
+        bus_available: Whether a bus transport backs this session. An extension
+            declaring ``TOUCHES_BUS`` is refused at load when False.
+        no_tools: ``"all"`` offers the model no tools at all, extension tools
+            included. ``"builtin"`` and ``None`` change nothing here: the caller
+            omits built-ins from ``tools``.
+        cwd: Where tools and ``@path`` references resolve; ``None`` means the
+            process cwd. Stored absolute.
+        prompt_templates: The templates ``submit`` expands for ``/name args``;
+            none by default.
+        skills: The skills ``submit`` expands for ``/skill:name args``; none by
+            default.
+
+    Raises:
+        ValueError: Both or neither of ``session_log`` and ``cursor``; both
+            compaction arguments; ``max_turns`` below 1; an unknown ``no_tools``.
     """
 
     def __init__(
@@ -796,8 +742,16 @@ class AgentSession:
     ) -> Cursor:
         """Open a cursor at ``at`` on the head's tree, live until :meth:`close_cursor`.
 
-        ``owner`` is the cursor the new one answers to: aborting the owner aborts
-        it (:meth:`abort`). A ``cursor_open`` channel event announces it.
+        A ``cursor_open`` channel event announces it.
+
+        Args:
+            at: The entry to sit on; ``None`` is before the root.
+            owner: The cursor the new one answers to: aborting the owner aborts
+                it (:meth:`abort`).
+            label: What the cursor was opened to do, for display.
+
+        Returns:
+            The new cursor, registered with this session.
 
         Raises:
             ValueError: ``at`` names no entry.
@@ -809,6 +763,10 @@ class AgentSession:
 
     async def close_cursor(self, cursor: Cursor) -> None:
         """Retire ``cursor``; a ``cursor_close`` channel event announces it.
+
+        Args:
+            cursor: The cursor to retire. One this session does not hold is a
+                no-op and announces nothing.
 
         Raises:
             ValueError: ``cursor`` is the head's, which a head swap replaces instead.
@@ -959,14 +917,14 @@ class AgentSession:
         return self._turn_model().name
 
     def get_model(self) -> dict[str, Any]:
-        """The active model as ``{id, provider, context_window}`` (S45).
+        """The acting cursor's model as a small, stable projection (S45).
 
-        A small, stable projection of the loop's ``Model`` (pi returns the whole
-        ``Model``; τ exposes only the three fields an extension needs to route,
-        price, or gauge a context window — keeping the extension API decoupled from
-        the full model schema). Read at call time, so it reflects a prior
-        :meth:`set_model`. It is the acting cursor's model: its frame's, else the
-        session's.
+        Only the fields an extension needs to route, price or gauge a context
+        window, keeping the extension API decoupled from the full model schema.
+
+        Returns:
+            ``{"id", "provider", "context_window"}`` of the acting cursor's frame
+            model, else the session's, read at call time.
         """
         model = self._turn_model()
         return {
@@ -978,11 +936,13 @@ class AgentSession:
     def set_model_resolver(self, resolver: Callable[[str], Model]) -> None:
         """Bind the model-name resolver used by :meth:`set_model` (S45).
 
-        A frontend calls this after building the session so ``ctx.set_model(name)``
-        can turn a config model NAME into a concrete ``Model`` (see
-        ``backends.make_model_resolver``, a closure over ``config["models"]``). The
-        harness core deliberately does not read ``~/.tau/config.json`` itself
-        (layering) — the resolver is the seam.
+        The core does not read ``~/.tau/config.json`` itself; the resolver is the
+        seam through which a head supplies its config's models.
+
+        Args:
+            resolver: Maps a config model name to a ``Model``. An ``api_key(name)``
+                method on it, when present, supplies that model's key
+                (:meth:`resolve_model`).
         """
         self._model_resolver = resolver
 
@@ -1094,13 +1054,20 @@ class AgentSession:
 
     @agent_facing(topic="sessions")
     def get_session_name(self) -> str | None:
-        """The newest ``session_info`` name in the log, or ``None`` if never named."""
+        """Read this session's name.
+
+        Returns:
+            The newest ``session_info`` name in the log, or ``None`` if never named.
+        """
         from tau_agent_core.extension_types import read_session_name
 
         return read_session_name(self)
 
     async def set_session_name(self, name: str) -> None:
         """Name this session: a ``session_info`` entry at the cursor, never model input.
+
+        Args:
+            name: The new name.
 
         Raises:
             ValueError: ``name`` is empty.
@@ -1114,28 +1081,23 @@ class AgentSession:
 
         At the head cursor this is the session's model. At any other cursor it is
         that cursor's :class:`~tau_agent_core.cursor.TurnFrame` model; a cursor with
-        no frame gets one that changes nothing else (every tool, hooks on).
+        no frame gets one that changes nothing else (every tool, hooks on). The key
+        switches with the model, by :meth:`resolve_model`. Every turn builds a new
+        loop, so the switch never lands mid-stream; and it is not written to the
+        session header, so a reload resumes on the stored model.
 
-        Mirrors pi's ``setModel`` (agent-session.ts:1444), adapted to τ: pi takes a
-        resolved ``Model`` object; τ takes a config model NAME and resolves it
-        through the bound resolver (:meth:`set_model_resolver`). The new ``Model`` is
-        stored on ``self._model``; because every turn rebuilds its ``AgentLoop`` with
-        ``model=self._model`` (see :meth:`_run_one_turn`), the switch takes effect on
-        the next completion — never mid-stream.
-
-        The key switches with the model, by :meth:`resolve_model`. It is a RUNTIME
-        switch: it is not written back to the session header, so a reload resumes
-        on the session's originally stored model.
+        Args:
+            name: A config model name, resolved through :meth:`set_model_resolver`'s
+                resolver.
 
         Returns:
             The new :meth:`get_model` projection.
 
-        Whatever the resolver raises for an unknown ``name`` (e.g. ``KeyError`` or
-        ``ValueError``) propagates unchanged — never swallowed.
-
         Raises:
-            RuntimeError: no resolver is bound (Fail-Early — nothing to resolve
-                ``name`` against).
+            RuntimeError: No resolver is bound.
+            TypeError: The resolver returned something other than a ``Model``.
+            Exception: Whatever the resolver raises for an unknown ``name``,
+                unchanged.
         """
         if self._model_resolver is None:
             raise RuntimeError(
@@ -1158,10 +1120,13 @@ class AgentSession:
     def resolve_model(self, name: str) -> tuple[Model, str | None]:
         """The model a config NAME resolves to, and the key it is called with.
 
-        The key is the resolver's ``api_key(name)`` when it has one, as
-        ``ConfigModelResolver`` does, so a model brings its own key. A resolver
-        that is only a ``name -> Model`` callable knows no keys, and its models
-        run with the session's key.
+        Args:
+            name: A config model name.
+
+        Returns:
+            ``(model, key)``. The key is the resolver's ``api_key(name)`` when it
+            has one, as ``ConfigModelResolver`` does; a plain ``name -> Model``
+            resolver knows no keys, and its models run with the session's key.
 
         Raises:
             RuntimeError: no resolver is bound.
@@ -1181,11 +1146,12 @@ class AgentSession:
     def summarizer(self) -> tuple[Model, str | None]:
         """The model and key a compaction or a branch summary runs on (H5 / §16.8).
 
-        Read live rather than cached at construction, so it tracks
-        :meth:`set_model` exactly as the shipped behaviour does. With no declared
-        policy — the default — this is ``(self._model, self._api_key)``, i.e. what
-        ``_perform_compaction`` already did; only a ``local_summarizer`` policy
-        answers differently, and it answers with a model and key it declared.
+        Read live, so it tracks :meth:`set_model`.
+
+        Returns:
+            ``(model, key)``: the session's model and key with no compaction
+            policy; otherwise the policy's summarizer, falling back to the
+            session's key when the policy names none.
         """
         if self._compaction_policy is None:
             return self._model, self._api_key
@@ -1193,22 +1159,15 @@ class AgentSession:
         return model, (key if key is not None else self._api_key)
 
     def get_usage(self) -> dict[str, Any] | None:
-        """The most recent completion's token usage, or ``None`` (S45).
+        """The acting cursor's most recent completion's token usage (S45, anchor G14).
 
-        The public per-completion usage accessor (anchor G14): a copy of the
-        ``usage`` dict the provider filled on the last completion's ``message_end``
-        (keys ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` /
-        ``cache_write_tokens`` / ``total_tokens`` / ``cost`` / ``extra``). Extensions
-        read this instead of pulling ``event.message["usage"]`` out of a notify event
-        or reaching the private ``_model``. ``None`` means no completion has landed
-        yet — an honest absence, never a fabricated zero (Fail-Early).
-
-        A DEEP copy: ``cost`` and ``extra`` (the server's ``timings`` block, the
-        tool-arg repair count — W8/G4) are nested dicts, so a shallow copy would
-        hand every caller a live alias into the session's own record, and one
-        extension mutating what it read would silently rewrite the completion's
-        measured telemetry for every later reader. Same bug class as the
-        ``SessionLog.entries()`` shallow copy.
+        Returns:
+            A deep copy of the ``usage`` dict from the last completion's
+            ``message_end`` (``input_tokens``, ``output_tokens``,
+            ``cache_read_tokens``, ``cache_write_tokens``, ``total_tokens``,
+            ``cost``, ``extra``), so a caller mutating the nested ``cost`` or
+            ``extra`` cannot rewrite the record. ``None`` until a completion has
+            landed, never a fabricated zero.
         """
         return (
             copy.deepcopy(self.acting_cursor.last_usage)
@@ -1222,6 +1181,9 @@ class AgentSession:
         Called by every path that spends tokens without going through the agent loop.
         Cumulative and monotonic for the session's lifetime; consumers take a
         before/after DELTA to attribute the spend to a particular exchange.
+
+        Args:
+            usage: The completion's token counts, added key by key.
         """
         self._side_usage = add_usage(self._side_usage, usage)
 
@@ -1233,33 +1195,24 @@ class AgentSession:
         reason: SideCompletionReason,
         summarizer_model_id: str,
     ) -> AsyncIterator[_SideCompletionWatch]:
-        """Bracket one piece of side work with its three events.
+        """Bracket one piece of side work (a compaction or branch summary) with events.
 
-        Side work — a compaction summary, a branch summary — spends tokens and
-        produces text outside any turn, so nothing in the agent-loop vocabulary
-        reports it and a head could only show a spinner. This emits
-        ``side_completion_start``, one ``side_completion_update`` per fragment
-        through the yielded watch, and exactly one ``side_completion_end``.
-
-        **Every exit emits the end**, including an exception, which then
-        propagates. A renderer opens a box on the start and has no other way to
-        learn the work is over; a failure that emitted nothing would leave that
-        box open for the life of the session (docs/STREAMING-SIDE-WORK.md §3).
-
-        Public because the second caller is outside this class:
-        ``TauBackend.navigate_tree`` brackets a branch summary, which
-        :func:`tau_agent_core.tree_ops.summarize_and_navigate` performs against a
-        log this session does not hold.
+        Emits ``side_completion_start`` on entry, one ``side_completion_update``
+        per fragment through the yielded watch, and exactly one
+        ``side_completion_end`` on every exit. An exception still gets the end
+        (``is_error=True``) and then propagates (docs/STREAMING-SIDE-WORK.md §3).
 
         Args:
-            purpose: which side completion this is.
-            summarizer_model_id: the model id doing the summarising, which is
+            purpose: Which side completion this is.
+            reason: What asked for it; carried on all three events.
+            summarizer_model_id: The model id doing the summarising, which is
                 often NOT the conversation's — the start event carries it so a
                 reader can see what they are paying for.
 
-        Yields:
-            The watch: ``delta`` is the sink to hand the summariser, and
-            ``finish`` records the text and usage the end event carries.
+        Returns:
+            An async context manager yielding the watch: ``delta`` is the sink
+            to hand the summariser, and ``finish`` records the text and usage
+            the end event carries.
         """
         await self._events.emit(
             AgentEvent(
@@ -1448,12 +1401,10 @@ class AgentSession:
         return self._events.on("all", handler)
 
     def subscribe_channel(self, channel: str, handler: Callable[..., Any]) -> Callable[[], None]:
-        """Subscribe to one of the bus's NON-``AgentEvent`` channels. Returns unsubscribe.
+        """Subscribe to one of the bus's string channels, outside the ``AgentEvent`` stream.
 
-        :meth:`subscribe` covers the ``AgentEvent`` stream, whose ``type`` Literal is
-        deliberately closed (S49); lifecycle rides separate string channels.
-
-        The channels a renderer cares about:
+        :meth:`subscribe` covers ``AgentEvent``. The channels a renderer cares
+        about (handlers take these as keywords):
 
         - ``"submission_start"`` — ``(submission, text, images, cursor)``, once per
           admitted submission that will actually run a turn, before the loop starts.
@@ -1465,36 +1416,35 @@ class AgentSession:
         - ``"cursor_open"`` / ``"cursor_close"`` — ``(cursor)``, when
           :meth:`open_cursor` / :meth:`close_cursor` run (docs/CURSORS.md §4).
 
-        Handlers may be sync or async and are dispatched exactly like
-        :meth:`subscribe`'s (fire-and-forget; an exception is surfaced through the
-        bus's ``on_error`` sink, never swallowed).
+        Args:
+            channel: The channel name.
+            handler: Sync or async; an exception it raises is surfaced through
+                the bus's ``on_error`` sink, never swallowed.
+
+        Returns:
+            A callable that removes ``handler``.
         """
         return self._events.on(channel, handler)
 
     def route_session_event(self, event: dict[str, Any]) -> None:
         """Route a coding-agent session-lifecycle event onto the extension bus.
 
-        The seam-3 emitter (``session_store.subscribe_session_events``, coding-agent)
-        publishes raw dicts ``{"type": <name>, "session": <Session>, **extra}`` for
-        ``session_start`` / ``session_before_fork`` / ``session_before_compact`` /
-        ``session_shutdown``. This is the bridge that gives them their first
-        consumer: each dict is re-emitted onto this session's ``EventBus`` on a
-        **separate string channel** named by ``event["type"]`` (``emit_channel``),
-        so ``api.on("session_before_compact", handler)`` — a handler subscribed to
-        the same bus the loop emits on — fires. The seam is a distinct channel, NOT
-        a member of the ``AgentEvent`` Literal (which carries no session events;
-        §E3c.4, §7 decision E3-c).
+        Re-emits the event on the string channel named by its ``type``, so
+        ``api.on("session_before_compact", handler)`` fires. These are channels,
+        NOT members of the ``AgentEvent`` Literal (§E3c.4, §7 decision E3-c).
+        The coding-agent layer registers this with its seam-3 emitter
+        (``subscribe_session_events``); tau-agent-core never imports
+        ``session_store``. The emit is scheduled as a fire-and-forget task.
 
-        Wired from the coding-agent layer (which owns both the emitter and this
-        session) — tau-agent-core never imports ``session_store``. Register it via
-        ``subscribe_session_events(agent_session.route_session_event)``.
+        Args:
+            event: ``{"type": <name>, "session": <Session>, **extra}`` for
+                ``session_start`` / ``session_before_fork`` /
+                ``session_before_compact`` / ``session_shutdown``; handlers
+                receive the whole dict.
 
-        The seam emitter is synchronous but fires from within the agent loop's
-        running event loop (e.g. ``append_compaction`` inside ``compact()``); the
-        bus dispatch is async, so the emit is scheduled as a fire-and-forget task
-        on the running loop (the ``EventBus`` contract is fire-and-forget). No
-        running loop is a misuse of the seam, surfaced loudly by ``get_running_loop``
-        (Fail-Early — no swallow, no synchronous fallback).
+        Raises:
+            RuntimeError: No event loop is running (Fail-Early, no synchronous
+                fallback).
         """
         loop = asyncio.get_running_loop()
         task = loop.create_task(self._events.emit_channel(str(event["type"]), event))
@@ -1502,26 +1452,17 @@ class AgentSession:
         task.add_done_callback(self._session_event_tasks.discard)
 
     async def emit_session_start(self, reason: str = "startup") -> None:
-        """Fire the notify-grade ``session_start`` lifecycle hook (S41).
+        """Bind this session to the running loop, then fire ``session_start`` (S41).
 
-        Dispatched through the session's :class:`ExtensionRunner` (not the notify
-        ``EventBus``) so a handler's exception is SURFACED (S44), not swallowed.
-        Called by the frontends *after* extensions are loaded — so a
-        ``session_start`` handler can reconstruct state from ``ctx.entries()`` /
-        install watchers with its registration already in place. Returns nothing:
-        the hook has no path effect. Gated on ``has_handlers`` for the
-        zero-extension fast path (no event dict built when nobody listens).
+        Call it after extensions are loaded, so a handler finds its registration
+        in place. The loop binding (which :meth:`submit_threadsafe` marshals to)
+        happens whether or not anything listens. Dispatched through the
+        :class:`ExtensionRunner`: a handler's exception is reported through its
+        error sink (S44) and the remaining handlers still run.
 
-        ``reason`` mirrors pi's ``SessionStartEvent.reason``
-        (``"startup" | "reload" | "new" | "resume" | "fork"``); the frontend that
-        knows why the session began passes the right one.
-
-        Also claims the loop binding (:meth:`_bind_loop`), UNCONDITIONALLY — before
-        the zero-extension fast path below, because the binding is about this
-        session, not about who is listening. This is the earliest moment a frontend
-        reliably runs the session on its loop, and a ``session_start`` handler is
-        exactly where a driver opens the subscription/timer/socket whose callbacks
-        will later need :meth:`submit_threadsafe` to have somewhere to marshal to.
+        Args:
+            reason: Why the session began, as pi's ``SessionStartEvent.reason``:
+                ``"startup"``, ``"reload"``, ``"new"``, ``"resume"`` or ``"fork"``.
         """
         self._bind_loop()
         if not self._extension_runner.has_handlers("session_start"):
@@ -1529,27 +1470,20 @@ class AgentSession:
         await self._extension_runner.emit_session_start({"type": "session_start", "reason": reason})
 
     async def emit_session_shutdown(self, reason: str = "quit") -> None:
-        """Fire the notify-grade ``session_shutdown`` lifecycle hook (S41), and
-        drain every still-running forked branch and marshalled submission.
+        """Fire the ``session_shutdown`` hook (S41) after cancelling background work.
 
         The teardown counterpart to :meth:`emit_session_start`, dispatched through
-        the runner (error-surfaced, not swallowed). The frontends fire it on the
-        genuine end-of-runtime moments — TUI quit, headless completion, and
-        SIGINT/SIGTERM — so an extension can commit exit state / stop watchers.
+        the runner (error-surfaced, not swallowed). The frontends fire it on TUI
+        quit, headless completion and SIGINT/SIGTERM.
 
-        This is also where the supervised fork-task registry closes out
-        (docs/SUBMISSION-LIFECYCLE.md "fork" — "must not become an orphan on
-        session close", :meth:`_cancel_forked_tasks`): run UNCONDITIONALLY,
-        before the ``has_handlers`` fast path below, because a forked branch must
-        not survive session teardown regardless of whether any extension
-        happens to be listening for it.
+        First, and whether or not any extension listens, it cancels and awaits
+        every forked branch, :meth:`deliver_queued` delivery and marshalled
+        submission: none has an awaiting caller, and none may outlive the
+        session (docs/SUBMISSION-LIFECYCLE.md "fork").
 
-        The same closes out :attr:`_threadsafe_tasks` (phase 4): a submission
-        marshalled in from a bus thread a millisecond before quit has no awaiting
-        caller either, and the reason it must not outlive the session is identical.
-
-        ``reason`` mirrors pi's ``SessionShutdownEvent.reason``
-        (``"quit" | "reload" | "new" | "resume" | "fork"``).
+        Args:
+            reason: As pi's ``SessionShutdownEvent.reason``: ``"quit"``,
+                ``"reload"``, ``"new"``, ``"resume"`` or ``"fork"``.
         """
         await self._cancel_forked_tasks()
         await self._cancel_task_registry(self._delivery_tasks)
@@ -1571,38 +1505,37 @@ class AgentSession:
     ) -> LoadExtensionsResult:
         """Load file-path extensions into THIS live session (E5 §2, S26/S27).
 
-        Discovers + imports each extension and invokes its ``register(api)``
-        against an :class:`ExtensionAPI` bound to this session's live
-        :class:`ExtensionRunner` bucket — so the four mutating hooks a file
-        extension registers actually FIRE in this session's loop. This is the
-        seam the E0–E4 loader left disconnected from any live process (E5 §0):
-        ``_load_extensions`` was called only by tests, never against a running
-        session's runner.
+        Each extension's ``register(api)`` runs against an api bound to its own
+        runner bucket (:meth:`_bind_extension_api`), labelled by file path and
+        appended in load order, so its hooks fire in this session's loop. Called
+        after construction, which resolves the load-vs-bind ordering (E5 D-E5-7).
+        Nothing is printed; the caller surfaces ``errors``.
 
-        Binding reuses :meth:`_bind_extension_api` as the loader's per-extension
-        ``api_factory``: each extension gets its OWN bucket appended in load
-        order and labelled by its **file path**, sharing this session's registry,
-        event bus, and live :class:`ExtensionContext`. An async ``register`` is
-        awaited by the loader. This runs once per run, AFTER construction (the
-        runner already exists), which is exactly what resolves the load-vs-bind
-        ordering (E5 D-E5-7): build the session, then bind file extensions to its
-        runner here — rather than needing the runner before the session exists.
+        Args:
+            explicit_paths: ``-e`` paths. A failure here raises unless
+                ``collect_explicit_errors``.
+            discover: Whether to scan the global extensions dir; ``-ne`` sets
+                False. ``explicit_paths`` load either way.
+            user_dir: The global extensions dir; ``None`` means
+                ``~/.tau/extensions``.
+            extensions_config: Per-extension config keyed by file stem (S40),
+                stored BEFORE binding so each ``api.config`` is sliced from it.
+                ``None`` keeps the current map.
+            collect_explicit_errors: Collect an explicit failure into ``errors``
+                like a discovered one, and keep loading (the TUI cannot abort
+                mid-load).
 
-        Error policy is the loader's (Fail-Early): an explicit ``-e`` failure
-        RAISES (the user named it); a *discovered* failure is collected into the
-        returned :class:`LoadExtensionsResult` ``errors`` and skipped.
-        ``collect_explicit_errors=True`` demotes an explicit failure to a collected
-        error too (the TUI passes this — it can't abort mid-load; headless leaves it
-        False to keep the raise). The caller
-        surfaces ``errors`` (headless → stderr, TUI → a notice); the loader no
-        longer prints them itself, so this is safe to call under a live Textual
-        screen.
+        Returns:
+            The extensions loaded and the failures collected. The failures also
+            replace what :meth:`get_extension_state` reports.
 
-        ``extensions_config`` (S40) is the per-extension config map
-        (``{"<file-stem>": {…}}``) this run resolved from ``~/.tau/config.json`` +
-        ``--ext-config`` overrides. It is stored on the session BEFORE binding so
-        :meth:`_bind_extension_api` can slice each extension's ``api.config`` by
-        file stem. ``None`` leaves the constructor-supplied map (default ``{}``).
+        Raises:
+            FileNotFoundError: An explicit path names no file.
+            ExtensionCapabilityError: An explicit extension declares a capability
+                this session lacks, or an invalid ``CONFIG_SCHEMA``.
+            Exception: Whatever an explicit extension's import or ``register``
+                raises, unchanged. None of these is raised when
+                ``collect_explicit_errors`` is set.
         """
         if extensions_config is not None:
             self._extensions_config = extensions_config
@@ -1654,12 +1587,11 @@ class AgentSession:
         )
 
     def list_managed_extensions(self) -> list[tuple[str, bool]]:
-        """Every file extension under management as ``(path, enabled)`` in load order.
+        """Every file extension under management, enabled or not.
 
-        The authoritative runtime state the ``/extensions`` listing reads so a
-        disabled extension shows as such: ``enabled`` is ``False`` exactly when the
-        path is in ``_disabled_paths`` (its bucket removed from the runner). Pure
-        read — no path effect, display-only.
+        Returns:
+            ``(path, enabled)`` in load order; ``enabled`` is False exactly when
+            :meth:`disable_extension` removed its bucket and nothing re-bound it.
         """
         return [(path, path not in self._disabled_paths) for path in self._loaded_extensions]
 
@@ -1750,11 +1682,15 @@ class AgentSession:
     def resolve_extension_target(self, token: str) -> str | None:
         """Resolve a user token (full path or file stem) to a managed path.
 
-        The ``/extensions <verb> <token>`` frontend passes what the user typed; the
-        listing shows stems (``Path(path).stem``), so ``disable 21_reminders`` must
-        map to the loaded path. Matches an exact path first, then a unique stem.
-        Returns ``None`` when nothing matches or a stem is ambiguous (the caller
-        reports it — no guessing, Fail-Early).
+        The listing shows stems, so ``disable 21_reminders`` must map to the
+        loaded path.
+
+        Args:
+            token: What the user typed: a managed path, or a file stem.
+
+        Returns:
+            The exact path if managed, else the one path with that stem; ``None``
+            when nothing matches or the stem is ambiguous (no guessing).
         """
         if token in self._loaded_extensions:
             return token
@@ -1786,7 +1722,14 @@ class AgentSession:
         the S41 teardown seam, so a watcher/exit-commit runs cleanly — then removes its
         runner bucket (hooks stop) and unwinds its registry tools/commands/shortcuts.
         The ``LoadedExtension`` record is KEPT so :meth:`enable_extension` can bring it
-        back. A no-op (unknown / already disabled) returns ``ok=False``, not an error.
+        back. If the extension's lock held the cursor, the cursor moves off it.
+
+        Args:
+            path: A managed path or a unique file stem.
+
+        Returns:
+            The outcome; ``ok=False`` for an unknown or already-disabled
+            extension, not an error.
         """
         target = self.resolve_extension_target(path)
         if target is None:
@@ -1835,7 +1778,13 @@ class AgentSession:
         Binds a FRESH runner bucket (its tools/commands/shortcuts re-enter the
         registry) and re-invokes the stored ``register(api)`` — the same entry point
         the loader called — then fires ``session_start`` (reason ``"enable"``) so a
-        watcher re-installs. A no-op (unknown / already enabled) returns ``ok=False``.
+        watcher re-installs.
+
+        Args:
+            path: A managed path or a unique file stem.
+
+        Returns:
+            The outcome; ``ok=False`` for an unknown or already-enabled extension.
         """
         target = self.resolve_extension_target(path)
         if target is None:
@@ -1874,9 +1823,21 @@ class AgentSession:
         enabled), removes its bucket + registry entries, then RE-IMPORTS the file fresh
         (a new module object — code edits on disk take effect) and re-invokes
         ``register`` against a fresh bucket, finally firing ``session_start`` (reason
-        ``"reload"``). A broken file RAISES out of here (Fail-Early — the extension is
-        left torn down; the frontend surfaces the error), which is why reload does not
-        return an ``ok=False`` for an import failure.
+        ``"reload"``). Works on a disabled extension too, and leaves it enabled.
+
+        Args:
+            path: A managed path or a unique file stem.
+
+        Returns:
+            The outcome; ``ok=False`` only for an unknown extension.
+
+        Raises:
+            FileNotFoundError: The file is gone from disk.
+            ExtensionCapabilityError: The new code declares a capability this
+                session lacks, or an invalid ``CONFIG_SCHEMA``.
+            Exception: Whatever the module's import or ``register`` raises,
+                unchanged. In every case the extension is left torn down, never
+                reported as ``ok=False``.
         """
         target = self.resolve_extension_target(path)
         if target is None:
@@ -2334,24 +2295,19 @@ class AgentSession:
 
         Reference: docs/SUBMISSION-LIFECYCLE.md phase 3; :mod:`tau_agent_core.commands`.
 
-        PURE and side-effect-free — it decides, it does not run. That matters because
-        this has two callers and they need the same answer for different reasons:
+        Pure: it decides, it does not run, and it does not decide whether dispatch
+        is ALLOWED (:meth:`submit` gates that on ``sub.expand_commands``). A head
+        asks it too, before rendering a user bubble for a ``/tree`` that will never
+        be a turn, so both get the same answer. It reads the live extension-command
+        registry; see :func:`~tau_agent_core.commands.resolve_command` for the
+        ordering rule (built-ins win).
 
-        - :meth:`submit`, which is the AUTHORITY. It calls this only when
-          ``sub.expand_commands`` is ``True``, which is where the security property
-          lives — this method itself does not know or care who is asking, so it must
-          never be the thing that decides whether dispatch is ALLOWED.
-        - a frontend PEEKING before it renders. The TUI must know whether a turn is
-          coming before it appends a user bubble to the transcript and its working
-          message list; asking after the fact would mean rendering a user turn for a
-          ``/tree`` that never becomes one. The old code answered this by owning the
-          whole dispatch block; now it asks the same function ``submit()`` asks, so
-          the two cannot drift.
+        Args:
+            text: The submitted text.
 
-        Resolution reads the live extension-command registry, so a command an
-        extension registered (or a reload removed) is reflected immediately. See
-        :func:`~tau_agent_core.commands.resolve_command` for the ordering rule
-        (built-ins win) and for why an unknown ``/…`` falls through to the model.
+        Returns:
+            The command it would dispatch as, or ``None`` for ordinary text,
+            including an unknown ``/…``, which goes to the model.
         """
         return resolve_command(text, self._registry.command_names())
 
@@ -2479,287 +2435,59 @@ class AgentSession:
     ) -> SubmissionResult:
         """The single admission point every input source funnels through.
 
-        ``cursor`` is the position the turn extends: :attr:`cursor` by default, or
-        any cursor this session opened (:meth:`open_cursor`). Every strategy below
-        acts on that cursor's own lock, queues and abort signal, so turns on two
-        cursors run concurrently (docs/CURSORS.md §2).
+        Reference: docs/SUBMISSION-LIFECYCLE.md, "The one door". In order:
 
-        Reference: docs/SUBMISSION-LIFECYCLE.md, "The one door" (phase 1, part 2).
-        TUI, headless, RPC, the SDK, and every extension are meant to converge on
-        this method (:meth:`prompt` below is now a thin compatibility wrapper over
-        it); the ``input`` hook chain moves HERE from the old ``prompt()`` body so
-        every submitter gets the same parsing/transform pipeline, not just a human
-        typing.
+        1. **Admission** by ``sub.multitask_strategy``, against ``cursor``'s own
+           lock, queues and abort signal, so turns on two cursors run concurrently
+           (docs/CURSORS.md §2). ``"reject"`` refuses if a turn is in flight;
+           ``"enqueue"`` waits for it; ``"steer"`` puts the text on the running
+           turn's steer queue, delivered before its next LLM call, or runs a turn
+           if none is in flight; ``"rollback"`` aborts the in-flight turn, waits,
+           and moves the cursor back to that turn's pre-turn leaf, refusing if a
+           different turn ran in between (the lock is FIFO, so a rollback does not
+           jump an already-queued enqueue); ``"fork"`` checks the leaf is
+           turn-complete and runs a supervised :meth:`spawn` in the background.
+        2. **The ``input`` hook chain**, which may transform or consume the text.
+        3. **Command dispatch**, only when ``sub.expand_commands``: a resolved
+           command (:meth:`resolve_command`) runs or steps instead of a turn and is
+           reported on ``SubmissionResult.command``. Off by default, which is a
+           security property: a bus payload starting ``/compact`` stays prompt text.
+        4. **A pending extension lock** refuses the turn.
+        5. **The turn**, persisted unless ``sub.store_history`` is False, bracketed
+           by ``submission_start``/``submission_end`` channel events, with every
+           ``AgentEvent`` stamped with the submission's provenance.
 
-        ``context`` is deliberately NOT a field on :class:`~tau_agent_core.submission.Submission`
-        — it is the pre-existing ``prompt(text, images, context)`` capability (the
-        TUI passes its own live working message list, ``backends.py`` ``stream_chat``)
-        threaded through as a direct keyword so :meth:`prompt` can keep its exact
-        signature and return type. No other submission source has ever had a
-        "context override" concept; ``Submission.text``/``images`` remain the only
-        per-submission content fields the cross-source contract carries.
+        For the turn's lifetime, ``sub.allow_user_input`` decides whether extension
+        dialogs may reach a TUI delegate, and the derived submission depth is
+        published so a self-continuing extension hits ``MAX_SUBMISSION_DEPTH``.
 
-        ``on_admitted`` (docs/REMOTE-CONTROL.md §4[3], C3) is the RPC surface's
-        admission signal, added for `tau_agent_core.rpc.commands`'s ``submit``/
-        ``prompt`` handlers and additive for every other caller (default ``None``,
-        never invoked, no observable change to any existing call site). C3 needs a
-        response at the moment a submission is ADMITTED — long before the turn this
-        call may go on to run has finished, which is the only point at which this
-        method historically returned anything at all. Fired exactly once, with no
-        arguments, from the one place below where every strategy that is actually
-        going to run a turn ON THIS CALL has already committed to that (see the
-        call site's own comment for why that is a clean, single point rather than
-        one per branch): the branches that return their own ``SubmissionResult``
-        before reaching it — "reject"'s failure, "steer"'s turn-in-flight delivery,
-        "rollback"'s stale-target refusal, "fork"'s admission failure or spawn — are
-        each already a complete, fast result the caller can react to synchronously,
-        so none of them need a separate signal. Fired AFTER
-        :meth:`_apply_input_pipeline` (phase-2 review B2), not before: an ``input``
-        hook that consumes the submission, or ``expand_commands`` resolving a slash
-        command, is a THIRD way to reach a complete result without a turn ever
-        running, and calling ``on_admitted`` ahead of that check made its own
-        promise below false for exactly those two cases. The turn's own progress
-        after admission is reported the ordinary way, through the ``AgentEvent``
-        stream this call stamps with the submission's provenance — ``on_admitted``
-        says only "this call is now committed to running a turn", nothing about how
-        that turn goes.
+        Args:
+            sub: The submission.
+            context: The model-input context to use instead of the cursor's path;
+                the TUI passes its working message list.
+            on_admitted: Called once, with no arguments, when this call commits to
+                running a turn (after the input pipeline, never on a path that
+                returns without one). It must not raise: an exception propagates
+                out of this method before the turn starts.
+            cursor: The cursor the turn extends; a cursor this session opened.
+                ``None`` means :attr:`cursor`.
 
-        **No-raise contract.** ``on_admitted`` MUST NOT raise. It is called from
-        inside this method's own ``try`` (S2), so a raising callback still unwinds
-        through the ``finally`` that releases :attr:`_turn_lock` and resets the
-        per-turn state — the session is not wedged — but the exception itself then
-        propagates straight out of :meth:`submit`, past everything the turn would
-        otherwise have done (no ``agent_start``, no persisted user node). A caller
-        that cannot guarantee its callback won't raise should catch inside the
-        callback itself and log, not rely on :meth:`submit` to recover for it.
-
-        Owns, in order (the spec's numbered list):
-
-        1. **Admission / concurrency** — ``sub.multitask_strategy`` against the
-           in-flight-turn lock.
-
-           - ``"reject"`` returns ``accepted=False`` with a reason, never
-             blocking and never raising.
-           - ``"enqueue"`` waits for the in-flight turn (if any) to finish, then
-             runs — never "parks" the way ``send_user_message(deliver_as=
-             "nextTurn")`` does; it is guaranteed to run within THIS call.
-           - ``"rollback"`` (decision 2): if a turn is genuinely in flight, signals
-             its :attr:`_abort_signal` (a REQUEST — the turn still unwinds through
-             its own ``finally``, which is what actually persists whatever it
-             produced before the signal was checked), then waits for the slot
-             exactly like ``"enqueue"``. Once acquired, it navigates the log back
-             to the leaf THAT turn recorded at ITS OWN admission
-             (:attr:`_pre_turn_leaf`, read BEFORE this call's own admission
-             overwrites it) by moving the cursor — the abandoned suffix falls off
-             the ``parentId`` walk, the shape ``ctx.fork(mode="in_place")`` also
-             has. If NO
-             turn is in flight there is nothing to discard, so this degrades to a
-             plain admission at the current cursor — no navigate, no signal.
-             **Known limitation:** ``asyncio.Lock`` is FIFO; a rollback queued
-             behind an already-waiting ``"enqueue"`` submission does not jump the
-             queue (it is granted the slot only after that submission ALSO
-             completes a full turn). Fixing that needs a priority-aware admission
-             primitive this work item does not build. Review fix, must_fix #1:
-             this used to then navigate to the ORIGINAL aborted turn's pre-turn
-             leaf regardless, silently discarding the queued submission's
-             completed work from the active path. It now detects that case
-             (:attr:`_current_turn_token` bumped by every admitted turn) and
-             refuses (``accepted=False``) rather than corrupting the tree — the
-             queue-jump gap stands, but it now fails safely instead of silently.
-           - ``"fork"`` (decision 2): does **not** touch :attr:`_turn_lock` at
-             all — the in-flight turn, if any, is genuinely untouched. The fork
-             point is this session's cursor leaf; admission
-             checks it is TURN-COMPLETE
-             (:meth:`~tau_agent_core.conversation_tree.ConversationTree.fork_admission_reason`)
-             and returns ``accepted=False`` with a clear reason rather than
-             producing a bad prefix. On success, a second agent is spawned in a
-             SUPERVISED background task (:meth:`_spawn_fork`,
-             :attr:`_forked_tasks`) — reusing ``ctx.spawn_branch``'s entire
-             mechanism (an owned cursor, tool scoping, failure containment) —
-             and ``submit()`` returns
-             ``accepted=True`` immediately, before the branch's turn finishes;
-             there is no caller left to await it the way ``spawn_branch``'s
-             caller does.
-           - ``"steer"`` (phase 4): deliver the content into the turn that is
-             ALREADY running — after its current tool calls have appended their
-             results, before its next LLM call. That point has one owner, the
-             agent loop, so this method's whole job is to put the content where
-             the loop will find it: :attr:`_pending_steer_messages`, which every
-             :class:`~tau_agent_core.agent_loop.AgentLoop` this session builds
-             receives as ``steer_queue=`` and drains immediately before each
-             provider call. Returns ``accepted=True`` with NO messages — the
-             transcript belongs to the submission that owns the turn.
-
-             With NO turn in flight there is nothing to steer, and the "next LLM
-             call" is the one this submission is about to make, so it takes the
-             slot and runs an ordinary turn (pi's split exactly:
-             ``streamingBehavior`` is consulted only ``if (this.isStreaming)``).
-
-             A steer left undelivered because the turn ended first (a
-             ``terminate``-ing tool, ``max_turns``) STAYS queued and is delivered
-             at the start of the next turn — it is never dropped and never
-             re-ordered. It IS dropped by :meth:`abort` and by ``rollback``'s
-             abort, which is pi's behaviour (``clearSteeringQueue()``) and the
-             only coherent one: the turn it was aimed at no longer exists.
-
-             This method is not the only door onto that queue: a hook running
-             INSIDE the turn cannot call ``submit()`` at all (the reentrancy
-             guard below), so mid-turn extension steering goes through
-             ``ctx.send_user_message(deliver_as="steer")`` →
-             :meth:`_queue_message`, which appends to the same list.
-
-           Also records :attr:`_pre_turn_leaf` — the log's cursor immediately
-           BEFORE this submission's user node — needed for provenance regardless
-           and, per decision 2, what makes ``rollback`` cheap: a LATER
-           submission's abort target is exactly this cursor.
-        2. **The `input` hook chain** — moved here from ``prompt()``. The event
-           now carries ``source``/``submitter`` so a handler can branch on
-           provenance (pi's ``InputSource`` equivalent). ``handled`` still
-           consumes without a turn.
-        3. **Command dispatch**, gated on ``sub.expand_commands`` (B2-b). The
-           built-ins ``/compact`` / ``/tree`` / ``/fork`` / ``/extensions`` and
-           every extension-registered ``/name args`` used to be intercepted inside
-           a Textual event handler (``tau_coding_agent/app.py``
-           ``on_input_submitted``), so no other input source had a command
-           vocabulary at all. The DECISION now lives in
-           :mod:`tau_agent_core.commands` and is taken here, via
-           :meth:`resolve_command`, against the POST-``input``-hook text (the
-           spec's own step order).
-
-           A resolved command is not a turn: nothing is persisted, no model call
-           is made, ``messages`` is empty, and the decision is reported on
-           :attr:`~tau_agent_core.submission.SubmissionResult.command`. An
-           extension command is RUN here (:meth:`run_extension_command`) because
-           any frontend can render the string it returns, and reported as a
-           :class:`~tau_agent_core.flows.Performed`; a built-in is STEPPED and
-           reported as the arm it is at — a :class:`~tau_agent_core.flows.FlowStep`,
-           a :class:`~tau_agent_core.flows.Ready` or a
-           :class:`~tau_agent_core.flows.View` — because the core cannot push a
-           Textual screen, and a frontend that cannot perform the arm it got must
-           raise :class:`~tau_agent_core.commands.UnsupportedCommandError` rather
-           than return having done nothing. An unrecognised ``/…`` resolves to
-           ``None`` and is sent to the model as ordinary text, unchanged.
-
-           ``expand_commands`` defaults to ``False`` and that is a SECURITY
-           property: a bus/timer/webhook payload beginning with ``"/compact"`` is
-           literal prompt text, and cannot smuggle a command through. Only a
-           submitter that positively declares itself an interactive frontend gets
-           dispatch. An extension that wants to compact calls the typed API.
-        4. **Session materialisation** — a no-op for THIS class: ``AgentSession``
-           requires a ``session_log`` at construction, so a session always
-           exists by the time ``submit()`` runs. "Create one if absent" is a
-           FRONTEND concern (e.g. the TUI's ``action_new_chat``), not this
-           method's.
-        5. **Persistence honouring ``store_history``** — ``True`` (the default,
-           and what :meth:`prompt` always passes) is byte-for-byte the
-           pre-existing persisted pipeline. ``False`` runs the same turn through
-           the model but persists nothing (:meth:`_run_one_turn`'s ``persist=``
-           parameter) and skips the end-of-prompt drain / ``user_turn_end`` —
-           both are about consolidating DURABLE session state (auto-compaction
-           acts on the persisted log; a followUp re-entry persists its own turn),
-           which a non-persisted submission has no business triggering.
-
-           ``silent`` is NOT honoured here and raises (see below). It folds into
-           ``store_history=False`` at construction (``Submission.__post_init__``),
-           but that is only half of what it promises: the other half — suppressing
-           renderer-visible output — has no coherent implementation at THIS seam.
-           The core has one multiplexed event bus and its subscribers are not all
-           renderers (``latency.py`` measures off it, ``rpc.py`` captures off it,
-           ``spawn_branch`` forwards off it), so declining to emit would blind
-           measurement and transport rather than a screen; and marking events
-           instead would only work once renderers honour the mark, which is the
-           multi-stream renderer contract of **Block 3** (``backends.py``
-           ``stream_chat`` is single-stream by construction and filters on nothing
-           today). The spec's own Jupyter rule says the same from the other
-           direction: a frontend filters to decide HOW to render and "dropping
-           other sources' events is how a multi-client session becomes
-           incoherent" — deciding that in the core is not this method's business.
-           A caller who wants the half that exists asks for it by name:
-           ``store_history=False``.
-        6. **Run, then return** — the admission step above already resolved
-           "run or enqueue" (enqueue is a wait, not a separate code path); this
-           step is the bare return of the produced messages. Every ``AgentEvent``
-           the turn's :class:`AgentLoop` emits is stamped with this submission's
-           ``submission_id``/``source``/``submitter``/``correlation``
-           (:meth:`_stamp_event`, "Provenance on events") — Jupyter's
-           ``parent_header``: a renderer decides HOW to show a turn from this,
-           never whether to drop it.
-
-           The submission's own SPAN is published too, on the ``submission_start``
-           / ``submission_end`` bus channels (B3-a; see :meth:`subscribe_channel`).
-           An ``AgentEvent`` brackets a TURN, and a followUp re-entry runs a second
-           ``loop.run()`` inside one ``submit()``, so ``agent_start``/``agent_end``
-           cannot tell a renderer where one user→answer exchange begins and ends.
-           These two can, and they are what lets a frontend render a turn it never
-           initiated — a bus, timer or extension submission — instead of only the
-           one it happens to be awaiting.
-
-        ``allow_user_input`` (Jupyter's ``allow_stdin``) is ENFORCED here, for the
-        whole lifetime of the admitted turn: this method publishes it on
-        :data:`~tau_agent_core.submission.SUBMISSION_ALLOWS_USER_INPUT`, and
-        :class:`~tau_agent_core.extension_types.ExtensionUI`'s blocking dialogs
-        (``confirm``/``select``/``input``/``form``) consult it before reaching a TUI
-        delegate. ``False`` (the ``Submission`` default, and what every non-human
-        source gets) means those dialogs take the headless-answer route even in a
-        TUI process — the configured ``--ui-defaults`` answer, or
-        :class:`~tau_agent_core.extension_types.HeadlessDialogError`. That is the
-        enforcement the spec names ("Enforcement stays HeadlessDialogError"), and
-        it is why the capability is per-submission rather than per-process: an
-        embedded τ serving a human at a terminal and a cron-triggered submission
-        must be able to bar the second from opening a modal on the first. Publication
-        is causal, not temporal — see the ContextVar's own docstring.
-
-        Depth (decision 3) is DERIVED here, not merely read off the record: the
-        submission's own ``depth`` is a floor, and
-        :func:`~tau_agent_core.submission.next_submission_depth` raises it to one
-        below the turn this call was originated from, if any
-        (:data:`~tau_agent_core.submission.DRIVING_SUBMISSION_DEPTH`, which this
-        method publishes for the lifetime of the turn it admits). "Originated
-        from" is causal, not temporal — a task spawned by a hook inside a turn
-        inherits that turn's depth even if it reaches this method after the turn
-        ended, and a task that predates the turn inherits nothing however much
-        traffic it delivers mid-turn. That is what makes the cap below reachable:
-        a self-continuing extension (``turn_end`` hook → spawn a task →
-        ``api.submit`` → its own ``turn_end`` hook → …) climbs one per link and
-        raises on the eleventh, instead of looping forever.
-
-        **This method is safe only from the session's own event loop** (phase 4,
-        "Task marshalling"). A NATS callback, a timer or a webhook handler that
-        fires in a context this session does not own must call
-        :meth:`submit_threadsafe` instead; calling this one from there RAISES,
-        because the alternative — working by accident, or silently rerouting — is
-        the "bus disconnected randomly" bug the spec names. See
-        :meth:`_bind_or_check_loop` for exactly what counts as foreign.
+        Returns:
+            The outcome: ``accepted=False`` with a ``rejection_reason`` when
+            refused; otherwise the turn's messages, or none for a steer, a fork, a
+            consumed input or a command.
 
         Raises:
-            RuntimeError: this call is on a different (live) event loop than the
-                one this session is bound to, or on no event loop at all. The
-                message names :meth:`submit_threadsafe` as the fix.
-            RuntimeError: the derived depth exceeds ``MAX_SUBMISSION_DEPTH``
-                (decision 3 — a hard cap that raises, never a silent drop or an
-                advisory flag).
-            RuntimeError: this call is reentrant — running on the SAME
-                ``asyncio.Task`` as the turn currently holding ``_turn_lock``
-                (review fix, must_fix #2). A hook (``input``, ``tool_call``,
-                ``turn_end``, ``user_turn_end``) that calls back into
-                :meth:`submit`/:meth:`prompt`/``ctx.prompt`` before its own
-                turn returns can never be admitted — every strategy below
-                either waits on or inspects a lock this task already holds,
-                so the call would hang forever with no exception and no log
-                line. A DIFFERENT task submitting concurrently is not this
-                case and is unaffected (see :attr:`_turn_task`).
-            NotImplementedError: ``sub.multitask_strategy`` is not one of the
-                five names in
-                :data:`~tau_agent_core.submission.MultitaskStrategy` — refused
-                rather than silently falling through to whichever branch is last.
-            UnsupportedCommandError: ``sub.expand_commands`` resolved a command
-                that was registered when :meth:`resolve_command` looked but gone
-                by the time :meth:`run_extension_command` ran (an extension
-                unloaded across the ``await``). Refusing loudly beats falling
-                through to the model with text the user meant as a command.
-            NotImplementedError: ``sub.silent`` is ``True`` — renderer
-                suppression lands in Block 3 (see step 5). ``store_history=False``
-                is the part that exists today and is not affected.
+            ValueError: ``cursor`` was not opened by this session.
+            RuntimeError: Called off the session's own event loop (use
+                :meth:`submit_threadsafe`); the derived depth exceeds
+                ``MAX_SUBMISSION_DEPTH``; or the call is reentrant, from a hook on
+                the task already running this cursor's turn, which would deadlock.
+            NotImplementedError: ``sub.multitask_strategy`` is unknown, or
+                ``sub.silent`` is True (only its ``store_history=False`` half
+                exists).
+            UnsupportedCommandError: A resolved command was unregistered before
+                it ran.
         """
         self._bind_or_check_loop("submit()")
         cur = self._cursor if cursor is None else self._registered(cursor)
@@ -2983,11 +2711,29 @@ class AgentSession:
         no extension hooks unless ``hooks``. Its turn is an ordinary submission
         (``source="agent"``, ``submitter="fork:<label>"``) whose events carry its
         cursor's id. Its first append records that frame as a config entry, so the
-        sub-agent's spec is in the tree. The cursor is closed before this returns.
+        sub-agent's spec is in the tree. The cursor is closed before this returns,
+        unless a turn still holds it.
 
-        **Failure is contained, not propagated** (§9.2/5): a sub-agent that raises
-        marks its branch with a ``branch_error`` entry and returns ``ok=False``; one
-        bad evaluator in a fan-out must not kill the turn that spawned it.
+        Failure is contained, not propagated (§9.2/5): a sub-agent that raises
+        leaves a ``branch_error`` entry and returns ``ok=False``, as does a
+        refused submission (without the entry).
+
+        Args:
+            at: The entry to branch from; ``None`` is before the root.
+            prompt: The sub-agent's user message.
+            tools: Names of the tools it may call, each one the spawning turn
+                offers.
+            model: Its model; ``None`` means the session's. It runs with the
+                session's API key either way.
+            max_turns: Its turn ceiling; ``None`` is no ceiling, not the session's.
+            label: What it is for, for display; ``None`` means the prompt's first
+                60 characters.
+            system_prompt: Its system prompt; ``None`` means the session's.
+            hooks: Whether extension hooks fire in its turn.
+            owner: The cursor it answers to; ``None`` means :attr:`acting_cursor`.
+
+        Returns:
+            What the sub-agent came back with; check ``ok`` first.
 
         Raises:
             ValueError: a name in ``tools`` is not one the spawning turn offers, or
@@ -3100,6 +2846,10 @@ class AgentSession:
         were aimed, the way a sub-agent's turn runs with nobody watching, rather
         than discarded. Supervised: :meth:`emit_session_shutdown` cancels it, and
         :meth:`wait_for_deliveries` awaits it.
+
+        Args:
+            cursor: A non-head cursor this session opened. Returns at once; the
+                delivery runs as a task on the running loop.
 
         Raises:
             ValueError: ``cursor`` is the head's, or this session did not open it.
@@ -3611,27 +3361,24 @@ class AgentSession:
     async def compact_messages(
         self, messages: list[dict[str, Any]], custom_instructions: str | None = None
     ) -> list[dict[str, Any]] | None:
-        """Compact a caller-supplied message list and return the shortened list.
+        """Summarize everything before the last user turn of a caller-held list.
 
-        This is the **manual** compaction path (the TUI's ``/compact``): it
-        summarizes everything before the most recent user turn and keeps that
-        turn intact, returning a new list shaped ``[<system messages>, <summary
-        as a user message>, <most recent user turn onward>]``. It is for callers
-        whose own store — not the session manager — is the authoritative context
-        they send to the model (the TUI's ``current_chat.messages`` is exactly
-        this).
+        For a caller whose own message list, not the session log, is the context
+        it sends. Unlike auto-compaction's token-budget cut, the cut is by count:
+        the most recent user turn onward is kept whole, whatever its size. The
+        summary's tokens go to the side ledger.
 
-        The cut is **count-based** (keep the last user turn), deliberately unlike
-        auto-compaction's token-budget cut: a manual compaction should visibly do
-        something on a normal-sized chat, not no-op until the conversation
-        exceeds ``keep_recent_tokens``.
+        Args:
+            messages: The context to compact; not modified.
+            custom_instructions: Extra guidance for the summarizer, or ``None``.
 
-        Returns None when there is nothing older to compact (zero or one user
-        turn), so the caller can no-op rather than grow the list with an empty
-        summary.
+        Returns:
+            A new list ``[<system messages>, <summary as a user message>, <last
+            user turn onward>]``, or ``None`` when there is at most one user
+            turn and so nothing older to compact.
 
         Raises:
-            CompactionError: if summary generation fails. Fail-Early.
+            CompactionError: The summarizer's completion failed or was aborted.
         """
         # System messages are never summarized; set them aside and restore them.
         system_msgs = [m for m in messages if m.get("role") == "system"]
@@ -3775,22 +3522,20 @@ class AgentSession:
     ) -> ContextUsageEstimate:
         """This session's context size, counted with its own counter and fit.
 
-        The single place the harness answers "how big is the context": the header,
-        ``get_session_stats``, both compaction checks and every extension read the
-        same number from here, so a display and a trigger can never disagree.
+        The one number the header, ``get_session_stats``, both compaction checks
+        and every extension read, so a display and a trigger never disagree.
 
-        ``messages`` defaults to the active path — or, while an agent loop is
-        mid-turn, to the context that loop is actually holding. The persisted path
-        is stale there: nothing this turn produced reaches the log until the turn
-        ends, so a bare reading during a twenty-tool-call turn would report the
-        conversation as it stood before the turn began. The loop publishes its
-        view at each turn boundary (:meth:`_compact_mid_turn`), which leaves one
-        gap: the FIRST request of a turn is still measured against the persisted
-        path, so it omits that turn's own user message.
+        Args:
+            messages: The messages to measure. ``None`` means the context the
+                running turn holds (published at each turn boundary by
+                :meth:`_compact_mid_turn`), else the active path. A turn's FIRST
+                request is still measured on the persisted path, so it omits
+                that turn's own user message.
 
-        The returned estimate's ``count`` carries the provenance — whether a
-        tokenizer or the character classes produced it, and whether the
-        chat-template framing is inside it.
+        Returns:
+            The estimate; its ``count`` carries the provenance — whether a
+            tokenizer or the character classes produced it, and whether the
+            chat-template framing is inside it.
         """
         in_flight = self.acting_cursor.in_flight_context
         if messages is not None:
@@ -3990,30 +3735,19 @@ class AgentSession:
     def abort(self, cursor: Cursor | None = None) -> None:
         """Abort ``cursor``'s turn, every cursor it owns, and every still-running forked branch.
 
-        ``cursor`` defaults to the one the caller acts on (:attr:`acting_cursor`).
         Owned cursors are aborted first, deepest first, so a sub-agent stops before
         the turn that spawned it (docs/CURSORS.md §6). Each loses its queued steers:
-        the turn they were aimed at is gone.
+        the turn they were aimed at is gone. A fork's background task is cancelled,
+        since no caller holds its cursor (docs/SUBMISSION-LIFECYCLE.md "fork").
 
-        A ``multitask_strategy="fork"`` submission's second agent is a REAL
-        ``AgentSession``, but not one an ``abort()`` caller has a handle to — it
-        was constructed and awaited from inside :meth:`_spawn_fork`'s background
-        task. Cancelling that ``asyncio.Task`` is this session's own "abort path"
-        reaching it (docs/SUBMISSION-LIFECYCLE.md "fork" — "must be cancellable
-        via the session's abort path"): the forked branch's own ``AgentSession``
-        does not need — and does not get — a direct ``abort()`` call, because
-        cancelling its driving task raises ``CancelledError`` into whichever
-        ``await`` it is suspended on, unwinding it the same way any cancelled
-        coroutine unwinds.
+        Marshalled :meth:`submit_threadsafe` submissions are deliberately NOT
+        cancelled: one in flight is an ordinary turn the signal already aborts,
+        and the rest are input this abort was never about. They are drained at
+        :meth:`emit_session_shutdown`.
 
-        :attr:`_threadsafe_tasks` is deliberately NOT cancelled here, and the
-        asymmetry is the point. A fork is a second agent that ``abort()`` has no
-        other handle on; a marshalled submission is an ORDINARY turn on this
-        session — if it is the one in flight, the signal above already aborts it,
-        by the same mechanism as any other turn. Cancelling the rest would discard
-        submissions that have not been admitted yet, i.e. input this abort was
-        never about, arriving from a source the aborting user cannot see. They are
-        drained at session shutdown instead (:meth:`emit_session_shutdown`).
+        Args:
+            cursor: A cursor this session opened; ``None`` means
+                :attr:`acting_cursor`.
         """
         target = self.acting_cursor if cursor is None else self._registered(cursor)
         for owned in reversed(self._owned_by(target)):
@@ -4434,6 +4168,9 @@ class AgentSession:
         then on ``api.ui.notify(msg, level)`` reaches the delegate (the TUI screen)
         instead of the headless stderr sink. Nothing calls this on the headless
         path, so ``tau -p`` keeps the stderr behaviour.
+
+        Args:
+            delegate: The front-end object ``api.ui`` calls are forwarded to.
         """
         self._extension_api.context.set_ui_delegate(delegate)
 
@@ -4446,26 +4183,26 @@ class AgentSession:
         stderr line — the parallel record family the ``--mode json`` frontend writes
         alongside the closed ``AgentEvent`` set. Only the headless JSON path installs
         one; the TUI sets a live delegate instead and ``--mode text`` leaves it unset
-        (stderr, unchanged). Passing ``None`` clears it.
+        (stderr, unchanged).
+
+        Args:
+            sink: Called with each extension record; ``None`` clears it.
         """
         self._extension_api.context.set_record_sink(sink)
 
     def set_headless_ui_defaults(self, policy: dict[str, str]) -> None:
-        """Set the headless dialog-answer policy for this session (E7 §3 / S48).
+        """Set the headless dialog-answer policy for every loaded extension (E7 §3 / S48).
 
-        Threads the resolved ``--ui-defaults`` / config ``"ui_defaults"`` map onto
-        the session's ONE shared :class:`ExtensionUI` (via the context), so a
-        headless dialog opened by any loaded extension auto-answers only for the
-        methods the user explicitly opted into — every other headless dialog
-        raises :class:`HeadlessDialogError` (Fail-Early, D-E6-2). This is run-scoped
-        runtime config: it is NOT persisted onto the session tree (the policy is
-        re-sourced each run, like ``--ext-config``). The TUI path never calls this —
-        it sets a live delegate instead, so a human answers.
+        A headless dialog auto-answers only for the methods in ``policy``; any
+        other raises :class:`HeadlessDialogError`. Run-scoped: nothing is written
+        to the session tree.
+
+        Args:
+            policy: Dialog method name to the answer token it auto-answers with
+                (the resolved ``--ui-defaults`` / config ``"ui_defaults"``).
 
         Raises:
-            ValueError: an unknown method or answer token (propagated from
-                :meth:`ExtensionUI.set_headless_defaults`); the frontend renders it
-                as a clean CLI error.
+            ValueError: An unknown method or answer token.
         """
         self._extension_api.context.set_headless_ui_defaults(policy)
 
@@ -4539,13 +4276,13 @@ class AgentSession:
     def get_extension_commands(self) -> list[tuple[str, str]]:
         """List the TYPED extension commands — what a reader can write after a ``/``.
 
-        Returns ``(name, description)`` for every typed name currently bound to a
-        command (docs/EXTENSION-NAMESPACE.md), which is what the palette
-        (:meth:`TauApp.get_system_commands`) and the completion popup list. An
-        extension that lost a contested name is absent here and present in
-        :meth:`get_qualified_commands`; it is reachable either way. Description falls
-        back to the empty string when a command omitted one (listing is best-effort
-        chrome, not a durable node).
+        What the palette and the completion popup list (docs/EXTENSION-NAMESPACE.md).
+        An extension that lost a contested name is absent here and present in
+        :meth:`get_qualified_commands`.
+
+        Returns:
+            ``(typed name, description)`` for every typed name bound to a
+            command; the description is ``""`` when the command gave none.
         """
         out: list[tuple[str, str]] = []
         for typed, qualified in self._registry.get_bindings().items():
@@ -4569,6 +4306,9 @@ class AgentSession:
 
         Leaves out a template whose name a built-in or an extension command holds,
         since dispatch reaches those first; lists a broken one with its error.
+
+        Returns:
+            One completion per offered template and skill command.
         """
         taken = {name for name, _ in self.get_extension_commands()}
         return prompt_command_completions(self._prompt_templates, self._skills, taken)
@@ -4576,9 +4316,12 @@ class AgentSession:
     def get_qualified_commands(self) -> list[tuple[str, str]]:
         """List the PRIVATE registry — every command at its ``ext:…`` name.
 
-        One entry per command an extension registered, contested or not. Heads keep
-        these out of ordinary completion and offer them under the ``ext:`` prefix, so
-        a command that lost its typed name is still findable and still runnable.
+        Heads keep these out of ordinary completion and offer them under the
+        ``ext:`` prefix, so a command that lost its typed name is still runnable.
+
+        Returns:
+            ``(qualified name, description)`` for every command an extension
+            registered, contested or not; the description is ``""`` when absent.
         """
         return [
             (name, str(command.get("description", "")))
@@ -4588,13 +4331,14 @@ class AgentSession:
     def get_extension_shortcuts(self) -> list[tuple[str, str, str, str]]:
         """List extension-registered key shortcuts (E10 §6 / S69).
 
-        Returns ``(key, command, args, description)`` for every shortcut an extension
-        registered via ``api.register_shortcut`` — the TUI's ``ctrl+e`` chord menu and
-        the command palette read this to LIST + dispatch them. ``key`` is the chord
-        tail (bound under the ``ctrl+e`` leader); ``command``/``args`` are dispatched
-        through the SAME :meth:`run_extension_command` path as a typed ``/name args``.
-        ``description`` falls back to the target command's registered description, then
-        to the empty string (listing is best-effort chrome, not a durable node).
+        The TUI's ``ctrl+e`` chord menu and the command palette list and dispatch
+        these; ``command``/``args`` go through :meth:`run_extension_command`, the
+        same path as a typed ``/name args``.
+
+        Returns:
+            ``(key, command, args, description)`` per ``api.register_shortcut``.
+            ``key`` is the chord tail under the ``ctrl+e`` leader. ``description``
+            falls back to the target command's, then to ``""``.
         """
         out: list[tuple[str, str, str, str]] = []
         for key, shortcut in self._registry.get_shortcuts().items():
@@ -4610,16 +4354,19 @@ class AgentSession:
     def get_extension_command_args(self, name: str) -> str | None:
         """The declared argument placeholder for command ``name`` (E7 §3 / S51).
 
-        A command may declare ``"args": "<placeholder>"`` in its ``register_command``
-        definition to signal that it expects a free-form argument string (parity with
-        typing ``/name args``). The palette (:meth:`TauApp.get_system_commands`) reads
-        this to decide whether a palette entry, which has no argument line, must first
-        open the S47 input modal to collect the arg string before dispatch.
+        A command declares ``"args": "<placeholder>"`` in ``register_command`` when
+        it expects a free-form argument string. The palette, which has no argument
+        line, reads this to decide whether to open the S47 input modal first.
 
-        Returns the placeholder string when declared, ``None`` when the command is
-        unknown or declares no ``args``. Fail-Early: a non-string ``args`` is a
-        construction bug (the field IS the placeholder text), so it RAISES rather than
-        being coerced or silently ignored.
+        Args:
+            name: The command's registered name.
+
+        Returns:
+            The placeholder, or ``None`` when the command is unknown or declares
+            no ``args``.
+
+        Raises:
+            TypeError: The declared ``args`` is not a string (Fail-Early).
         """
         command = self._registry.get_command(name)
         if command is None:
@@ -4637,22 +4384,22 @@ class AgentSession:
     async def run_extension_command(self, name: str, args: str = "") -> ExtensionCommandResult:
         """Run an extension-registered slash command (E5 §5 / S35; output channel S46).
 
-        Port of pi's ``_tryExecuteExtensionCommand`` (agent-session.ts:1143). Looks
-        up ``name`` in the session registry and, if found, invokes its ``handler``
-        with ``(args, ctx)`` where ``ctx`` is the session's ONE live
-        :class:`ExtensionContext` (the same object hook handlers and ``api.ui``
-        reach through, so a command's ``ctx.ui.notify`` paints in the same TUI).
+        Port of pi's ``_tryExecuteExtensionCommand`` (agent-session.ts:1143). The
+        handler is called with ``(args, ctx)``, ``ctx`` being the session's one live
+        :class:`ExtensionContext`, and awaited if it returns an awaitable.
 
-        Returns an :class:`ExtensionCommandResult`: ``handled`` is ``True`` iff the
-        command existed and ran (``False`` for an unknown command so the caller can
-        fall through and treat the text as a prompt), and ``output`` carries the
-        value the handler RETURNED (E7 §3 / S46 — previously discarded, G7). The
-        frontends render ``output`` as display-only chrome; it is never appended to
-        the active path (the tree-as-truth invariant is untouched).
+        Args:
+            name: The command's registered name.
+            args: The argument string, as typed after ``/name``.
 
-        Fail-Early: a command registered without a callable ``handler`` cannot run,
-        so an attempt to invoke one RAISES rather than silently no-op'ing — a
-        registered-but-inert command is a construction bug, not a runnable command.
+        Returns:
+            ``handled=False`` for an unknown command, so the caller can fall
+            through; otherwise ``handled=True`` and the handler's return value as
+            display-only ``output``.
+
+        Raises:
+            RuntimeError: The command has no callable ``handler``.
+            Exception: Whatever the handler raises, unchanged.
         """
         command = self._registry.get_command(name)
         if command is None:

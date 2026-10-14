@@ -96,13 +96,17 @@ from_error(tool_name: str, error_message: str, tool_call_id: str | None = None) 
 
 `tau_agent_core.tools.base.AgentToolResult.from_error`
 
-Create a failure result.
+Build a failure result whose text is ``error_message``.
 
 **Parameters**
 
-- `tool_name: str` — *(no description)*
-- `error_message: str` — *(no description)*
-- `tool_call_id: str | None = None` — *(no description)*
+- `tool_name: str` — The tool that failed.
+- `error_message: str` — Shown to the model as the content's text block and kept in ``error_message``.
+- `tool_call_id: str | None = None` — The call this answers, if known.
+
+**Returns**
+
+A result with ``is_error`` set and no ``details``.
 
 ### from_exception
 
@@ -121,9 +125,13 @@ also sets ``terminate``. Any other exception gives the model
 
 **Parameters**
 
-- `tool_name: str` — *(no description)*
-- `exc: BaseException` — *(no description)*
-- `tool_call_id: str | None = None` — *(no description)*
+- `tool_name: str` — The tool whose call raised.
+- `exc: BaseException` — What it raised.
+- `tool_call_id: str | None = None` — The call this answers, if known.
+
+**Returns**
+
+A result with ``is_error`` set.
 
 ### is_error
 
@@ -156,44 +164,32 @@ Name of the executed tool
 
 A tool an extension registered, as the registry holds it.
 
-Third and last member of the hierarchy. It used to be a bare ``dict`` passed
-to ``api.register_tool()`` and stored as a dict, which meant the one shape
-crossing the extension boundary was the one shape with no schema — nothing to
-validate against, nothing to generate documentation from, and four separate
-``defn["key"]`` / ``defn.get("key", default)`` readers each deciding for
-themselves what was required. A missing key surfaced as a ``KeyError`` from
-inside the agent loop, one turn after the mistake.
+``api.register_tool()`` still accepts a plain dict and validates it into this
+model at the boundary, so a missing key fails there rather than as a
+``KeyError`` inside the agent loop a turn later. ``label`` defaults to
+``name`` here only, as ``register_tool``'s contract promises.
 
-``api.register_tool()`` still accepts the plain dict, so pi parity and every
-existing extension are unaffected; the dict is validated into this model at
-the boundary instead of being carried raw.
-
-Two differences from the parent, both real rather than cosmetic:
-
-``source`` — who registered it, for the ``/extensions`` surface. Default
-``"built-in"``, matching what :meth:`ExtensionRegistry.get_all_tools` reported
-before; ``ExtensionAPI.register_tool`` sets ``"extension"``. Accepted under
-its historical ``_source`` spelling too, because that is the key extensions
-and tests already write.
-
-``execute`` — the EXTENSION signature, ``execute(tool_call_id, params, signal,
-on_update, ctx)``, five arguments with the bound ``ExtensionContext`` last. The
-parent's is the loop's four-argument form. Nothing here can enforce that
-difference — both are ``Callable`` and a decorated or ``*args`` wrapper has no
-inspectable arity — so ``AgentSession._resolve_extension_tools`` adapts one to
-the other, and this docstring is where the difference is stated.
+``execute`` has the EXTENSION signature, ``execute(tool_call_id, params,
+signal, on_update, ctx)`` with the bound ``ExtensionContext`` last, not the
+parent's four-argument loop form. Nothing can enforce that (both are
+``Callable``), so ``AgentSession._resolve_extension_tools`` adapts one to the
+other.
 
 ### model_config
 
 `tau_agent_core.tools.base.ExtensionToolDefinition.model_config`
 
-*No description. This object is marked but undocumented.*
+Pydantic config; ``populate_by_name`` lets ``source`` be
+passed by its field name as well as its alias.
 
 ### source
 
 `tau_agent_core.tools.base.ExtensionToolDefinition.source: str`
 
-*No description. This object is marked but undocumented.*
+Who registered it, for the ``/extensions`` surface:
+``"built-in"`` by default, ``"extension"`` from
+``ExtensionAPI.register_tool``. Also accepted as ``_source``, the
+name a by-alias dump writes.
 
 ## ToolBatchResult
 <!-- agent: yes -->
@@ -253,7 +249,7 @@ Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
 
 `tau_llm.tools.ToolDefinition`
 
-Tool definition for the LLM API.
+Tool definition for the LLM API. Build one with :func:`define_tool`.
 
 Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
 
@@ -261,49 +257,52 @@ Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
 
 `tau_llm.tools.ToolDefinition.description: str`
 
-*No description. This object is marked but undocumented.*
+What the model is told the tool does.
 
 ### execute
 
 `tau_llm.tools.ToolDefinition.execute: ToolExecute`
 
-*No description. This object is marked but undocumented.*
+The implementation. tau_llm stores it and never calls it; the
+calling convention belongs to whoever runs the tool.
 
 ### execution_mode
 
 `tau_llm.tools.ToolDefinition.execution_mode: Literal['sequential', 'parallel']`
 
-*No description. This object is marked but undocumented.*
+``"sequential"`` forces the whole batch of calls it
+appears in to run one at a time in tau_agent_core's loop.
 
 ### label
 
 `tau_llm.tools.ToolDefinition.label: str`
 
-*No description. This object is marked but undocumented.*
+Human-readable name for display.
 
 ### name
 
 `tau_llm.tools.ToolDefinition.name: str`
 
-*No description. This object is marked but undocumented.*
+The name the model calls; wire-safe (``[A-Za-z0-9_-]``, at most 64).
 
 ### parameters
 
 `tau_llm.tools.ToolDefinition.parameters: dict[str, Any]`
 
-*No description. This object is marked but undocumented.*
+JSON Schema object schema for the arguments.
 
 ### prompt_guidelines
 
 `tau_llm.tools.ToolDefinition.prompt_guidelines: list[str] | None`
 
-*No description. This object is marked but undocumented.*
+Usage notes rendered under the snippet.
 
 ### prompt_snippet
 
 `tau_llm.tools.ToolDefinition.prompt_snippet: str | None`
 
-*No description. This object is marked but undocumented.*
+The tool's line in the system prompt's tool list;
+``None`` renders no line.
 
 ## ToolError
 <!-- agent: yes -->
@@ -353,19 +352,19 @@ read-only properties so an object exposing them as properties — which
 
 `tau_llm.tools.ToolSpec.description: str`
 
-*No description. This object is marked but undocumented.*
+What the model is told the tool does.
 
 ### name
 
 `tau_llm.tools.ToolSpec.name: str`
 
-*No description. This object is marked but undocumented.*
+The name the model calls.
 
 ### parameters
 
 `tau_llm.tools.ToolSpec.parameters: dict[str, Any]`
 
-*No description. This object is marked but undocumented.*
+JSON Schema object schema for the arguments.
 
 ## define_tool
 <!-- agent: yes -->
@@ -392,23 +391,24 @@ The keyword form is the one to reach for::
         execute=lambda text: {"words": len(text.split())},
     )
 
-A single mapping may also be passed positionally —
-``define_tool({"name": ..., ...})`` — which is the shape this function
-originally advertised. Passing both forms, or neither, is a caller error.
+A single mapping may be passed positionally instead
+(``define_tool({"name": ..., ...})``), but not both forms.
 
-NOTE: this is not the shape ``tau_agent_core``'s
-``ExtensionAPI.register_tool()`` takes. That one is a plain dict whose
-``execute`` has the five-argument extension signature
-``execute(tool_call_id, params, signal, on_update, ctx)``, and it defaults a
-missing ``label`` to ``name``. The two are separate contracts on purpose;
-do not feed the result of this function to ``register_tool``.
+Not the shape ``ExtensionAPI.register_tool()`` takes: that is a plain dict
+whose ``execute`` has the five-argument extension signature
+``execute(tool_call_id, params, signal, on_update, ctx)``. Do not pass this
+function's result to ``register_tool``.
 
 Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
 
 **Parameters**
 
-- `definition: Mapping[str, Any] | None = None` — *(no description)*
-- `**fields: Any` — *(no description)*
+- `definition: Mapping[str, Any] | None = None` — The fields as a single mapping, positional-only.
+- `**fields: Any` — The fields as keywords — the :class:`ToolDefinition` attributes.
+
+**Returns**
+
+The validated definition.
 
 **Raises**
 

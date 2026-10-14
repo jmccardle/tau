@@ -272,7 +272,7 @@
       "type": "object"
     },
     "AssistantMessage": {
-      "description": "An assistant message from the LLM.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\n``timestamp`` is epoch milliseconds at the moment this message stopped being\nwritten \u2014 the completion's end, or the abort for a partial. ``None`` means no\nclock applies, which is the case for a synthetic message an extension built\n(docs/MESSAGE-TIMESTAMPS.md \u00a72). It is never 0: \u03c4 did not run in 1970, so a 0\nis legacy data and the session stores map it to ``None`` on load.",
+      "description": "An assistant message from the LLM.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\n``timestamp`` is epoch milliseconds at the moment this message stopped being\nwritten \u2014 the completion's end, or the abort for a partial. ``None`` means no\nclock applies, which is the case for a synthetic message an extension built\n(docs/MESSAGE-TIMESTAMPS.md \u00a72). It is never 0: \u03c4 did not run in 1970, so a 0\nis legacy data and the session stores map it to ``None`` on load.\n\nAttributes:\n    role: Discriminator, always ``\"assistant\"``.\n    content: Thinking, text and tool-call blocks.\n    api: The wire protocol that produced it, e.g. ``\"openai-completions\"``.\n    provider: The provider id the request went to.\n    model: The model id the request named.\n    response_id: The server's id for the completion, when it sent one.\n    usage: Token counts for this completion.\n    stop_reason: Why generation ended.\n    error_message: The failure text when ``stop_reason`` is ``\"error\"``.\n    timestamp: See above.",
       "properties": {
         "api": {
           "type": "string"
@@ -3537,7 +3537,7 @@
       "type": "object"
     },
     "ImageContent": {
-      "description": "An image content block in a message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "description": "An image content block in a message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\nAttributes:\n    type: Discriminator, always ``\"image\"``.\n    data: The image bytes, base64-encoded, without a ``data:`` prefix.\n    mime_type: The image's media type, e.g. ``\"image/png\"``.",
       "properties": {
         "data": {
           "type": "string"
@@ -5854,7 +5854,7 @@
       "type": "object"
     },
     "TextContent": {
-      "description": "A text content block in a message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "description": "A text content block in a message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\nAttributes:\n    type: Discriminator, always ``\"text\"``.\n    text: The text itself.",
       "properties": {
         "text": {
           "type": "string"
@@ -5918,7 +5918,7 @@
       "type": "object"
     },
     "ThinkingContent": {
-      "description": "A thinking/reasoning content block.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "description": "A thinking/reasoning content block.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\nAttributes:\n    type: Discriminator, always ``\"thinking\"``.\n    thinking: The reasoning text.\n    cached_tokens: Not set by any \u03c4 provider; stays 0 unless a caller fills it.\n    thinking_signature: What a provider needs to replay this block. On the\n        OpenAI wire, the name of the response field the reasoning arrived in\n        (e.g. ``\"reasoning_content\"``); on Anthropic, a namespaced dict holding\n        the signature or redacted payload. ``\"\"`` when there is none.",
       "properties": {
         "cached_tokens": {
           "default": 0,
@@ -5952,7 +5952,7 @@
       "type": "object"
     },
     "ToolCall": {
-      "description": "A tool call content block in a message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "description": "A tool call content block in a message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\nAttributes:\n    type: Discriminator, always ``\"toolCall\"``.\n    id: The provider's call id; the answering result carries it as\n        ``tool_call_id``.\n    name: The tool the model asked for.\n    arguments: The parsed argument object.\n    provider_signature: Vendor-namespaced data a provider must send back with\n        this call, e.g. Gemini's thought signature. Persisted with the session.",
       "properties": {
         "arguments": {
           "additionalProperties": true,
@@ -5983,7 +5983,7 @@
       "type": "object"
     },
     "ToolResultMessage": {
-      "description": "A tool result message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "description": "A tool result message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\nAttributes:\n    role: Discriminator, always ``\"toolResult\"``.\n    tool_call_id: The ``ToolCall.id`` this answers.\n    tool_name: The tool that ran.\n    content: What the model sees: text and image blocks.\n    details: Structured data for heads and hooks; no provider sends it.\n    is_error: Whether the tool failed; the content then holds the error.\n    timestamp: Epoch milliseconds when the result was created.",
       "properties": {
         "content": {
           "items": {
@@ -6156,7 +6156,7 @@
       "type": "object"
     },
     "Usage": {
-      "description": "Token usage information for an LLM response.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\nUsage is immutable (frozen) \u2014 once created, its fields cannot be modified.\n\n``cache_reported`` says whether the SERVER accounted for a prompt cache on\nthis completion at all, which a 0 in the two counters cannot: llama.cpp\nreports no cache fields, so its 0 means \"no cache here\" where a gateway's 0\nmeans \"cached nothing\". Only the second is a finding\n(docs/PROMPT-CACHING.md \u00a77).",
+      "description": "Token usage for one LLM response. Frozen: use ``model_copy(update=...)``.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\n``cache_reported`` exists because a 0 in the cache counters is ambiguous:\nllama.cpp reports no cache fields, while a gateway's 0 means \"cached\nnothing\" (docs/PROMPT-CACHING.md \u00a77).\n\nAttributes:\n    model_config: Pydantic configuration; makes instances frozen.\n    input_tokens: Prompt tokens, as the provider reported them.\n    output_tokens: Completion tokens, as the provider reported them.\n    cache_read_tokens: Prompt tokens served from the provider's cache.\n    cache_write_tokens: Prompt tokens written to the provider's cache.\n    total_tokens: The server's total, or input plus output when it sent none.\n    cost: Not set by any \u03c4 provider; prices are applied at the head's emit\n        boundary, not stored here.\n    extra: Provider-specific additions, e.g. llama.cpp ``\"timings\"`` or the\n        OpenAI provider's ``\"repairs\"`` count for tool-call arguments.",
       "properties": {
         "cache_read_tokens": {
           "default": 0,
@@ -6196,7 +6196,7 @@
       "type": "object"
     },
     "UserMessage": {
-      "description": "A user message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.",
+      "description": "A user message.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\nAttributes:\n    role: Discriminator, always ``\"user\"``.\n    content: Plain text, or a list of text and image blocks.\n    timestamp: Epoch milliseconds when the message was created.",
       "properties": {
         "content": {
           "anyOf": [

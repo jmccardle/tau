@@ -13,25 +13,19 @@ class BranchResult(ok: bool, cursor_id: str, label: str, leaf: str | None, messa
 
 What a sub-agent came back with (``ctx.spawn_branch``, ``AgentSession.spawn``).
 
-``ok`` is the field callers must actually read. A sub-agent that failed returns a
-``BranchResult`` with ``ok=False`` rather than raising, because failure containment
-is the design (§9.2/5) — one bad evaluator in a fan-out must not kill the turn that
-spawned it. An unchecked ``ok`` turns a failure into an empty-but-successful-looking
-answer, so the field is first.
-
-``leaf`` is the sub-agent's final entry id — the handle the spawner's fold step uses
-to read the verdict back (or to ``ctx.summarize_branch(leaf)`` it) before making its
-one distilled append on its own cursor. ``cursor_id`` names the cursor its events
-carried; the cursor is closed by the time this is returned.
+A sub-agent that failed returns ``ok=False`` rather than raising: failure
+containment is the design (§9.2/5), so one bad evaluator in a fan-out does not
+kill the turn that spawned it. An unchecked ``ok`` turns a failure into an
+empty-but-successful-looking answer.
 
 **Constructor parameters**
 
-- `ok: bool` — *(no description)*
-- `cursor_id: str` — *(no description)*
-- `label: str` — *(no description)*
-- `leaf: str | None` — *(no description)*
-- `messages: list[dict[str, Any]]` — *(no description)*
-- `error: str | None` — *(no description)*
+- `ok: bool` — Whether the sub-agent's turn was admitted and finished without raising. Read this first.
+- `cursor_id: str` — The cursor its events carried; closed by the time this returns.
+- `label: str` — The cursor's label: the ``label`` given, else the prompt's first 60 characters.
+- `leaf: str | None` — The sub-agent's final entry id, or ``None`` if it appended nothing; the handle to read the verdict back or ``ctx.summarize_branch`` it.
+- `messages: list[dict[str, Any]]` — The sub-agent turn's messages; empty when ``ok`` is false.
+- `error: str | None` — Why it failed, or ``None`` when ``ok``.
 
 ## ExtensionAPI
 <!-- agent: yes -->
@@ -51,12 +45,12 @@ import τ-agent-core internals.
 
 **Constructor parameters**
 
-- `registry: ExtensionRegistry | None = None` — ExtensionRegistry for tool/command/flag management.
-- `event_bus: EventBus | None = None` — EventBus for event subscription.
-- `context: ExtensionContext | None = None` — ExtensionContext with session state.
-- `session: Any = None` — AgentSession for messaging.
-- `hook_handlers: ExtensionHandlers | None = None` — This extension's OWN ``ExtensionHandlers`` bucket in the session ``ExtensionRunner`` (load order preserved). ``api.on()`` routes the four MUTATING hooks (``tool_call`` / ``tool_result`` / ``before_agent_start`` / ``context``) here — the dispatch surface the loop's hook call-sites gate on. Left ``None`` for an api that is not bound to a runner bucket; registering a hook on such an api then RAISES (Fail-Early) rather than silently no-op'ing (S24).
-- `config: dict[str, Any] | None = None` — This extension's OWN per-extension config slice (E6 §2 / S40). Sourced from ``~/.tau/config.json`` ``"extensions": {"<name>": {…}}`` keyed by the extension's file stem, with per-run ``--ext-config <name>.<key>=<value>`` overrides applied on top. The session slices the right entry per extension in ``AgentSession._bind_extension_api`` and passes it here; ``None`` → an empty dict (an unconfigured extension reads ``{}``, never a fabricated value — Fail-Early leaves defaulting to the extension).
+- `registry: ExtensionRegistry | None = None` — Where tools, commands and shortcuts land; ``None`` makes a private, empty one.
+- `event_bus: EventBus | None = None` — The notify bus :meth:`on` and :meth:`emit` use; ``None`` makes a private one.
+- `context: ExtensionContext | None = None` — The shared context; ``None`` makes a fresh one. Either way ``session`` is bound onto it.
+- `session: Any = None` — The ``AgentSession``, or ``None`` for an unbound api whose session-backed methods raise.
+- `hook_handlers: ExtensionHandlers | None = None` — This extension's own runner bucket. ``None`` gives the api no identity: hook registration, :meth:`emit`, :meth:`submit` and command registration then raise.
+- `config: dict[str, Any] | None = None` — This extension's config slice (:attr:`config`); copied, and ``None`` reads as ``{}``.
 
 ### append_entry
 
@@ -68,27 +62,20 @@ async append_entry(custom_type: str, data: dict) -> None
 
 Persist durable, NON-message extension state onto the session tree (E6 §2 / S39).
 
-Appends a ``{customType, data}`` node of its own tree entry KIND
-(``customEntry``) to the authoritative session log via
-``AgentSession._append_custom_entry``. This REPLACES the former RAM-only
-registry ``_entry_store``, which was lost on restart (G4): the entry now
-persists, survives a reload, and is readable back through ``ctx.entries()``
-(the reconstruction path S56's ``TreeStore`` builds on).
-
-It is deliberately NOT a message: ``ConversationTree`` never folds a
-``customEntry`` into the loop context and ``convert_to_llm`` never sees it,
-so this is tree-as-backplane state — on the durable path, excluded from
-model input. To inject a node the model reads, use ``send_message``
-(``visible_to_model``) or ``send_user_message`` instead.
+Appends a ``customEntry`` node via ``AgentSession._append_custom_entry``; it
+survives a reload and reads back through ``ctx.entries()``. It is NOT a
+message: never folded into the loop context, never seen by the model. To
+inject a node the model reads, use ``send_message`` (``visible_to_model``)
+or ``send_user_message``.
 
 **Parameters**
 
-- `custom_type: str` — *(no description)*
-- `data: dict` — *(no description)*
+- `custom_type: str` — The entry's ``customType``, naming its kind; non-empty.
+- `data: dict` — The state to persist.
 
 **Raises**
 
-- `RuntimeError` — if no session with ``_append_custom_entry`` is bound (e.g. a bare ``ExtensionAPI()``). Fail-Early: raise rather than silently drop the entry into a RAM store that evaporates on restart.
+- `RuntimeError` — no session with ``_append_custom_entry`` is bound (e.g. a bare ``ExtensionAPI()``); the entry is not dropped silently.
 - `ValueError` — propagated from ``_append_custom_entry`` when ``custom_type`` is empty or ``data`` is not a dict.
 
 ### emit
@@ -101,34 +88,22 @@ async emit(topic: str, payload: Any) -> None
 
 Publish ``payload`` on this extension's channel ``ext:<name>:<topic>`` (S52).
 
-Inter-extension pub/sub — a faithful port of pi's ``pi.events.emit``
-(``event-bus.ts``), adapted to τ's single notify
-:class:`~tau_agent_core.events.EventBus`. Fire-and-forget, in-RAM broadcast to
-every handler another (or the same) extension subscribed with
-``api.on("ext:<name>:<topic>", handler)``. The channel is ALWAYS namespaced
-under this emitting extension's own name (:meth:`_emitting_extension_name`), so
-an extension can only publish under its own namespace and a subscriber gets
-unforgeable provenance — τ's discipline over pi's free-form channel strings.
-
-This is deliberately **NOT a backplane**: it touches neither the session tree,
-the session log, nor ``convert_to_llm``, so a custom-channel payload is **NEVER
-model-visible** (the tree is the only durable, model-visible channel — E5 §1).
-It is process-local and evaporates on restart; use :meth:`append_entry` /
-:meth:`send_message` for anything durable or model-facing.
-
-Dispatch is synchronous per the ``EventBus`` contract (subscribed handlers run
-when this coroutine is awaited); a handler that raises is SURFACED through the
-bus on_error path (S44), never swallowed.
+In-RAM broadcast on the notify :class:`~tau_agent_core.events.EventBus` to
+every ``api.on("ext:<name>:<topic>", handler)``; ``<name>`` is always this
+extension's own. Never written to the tree, so never model-visible and
+gone on restart — durable state uses :meth:`append_entry` or
+:meth:`send_message`. Handlers run while this is awaited; one that raises
+is surfaced through the bus's on_error path (S44), not here.
 
 **Parameters**
 
-- `topic: str` — *(no description)*
-- `payload: Any` — *(no description)*
+- `topic: str` — The topic, the last segment of the channel name.
+- `payload: Any` — Delivered to each subscribed handler as-is.
 
 **Raises**
 
-- `ValueError` — if ``topic`` is not a non-empty string.
-- `RuntimeError` — if this api is not bound to a runner bucket (no extension identity to namespace under) — Fail-Early, via :meth:`_emitting_extension_name`.
+- `ValueError` — ``topic`` is empty or whitespace.
+- `RuntimeError` — No runner bucket is bound, so there is no name to namespace under.
 
 ### extension_name
 
@@ -152,11 +127,11 @@ get_all_tools() -> list[Any]
 
 `tau_agent_core.extension_types.ExtensionAPI.get_all_tools`
 
-Get all registered tools.
+List every registered tool, active or not.
 
 **Returns**
 
-List of tool info from the registry.
+One ``ToolInfo`` (name, description, parameters, source) per tool in the registry, built-in and extension alike.
 
 ### get_command
 
@@ -166,14 +141,18 @@ get_command(name: str) -> dict | None
 
 `tau_agent_core.extension_types.ExtensionAPI.get_command`
 
-The command dict ``name`` resolves to, or ``None``.
+Look up the command ``name`` resolves to.
 
-Accepts either name a command answers to. Read it to decide whether to claim a
-typed name at all, or to see whose handler is behind one before calling it.
+Read it to decide whether to claim a typed name at all, or to see whose
+handler is behind one before calling it.
 
 **Parameters**
 
-- `name: str` — *(no description)*
+- `name: str` — Either name a command answers to: the typed one or the qualified ``ext:<extension>.<name>``.
+
+**Returns**
+
+The registered command dict, or ``None`` if ``name`` resolves to none.
 
 ### get_session_name
 
@@ -183,7 +162,11 @@ get_session_name() -> str | None
 
 `tau_agent_core.extension_types.ExtensionAPI.get_session_name`
 
-The session's name (:func:`read_session_name`), or ``None`` if never set.
+Read the session's name (:func:`read_session_name`).
+
+**Returns**
+
+The newest name, or ``None`` if never set or the newest name is empty.
 
 **Raises**
 
@@ -197,46 +180,23 @@ on(event: str, handler: Callable) -> Callable[[], None]
 
 `tau_agent_core.extension_types.ExtensionAPI.on`
 
-Subscribe to an event — routed by KIND (S24 bridge).
+Subscribe to an event, routed by kind (S24).
 
-The six MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
-``tool_result`` / ``before_agent_start`` / ``input`` / ``turn_end`` /
-``user_turn_end``) AND the
-two notify-grade session-lifecycle hooks (``ExtensionRunner.LIFECYCLE_EVENTS``:
-``session_start`` / ``session_shutdown``, S41) are dispatched by the
-session's separate ``ExtensionRunner``, whose call-sites gate on
-``has_handlers(event)``. Those registrations must land in THIS extension's
-runner bucket (``self._hook_handlers``), not on the notify ``EventBus`` —
-otherwise they are a silent no-op in a real session (the bug S24 closes),
-and the lifecycle hooks in particular route through the runner precisely so
-their handler errors are SURFACED (S44) instead of swallowed like the bus.
-Every other (notify) event keeps going to the ``EventBus``.
+See docs/extensions.md, "Hook and event vocabulary".
 
-``turn_end`` (S43) is the mutating variant: ``api.on("turn_end", …)`` now
-routes to the runner, where a handler may return ``{message}`` for a durable
-append or return nothing to observe. The notify-grade ``turn_end``
-``AgentEvent`` on the ``EventBus`` is UNCHANGED — pure observers still reach
-it via ``api.on("all", …)`` or :meth:`AgentSession.subscribe`.
+The mutating hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call``,
+``tool_result``, ``before_agent_start``, ``input``, ``turn_end``,
+``user_turn_end``) and the lifecycle hooks (``LIFECYCLE_EVENTS``:
+``session_start``, ``session_shutdown``) go to this extension's runner
+bucket, where handler errors are surfaced. Everything else — notify
+events, ``"all"``, and ``ext:<name>:<topic>`` channels from :meth:`emit` —
+goes to the notify ``EventBus``.
 
-``user_turn_end`` is ``turn_end``'s once-per-``prompt()`` sibling (§12.4 /
-§16.5). ``turn_end`` fires per AGENT-LOOP turn — six times for an utterance
-resolved in six tool round-trips — which is right for a per-completion
-observer and wrong for anything that should happen once per utterance.
-``api.on("user_turn_end", …)`` fires exactly once, after the loop, the
-followUp drain and auto-compaction, with the same durable ``{message}``
-append. Choose by cadence: per completion, or per utterance.
-
-The retired ``context`` hook (E5 §3.2 / S30) is rejected UP FRONT: it was
-removed from ``HOOK_EVENTS``, so left unguarded it would fall through to the
-notify ``EventBus`` and bind silently to a channel nothing ever emits — a
-dead no-op. Fail-Early: raise an unknown-hook error naming the durable
-replacement instead.
-
-A custom **inter-extension channel** ``ext:<name>:<topic>`` (E7 §3 / S52) is
-neither a hook nor a retired name, so it takes the same ``EventBus`` fallthrough
-as a notify event: ``api.on("ext:pub:ping", handler)`` receives whatever the
-``pub`` extension broadcasts via :meth:`emit`. These channels are in-RAM,
-fire-and-forget, and never model-visible — explicitly NOT a backplane.
+``turn_end`` fires once per agent-loop turn (per completion);
+``user_turn_end`` fires once per utterance, after the loop, the followUp
+drain and auto-compaction. Either handler may return ``{message}`` for a
+durable append. The notify-grade ``turn_end`` ``AgentEvent`` still reaches
+``api.on("all", …)``.
 
 **Parameters**
 
@@ -249,7 +209,7 @@ An unsubscribe function.
 
 **Raises**
 
-- `RuntimeError` — registering the retired ``context`` hook (removed in E5 §3.2 / S30), or registering a mutating hook on an api that was never bound to a runner bucket (``hook_handlers is None``). Fail-Early — a hook with nowhere to dispatch is a construction bug, not a no-op.
+- `RuntimeError` — the retired ``context`` hook (E5 §3.2 / S30), or a runner-routed hook on an api with no runner bucket (``hook_handlers is None``), where it could never fire.
 
 ### register_command
 
@@ -276,6 +236,10 @@ it, or a human pinned it elsewhere, this one keeps only its qualified name.
 
 ``None`` when ``/name`` now runs this command. Otherwise the qualified name that holds it instead — pass it to :meth:`run_command` to wrap, chain or defer to whatever got there first.
 
+**Raises**
+
+- `RuntimeError` — No runner bucket is bound (:attr:`extension_name`).
+
 ### register_flow
 
 ```python
@@ -286,23 +250,10 @@ register_flow(name: str, description: str, handler: Any, *, argument: Argument |
 
 Register a slash command AND say what it takes (docs/EXTENSION-FLOWS.md).
 
-:meth:`register_command` gives a command a name and a handler, and nothing
-else: every head then shows the name and hands the handler whatever was typed,
-because nothing anywhere says what it should have been. This adds that
-statement, in the vocabulary τ's own gestures already use — so a command
-registered here gets tab completion, a rendered form, and a palette entry that
-asks for its argument, in the TUI and over the RPC wire alike, with no head
-code written for it.
-
-The handler contract does not change: it is still called with
-``(args, ctx)``, where ``args`` is the argument's bound value as text. A
-command that later declares a flow keeps working for callers that never
-learned about the declaration.
-
-**One argument at most**, refused rather than truncated. An extension flow
-ends in a handler taking one typed line, and splitting one line across two
-arguments has no rule — the same refusal ``bind_command_args`` makes for
-built-ins. A gesture needing several fields drives ``ui.form`` itself.
+The declaration gives the command completion, a rendered form and a
+palette entry in every head. The handler is still called with
+``(args, ctx)``, ``args`` being the argument's bound value as text. At
+most one argument; a gesture needing several fields drives ``ui.form``.
 
 **Parameters**
 
@@ -319,7 +270,8 @@ meth:`register_command` returns — ``None`` when ``/name`` is this flow, else t
 
 **Raises**
 
-- `ValueError` — ``name`` or ``description`` is empty, ``handler`` is not callable, ``domain`` does not match what ``argument`` names, or a domain with an enumerator was declared with no ``values`` callable. The last one is Fail-Early: the flow would reach a step that offers nothing and read as an empty set rather than a missing registration.
+- `ValueError` — ``name`` or ``description`` is empty; ``handler`` is not callable; ``name`` is already a built-in flow or view; ``domain`` does not match what ``argument`` names; a domain with an enumerator has no ``values`` callable; or an ``argument`` came with ``values`` but no ``domain``.
+- `RuntimeError` — No runner bucket is bound (:attr:`extension_name`).
 
 ### register_shortcut
 
@@ -331,21 +283,10 @@ register_shortcut(key: str, command: str, *, args: str = '', description: str | 
 
 Bind a key to a command in the guarded extension chord namespace (E10 §6 / S69).
 
-Mirrors pi's ``registerShortcut(shortcut, options)`` (types.ts:1182), adapted
-to τ's dispatch model: instead of a raw handler callable, a shortcut names a
-``command`` an extension registered via :meth:`register_command`, dispatched
-exactly like a panel action (S68) or a typed ``/name args``. Keeping the
-binding a command name (not an opaque callable) means the SAME verb is
-reachable three ways — chord, palette, and ``/command`` — and stays runnable
-headless (a keyboard shortcut has no headless surface, but the command it
-fires does).
-
-``key`` is the chord TAIL — the second key pressed after the ``ctrl+e``
-extension leader. This is the "guarded namespace": the TUI only ever binds
-extension shortcuts under that leader, never as bare global keys, so an
-extension physically cannot clobber a core binding (``ctrl+c``/``ctrl+n``/…).
-Registering ``key="g"`` for ``command="fleet_status"`` makes ``ctrl+e`` then
-``g`` dispatch ``/fleet_status``.
+``key`` is the chord tail after the ``ctrl+e`` extension leader, so an
+extension cannot clobber a core binding: ``key="g"`` with
+``command="fleet_status"`` makes ``ctrl+e g`` dispatch ``/fleet_status``,
+exactly as a panel action or a typed command would.
 
 **Parameters**
 
@@ -367,32 +308,16 @@ register_tool(definition: dict | ExtensionToolDefinition) -> None
 
 `tau_agent_core.extension_types.ExtensionAPI.register_tool`
 
-Register a tool callable by the LLM (pi ``ToolDefinition`` shape).
+Register a tool callable by the LLM.
 
-Mirrors pi's ``registerTool(tool: ToolDefinition)``
-(coding-agent/src/core/extensions/types.ts:433). The definition is a
-plain dict — NOT a Pydantic/TypeBox model — carrying:
-
-- ``name`` (str): tool name used in LLM tool calls.
-- ``description`` (str): description sent to the LLM.
-- ``parameters`` (dict): JSON-schema dict for argument validation.
-- ``execute`` (callable): ``execute(tool_call_id, params, signal,
-  on_update, ctx)`` returning an ``AgentToolResult``-shaped value
-  (may be sync or async). ``ctx`` is the bound ``ExtensionContext``.
-
-Optional keys: ``label`` (defaults to ``name`` for UI), ``prompt_snippet``,
-``prompt_guidelines``, ``execution_mode`` ("sequential"/"parallel").
-
-The dict is validated into an
-:class:`~tau_agent_core.tools.base.ExtensionToolDefinition` — the schema
-for this shape — with ``source="extension"``. Passing that model directly
-works too. Either way the registry stores the model, so every reader
-downstream sees typed attributes instead of a mapping whose keys it has to
-guess; the resolved tool is merged into the loop's tools next turn.
+The definition is validated into an
+:class:`~tau_agent_core.tools.base.ExtensionToolDefinition` with
+``source="extension"`` and stored in the registry; the tool joins the
+loop's tools next turn.
 
 **Parameters**
 
-- `definition: dict | ExtensionToolDefinition` — *(no description)*
+- `definition: dict | ExtensionToolDefinition` — A dict or an ``ExtensionToolDefinition``. Required keys: ``name``; ``description`` (sent to the LLM); ``parameters`` (a JSON-schema dict); ``execute(tool_call_id, params, signal, on_update, ctx)``, sync or async, returning an ``AgentToolResult``-shaped value, with ``ctx`` the bound ``ExtensionContext``. Optional: ``label`` (defaults to ``name``), ``prompt_snippet``, ``prompt_guidelines``, ``execution_mode`` (``"sequential"``/``"parallel"``). A dict is not mutated.
 
 **Raises**
 
@@ -469,28 +394,20 @@ async send_message(message: dict, options: dict | None = None) -> None
 
 `tau_agent_core.extension_types.ExtensionAPI.send_message`
 
-Append a durable custom message node onto the active path (pi ``sendMessage``).
+Append a durable custom message node onto the active path (E6 §2 / S38).
 
-Persists ``{customType, content, display?, details?}`` as a ``role:
-"custom"`` tree node via ``AgentSession._append_custom_message`` (E6 §2 /
-S38) — it renders in the transcript / tree and survives a reload, exactly
-like a ``before_agent_start`` injection.
-
-Per D-E6-1 the node is **display-only by default**. Pass
-``options={"visible_to_model": True}`` to also feed it to the model
-(remapped custom→user on the wire); otherwise it is excluded from
-``convert_to_llm`` and never reaches the LLM. This is intentional: it does
-NOT create a third model-visible default channel — ``before_agent_start``
-and ``send_user_message`` already serve that.
+Persisted as a ``role: "custom"`` tree node via
+``AgentSession._append_custom_message``; it renders in the transcript and
+survives a reload, like a ``before_agent_start`` injection.
 
 **Parameters**
 
-- `message: dict` — *(no description)*
-- `options: dict | None = None` — *(no description)*
+- `message: dict` — ``{customType, content, display?, details?}``.
+- `options: dict | None = None` — ``{"visible_to_model": True}`` also feeds the node to the model (as a user message on the wire). By default (D-E6-1) it is display-only and never reaches the LLM; ``before_agent_start`` and ``send_user_message`` are the model-visible channels.
 
 **Raises**
 
-- `RuntimeError` — if no session with ``_append_custom_message`` is bound (e.g. a bare ``ExtensionAPI()``). Fail-Early: raise rather than silently drop the message (the old inert no-op called a nonexistent method and did nothing).
+- `RuntimeError` — no session with ``_append_custom_message`` is bound (e.g. a bare ``ExtensionAPI()``); the message is not dropped silently.
 - `ValueError` — propagated from ``_append_custom_message`` when ``message`` lacks ``content`` or ``customType``.
 
 ### send_user_message
@@ -501,26 +418,12 @@ send_user_message(content: str, deliver_as: str = 'followUp') -> None
 
 `tau_agent_core.extension_types.ExtensionAPI.send_user_message`
 
-Queue a user message for the agent (pi ``sendUserMessage``).
-
-``deliver_as`` selects the delivery mode. The parameter stays a plain
-``str`` so future modes stay extensible (decision 5), but the three modes
-the queue supports are validated here:
-
-- ``"followUp"`` (default): drains at the end of the current ``prompt()``
-  and re-enters within the same call.
-- ``"nextTurn"``: queued for the next ``prompt()``.
-- ``"steer"`` (docs/SUBMISSION-LIFECYCLE.md phase 4): delivered by the
-  loop running RIGHT NOW, before its next LLM call — pi's
-  ``sendUserMessage(..., {deliverAs: "steer"})``. This is how a hook
-  steers the turn it is itself running inside; ``ctx.submit()`` cannot do
-  it (a submission from the in-flight turn's own task is refused, because
-  it could never be admitted).
+Queue a user message for the agent.
 
 **Parameters**
 
-- `content: str` — *(no description)*
-- `deliver_as: str = 'followUp'` — *(no description)*
+- `content: str` — The message text.
+- `deliver_as: str = 'followUp'` — The delivery mode; a plain ``str`` so modes stay extensible (decision 5), validated against the three the queue supports. ``"followUp"`` drains at the end of the current ``prompt()`` and re-enters within the same call. ``"nextTurn"`` waits for the next ``prompt()``. ``"steer"`` (docs/SUBMISSION-LIFECYCLE.md phase 4) is delivered by the loop running now, before its next LLM call — how a hook steers the turn it runs inside, which a submission cannot.
 
 **Raises**
 
@@ -539,7 +442,7 @@ Enable/disable tools by name (forwards to the registry).
 
 **Parameters**
 
-- `names: list[str]` — *(no description)*
+- `names: list[str]` — The registered tools to keep active; every other registered tool is filtered out of ``get_active_tools``. Replaces any earlier set.
 
 ### set_session_name
 
@@ -553,11 +456,12 @@ Name the session (:func:`apply_session_name`, shared with the RPC verb).
 
 **Parameters**
 
-- `name: str` — *(no description)*
+- `name: str` — The new name; must be non-empty.
 
 **Raises**
 
 - `RuntimeError` — this api is not bound to a session.
+- `ValueError` — ``name`` is empty.
 
 ### submit
 
@@ -569,56 +473,30 @@ async submit(text: str, *, multitask_strategy: MultitaskStrategy = 'reject', ima
 
 Originate an agent turn as THIS extension (docs/SUBMISSION-LIFECYCLE.md).
 
-The extension half of "one door for every input source": an extension bound
-to an external event source (a bus subscription, a timer, a webhook) is the
-one deciding when a turn happens, and this is how it says so — the same
-:meth:`AgentSession.submit` admission point the TUI, headless, and the SDK
-funnel through, so concurrency policy is decided ONCE in the core instead of
-re-invented per extension (``nats_bus``'s hand-rolled ``turn_in_flight`` flag
-is the workaround this deletes).
-
-``source="extension"`` and ``submitter=<this extension's own name>`` are
-supplied BY THIS BINDING from the caller's own runner bucket
-(:meth:`_emitting_extension_name`) and are deliberately **not parameters**
-— the same unforgeability :meth:`emit` has for ``ext:<name>:<topic>``
-channels. **An extension cannot claim to be a human**, or to be another
-extension. That matters because phase 2 put ``source``/``submitter`` on every
-:class:`~tau_agent_core.events.AgentEvent` precisely so a renderer could tell
-a bus-driven turn from a typed one; a spoofable field would make the
-distinction worthless.
-
-``expand_commands`` is likewise not a parameter: it stays ``False`` (the
-:class:`~tau_agent_core.submission.Submission` default) so injected text can
-never smuggle a ``/compact`` through a bus payload — pi's
-``sendUserMessage(expandPromptTemplates: false)``. An extension that wants to
-compact calls :meth:`ExtensionContext.compact`, the typed API, not a string.
-
-``depth`` is likewise not a parameter: :meth:`AgentSession.submit` derives it
-(decision 3). A self-continuing extension — one whose ``turn_end`` hook spawns
-a task that calls this method, whose turn fires ``turn_end`` again — climbs one
-per link because the spawned task inherits the turn's
-:data:`~tau_agent_core.submission.DRIVING_SUBMISSION_DEPTH`, and the eleventh
-link RAISES rather than looping forever. A submission delivered by a task that
-PREDATES the turn (a bus subscription loop, a timer) is not self-submission and
-stays at depth 0 however much traffic it delivers mid-turn.
+Goes through :meth:`AgentSession.submit`, the one admission point. Not
+parameters, so not forgeable: ``source="extension"``, ``submitter`` (this
+extension's own name), ``expand_commands=False`` (a ``/compact`` in a bus
+payload stays text) and ``depth`` (derived; a self-continuing chain raises
+past ``MAX_SUBMISSION_DEPTH``). Call from the session's own loop; a
+thread or foreign loop uses :meth:`submit_threadsafe`.
 
 **Parameters**
 
 - `text: str` — The utterance to run a turn on.
-- `multitask_strategy: MultitaskStrategy = 'reject'` — Policy against an in-flight turn — LangGraph's parameter, on the submission rather than the submitter. Defaults to ``"reject"`` (Fail-Early: a refusal you can see, not a queue you forgot about), which returns ``accepted=False`` with a ``rejection_reason`` rather than raising or dropping silently. See :meth:`AgentSession.submit` for every strategy's exact semantics.
+- `multitask_strategy: MultitaskStrategy = 'reject'` — Policy against an in-flight turn, as :meth:`AgentSession.submit` defines them. ``"reject"`` by default: a busy session returns ``accepted=False``, never a silent queue.
 - `images: list[dict[str, Any]] | None = None` — Optional image dicts for a multimodal submission.
-- `correlation: dict[str, Any] | None = None` — Free-form origin detail — bus subject + binding id, cron id, HTTP request id — carried onto every event this turn emits so a renderer can fan out to the right consumer. Validated JSON-safe at :class:`~tau_agent_core.submission.Submission` construction (decision 4): a live object here raises HERE, naming the key, rather than detonating in a JSON renderer three hops downstream.
-- `allow_user_input: bool = False` — Jupyter ``allow_stdin`` — whether code running under THIS submission may prompt a human. Default ``False``: a bus- or timer-driven turn has nobody at a keyboard. ENFORCED: for the whole of the admitted turn, :class:`ExtensionUI`'s blocking dialogs (``confirm``/``select``/``input``/``form``) bypass the TUI delegate and take the headless-answer route, so with no ``--ui-defaults`` policy they raise :class:`HeadlessDialogError` instead of putting a modal in front of whoever happens to be at the terminal. Pass ``True`` only when a human really is expecting to be asked.
+- `correlation: dict[str, Any] | None = None` — JSON-safe origin detail (bus subject, cron id, request id) carried onto every event this turn emits.
+- `allow_user_input: bool = False` — Whether code under this submission may prompt a human (Jupyter's ``allow_stdin``). ``False`` by default: for the whole turn :meth:`ExtensionUI.form` skips the TUI delegate and takes the headless policy, raising :class:`HeadlessDialogError` without one.
 
 **Returns**
 
-class:`~tau_agent_core.submission.SubmissionResult` — ``accepted`` plus either this turn's ``messages`` or a ``rejection_reason``. A refusal is a RESULT (LSP's ``ApplyWorkspaceEditResult``), not an exception.
+class:`~tau_agent_core.submission.SubmissionResult`: ``accepted`` plus this turn's ``messages`` or a ``rejection_reason``. A refusal is a result, not an exception.
 
 **Raises**
 
-- `RuntimeError` — if this api is not bound to a runner bucket (no extension identity to submit under) — Fail-Early, via :meth:`_emitting_extension_name`.
-- `RuntimeError` — if this api is not bound to an ``AgentSession`` (nothing to submit to).
-- `ValueError` — if ``correlation`` carries a non-JSON value (decision 4).
+- `RuntimeError` — No runner bucket (no identity) or no ``AgentSession`` is bound; or :meth:`AgentSession.submit` refused the call (off its loop, reentrant on the in-flight turn's task, or past ``MAX_SUBMISSION_DEPTH``).
+- `NotImplementedError` — An unknown ``multitask_strategy``.
+- `ValueError` — ``correlation`` carries a non-JSON value.
 
 ### submit_threadsafe
 
@@ -630,34 +508,20 @@ submit_threadsafe(text: str, *, multitask_strategy: MultitaskStrategy = 'reject'
 
 Originate a turn from a FOREIGN loop or thread (docs/SUBMISSION-LIFECYCLE.md).
 
-The marshalling counterpart to :meth:`submit`, for the driver whose callback
-does not run on the session's loop: a ``paho-mqtt`` client thread, a
-``watchdog`` filesystem observer, a WSGI/webhook request thread, a
-``threading.Timer``. Those contexts have no event loop to ``await`` on, so
-this is **synchronous** — it hands the submission to the session's own loop
-(:meth:`AgentSession.submit_threadsafe`) and returns a
-:class:`concurrent.futures.Future` for the result.
-
-Which one to use is a question about the CALLBACK, not a matter of taste, and
-it is answerable: if the library delivers events by awaiting your coroutine
-on the loop the session runs on — as ``nats-py`` does, because its client was
-connected from a ``session_start`` handler running on that very loop — the
-callback is already home and :meth:`submit` is correct. If the library spawns
-its own thread, this method is the only correct call, and :meth:`submit` will
-say so by raising rather than corrupting a turn silently.
-
-Every unforgeability property of :meth:`submit` holds here identically —
-``source="extension"`` and ``submitter`` come from this api's own runner
-bucket, and ``expand_commands`` stays ``False``. See :meth:`submit` for what
-each argument means; they are the same arguments.
+Synchronous: hands the submission to the session's own loop
+(:meth:`AgentSession.submit_threadsafe`) and returns a future. Use it when
+the callback runs on a thread the library spawned (``paho-mqtt``,
+``watchdog``, a WSGI thread, ``threading.Timer``); a callback awaited on
+the session's loop (``nats-py`` connected from ``session_start``) uses
+:meth:`submit`. The fixed fields are :meth:`submit`'s.
 
 **Parameters**
 
-- `text: str` — *(no description)*
-- `multitask_strategy: MultitaskStrategy = 'reject'` — *(no description)*
-- `images: list[dict[str, Any]] | None = None` — *(no description)*
-- `correlation: dict[str, Any] | None = None` — *(no description)*
-- `allow_user_input: bool = False` — *(no description)*
+- `text: str` — The utterance to run a turn on.
+- `multitask_strategy: MultitaskStrategy = 'reject'` — Policy against an in-flight turn; ``"reject"`` by default, as for :meth:`submit`.
+- `images: list[dict[str, Any]] | None = None` — Optional image dicts for a multimodal submission.
+- `correlation: dict[str, Any] | None = None` — JSON-safe origin detail carried onto every event of the turn, as for :meth:`submit`.
+- `allow_user_input: bool = False` — Whether code under this submission may prompt a human; ``False`` by default, as for :meth:`submit`.
 
 **Returns**
 
@@ -665,19 +529,17 @@ class:`concurrent.futures.Future` resolving to the class:`~tau_agent_core.submis
 
 **Raises**
 
-- `RuntimeError` — if this api is bound to no runner bucket (no identity to submit under) or no ``AgentSession`` (nothing to submit to).
-- `RuntimeError` — if the session is not bound to a running loop yet, or if this is called from the session's own loop — see :meth:`AgentSession.submit_threadsafe`, which owns both checks.
-- `ValueError` — if ``correlation`` carries a non-JSON value (decision 4).
+- `RuntimeError` — No runner bucket or no ``AgentSession`` is bound; the session is not bound to a running loop yet; or this is called from the session's own loop, where blocking on the future deadlocks.
+- `ValueError` — ``correlation`` carries a non-JSON value.
 
 ### ui
 
 `tau_agent_core.extension_types.ExtensionAPI.ui: ExtensionUI`
 
-UI methods (TUI-only, no-ops in headless mode).
+The session's one :class:`ExtensionUI`, the same object as ``ctx.ui``.
 
-**Returns**
-
-The ExtensionUI instance from the context.
+Painted in the TUI; headless it emits records or stderr lines, and
+``form`` follows the ``--ui-defaults`` policy.
 
 ### unregister_command
 
@@ -736,10 +598,10 @@ Reference: SUBPHASE-0.0.md, "8. Extension API Surface" section.
 
 **Constructor parameters**
 
-- `cwd: str = '.'` — Current working directory. Defaults to ".".
-- `session_manager: Any | None = None` — SessionManager instance. Defaults to None.
-- `signal: Any | None = None` — AbortSignal for this context. Defaults to None.
-- `is_idle: bool = True` — Whether the agent is idle. Defaults to True.
+- `cwd: str = '.'` — Returned by :attr:`cwd` as given; nothing resolves it. The default ``"."`` is the process cwd, for a context made outside a session.
+- `session_manager: Any | None = None` — Returned by :attr:`session_manager`; ``shutdown`` forwards to it when it has a ``shutdown()``.
+- `signal: Any | None = None` — The abort signal :attr:`signal` returns while no session is bound.
+- `is_idle: bool = True` — Returned by :attr:`is_idle` as given; nothing updates it.
 
 ### abort
 
@@ -761,26 +623,22 @@ async compact(custom_instructions: str | None = None, defer: bool = False) -> An
 
 Compact the active conversation (delegates to ``AgentSession.compact``).
 
-Runs the full append-only compaction pipeline on the bound session's log
-(``agent_session.py`` ``compact``): build the active-path entries, summarize
-the compacted prefix via the LLM, and APPEND a compaction entry so the
-prefix drops out of future context at read time. Returns the
-``CompactionResult`` (or ``None`` when there is nothing to compact).
-
-Two variants (S20 / decision 3):
-
-- ``defer=False`` (default): the IMMEDIATE variant — compacts now and
-  returns the ``CompactionResult``.
-- ``defer=True``: the TURN-END-DEFERRED variant — a tool calling this
-  mid-turn cannot compact under the live agent loop, so the intent is
-  RECORDED and applied exactly once at the tail of ``prompt()`` (the same
-  site as auto-compaction). Returns ``None`` immediately; the tool then
-  returns its own normal result.
+Summarizes the active path's prefix via the LLM and APPENDS a compaction
+entry, so the prefix drops out of future context at read time.
 
 **Parameters**
 
 - `custom_instructions: str | None = None` — Optional extra focus for the summary.
-- `defer: bool = False` — When True, record the intent for the end-of-prompt drain instead of compacting now.
+- `defer: bool = False` — Record the intent instead of compacting now (S20 / decision 3). A tool calling this mid-turn cannot compact under the live agent loop; the intent is applied exactly once at the tail of ``prompt()``, the same site as auto-compaction.
+
+**Returns**
+
+The ``CompactionResult``, or ``None`` when there was nothing to compact or ``defer`` was set.
+
+**Raises**
+
+- `RuntimeError` — No session is bound.
+- `CompactionError` — Summary generation failed (not when deferred).
 
 ### complete
 
@@ -792,12 +650,9 @@ async complete(messages: list[dict[str, Any]], *, model: Any = None, constraints
 
 One LLM request/response — no agent loop, no tree writes (C1).
 
-The primitive behind every "classify / extract / draft" story where the *result*
-matters, not the process. Deliberately **stateless and session-free**: it touches
-neither the entry log nor the cursor, so it is safe under ``asyncio.gather`` at
-any fan-out. Errors propagate (no retry policy hidden inside).
-
-With ``constraints``, this is the retrieval-review verdict primitive::
+Touches neither the entry log nor the cursor, so it is safe under
+``asyncio.gather`` at any fan-out; its usage is banked on the session's
+side ledger. No retries. With ``constraints``::
 
     verdicts = await asyncio.gather(*[
         ctx.complete(
@@ -824,7 +679,7 @@ A ``tau_llm.AssistantMessage``.
 
 **Raises**
 
-- `RuntimeError` — the completion errored or was aborted.
+- `RuntimeError` — No session is bound; ``model`` is a name and the session has no resolver; the completion errored or was aborted; or it stopped at the token limit (``stop_reason="length"``), which is a truncated prefix rather than an answer.
 - `ConstraintViolation` — the constraint did not hold (see DecodeConstraints).
 
 ### complete_text
@@ -835,23 +690,23 @@ async complete_text(messages: list[dict[str, Any]], *, model: Any = None, constr
 
 `tau_agent_core.extension_types.ExtensionContext.complete_text`
 
-:meth:`complete`, returning the response's text (the common case).
-
-Raises if the response carries no text — an empty answer is a failure, not an
-empty string to be silently threaded onward (Fail-Early).
-
-The text is returned VERBATIM, not stripped. Under a constraint, whitespace is
-part of the constrained value: ``grammar.fixed("yes ")`` really does force the
-trailing space (verified live against llguidance), and the provider verified the
-output *with* it. Stripping here would hand the caller a string the constraint
-never produced — and one that fails the very membership check it just passed.
+Run :meth:`complete` and return the response's text (the common case).
 
 **Parameters**
 
-- `messages: list[dict[str, Any]]` — *(no description)*
-- `model: Any = None` — *(no description)*
-- `constraints: Any = None` — *(no description)*
-- `api_key: str | None = None` — *(no description)*
+- `messages: list[dict[str, Any]]` — τ message dicts, as for :meth:`complete`.
+- `model: Any = None` — A name, a ``Model``, or ``None`` for the session's, as for :meth:`complete`.
+- `constraints: Any = None` — An optional ``tau_llm.DecodeConstraints``.
+- `api_key: str | None = None` — Overrides the session's key.
+
+**Returns**
+
+The text blocks joined, VERBATIM: under a constraint whitespace is part of the constrained value (``grammar.fixed("yes ")`` forces the trailing space), so stripping would yield a string the constraint never produced.
+
+**Raises**
+
+- `RuntimeError` — the response's text is empty or whitespace-only, or :meth:`complete` failed.
+- `ConstraintViolation` — the constraint did not hold.
 
 ### cursor
 
@@ -873,18 +728,15 @@ emit_veto_record(*, extension: str | None, tool: str, reason: str) -> None
 
 Emit a blocked-tool VETO record via the shared UI's record sink (E7 §3 / S50).
 
-Thin pass-through to :meth:`ExtensionUI.emit_veto`. The agent loop reaches this
-through the bound :class:`ExtensionRunner` (``emit_veto_record``) when a
-`tool_call` hook vetoes a call, so the JSON stream carries a
-``kind: "veto"`` / ``blocked: true`` record (anchor G11) alongside the closed
-``AgentEvent`` set. A no-op unless the headless ``--mode json`` path installed a
-sink.
+Thin pass-through to :meth:`ExtensionUI.emit_veto`, reached from the agent
+loop through :class:`ExtensionRunner` when a `tool_call` hook vetoes a call
+(anchor G11). A no-op unless the ``--mode json`` path installed a sink.
 
 **Parameters**
 
-- `extension: str | None` — *(no description)*
-- `tool: str` — *(no description)*
-- `reason: str` — *(no description)*
+- `extension: str | None` — The vetoing extension's path, or ``None`` if unattributed.
+- `tool: str` — The blocked tool's name.
+- `reason: str` — The veto reason the hook gave.
 
 ### entries
 
@@ -894,11 +746,15 @@ entries() -> list[dict[str, Any]]
 
 `tau_agent_core.extension_types.ExtensionContext.entries`
 
-The bound session log's raw, append-only entries (all kinds).
+Read the bound session log's raw, append-only entries (all kinds).
 
-Thin pass-through to ``SessionLog.entries()`` — the same entry list a
-``ConversationTree`` folds into context. Read-only: a copy per the log's
-contract, so mutating the returned list does not touch the log.
+**Returns**
+
+``SessionLog.entries()``, the list a ``ConversationTree`` folds into context; a copy, so mutating it does not touch the log.
+
+**Raises**
+
+- `RuntimeError` — no session is bound.
 
 ### fork
 
@@ -908,30 +764,22 @@ async fork(entry_id: str | None = None, mode: Literal['in_place', 'export'] = 'i
 
 `tau_agent_core.extension_types.ExtensionContext.fork`
 
-Fork the conversation — one op, two modes (plan §7 decision E3-b).
-
-- ``mode="in_place"`` (default): move the session's cursor to ``entry_id``
-  (``None`` → before the root), so the next turn appends a sibling branch
-  there. Returns the context at the new position.
-- ``mode="export"``: copy the session into a NEW file via ``Session.fork``
-  (the source is never touched). With ``entry_id``, only the path to that
-  entry is copied, so the new session continues from it. Returns the new
-  session file path as a string.
-
-``defer=True`` (S20 / decision 3): a tool calling this mid-turn cannot
-re-parent the log under the live agent loop, so the intent is RECORDED and
-applied exactly once at the tail of ``prompt()``. Returns ``None``
-immediately; the tool then returns its own normal result.
-
-Fail-Early: export requires a concrete file-backed ``Session`` log — an
-in-memory SDK log cannot be exported to a file and RAISES rather than
-fabricating one.
+Fork the conversation in place or into a new session file.
 
 **Parameters**
 
-- `entry_id: str | None = None` — *(no description)*
-- `mode: Literal['in_place', 'export'] = 'in_place'` — *(no description)*
-- `defer: bool = False` — *(no description)*
+- `entry_id: str | None = None` — Where to fork. In place, the entry to move onto (``None`` is before the root); for export, the entry whose path is copied (``None`` copies the whole session).
+- `mode: Literal['in_place', 'export'] = 'in_place'` — ``"in_place"`` moves the session's head cursor so the next turn appends a sibling branch there. ``"export"`` copies the session into a NEW file via ``Session.fork``, never touching the source.
+- `defer: bool = False` — Record the intent instead of forking now; it is applied once at the tail of ``prompt()``. A tool calling this mid-turn needs it.
+
+**Returns**
+
+In place, the context at the new position; for export, the new session file's path as a string; ``None`` when ``defer`` is set.
+
+**Raises**
+
+- `RuntimeError` — no session is bound, or export from a log that is not file-backed.
+- `ValueError` — an unknown ``mode``, or an ``entry_id`` that names no entry.
 
 ### get_context_usage
 
@@ -941,22 +789,15 @@ get_context_usage() -> dict[str, Any] | None
 
 `tau_agent_core.extension_types.ExtensionContext.get_context_usage`
 
-Return context usage for the active model (pi ``ContextUsage`` shape).
+Measure how full the active model's context window is.
 
-Faithful port of pi's ``getContextUsage`` (agent-session.ts:2975 →
-``ContextUsage`` at types.ts:281-287): returns
-``{tokens, context_window, percent}`` where ``tokens`` is the estimated
-context-token count from ``estimate_context_tokens`` — the SAME estimate
-that drives auto-compaction (agent_session.py:523) — and ``percent`` is
-``tokens / context_window * 100``.
+**Returns**
 
-Returns ``None`` when the model has no positive ``context_window`` (pi
-returns ``undefined``); that is a genuine "unknown", not a fabricated
-zero.
+``{tokens, context_window, percent}``: ``tokens`` is ``estimate_context_tokens`` over the session's messages, the same estimate that drives auto-compaction, and ``percent`` is ``tokens / context_window * 100``. ``None`` when the model has no positive ``context_window`` — unknown, not a fabricated zero.
 
 **Raises**
 
-- `RuntimeError` — if no session is bound — there is nothing to measure. Replaces the old fictional ``{"total_tokens": 0}`` stub (Fail-Early: raise rather than fabricate).
+- `RuntimeError` — no session is bound.
 
 ### get_model
 
@@ -966,15 +807,15 @@ get_model() -> dict[str, Any]
 
 `tau_agent_core.extension_types.ExtensionContext.get_model`
 
-The active model as ``{id, provider, context_window}`` (S45).
+Read the active model (S45), via :meth:`AgentSession.get_model`.
 
-Delegates to :meth:`AgentSession.get_model`. Mirrors pi's ``ctx.model``
-(types.ts:311) but as the three-field projection an extension needs, so it
-never has to reach the private ``ctx._session._model``.
+**Returns**
+
+``{id, provider, context_window}``, so an extension never reaches the private ``ctx._session._model``.
 
 **Raises**
 
-- `RuntimeError` — if no session is bound (Fail-Early — no model to read).
+- `RuntimeError` — no session is bound.
 
 ### get_usage
 
@@ -984,16 +825,18 @@ get_usage() -> dict[str, Any] | None
 
 `tau_agent_core.extension_types.ExtensionContext.get_usage`
 
-The most recent completion's token usage, or ``None`` (S45).
+Read the most recent completion's token usage (S45, anchor G14).
 
-The public per-completion usage accessor (anchor G14): delegates to
-:meth:`AgentSession.get_usage`. Returns a copy of the last completion's
-``usage`` dict, or ``None`` when no completion has landed yet. Read this from
-a ``message_end`` handler instead of pulling ``event.message["usage"]``.
+Delegates to :meth:`AgentSession.get_usage`. Read this from a
+``message_end`` handler instead of pulling ``event.message["usage"]``.
+
+**Returns**
+
+A copy of the last completion's ``usage`` dict, or ``None`` when no completion has landed yet.
 
 **Raises**
 
-- `RuntimeError` — if no session is bound (Fail-Early — nothing to measure).
+- `RuntimeError` — no session is bound.
 
 ### navigate
 
@@ -1005,17 +848,20 @@ async navigate(target_id: str | None, summarize: bool = False, custom_instructio
 
 Move the bound session's cursor to ``target_id`` and return the new context.
 
-``summarize=False`` writes nothing; the branch left behind drops out of
-context by ancestry. ``summarize=True`` delegates to :meth:`summarize_branch`,
-unless the cursor is already at ``target_id``.
-
-Returns the context at the new position (``ConversationTree.context_for``).
-
 **Parameters**
 
-- `target_id: str | None` — *(no description)*
-- `summarize: bool = False` — *(no description)*
-- `custom_instructions: str | None = None` — *(no description)*
+- `target_id: str | None` — The entry to move onto, or ``None`` for before the root.
+- `summarize: bool = False` — ``False`` writes nothing; the branch left behind drops out of context by ancestry. ``True`` delegates to :meth:`summarize_branch`, unless the cursor is already at ``target_id``.
+- `custom_instructions: str | None = None` — Passed to :meth:`summarize_branch`.
+
+**Returns**
+
+The context at the new position (``ConversationTree.context_for``).
+
+**Raises**
+
+- `RuntimeError` — No session is bound.
+- `ValueError` — ``target_id`` names no entry, ``summarize`` with a ``None`` ``target_id`` while the cursor is elsewhere, or (with ``summarize``) the summarizer returned nothing usable.
 
 ### prompt
 
@@ -1027,57 +873,22 @@ async prompt(text: str) -> list[dict[str, Any]]
 
 DEPRECATED alias for :meth:`ExtensionAPI.submit` — use ``api.submit`` instead.
 
-Run one agent turn on the bound session, returning this turn's messages.
-Kept working so existing extensions keep working; it is now exactly
-``submit(text, multitask_strategy="enqueue")`` with the result's
-``messages`` returned in place of the :class:`SubmissionResult`, which
-is the whole reason to prefer ``api.submit``: a refusal is a typed
-result there, and unreachable through this signature.
-
-**What changed (docs/SUBMISSION-LIFECYCLE.md phase 5).** This used to
-delegate to :meth:`AgentSession.prompt`, the *interactive* compatibility
-wrapper, so every turn an extension originated emitted lifecycle events
-stamped ``source="interactive"``, ``submitter="human"`` — a bus message
-indistinguishable from a person typing, which is precisely what phase 2's
-provenance fields exist to tell apart. It now builds its own
-:class:`~tau_agent_core.submission.Submission` with
-``source="extension"``.
-
-The ``submitter`` is :data:`UNATTRIBUTED_EXTENSION`, not the calling
-extension's name: a session has ONE shared :class:`ExtensionContext`
-(see that constant), so this object cannot know which extension called
-it. :meth:`ExtensionAPI.submit` is bucket-bound and reports the real
-name — that is the attributed door, and the reason this one is
-deprecated rather than merely renamed.
-
-Concurrency is unchanged: ``"enqueue"``. A call from a DIFFERENT event
-source's own coroutine (a second bus message, a second timer tick) is
-genuine concurrency and waits for the in-flight turn, then runs — never
-a silent drop, never corrupted history. (``api.submit`` defaults to
-``"reject"`` instead, the Fail-Early default; ask for ``"enqueue"``
-explicitly there if you want this behaviour.)
-
-Re-entrancy — a hook (``input``/``tool_call``/``turn_end``/
-``user_turn_end``) belonging to THIS SAME in-flight turn calling
-``ctx.prompt()`` before its own turn has returned — is NOT the caller's
-problem to arbitrate: ``submit()`` detects it (same ``asyncio.Task`` as
-the turn already holding the admission lock) and RAISES immediately
-(review fix, must_fix #2). Before this, such a call deadlocked
-silently forever — every ``multitask_strategy`` either inspects or
-waits on a lock this task already holds, so nothing could ever release
-it. Decision 3's depth cap anticipates a *bounded* form of
-self-submission; nested execution that bypasses the lock to actually
-satisfy one is not implemented, so this raises unconditionally rather
-than hanging.
+Submits with ``multitask_strategy="enqueue"`` (waits for an in-flight
+turn), ``source="extension"`` and the submitter
+:data:`UNATTRIBUTED_EXTENSION`, because the shared context cannot know
+which extension called (docs/SUBMISSION-LIFECYCLE.md phase 5).
 
 **Parameters**
 
-- `text: str` — *(no description)*
+- `text: str` — The prompt to run as one agent turn on the bound session.
+
+**Returns**
+
+This turn's messages only; there is no refusal to see under ``"enqueue"``.
 
 **Raises**
 
-- `RuntimeError` — if no session is bound (Fail-Early — nothing to prompt).
-- `RuntimeError` — this call is reentrant on the in-flight turn's own asyncio task (see above).
+- `RuntimeError` — No session is bound, or :meth:`AgentSession.submit` refused the call: reentrant from a hook on the in-flight turn's own task (it would deadlock), off the session's loop, or past ``MAX_SUBMISSION_DEPTH``.
 
 ### resolve_model
 
@@ -1089,19 +900,22 @@ resolve_model(model: Any = None) -> Any
 
 Resolve ``model`` to a ``tau_llm.Model``.
 
-``None`` → the session's current model. A **string** → looked up in the same
-config ``models`` registry the TUI picks from, via the resolver already injected
-on the session (``AgentSession.set_model_resolver`` / ``backends.make_model_resolver``).
-A ``Model`` → used as-is.
-
-Model routing through the registry is the point: an extension's model choice is
-then configured inline with the agent's, in its existing config slice — e.g.
-``"extensions": {"retrieval_review": {"model": "local-llm-small"}}`` — with no
+Routing names through the config registry lets an extension's model be
+configured in its own config slice — e.g. ``"extensions":
+{"retrieval_review": {"model": "local-llm-small"}}`` — with no
 extension-private client plumbing.
 
 **Parameters**
 
-- `model: Any = None` — *(no description)*
+- `model: Any = None` — ``None`` for the session's current model; a name, looked up by the resolver bound on the session (the config ``models`` registry the TUI picks from); or a ``Model``, used as-is.
+
+**Returns**
+
+The resolved ``Model``.
+
+**Raises**
+
+- `RuntimeError` — no session is bound, or a name was given and the session has no model resolver.
 
 ### set_headless_ui_defaults
 
@@ -1113,15 +927,16 @@ set_headless_ui_defaults(policy: dict[str, str]) -> None
 
 Set the headless dialog-answer policy on the shared UI (E7 §3 / S48).
 
-Delegates to :meth:`ExtensionUI.set_headless_defaults`; the frontends call
-this (via :meth:`AgentSession.set_headless_ui_defaults`) with the resolved
-``--ui-defaults`` / config policy so a headless dialog auto-answers only
-when the user opted in. Validation (unknown method/token) raises
-``ValueError`` — the caller surfaces it as a clean CLI error.
+The frontends call this (via :meth:`AgentSession.set_headless_ui_defaults`)
+so a headless dialog auto-answers only when the user opted in.
 
 **Parameters**
 
-- `policy: dict[str, str]` — *(no description)*
+- `policy: dict[str, str]` — The resolved ``--ui-defaults`` / config policy, as for :meth:`ExtensionUI.set_headless_defaults`.
+
+**Raises**
+
+- `ValueError` — an unknown method or token; the caller surfaces it as a CLI error.
 
 ### set_model
 
@@ -1131,15 +946,14 @@ set_model(name: str) -> dict[str, Any]
 
 `tau_agent_core.extension_types.ExtensionContext.set_model`
 
-Switch the active model by NAME, effective next turn (S45).
+Switch the acting cursor's model by NAME, effective on its next turn (S45).
 
-Delegates to :meth:`AgentSession.set_model` (pi ``setModel`` parity, adapted
-to τ's name-based resolver). Whatever the resolver raises for an unknown
-``name`` propagates unchanged.
+Delegates to :meth:`AgentSession.set_model`: at the head cursor that is
+the session's model, at any other cursor that cursor's frame.
 
 **Parameters**
 
-- `name: str` — The model name to resolve and switch to.
+- `name: str` — The config model name to resolve and switch to.
 
 **Returns**
 
@@ -1147,7 +961,9 @@ The new :meth:`get_model` projection.
 
 **Raises**
 
-- `RuntimeError` — if no session is bound, or the session has no model resolver bound (both Fail-Early — no registry to resolve ``name``).
+- `RuntimeError` — No session is bound, or the session has no model resolver.
+- `TypeError` — The resolver returned something other than a ``Model``.
+- `Exception` — Whatever the resolver raises for an unknown ``name``, unchanged.
 
 ### set_record_sink
 
@@ -1159,14 +975,13 @@ set_record_sink(sink: Callable[[dict[str, Any]], None] | None) -> None
 
 Install the headless JSON record sink on the shared UI (E7 §3 / S49).
 
-Delegates to :meth:`ExtensionUI.set_record_sink`; the headless ``--mode json``
-path calls this (via :meth:`AgentSession.set_extension_record_sink`) so every
-loaded extension's ``api.ui.notify(...)`` becomes a structured record on the
-JSON stream instead of a stderr line (anchor G10).
+The headless ``--mode json`` path calls this (via
+:meth:`AgentSession.set_extension_record_sink`) so every extension's UI
+calls become records on the JSON stream instead of stderr lines (anchor G10).
 
 **Parameters**
 
-- `sink: Callable[[dict[str, Any]], None] | None` — *(no description)*
+- `sink: Callable[[dict[str, Any]], None] | None` — As for :meth:`ExtensionUI.set_record_sink`; ``None`` clears it.
 
 ### set_ui_delegate
 
@@ -1195,10 +1010,10 @@ shutdown() -> None
 
 `tau_agent_core.extension_types.ExtensionContext.shutdown`
 
-Request a shutdown: marks `shutdown_requested` and, if a
-`session_manager` is bound, additionally calls its `shutdown()` too
-(the pre-existing pass-through — kept for whatever still relies on
-it). Idempotent; safe to call more than once.
+Request a shutdown by setting :attr:`shutdown_requested`; idempotent.
+
+Also calls ``session_manager.shutdown()`` when one with that method was
+given at construction.
 
 ### shutdown_requested
 
@@ -1216,25 +1031,18 @@ async spawn_branch(parent_id: str | None, prompt: str, *, tools: list[str], mode
 
 Run a tool-using sub-agent on its own cursor in THIS conversation (C2/W14).
 
-Resolves ``model`` (a name, a ``Model`` or ``None`` for the session's) and
-delegates to :meth:`AgentSession.spawn`, which documents the cursor it opens,
-the frame it runs under and how failure is contained (docs/CURSORS.md §6).
-
-``tools`` is a **required hard allowlist**: "inherit the spawner's tools" would
-hand a retrieval evaluator ``write`` and ``bash`` silently, and an empty default
-would produce a sub-agent that cannot do its job just as silently. Pass ``[]``
-to mean none.
+Delegates to :meth:`AgentSession.spawn` (docs/CURSORS.md §6).
 
 **Parameters**
 
-- `parent_id: str | None` — *(no description)*
-- `prompt: str` — *(no description)*
-- `tools: list[str]` — *(no description)*
-- `model: Any = None` — *(no description)*
-- `max_turns: int | None = None` — *(no description)*
-- `label: str | None = None` — *(no description)*
-- `system_prompt: str | None = None` — *(no description)*
-- `hooks: bool = False` — *(no description)*
+- `parent_id: str | None` — The entry the sub-agent's cursor opens at, or ``None`` for before the root.
+- `prompt: str` — The sub-agent's task, sent as its one submission.
+- `tools: list[str]` — A required hard allowlist of tool names; ``[]`` means none.
+- `model: Any = None` — A name, a ``Model``, or ``None`` for the session's.
+- `max_turns: int | None = None` — Cap on the sub-agent's loop turns, or ``None`` for no cap.
+- `label: str | None = None` — The cursor's label; defaults to the prompt's first 60 characters.
+- `system_prompt: str | None = None` — Replaces the session's system prompt for this branch.
+- `hooks: bool = False` — Whether extension hooks fire during the sub-agent's turn.
 
 **Returns**
 
@@ -1242,6 +1050,7 @@ class:`BranchResult`. **Check ``ok``** — a failed sub-agent returns a result, 
 
 **Raises**
 
+- `RuntimeError` — No session is bound, or ``model`` is a name and the session has no resolver.
 - `ValueError` — a tool is not one the spawning turn offers, or ``parent_id`` names no entry.
 
 ### summarize_branch
@@ -1254,36 +1063,34 @@ async summarize_branch(from_entry: str, custom_instructions: str | None = None) 
 
 Summarize the subtree at ``from_entry`` and splice it onto the active path.
 
-Binds :func:`tau_agent_core.tree_ops.summarize_and_navigate` to the extension's
-own session: the capability extracts the branch text, summarizes it (raise-based
-on a failed or empty summary, Fail-Early) and APPENDs a ``branch_summary`` entry
-parented at ``from_entry``, and this supplies the session's model and key and
-banks the tokens the summarizer spent. The abandoned children drop out of context
-via the ``parentId`` walk.
-
-Returns the re-rendered active-path messages (``ConversationTree.context_for``).
+Binds :func:`tau_agent_core.tree_ops.summarize_and_navigate` to the session's
+head cursor, model and key, and banks the tokens the summarizer spent. It
+APPENDs a ``branch_summary`` entry parented at ``from_entry``; the abandoned
+children drop out of context via the ``parentId`` walk.
 
 **Parameters**
 
-- `from_entry: str` — *(no description)*
-- `custom_instructions: str | None = None` — *(no description)*
+- `from_entry: str` — The entry whose subtree is summarized.
+- `custom_instructions: str | None = None` — Optional extra focus for the summary.
+
+**Returns**
+
+The re-rendered active-path messages (``ConversationTree.context_for``).
+
+**Raises**
+
+- `RuntimeError` — No session is bound.
+- `ValueError` — ``from_entry`` names no entry (checked before the model call), or the summarizer returned nothing usable.
 
 ### ui
 
 `tau_agent_core.extension_types.ExtensionContext.ui: ExtensionUI`
 
-UI surfaces: TUI-only, and no-ops or headless policy elsewhere.
+The session's one :class:`ExtensionUI`, the same object as ``api.ui``.
 
-The same :class:`ExtensionUI` instance :attr:`ExtensionAPI.ui` exposes —
-both read ``self._ui`` off this one context — so ``ctx.ui.notify(...)``
-inside a handler paints on the delegate ``api.ui`` would. Every mutating
-hook and every ``register_command`` handler is called as
-``handler(event_or_args, ctx)`` with the context and never the
-:class:`ExtensionAPI`, so this property is a handler's only route to it.
-
-``notify``, ``status``, ``panel`` and ``form`` are the surface. 0.10.0
-removed ``confirm``, ``select`` and ``input``; a question now goes through
-:meth:`ExtensionAPI.request_user_action`, which every head can answer.
+A hook or command handler receives ``ctx``, never the api, so this is its
+route to ``notify``, ``set_status``, ``panel`` and ``form``. A question
+that gates work goes through :meth:`ExtensionAPI.request_user_action`.
 
 ## ExtensionInfo
 <!-- agent: yes -->
@@ -1296,27 +1103,18 @@ class ExtensionInfo(name: str, path: str, tools: list[str], commands: list[str],
 
 Read-only summary of one loaded extension for the ``/extensions`` surface.
 
-Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). Carries an extension's
-display ``name``, source ``path``, and the ``tools`` / ``commands`` /
-``shortcuts`` / ``hooks`` it registered — everything the palette listing shows
-for a loaded extension (shortcuts E10 §6 / S69).
-
-``content_hash`` and ``subjects`` are H7's addition (SIM_SPEC_v2 §16.6): the
-file's identity at load time and its declared bus subjects (``()`` for an
-extension that does not touch the bus). This is the pair
-:func:`~tau_agent_core.run_manifest.build_run_manifest` emits into
-``manifest.json`` beside ``harness`` and ``compaction``.
+Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34); shortcuts E10 §6 / S69.
 
 **Constructor parameters**
 
-- `name: str` — *(no description)*
-- `path: str` — *(no description)*
-- `tools: list[str]` — *(no description)*
-- `commands: list[str]` — *(no description)*
-- `shortcuts: list[str]` — *(no description)*
-- `hooks: list[str]` — *(no description)*
-- `content_hash: str = ''` — *(no description)*
-- `subjects: tuple[str, ...] = ()` — *(no description)*
+- `name: str` — The display name: the file's stem.
+- `path: str` — The source file.
+- `tools: list[str]` — Names of the tools it registered.
+- `commands: list[str]` — Names of the commands it registered.
+- `shortcuts: list[str]` — The shortcuts it registered.
+- `hooks: list[str]` — The hook events it handles, sorted.
+- `content_hash: str = ''` — Hex sha256 of the source at load time (H7, SIM_SPEC_v2 §16.6); :func:`~tau_agent_core.run_manifest.build_run_manifest` writes it, with ``subjects``, into ``manifest.json``.
+- `subjects: tuple[str, ...] = ()` — Its declared bus subjects; ``()`` if it does not touch the bus.
 
 ## ExtensionLoadError
 <!-- agent: yes -->
@@ -1331,8 +1129,8 @@ A discovered extension that failed to load (pi types.ts:1590 errors[]).
 
 **Constructor parameters**
 
-- `path: str` — *(no description)*
-- `error: str` — *(no description)*
+- `path: str` — The extension file that failed.
+- `error: str` — The exception's message.
 
 ## ExtensionUI
 <!-- agent: yes -->
@@ -1392,23 +1190,13 @@ Echo the decode constraint that shaped a ``ctx.complete()`` call (G4/C).
 
 Routes ONLY to the record sink — the ``--mode json`` record family (S49) —
 emitting ``{"type": "extension", "kind": "constraints", "extension":
-<path|null>, "constraints": <summary>}`` where ``summary`` is
-:meth:`DecodeConstraints.describe`'s output (``{"kind": "choices"|"json_schema"
-|"grammar", ...}``). This retires the "``describe()`` has zero non-test callers"
-debt: the ONE place a real constraint exists at completion time is
-``ctx.complete()``, so that is the honest producer of this record.
-
-Guard: NEVER echo ``{"kind": "none"}`` — the caller only reaches here when
-``constraints.has_constraint()`` is true, and this second check makes the
-"no fabricated placeholder" invariant local (Fail-Early: a ``none`` summary
-is dropped rather than emitted as a meaningless record). Like :meth:`emit_veto`
-this deliberately does NOT touch the TUI delegate or stderr, and with no sink
-installed it is a no-op (the JSON record family only exists on that one path).
+<path|null>, "constraints": <summary>}``. Like :meth:`emit_veto` it never
+touches the TUI delegate or stderr, and with no sink it is a no-op.
 
 **Parameters**
 
-- `summary: dict[str, Any]` — *(no description)*
-- `source: str | None = None` — *(no description)*
+- `summary: dict[str, Any]` — :meth:`DecodeConstraints.describe`'s output, ``{"kind": "choices"|"json_schema"|"grammar", ...}``. A ``{"kind": "none"}`` summary is dropped rather than emitted as a placeholder record.
+- `source: str | None = None` — The calling extension's path, or ``None`` if unattributed.
 
 ### emit_veto
 
@@ -1428,14 +1216,13 @@ orchestrating a child ``tau -p --mode json`` can tell a `tool_call` veto
 the TUI delegate or stderr: in the TUI the veto is rendered off the
 ``tool_execution_end`` AgentEvent's ``blocked`` field, and in ``--mode text``
 it already surfaces as the persisted errored tool-result node — a stderr line
-here would be a duplicate. With no sink installed this is a no-op (not a
-fabricated channel — the JSON record family only exists on that one path).
+here would be a duplicate. With no sink installed this is a no-op.
 
 **Parameters**
 
-- `extension: str | None` — *(no description)*
-- `tool: str` — *(no description)*
-- `reason: str` — *(no description)*
+- `extension: str | None` — The vetoing extension's path, or ``None`` if unattributed.
+- `tool: str` — The blocked tool's name.
+- `reason: str` — The veto reason the hook gave.
 
 ### form
 
@@ -1445,41 +1232,29 @@ async form(spec: dict[str, Any]) -> dict[str, Any] | None
 
 `tau_agent_core.extension_types.ExtensionUI.form`
 
-Show a DECLARATIVE form and return ``{field_name: value}`` (E10 §6 / S66).
+Show a declarative form and return ``{field_name: value}`` (E10 §6 / S66).
 
-The τ answer to pi's ``question``/``questionnaire`` — but a plain-data SPEC,
-not a widget factory (D-E6-4): ``spec = {title?, fields: [{name, kind,
-label?, default?, options?}, ...]}`` with ``kind`` one of
-:data:`FORM_FIELD_KINDS` (``text``/``select``/``multiselect``/``confirm``/
-``number``). The spec is validated by :func:`validate_form_spec` up front so
-a malformed form fails BEFORE any UI is shown, in every mode.
+The spec is validated before any UI is shown, in every mode. Routing:
 
-Routing (mirrors the other blocking dialogs, S48):
-
-- **TUI mode** with a delegate, and a driving submission that permits
-  asking a human (:meth:`_human_delegate`) → delegates to the frontend's
-  single generic ``ExtensionFormScreen``; a real human fills it. Returns
-  the ``{name: value}`` dict on submit, or ``None`` on cancel/Esc (a
-  cancelled form is NOT a fabricated set of answers — Fail-Early, same as
-  :meth:`select`). A form is a blocking dialog like any other, so
-  ``allow_user_input=False`` routes it down the policy path below rather
-  than putting a screen in front of a human who did not originate the
-  turn.
-- **headless ``--mode json``** (a record sink is installed) → first emits one
-  ``{"type": "extension", "kind": "form", …}`` record describing the request
-  (visibility on the stream, like :meth:`notify`), THEN resolves via policy.
-- **headless policy** → with ``--ui-defaults form=defaults`` returns each
-  field's declared default (:func:`form_headless_value`); with NO ``form``
-  policy RAISES :class:`HeadlessDialogError`. It NEVER silently auto-fills a
-  form the user did not fill.
+- a bound delegate and a driving submission that permits asking a human
+  (:meth:`_human_delegate`) → the TUI's ``ExtensionFormScreen``;
+- otherwise, with a record sink installed (``--mode json``), one
+  ``{"type": "extension", "kind": "form", …}`` record is emitted first;
+- then the headless policy: ``form=defaults`` answers each field with
+  :func:`form_headless_value`, and no policy raises.
 
 **Parameters**
 
-- `spec: dict[str, Any]` — *(no description)*
+- `spec: dict[str, Any]` — The form spec :func:`validate_form_spec` accepts; ``kind`` is one of :data:`FORM_FIELD_KINDS`.
 
 **Returns**
 
-``dict[str, Any]`` mapping each field name to its answer, or ``None`` when a TUI user cancels. The headless ``defaults`` answer is always a dict (the user opted in — there is nothing to cancel).
+Each field name mapped to its answer, or ``None`` when a TUI user cancels (never a fabricated set of answers). The headless ``defaults`` answer is always a dict.
+
+**Raises**
+
+- `ValueError` — ``spec`` is malformed.
+- `HeadlessDialogError` — no human may be asked and there is no ``form`` policy.
 
 ### interactive
 
@@ -1519,19 +1294,11 @@ Routing (first match wins):
   stream (S49 — anchor G10).
 - otherwise (headless ``--mode text`` / SDK) → prints to stderr, unchanged.
 
-``source`` is the originating extension's identity when the caller knows it
-(the S44 error-surface path passes the failing extension's path). A plain
-``api.ui.notify(...)`` cannot supply one: every bound extension shares the
-session's ONE :class:`ExtensionUI` (``api.ui`` is that single instance — a
-test-enforced invariant), so the shared sink has no per-call attribution.
-Fail-Early: the record then carries ``"extension": null`` — the honest
-"unattributed" value — rather than a fabricated name.
-
 **Parameters**
 
-- `message: str` — *(no description)*
-- `level: str = 'info'` — *(no description)*
-- `source: str | None = None` — *(no description)*
+- `message: str` — The notification text.
+- `level: str = 'info'` — Severity label passed to the delegate or written into the record or stderr line, e.g. ``"info"``.
+- `source: str | None = None` — The originating extension's identity when the caller knows it (the S44 error-surface path passes the failing extension's path). A plain ``api.ui.notify(...)`` cannot supply one, because every extension shares the session's one :class:`ExtensionUI`; the record then carries ``"extension": null`` rather than a fabricated name.
 
 ### panel
 
@@ -1541,50 +1308,24 @@ panel(key: str, spec: dict[str, Any] | None, *, source: str | None = None) -> No
 
 `tau_agent_core.extension_types.ExtensionUI.panel`
 
-Show, update, or clear a persistent keyed PANEL (E10 §6 / S68).
+Show, update, or clear a persistent keyed panel (E10 §6 / S68).
 
-The fleet-dashboard primitive (D-E6-4: a plain-data SPEC, not a widget
-factory). ``key`` names a persistent panel surface; re-calling the same key
-UPDATES that panel in place (a live delegate table ticking as children start /
-finish / cost), and ``spec=None`` CLEARS it (the fleet is done). ``spec`` is
-``{title?, <body>, actions?}`` where ``<body>`` is EXACTLY ONE of
-``table`` / ``list`` / ``text`` and ``actions`` is a list of
-``{label, command, args?}`` — pressing an action DISPATCHES ``command`` back
-into the extension as a ``register_command`` call (the panel→extension loop).
-The spec is validated by :func:`validate_panel_spec` up front so a malformed
-panel fails BEFORE any UI is shown, in every mode.
-
-Like :meth:`set_status` this is NON-BLOCKING display (a panel is not a dialog
-awaiting an answer), so it needs no headless answer policy — it routes exactly
-like :meth:`notify`:
-
-- **TUI mode** with a delegate → paints on the delegate's panel host, which
-  mounts / updates / removes the keyed :class:`ExtensionPanel`.
-- **headless ``--mode json``** (a :meth:`set_record_sink` is installed) →
-  emits one ``{"type": "extension", "kind": "panel", "key": …, "spec": …}``
-  record through the sink (``spec`` is the normalized dict, or ``null`` on
-  clear) so a parent reading a child ``tau -p --mode json`` stream sees the
-  panel and its declared actions (anchor G10). This IS the non-interactive
-  headless policy (§6.3): the surface is visible on the stream, its actions
-  simply cannot be pressed without a TUI — a panel is never TUI-ONLY.
-- otherwise (headless ``--mode text`` / SDK) → prints to stderr, unchanged
-  from :meth:`notify`'s fallback (honest, never a silent no-op).
-
-``source`` is the originating extension's identity when the caller knows it;
-a plain ``api.ui.panel(...)`` cannot supply one (every bound extension shares
-the session's ONE :class:`ExtensionUI`), so the record then carries
-``"extension": null`` rather than a fabricated name — same contract as
-:meth:`notify`/:meth:`set_status`.
+Pressing an action dispatches its ``command`` as a registered command. The
+spec is validated before any UI is shown, in every mode. Non-blocking, so
+it routes like :meth:`notify`: the delegate's panel host in the TUI; one
+``{"type": "extension", "kind": "panel", "key": …, "spec": …}`` record
+under ``--mode json`` (``spec`` normalized, or ``null`` on clear), whose
+actions cannot be pressed; otherwise the title on stderr.
 
 **Parameters**
 
-- `key: str` — *(no description)*
-- `spec: dict[str, Any] | None` — *(no description)*
-- `source: str | None = None` — *(no description)*
+- `key: str` — The panel; re-calling the same key updates it in place.
+- `spec: dict[str, Any] | None` — ``{title?, <body>, actions?}`` as :func:`validate_panel_spec` accepts; ``None`` clears the panel.
+- `source: str | None = None` — The originating extension's identity, or ``None``; same contract as :meth:`notify`'s.
 
 **Raises**
 
-- `ValueError` — if ``key`` is not a non-empty string (Fail-Early: a panel with no key has nothing to update or clear); or (via :func:`validate_panel_spec`) if ``spec`` is malformed.
+- `ValueError` — ``key`` is not a non-empty string, or ``spec`` is malformed (:func:`validate_panel_spec`).
 
 ### set_headless_defaults
 
@@ -1596,16 +1337,13 @@ set_headless_defaults(policy: dict[str, str]) -> None
 
 Set (replace) the headless-answer policy, validating every entry (S48).
 
-``policy`` maps a dialog method to its answer token; keys must be in
-:data:`HEADLESS_DIALOG_ANSWERS` and each token must be one of that method's
-allowed answers (case-insensitive). Fail-Early: an unknown method or token
-RAISES :class:`ValueError` rather than being silently ignored, so a
-typo in ``--ui-defaults`` / config surfaces instead of leaving a dialog
-unexpectedly raising at runtime.
-
 **Parameters**
 
-- `policy: dict[str, str]` — *(no description)*
+- `policy: dict[str, str]` — Dialog method to answer token. Keys must be in :data:`HEADLESS_DIALOG_ANSWERS`; each token must be one of that method's answers, matched case-insensitively and stored lowercased.
+
+**Raises**
+
+- `ValueError` — an unknown or retired method, or a token the method does not allow; a ``--ui-defaults`` typo surfaces here, not mid-run.
 
 ### set_record_sink
 
@@ -1618,15 +1356,12 @@ set_record_sink(sink: Callable[[dict[str, Any]], None] | None) -> None
 Install (or clear) the headless JSON record sink (E7 §3 / S49 — G10).
 
 The frontends call this (via :meth:`AgentSession.set_extension_record_sink`)
-on the ``--mode json`` headless path with a writer that serializes each
-record to one stdout line — the parallel record family alongside the closed
-``AgentEvent`` set (like the session header line). Passing ``None`` restores
-the plain stderr sink. Nothing calls this in the TUI or in ``--mode text``,
-so those paths keep the delegate / stderr behaviour.
+on the ``--mode json`` headless path only; the TUI and ``--mode text`` keep
+the delegate / stderr behaviour.
 
 **Parameters**
 
-- `sink: Callable[[dict[str, Any]], None] | None` — *(no description)*
+- `sink: Callable[[dict[str, Any]], None] | None` — Writes one record (the family beside the ``AgentEvent`` set) as one stdout line; ``None`` restores the plain stderr output.
 
 ### set_status
 
@@ -1638,36 +1373,20 @@ set_status(key: str, text: str | None, *, source: str | None = None) -> None
 
 Set (or clear) a keyed slot in the extension status strip (E10 §6 / S67).
 
-Ambient, live state painted in a one-line footer strip. ``key`` identifies
-a SLOT — re-calling the same key UPDATES that slot in place (e.g. budget
-proximity ticking each turn), never appending a new one. ``text=None``
-CLEARS the slot. Unlike :meth:`form` this is non-blocking display, so it
-needs no headless answer policy — it routes exactly like :meth:`notify`:
-
-- **TUI mode** with a delegate → paints on the delegate's status strip.
-- **headless ``--mode json``** (a :meth:`set_record_sink` is installed) →
-  emits one ``{"type": "extension", "kind": "status", …}`` record through the
-  sink so a parent reading a child ``tau -p --mode json`` stream sees the
-  ambient state change (S49 — anchor G10). A cleared slot rides the same
-  record with ``"text": null``.
-- otherwise (headless ``--mode text`` / SDK) → prints to stderr, unchanged
-  from :meth:`notify`'s fallback (honest, never a silent no-op).
-
-``source`` is the originating extension's identity when the caller knows it;
-a plain ``api.ui.set_status(...)`` cannot supply one (every bound extension
-shares the session's ONE :class:`ExtensionUI`), so the record then carries
-``"extension": null`` rather than a fabricated name — same contract as
-:meth:`notify`.
+Re-calling a key updates its slot in place. Non-blocking, so it routes
+like :meth:`notify`: the delegate's status strip in the TUI; one
+``{"type": "extension", "kind": "status", …}`` record under ``--mode json``
+(a cleared slot carries ``"text": null``); otherwise a stderr line.
 
 **Parameters**
 
-- `key: str` — *(no description)*
-- `text: str | None` — *(no description)*
-- `source: str | None = None` — *(no description)*
+- `key: str` — The slot to update or clear.
+- `text: str | None` — The slot's new text; ``None`` clears it.
+- `source: str | None = None` — The originating extension's identity, or ``None``; same contract as :meth:`notify`'s.
 
 **Raises**
 
-- `ValueError` — if ``key`` is not a non-empty string (Fail-Early: a status slot with no key has nothing to update or clear).
+- `ValueError` — ``key`` is not a non-empty string.
 
 ## HeadlessDialogError
 <!-- agent: yes -->
@@ -1709,8 +1428,8 @@ omitted until the API is bound to the live session (E1/S3).
 
 **Constructor parameters**
 
-- `extensions: list[LoadedExtension] = list()` — *(no description)*
-- `errors: list[ExtensionLoadError] = list()` — *(no description)*
+- `extensions: list[LoadedExtension] = list()` — The extensions that loaded, in load order.
+- `errors: list[ExtensionLoadError] = list()` — The extensions that failed to load and were collected rather than raised.
 
 ## LoadedExtension
 <!-- agent: yes -->
@@ -1723,35 +1442,18 @@ class LoadedExtension(path: str, register: Callable[..., Any], api: ExtensionAPI
 
 A successfully loaded extension.
 
-Narrowed port of pi's ``Extension`` record (coding-agent types.ts:1577) to
-what S1 needs: the source ``path``, the module-level ``register`` factory
-that was invoked, and the ``ExtensionAPI`` it registered against.
-
-``config_schema`` is the extension's own ``CONFIG_SCHEMA`` module attribute,
-normalized by :func:`~tau_agent_core.extension_types.validate_form_spec` at
-load — the declaration that lets a head render a settings screen for keys
-only the extension knows. ``None`` means the module declared none, which is
-every extension written before the attribute existed.
-
-``content_hash``, ``subjects`` and ``touches_bus`` are H7/H8's addition
-(SIM_SPEC_v2 §16.6/§16.10): the file's identity at load time, and its
-declared bus subjects, if any. ``content_hash`` is a sha256 of the exact
-bytes compiled — the same source read used to ``exec`` the module — so two
-loads of the same path at different contents produce different hashes and
-are never mistaken for one condition (the pattern §15.1's ``producer``,
-``Trace.arm``, and H5's compaction policy already established for this
-program: a configuration that changes what a number means is a mandatory
-partition key).
+Narrowed port of pi's ``Extension`` record (coding-agent types.ts:1577).
+The hash and bus fields are H7/H8's addition (SIM_SPEC_v2 §16.6/§16.10).
 
 **Constructor parameters**
 
-- `path: str` — *(no description)*
-- `register: Callable[..., Any]` — *(no description)*
-- `api: ExtensionAPI` — *(no description)*
-- `content_hash: str = ''` — *(no description)*
-- `subjects: tuple[str, ...] = ()` — *(no description)*
-- `touches_bus: bool = False` — *(no description)*
-- `config_schema: dict[str, Any] | None = None` — *(no description)*
+- `path: str` — The source file it was loaded from.
+- `register: Callable[..., Any]` — The module-level ``register`` function that was invoked.
+- `api: ExtensionAPI` — The ``ExtensionAPI`` it registered against.
+- `content_hash: str = ''` — Hex sha256 of the exact bytes compiled, so two loads of one path at different contents are never mistaken for one condition.
+- `subjects: tuple[str, ...] = ()` — The bus subjects the module's ``SUBJECTS`` declared; ``()`` unless ``touches_bus``.
+- `touches_bus: bool = False` — The module's ``TOUCHES_BUS`` declaration.
+- `config_schema: dict[str, Any] | None = None` — The module's ``CONFIG_SCHEMA`` normalized by :func:`~tau_agent_core.extension_types.validate_form_spec` to ``{"title", "fields"}``, so a head can render a settings screen. ``None`` if the module declared none.
 
 ## apply_session_name
 <!-- agent: yes -->
@@ -1771,8 +1473,8 @@ promise durability checks first (``rpc.commands.require_durable_session``).
 
 **Parameters**
 
-- `session: Any` — *(no description)*
-- `name: str` — *(no description)*
+- `session: Any` — The ``AgentSession`` to name.
+- `name: str` — The new name; must be non-empty.
 
 **Raises**
 
@@ -1787,20 +1489,21 @@ ext_channel(name: str, topic: str) -> str
 
 `tau_agent_core.extension_types.ext_channel`
 
-The namespaced ``EventBus`` channel for an extension pub/sub topic (E7 §3 / S52).
+Build the namespaced ``EventBus`` channel for an extension topic (E7 §3 / S52).
 
-Returns ``ext:<name>:<topic>``. The ``ext:`` prefix keeps custom
-inter-extension channels disjoint from the closed ``AgentEvent`` type set the
-notify bus also carries, and ``<name>`` (the emitting extension's file stem —
-the same stem that keys ``api.config``) makes the channel's origin unforgeable:
-:meth:`ExtensionAPI.emit` derives ``name`` from the caller's own bucket, so an
-extension can only publish under its own namespace. A subscriber passes the full
-result string to ``api.on(...)`` to receive it.
+The ``ext:`` prefix keeps these channels disjoint from the ``AgentEvent``
+types the bus also carries. :meth:`ExtensionAPI.emit` derives ``name`` from
+the caller's own bucket, so an extension can only publish under its own
+namespace. A subscriber passes the result to ``api.on(...)``.
 
 **Parameters**
 
-- `name: str` — *(no description)*
-- `topic: str` — *(no description)*
+- `name: str` — The emitting extension's file stem, the one that keys ``api.config``.
+- `topic: str` — The extension's own topic name.
+
+**Returns**
+
+``ext:<name>:<topic>``.
 
 ## form_headless_value
 <!-- agent: yes -->
@@ -1811,17 +1514,18 @@ form_headless_value(field: dict[str, Any]) -> Any
 
 `tau_agent_core.extension_types.form_headless_value`
 
-The ``form=defaults`` headless answer for one validated field (S66).
+Give the ``form=defaults`` headless answer for one validated field (S66).
 
-Returns the field's declared ``default`` when present (the extension author's
-explicit value, trusted like ``input``'s default); otherwise the kind's natural
-empty value (``select`` → its first option, which is always concrete). This is
-only reached once the user opts in via ``--ui-defaults form=defaults`` — with no
-policy the form raises instead of fabricating an answer.
+Only reached once the user opts in via ``--ui-defaults form=defaults``; with
+no policy the form raises instead of fabricating an answer.
 
 **Parameters**
 
-- `field: dict[str, Any]` — *(no description)*
+- `field: dict[str, Any]` — One field from :func:`validate_form_spec`'s normalized list.
+
+**Returns**
+
+The field's declared ``default`` when present; otherwise the kind's empty value (``""``, ``0``, ``False``, ``[]``), or a ``select``'s first option.
 
 ## read_session_name
 <!-- agent: yes -->
@@ -1832,11 +1536,15 @@ read_session_name(session: Any) -> str | None
 
 `tau_agent_core.extension_types.read_session_name`
 
-``session``'s name (:func:`~tau_agent_core.session_log.session_name`), or ``None``.
+Read ``session``'s name (:func:`~tau_agent_core.session_log.session_name`).
 
 **Parameters**
 
-- `session: Any` — *(no description)*
+- `session: Any` — The ``AgentSession`` whose log is read.
+
+**Returns**
+
+The newest ``session_info`` name, or ``None`` if never named or the newest name is empty.
 
 ## summarize_extensions
 <!-- agent: yes -->
@@ -1847,23 +1555,24 @@ summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]
 
 `tau_agent_core.sdk.summarize_extensions`
 
-Per-extension name/path/tools/commands/hooks from a ``LoadExtensionsResult``.
+Summarize each loaded extension for the ``/extensions`` listing.
 
-Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). The palette (``/extensions``)
-reads this to list each loaded extension; ``result.errors`` is surfaced
-alongside by the caller (load failures).
-
-Each loaded extension's ``api`` is bound to its own runner bucket
-(:class:`~tau_agent_core.extensions.runner.ExtensionHandlers`, labelled by the
-extension's file path — see ``AgentSession._bind_extension_api`` /
-``_standalone_api_factory``), which is the ONLY place that records which
-extension registered which tool/command/hook. A loaded extension whose api has
-no bucket is a construction bug, so this raises rather than fabricating an empty
-listing (Fail-Early).
+Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). Registrations are read
+from each extension's runner bucket
+(:class:`~tau_agent_core.extensions.runner.ExtensionHandlers`), the only
+record of which extension registered what.
 
 **Parameters**
 
-- `result: LoadExtensionsResult` — *(no description)*
+- `result: LoadExtensionsResult` — The load result. Its ``errors`` are not summarized; the caller surfaces them alongside.
+
+**Returns**
+
+class:`ExtensionInfo` per loaded extension, in load order.
+
+**Raises**
+
+- `RuntimeError` — An extension's api has no runner bucket, a construction bug (Fail-Early, not an empty listing).
 
 ## validate_ask_spec
 <!-- agent: yes -->
@@ -1904,26 +1613,19 @@ validate_form_spec(spec: Any) -> tuple[str, list[dict[str, Any]]]
 
 Validate + normalize a ``ui.form`` spec into ``(title, fields)`` (S66).
 
-The single source of truth for the declarative form contract, shared by
-:meth:`ExtensionUI.form` (headless path + early-fail) and the TUI's
-``ExtensionFormScreen`` (which re-validates the same raw spec), so the two can
-never disagree about what a field means.
-
-``spec`` is a plain dict ``{title?: str, fields: [field, ...]}``; each field is
-``{name: str, kind: str, label?: str, default?: Any, options?: [str, ...]}``.
-A ``select``/``multiselect`` field MUST carry a non-empty ``options`` list of
-strings. Returns the resolved title (defaults to ``"Form"``) and the normalized
-field list (``label`` defaulted to ``name``; ``default``/``options`` preserved
-when present).
-
-Fail-Early: a non-dict spec, an empty/absent ``fields`` list, a field missing a
-non-empty string ``name``, a duplicate name, an unknown ``kind``, or a
-select/multiselect without a valid ``options`` list RAISES :class:`ValueError`
-rather than silently dropping the field.
+Shared by :meth:`ExtensionUI.form` and the TUI's ``ExtensionFormScreen``.
 
 **Parameters**
 
-- `spec: Any` — *(no description)*
+- `spec: Any` — ``{title?: str, fields: [field, ...]}``; each field is ``{name: str, kind: str, label?: str, default?: Any, options?: [str, ...]}``. A ``select``/``multiselect`` field must carry non-empty string ``options``.
+
+**Returns**
+
+The title (default ``"Form"``) and the normalized fields: ``label`` defaulted to ``name``, ``default``/``options`` kept when present.
+
+**Raises**
+
+- `ValueError` — a non-dict spec, a non-string title or label, an empty or absent ``fields`` list, a field without a non-empty string ``name``, a duplicate name, an unknown ``kind``, or a select/multiselect without valid ``options``. Nothing is silently dropped.
 
 ## validate_form_values
 <!-- agent: yes -->
@@ -1961,21 +1663,16 @@ validate_panel_spec(spec: Any) -> dict[str, Any]
 
 Validate + normalize a ``ui.panel`` spec into ``{title, body, actions}`` (S68).
 
-The single source of truth for the declarative panel contract, shared by
-:meth:`ExtensionUI.panel` (headless record + early-fail) and the TUI's
-``ExtensionPanel`` widget (which re-validates the same raw spec), so the two can
-never disagree about a panel's shape.
-
-``spec`` is a plain dict ``{title?: str, <body>, actions?: [...]}`` where ``<body>``
-is EXACTLY ONE of ``table`` / ``list`` / ``text`` (see :func:`_validate_panel_body`)
-and ``actions`` is the optional command-dispatch list (see
-:func:`_validate_panel_actions`). Returns the normalized
-``{"title", "body", "actions"}`` dict (title defaults to ``"Panel"``).
-
-Fail-Early: a non-dict spec, a non-string title, ZERO or MORE-THAN-ONE body key,
-or any malformed body/action RAISES :class:`ValueError` rather than rendering a
-half-formed panel.
+Shared by :meth:`ExtensionUI.panel` and the TUI's ``ExtensionPanel`` widget.
 
 **Parameters**
 
-- `spec: Any` — *(no description)*
+- `spec: Any` — ``{title?: str, <body>, actions?: [...]}`` where ``<body>`` is EXACTLY ONE of ``table`` / ``list`` / ``text`` (see :func:`_validate_panel_body`) and ``actions`` is the optional command-dispatch list (see :func:`_validate_panel_actions`).
+
+**Returns**
+
+``{"title", "body", "actions"}``; title defaults to ``"Panel"``, actions to ``[]``.
+
+**Raises**
+
+- `ValueError` — a non-dict spec, a non-string title, zero or several body keys, or any malformed body or action.

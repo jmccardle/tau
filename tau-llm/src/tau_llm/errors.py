@@ -38,7 +38,9 @@ class ProviderHttpError(RuntimeError):
 
     Attributes:
         status_code: The HTTP status, e.g. 400 for an over-context prompt.
-        message: The server's own error text, or ``""`` when the body had none.
+        message: The server's ``error.message``. Without one, the OpenAI wire
+            uses the bounded body and the Anthropic wire the SDK's text, so it
+            is ``""`` only when there was nothing to report.
         body: The raw response body, bounded to ``MAX_ERROR_BODY_CHARS``.
         model_id: The requested model id.
         base_url: The endpoint the request went to.
@@ -56,6 +58,17 @@ class ProviderHttpError(RuntimeError):
         base_url: str,
         retry_after: float | None = None,
     ) -> None:
+        """Record the refusal; ``body`` is bounded here, so pass it whole.
+
+        Args:
+            status_code: The HTTP status.
+            message: The server's error text.
+            body: The raw response body, any length.
+            model_id: The requested model id.
+            base_url: The endpoint the request went to.
+            retry_after: Seconds the server asked for, already parsed from its
+                header; None when it named none.
+        """
         self.status_code = status_code
         self.message = message
         self.body = truncate_error_text(body)
@@ -83,6 +96,13 @@ class ProviderConnectionError(RuntimeError):
     """
 
     def __init__(self, message: str, *, model_id: str, base_url: str) -> None:
+        """Record the failure.
+
+        Args:
+            message: The provider's description of the failure; becomes ``str()``.
+            model_id: The requested model id.
+            base_url: The endpoint the request went to.
+        """
         self.model_id = model_id
         self.base_url = base_url
         super().__init__(message)
@@ -158,10 +178,18 @@ def _finite(value: Any) -> float | None:
 def http_error_from_anthropic(
     exc: BaseException, *, model_id: str, base_url: str
 ) -> ProviderHttpError | None:
-    """The ProviderHttpError for an ``anthropic.APIStatusError``; None for anything else.
+    """Translate an ``anthropic.APIStatusError`` into a :class:`ProviderHttpError`.
 
     The SDK module is looked up, not imported: an exception from an SDK that was
     never loaded cannot be one of its types.
+
+    Args:
+        exc: Any exception the SDK call raised.
+        model_id: The requested model id.
+        base_url: The endpoint the request went to.
+
+    Returns:
+        The translated error, or None when ``exc`` is not an ``APIStatusError``.
     """
     sdk = sys.modules.get("anthropic")
     if sdk is None or not isinstance(exc, sdk.APIStatusError):
@@ -182,7 +210,17 @@ def http_error_from_anthropic(
 def http_error_from_google(
     exc: BaseException, *, model_id: str, base_url: str
 ) -> ProviderHttpError | None:
-    """The ProviderHttpError for a ``google.genai.errors.APIError``; None for anything else."""
+    """Translate a ``google.genai.errors.APIError`` into a :class:`ProviderHttpError`.
+
+    Args:
+        exc: Any exception the SDK call raised.
+        model_id: The requested model id.
+        base_url: The endpoint the request went to.
+
+    Returns:
+        The translated error, or None when ``exc`` is not an ``APIError`` or
+        carries no integer status.
+    """
     sdk = sys.modules.get("google.genai.errors")
     if sdk is None or not isinstance(exc, sdk.APIError) or not isinstance(exc.code, int):
         return None

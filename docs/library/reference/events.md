@@ -298,8 +298,8 @@ Emit to all handlers on a specific channel.
 **Parameters**
 
 - `channel: str` — Channel name.
-- `*args: Any` — *(no description)*
-- `**kwargs: Any` — *(no description)*
+- `*args: Any` — Positional arguments passed to each handler.
+- `**kwargs: Any` — Keyword arguments passed to each handler.
 
 ### has_listeners
 
@@ -374,16 +374,20 @@ on_error(listener: ErrorListener) -> Callable[[], None]
 
 `tau_agent_core.events.EventBus.on_error`
 
-Register a listener for handler exceptions. Returns an unsubscribe.
+Register a listener for exceptions raised by this bus's handlers.
 
-S44 (anchor G3). A notify handler that raises is routed here instead of
-being swallowed — the session binds this to the same on_error surface the
-:class:`~tau_agent_core.extensions.runner.ExtensionRunner` uses, so a
-failing observer is as visible as a failing mutating hook.
+S44 (anchor G3). A handler that raises is routed here instead of being
+swallowed; the session binds this to the same on_error surface the
+:class:`~tau_agent_core.extensions.runner.ExtensionRunner` uses. With no
+listener bound, the error goes to stderr.
 
 **Parameters**
 
-- `listener: ErrorListener` — *(no description)*
+- `listener: ErrorListener` — Called with ``(error, channel)``.
+
+**Returns**
+
+A callable that removes ``listener``; calling it twice is harmless.
 
 ## retry_notice
 <!-- agent: yes -->
@@ -401,6 +405,10 @@ Example: ``"HTTP 503 from model 'q' at 'http://h': loading — retry 1 of 3 in 1
 **Parameters**
 
 - `event: dict[str, Any]` — A ``provider_retry`` payload: ``AgentEvent.model_dump()`` or a ``WireEvent`` dict. Reads ``error``, ``attempt``, ``max_retries`` and ``delay_seconds``.
+
+**Returns**
+
+``"<error> — retry <attempt> of <max_retries> in <delay>s"``, the delay to one decimal place.
 
 **Raises**
 

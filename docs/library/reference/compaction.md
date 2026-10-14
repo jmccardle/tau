@@ -15,8 +15,8 @@ File-operation details stored alongside a compaction (pi: CompactionDetails).
 
 **Constructor parameters**
 
-- `read_files: list[str] = list()` — *(no description)*
-- `modified_files: list[str] = list()` — *(no description)*
+- `read_files: list[str] = list()` — Sorted paths read, but not modified, in the compacted span.
+- `modified_files: list[str] = list()` — Sorted paths edited or written in the compacted span; a path both read and modified appears only here.
 
 ## CompactionError
 <!-- agent: yes -->
@@ -30,14 +30,13 @@ class CompactionError(code: str, message: str)
 Raised when a compaction cannot complete.
 
 Pythonic translation of pi's ``Result<T, CompactionError>`` error arm
-(types.ts:161). ``code`` is one of ``"aborted"``, ``"summarization_failed"``,
-or ``"invalid_session"``. Fail-Early: callers handle the failure rather than
-receive a fabricated summary.
+(types.ts:161). Fail-Early: callers handle the failure rather than receive a
+fabricated summary.
 
 **Constructor parameters**
 
-- `code: str` — *(no description)*
-- `message: str` — *(no description)*
+- `code: str` — The failure kind; stored as :attr:`code`.
+- `message: str` — Human-readable detail; becomes ``str(error)``.
 
 ## CompactionLimits
 <!-- agent: yes -->
@@ -76,13 +75,17 @@ checkable. There is no default instance and no default mode.
 
 **Constructor parameters**
 
-- `mode: PolicyMode` — *(no description)*
-- `max_turns: int | None = None` — *(no description)*
-- `max_tokens_per_turn: int | None = None` — *(no description)*
-- `summarizer_model: Model | None = None` — *(no description)*
-- `summarizer_api_key: str | None = None` — *(no description)*
-- `reserve_tokens: int = DEFAULT_COMPACTION_SETTINGS.reserve_tokens` — *(no description)*
-- `keep_recent_tokens: int = DEFAULT_COMPACTION_SETTINGS.keep_recent_tokens` — *(no description)*
+- `mode: PolicyMode` — Which of the three admissible policies this is.
+- `max_turns: int | None = None` — Bound on user turns (``prompt()`` calls). Required by ``disabled`` and ``turn_cap``; must be ``None`` otherwise.
+- `max_tokens_per_turn: int | None = None` — Bound on the context each user turn may add. Required by ``turn_cap`` only.
+- `summarizer_model: Model | None = None` — The summariser. Required by ``local_summarizer`` only.
+- `summarizer_api_key: str | None = None` — Key for ``summarizer_model``. Required by ``local_summarizer`` only; never written to the manifest.
+- `reserve_tokens: int = DEFAULT_COMPACTION_SETTINGS.reserve_tokens` — Copied into :attr:`compaction_settings`; the threshold is ``context_window - reserve_tokens``. Must be positive.
+- `keep_recent_tokens: int = DEFAULT_COMPACTION_SETTINGS.keep_recent_tokens` — Copied into :attr:`compaction_settings`.
+
+**Raises**
+
+- `CompactionPolicyError` — unknown mode, a required field unset, a field the mode does not use set, or a non-positive bound.
 
 ### admit_turn
 
@@ -94,12 +97,15 @@ admit_turn(turns_used: int) -> None
 
 Admit the ``turns_used``-th user turn, or raise (premise P2).
 
-``turns_used`` is 1-based and counts ``prompt()`` calls, which is the unit a
-scripted scenario is written in.
+A no-op for a policy without ``max_turns`` (``local_summarizer``).
 
 **Parameters**
 
-- `turns_used: int` — *(no description)*
+- `turns_used: int` — 1-based count of ``prompt()`` calls, including this one.
+
+**Raises**
+
+- `CompactionPolicyViolation` — ``turns_used > max_turns``.
 
 ### bind_to
 
@@ -111,12 +117,16 @@ bind_to(model: Model) -> None
 
 Check this declaration against the model it will run under; raise if not.
 
-Called once, at session construction. Everything checkable before a token is
-spent is checked here rather than discovered at turn 40 of a scenario run.
+Called once, at session construction, so everything checkable before a
+token is spent fails here rather than at turn 40.
 
 **Parameters**
 
-- `model: Model` — *(no description)*
+- `model: Model` — The session model; its ``context_window`` is what is checked.
+
+**Raises**
+
+- `CompactionPolicyError` — ``context_window <= reserve_tokens``; under ``local_summarizer``, a summariser window smaller than the session's; under ``turn_cap``, ``max_turns * max_tokens_per_turn`` exceeding ``context_window - reserve_tokens``.
 
 ### compaction_settings
 
@@ -138,15 +148,13 @@ disabled(*, max_turns: int) -> CompactionPolicy
 
 Compaction off, bounded by user-turn count (§16.8 option 1).
 
-``max_turns`` is not decoration: with compaction off, nothing else stops
-the conversation growing past the model window, and the bound is the whole
-of what makes this policy safe. Exceeding it raises rather than letting the
-run continue into a provider-side overflow whose cause is not recoverable
-from the artifact.
-
 **Parameters**
 
-- `max_turns: int` — *(no description)*
+- `max_turns: int` — Bound on user turns. With compaction off nothing else stops the context outgrowing the window; :meth:`admit_turn` raises past it.
+
+**Returns**
+
+A ``disabled`` policy.
 
 ### local_summarizer
 
@@ -158,18 +166,14 @@ local_summarizer(*, model: Model, api_key: str) -> CompactionPolicy
 
 Compaction on, through a separately declared model (§16.8 option 2).
 
-``api_key`` is required rather than inherited from the session: a
-summariser on the near side of a partition is a different endpoint with
-different credentials, and silently reusing the session's key is the kind
-of guess that works in the lab and fails on the board. Pass the literal the
-local server expects (many ignore it) — but pass it.
-
-The key is never written to a manifest; see :meth:`to_manifest`.
-
 **Parameters**
 
-- `model: Model` — *(no description)*
-- `api_key: str` — *(no description)*
+- `model: Model` — The summariser; :meth:`bind_to` requires its context window to be at least the session model's.
+- `api_key: str` — Required, not inherited from the session: a near-side summariser is a different endpoint with different credentials. Pass the literal the local server expects, even if it ignores it. Never written to a manifest.
+
+**Returns**
+
+A ``local_summarizer`` policy.
 
 ### observe_context
 
@@ -186,15 +190,18 @@ enabled/threshold gates, so a ``turn_cap`` run that has broken its premise
 dies here rather than making the full-window model call the policy exists to
 keep out of the measurement.
 
-Modes other than ``turn_cap`` declare no per-turn token bound, so there is
-nothing here for them to violate. That asymmetry is not an oversight: it is
-the reason ``turn_cap`` is the stronger declaration.
+Other modes declare no per-turn token bound, so this is a no-op for them —
+which is why ``turn_cap`` is the stronger declaration.
 
 **Parameters**
 
-- `turns_used: int` — *(no description)*
-- `context_tokens: int` — *(no description)*
-- `context_window: int` — *(no description)*
+- `turns_used: int` — 1-based count of user turns so far.
+- `context_tokens: int` — Current context size, in tokens.
+- `context_window: int` — The session model's context window, in tokens.
+
+**Raises**
+
+- `CompactionPolicyViolation` — ``context_tokens`` exceeds ``turns_used * max_tokens_per_turn`` (premise P1), or exceeds ``context_window - reserve_tokens`` (the claim C).
 
 ### summarizer_for
 
@@ -206,14 +213,13 @@ summarizer_for(session_model: Model) -> tuple[Model, str | None]
 
 The (model, api_key) a compaction under this policy summarises through.
 
-For every mode but ``local_summarizer`` that is the session's own model and
-the session's own key — which is exactly the shipped behaviour, restated
-rather than changed. Returning ``None`` for the key means "whatever the
-session was constructed with"; the session substitutes its own.
-
 **Parameters**
 
-- `session_model: Model` — *(no description)*
+- `session_model: Model` — The session's model, returned for every mode but ``local_summarizer``.
+
+**Returns**
+
+``(summarizer_model, summarizer_api_key)`` under ``local_summarizer``; otherwise ``(session_model, None)``, where ``None`` means the session substitutes its own key.
 
 ### to_manifest
 
@@ -225,8 +231,9 @@ to_manifest() -> dict[str, Any]
 
 The manifest fragment. JSON-serialisable, and it never carries a secret.
 
-Everything a later reader needs to know what population a number came from,
-and nothing that would make the artifact unsafe to keep.
+**Returns**
+
+``mode``; ``declared``, holding only the set fields among ``max_turns``, ``max_tokens_per_turn`` and ``summarizer_model`` (as id, provider, base_url, context_window — no key); ``compaction_enabled``; ``reserve_tokens``; ``keep_recent_tokens``.
 
 ### turn_cap
 
@@ -238,15 +245,18 @@ turn_cap(*, max_turns: int, max_tokens_per_turn: int) -> CompactionPolicy
 
 Compaction as shipped, under a budget proven to keep it out of reach.
 
-See the module docstring for the proof and for which half of it is checked
-where. Both numbers are the caller's to supply: this module will not invent
-a per-turn token bound, because an invented bound turns the proof back into
-the estimate §16.8 refuses.
+See the module docstring for the proof and where each half is checked. No
+per-turn bound is invented here: that would turn the proof back into the
+estimate §16.8 refuses.
 
 **Parameters**
 
-- `max_turns: int` — *(no description)*
-- `max_tokens_per_turn: int` — *(no description)*
+- `max_turns: int` — Bound on user turns, enforced by :meth:`admit_turn`.
+- `max_tokens_per_turn: int` — Bound on context growth per user turn, enforced by :meth:`observe_context`.
+
+**Returns**
+
+A ``turn_cap`` policy; :meth:`bind_to` checks the budget closes.
 
 ## CompactionPolicyError
 <!-- agent: yes -->
@@ -285,17 +295,19 @@ class CompactionPreparation(first_kept_entry_id: str, messages_to_summarize: lis
 
 Prepared inputs for a compaction run (pi: CompactionPreparation).
 
+Built by :func:`prepare_compaction`; consumed by :func:`compact`.
+
 **Constructor parameters**
 
-- `first_kept_entry_id: str` — *(no description)*
-- `messages_to_summarize: list[dict[str, Any]]` — *(no description)*
-- `turn_prefix_messages: list[dict[str, Any]]` — *(no description)*
-- `is_split_turn: bool` — *(no description)*
-- `tokens_before: int` — *(no description)*
-- `file_ops: FileOperations` — *(no description)*
-- `settings: CompactionSettings` — *(no description)*
-- `previous_summary: str | None = None` — *(no description)*
-- `compacted_entry_ids: list[str] = list()` — *(no description)*
+- `first_kept_entry_id: str` — Id of the oldest entry left uncompacted.
+- `messages_to_summarize: list[dict[str, Any]]` — History messages before the kept span (or before the split turn's start), excluding prior compaction entries.
+- `turn_prefix_messages: list[dict[str, Any]]` — On a split turn, the turn's messages before the cut; empty otherwise.
+- `is_split_turn: bool` — Whether the cut falls inside a turn rather than at a user message.
+- `tokens_before: int` — Estimated context tokens of the whole path.
+- `file_ops: FileOperations` — File operations extracted from both message lists.
+- `settings: CompactionSettings` — The settings the cut was chosen with; ``reserve_tokens`` sizes the summary budget.
+- `previous_summary: str | None = None` — The newest prior compaction's summary, to update rather than replace; None when there is none.
+- `compacted_entry_ids: list[str] = list()` — Ids of every entry from the previous kept boundary up to the cut, oldest first.
 
 ## CompactionResult
 <!-- agent: yes -->
@@ -314,13 +326,13 @@ these in its persistence layer; τ threads them through so
 
 **Constructor parameters**
 
-- `summary: str` — *(no description)*
-- `first_kept_entry_id: str` — *(no description)*
-- `tokens_before: int` — *(no description)*
-- `details: CompactionDetails | None = None` — *(no description)*
-- `compacted_entry_ids: list[str] = list()` — *(no description)*
-- `tokens_saved: int = 0` — *(no description)*
-- `usage: dict[str, int] = zero_usage()` — *(no description)*
+- `summary: str` — The summary text, with the file-operation tags appended.
+- `first_kept_entry_id: str` — Id of the oldest entry left uncompacted.
+- `tokens_before: int` — Estimated context tokens of the whole path before compaction.
+- `details: CompactionDetails | None = None` — The read and modified file lists.
+- `compacted_entry_ids: list[str] = list()` — Ids of the entries the summary replaces, oldest first.
+- `tokens_saved: int = 0` — Estimated tokens of the replaced messages minus those of the summary message; negative if the summary is the larger.
+- `usage: dict[str, int] = zero_usage()` — What the summarization call(s) cost, summed over both calls on a split turn.
 
 ## CompactionSettings
 <!-- agent: yes -->
@@ -375,12 +387,13 @@ calculate_context_tokens(usage: dict[str, Any]) -> int
 
 Total context tokens from a Usage dict (pi: calculateContextTokens).
 
-Prefers the provider-reported ``total_tokens``; falls back to the sum of the
-component counts when total is absent/zero.
-
 **Parameters**
 
-- `usage: dict[str, Any]` — *(no description)*
+- `usage: dict[str, Any]` — A Usage dict; missing or ``None`` counts read as 0.
+
+**Returns**
+
+``total_tokens`` when non-zero, else the sum of input, output, cache-read and cache-write tokens.
 
 ## compact
 <!-- agent: yes -->
@@ -396,21 +409,22 @@ Generate the compaction summary from prepared history (pi: compact).
 On a split turn, the history and the turn prefix are summarized concurrently
 and stitched together (pi uses ``Promise.all``).
 
-``on_text_delta`` watches the HISTORY summary only, even on a split turn.
-The two completions run concurrently, so feeding both into one sink would
-interleave two documents into unreadable text; the prefix summary is stitched
-on after both finish and arrives in the caller's final result instead. Nothing
-is hidden — the whole summary is returned either way — but what the reader
-watches arrive is one document rather than two shuffled together.
-
 **Parameters**
 
-- `preparation: CompactionPreparation` — *(no description)*
-- `model: Model` — *(no description)*
-- `api_key: str | None` — *(no description)*
-- `custom_instructions: str | None = None` — *(no description)*
-- `thinking_level: str | None = None` — *(no description)*
-- `on_text_delta: TextDeltaSink | None = None` — *(no description)*
+- `preparation: CompactionPreparation` — From :func:`prepare_compaction`.
+- `model: Model` — The summarizing model.
+- `api_key: str | None` — Passed to the provider when truthy.
+- `custom_instructions: str | None = None` — Appended to the history prompt as "Additional focus"; not used for the turn-prefix summary.
+- `thinking_level: str | None = None` — Sent as ``reasoning`` when the model reasons and it is not ``"off"``.
+- `on_text_delta: TextDeltaSink | None = None` — Streams the HISTORY summary only, even on a split turn: two concurrent completions in one sink would interleave. The prefix summary arrives only in the result.
+
+**Returns**
+
+The result, with the file-operation tags appended to ``summary``.
+
+**Raises**
+
+- `CompactionError` — ``"invalid_session"`` when ``first_kept_entry_id`` is empty; ``"aborted"`` or ``"summarization_failed"`` from either completion.
 
 ## compaction_limits
 <!-- agent: yes -->
@@ -427,17 +441,20 @@ By default the hard limit is ``context_window - reserve_tokens`` — the margin
 a compaction needs for its own summarization call and output — and the soft
 limit sits at ``soft_limit_ratio`` of that, so an end-of-turn compaction fires
 with room to spare. Either can be pinned outright with ``hard_limit_tokens`` /
-``soft_limit_tokens``, which is how a test asks for a 20k ceiling on a 172k
-model.
+``soft_limit_tokens``.
 
 **Parameters**
 
-- `context_window: int` — *(no description)*
-- `settings: CompactionSettings` — *(no description)*
+- `context_window: int` — The model's context window, in tokens.
+- `settings: CompactionSettings` — Supplies the reserve, the soft ratio and any pinned limits.
+
+**Returns**
+
+The resolved limits, with ``soft <= hard <= context_window``.
 
 **Raises**
 
-- `ValueError` — when the resolved limits are unusable — non-positive, out of order, or past the window. Fail-Early: a hard limit below the soft limit would make the mid-turn check fire before the end-of-turn one and compact on every single tool call.
+- `ValueError` — a non-positive window, a ``soft_limit_ratio`` outside (0, 1], or resolved limits that are non-positive, out of order, or past the window. A hard limit below the soft one would compact on every tool call.
 
 ## count_message
 <!-- agent: yes -->
@@ -450,21 +467,17 @@ count_message(message: dict[str, Any], counter: TextCounter | None = None) -> To
 
 Tokens one message dict costs, labelled with how the number was reached.
 
-``counter`` is any :class:`~tau_llm.tokens.TextCounter`: a
-:class:`~tau_llm.tokens.TokenizerCounter` gives an exact count of the text, a
-:class:`~tau_llm.tokens.CharClassCounter` (the default) gives a labelled
-estimate. Neither includes the chat template — see
+Neither counter includes the chat template — see
 :func:`estimate_context_tokens`, which is where that gap is closed.
-
-An image is priced at :data:`ESTIMATED_IMAGE_TOKENS`, which is an assumption
-and not a measurement: providers tile images differently and τ has not
-measured any of them. The returned count says ``exact=False`` whenever an
-image is in it, even behind an exact tokenizer.
 
 **Parameters**
 
-- `message: dict[str, Any]` — *(no description)*
-- `counter: TextCounter | None = None` — *(no description)*
+- `message: dict[str, Any]` — A message dict; its payload is :func:`message_payload`.
+- `counter: TextCounter | None = None` — A :class:`~tau_llm.tokens.TokenizerCounter` for an exact text count; None uses a :class:`~tau_llm.tokens.CharClassCounter` estimate.
+
+**Returns**
+
+The count; ``ZERO_TOKENS`` for an empty payload. Each image adds data:`ESTIMATED_IMAGE_TOKENS`, an unmeasured assumption, so any count containing an image has ``exact=False`` even behind a tokenizer.
 
 ## estimate_context_tokens
 <!-- agent: yes -->
@@ -510,28 +523,16 @@ estimate_span_tokens(entries: list[dict[str, Any]]) -> int
 
 Estimated context tokens a SPAN of active-path entries contributes.
 
-The one spelling of "what did this span cost the context", so the number a
-splice anchor RECORDS (``coveredTokens`` on a ``compaction``/``elide`` entry —
-TREE-BROWSER-AS-EDITOR.md §8.1, §8.2) is produced by the same arithmetic as the
-``tokensBefore`` it sits beside (``prepare_compaction``, :func:`estimate_tokens`
-via :func:`estimate_context_tokens`). Two spellings would let a browser row show
-"folds 12 entries, 8k tokens" against a ``tokensBefore`` computed on a different
-basis, and nothing would report the mismatch.
-
-Public because the value must be named at the CALL SITE: §11.3 makes the
-provenance a required keyword argument on the appenders precisely so a caller
-that cannot compute it fails there (``AgentSession._perform_compaction`` and
-``tree_ops.elide_span`` / ``commit_branch``). Computing it inside the five ``SessionLog``
-implementations instead would put this arithmetic — and the entry→message
-flattening under it — in five places.
-
-Non-message entries contribute nothing, exactly as they contribute nothing to
-model input: an ``agent_spec``/``customEntry``/``navigate`` node in the span is
-counted by ``coveredEntries`` and priced at zero here, which is the truth.
+The ``coveredTokens`` a splice anchor records, computed on the same basis
+as the ``tokensBefore`` beside it (TREE-BROWSER-AS-EDITOR.md §8.1, §11.3).
 
 **Parameters**
 
-- `entries: list[dict[str, Any]]` — *(no description)*
+- `entries: list[dict[str, Any]]` — The span, oldest first. ``message``/``customMessage`` entries count as their message; a ``compaction`` entry counts as its summary message; any other entry counts zero, as it costs model input nothing.
+
+**Returns**
+
+func:`estimate_context_tokens` total over the flattened span.
 
 ## estimate_tokens
 <!-- agent: yes -->
@@ -544,13 +545,16 @@ estimate_tokens(message: dict[str, Any]) -> int
 
 Estimated token count for one message dict, as a bare int.
 
-The count-only view of :func:`count_message` for the several call sites that
-display a size and have no use for its provenance. Anything DECIDING on the
-number should call :func:`count_message` and read ``exact``.
+For call sites that display a size. Anything DECIDING on the number should
+call :func:`count_message` and read ``exact``.
 
 **Parameters**
 
-- `message: dict[str, Any]` — *(no description)*
+- `message: dict[str, Any]` — A message dict.
+
+**Returns**
+
+``count_message(message).tokens``, with the default counter.
 
 ## is_compaction_summary
 <!-- agent: yes -->
@@ -563,13 +567,16 @@ is_compaction_summary(message: dict[str, Any]) -> bool
 
 Whether this message is a compaction summary re-entering the context.
 
-Recognised by the marker :func:`_summary_context_message` writes, which is
-why both live here: a second spelling of the prefix would make this silently
-stop matching the thing it is about.
+Recognised by the marker :func:`_summary_context_message` writes; both live
+here so the prefix has one spelling.
 
 **Parameters**
 
-- `message: dict[str, Any]` — *(no description)*
+- `message: dict[str, Any]` — A message dict.
+
+**Returns**
+
+True when it is a user message whose first content block is text starting with :data:`COMPACTION_SUMMARY_PREFIX`.
 
 ## message_payload
 <!-- agent: yes -->
@@ -583,12 +590,15 @@ message_payload(message: dict[str, Any]) -> tuple[str, int]
 The ``(text, image_count)`` of one message dict, as the wire carries it.
 
 The single spelling of "what is in this message that costs tokens", shared by
-:func:`count_message` and by anything measuring a transcript. An unknown role
-contributes nothing, which is the truth: the wire has no place to put it.
+:func:`count_message` and by anything measuring a transcript.
 
 **Parameters**
 
-- `message: dict[str, Any]` — *(no description)*
+- `message: dict[str, Any]` — A message dict with ``role`` and ``content``.
+
+**Returns**
+
+Text blocks (plus, for an assistant, thinking text and each tool call's name and JSON arguments) joined by newlines, and the image-block count. An unknown role gives ``("", 0)``: the wire has no place to put it.
 
 ## must_compact
 <!-- agent: yes -->
@@ -601,15 +611,18 @@ must_compact(context_tokens: int, context_window: int, settings: CompactionSetti
 
 Whether to compact NOW, mid-turn, having crossed the hard limit.
 
-The difference from :func:`should_compact` is when the caller is allowed to
-wait. A soft crossing can wait for the turn to finish; a hard crossing cannot,
-because the next request in this same turn is the one that gets refused.
+Unlike a soft crossing (:func:`should_compact`), a hard one cannot wait for
+the turn to finish: the next request in this turn is the one refused.
 
 **Parameters**
 
-- `context_tokens: int` — *(no description)*
-- `context_window: int` — *(no description)*
-- `settings: CompactionSettings` — *(no description)*
+- `context_tokens: int` — Current context size, in tokens.
+- `context_window: int` — The model's context window, in tokens.
+- `settings: CompactionSettings` — The compaction settings in force.
+
+**Returns**
+
+True when ``settings.enabled`` and ``context_tokens`` exceeds the hard limit; False when disabled or :func:`try_compaction_limits` gives None.
 
 ## policy_for_scenario
 <!-- agent: yes -->
@@ -622,15 +635,18 @@ policy_for_scenario(scenario: str, *, max_turns: int, max_tokens_per_turn: int) 
 
 Build the declared policy for a lettered scenario (§7.3-§7.7).
 
-Raises on an unknown scenario rather than falling back to anything: an
-unrecognised scenario letter is a harness bug, and the failure mode a default
-would produce is a run measured under a policy nobody chose.
+An unknown letter raises rather than falling back: a default would be a run
+measured under a policy nobody chose.
 
 **Parameters**
 
-- `scenario: str` — the scenario letter, ``"A"``-``"E"``.
+- `scenario: str` — the scenario letter, ``"A"``-``"E"``; whitespace and case are ignored.
 - `max_turns: int` — the run's declared bound on user turns.
 - `max_tokens_per_turn: int` — the run's declared bound on per-turn context growth.
+
+**Returns**
+
+A ``turn_cap`` policy, the only mode this builder constructs.
 
 **Raises**
 
@@ -648,16 +664,17 @@ prepare_compaction(path_entries: list[dict[str, Any]], settings: CompactionSetti
 Prepare active-path entries for compaction, or None when inapplicable.
 
 Faithful port of pi's prepareCompaction (compaction.ts:542), reading τ entry
-dicts. Returns None when there is nothing to compact: an empty path, a path
-that already ends in a compaction entry, or — τ's one divergence from pi
-here, see the comment at the guard — a cut that would remove no message from
-the context at all, which is what the shipped ``keep_recent_tokens`` produces
-for every conversation smaller than it.
+dicts. Only the span from the newest prior compaction's first kept entry
+onward is eligible to be cut.
 
 **Parameters**
 
-- `path_entries: list[dict[str, Any]]` — *(no description)*
-- `settings: CompactionSettings` — *(no description)*
+- `path_entries: list[dict[str, Any]]` — The active path's entries, oldest first.
+- `settings: CompactionSettings` — ``keep_recent_tokens`` chooses the cut.
+
+**Returns**
+
+The preparation, or None when there is nothing to compact: an empty path, a path ending in a compaction entry, or — τ's one divergence from pi — a cut that would remove no message, which is what every conversation smaller than ``keep_recent_tokens`` produces.
 
 **Raises**
 
@@ -676,9 +693,13 @@ Whether to compact at the END of a turn, having crossed the soft limit.
 
 **Parameters**
 
-- `context_tokens: int` — *(no description)*
-- `context_window: int` — *(no description)*
-- `settings: CompactionSettings` — *(no description)*
+- `context_tokens: int` — Current context size, in tokens.
+- `context_window: int` — The model's context window, in tokens.
+- `settings: CompactionSettings` — The compaction settings in force.
+
+**Returns**
+
+True when ``settings.enabled`` and ``context_tokens`` exceeds the soft limit; False when disabled or :func:`try_compaction_limits` gives None.
 
 ## try_compaction_limits
 <!-- agent: yes -->
@@ -691,16 +712,16 @@ try_compaction_limits(context_window: int, settings: CompactionSettings) -> Comp
 
 :func:`compaction_limits`, or None when this window cannot carry the margins.
 
-None is a real state and not a swallowed error: a model whose whole window is
-smaller than the room a compaction needs to run cannot be auto-compacted at
-any threshold, and the honest answer to "should we compact" there is "this
-setting does not apply", not a number. :meth:`AgentSession._maybe_auto_compact`
-says the same thing in its guard.
-
-Use :func:`compaction_limits` wherever the caller has already established that
-the window is workable and a bad pair is a bug worth raising on.
+None is a real state, not a swallowed error: a window smaller than the room a
+compaction needs cannot be auto-compacted at any threshold.
+:meth:`AgentSession._maybe_auto_compact` says the same in its guard. Use
+:func:`compaction_limits` where a bad pair is a bug worth raising on.
 
 **Parameters**
 
-- `context_window: int` — *(no description)*
-- `settings: CompactionSettings` — *(no description)*
+- `context_window: int` — The model's context window, in tokens.
+- `settings: CompactionSettings` — As for :func:`compaction_limits`.
+
+**Returns**
+
+The limits, or None wherever :func:`compaction_limits` would raise ``ValueError`` — including for a bad ``soft_limit_ratio`` or pinned limit.

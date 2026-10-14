@@ -68,15 +68,34 @@ class RetryPolicy:
                 raise ValueError(f"{name} must be >= 0, got {getattr(self, name)}")
 
     def retryable(self, exc: BaseException) -> bool:
-        """Whether ``exc`` is a failure this policy re-sends for."""
+        """Whether this policy re-sends after ``exc``.
+
+        Args:
+            exc: What the attempt raised before producing any event.
+
+        Returns:
+            True for a :class:`ProviderHttpError` whose status is in ``statuses``,
+            and for any :class:`ProviderConnectionError`.
+        """
         if isinstance(exc, ProviderHttpError):
             return exc.status_code in self.statuses
         return isinstance(exc, ProviderConnectionError)
 
     def delay(self, retry: int, exc: BaseException, rng: Callable[[], float]) -> float | None:
-        """Seconds to wait before retry number ``retry`` (from 1); None means do not retry.
+        """Compute the wait before one retry.
 
-        A ``Retry-After`` replaces the backoff. One over ``max_retry_after`` is None.
+        A ``Retry-After`` replaces the backoff and gets no jitter.
+
+        Args:
+            retry: Which retry this is, counting from 1.
+            exc: The failure being retried; its ``retry_after`` is read when it
+                is a :class:`ProviderHttpError`.
+            rng: Returns a float in [0, 1) that scales the jitter.
+
+        Returns:
+            Seconds to wait: ``min(max_delay, base_delay * 2**(retry-1))``
+            stretched by up to ``jitter``, or the server's ``Retry-After``. None
+            when that ``Retry-After`` exceeds ``max_retry_after``: do not retry.
         """
         asked = exc.retry_after if isinstance(exc, ProviderHttpError) else None
         if asked is not None:

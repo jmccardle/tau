@@ -43,7 +43,15 @@ _UNSET = _Unset()
 
 @agent_facing(topic="messages")
 def is_valid_thinking_level(level: str) -> bool:
-    """True if ``level`` is one of the known levels ("off".."xhigh")."""
+    """Whether ``level`` names a known thinking level.
+
+    Args:
+        level: Any string.
+
+    Returns:
+        True for ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``, ``"high"``
+        and ``"xhigh"``.
+    """
     return level in EXTENDED_THINKING_LEVELS
 
 
@@ -54,8 +62,13 @@ def get_supported_thinking_levels(model: Model) -> list[ModelThinkingLevel]:
     A non-reasoning model supports only ``["off"]``. Otherwise every level is
     supported except those the ``thinking_level_map`` explicitly nulls out, with
     one special case: ``"xhigh"`` is available only when the map provides an
-    entry for it (it is a non-standard extension). Mirrors pi
-    ``getSupportedThinkingLevels`` (models.ts:53-63).
+    entry for it (it is a non-standard extension).
+
+    Args:
+        model: Reads ``reasoning`` and ``thinking_level_map``.
+
+    Returns:
+        The supported levels in :data:`EXTENDED_THINKING_LEVELS` order.
     """
     if not model.reasoning:
         return ["off"]
@@ -79,9 +92,16 @@ def clamp_thinking_level(model: Model, level: ModelThinkingLevel) -> ModelThinki
     """Clamp ``level`` to the nearest level ``model`` actually supports.
 
     If the exact level is supported it is returned unchanged. Otherwise search
-    upward (more effort) first, then downward, falling back to the lowest
-    supported level (``"off"`` for a non-reasoning model). Mirrors pi
-    ``clampThinkingLevel`` (models.ts:64-83).
+    upward (more effort) first, then downward.
+
+    Args:
+        model: The model whose supported levels bound the result.
+        level: The requested level. An unknown string clamps to the lowest
+            supported level.
+
+    Returns:
+        A level from :func:`get_supported_thinking_levels`; ``"off"`` for a
+        non-reasoning model.
     """
     available = get_supported_thinking_levels(model)
     if level in available:

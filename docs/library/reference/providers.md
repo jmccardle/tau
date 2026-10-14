@@ -120,6 +120,10 @@ __aiter__() -> 'AssistantMessageEventStream'
 
 Return self as the async iterator.
 
+**Returns**
+
+This stream; events come from :meth:`__anext__`.
+
 ### __anext__
 
 ```python
@@ -179,7 +183,8 @@ The fully accumulated AssistantMessage.
 
 **Raises**
 
-- `Exception` — If the stream produced an ErrorEvent. The ORIGINAL exception is re-raised with its type intact (e.g. ``ConstraintViolation``, which carries the offending output), not flattened to a bare ``Exception``.
+- `Exception` — The stream failed. An exception the provider stream raised is re-raised with its type intact (``ProviderHttpError``, ``ConstraintViolation``); an ErrorEvent the provider yielded raises a bare ``Exception`` carrying its message.
+- `RuntimeError` — The stream ended without a final message.
 
 ## Compat
 <!-- agent: yes -->
@@ -198,19 +203,22 @@ Set per-model in ``~/.tau/config.json`` (``models.<name>.compat``).
 
 `tau_llm.compat.Compat.max_tokens_field: MaxTokensField | None`
 
-*No description. This object is marked but undocumented.*
+Which request field carries the completion-token cap.
 
 ### supports_usage_in_streaming
 
 `tau_llm.compat.Compat.supports_usage_in_streaming: bool | None`
 
-*No description. This object is marked but undocumented.*
+Whether to send
+``stream_options.include_usage`` on a streaming request.
 
 ### tool_call_schema
 
 `tau_llm.compat.Compat.tool_call_schema: ToolCallSchema | None`
 
-*No description. This object is marked but undocumented.*
+``"anthropic"`` translates tool calls an
+OpenAI-compatible gateway returns in the Anthropic shape. Never
+detected; only an operator can state it.
 
 ## DoneEvent
 <!-- agent: yes -->
@@ -290,13 +298,15 @@ idempotent — the pool may close an instance that never issued a request.
 
 `tau_llm.providers.base.Provider.id: str`
 
-*No description. This object is marked but undocumented.*
+Vendor id (``"openai"``, ``"groq"``), matching ``Model.provider``.
+Empty on the class; the :class:`ApiFactory` stamps it after construction.
 
 ### name
 
 `tau_llm.providers.base.Provider.name: str`
 
-*No description. This object is marked but undocumented.*
+Human-readable vendor label (``"OpenAI"``, ``"Groq"``). Same
+stamping rule as ``id``.
 
 ### stream_chat
 
@@ -341,7 +351,7 @@ of these: the server may still be working on the request.
 
 **Constructor parameters**
 
-- `message: str` — *(no description)*
+- `message: str` — The provider's description of the failure; becomes ``str()``.
 - `model_id: str` — The requested model id.
 - `base_url: str` — The endpoint the request went to.
 
@@ -363,7 +373,7 @@ Every provider raises this for an HTTP refusal, and
 **Constructor parameters**
 
 - `status_code: int` — The HTTP status, e.g. 400 for an over-context prompt.
-- `message: str` — The server's own error text, or ``""`` when the body had none.
+- `message: str` — The server's ``error.message``. Without one, the OpenAI wire uses the bounded body and the Anthropic wire the SDK's text, so it is ``""`` only when there was nothing to report.
 - `body: str` — The raw response body, bounded to ``MAX_ERROR_BODY_CHARS``.
 - `model_id: str` — The requested model id.
 - `base_url: str` — The endpoint the request went to.
@@ -400,7 +410,11 @@ resolve_api_key() -> str | None
 
 `tau_llm.providers.base.ProviderSpec.resolve_api_key`
 
-First non-empty value among ``api_key_env``, or None if none is set.
+Look up this vendor's credential in the environment.
+
+**Returns**
+
+The first non-empty value among ``api_key_env``, in order, or None when none is set (including when ``api_key_env`` is empty).
 
 ## ResolvedCompat
 <!-- agent: yes -->
@@ -413,19 +427,19 @@ First non-empty value among ``api_key_env``, or None if none is set.
 
 `tau_llm.compat.ResolvedCompat.max_tokens_field: MaxTokensField`
 
-*No description. This object is marked but undocumented.*
+As :attr:`Compat.max_tokens_field`.
 
 ### supports_usage_in_streaming
 
 `tau_llm.compat.ResolvedCompat.supports_usage_in_streaming: bool`
 
-*No description. This object is marked but undocumented.*
+As :attr:`Compat.supports_usage_in_streaming`.
 
 ### tool_call_schema
 
 `tau_llm.compat.ResolvedCompat.tool_call_schema: ToolCallSchema`
 
-*No description. This object is marked but undocumented.*
+As :attr:`Compat.tool_call_schema`.
 
 ## RetryEvent
 <!-- agent: yes -->
@@ -481,15 +495,19 @@ delay(retry: int, exc: BaseException, rng: Callable[[], float]) -> float | None
 
 `tau_llm.retry.RetryPolicy.delay`
 
-Seconds to wait before retry number ``retry`` (from 1); None means do not retry.
+Compute the wait before one retry.
 
-A ``Retry-After`` replaces the backoff. One over ``max_retry_after`` is None.
+A ``Retry-After`` replaces the backoff and gets no jitter.
 
 **Parameters**
 
-- `retry: int` — *(no description)*
-- `exc: BaseException` — *(no description)*
-- `rng: Callable[[], float]` — *(no description)*
+- `retry: int` — Which retry this is, counting from 1.
+- `exc: BaseException` — The failure being retried; its ``retry_after`` is read when it is a :class:`ProviderHttpError`.
+- `rng: Callable[[], float]` — Returns a float in [0, 1) that scales the jitter.
+
+**Returns**
+
+Seconds to wait: ``min(max_delay, base_delay * 2**(retry-1))`` stretched by up to ``jitter``, or the server's ``Retry-After``. None when that ``Retry-After`` exceeds ``max_retry_after``: do not retry.
 
 ### retryable
 
@@ -499,11 +517,15 @@ retryable(exc: BaseException) -> bool
 
 `tau_llm.retry.RetryPolicy.retryable`
 
-Whether ``exc`` is a failure this policy re-sends for.
+Whether this policy re-sends after ``exc``.
 
 **Parameters**
 
-- `exc: BaseException` — *(no description)*
+- `exc: BaseException` — What the attempt raised before producing any event.
+
+**Returns**
+
+True for a :class:`ProviderHttpError` whose status is in ``statuses``, and for any :class:`ProviderConnectionError`.
 
 ## StreamEventStream
 <!-- agent: yes -->
@@ -526,7 +548,11 @@ __aiter__() -> AsyncIterator[Any]
 
 `tau_llm.providers.base.StreamEventStream.__aiter__`
 
-*No description. This object is marked but undocumented.*
+Iterate the provider's events.
+
+**Returns**
+
+An async iterator of typed streaming events that ends after the terminal ``DoneEvent`` or ``ErrorEvent``.
 
 ## TextDeltaEvent
 <!-- agent: yes -->
@@ -692,11 +718,15 @@ get_api_factory(api: str) -> ApiFactory
 
 `tau_llm.providers.base.get_api_factory`
 
-The factory for ``api``.
+Look up the client factory for a wire protocol.
 
 **Parameters**
 
-- `api: str` — *(no description)*
+- `api: str` — Wire-protocol id, as in ``Model.api``.
+
+**Returns**
+
+The factory registered under ``api``.
 
 **Raises**
 
@@ -711,15 +741,15 @@ get_provider_spec(provider_id: str) -> ProviderSpec | None
 
 `tau_llm.providers.base.get_provider_spec`
 
-The vendor's spec, or None if it was never registered.
-
-None is not an error: an unregistered vendor id is a free-form label on a
-``Model`` that already carries its own endpoint. Only a model whose ``api``
-is unknown cannot be served.
+Look up a vendor's defaults.
 
 **Parameters**
 
-- `provider_id: str` — *(no description)*
+- `provider_id: str` — Vendor id, as in ``Model.provider``.
+
+**Returns**
+
+The registered spec, or None if that vendor was never registered. None is not an error: an unregistered vendor id is a free-form label on a ``Model`` that carries its own endpoint; only an unknown ``api`` cannot be served.
 
 ## register_api
 <!-- agent: yes -->
@@ -771,6 +801,10 @@ registered_apis() -> tuple[str, ...]
 
 `tau_llm.providers.base.registered_apis`
 
+List the registered wire protocols.
+
+**Returns**
+
 Every registered wire-protocol id, sorted.
 
 ## registered_providers
@@ -781,6 +815,10 @@ registered_providers() -> tuple[str, ...]
 ```
 
 `tau_llm.providers.base.registered_providers`
+
+List the registered vendors.
+
+**Returns**
 
 Every registered vendor id, sorted.
 
@@ -798,11 +836,14 @@ The compat τ will actually use for ``model``.
 Detection first, then the operator's stated :class:`Compat` over the top,
 field by field — an unset field falls through to the detected value rather
 than to a type default, so stating one quirk never silently resets another.
-Mirrors pi's ``getCompat`` (``openai-completions.ts:1631``).
 
 **Parameters**
 
-- `model: Model` — *(no description)*
+- `model: Model` — The model whose ``base_url`` is detected and whose ``compat`` is applied over the result.
+
+**Returns**
+
+The merged compat; exactly the detected one when ``model.compat`` is ``None``.
 
 ## split_tool_result_content
 <!-- agent: yes -->
@@ -885,7 +926,7 @@ Remove a wire-protocol registration.
 
 **Parameters**
 
-- `api: str` — *(no description)*
+- `api: str` — Wire-protocol id previously passed to :func:`register_api`.
 
 **Raises**
 
@@ -904,7 +945,7 @@ Remove a vendor registration.
 
 **Parameters**
 
-- `provider_id: str` — *(no description)*
+- `provider_id: str` — Vendor id, as in ``ProviderSpec.id``.
 
 **Raises**
 

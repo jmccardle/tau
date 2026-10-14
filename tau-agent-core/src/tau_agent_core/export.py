@@ -76,11 +76,19 @@ class ExportConfig:
         return cls(**data)
 
     def is_markdown(self) -> bool:
-        """Check if this config is for markdown export."""
+        """Whether ``format`` is ``"markdown"``.
+
+        Returns:
+            True for markdown export.
+        """
         return self.format == "markdown"
 
     def is_html(self) -> bool:
-        """Check if this config is for HTML export."""
+        """Whether ``format`` is ``"html"``.
+
+        Returns:
+            True for HTML export.
+        """
         return self.format == "html"
 
     def __repr__(self) -> str:

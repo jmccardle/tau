@@ -49,7 +49,11 @@ is_html() -> bool
 
 `tau_agent_core.export.ExportConfig.is_html`
 
-Check if this config is for HTML export.
+Whether ``format`` is ``"html"``.
+
+**Returns**
+
+True for HTML export.
 
 ### is_markdown
 
@@ -59,7 +63,11 @@ is_markdown() -> bool
 
 `tau_agent_core.export.ExportConfig.is_markdown`
 
-Check if this config is for markdown export.
+Whether ``format`` is ``"markdown"``.
+
+**Returns**
+
+True for markdown export.
 
 ### to_dict
 
