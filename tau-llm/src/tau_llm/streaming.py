@@ -113,11 +113,15 @@ class DoneEvent:
         type: Always "done".
         final: The fully accumulated AssistantMessage.
         usage: Token usage information for the response.
+        response_headers: The HTTP response headers, names lowercased, e.g. a
+            vendor's rate-limit counters; None when the provider did not capture
+            them. Not persisted on ``final``. See docs/RESPONSE-HEADERS.md.
     """
 
     final: AssistantMessage
     usage: Usage
     type: Literal["done"] = "done"
+    response_headers: dict[str, str] | None = None
 
 
 @agent_facing(topic="providers")
@@ -170,6 +174,7 @@ class AssistantMessageEventStream:
         _done: Whether the stream has completed.
         _final: The final AssistantMessage (set on DoneEvent).
         _usage: Token usage information.
+        _response_headers: The terminal DoneEvent's response headers.
         _error: Error message if an error occurred.
         _event_queue: Internal asyncio.Queue for event distribution.
         _collector_task: Background coroutine processing the provider stream.
@@ -192,6 +197,7 @@ class AssistantMessageEventStream:
         self._done = False
         self._final: AssistantMessage | None = None
         self._usage = Usage()
+        self._response_headers: dict[str, str] | None = None
         self._error: str | None = None
         self._error_exc: BaseException | None = None
         self._event_queue: asyncio.Queue[Any] = asyncio.Queue()
@@ -284,6 +290,7 @@ class AssistantMessageEventStream:
         if chunk.type == "done":
             self._final = chunk.final
             self._usage = chunk.usage
+            self._response_headers = chunk.response_headers
             self._done = True
         elif chunk.type == "error":
             self._error = chunk.message
@@ -325,6 +332,11 @@ class AssistantMessageEventStream:
             raise RuntimeError("Stream completed without producing a final AssistantMessage")
         return self._final
 
+    @property
+    def response_headers(self) -> dict[str, str] | None:
+        """The finished response's headers, as on :class:`DoneEvent`; None before it or uncaptured."""
+        return self._response_headers
+
     async def _wait_for_done(self) -> None:
         """Wait for the DoneEvent from the internal queue.
 
@@ -339,6 +351,7 @@ class AssistantMessageEventStream:
                 self._done = True
                 self._final = event.final
                 self._usage = event.usage
+                self._response_headers = event.response_headers
                 return
             elif event.type == "error":
                 self._error = event.message

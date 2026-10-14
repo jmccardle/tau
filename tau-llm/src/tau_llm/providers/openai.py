@@ -34,7 +34,7 @@ import httpx
 from tau_llm import grammar as grammar_mod
 from tau_llm.compat import ResolvedCompat, resolve_compat
 from tau_llm.constraints import ConstraintViolation
-from tau_llm.errors import ProviderHttpError
+from tau_llm.errors import ProviderHttpError, response_headers_of
 from tau_llm.errors import truncate_error_text as _truncate_error_text
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.json_parse import (
@@ -186,6 +186,7 @@ class _TransportState:
     saw_done: bool = False
     # The transport already yielded an ErrorEvent and there is nothing to finalize.
     failed: bool = False
+    response_headers: dict[str, str] | None = None
 
 
 _RESERVED_BODY_KEYS = frozenset({"model", "messages", "stream", "stream_options", "tools"})
@@ -1621,6 +1622,7 @@ class OpenAICompletionsProvider(Provider):
                     type="done",
                     final=final_msg,
                     usage=usage_obj,
+                    response_headers=state.response_headers,
                 )
                 return
 
@@ -1666,6 +1668,7 @@ class OpenAICompletionsProvider(Provider):
             body=body,
             model_id=model.id,
             base_url=self.base_url,
+            headers=response_headers_of(response),
         )
 
     def _apply_tool_call_schema(self, tc: dict, compat: ResolvedCompat, model: Model) -> dict:
@@ -1700,6 +1703,7 @@ class OpenAICompletionsProvider(Provider):
             if response.status_code != 200:
                 await response.aread()
                 raise self._http_error_from_response(response, model)
+            state.response_headers = response_headers_of(response)
 
             # Read SSE lines as they arrive (no full-body buffering).
             async for line in response.aiter_lines():
@@ -1853,6 +1857,7 @@ class OpenAICompletionsProvider(Provider):
         response = await client.post("/chat/completions", json=payload, timeout=request_timeout)
         if response.status_code != 200:
             raise self._http_error_from_response(response, model)
+        state.response_headers = response_headers_of(response)
 
         body = response.json()
         if not isinstance(body, dict):

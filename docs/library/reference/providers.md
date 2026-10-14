@@ -163,6 +163,12 @@ which the provider polls between chunks. Reach for that, not this.
 
 The partial state is preserved either way.
 
+### response_headers
+
+`tau_llm.streaming.AssistantMessageEventStream.response_headers: dict[str, str] | None`
+
+The finished response's headers, as on :class:`DoneEvent`; None before it or uncaptured.
+
 ### result
 
 ```python
@@ -216,7 +222,7 @@ Set per-model in ``~/.tau/config.json`` (``models.<name>.compat``).
 <!-- agent: yes -->
 
 ```python
-class DoneEvent(final: AssistantMessage, usage: Usage, type: Literal['done'] = 'done')
+class DoneEvent(final: AssistantMessage, usage: Usage, type: Literal['done'] = 'done', response_headers: dict[str, str] | None = None)
 ```
 
 `tau_llm.streaming.DoneEvent`
@@ -232,6 +238,7 @@ Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 - `final: AssistantMessage` — The fully accumulated AssistantMessage.
 - `usage: Usage` — Token usage information for the response.
 - `type: Literal['done'] = 'done'` — Always "done".
+- `response_headers: dict[str, str] | None = None` — The HTTP response headers, names lowercased, e.g. a vendor's rate-limit counters; None when the provider did not capture them. Not persisted on ``final``. See docs/RESPONSE-HEADERS.md.
 
 ## ErrorEvent
 <!-- agent: yes -->
@@ -327,7 +334,7 @@ A StreamEventStream — an async iterator of typed streaming events (TextDeltaEv
 <!-- agent: yes -->
 
 ```python
-class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str)
+class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str, headers: dict[str, str] | None = None)
 ```
 
 `tau_llm.errors.ProviderHttpError`
@@ -345,6 +352,7 @@ Every provider raises this for an HTTP refusal, and
 - `body: str` — The raw response body, bounded to ``MAX_ERROR_BODY_CHARS``.
 - `model_id: str` — The requested model id.
 - `base_url: str` — The endpoint the request went to.
+- `headers: dict[str, str] | None = None` — The response headers, names lowercased, e.g. ``retry-after``; None when the transport could not read them.
 
 ## ProviderSpec
 <!-- agent: yes -->
