@@ -95,6 +95,11 @@ def resolve_model(
         provider: Registered vendor id (default: "openai").
         base_url: Optional custom API base URL.
 
+    Returns:
+        A new Model; the shared built-in defaults are never mutated. A
+        non-built-in id gets ``context_window=128000`` and ``max_tokens=4096``,
+        and speaks ``openai-completions`` when ``provider`` is unregistered.
+
     Raises:
         ValueError: No ``base_url`` and ``provider`` is not registered with a
             default endpoint (docs/EXTENSION-PROVIDERS.md §2).

@@ -861,11 +861,13 @@ class ExtensionContext:
     ) -> None:
         """Initialize ExtensionContext.
 
-        A session's context is built with every default (``ExtensionAPI`` makes
-        it); only ``_session`` is bound afterwards.
+        A session builds its context with only ``cwd`` (the session's); only
+        ``_session`` is bound afterwards.
 
         Args:
-            cwd: Returned by :attr:`cwd` as given; nothing resolves it.
+            cwd: Returned by :attr:`cwd` as given; nothing resolves it. The
+                default ``"."`` is the process cwd, for a context made outside
+                a session.
             session_manager: Returned by :attr:`session_manager`; ``shutdown``
                 forwards to it when it has a ``shutdown()``.
             signal: The abort signal :attr:`signal` returns while no session is
@@ -882,9 +884,10 @@ class ExtensionContext:
 
     @property
     def cwd(self) -> str:
-        """The ``cwd`` given at construction, ``"."`` for a session-built context.
+        """The ``cwd`` given at construction: the session's cwd in a session.
 
-        Not the session's working directory: no session path passes one.
+        Built-in tools resolve paths there, so a hook checking a path resolves
+        it here too, not against the process cwd.
         """
         return self._cwd
 
