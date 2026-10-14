@@ -4345,8 +4345,8 @@ class AgentSession:
         in the runner: ``api.on`` routes the four mutating hooks there (S24).
         ``context`` shares the live :class:`ExtensionContext` — passed for the
         per-extension apis so every handler sees the one context the session binds
-        the abort signal / live session onto; ``None`` lets ``ExtensionAPI`` make a
-        fresh context (used only for the session-shared api built at construction).
+        the abort signal / live session onto; ``None`` (the session-shared api built
+        at construction) makes a fresh one at the session's cwd, never ``"."``.
         ``config`` is this extension's per-extension config slice (S40); ``None``
         for the session-shared api (which no extension file receives).
 
