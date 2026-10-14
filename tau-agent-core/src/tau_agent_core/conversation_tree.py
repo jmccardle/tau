@@ -546,16 +546,11 @@ class ConversationTree:
     def fork_admission_reason(self, target_id: str | None) -> str | None:
         """Whether ``target_id`` is safe to fork FROM, or the reason it is not.
 
-        docs/SUBMISSION-LIFECYCLE.md's admission check for
-        ``multitask_strategy="fork"``: a fork point must be TURN-COMPLETE. An
-        assistant message whose ``toolCall`` blocks have no ``toolResult`` on this
-        path is a prefix most providers reject, and a result appended later (a
-        descendant) cannot rescue it, since a cursor reads ancestors only
-        (I1, NODE-ADDRESSABLE-AGENTS.md §2).
-
-        Walks the RAW chain (:meth:`path`), tracking the newest assistant message's
-        unanswered call ids. The spliced view would agree: compaction never cuts
-        mid-tool-call (``compaction.find_valid_cut_points``).
+        The admission check for ``multitask_strategy="fork"``
+        (docs/SUBMISSION-LIFECYCLE.md): a fork point must be turn-complete, i.e.
+        no assistant ``toolCall`` on the raw path (:meth:`path`) up to it lacks
+        its ``toolResult``. A result appended later cannot rescue it, since a
+        cursor reads ancestors only (NODE-ADDRESSABLE-AGENTS.md §2).
 
         Args:
             target_id: The proposed fork point; ``None`` (before the root) is
@@ -566,10 +561,8 @@ class ConversationTree:
             if ``target_id`` is a safe fork point.
 
         Raises:
-            ValueError: ``target_id`` names no entry — Fail-Early, mirroring
-                the :class:`~tau_agent_core.cursor.Cursor` constructor's check on
-                the same value (a dangling fork point would hand the second agent
-                an empty or wrong context with no error).
+            ValueError: ``target_id`` names no entry, as the
+                :class:`~tau_agent_core.cursor.Cursor` constructor checks.
         """
         if target_id is None:
             return None
@@ -697,11 +690,10 @@ class ConversationTree:
     # --- UI + subtree ops --------------------------------------------------
 
     def entry(self, entry_id: str) -> dict[str, Any]:
-        """The raw log entry ``entry_id`` names.
+        """The raw log entry ``entry_id`` names, whole body included.
 
-        For the tree browser's detail pane: :class:`TreeNode` carries only the
-        one-line ``preview``, and widening it would push every body onto every
-        consumer of :meth:`tree`, the RPC surface included.
+        :class:`TreeNode` carries only a one-line ``preview``; this is the full
+        entry, for a detail view.
 
         Args:
             entry_id: The id to look up.
@@ -710,8 +702,7 @@ class ConversationTree:
             The entry itself, not a copy.
 
         Raises:
-            KeyError: no entry has that id. The browser builds its rows from these
-                same entries, so a miss is a broken index, not a missing body.
+            KeyError: no entry has that id.
         """
         return self._by_id[entry_id]
 
@@ -848,10 +839,8 @@ class ConversationTree:
     def message_text(self, entry_id: str) -> str:
         """``entry_id``'s message flattened to plain text, or ``""`` if it has none.
 
-        The whole body, where :attr:`TreeNode.preview` is its first line elided to
-        a row. Added for the tree browser's ``revise`` gesture (PLAN-0.9.4 §4,
-        item 2), which puts a user message back in the input to be edited — a
-        preview would hand back a truncated version of what the reader typed.
+        The whole body, where :attr:`TreeNode.preview` is its first line elided
+        to a row (the browser's ``revise`` gesture, PLAN-0.9.4 §4).
 
         Args:
             entry_id: The entry to read.

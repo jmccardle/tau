@@ -344,9 +344,11 @@ class AssistantMessageEventStream:
             The fully accumulated AssistantMessage.
 
         Raises:
-            Exception: If the stream produced an ErrorEvent. The ORIGINAL exception is
-                re-raised with its type intact (e.g. ``ConstraintViolation``, which
-                carries the offending output), not flattened to a bare ``Exception``.
+            Exception: The stream failed. An exception the provider stream
+                raised is re-raised with its type intact (``ProviderHttpError``,
+                ``ConstraintViolation``); an ErrorEvent the provider yielded
+                raises a bare ``Exception`` carrying its message.
+            RuntimeError: The stream ended without a final message.
         """
         await self._ensure_collector()
         if not self._done:

@@ -98,24 +98,18 @@ def build_run_manifest(
 ) -> dict[str, Any]:
     """Build the manifest fragment this harness is responsible for.
 
-    ``compaction_policy`` is keyword-only and has no default, so a manifest cannot
-    be built without making the §16.8 decision. That is the whole mechanism: the
-    option "leave the default" is removed by there not being one.
+    ``compaction_policy`` has no default, so a manifest cannot be built without
+    making the §16.8 decision.
 
     Args:
-        harness: the harness identity §5.2 partitions latency by. Defaults to
-            :data:`HARNESS`; a pi-era run records ``"pi"`` and the two are different
-            populations that must never be pooled.
-        compaction_policy: the run's declared policy.
-        extensions: the run's loaded extensions, as returned by
-            ``sdk.summarize_extensions()`` (H7, §16.6). ``None`` omits the
-            ``extensions`` key entirely rather than writing an empty list, so a
-            manifest built by a caller that hasn't threaded this through yet is
-            visibly missing the key rather than silently claiming zero
-            extensions loaded.
-        extra: further top-level manifest keys the caller owns (seed, run id,
-            clock origin, DB snapshot id — §9's list). Passed through unchanged and
-            refused if they would shadow a key this function owns.
+        harness: The harness identity §5.2 partitions latency by; a pi-era run
+            records ``"pi"``, a separate population.
+        compaction_policy: The run's declared policy.
+        extensions: The run's loaded extensions, as ``sdk.summarize_extensions()``
+            returns them. ``None`` omits the ``extensions`` key rather than
+            writing an empty list, so "not recorded" never reads as "none loaded".
+        extra: Further top-level keys the caller owns (seed, run id, clock
+            origin — §9's list), passed through unchanged.
 
     Returns:
         ``harness``, ``compaction`` (the policy's ``to_manifest()``), ``extensions``

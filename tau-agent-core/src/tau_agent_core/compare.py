@@ -172,7 +172,10 @@ async def start_comparison(
     Raises:
         ValueError: no models, no text, no model resolver, or ``leaf`` names no
             entry. Nothing was opened.
-        KeyError: a model name the resolver does not know. Nothing was opened.
+        KeyError: a model name ``ConfigModelResolver`` does not know; another
+            resolver's error propagates as raised. Nothing was opened.
+        TypeError: the resolver returned something other than a ``Model``.
+            Nothing was opened.
     """
     if not models:
         raise ValueError("compare needs at least one model")

@@ -210,7 +210,8 @@ class TokenizerCounter:
 
         Raises:
             TokenizerUnavailable: the ``tokenizers`` package is not installed.
-            OSError: the file does not exist or does not parse.
+            Exception: the file does not exist or does not parse. ``tokenizers``
+                raises a bare ``Exception`` for both, not ``OSError``.
         """
         tokenizers = _require_tokenizers()
         return cls(tokenizers.Tokenizer.from_file(path), name=path)
@@ -219,9 +220,7 @@ class TokenizerCounter:
     def from_pretrained(cls, repo_id: str) -> TokenizerCounter:
         """Fetch a tokenizer from the HuggingFace hub by repository id.
 
-        Network-dependent and uncached by this class — the caller owns the cache,
-        because where a downloaded file lands is a policy question this module has
-        no business answering.
+        Network-dependent and uncached by this class: the caller owns the cache.
 
         Args:
             repo_id: The hub repository id, e.g. ``"Qwen/Qwen3-8B"``.
@@ -612,8 +611,9 @@ def counter_for(model: Any, *, fallback: bool = False) -> TextCounter:
     Raises:
         TokenizerUnavailable: ``model.tokenizer`` is set, ``fallback`` is False,
             and the ``tokenizers`` package is missing.
-        OSError: ``model.tokenizer`` is set, ``fallback`` is False, and the file
-            or repo id does not resolve.
+        Exception: ``model.tokenizer`` is set, ``fallback`` is False, and the file
+            or repo id does not load; whatever ``tokenizers`` or the hub raised,
+            unchanged (a bare ``Exception`` for a missing or malformed file).
     """
     spec = getattr(model, "tokenizer", None)
     if not spec:

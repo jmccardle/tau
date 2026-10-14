@@ -199,11 +199,8 @@ class AssistantMessage(BaseModel):
 class Model(BaseModel):
     """One model: which endpoint to call, how to speak to it, what it can do.
 
-    Reference: SUBPHASE-0.0.md, "1. Messages" section.
-
-    ``prompt_cache`` asks for caching on every wire; ``prompt_cache_dialect``
-    says how an OpenAI-compatible endpoint must be asked, and stays unset for a
-    native or automatic wire (docs/PROMPT-CACHING.md §5).
+    Reference: SUBPHASE-0.0.md, "1. Messages" section. Prompt caching:
+    docs/PROMPT-CACHING.md §5.
 
     Attributes:
         id: The model id sent on the wire.

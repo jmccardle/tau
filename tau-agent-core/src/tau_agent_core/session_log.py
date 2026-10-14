@@ -84,7 +84,8 @@ class SessionLog(Protocol):
             payload: Its finished fields, replacing the old payload.
 
         Raises:
-            ValueError: ``entry_id`` names no entry, or one that is not incomplete.
+            ValueError: ``entry_id`` names no entry, the entry is not incomplete,
+                or ``payload`` sets a ``status``.
         """
         ...
 

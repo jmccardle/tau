@@ -381,8 +381,8 @@ class Cursor:
             The new entry's id.
 
         Raises:
-            ValueError: ``first_kept_id`` names no entry. The fold never finds an
-                unknown anchor and would drop the whole kept region silently.
+            ValueError: ``first_kept_id`` names no entry (the fold would drop the
+                whole kept region silently), or the leaf is an incomplete entry.
         """
         _require_entry(self.log, first_kept_id, "compaction first_kept_id")
         return await self.append(
@@ -417,8 +417,8 @@ class Cursor:
             The new entry's id.
 
         Raises:
-            ValueError: ``first_kept_id`` names no entry, for the reason
-                :meth:`append_compaction` gives.
+            ValueError: ``first_kept_id`` names no entry, or the leaf is an
+                incomplete entry, as for :meth:`append_compaction`.
         """
         _require_entry(self.log, first_kept_id, "elide first_kept_id")
         return await self.append(
@@ -443,7 +443,8 @@ class Cursor:
             The new entry's id.
 
         Raises:
-            ValueError: ``from_id`` names no entry.
+            ValueError: ``from_id`` names no entry, or names an incomplete one;
+                the cursor has already moved there when the second is raised.
         """
         self.move(from_id)
         return await self.append("branch_summary", summary=summary, fromId=from_id)
