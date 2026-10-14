@@ -20,6 +20,7 @@ import inspect
 import os
 import re
 import sys
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -31,7 +32,9 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.extension_types import ExtensionAPI
+from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
+from tau_agent_core.skills import Skill, load_skills, render_skills_block
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 from tau_agent_core.tools.bash import BashTool
 from tau_agent_core.tools.edit import EditTool
@@ -1140,15 +1143,19 @@ def _build_system_prompt(
     no_context_files: bool = False,
     agent_dir: str | Path | None = None,
     model: str | None = None,
+    skills: Sequence[Skill] = (),
 ) -> str:
-    """Build the system prompt from a base prompt, context files and tools.
+    """Build the system prompt from a base prompt, context files, skills and tools.
 
     The system prompt is built from:
 
     1. ``custom_prompt`` if given, else :data:`BASE_SYSTEM_PROMPT`.
     2. Every context file :func:`load_project_context_files` discovers, unless
        ``no_context_files``.
-    3. Tool definitions for ``prompt_snippet`` and ``prompt_guidelines``.
+    3. The skill listing (:func:`~tau_agent_core.skills.render_skills_block`),
+       only when a tool named ``read`` is offered, since the listing tells the
+       model to read the skill's file.
+    4. Tool definitions for ``prompt_snippet`` and ``prompt_guidelines``.
 
     **Context files COMPOSE with (2 follows 1); they never replace it and are
     never replaced by it.** This is the whole point of the change: a caller who
@@ -1165,6 +1172,7 @@ def _build_system_prompt(
                          custom prompt WRAP τ's voice instead of replacing it.
                          Available only in a ``custom_prompt``.
     ``{{project_context}}`` the ``<project_context>`` block.
+    ``{{skills}}``       the ``<available_skills>`` block.
     ``{{tools}}``        the ``Available tools:`` block.
     ``{{tool_names}}``   just the names, comma-separated, for a one-line mention.
     ``{{cwd}}``          the working directory the tools run in.
@@ -1187,6 +1195,7 @@ def _build_system_prompt(
         no_context_files: Skip discovery entirely (``--no-context-files``/``-nc``).
         agent_dir: Override the ``~/.tau`` global-context directory.
         model: Model id for ``{{model}}``. Empty when the caller does not know it.
+        skills: The skills to list; pass ``SkillCatalog.listed()``.
 
     Returns:
         Complete system prompt string.
@@ -1198,9 +1207,12 @@ def _build_system_prompt(
 
     context_block = "" if no_context_files else _render_project_context(cwd, agent_dir)
     tools_block = _render_tool_list(tools)
+    can_read = any(tool.name == "read" for tool in (tools or []))
+    skills_block = render_skills_block(skills) if can_read else ""
 
     fields = {
         "project_context": context_block,
+        "skills": skills_block,
         "tools": tools_block,
         "tool_names": ", ".join(tool.name for tool in (tools or [])),
         "cwd": cwd,
@@ -1221,6 +1233,9 @@ def _build_system_prompt(
     if context_block and "project_context" not in used:
         lines.append("")
         lines.append(context_block)
+    if skills_block and "skills" not in used:
+        lines.append("")
+        lines.append(skills_block)
     if tools_block and "tools" not in used:
         lines.append("")
         lines.append(tools_block)
@@ -1248,6 +1263,10 @@ def create_agent_session(
     no_tools: Literal["all", "builtin"] | None = None,
     max_turns: int | None = None,
     tool_options: dict[str, dict[str, Any]] | None = None,
+    prompt_template_paths: Iterable[str | Path] = (),
+    no_prompt_templates: bool = False,
+    skill_paths: Iterable[str | Path] = (),
+    no_skills: bool = False,
 ) -> AgentSession:
     """Create an AgentSession with all defaults.
 
@@ -1357,6 +1376,12 @@ def create_agent_session(
             for tools not in ``tools``, and irrelevant when ``no_tools`` is set,
             since then no built-in is constructed at all. See
             :func:`_resolve_tools`.
+        prompt_template_paths: Template files or directories to load ahead of
+            the discovered ones (docs/PROMPT-TEMPLATES-AND-SKILLS.md §4).
+        no_prompt_templates: Skip template discovery; explicit paths still load.
+        skill_paths: Skill directories, ``SKILL.md`` files or directories of
+            skills to load ahead of the discovered ones (§5).
+        no_skills: Skip skill discovery; explicit paths still load.
 
     Raises:
         ValueError: if ``no_tools`` is given together with a non-empty ``tools``
@@ -1391,12 +1416,18 @@ def create_agent_session(
 
     ext_factories = list(extensions) if extensions else []
 
+    templates = load_prompt_templates(
+        cwd=cwd, paths=prompt_template_paths, discover=not no_prompt_templates
+    )
+    skills = load_skills(cwd=cwd, paths=skill_paths, discover=not no_skills)
+
     sys_prompt = _build_system_prompt(
         cwd,
         tool_objs,
         custom_prompt=system_prompt,
         no_context_files=no_context_files,
         model=model.id,
+        skills=skills.listed(),
     )
 
     if session_log is None:
@@ -1418,4 +1449,6 @@ def create_agent_session(
         no_tools=no_tools,
         max_turns=max_turns,
         cwd=cwd,
+        prompt_templates=templates,
+        skills=skills,
     )

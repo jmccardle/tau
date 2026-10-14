@@ -65,7 +65,7 @@ is not.
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -88,16 +88,23 @@ from tau_agent_core.flows import (
     flow_arguments,
     next_step,
 )
+from tau_agent_core.prompt_templates import (
+    EMPTY_TEMPLATES,
+    PromptTemplate,
+    PromptTemplateCatalog,
+    expand_prompt_template,
+)
+from tau_agent_core.resources import BrokenResource, ResourceError
+from tau_agent_core.skills import EMPTY_SKILLS, SKILL_PREFIX, Skill, SkillCatalog, expand_skill
 
-CommandOrigin = Literal["builtin", "extension"]
-"""Where a command NAME came from: τ's own vocabulary, or a loaded extension.
+CommandOrigin = Literal["builtin", "extension", "template", "skill"]
+"""Where a command NAME came from: τ's own vocabulary, a loaded extension, a
+prompt template or a skill (docs/PROMPT-TEMPLATES-AND-SKILLS.md).
 
-It replaced ``CommandPerformer``, which said ``"core"`` / ``"frontend"`` and meant
-"who runs this" — a question with four answers, now answered by which arm of
-:data:`~tau_agent_core.flows.Dispatched` came back. What is left is a genuine fact
-about the NAME, and the fact a head actually wants: a palette groups built-ins apart
-from what an extension registered, and ``resolve_command`` resolves built-ins first
-so an extension cannot shadow ``/compact``.
+It says nothing about who runs the command; that is which arm of
+:data:`~tau_agent_core.flows.Dispatched` comes back. A palette groups by it.
+:func:`resolve_command` only ever returns the first two: a template or a skill
+is not dispatched, it is expanded into the prompt (:func:`expand_prompt_command`).
 """
 
 NAMESPACE_PREFIX = "ext:"
@@ -294,6 +301,91 @@ def resolve_command(
     return None
 
 
+def expand_prompt_command(
+    text: str,
+    templates: PromptTemplateCatalog = EMPTY_TEMPLATES,
+    skills: SkillCatalog = EMPTY_SKILLS,
+) -> str | None:
+    """The prompt ``text`` expands to, when it invokes a template or a skill.
+
+    ``None`` means ``text`` invokes neither, and goes on as it is. The caller asks
+    :func:`resolve_command` FIRST: a built-in or an extension command with the
+    same name wins, so this is only reached for a line that is not a command.
+
+    ``/skill:<name> args`` looks in ``skills``; any other ``/<name> args`` looks
+    in ``templates``. An unknown name returns ``None``, the same fall-through an
+    unknown command has.
+
+    Args:
+        text: The submitted line, after the ``input`` hooks.
+        templates: The session's templates.
+        skills: The session's skills.
+
+    Returns:
+        The expanded prompt, or ``None``.
+
+    Raises:
+        ResourceError: The name belongs to a file that could not be read, or the
+            template cannot be expanded with these arguments.
+    """
+    parsed = parse_command(text)
+    if parsed is None:
+        return None
+    name, args = parsed
+    entry: PromptTemplate | Skill | BrokenResource | None
+    if name.startswith(SKILL_PREFIX):
+        entry = skills.get(name[len(SKILL_PREFIX) :])
+    else:
+        entry = templates.get(name)
+    if entry is None:
+        return None
+    if isinstance(entry, BrokenResource):
+        raise ResourceError(f"/{name} cannot run: {entry.source.path}: {entry.error}")
+    if isinstance(entry, Skill):
+        return expand_skill(entry, args)
+    return expand_prompt_template(entry, args)
+
+
+def prompt_command_completions(
+    templates: PromptTemplateCatalog = EMPTY_TEMPLATES,
+    skills: SkillCatalog = EMPTY_SKILLS,
+    taken: Collection[str] = (),
+) -> tuple[CommandCompletion, ...]:
+    """The template and skill command words a reader can type, for a completion list.
+
+    A word that is a built-in or in ``taken`` (the extension commands) is left
+    out, because :func:`resolve_command` would never reach it. A broken entry is
+    listed, with its error as the description, so the reader sees why the
+    command will refuse.
+
+    Args:
+        templates: The session's templates.
+        skills: The session's skills, listed as ``skill:<name>``.
+        taken: Command names that resolve before a template or skill does.
+
+    Returns:
+        One candidate per reachable template, then per reachable skill.
+    """
+    rows = [
+        CommandCompletion(template.name, _completion_text(template), "template")
+        for template in templates.entries
+    ]
+    rows.extend(
+        CommandCompletion(f"{SKILL_PREFIX}{skill.name}", _completion_text(skill), "skill")
+        for skill in skills.entries
+    )
+    return tuple(row for row in rows if row.name not in FRONTEND_COMMANDS and row.name not in taken)
+
+
+def _completion_text(entry: PromptTemplate | Skill | BrokenResource) -> str:
+    """The one line a completion list shows for a template or skill."""
+    if isinstance(entry, BrokenResource):
+        return f"broken: {entry.error}"
+    if isinstance(entry, PromptTemplate) and entry.argument_hint:
+        return f"{entry.argument_hint} — {entry.description}"
+    return entry.description
+
+
 def dispatch_builtin(
     name: str,
     args: str,
@@ -403,37 +495,29 @@ class CommandCompletions:
 
 
 def complete_command(
-    text: str, extension_commands: Mapping[str, str] = NO_EXTENSION_COMMANDS
+    text: str,
+    extension_commands: Mapping[str, str] = NO_EXTENSION_COMMANDS,
+    prompt_commands: Sequence[CommandCompletion] = (),
 ) -> CommandCompletions | None:
     """Candidate commands for a partly-typed line. ``None`` means "show nothing".
 
-    Pure, and the same shape as :func:`resolve_command`: it takes the text plus the
-    extension vocabulary rather than reading either off a session, so a frontend, a test,
-    and an embedded UI all get the same answer from the same code. It runs nothing and
-    decides nothing — ``resolve_command`` remains the only thing that says whether a line
-    IS a command.
-
-    Matching is a case-sensitive prefix test on the first word, because that is what
-    ``resolve_command`` does with the finished line. A ``/`` on its own has an empty
-    prefix and therefore matches everything, which is how the whole vocabulary becomes
-    browsable. Built-ins come first and an extension that registered a built-in's name is
-    dropped, mirroring the resolution order exactly: such a name is unreachable, so
-    offering it would advertise a command the user cannot run.
+    Pure, like :func:`resolve_command`, and it decides nothing. Matching is a
+    case-sensitive prefix test on the first word, which is what dispatch does with
+    the finished line; a bare ``/`` matches everything. Order is resolution
+    order — built-ins, then extension commands, then templates and skills — and a
+    name an earlier group already holds is dropped, because it cannot be reached.
 
     Args:
-        text: The editor's contents as typed. Stripped here, the way ``parse_command``
-            strips, so the two agree about what the first word is.
-        extension_commands: Extension-registered command names mapped to their
-            descriptions (``AgentSession.get_extension_commands``). A frontend with no
-            backend yet passes nothing and gets the built-ins.
+        text: The editor's contents as typed.
+        extension_commands: Extension command names mapped to their descriptions
+            (``AgentSession.get_extension_commands``).
+        prompt_commands: Template and skill candidates
+            (``AgentSession.get_prompt_commands``).
 
     Returns:
-        A :class:`CommandCompletions` while the first word is still worth commenting on,
-        or ``None`` when it is not. ``None`` covers two cases: the line is not
-        ``/``-prefixed at all, and the line has an unknown first word FOLLOWED BY A SPACE.
-        The second is the "pasted a file path" case — once a space is typed after a word
-        that names no command, the line is committed to being prose and a warning about it
-        would be noise.
+        A :class:`CommandCompletions`, or ``None`` when the line is not
+        ``/``-prefixed, or when an unknown first word is followed by a space —
+        the line is then prose (a pasted path), and a warning would be noise.
     """
     stripped = text.strip()
     if not stripped.startswith("/"):
@@ -451,6 +535,13 @@ def complete_command(
         CommandCompletion(name=name, description=description, origin="extension")
         for name, description in extension_commands.items()
         if name.startswith(token) and name not in FRONTEND_COMMANDS
+    )
+    matches.extend(
+        candidate
+        for candidate in prompt_commands
+        if candidate.name.startswith(token)
+        and candidate.name not in FRONTEND_COMMANDS
+        and candidate.name not in extension_commands
     )
 
     if not matches and space != -1:

@@ -90,6 +90,7 @@ class _FakeBackend:
         if on_event is not None:
             on_event({"kind": "text_delta", "delta": "ANSWER"})
         new_messages = [
+            {"role": "user", "content": submission.text},
             {"role": "assistant", "content": [{"type": "text", "text": "ANSWER"}]},
         ]
         return (
@@ -172,10 +173,10 @@ async def test_continue_loads_most_recent_and_updates_in_place(env):
     )
     assert rc == 0
 
-    # Context handed to the backend = B's stored transcript + the new user turn.
+    # Context handed to the backend = B's stored transcript; the turn builds the user message.
     ctx = env["backend"].messages
-    assert ctx[:3] == _seeded_convo("b1")
-    assert _no_ts(ctx[-1]) == {"role": "user", "content": "next"}
+    assert ctx == _seeded_convo("b1")
+    assert env["backend"].submission.text == "next"
 
     # No new file; B grew in place; A untouched.
     assert _files(env) == sorted([a.path, b.path])
@@ -276,7 +277,7 @@ async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env)
     assert ctx[0] == {"role": "system", "content": "You are helpful."}
     assert ctx[1]["content"] == [{"type": "text", "text": "[[Compaction summary: OLD-SUMMARY]]"}]
     assert {"role": "assistant", "content": [{"type": "text", "text": "r"}]} in ctx
-    assert _no_ts(ctx[-1]) == {"role": "user", "content": "next"}
+    assert env["backend"].submission.text == "next"
     # The dropped prefix is absent from the model context — the actual fix …
     assert {"role": "user", "content": "a1"} not in [_no_ts(m) for m in ctx]
     # … even though it is still on disk (the linear fold would have re-fed it).

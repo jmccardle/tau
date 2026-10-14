@@ -25,8 +25,11 @@ from tau_agent_core.agent_session import (
 )
 from tau_agent_core import tree_ops
 from tau_agent_core.attachments import elide_attachment_bodies, human_size
+from tau_agent_core.commands import CommandCompletion
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.extension_locks import ExtensionRequest
+from tau_agent_core.prompt_templates import load_prompt_templates
+from tau_agent_core.skills import load_skills
 from tau_agent_core.messages import CUSTOM_ROLE
 from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.rpc.wire_events import project_event
@@ -1435,12 +1438,23 @@ class TauBackend(Backend):
             custom_prompt = append_system_prompt(
                 custom_prompt or BASE_SYSTEM_PROMPT, list(append_sections)
             )
+        templates = load_prompt_templates(
+            cwd=cwd,
+            paths=config.get("prompt_templates") or (),
+            discover=not config.get("no_prompt_templates", False),
+        )
+        skills = load_skills(
+            cwd=cwd,
+            paths=config.get("skills") or (),
+            discover=not config.get("no_skills", False),
+        )
         self.system_prompt = _build_system_prompt(
             cwd=cwd,
             tools=tools,
             custom_prompt=custom_prompt,
             no_context_files=bool(config.get("no_context_files", False)),
             model=config.get("model") or None,
+            skills=skills.listed(),
         )
 
         no_tools = config.get("no_tools")
@@ -1459,6 +1473,8 @@ class TauBackend(Backend):
             no_tools=no_tools,
             max_turns=max_turns,
             cwd=cwd,
+            prompt_templates=templates,
+            skills=skills,
         )
         self.comparisons: dict[str, Comparison] = {}
 
@@ -1662,6 +1678,13 @@ class TauBackend(Backend):
         built-ins.
         """
         return self.agent_session.get_extension_commands()
+
+    def get_prompt_commands(self) -> tuple[CommandCompletion, ...]:
+        """Template and skill command words, for a completion list.
+
+        Delegates to :meth:`AgentSession.get_prompt_commands`.
+        """
+        return self.agent_session.get_prompt_commands()
 
     def get_extension_command_args(self, name: str) -> str | None:
         """The declared argument placeholder for command ``name`` (E7 §3 / S51).

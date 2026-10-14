@@ -620,6 +620,7 @@ class _FakeBackend:
                 }
             )
         new_messages = [
+            {"role": "user", "content": submission.text},
             {"role": "assistant", "content": [{"type": "text", "text": "Hello world"}]},
         ]
         return (
@@ -660,10 +661,10 @@ async def test_run_print_text_mode(fake_backend, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert out == "Hello world\n"
-    # system prompt + user message were passed to the backend
+    # the system prompt is the context; the prompt rides on the submission
     msgs = fake_backend["backend"].messages
-    assert msgs[0] == {"role": "system", "content": "You are helpful."}
-    assert _no_ts(msgs[-1]) == {"role": "user", "content": "hi"}
+    assert msgs == [{"role": "system", "content": "You are helpful."}]
+    assert fake_backend["backend"].submission.text == "hi"
 
 
 async def test_run_print_json_mode(fake_backend, capsys):

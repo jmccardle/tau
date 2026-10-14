@@ -100,8 +100,9 @@ def command_vocabulary(session: Any) -> list[dict[str, Any]]:
     Returns:
         ``{name, description, origin, flow, hidden}`` per command: τ's built-ins
         (``origin`` ``"builtin"``), then extension commands by typed name, then
-        their qualified names (``hidden``). ``flow`` says whether ``next_step``
-        steps it.
+        their qualified names (``hidden``), then prompt templates and skills
+        (``origin`` ``"template"``/``"skill"``, never a flow). ``flow`` says
+        whether ``next_step`` steps it.
     """
     vocabulary = session.vocabulary
     listed: list[dict[str, Any]] = [
@@ -134,6 +135,16 @@ def command_vocabulary(session: Any) -> list[dict[str, Any]]:
                 "origin": "extension",
                 "flow": vocabulary.is_extension_flow(name),
                 "hidden": True,
+            }
+        )
+    for candidate in session.get_prompt_commands():
+        listed.append(
+            {
+                "name": candidate.name,
+                "description": candidate.description,
+                "origin": candidate.origin,
+                "flow": False,
+                "hidden": False,
             }
         )
     return listed

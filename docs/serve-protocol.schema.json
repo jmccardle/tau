@@ -671,10 +671,12 @@
           "type": "string"
         },
         "origin": {
-          "description": "`builtin` for \u03c4's own, `extension` for one an extension registered.",
+          "description": "`builtin` for \u03c4's own, `extension` for one an extension registered, `template` or `skill` for one the session expands into a prompt (docs/PROMPT-TEMPLATES-AND-SKILLS.md).",
           "enum": [
             "builtin",
-            "extension"
+            "extension",
+            "template",
+            "skill"
           ]
         }
       },
@@ -2765,10 +2767,12 @@
                 "type": "string"
               },
               "origin": {
-                "description": "Where the NAME came from: 'builtin' is \u03c4's own vocabulary, 'extension' is one a loaded extension registered. Built-ins resolve first, so an extension cannot shadow one. It does NOT say who runs the command \u2014 that is which arm the dispatch returns.",
+                "description": "Where the NAME came from: 'builtin' is \u03c4's own vocabulary, 'extension' is one a loaded extension registered, 'template' is a prompt template and 'skill' is a skill (`skill:<name>`). Resolution is in that order, so nothing shadows a built-in. A template or skill is not dispatched: the core expands it into the prompt and a turn runs (docs/PROMPT-TEMPLATES-AND-SKILLS.md).",
                 "enum": [
                   "builtin",
-                  "extension"
+                  "extension",
+                  "template",
+                  "skill"
                 ],
                 "type": "string"
               }

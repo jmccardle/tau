@@ -578,13 +578,15 @@ _GET_COMMANDS_RETURNS: dict[str, Any] = {
                     },
                     "origin": {
                         "type": "string",
-                        "enum": ["builtin", "extension"],
+                        "enum": ["builtin", "extension", "template", "skill"],
                         "description": (
                             "Where the NAME came from: 'builtin' is τ's own vocabulary, "
-                            "'extension' is one a loaded extension registered. Built-ins "
-                            "resolve first, so an extension cannot shadow one. It does "
-                            "NOT say who runs the command — that is which arm the "
-                            "dispatch returns."
+                            "'extension' is one a loaded extension registered, 'template' "
+                            "is a prompt template and 'skill' is a skill "
+                            "(`skill:<name>`). Resolution is in that order, so nothing "
+                            "shadows a built-in. A template or skill is not dispatched: "
+                            "the core expands it into the prompt and a turn runs "
+                            "(docs/PROMPT-TEMPLATES-AND-SKILLS.md)."
                         ),
                     },
                     "flow": {

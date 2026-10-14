@@ -75,11 +75,16 @@ from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
 from tau_agent_core.commands import (
+    CommandCompletion,
     CommandInvocation,
     UnsupportedCommandError,
     dispatch_builtin,
+    expand_prompt_command,
+    prompt_command_completions,
     resolve_command,
 )
+from tau_agent_core.prompt_templates import EMPTY_TEMPLATES, PromptTemplateCatalog
+from tau_agent_core.skills import EMPTY_SKILLS, SkillCatalog
 from tau_agent_core.flows import Dispatched, Performed, Ready
 from tau_agent_core.submission import (
     DRIVING_SUBMISSION_DEPTH,
@@ -598,6 +603,8 @@ class AgentSession:
         bus_available: bool = False,
         no_tools: Literal["all", "builtin"] | None = None,
         cwd: str | None = None,
+        prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES,
+        skills: SkillCatalog = EMPTY_SKILLS,
     ) -> None:
         if cursor is not None and session_log is not None:
             raise ValueError("pass session_log or cursor, not both")
@@ -611,6 +618,8 @@ class AgentSession:
         self._model = model
         self._cwd = os.path.abspath(cwd) if cwd is not None else os.getcwd()
         self._system_prompt = system_prompt
+        self._prompt_templates = prompt_templates
+        self._skills = skills
         self._tools: list[AgentTool] = tools or []
         if no_tools not in (None, "all", "builtin"):
             raise ValueError(
@@ -2407,6 +2416,10 @@ class AgentSession:
     ) -> tuple[str, list[dict] | None, SubmissionResult | None]:
         """:meth:`submit` steps 2-3 — the ``input`` hook chain, then command dispatch.
 
+        A line that is not a command but invokes a prompt template or a skill is
+        expanded here, after the hooks, so the expansion is the text the turn
+        persists and every head renders (docs/PROMPT-TEMPLATES-AND-SKILLS.md §6).
+
         Returns ``(text, images, early)``. ``early`` is non-``None`` when the
         submission was fully handled without a turn: an ``input`` handler CONSUMED
         it (``handled``), or ``expand_commands`` resolved it to a command. In both
@@ -2450,6 +2463,9 @@ class AgentSession:
                         command=await self._perform_command(invocation),
                     ),
                 )
+            expanded = expand_prompt_command(text, self._prompt_templates, self._skills)
+            if expanded is not None:
+                text = expanded
 
         return text, images, None
 
@@ -4537,6 +4553,25 @@ class AgentSession:
             if command is not None:
                 out.append((typed, str(command.get("description", ""))))
         return out
+
+    @property
+    def prompt_templates(self) -> PromptTemplateCatalog:
+        """The prompt templates ``/name args`` expands (docs/PROMPT-TEMPLATES-AND-SKILLS.md)."""
+        return self._prompt_templates
+
+    @property
+    def skills(self) -> SkillCatalog:
+        """The skills ``/skill:name args`` expands and the system prompt lists."""
+        return self._skills
+
+    def get_prompt_commands(self) -> tuple[CommandCompletion, ...]:
+        """The template and skill command words, as a completion list offers them.
+
+        Leaves out a template whose name a built-in or an extension command holds,
+        since dispatch reaches those first; lists a broken one with its error.
+        """
+        taken = {name for name, _ in self.get_extension_commands()}
+        return prompt_command_completions(self._prompt_templates, self._skills, taken)
 
     def get_qualified_commands(self) -> list[tuple[str, str]]:
         """List the PRIVATE registry — every command at its ``ext:…`` name.

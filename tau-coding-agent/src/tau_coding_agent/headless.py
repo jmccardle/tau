@@ -29,7 +29,6 @@ import json
 import os
 import signal
 import sys
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import uuid4
@@ -88,6 +87,43 @@ def resolve_no_tools(args: "CLIArgs") -> Literal["all", "builtin"] | None:
     if args.no_builtin_tools:
         return "builtin"
     return None
+
+
+def apply_resource_flags(
+    model_config: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    prompt_templates: list[str],
+    no_prompt_templates: bool,
+    skills: list[str],
+    no_skills: bool,
+) -> None:
+    """Put the template and skill paths and switches into ``model_config``, in place.
+
+    Paths join in precedence order — the CLI's, then the model entry's, then
+    config.json's top-level ``prompt_templates``/``skills`` lists — and the first
+    file to claim a name keeps it (docs/PROMPT-TEMPLATES-AND-SKILLS.md §2.2).
+    Shared by ``resolve_model_config`` and the TUI, so every head reads one rule.
+
+    Raises:
+        CLIError: A config list is not a list of strings.
+    """
+    for key, cli_paths, switch, off in (
+        ("prompt_templates", prompt_templates, "no_prompt_templates", no_prompt_templates),
+        ("skills", skills, "no_skills", no_skills),
+    ):
+        joined = list(cli_paths)
+        for where, holder in (("model entry", model_config), ("config.json", config)):
+            listed = holder.get(key)
+            if listed is None:
+                continue
+            if not isinstance(listed, list) or not all(isinstance(p, str) for p in listed):
+                raise CLIError(f"{where} key {key!r} must be a list of paths, got {listed!r}")
+            joined.extend(p for p in listed if p not in joined)
+        if joined:
+            model_config[key] = joined
+        if off:
+            model_config[switch] = True
 
 
 def resolve_model_config(
@@ -184,6 +220,15 @@ def resolve_model_config(
 
     if args.no_context_files:
         model_config["no_context_files"] = True
+
+    apply_resource_flags(
+        model_config,
+        config,
+        prompt_templates=args.prompt_templates,
+        no_prompt_templates=args.no_prompt_templates,
+        skills=args.skills,
+        no_skills=args.no_skills,
+    )
 
     if "reasoning_replay" not in model_config and config.get("reasoning_replay") is not None:
         model_config["reasoning_replay"] = config["reasoning_replay"]
@@ -852,14 +897,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
             await _dispatch_command_submission(backend, submission, args.mode)
             return 0
 
-        # Stamped here because print mode appends the user turn itself (see :768).
-        await cursor.append_message(
-            {
-                "role": "user",
-                "content": prompt_text,
-                "timestamp": int(time.time() * 1000),
-            }
-        )
         messages: list[dict] = cursor.context()
 
         if args.mode == "json":
@@ -907,9 +944,9 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         # create_backend already refused a bad max_tokens, so this read is the wire's.
         report_truncation(new_messages, model_config.get("max_tokens", DEFAULT_MAX_TOKENS))
 
+        # The core's user message, not prompt_text: a hook or a template may have rewritten it.
         for message in new_messages:
-            if message.get("role") != "user":
-                await cursor.append_message(message)
+            await cursor.append_message(message)
 
         return 0
     finally:
