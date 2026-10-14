@@ -1004,6 +1004,7 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     """
     model_id = config.get("model", "gpt-4")
     backend_type = config.get("backend", "openai").lower()
+    entry = config.get("config_name", model_id)
 
     # Map provider name (TauApp's "backend" field) to tau-agent-core provider.
     provider_map = {"openai": "openai", "anthropic": "anthropic", "gemini": "gemini"}
@@ -1013,14 +1014,14 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     api = config.get("api") or (spec.api if spec else "openai-completions")
     if api not in registered_apis():
         raise ValueError(
-            f"models.{model_id}.api is {api!r}, which τ does not implement. "
+            f"models.{entry}.api is {api!r}, which τ does not implement. "
             f"Registered wire protocols: {', '.join(sorted(registered_apis()))}."
         )
 
     base_url = config.get("base_url") or (spec.base_url if spec else None)
     if not base_url:
         raise ValueError(
-            f"models.{model_id}: backend {provider!r} is not a registered provider with a "
+            f"models.{entry}: backend {provider!r} is not a registered provider with a "
             f"default endpoint, and the entry sets no base_url. Set base_url, or register "
             f"the provider before this model is built (docs/EXTENSION-PROVIDERS.md §2). "
             f"Registered providers: {', '.join(registered_providers())}."
