@@ -1,6 +1,6 @@
 # docs/ index
 
-85 design records live at the top level of `docs/`. Each opens with its status
+91 design records live at the top level of `docs/`. Each opens with its status
 in the first three lines, so what a file claims to describe is checkable before
 reading it. `.claude/skills/feature-doc` is how one is written and how a line
 below is added.
