@@ -66,7 +66,7 @@ exempt from the prose scans, because rewriting a measurement falsifies it.
 
 ## The rest of `docs/` (manifest)
 
-The other 39. Open one when something here names your problem; do not add
+The other 40. Open one when something here names your problem; do not add
 findings-length lines to it. A doc that has grown a real trap gets promoted to
 Findings, which means writing the finding rather than lengthening the clause.
 
@@ -96,6 +96,7 @@ Findings, which means writing the finding rather than lengthening the clause.
 **Research and unbuilt** — each states its own status header, and several are stale:
 `TAU-SERVE.md` (the 0.12.0 plan: durable writes, `tau serve`, `--connect`, cursor compare; M0–M5 built, M6's rename built) ·
 `CODE-MODE.md` (a Python script calling every extension's tools in a sandbox; the seams, interpreter candidates and lifetime; nothing built) ·
+`PROVIDER-COVERAGE.md` (pi's 44 providers classified against τ's three wires, the three official APIs feature by feature, and a cassette-replayed provider contract suite; partly built — the suite prototype, no provider changed) ·
 `CONSTRAINED-GEN-AND-BRANCHING-PLAN.md` · `JMFTS-INTEGRATION-PLAN.md` ·
 `RESEARCH-INTEGRATION-EVALUATION.md` · `ALPHA-SELECTOR-SPEC.md` ·
 `M2-RESULTS.md` · `M3-DESIGN.md` · `WORKSTREAM-CROSSWALK.md` (the status index across the four vocabularies).

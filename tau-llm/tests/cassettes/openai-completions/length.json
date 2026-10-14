@@ -1,0 +1,75 @@
+{
+ "meta": {
+  "provenance": "synthetic",
+  "written": "2026-10-12",
+  "source": "https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events.md",
+  "note": "Hand-written from the vendor's documented stream shape, NOT captured. Replace by recording (docs/PROVIDER-COVERAGE.md \u00a75.2); a recorded cassette sets provenance to 'recorded' and names the capture date."
+ },
+ "expect": {
+  "stop_reason": "length"
+ },
+ "response": {
+  "status": 200,
+  "headers": {
+   "content-type": "text/event-stream"
+  },
+  "sse": [
+   {
+    "data": {
+     "id": "chatcmpl-x",
+     "object": "chat.completion.chunk",
+     "created": 1760000000,
+     "model": "gpt-test",
+     "choices": [
+      {
+       "index": 0,
+       "delta": {
+        "role": "assistant",
+        "content": "Hel"
+       },
+       "finish_reason": null
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "id": "chatcmpl-x",
+     "object": "chat.completion.chunk",
+     "created": 1760000000,
+     "model": "gpt-test",
+     "choices": [
+      {
+       "index": 0,
+       "delta": {},
+       "finish_reason": "length"
+      }
+     ]
+    }
+   },
+   {
+    "data": {
+     "id": "chatcmpl-x",
+     "object": "chat.completion.chunk",
+     "created": 1760000000,
+     "model": "gpt-test",
+     "choices": [],
+     "usage": {
+      "prompt_tokens": 2048,
+      "completion_tokens": 7,
+      "total_tokens": 2055,
+      "prompt_tokens_details": {
+       "cached_tokens": 1024
+      },
+      "completion_tokens_details": {
+       "reasoning_tokens": 3
+      }
+     }
+    }
+   },
+   {
+    "data": "[DONE]"
+   }
+  ]
+ }
+}

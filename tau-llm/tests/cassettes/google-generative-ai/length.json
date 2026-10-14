@@ -1,0 +1,46 @@
+{
+ "meta": {
+  "provenance": "synthetic",
+  "written": "2026-10-12",
+  "source": "https://ai.google.dev/api/generate-content",
+  "note": "Hand-written from the vendor's documented stream shape, NOT captured. Replace by recording (docs/PROVIDER-COVERAGE.md \u00a75.2); a recorded cassette sets provenance to 'recorded' and names the capture date."
+ },
+ "expect": {
+  "stop_reason": "length"
+ },
+ "response": {
+  "status": 200,
+  "headers": {
+   "content-type": "text/event-stream"
+  },
+  "sse": [
+   {
+    "data": {
+     "candidates": [
+      {
+       "content": {
+        "role": "model",
+        "parts": [
+         {
+          "text": "Hel"
+         }
+        ]
+       },
+       "index": 0,
+       "finishReason": "MAX_TOKENS"
+      }
+     ],
+     "modelVersion": "gemini-test",
+     "responseId": "r1",
+     "usageMetadata": {
+      "promptTokenCount": 2048,
+      "candidatesTokenCount": 4,
+      "thoughtsTokenCount": 3,
+      "cachedContentTokenCount": 1024,
+      "totalTokenCount": 2055
+     }
+    }
+   }
+  ]
+ }
+}
