@@ -522,25 +522,35 @@ def _extract_reasoning(delta: dict) -> tuple[str, str]:
 
 
 def _split_content_chunks(chunks: list) -> tuple[str, str]:
-    """Return ``(text, thinking)`` from a list-valued ``content`` delta.
+    """Return ``(text, thinking)`` from a list-valued ``content``.
 
-    Mistral's reasoning models (e.g. ``mistral-large-4``) stream ``content`` as
-    ``[{"type": "thinking", "thinking": [{"type": "text", "text": ...}]}]`` or
-    ``[{"type": "text", "text": ...}]`` instead of a string.
+    Mistral's reasoning models send ``content`` as a list of chunks rather than a
+    string: ``{"type": "text", "text": ...}`` and
+    ``{"type": "thinking", "thinking": [{"type": "text", "text": ...}]}``.
+
+    Raises:
+        ValueError: A chunk of any other shape or type. Dropping it would lose
+            part of the reply without a trace.
     """
     text: list[str] = []
     thinking: list[str] = []
-    for c in chunks:
-        if isinstance(c, str):
-            text.append(c)
-        elif isinstance(c, dict) and c.get("type") == "text":
-            text.append(c.get("text") or "")
-        elif isinstance(c, dict) and c.get("type") == "thinking":
-            inner = c.get("thinking")
+    for chunk in chunks:
+        kind = chunk.get("type") if isinstance(chunk, dict) else None
+        if kind == "text":
+            text.append(chunk.get("text") or "")
+        elif kind == "thinking":
+            inner = chunk.get("thinking")
             if isinstance(inner, str):
                 thinking.append(inner)
-            elif isinstance(inner, list):
-                thinking.extend(i.get("text") or "" if isinstance(i, dict) else str(i) for i in inner)
+                continue
+            if not isinstance(inner, list):
+                raise ValueError(f"thinking chunk without a string or list body: {chunk!r}")
+            for part in inner:
+                if not (isinstance(part, dict) and part.get("type") == "text"):
+                    raise ValueError(f"thinking chunk with a non-text part: {part!r}")
+                thinking.append(part.get("text") or "")
+        else:
+            raise ValueError(f"unsupported content chunk: {chunk!r}")
     return "".join(text), "".join(thinking)
 
 
@@ -1783,12 +1793,14 @@ class OpenAICompletionsProvider(Provider):
                 if choice_usage:
                     state.usage_data = choice_usage
 
-                # Process text delta. Mistral's reasoning models stream `content` as a list of
-                # chunks ({"type": "text"} / {"type": "thinking", "thinking": [text chunks]})
-                # rather than a string; split it into text and thinking.
                 text = delta.get("content", "") or ""
                 if isinstance(text, list):
-                    text, chunk_thinking = _split_content_chunks(text)
+                    try:
+                        text, chunk_thinking = _split_content_chunks(text)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Model {model.id!r} at {self.base_url!r} streamed {exc}"
+                        ) from None
                     if chunk_thinking:
                         # no signature: there is no request field to replay it under
                         accum.thinking_parts.append(chunk_thinking)
@@ -1940,11 +1952,25 @@ class OpenAICompletionsProvider(Provider):
             yield self._make_thinking_event(reasoning, accum, partial)
 
         content = message.get("content")
+        if isinstance(content, list):
+            try:
+                content, chunk_thinking = _split_content_chunks(content)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Non-streaming completion from model {model.id!r} at "
+                    f"{self.base_url!r} returned {exc}"
+                ) from None
+            if chunk_thinking:
+                # no signature: there is no request field to replay it under
+                accum.thinking_parts.append(chunk_thinking)
+                accum.has_thinking = True
+                partial = self._build_partial_message(accum, model)
+                yield self._make_thinking_event(chunk_thinking, accum, partial)
         if content is not None and not isinstance(content, str):
             raise ValueError(
                 f"Non-streaming completion from model {model.id!r} at {self.base_url!r} "
                 f"returned `message.content` of type {type(content).__name__}, "
-                f"expected a string or null: {content!r}"
+                f"expected a string, a list of chunks, or null: {content!r}"
             )
         if content:
             accum.text_parts.append(content)
