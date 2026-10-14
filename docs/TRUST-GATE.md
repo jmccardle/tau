@@ -20,7 +20,7 @@ This was measured on 2026-10-12 against `354f1f0`. The probe ran
 | `<cwd>/.tau/SYSTEM.md` | goes into the system prompt, last, with no question asked | `sdk.py:985` |
 | `<cwd>/.tau/extensions/*.py` | **never discovered**: `evil.py` did not run | `sdk.py:667`, global dir only |
 | `<cwd>/.tau/settings.json` | read by `Settings.load`, which **has no caller** in any `src` tree | `settings.py:76` |
-| skills, prompt templates | do not exist yet (Tier 10) | — |
+| skills, prompt templates | did not exist when measured. Tier 10 (built 2026-10-14) loads project prompt templates ungated and holds project skills back | `resources.PROJECT_SCOPE_ADMITTED`, `PROMPT-TEMPLATES-AND-SKILLS.md` |
 
 The probe returned three context files: `clone/AGENTS.md`,
 `clone/sub/CLAUDE.md` and `clone/sub/.tau/SYSTEM.md`. It loaded zero
