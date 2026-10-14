@@ -266,12 +266,14 @@ def _tool_call_chunks(
     return chunks
 
 
-def _collect(monkeypatch, response: _FakeResponse) -> list:
+def _collect(monkeypatch, response: _FakeResponse, **options) -> list:
     """Drive ``stream_simple`` end to end and return every emitted event."""
     monkeypatch.setattr("tau_llm.providers.openai.httpx.AsyncClient", _client_factory(response))
 
     async def go():
-        stream = await stream_simple(model=_model(), context=_ctx(), options={"api_key": "sk-test"})
+        stream = await stream_simple(
+            model=_model(), context=_ctx(), options={"api_key": "sk-test", **options}
+        )
         return [e async for e in stream]
 
     return asyncio.run(go())
@@ -397,10 +399,11 @@ def test_tool_call_stream_result_matches_the_done_events_final_message(monkeypat
     ids=["401-auth", "429-rate-limit", "500-server"],
 )
 def test_an_http_error_produces_exactly_one_error_event(monkeypatch, status, error_msg, expect):
-    """Collapses what were six single-assertion tests (is_error flag, .type,
-    message-per-status, "no other events") into one parametrized behaviour: an
-    HTTP error is reported as a single ErrorEvent and nothing else."""
-    events = _collect(monkeypatch, _FakeResponse([], status_code=status, error_msg=error_msg))
+    """With retry off, an HTTP error is reported as a single ErrorEvent and nothing
+    else. A 429 is retried by default; test_provider_retry.py covers that."""
+    events = _collect(
+        monkeypatch, _FakeResponse([], status_code=status, error_msg=error_msg), retry=False
+    )
     assert len(events) == 1
     (error,) = events
     assert isinstance(error, ErrorEvent)

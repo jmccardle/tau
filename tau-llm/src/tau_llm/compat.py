@@ -83,6 +83,14 @@ class Compat(BaseModel):
     left unset, so an operator can correct one field without restating the rest.
 
     Set per-model in ``~/.tau/config.json`` (``models.<name>.compat``).
+
+    Attributes:
+        max_tokens_field: Which request field carries the completion-token cap.
+        supports_usage_in_streaming: Whether to send
+            ``stream_options.include_usage`` on a streaming request.
+        tool_call_schema: ``"anthropic"`` translates tool calls an
+            OpenAI-compatible gateway returns in the Anthropic shape. Never
+            detected; only an operator can state it.
     """
 
     max_tokens_field: MaxTokensField | None = None
@@ -92,7 +100,13 @@ class Compat(BaseModel):
 
 @agent_facing(topic="providers")
 class ResolvedCompat(BaseModel):
-    """:class:`Compat` with every field decided. What the provider reads."""
+    """:class:`Compat` with every field decided. What the provider reads.
+
+    Attributes:
+        max_tokens_field: As :attr:`Compat.max_tokens_field`.
+        supports_usage_in_streaming: As :attr:`Compat.supports_usage_in_streaming`.
+        tool_call_schema: As :attr:`Compat.tool_call_schema`.
+    """
 
     max_tokens_field: MaxTokensField
     supports_usage_in_streaming: bool
@@ -148,7 +162,14 @@ def resolve_compat(model: Model) -> ResolvedCompat:
     Detection first, then the operator's stated :class:`Compat` over the top,
     field by field — an unset field falls through to the detected value rather
     than to a type default, so stating one quirk never silently resets another.
-    Mirrors pi's ``getCompat`` (``openai-completions.ts:1631``).
+
+    Args:
+        model: The model whose ``base_url`` is detected and whose ``compat`` is
+            applied over the result.
+
+    Returns:
+        The merged compat; exactly the detected one when ``model.compat`` is
+        ``None``.
     """
     detected = detect_compat(model.provider, model.base_url)
     stated = model.compat

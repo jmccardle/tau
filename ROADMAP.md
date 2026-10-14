@@ -6,6 +6,19 @@ this file. Older entries cite pi as "the source of truth"; that stopped being th
 arrangement on 2026-09-03 (`CLAUDE.md`, "Parity with pi is not an objective") and
 those citations are provenance now.
 
+**State (2026-10-14): 0.13.0 in progress, not cut.** `master` = `origin/master`
+= `df6143d`; `github` was not pushed and is behind by the 50 commits of
+`354f1f0..df6143d`. Version literals still read `0.12.0`. Since 0.12.0:
+`ProviderHttpError` (R1), provider retry (`docs/PROVIDER-RETRY.md`),
+`tau --export-html` (`docs/HTML-EXPORT.md`), prompt templates and skills
+(`docs/PROMPT-TEMPLATES-AND-SKILLS.md`), the M4 library fix
+(`docs/EXTENSION-PROVIDERS.md` §2), Mistral list-valued content, `ctx.cwd`, a
+cassette contract suite (`docs/PROVIDER-COVERAGE.md`), the trust-gate research
+record (`docs/TRUST-GATE.md`, nothing built) and docstring coverage 1152/1152.
+Suite on `df6143d`: **6616 passed, 158 skipped, 6 deselected, 3 xfailed, 0
+failed**; the release matrix has not run. Open work is tracked as issues on the
+`john/tau` forgejo repo from this date (R2/R5/R6 are #17–#19), milestone `0.13.0`; #1 tracks the cut.
+
 **State (2026-10-04): 0.12.0 shipped.** Tag `v0.12.0` → `bebdedf`, all five
 distributions on PyPI (`publish.yml` run 37225374694). Local, `origin` and
 `github` agreed at `bebdedf` before the tag. CI on the tag: **6446 passed,
@@ -511,13 +524,12 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   rather than being displaced by it, and has `--no-context-files`/`-nc`
   (`cli.py:298`). The default config no longer sets `system_prompt` at all
   (`133e74d`). See `docs/PLAN-0.9.3.md` §1.
-- **Trust gate** (Tier 8) — still open; no `trust.json`, no `TrustGate` symbol,
-  no `--approve`/`--no-approve` flag, re-grepped 2026-08-28.
-- **`--export` HTML** (Tier 9) — still open. `tau-agent-core/.../export.py`
-  defines the format *types* (markdown and HTML, per PHASE-6-SUBPHASE-2), and
-  `cli.py`'s only export flag is `--export-session`, a JMFTS→`.jsonl` copy
-  (`cli.py:421-426`, `_run_export_session` at `cli.py:636`). No HTML exporter is
-  reachable from the CLI.
+- **Trust gate** (Tier 8) — **researched 2026-10-12, nothing built**
+  (`docs/TRUST-GATE.md`). Waits on the owner's answers in its §6; Q1 is an
+  opt-in config flag versus the full gate. Project-scope skills wait on it.
+- ~~**`--export` HTML** (Tier 9)~~ — **built 2026-10-12, unreleased**
+  (`docs/HTML-EXPORT.md`). `tau --export-html REF [OUT]`; the renderer is the
+  pure `tau_agent_core.export.render_session_html`. No image size cap (§6).
 - ~~**pi-faithful `--mode json`** (Tier 9)~~ — **struck 2026-09-17.** The
   objective was to make `--mode json` emit pi's `AgentSessionEvent` schema. It
   is retired rather than done, for two reasons measured that day. Nothing speaks
@@ -536,13 +548,14 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   486 KB for the same answer, with a linearity gate. That was τ's own bug, not a
   divergence from pi, and pi having hit it too (its regression #7290) is
   evidence it is real rather than a reason to copy anything else.
-- **Tier 10 — templates and skills legs** (the themes leg shipped 2026-08-24,
-  see above). Still absent on 2026-08-28: no `PromptTemplate` type, no
-  `$ARGUMENTS` handling, no `SKILL.md` loader, no shared resource-loader
-  abstraction. The `{{fields}}` expansion added in `bf8d2fc` is system-prompt
-  field substitution and is a different mechanism.
-- **Tier 11 M4/M5** — `registerProvider`, package manager. Deliberately
-  deferred (see "Shipped" above), not stalled.
+- ~~**Tier 10 — templates and skills legs**~~ — **built 2026-10-12, unreleased**
+  (`docs/PROMPT-TEMPLATES-AND-SKILLS.md`), user and explicit scopes; the project
+  scope for skills waits on the trust gate. Open: a colliding template name is
+  silently unreachable (§9), and `$1` cannot be escaped.
+- **Tier 11 M4/M5** — the library fix is **built 2026-10-12**: an unregistered
+  vendor no longer inherits OpenAI's endpoint (`docs/EXTENSION-PROVIDERS.md`
+  §2). An extension-API `register_provider` (§3) and a package manager (§4) are
+  researched, not built, and wait on the four decisions in §5.
 - **RPC says `cursor` where it means an entry id** — **done 2026-10-03, RPC
   2.0 / serve 0.5** (`docs/TAU-SERVE.md` §7.4). The entry id is `leaf`, the caret
   is `offset`, `is_cursor` is `is_leaf`. tau-code needs the matching update.
@@ -569,10 +582,123 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   finalized with `stop_reason: "error"` and stays in model input; every raised
   turn ends with a display-only `turn_error`; tools raise `ToolError`/`ToolHalt`
   for the model and anything else is shown only to the user.
+- **What JMFTS needs from `tau-llm` for token discipline** (added 2026-10-12).
+  The source is JMFTS's `.archive/TOKENIZATION_REQUIREMENTS.md` Part 4. R3 and R4
+  shipped in 0.12.0 (`Model.tokenizer`, `TokenizerCounter`'s
+  `includes_template=False`). The other four have no order yet:
+  - **R1, a non-2xx raises a typed error with its status** — **built
+    2026-10-12, unreleased** (`docs/PROVIDER-HTTP-ERRORS.md`). This unblocks
+    JMFTS #8 and the τ half of #32.
+  - **R2, `Provider.count_tokens(model, messages, tools=None) -> TokenCount | None`**,
+    non-abstract, returning None on the base class. Anthropic `count_tokens` and
+    Google `countTokens` are server-counted routes. On the OpenAI provider,
+    probe `POST /tokenize` once per `(base_url, model)` and cache the probe's
+    result. Open: `TokenSource` has no server-side value yet.
+  - **R5, a live `/tokenize` conformance assertion** in
+    `tau-llm/tests/test_llama_conformance.py`: a fixed string's count, and its
+    equality with `usage.input_tokens` of a real completion. Depends on R2.
+  - **R6, `context_window` from llama.cpp `GET /props` `n_ctx`** where the
+    server offers it; `0` stays where it does not.
 - **RPC's result schemas leave shapes as prose** — **done 2026-10-03, RPC
   2.1** (`docs/TAU-SERVE.md` §5 built note). The records and the schema
   generator are in core; `get_capabilities` and `docs/RPC-PROTOCOL.md` are
   typed to their leaves, with `$defs`.
+- **Code mode: the model writes a Python script and the tools run inside it**
+  (added 2026-10-12). **Status: researched, prototyped on an unmerged branch, not
+  on master. Scheduled 2026-10-14 (owner) as 0.13.0's major priority**; forgejo
+  #2, and #1's cut waits on it. The record is `docs/CODE-MODE.md`
+  (`7303954`). The prototypes are on the local, unpushed branch
+  `feat/code-mode-experiments` (tip `1039fd8`, 2026-10-06). It merges six
+  experiments, and three of them are code mode:
+  - tool exposure, nested calls and typed returns: `9e1d1b0`, `65a162d`, then a
+    cache-safe rework in `d1fcdad` and `fc9539b` (record in
+    `experiments/tool-exposure/RESULTS.md`);
+  - sandbox providers: `3f335b9` (`experiments/sandbox-providers/RESULTS.md`);
+  - a stateful Monty sandbox whose state is kept in the tree: `51579aa`
+    (`experiments/stateful-sandbox/RESULTS.md`).
+
+  The suite on that tip was 6636 passed and 0 failed on 3.11, and 6637 and 0 on
+  3.14t.
+  - **Why τ wants it** (`CODE-MODE.md` §1): declaration cost is not the reason.
+    The seven built-ins come to about 1k tokens. The reasons are that tool
+    results make up 76.5% of stored message text, and that tool-calling runs have
+    a median length of 4 and a p90 of 33 completions. A script keeps
+    intermediate results out of the context and collapses a run into one
+    completion. Declaration cost becomes τ's problem only when τ gains an MCP
+    client.
+  - **Decided:**
+    - The script language is Python (§6.2).
+    - The interpreter is not a security boundary, because `bash` already runs
+      with the user's privileges. It buys four things (§3): a scoped bridge
+      whose calls pass through the same hooks, credentials kept in the harness,
+      results kept out of the context, and resource limits.
+    - In-process `exec` and subinterpreters are rejected as isolation (§6.2,
+      measured).
+    - **Both Monty and CPython ship**, behind a pluggable `SandboxProvider`. Each
+      provider × lifetime renders its own system-prompt section and tool
+      description, and the config can override them (owner, 2026-10-06; built in
+      `3f335b9`). This supersedes §8's "nothing here picks one".
+    - **The declared `tools` block never changes on its own** (owner,
+      2026-10-06). Loading a deferred tool appends its schema as a message, and
+      the model calls it through a fixed `call_tool` dispatcher. Masking a tool
+      keeps it declared and refuses the call. Only an explicit
+      `redeclare_tools` changes the block, and `tau_agent_core` reports the
+      cache miss that would cost. Built in `d1fcdad`; `381d594` measured it
+      holding the cache on Haiku. This replaces §5.2's "small cost, one risk".
+    - `parent_tool_call_id` bumps the wires to RPC 2.2 and serve 0.9 (`fc9539b`).
+    - The exposure vocabulary as built is `direct`, `model-only`, `callable`,
+      `deferred` and `hidden`. §5.2's `codemode` value was renamed `callable`.
+    - Typed returns are read from return type hints.
+  - **Open:**
+    - Whether to review the branch, push it or merge it. It moves serve to 0.9,
+      and tau-code still speaks 0.8, so a release cut from it would refuse every
+      tau-code client.
+    - The sandbox providers still call tools through `DirectToolInvoker`, which
+      skips the hooks: no `tool_call` veto and no events. Moving them to
+      `ctx.execute_tool` is the next integration step.
+    - The `session` lifetime is a hidden channel: its heap is keyed by cursor,
+      not by tree position. Either drop it on navigate and fork, or back it with
+      the stateful-sandbox entries. That experiment met tree-as-truth by loading
+      a dump, not by replaying scripts.
+    - Whether a code-mode section is a real `{{codemode}}` system-prompt field or
+      a `before_agent_start` append, which is last-wins.
+    - Whether core registers `tool_search` and `call_tool` when the first
+      deferred tool appears.
+    - Whether a head warns when a mid-session `register_tool` changes the block.
+    - Whether `[dev]` keeps pulling `pydantic-monty`. The release matrix has
+      never run it.
+    - Calls still running when a script ends are cancelled (§6.5).
+    - Behaviour on interruption (§8): a sequential tool called from parallel
+      script code currently runs concurrently.
+    - A core-side reading of nested calls that all three heads render.
+    - `on_update` is still never passed.
+    - The headless `tau -p --continue` bug that lost tool-written entries is
+      fixed on the branch (`3a74ed7`), not on master.
+  - **Unmeasured, and it decides default versus opt-in** (§8): whether τ's
+    default local model writes reliable scripts or uses `tool_search` reliably.
+    Every live run so far used Haiku 4.5, because the local model was down.
+  - **Depends on:**
+    - "Never bust the prompt cache automatically", which is built on the branch.
+    - The tree-as-truth rule (`EXTENSIONS-ORCHESTRATION-PLAN.md` §4), which
+      governs the active tool set, `store`/`load` and any persistent lifetime.
+    - The trust gate above. It is not a prerequisite in the record (inferred),
+      but a permission gate written as a `tool_call` hook reaches script calls
+      only once those calls go through the pipeline.
+    - R2 `count_tokens` above, which would let §1's chars/4 estimates be
+      re-measured as real tokens (inferred).
+    - An MCP client extension, which §7 sequences after the exposure modes. A
+      JMFTS `ToolRanker`, and scripts stored as searchable skills, are both
+      blocked by `customEntry` projecting to `""` (`tau_jmfts/store.py:130`).
+  - **Cost, as the record prices it:**
+    - The nested-call seam: split `_prepare_tool_call` and `_apply_after_hooks`
+      out of the loop, and a minor wire bump. Both are now built.
+    - Exposure on the definition: small.
+    - Monty: an extra pinned `>=1.1,<1.2`, with wheels on every supported
+      Python.
+    - CPython: no new dependency, about 4 ms per fresh interpreter with a
+      prewarmed spare.
+    - Monty's per-call cost measured 353 µs on a loaded machine, against
+      §6.2's 92 µs. A quiet re-run is owed before either figure is quoted.
 
 ---
 
@@ -613,10 +739,10 @@ visible, not a real debt.
 - ~~**No repeat-tool-call detection in `agent_loop.py`**~~ (0.9.3 §4.2) —
   **fixed in 0.9.5.** `AgentLoopConfig.repeat_tool_call_limit`, default 3, `ge=2`
   (`agent_loop_types.py:83`), enforced at `agent_loop.py:322`.
-- **No retry or backoff anywhere in `tau-llm`** (0.9.3 §4.3). The seven-backend
-  probe found UnoRouter 429s that name their own retry interval, so the
-  information is on the wire and unused. **Re-checked 2026-09-13: still open**,
-  and now the oldest item on this list.
+- ~~**No retry or backoff anywhere in `tau-llm`**~~ (0.9.3 §4.3) — **built
+  2026-10-12, unreleased** (`docs/PROVIDER-RETRY.md`): retry before any output,
+  up to three times, `Retry-After` honoured, on by default. JMFTS must pass
+  `options["retry"]=False` or it retries twice.
 - ~~**A stated `--max-turns` ceiling is still reached silently**~~ — **fixed in
   0.9.5.** `"max_turns"` and `"repeat_tool_calls"` are `end_reason` values
   (`events.py:43`), set at `agent_loop.py:331` and `:483`, and documented on the
@@ -835,23 +961,14 @@ and two items promoted out of the debt list.
    it elsewhere.
 4. **Trust gate** (Tier 8) — security-ordered; Tier 10's skills leg and
    project-local extensions are gated behind it per the original plan.
-5. **Tier 9** — `--export` HTML. The other half of this tier, a pi-faithful
-   `--mode json`, was struck on 2026-09-17; see "Open work". Both seams
-   (`entries()`/`header`) are already in place, and `export.py` already defines
-   the HTML format types. Re-checked 2026-09-13: no HTML exporter is reachable
-   from `cli.py`.
-6. **Tier 10's remaining legs** — shared resource loader, templates, skills. No
-   `PromptTemplate` type, no `$ARGUMENTS` handling, no `SKILL.md` loader exists
-   in any `src` tree (re-grepped 2026-09-13). Themes shipped 2026-08-24 and did
-   not need the shared loader, so that abstraction is still unwritten and still
-   unproven.
-7. **Docstring coverage** — 441 of 958 marked objects are incomplete (54.0%
-   complete, up from 41.7% on 08-28). The gate cannot enter the pre-commit hook
-   until this moves.
-8. **Retry/backoff in `tau-llm`** (0.9.3 §4.3) — unscheduled since 2026-08-21
-   and the oldest open item on this file.
-9. **Tier 11 M4/M5** — `registerProvider`, package manager. Lowest priority;
-   deliberately deferred, no user demand signal yet.
+5. ~~**Tier 9** — `--export` HTML~~ — **built 2026-10-12** (`docs/HTML-EXPORT.md`).
+6. ~~**Tier 10's remaining legs**~~ — **built 2026-10-12**
+   (`docs/PROMPT-TEMPLATES-AND-SKILLS.md`).
+7. ~~**Docstring coverage**~~ — **1152/1152 on 2026-10-14**, 0 drift. Whether
+   `check_docs_coverage.py` now enters the pre-commit hook is open.
+8. ~~**Retry/backoff in `tau-llm`**~~ — **built 2026-10-12** (`docs/PROVIDER-RETRY.md`).
+9. **Tier 11 M4/M5** — library half built 2026-10-12; the extension API and the
+   package manager wait on `docs/EXTENSION-PROVIDERS.md` §5.
 Closed items from earlier orderings, kept so a reader can tell a finished item
 from one that was quietly dropped:
 

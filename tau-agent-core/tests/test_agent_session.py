@@ -1655,6 +1655,7 @@ class TestEventBus:
             "side_completion_start",
             "side_completion_update",
             "side_completion_end",
+            "provider_retry",
         }
         assert set(bus._listeners.keys()) == expected_types
 
@@ -1681,13 +1682,17 @@ class TestSDKHelpers:
         """A registered provider's api reaches the Model, not openai-completions."""
         assert resolve_model("gemini-2.5-pro", provider="gemini").api == "google-generative-ai"
 
-    def test_resolve_model_unregistered_provider_needs_base_url(self):
-        """An unregistered provider label cannot silently target api.openai.com."""
-        with pytest.raises(ValueError, match="base_url is required"):
-            resolve_model("m", provider="my-local")
-        local = resolve_model("m", provider="my-local", base_url="http://localhost:8080/v1")
-        assert local.api == "openai-completions"
-        assert local.base_url == "http://localhost:8080/v1"
+    def test_resolve_model_unregistered_provider_needs_a_base_url(self):
+        """No endpoint is an error, never OpenAI's (EXTENSION-PROVIDERS.md §2)."""
+        with pytest.raises(ValueError, match="'groq' is not registered"):
+            resolve_model("llama-3", provider="groq")
+        model = resolve_model("llama-3", provider="groq", base_url="https://g/v1")
+        assert (model.api, model.base_url) == ("openai-completions", "https://g/v1")
+
+    def test_resolve_model_base_url_does_not_leak_into_the_default(self):
+        """The override returns a copy; the shared default stays untouched."""
+        resolve_model("gpt-4o", base_url="https://custom.com/v1")
+        assert resolve_model("gpt-4o").base_url == "https://api.openai.com/v1"
 
     def test_resolve_model_custom_base_url(self):
         """resolve_model() respects custom base_url without mutating the default."""

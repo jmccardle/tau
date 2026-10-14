@@ -105,6 +105,7 @@ class WireEvent(BaseModel):
         "side_completion_start",
         "side_completion_update",
         "side_completion_end",
+        "provider_retry",
     ] = Field(description="Event type discriminator.")
     timestamp: int = Field(ge=0, description="Milliseconds since epoch.")
     turn_index: int | None = Field(default=None, description="Turn number (turn_*).")
@@ -253,6 +254,32 @@ class WireEvent(BaseModel):
         "side_completion_* events, so a host that attached mid-summary still "
         "learns whether the work was requested or imposed. None for all other "
         "event types.",
+    )
+    attempt: int | None = Field(
+        default=None,
+        description="Which retry a provider_retry announces, counting from 1. A "
+        "provider_retry says a request failed before producing any output and "
+        "will be sent again, byte-identical, after delay_seconds; `error` is the "
+        "failure. A host renders it as a passing warning: if the retries run "
+        "out, the turn's agent_end carries the final error as usual. None for "
+        "all other event types. See docs/PROVIDER-RETRY.md.",
+    )
+    max_retries: int | None = Field(
+        default=None,
+        description="The most retries that request will make, on provider_retry. "
+        "None for all other event types.",
+    )
+    delay_seconds: float | None = Field(
+        default=None,
+        description="Seconds τ waits before re-sending, on provider_retry: the "
+        "server's Retry-After when it sent one, else an exponential backoff. "
+        "None for all other event types.",
+    )
+    status_code: int | None = Field(
+        default=None,
+        description="The HTTP status being retried, on provider_retry (e.g. 429, "
+        "503). None for a connection that failed before any response, and for "
+        "all other event types.",
     )
     leaf: str | None = Field(
         default=None,

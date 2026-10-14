@@ -21,19 +21,19 @@ is legacy data and the session stores map it to ``None`` on load.
 
 `tau_llm.types.AssistantMessage.api: str`
 
-*No description. This object is marked but undocumented.*
+The wire protocol that produced it, e.g. ``"openai-completions"``.
 
 ### content
 
 `tau_llm.types.AssistantMessage.content: list[TextContent | ThinkingContent | ToolCall]`
 
-*No description. This object is marked but undocumented.*
+Thinking, text and tool-call blocks.
 
 ### error_message
 
 `tau_llm.types.AssistantMessage.error_message: str | None`
 
-*No description. This object is marked but undocumented.*
+The failure text when ``stop_reason`` is ``"error"``.
 
 ### get_tool_calls
 
@@ -53,43 +53,43 @@ List of ToolCall objects found in content blocks.
 
 `tau_llm.types.AssistantMessage.model: str`
 
-*No description. This object is marked but undocumented.*
+The model id the request named.
 
 ### provider
 
 `tau_llm.types.AssistantMessage.provider: str`
 
-*No description. This object is marked but undocumented.*
+The provider id the request went to.
 
 ### response_id
 
 `tau_llm.types.AssistantMessage.response_id: str | None`
 
-*No description. This object is marked but undocumented.*
+The server's id for the completion, when it sent one.
 
 ### role
 
 `tau_llm.types.AssistantMessage.role: Literal['assistant']`
 
-*No description. This object is marked but undocumented.*
+Discriminator, always ``"assistant"``.
 
 ### stop_reason
 
 `tau_llm.types.AssistantMessage.stop_reason: Literal['stop', 'length', 'toolUse', 'error', 'aborted']`
 
-*No description. This object is marked but undocumented.*
+Why generation ended.
 
 ### timestamp
 
 `tau_llm.types.AssistantMessage.timestamp: int | None`
 
-*No description. This object is marked but undocumented.*
+See above.
 
 ### usage
 
 `tau_llm.types.AssistantMessage.usage: Usage`
 
-*No description. This object is marked but undocumented.*
+Token counts for this completion.
 
 ## Attachment
 <!-- agent: yes -->
@@ -154,15 +154,16 @@ The five running sums and the observation count a calibrator carries.
 Serializable so a session can resume a fit instead of paying the three-turn
 warm-up again. Sums, not samples: the fit is a 2x2 normal-equation solve, so
 the whole history compresses to this regardless of how many turns fed it.
+With ``n`` messages, ``p`` payload tokens and ``r`` billed tokens per turn:
 
 **Constructor parameters**
 
-- `nn: float = 0.0` — *(no description)*
-- `npay: float = 0.0` — *(no description)*
-- `pp: float = 0.0` — *(no description)*
-- `nr: float = 0.0` — *(no description)*
-- `pr: float = 0.0` — *(no description)*
-- `count: int = 0` — *(no description)*
+- `nn: float = 0.0` — Sum of ``n*n``.
+- `npay: float = 0.0` — Sum of ``n*p``.
+- `pp: float = 0.0` — Sum of ``p*p``.
+- `nr: float = 0.0` — Sum of ``n*r``.
+- `pr: float = 0.0` — Sum of ``p*r``.
+- `count: int = 0` — Turns observed.
 
 ### from_dict
 
@@ -172,11 +173,19 @@ from_dict(data: dict[str, Any]) -> CalibrationState
 
 `tau_llm.tokens.CalibrationState.from_dict`
 
-Rebuild from :meth:`to_dict`. Missing keys are a hard error.
+Rebuild from :meth:`to_dict` output.
 
 **Parameters**
 
-- `data: dict[str, Any]` — *(no description)*
+- `data: dict[str, Any]` — A mapping with all six field names; extra keys are ignored.
+
+**Returns**
+
+The restored state.
+
+**Raises**
+
+- `ValueError` — any of the six keys is missing.
 
 ### to_dict
 
@@ -187,6 +196,10 @@ to_dict() -> dict[str, float | int]
 `tau_llm.tokens.CalibrationState.to_dict`
 
 Plain-dict form for persistence.
+
+**Returns**
+
+The six fields keyed by name; :meth:`from_dict` reverses it.
 
 ## CharClassCounter
 <!-- agent: yes -->
@@ -209,7 +222,7 @@ ratio that splits the difference is wrong about both.
 
 **Constructor parameters**
 
-- `coefficients: dict[str, tuple[float, ...]] | None = None` — *(no description)*
+- `coefficients: dict[str, tuple[float, ...]] | None = None` — Role name to seven weights in :data:`CLASS_FEATURES` order. Must include a ``"default"`` row. ``None`` uses :data:`CLASS_COEFFICIENTS`.
 
 ### count
 
@@ -223,20 +236,24 @@ Estimated token count for ``text`` under ``role``'s weights.
 
 **Parameters**
 
-- `text: str` — *(no description)*
-- `role: str | None = None` — *(no description)*
+- `text: str` — The text to estimate.
+- `role: str | None = None` — Selects a weight row; an unknown or absent role uses ``"default"``.
+
+**Returns**
+
+An inexact count of at least 1 for non-empty text, with ``includes_template=False``. Empty text is :data:`ZERO_TOKENS`.
 
 ### exact
 
 `tau_llm.tokens.CharClassCounter.exact: bool`
 
-*No description. This object is marked but undocumented.*
+Always False: every count is an estimate.
 
 ### source
 
 `tau_llm.tokens.CharClassCounter.source: TokenSource`
 
-*No description. This object is marked but undocumented.*
+Always ``"classes"``.
 
 ## ContextCalibrator
 <!-- agent: yes -->
@@ -267,7 +284,7 @@ and the system prompt it amortizes is a property of the session.
 
 **Constructor parameters**
 
-- `state: CalibrationState | None = None` — *(no description)*
+- `state: CalibrationState | None = None` — Sums from a previous calibrator's :attr:`state`; ``None`` starts empty. Adopted, not copied: :meth:`observe` mutates it.
 
 ### observations
 
@@ -305,14 +322,18 @@ predict(*, messages: int, payload: TokenCount) -> TokenCount
 
 What the endpoint will bill for ``messages`` messages costing ``payload``.
 
-Returns ``payload`` unchanged, with its own provenance, when the fit is not
-ready — an uncalibrated number that says it is uncalibrated, rather than a
-calibrated-looking number with nothing behind it.
-
 **Parameters**
 
-- `messages: int` — *(no description)*
-- `payload: TokenCount` — *(no description)*
+- `messages: int` — How many messages the request will carry.
+- `payload: TokenCount` — What a :class:`TextCounter` said those messages cost.
+
+**Returns**
+
+A ``"calibrated"`` count including template framing; or ``payload`` unchanged, with its own provenance, when the fit is not ready or ``messages`` is 0.
+
+**Raises**
+
+- `ValueError` — ``messages`` is negative.
 
 ### ready
 
@@ -330,10 +351,11 @@ solve() -> tuple[float, float] | None
 
 The fitted ``(a, r)``, or None while the fit is unusable.
 
-None means one of: fewer than :data:`CALIBRATION_MIN_OBSERVATIONS` turns
-seen, a singular system (every observed turn had the same shape), or a
-multiplier outside :data:`CALIBRATION_SCALE_BOUNDS`. A caller that gets
-None uses the uncalibrated payload and says so.
+A negative ``a`` is clamped to 0 and ``r`` refit alone.
+
+**Returns**
+
+``(a, r)``: tokens per message and the payload multiplier. ``None`` when fewer than :data:`CALIBRATION_MIN_OBSERVATIONS` turns were seen, the system is singular (every turn had the same shape), or ``r`` falls outside :data:`CALIBRATION_SCALE_BOUNDS`.
 
 ## ImageContent
 <!-- agent: yes -->
@@ -348,92 +370,88 @@ Reference: SUBPHASE-0.0.md, "1. Messages" section.
 
 `tau_llm.types.ImageContent.data: str`
 
-*No description. This object is marked but undocumented.*
+The image bytes, base64-encoded, without a ``data:`` prefix.
 
 ### mime_type
 
 `tau_llm.types.ImageContent.mime_type: str`
 
-*No description. This object is marked but undocumented.*
+The image's media type, e.g. ``"image/png"``.
 
 ### type
 
 `tau_llm.types.ImageContent.type: Literal['image']`
 
-*No description. This object is marked but undocumented.*
+Discriminator, always ``"image"``.
 
 ## Model
 <!-- agent: yes -->
 
 `tau_llm.types.Model`
 
-LLM model configuration.
+One model: which endpoint to call, how to speak to it, what it can do.
 
-Reference: SUBPHASE-0.0.md, "1. Messages" section.
-
-Represents a model with its provider and connection details.
-Serializes to OpenAI-compatible dict format.
-
-Two fields carry prompt caching and they answer different questions.
-``prompt_cache`` asks for it, on every wire. ``prompt_cache_dialect`` says
-how an OpenAI-compatible endpoint has to be asked, and stays unset for a wire
-whose caching is native (``anthropic-messages``) or automatic (OpenAI's own),
-so a marker is only ever written into the request body where one is declared
-(docs/PROMPT-CACHING.md §5).
+Reference: SUBPHASE-0.0.md, "1. Messages" section. Prompt caching:
+docs/PROMPT-CACHING.md §5.
 
 ### api
 
 `tau_llm.types.Model.api: str`
 
-*No description. This object is marked but undocumented.*
+The wire protocol, e.g. ``"openai-completions"``; selects the
+provider class.
 
 ### base_url
 
 `tau_llm.types.Model.base_url: str`
 
-*No description. This object is marked but undocumented.*
+The endpoint. Empty falls back to the registered provider's
+default; with neither, a request raises.
 
 ### compat
 
 `tau_llm.types.Model.compat: Compat | None`
 
-*No description. This object is marked but undocumented.*
+Stated OpenAI-wire quirks; ``None`` means detect them
+(:mod:`tau_llm.compat`).
 
 ### context_window
 
 `tau_llm.types.Model.context_window: int`
 
-*No description. This object is marked but undocumented.*
+The model's context size in tokens.
 
 ### extra_body
 
 `tau_llm.types.Model.extra_body: dict[str, Any]`
 
-*No description. This object is marked but undocumented.*
+Static request-body fields merged into every request;
+per-call options win.
 
 ### grammar_dialect
 
 `tau_llm.types.Model.grammar_dialect: Literal['llguidance', 'gbnf'] | None`
 
-*No description. This object is marked but undocumented.*
+The decode-constraint grammar the server accepts.
+``None`` makes any constrained request raise.
 
 ### id
 
 `tau_llm.types.Model.id: str`
 
-*No description. This object is marked but undocumented.*
+The model id sent on the wire.
 
 ### max_tokens
 
 `tau_llm.types.Model.max_tokens: int`
 
-*No description. This object is marked but undocumented.*
+Completion-token cap, sent unless the call sets its own.
 
 ### name
 
 `tau_llm.types.Model.name: str`
 
-*No description. This object is marked but undocumented.*
+Human-readable name.
 
 ### prompt_cache
 
@@ -451,67 +469,79 @@ How an OpenAI-compatible endpoint must be asked; unset for a native wire.
 
 `tau_llm.types.Model.provider: str`
 
-*No description. This object is marked but undocumented.*
+Provider id. Must agree with ``api`` when the provider is
+registered, and supplies the endpoint and credential defaults.
 
 ### reasoning
 
 `tau_llm.types.Model.reasoning: bool`
 
-*No description. This object is marked but undocumented.*
+Whether the model accepts a reasoning level. False supports
+only ``"off"``.
 
 ### reasoning_replay
 
 `tau_llm.types.Model.reasoning_replay: Literal['all', 'turn', 'off']`
 
-*No description. This object is marked but undocumented.*
+Which past thinking is sent back: ``"turn"`` (only
+after the last user message), ``"all"``, or ``"off"``
+(docs/ANTHROPIC-GOOGLE-CLIENTS.md §S1).
 
 ### request_timeout
 
 `tau_llm.types.Model.request_timeout: float | None`
 
-*No description. This object is marked but undocumented.*
+Completion timeout in seconds; a per-call
+``request_timeout`` option wins, ``None`` keeps the provider's.
 
 ### requires_tool_call_id
 
 `tau_llm.types.Model.requires_tool_call_id: bool`
 
-*No description. This object is marked but undocumented.*
+Send tool-call ids on the Google wire.
 
 ### server_features
 
 `tau_llm.types.Model.server_features: list[str]`
 
-*No description. This object is marked but undocumented.*
+Advisory tags from config (e.g. ``"jump_forward"``).
+Nothing in tau-llm reads them; never used for gating.
 
 ### stream
 
 `tau_llm.types.Model.stream: bool`
 
-*No description. This object is marked but undocumented.*
+Use SSE streaming. False talks to a backend without SSE; the
+same events are produced either way. A per-call option wins.
 
 ### strict_reasoning_formats
 
 `tau_llm.types.Model.strict_reasoning_formats: bool`
 
-*No description. This object is marked but undocumented.*
+Raise on a thinking signature from another
+provider instead of warning once and dropping it.
 
 ### supports_multimodal_function_response
 
 `tau_llm.types.Model.supports_multimodal_function_response: bool`
 
-*No description. This object is marked but undocumented.*
+Put tool-result images inside
+the tool result rather than in a separate image turn.
 
 ### temperature
 
 `tau_llm.types.Model.temperature: float | None`
 
-*No description. This object is marked but undocumented.*
+Sampling temperature, 0.0–2.0; ``None`` sends none.
 
 ### thinking_level_map
 
 `tau_llm.types.Model.thinking_level_map: dict[str, str | dict[str, Any] | None] | None`
 
-*No description. This object is marked but undocumented.*
+Per-level override of what a reasoning level sends:
+a string becomes ``reasoning_effort``, a dict is merged into the
+body, ``None`` marks the level unsupported. ``"xhigh"`` exists only
+when mapped. See :func:`tau_llm.models.get_supported_thinking_levels`.
 
 ### to_openai_format
 
@@ -525,7 +555,7 @@ Serialize to OpenAI-compatible format.
 
 **Returns**
 
-dict with keys compatible with OpenAI API: - id: model identifier - name: human-readable name - provider: provider name - base_url: API endpoint - max_completion_tokens: max tokens for completion
+``id``, ``name``, ``provider``, ``base_url``, ``max_completion_tokens`` (from ``max_tokens``) and ``context_window``.
 
 ### tokenizer
 
@@ -583,13 +613,13 @@ Reference: SUBPHASE-0.0.md, "1. Messages" section.
 
 `tau_llm.types.TextContent.text: str`
 
-*No description. This object is marked but undocumented.*
+The text itself.
 
 ### type
 
 `tau_llm.types.TextContent.type: Literal['text']`
 
-*No description. This object is marked but undocumented.*
+Discriminator, always ``"text"``.
 
 ## TextCounter
 <!-- agent: yes -->
@@ -614,8 +644,12 @@ Tokens for ``text``, optionally hinted by the message ``role``.
 
 **Parameters**
 
-- `text: str` — *(no description)*
-- `role: str | None = None` — *(no description)*
+- `text: str` — The text to count.
+- `role: str | None = None` — The message role the text belongs to, for counters that weigh roles differently.
+
+**Returns**
+
+The count, labelled with this counter's provenance.
 
 ### exact
 
@@ -642,25 +676,28 @@ Reference: SUBPHASE-0.0.md, "1. Messages" section.
 
 `tau_llm.types.ThinkingContent.cached_tokens: int`
 
-*No description. This object is marked but undocumented.*
+Not set by any τ provider; stays 0 unless a caller fills it.
 
 ### thinking
 
 `tau_llm.types.ThinkingContent.thinking: str`
 
-*No description. This object is marked but undocumented.*
+The reasoning text.
 
 ### thinking_signature
 
 `tau_llm.types.ThinkingContent.thinking_signature: str | dict[str, Any]`
 
-*No description. This object is marked but undocumented.*
+What a provider needs to replay this block. On the
+OpenAI wire, the name of the response field the reasoning arrived in
+(e.g. ``"reasoning_content"``); on Anthropic, a namespaced dict holding
+the signature or redacted payload. ``""`` when there is none.
 
 ### type
 
 `tau_llm.types.ThinkingContent.type: Literal['thinking']`
 
-*No description. This object is marked but undocumented.*
+Discriminator, always ``"thinking"``.
 
 ## TokenCount
 <!-- agent: yes -->
@@ -703,8 +740,8 @@ is not in it. :class:`ContextCalibrator` is what learns the difference.
 
 **Constructor parameters**
 
-- `tokenizer: Any` — *(no description)*
-- `name: str = '<tokenizer>'` — *(no description)*
+- `tokenizer: Any` — A ``tokenizers.Tokenizer``, or anything with a compatible ``.encode(text, add_special_tokens=False).ids``.
+- `name: str = '<tokenizer>'` — Where it came from, for :attr:`name`.
 
 ### count
 
@@ -714,18 +751,22 @@ count(text: str, *, role: str | None = None) -> TokenCount
 
 `tau_llm.tokens.TokenizerCounter.count`
 
-Exact token count for ``text``. ``role`` is accepted and ignored.
+Exact token count for ``text``, without special tokens.
 
 **Parameters**
 
-- `text: str` — *(no description)*
-- `role: str | None = None` — *(no description)*
+- `text: str` — The text to encode.
+- `role: str | None = None` — Accepted for :class:`TextCounter` compatibility and ignored.
+
+**Returns**
+
+An exact count with ``includes_template=False``.
 
 ### exact
 
 `tau_llm.tokens.TokenizerCounter.exact: bool`
 
-*No description. This object is marked but undocumented.*
+Always True: counts are exact for the text given.
 
 ### from_file
 
@@ -739,12 +780,16 @@ Load a ``tokenizer.json`` off disk.
 
 **Parameters**
 
-- `path: str` — *(no description)*
+- `path: str` — Path to the ``tokenizer.json`` file.
+
+**Returns**
+
+A counter named after ``path``.
 
 **Raises**
 
 - `TokenizerUnavailable` — the ``tokenizers`` package is not installed.
-- `OSError` — the file does not exist or does not parse.
+- `Exception` — the file does not exist or does not parse. ``tokenizers`` raises a bare ``Exception`` for both, not ``OSError``.
 
 ### from_pretrained
 
@@ -756,13 +801,15 @@ from_pretrained(repo_id: str) -> TokenizerCounter
 
 Fetch a tokenizer from the HuggingFace hub by repository id.
 
-Network-dependent and uncached by this class — the caller owns the cache,
-because where a downloaded file lands is a policy question this module has
-no business answering.
+Network-dependent and uncached by this class: the caller owns the cache.
 
 **Parameters**
 
-- `repo_id: str` — *(no description)*
+- `repo_id: str` — The hub repository id, e.g. ``"Qwen/Qwen3-8B"``.
+
+**Returns**
+
+A counter named after ``repo_id``.
 
 **Raises**
 
@@ -773,7 +820,7 @@ no business answering.
 
 `tau_llm.tokens.TokenizerCounter.source: TokenSource`
 
-*No description. This object is marked but undocumented.*
+Always ``"tokenizer"``.
 
 ## TokenizerUnavailable
 <!-- agent: yes -->
@@ -795,31 +842,33 @@ Reference: SUBPHASE-0.0.md, "1. Messages" section.
 
 `tau_llm.types.ToolCall.arguments: dict[str, Any]`
 
-*No description. This object is marked but undocumented.*
+The parsed argument object.
 
 ### id
 
 `tau_llm.types.ToolCall.id: str`
 
-*No description. This object is marked but undocumented.*
+The provider's call id; the answering result carries it as
+``tool_call_id``.
 
 ### name
 
 `tau_llm.types.ToolCall.name: str`
 
-*No description. This object is marked but undocumented.*
+The tool the model asked for.
 
 ### provider_signature
 
 `tau_llm.types.ToolCall.provider_signature: dict[str, Any]`
 
-*No description. This object is marked but undocumented.*
+Vendor-namespaced data a provider must send back with
+this call, e.g. Gemini's thought signature. Persisted with the session.
 
 ### type
 
 `tau_llm.types.ToolCall.type: Literal['toolCall']`
 
-*No description. This object is marked but undocumented.*
+Discriminator, always ``"toolCall"``.
 
 ## ToolResultMessage
 <!-- agent: yes -->
@@ -834,66 +883,62 @@ Reference: SUBPHASE-0.0.md, "1. Messages" section.
 
 `tau_llm.types.ToolResultMessage.content: list[TextContent | ImageContent]`
 
-*No description. This object is marked but undocumented.*
+What the model sees: text and image blocks.
 
 ### details
 
 `tau_llm.types.ToolResultMessage.details: dict[str, Any] | None`
 
-*No description. This object is marked but undocumented.*
+Structured data for heads and hooks; no provider sends it.
 
 ### is_error
 
 `tau_llm.types.ToolResultMessage.is_error: bool`
 
-*No description. This object is marked but undocumented.*
+Whether the tool failed; the content then holds the error.
 
 ### role
 
 `tau_llm.types.ToolResultMessage.role: Literal['toolResult']`
 
-*No description. This object is marked but undocumented.*
+Discriminator, always ``"toolResult"``.
 
 ### timestamp
 
 `tau_llm.types.ToolResultMessage.timestamp: int`
 
-*No description. This object is marked but undocumented.*
+Epoch milliseconds when the result was created.
 
 ### tool_call_id
 
 `tau_llm.types.ToolResultMessage.tool_call_id: str`
 
-*No description. This object is marked but undocumented.*
+The ``ToolCall.id`` this answers.
 
 ### tool_name
 
 `tau_llm.types.ToolResultMessage.tool_name: str`
 
-*No description. This object is marked but undocumented.*
+The tool that ran.
 
 ## Usage
 <!-- agent: yes -->
 
 `tau_llm.types.Usage`
 
-Token usage information for an LLM response.
+Token usage for one LLM response. Frozen: use ``model_copy(update=...)``.
 
 Reference: SUBPHASE-0.0.md, "1. Messages" section.
 
-Usage is immutable (frozen) — once created, its fields cannot be modified.
-
-``cache_reported`` says whether the SERVER accounted for a prompt cache on
-this completion at all, which a 0 in the two counters cannot: llama.cpp
-reports no cache fields, so its 0 means "no cache here" where a gateway's 0
-means "cached nothing". Only the second is a finding
-(docs/PROMPT-CACHING.md §7).
+``cache_reported`` exists because a 0 in the cache counters is ambiguous:
+llama.cpp reports no cache fields, while a gateway's 0 means "cached
+nothing" (docs/PROMPT-CACHING.md §7).
 
 ### cache_read_tokens
 
 `tau_llm.types.Usage.cache_read_tokens: int`
 
-*No description. This object is marked but undocumented.*
+Prompt tokens served from the provider's cache.
 
 ### cache_reported
 
@@ -907,43 +952,45 @@ False makes ``cache_read_tokens`` of 0 silence rather than a miss.
 
 `tau_llm.types.Usage.cache_write_tokens: int`
 
-*No description. This object is marked but undocumented.*
+Prompt tokens written to the provider's cache.
 
 ### cost
 
 `tau_llm.types.Usage.cost: dict[str, float]`
 
-*No description. This object is marked but undocumented.*
+Not set by any τ provider; prices are applied at the head's emit
+boundary, not stored here.
 
 ### extra
 
 `tau_llm.types.Usage.extra: dict[str, Any]`
 
-*No description. This object is marked but undocumented.*
+Provider-specific additions, e.g. llama.cpp ``"timings"`` or the
+OpenAI provider's ``"repairs"`` count for tool-call arguments.
 
 ### input_tokens
 
 `tau_llm.types.Usage.input_tokens: int`
 
-*No description. This object is marked but undocumented.*
+Prompt tokens, as the provider reported them.
 
 ### model_config
 
 `tau_llm.types.Usage.model_config`
 
-*No description. This object is marked but undocumented.*
+Pydantic configuration; makes instances frozen.
 
 ### output_tokens
 
 `tau_llm.types.Usage.output_tokens: int`
 
-*No description. This object is marked but undocumented.*
+Completion tokens, as the provider reported them.
 
 ### total_tokens
 
 `tau_llm.types.Usage.total_tokens: int`
 
-*No description. This object is marked but undocumented.*
+The server's total, or input plus output when it sent none.
 
 ## UserMessage
 <!-- agent: yes -->
@@ -958,19 +1005,19 @@ Reference: SUBPHASE-0.0.md, "1. Messages" section.
 
 `tau_llm.types.UserMessage.content: str | list[TextContent | ImageContent]`
 
-*No description. This object is marked but undocumented.*
+Plain text, or a list of text and image blocks.
 
 ### role
 
 `tau_llm.types.UserMessage.role: Literal['user']`
 
-*No description. This object is marked but undocumented.*
+Discriminator, always ``"user"``.
 
 ### timestamp
 
 `tau_llm.types.UserMessage.timestamp: int`
 
-*No description. This object is marked but undocumented.*
+Epoch milliseconds when the message was created.
 
 ## clamp_thinking_level
 <!-- agent: yes -->
@@ -984,14 +1031,16 @@ clamp_thinking_level(model: Model, level: ModelThinkingLevel) -> ModelThinkingLe
 Clamp ``level`` to the nearest level ``model`` actually supports.
 
 If the exact level is supported it is returned unchanged. Otherwise search
-upward (more effort) first, then downward, falling back to the lowest
-supported level (``"off"`` for a non-reasoning model). Mirrors pi
-``clampThinkingLevel`` (models.ts:64-83).
+upward (more effort) first, then downward.
 
 **Parameters**
 
-- `model: Model` — *(no description)*
-- `level: ModelThinkingLevel` — *(no description)*
+- `model: Model` — The model whose supported levels bound the result.
+- `level: ModelThinkingLevel` — The requested level. An unknown string clamps to the lowest supported level.
+
+**Returns**
+
+A level from :func:`get_supported_thinking_levels`; ``"off"`` for a non-reasoning model.
 
 ## complete_attachment
 <!-- agent: yes -->
@@ -1043,10 +1092,14 @@ id. Unset means no tokenizer was configured and the caller gets a
 - `model: Any` — Any object with an optional ``tokenizer`` attribute; a :class:`~tau_llm.types.Model` in practice.
 - `fallback: bool = False` — What to do when ``model.tokenizer`` IS set but will not load. False (the default) re-raises: the operator named a tokenizer, so silently substituting an estimate would hide a typo in a path behind a plausible number. True downgrades to the class counter, for a display that must render something rather than crash a UI thread.
 
+**Returns**
+
+class:`TokenizerCounter` (memoized per tokenizer spec; a ``.json`` suffix loads a file, anything else the hub), else a class:`CharClassCounter`.
+
 **Raises**
 
 - `TokenizerUnavailable` — ``model.tokenizer`` is set, ``fallback`` is False, and the ``tokenizers`` package is missing.
-- `OSError` — ``model.tokenizer`` is set, ``fallback`` is False, and the file or repo id does not resolve.
+- `Exception` — ``model.tokenizer`` is set, ``fallback`` is False, and the file or repo id does not load; whatever ``tokenizers`` or the hub raised, unchanged (a bare ``Exception`` for a missing or malformed file).
 
 ## elide_attachment_bodies
 <!-- agent: yes -->
@@ -1090,12 +1143,15 @@ Return the levels ``model`` supports, least → most effort.
 A non-reasoning model supports only ``["off"]``. Otherwise every level is
 supported except those the ``thinking_level_map`` explicitly nulls out, with
 one special case: ``"xhigh"`` is available only when the map provides an
-entry for it (it is a non-standard extension). Mirrors pi
-``getSupportedThinkingLevels`` (models.ts:53-63).
+entry for it (it is a non-standard extension).
 
 **Parameters**
 
-- `model: Model` — *(no description)*
+- `model: Model` — Reads ``reasoning`` and ``thinking_level_map``.
+
+**Returns**
+
+The supported levels in :data:`EXTENDED_THINKING_LEVELS` order.
 
 ## is_displayed
 <!-- agent: yes -->
@@ -1136,11 +1192,15 @@ is_valid_thinking_level(level: str) -> bool
 
 `tau_llm.models.is_valid_thinking_level`
 
-True if ``level`` is one of the known levels ("off".."xhigh").
+Whether ``level`` names a known thinking level.
 
 **Parameters**
 
-- `level: str` — *(no description)*
+- `level: str` — Any string.
+
+**Returns**
+
+True for ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``, ``"high"`` and ``"xhigh"``.
 
 ## remove_attachment
 <!-- agent: yes -->

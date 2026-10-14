@@ -49,7 +49,11 @@ is_html() -> bool
 
 `tau_agent_core.export.ExportConfig.is_html`
 
-Check if this config is for HTML export.
+Whether ``format`` is ``"html"``.
+
+**Returns**
+
+True for HTML export.
 
 ### is_markdown
 
@@ -59,7 +63,11 @@ is_markdown() -> bool
 
 `tau_agent_core.export.ExportConfig.is_markdown`
 
-Check if this config is for markdown export.
+Whether ``format`` is ``"markdown"``.
+
+**Returns**
+
+True for markdown export.
 
 ### to_dict
 
@@ -80,10 +88,10 @@ A dict with all export configuration fields.
 
 `tau_agent_core.export.HTMLExporter`
 
-Export session messages to HTML format.
+Export a flat message list as one self-contained HTML page.
 
-Produces a styled HTML document with sections for
-user, assistant, and (optionally) tool messages.
+The flat counterpart of :func:`render_session_html`, for a caller holding
+messages rather than a session's entries; both draw a message the same way.
 
 ### export
 
@@ -93,16 +101,16 @@ export(messages: list[dict], config: ExportConfig) -> str
 
 `tau_agent_core.export.HTMLExporter.export`
 
-Export a session's messages to HTML.
+Render ``messages`` in order.
 
 **Parameters**
 
-- `messages: list[dict]` — List of message dicts representing the session.
-- `config: ExportConfig` — Export configuration controlling what to include.
+- `messages: list[dict]` — Message dicts in ``tau_llm`` shape.
+- `config: ExportConfig` — What to include. ``include_timestamps`` shows each message's epoch-ms ``timestamp`` in local time.
 
 **Returns**
 
-HTML formatted string.
+The HTML document.
 
 ## MarkdownExporter
 <!-- agent: yes -->
@@ -142,20 +150,53 @@ export_session(messages: list[dict], config: ExportConfig | None = None) -> str
 
 `tau_agent_core.export.export_session`
 
-Export a session's messages to a human-readable string.
+Export a flat message list as Markdown or HTML.
 
-Supports exporting to markdown and HTML formats with configurable
-inclusion of tool calls, thinking blocks, and timestamps.
+For a whole session tree, use :func:`render_session_html`.
 
 **Parameters**
 
-- `messages: list[dict]` — List of message dicts representing the session. Each dict should have 'role' and 'content' keys, matching the tau_llm message types.
-- `config: ExportConfig | None = None` — Export configuration. Defaults to ExportConfig(format="markdown") if not provided.
+- `messages: list[dict]` — Message dicts in ``tau_llm`` shape (``role``, ``content``).
+- `config: ExportConfig | None = None` — What to export; defaults to ``ExportConfig(format="markdown")``.
 
 **Returns**
 
-Formatted string in the requested export format.
+The document in the requested format.
 
 **Raises**
 
 - `ValueError` — If the export format in config is invalid.
+
+## render_session_html
+<!-- agent: yes -->
+
+```python
+render_session_html(entries: list[dict[str, Any]], *, header: Mapping[str, Any] | None = None, leaf: str | None = None, config: ExportConfig | None = None) -> str
+```
+
+`tau_agent_core.export.render_session_html` · since 0.13.0
+
+A whole session tree as one HTML page that loads nothing from the network.
+
+Every entry appears once. The path to ``leaf`` is the main thread; at each
+fork the other children fold in place as ``<details>`` branches, each laid out
+by the same rule with its newest-written child continuing. Images are inline
+``data:`` URIs, there is no script, and a Content-Security-Policy forbids
+every fetch. Message text is preformatted, not rendered Markdown.
+
+See docs/HTML-EXPORT.md.
+
+**Parameters**
+
+- `entries: list[dict[str, Any]]` — A log's ``entries()``, in append order.
+- `header: Mapping[str, Any] | None = None` — The session header (``ConversationSession.header``); ``None`` omits the identity lines, which an ``InMemorySessionLog`` has none of.
+- `leaf: str | None = None` — The entry whose path is the main thread; ``None`` is :func:`~tau_agent_core.session_log.default_leaf`, where a reopened session continues.
+- `config: ExportConfig | None = None` — What to include; defaults to ``ExportConfig(format="html")``.
+
+**Returns**
+
+The HTML document.
+
+**Raises**
+
+- `ValueError` — ``config`` is not an HTML config, or ``leaf`` names no entry.

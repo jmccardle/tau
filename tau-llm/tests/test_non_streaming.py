@@ -26,6 +26,7 @@ import pytest
 from pydantic import ValidationError
 
 from tau_llm.constraints import DecodeConstraints
+from tau_llm.errors import ProviderHttpError
 from tau_llm.providers.openai import OpenAICompletionsProvider
 from tau_llm.streaming import (
     DoneEvent,
@@ -34,7 +35,7 @@ from tau_llm.streaming import (
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
 )
-from tau_llm.types import Model, TextContent, UserMessage
+from tau_llm.types import Model, TextContent, ThinkingContent, UserMessage
 
 
 class _StreamCM:
@@ -254,9 +255,7 @@ def test_non_streaming_produces_the_same_assistant_message_as_streaming():
 
     assert isinstance(buffered.timestamp, int)
     assert isinstance(streamed.timestamp, int)
-    assert buffered.model_dump(exclude={"timestamp"}) == streamed.model_dump(
-        exclude={"timestamp"}
-    )
+    assert buffered.model_dump(exclude={"timestamp"}) == streamed.model_dump(exclude={"timestamp"})
 
 
 def test_non_streaming_carries_text_thinking_tool_calls_usage_and_stop_reason():
@@ -483,7 +482,7 @@ def test_a_buffered_content_that_is_not_a_string_raises_rather_than_being_guesse
                     "id": "r",
                     "choices": [
                         {
-                            "message": {"role": "assistant", "content": [{"type": "text"}]},
+                            "message": {"role": "assistant", "content": {"text": "hi"}},
                             "finish_reason": "stop",
                         }
                     ],
@@ -499,24 +498,26 @@ def test_a_buffered_content_that_is_not_a_string_raises_rather_than_being_guesse
 
 def test_a_non_200_reads_the_same_in_both_transports():
     body = {"error": {"message": "model not found"}}
-    streamed = _run(
-        _FakeClient(
-            stream_response=_FakeResponse(
-                lines=[], body=body, status_code=404, text=json.dumps(body)
-            )
-        ),
-        _model(stream=True),
-    )
-    buffered = _run(
-        _FakeClient(post_response=_FakeResponse(body=body, status_code=404, text=json.dumps(body))),
-        _model(stream=False),
-    )
+    with pytest.raises(ProviderHttpError) as streamed:
+        _run(
+            _FakeClient(
+                stream_response=_FakeResponse(
+                    lines=[], body=body, status_code=404, text=json.dumps(body)
+                )
+            ),
+            _model(stream=True),
+        )
+    with pytest.raises(ProviderHttpError) as buffered:
+        _run(
+            _FakeClient(
+                post_response=_FakeResponse(body=body, status_code=404, text=json.dumps(body))
+            ),
+            _model(stream=False),
+        )
 
-    (streamed_error,) = [e for e in streamed if isinstance(e, ErrorEvent)]
-    (buffered_error,) = [e for e in buffered if isinstance(e, ErrorEvent)]
-    assert buffered_error.message == streamed_error.message
-    assert "HTTP 404" in buffered_error.message
-    assert "model not found" in buffered_error.message
+    assert str(buffered.value) == str(streamed.value)
+    assert buffered.value.status_code == streamed.value.status_code == 404
+    assert buffered.value.message == "model not found"
 
 
 def test_streaming_is_the_default_and_model_stream_false_switches_transport():
@@ -691,3 +692,48 @@ def test_a_finish_reason_of_length_maps_the_same_way_without_a_stream():
         _model(stream=False),
     )
     assert _final(events).final.stop_reason == "length"
+
+
+_MISTRAL_THINKING = {"type": "thinking", "thinking": [{"type": "text", "text": "17*23 = 391."}]}
+_MISTRAL_TEXT = {"type": "text", "text": "391"}
+
+
+def _mistral_events(stream: bool, content: list) -> list:
+    if stream:
+        chunks = [
+            {"id": "m", "choices": [{"index": 0, "delta": {"content": [c]}}]} for c in content
+        ] + [{"id": "m", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}]
+        client = _FakeClient(stream_response=_FakeResponse(lines=_sse(chunks)))
+    else:
+        body = {
+            "id": "m",
+            "choices": [
+                {"message": {"role": "assistant", "content": content}, "finish_reason": "stop"}
+            ],
+        }
+        client = _FakeClient(post_response=_FakeResponse(body=body))
+    return _run(client, _model(stream=stream))
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_mistral_chunked_content_splits_into_thinking_then_text(stream):
+    final = _final(_mistral_events(stream, [_MISTRAL_THINKING, _MISTRAL_TEXT])).final
+    assert [type(c) for c in final.content] == [ThinkingContent, TextContent]
+    assert final.content[0].thinking == "17*23 = 391."
+    assert final.content[1].text == "391"
+
+
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.parametrize(
+    "chunk",
+    [
+        {"type": "reference", "reference_ids": [1]},
+        {"type": "thinking", "thinking": [{"type": "image_url", "image_url": "x"}]},
+        "bare string",
+    ],
+)
+def test_an_unknown_content_chunk_raises_rather_than_being_dropped(stream, chunk):
+    events = _mistral_events(stream, [_MISTRAL_TEXT, chunk])
+    errors = [e for e in events if isinstance(e, ErrorEvent)]
+    assert len(errors) == 1
+    assert "test-model" in errors[0].message

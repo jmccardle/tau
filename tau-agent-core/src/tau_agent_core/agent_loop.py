@@ -26,6 +26,7 @@ from tau_llm.client import stream_simple
 from tau_llm.streaming import (
     DoneEvent,
     ErrorEvent,
+    RetryEvent,
     TextDeltaEvent,
     ThinkingDeltaEvent,
     ToolCallDeltaEvent,
@@ -41,6 +42,7 @@ from tau_agent_core.agent_loop_types import (
     PreparedToolCall,
 )
 from tau_agent_core.events import AgentEndReason, AgentEvent
+from tau_agent_core.provider_retry import provider_retry_event
 from tau_agent_core.messages import convert_to_llm, create_custom_message
 from tau_agent_core.tool_pipeline import (
     BlockedCall,
@@ -76,15 +78,31 @@ class TurnWriter(Protocol):
     """
 
     async def open(self, message: dict[str, Any]) -> Any:
-        """Record that an assistant message has started; return a handle for :meth:`finalize`."""
+        """Record that an assistant message has started.
+
+        Args:
+            message: The empty assistant message dict, before any content streams.
+
+        Returns:
+            An opaque handle the loop passes back to :meth:`finalize`.
+        """
         ...
 
     async def finalize(self, handle: Any, message: Any) -> None:
-        """Complete the message :meth:`open` started."""
+        """Complete the message :meth:`open` started.
+
+        Args:
+            handle: What :meth:`open` returned for this message.
+            message: The finished assistant message.
+        """
         ...
 
     async def append(self, message: Any) -> None:
-        """Write a message that is finished when it exists: a tool result, a steer, a node."""
+        """Write a message that is finished when it exists: a tool result, a steer, a node.
+
+        Args:
+            message: The finished message, a dict or a pydantic message model.
+        """
         ...
 
 
@@ -109,49 +127,52 @@ COMPLETED_MESSAGES_ATTR = "tau_completed_messages"
 def completed_messages(exc: BaseException) -> list[Any]:
     """The messages an agent-loop run had already completed when *exc* ended it.
 
-    Empty for any other exception, so a caller can ask unconditionally. The
-    caller that matters is
+    The caller that matters is
     :meth:`~tau_agent_core.agent_session.AgentSession._run_one_turn`, which
-    persists these before re-raising — the requirement in docs/PLAN-0.9.4.md §3:
-    *every complete message or tool result should be persisted*.
+    persists these before re-raising (docs/PLAN-0.9.4.md §3).
+
+    Args:
+        exc: Any exception; only one raised out of an agent-loop run carries
+            messages.
+
+    Returns:
+        A copy of the completed messages, or an empty list for any other
+        exception, so a caller can ask unconditionally.
     """
     return list(getattr(exc, COMPLETED_MESSAGES_ATTR, []))
 
 
 @agent_facing(topic="agent-loop")
 class AgentLoop:
-    """The core agent loop.
+    """The core agent loop: drives conversations, executes tools, emits events.
 
-    Drives conversations, executes tools, and emits events.
+    Events follow docs/SUBPHASE-0.0.md, "5. Agent Events".
 
-    Reference: PHASE-2-SUBPHASE-1.md, "Implementation Outline" section.
-    Reference: SUBPHASE-0.0.md, "5. Agent Events" section.
+    Args:
+        config: Agent loop configuration.
+        emit: Awaited with each AgentEvent; ``None`` emits nothing.
+        tools: The tools the model may call, keyed by name (a later duplicate
+            name wins).
+        model: Overrides ``config.model`` when truthy.
+        abort_signal: Checked between turns and passed to the stream and tools;
+            ``None`` means the run cannot be aborted.
+        hook_dispatcher: The return-collecting extension hook dispatcher, whose
+            ``emit_*`` results the mutating-hook call-sites thread forward.
+            ``None`` when standalone: no hook work at all.
+        steer_queue: The session's live steering queue (docs/SUBMISSION-LIFECYCLE.md
+            phase 4). The list object itself is shared, not a drain callback, so
+            the loop can peek before a would-be-final turn and drain only in the
+            statement that delivers; a ``max_turns`` exit strands nothing.
+        mid_turn_compactor: Offered the context at each turn boundary; see
+            :data:`MidTurnCompactor`. ``None`` never compacts mid-turn.
+        writer: Where each message is written as it exists; ``None`` writes
+            nothing and the loop only returns what it produced.
+        call_gate: Given a model-issued call's tool name, the reason to refuse
+            it, or ``None`` to let it run; how a masked tool stays declared, so
+            the ``tools`` block and the prompt cache hold. ``None`` gates nothing.
 
     Attributes:
-        config: Agent loop configuration.
-        emit: Callback to emit AgentEvents (fire-and-forget; returns None).
-        _turn_index: Current turn counter.
-        _tools: Mapping of tool names to AgentTool instances.
-        _hook_dispatcher: The return-collecting extension hook dispatcher
-            (an :class:`~tau_agent_core.extensions.runner.ExtensionRunner`),
-            injected by :class:`~tau_agent_core.agent_session.AgentSession`.
-        _call_gate: Given a model-issued call's tool name, the reason to refuse
-            it, or ``None`` to let it run. How a masked tool stays declared, so
-            the ``tools`` block and the prompt cache hold (experimental).
-            Unlike ``emit`` (fire-and-forget), its ``emit_*`` methods return
-            results that the mutating-hook call-sites thread forward. ``None``
-            when the loop runs standalone (no session / no extensions).
-        _steer_queue: The session's live steering queue — the delivery point for
-            ``multitask_strategy="steer"`` (docs/SUBMISSION-LIFECYCLE.md phase 4;
-            pi ``agent-loop.ts:166-186``). The LIST OBJECT itself is shared with
-            :class:`~tau_agent_core.agent_session.AgentSession` rather than a
-            drain callback, deliberately: the loop must both PEEK (to decide
-            whether a would-be-final turn takes one more LLM call) and DRAIN
-            (immediately before the call that carries the content), and a
-            drain-only seam forces the loop to hold drained content in a local
-            that a ``max_turns`` exit would strand. Sharing the list means
-            nothing leaves the queue until the very statement that delivers it.
-            ``None`` when the loop runs standalone (no session).
+        config: The configuration passed in.
     """
 
     def __init__(
@@ -198,10 +219,14 @@ class AgentLoop:
     def has_hook_handlers(self, event: str) -> bool:
         """Whether any extension has a handler for the mutating hook ``event``.
 
-        The zero-extension fast path (pi ``agent-session.ts:407-411``): the four
-        hook call-sites (S11-S14) call this before dispatching so a session with
-        no extensions — or a standalone loop with no injected dispatcher — does
-        no hook work at all. Returns ``False`` when no dispatcher was injected.
+        The zero-extension fast path: the hook call-sites (S11-S14) check this
+        before dispatching, so a loop with no extensions does no hook work.
+
+        Args:
+            event: The hook name.
+
+        Returns:
+            True if a dispatcher was injected and has a handler for ``event``.
         """
         return self._hook_dispatcher is not None and self._hook_dispatcher.has_handlers(event)
 
@@ -601,8 +626,8 @@ class AgentLoop:
         """Close the ``agent_start`` bracket, however the loop ended.
 
         This used to be reachable only by falling out of the ``while``, so a loop
-        that RAISED — a provider ``ErrorEvent`` becomes a ``RuntimeError``
-        (:meth:`_stream_response`); a dropped connection — or one that was
+        that RAISED — a provider ``ErrorEvent`` is raised as its ``exception``, or
+        as a ``RuntimeError`` (:meth:`_stream_response`); a dropped connection — or one that was
         CANCELLED (``abort()`` cancels every forked task) emitted no ``agent_end``
         at all, leaving the bracket open for the rest of the session.
 
@@ -874,7 +899,9 @@ class AgentLoop:
 
         try:
             async for event in stream:
-                if isinstance(event, TextDeltaEvent):
+                if isinstance(event, RetryEvent):
+                    await self._emit(provider_retry_event(event))
+                elif isinstance(event, TextDeltaEvent):
                     latest = event.partial
                     partial_text += event.delta
                     partial_content_blocks = [{"type": "text", "text": partial_text}]
@@ -951,7 +978,11 @@ class AgentLoop:
                             f"provider emitted an error event with an empty message "
                             f"(model {model_label!r}); the upstream failure is unreported"
                         )
-                    failure = RuntimeError(detail)
+                    failure = (
+                        event.exception
+                        if isinstance(event.exception, Exception)
+                        else RuntimeError(detail)
+                    )
                     await self._stream_failed(failure, handle, latest, detail)
                     raise failure
         except Exception as exc:

@@ -277,7 +277,7 @@ async def test_resume_of_compacted_session_hands_spliced_context_to_backend(env)
     assert ctx[0] == {"role": "system", "content": "You are helpful."}
     assert ctx[1]["content"] == [{"type": "text", "text": "[[Compaction summary: OLD-SUMMARY]]"}]
     assert {"role": "assistant", "content": [{"type": "text", "text": "r"}]} in ctx
-    assert _no_ts(ctx[-1]) == {"role": "user", "content": "next"}
+    assert env["backend"].submission.text == "next"
     # The dropped prefix is absent from the model context — the actual fix …
     assert {"role": "user", "content": "a1"} not in [_no_ts(m) for m in ctx]
     # … even though it is still on disk (the linear fold would have re-fed it).

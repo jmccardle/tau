@@ -42,6 +42,7 @@ REJECTED_UNDER_RPC = {
     "store",
     "connect",
     "cwd",
+    "export_html",
 }
 
 HONORED_UNDER_RPC = {
@@ -60,6 +61,10 @@ HONORED_UNDER_RPC = {
     "system_prompt",
     "append_system_prompt",
     "no_context_files",
+    "prompt_templates",
+    "no_prompt_templates",
+    "skills",
+    "no_skills",
     "thinking",
     "session_dir",
     "max_turns",

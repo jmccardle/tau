@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tau_llm.models import EXTENDED_THINKING_LEVELS
+from tau_agent_core.resources import ResourceError
 from tau_coding_agent.config import TAU_DIR, ConfigError, load_config
 from tau_coding_agent.headless import (
     CLIError,
@@ -70,6 +71,10 @@ class CLIArgs:
     append_system_prompt: list[str] = field(default_factory=list)  # repeatable
     system_prompt: str | None = None
     no_context_files: bool = False
+    prompt_templates: list[str] = field(default_factory=list)  # --prompt-template (repeatable)
+    no_prompt_templates: bool = False
+    skills: list[str] = field(default_factory=list)  # --skill (repeatable)
+    no_skills: bool = False
     thinking: str | None = None  # off|minimal|low|medium|high|xhigh
     continue_session: bool = False  # --continue/-c → most-recent session
     resume: bool = False
@@ -80,6 +85,7 @@ class CLIArgs:
     session_dir: str | None = None
     import_session: str | None = None  # --import-session PATH
     export_session: list[str] | None = None  # --export-session REF PATH (nargs=2)
+    export_html: list[str] | None = None  # --export-html REF [OUT]
     verbose: bool = False
     fun: bool = FUN_DEFAULT
     connect: str | None = None  # --connect ADDR → drive a `tau serve` daemon
@@ -132,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
             '  tau -p --store jmfts "hi"   # headless turn persisted to JMFTS\n'
             "  tau --import-session x.jsonl        # copy a file session into JMFTS\n"
             "  tau --export-session 42 x.jsonl     # copy JMFTS doc 42 to a file\n"
+            "  tau --export-html 4f2a out.html     # a session as one HTML page\n"
             "  tau --mode rpc --model gpt-4o       # JSON-RPC 2.0 server over stdio\n"
             "\n"
             "--resume opens the interactive session picker, so it needs a prompt\n"
@@ -298,6 +305,35 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip project context discovery (AGENTS.md, CLAUDE.md, .tau/SYSTEM.md) for this run",
     )
+    parser.add_argument(
+        "--prompt-template",
+        dest="prompt_templates",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="load prompt templates from PATH, a .md file or a directory (repeatable)",
+    )
+    parser.add_argument(
+        "--no-prompt-templates",
+        dest="no_prompt_templates",
+        action="store_true",
+        help="skip prompt template discovery (~/.tau/prompts, .tau/prompts); "
+        "--prompt-template paths still load",
+    )
+    parser.add_argument(
+        "--skill",
+        dest="skills",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="load a skill directory, a SKILL.md, or a directory of skills (repeatable)",
+    )
+    parser.add_argument(
+        "--no-skills",
+        dest="no_skills",
+        action="store_true",
+        help="skip skill discovery (~/.tau/skills); --skill paths still load",
+    )
     sess = parser.add_mutually_exclusive_group()
     sess.add_argument(
         "--continue",
@@ -385,6 +421,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="export a JMFTS-backed session (REF = JMFTS doc id) to a .jsonl file, then exit",
     )
     parser.add_argument(
+        "--export-html",
+        dest="export_html",
+        nargs="+",
+        default=None,
+        metavar=("REF", "OUT"),
+        help="write a saved session, every branch of it, as one self-contained HTML "
+        "page, then exit. REF is a .jsonl path, a session id or a unique id prefix "
+        "from any directory; OUT defaults to tau-session-<id>.html, and - writes to "
+        "stdout. Reads the store --store/--session-dir name",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="verbose logging (long-only; pi-aligned, -v is --version)",
@@ -427,6 +474,10 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         append_system_prompt=list(ns.append_system_prompt or []),
         system_prompt=ns.system_prompt,
         no_context_files=ns.no_context_files,
+        prompt_templates=list(ns.prompt_templates or []),
+        no_prompt_templates=ns.no_prompt_templates,
+        skills=list(ns.skills or []),
+        no_skills=ns.no_skills,
         thinking=ns.thinking,
         continue_session=ns.continue_session,
         resume=ns.resume,
@@ -437,6 +488,7 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
         session_dir=ns.session_dir,
         import_session=ns.import_session,
         export_session=list(ns.export_session) if ns.export_session else None,
+        export_html=list(ns.export_html) if ns.export_html else None,
         verbose=ns.verbose,
         fun=ns.fun,
         connect=ns.connect,
@@ -477,6 +529,10 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         "no_tools": resolve_no_tools(args),
         "append_system_prompt": list(args.append_system_prompt or []),
         "no_context_files": args.no_context_files,
+        "prompt_templates": list(args.prompt_templates),
+        "no_prompt_templates": args.no_prompt_templates,
+        "skills": list(args.skills),
+        "no_skills": args.no_skills,
         "max_turns": args.max_turns,
         "ext_config": ext_config_overrides,
         "store": args.store,
@@ -518,6 +574,10 @@ _LOCAL_ONLY_FLAGS: tuple[tuple[str, str], ...] = (
     ("append_system_prompt", "--append-system-prompt"),
     ("system_prompt", "--system-prompt"),
     ("no_context_files", "--no-context-files"),
+    ("prompt_templates", "--prompt-template"),
+    ("no_prompt_templates", "--no-prompt-templates"),
+    ("skills", "--skill"),
+    ("no_skills", "--no-skills"),
     ("max_turns", "--max-turns"),
     ("ext_config", "--ext-config"),
     ("provider", "--provider"),
@@ -646,6 +706,44 @@ def _run_export_session(ref: str, path: str, config: dict) -> int:
     return 0
 
 
+def _run_export_html(args: CLIArgs, config: dict) -> int:
+    """``--export-html REF [OUT]``: render a saved session to one HTML page, then exit.
+
+    REF resolves in every directory (``resolve_ref(cwd=None)``), because an
+    export reads a session and the cwd scoping that keeps ``--session`` from
+    resuming another project's conversation protects nothing here. See
+    docs/HTML-EXPORT.md.
+    """
+    from pathlib import Path
+
+    from tau_agent_core.export import render_session_html
+    from tau_coding_agent.store_factory import build_session_catalog
+
+    assert args.export_html is not None  # the caller's branch guarantees this
+    if len(args.export_html) > 2:
+        raise CLIError(
+            f"--export-html takes REF and an optional OUT, got {len(args.export_html)} values"
+        )
+    ref = args.export_html[0]
+    out = args.export_html[1] if len(args.export_html) == 2 else None
+    catalog = build_session_catalog(config, args.store, args.session_dir)
+    try:
+        session = catalog.resolve_ref(ref, cwd=None)
+    except LookupError as exc:
+        raise CLIError(str(exc)) from exc
+    page = render_session_html(session.entries(), header=session.header)
+    if out == "-":
+        sys.stdout.write(page)
+        return 0
+    target = Path(out) if out is not None else Path(f"tau-session-{session.id}.html")
+    try:
+        target.write_text(page, encoding="utf-8")
+    except OSError as exc:
+        raise CLIError(f"cannot write {target}: {exc}") from exc
+    print(f"exported session {session.id} -> {target}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``tau`` console script.
 
@@ -673,6 +771,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"τ-coding-agent args: {args}", file=sys.stderr)
 
     try:
+        if args.export_html is not None:
+            if (
+                args.print_mode
+                or args.messages
+                or args.resume
+                or args.continue_session
+                or args.session
+                or args.fork
+                or args.no_session
+                or args.import_session is not None
+                or args.export_session is not None
+                or args.connect is not None
+                or args.mode != "text"
+            ):
+                raise CLIError(
+                    "--export-html writes one saved session to a file and exits; it "
+                    "can't be combined with --print, messages, --mode, "
+                    "--connect, session-continuation flags, --no-session, or the "
+                    "JMFTS copy flags. It does honour --store and --session-dir"
+                )
+            return _run_export_html(args, load_config())
+
         if args.import_session is not None or args.export_session is not None:
             if args.import_session is not None and args.export_session is not None:
                 raise CLIError("--import-session and --export-session are mutually exclusive")
@@ -818,7 +938,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cwd is not None:
             raise CLIError("--cwd names a directory on a daemon's machine; it needs --connect")
         return _launch_tui(args, config)
-    except ConfigError as exc:
+    except (ConfigError, ResourceError) as exc:
         print(f"tau: error: {exc}", file=sys.stderr)
         return 2
 

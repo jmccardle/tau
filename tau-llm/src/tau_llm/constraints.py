@@ -29,10 +29,19 @@ class ConstraintViolation(RuntimeError):
 
     Raised when verification (§4.3) finds the output outside the declared constraint —
     which, on a server where llguidance died mid-generation, means the generation ran
-    **unconstrained** and the result is fabricated data. Carries the offending output.
+    **unconstrained** and the result is fabricated data.
+
+    Attributes:
+        output: The generated text that failed verification.
     """
 
     def __init__(self, message: str, output: str) -> None:
+        """Build the error.
+
+        Args:
+            message: Human-readable explanation; becomes ``str(exc)``.
+            output: The offending generated text.
+        """
         super().__init__(message)
         self.output = output
 
@@ -53,6 +62,11 @@ class DecodeConstraints(BaseModel):
             constraint legal alongside a declared tools array (see the provider).
         extra_body: Per-call body params. Highest precedence: over ``Model.extra_body``,
             over τ defaults.
+        verify: Caller-supplied output check; when set it replaces the built-in
+            check for every kind. Required for a ``grammar`` that carries no
+            ``check`` of its own (one not built with :mod:`tau_llm.grammar`).
+            Excluded from serialization.
+        model_config: Pydantic configuration; allows the ``verify`` callable.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -101,28 +115,31 @@ class DecodeConstraints(BaseModel):
         return self
 
     def has_constraint(self) -> bool:
-        """Whether this carries an actual decode constraint (vs only tool_choice/extra_body)."""
+        """Whether this carries an actual decode constraint.
+
+        Returns:
+            True when ``grammar``, ``json_schema`` or ``choices`` is set; False
+            for one that only carries ``tool_choice`` / ``extra_body``.
+        """
         return self.grammar is not None or self.json_schema is not None or self.choices is not None
 
     def verify_output(self, text: str) -> None:
         """Assert ``text`` actually satisfies this constraint; raise if it does not.
 
-        **τ never trusts a constraint blindly.** The failure mode is real and observed
-        (GRAMMAR_DECODING_RECON.md:36): on some tokenizers llguidance dies mid-generation,
-        logs the error *server-side*, and lets generation continue **unconstrained** —
-        completely invisible to the client, which receives a 200 and plausible text.
+        On some tokenizers llguidance dies mid-generation and the server keeps
+        generating **unconstrained** behind a 200, so a failed check raises rather
+        than warns.
 
-        An unconstrained result returned as a constrained one is fabricated data, so a
-        failed check raises rather than warns.
+        The check: ``verify`` when the caller supplied one; otherwise exact
+        membership for ``choices``, a JSON parse (not full schema validation) for
+        ``json_schema``, and the grammar's own ``check`` for ``grammar``. A
+        constraint-free instance checks nothing.
 
-        What can be checked per kind:
+        Args:
+            text: The generated output.
 
-        - ``choices`` — exact membership. Total.
-        - ``json_schema`` — the output must parse as JSON. (Full schema validation is
-          optional; a parse failure alone already catches constraint death.)
-        - ``grammar`` — no general check is possible against an arbitrary grammar. The
-          caller may supply ``verify``; absent that, τ asserts non-empty output and the
-          residual risk is documented.
+        Raises:
+            ConstraintViolation: ``text`` fails the check.
         """
         if not self.has_constraint():
             return
@@ -175,6 +192,11 @@ class DecodeConstraints(BaseModel):
 
         Recorded on events / persisted entry payloads so *what constrained a
         generation* is inspectable after the fact. Never replayed as context.
+
+        Returns:
+            ``{"kind": ...}`` with ``kind`` one of ``"choices"``,
+            ``"json_schema"``, ``"grammar"`` or ``"none"``, plus that kind's
+            value under ``choices`` / ``schema`` / ``grammar``.
         """
         if self.choices is not None:
             return {"kind": "choices", "choices": list(self.choices)}

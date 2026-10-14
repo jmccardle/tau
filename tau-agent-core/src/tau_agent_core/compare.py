@@ -41,6 +41,9 @@ def split_compare_args(raw: str) -> dict[str, Any]:
     every word is a model name and the prompt is left unbound, so a head asks for
     it as the flow's next step.
 
+    Args:
+        raw: The text typed after ``/compare``.
+
     Returns:
         ``{"models": [...], "text": ...}``, with only the parts that were typed.
 
@@ -83,7 +86,13 @@ class Comparison:
     turns: tuple[asyncio.Task[SubmissionResult], ...]
 
     def cursor(self, cursor_id: str) -> Cursor:
-        """The compare cursor ``cursor_id`` names.
+        """Look up one of this comparison's cursors by id.
+
+        Args:
+            cursor_id: The cursor's ``id``.
+
+        Returns:
+            The matching cursor from ``cursors``.
 
         Raises:
             KeyError: it is not one of this comparison's.
@@ -100,7 +109,10 @@ class Comparison:
         admitted, cancelled) and awaited first: picking a winner is the decision
         that the others are not wanted.
         Their branches stay in the tree, interrupted ones marked incomplete.
-        ``keep`` ``None`` keeps none and leaves the head where it is.
+
+        Args:
+            keep: The id of the cursor whose leaf the head moves to; ``None`` keeps
+                none and leaves the head where it is.
 
         Returns:
             The head cursor's leaf afterwards.
@@ -154,10 +166,16 @@ async def start_comparison(
         text: The prompt every cursor receives, sent as a prompt and never as a command.
         allow_user_input: Whether a hook in these turns may ask the user a question.
 
+    Returns:
+        The running comparison; its ``turns`` are still in flight.
+
     Raises:
         ValueError: no models, no text, no model resolver, or ``leaf`` names no
             entry. Nothing was opened.
-        KeyError: a model name the resolver does not know. Nothing was opened.
+        KeyError: a model name ``ConfigModelResolver`` does not know; another
+            resolver's error propagates as raised. Nothing was opened.
+        TypeError: the resolver returned something other than a ``Model``.
+            Nothing was opened.
     """
     if not models:
         raise ValueError("compare needs at least one model")

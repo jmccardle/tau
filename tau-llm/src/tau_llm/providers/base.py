@@ -76,7 +76,14 @@ class StreamEventStream(Protocol):
     that adds queue buffering and the terminal ``result()``.
     """
 
-    def __aiter__(self) -> AsyncIterator[Any]: ...
+    def __aiter__(self) -> AsyncIterator[Any]:
+        """Iterate the provider's events.
+
+        Returns:
+            An async iterator of typed streaming events that ends after the
+            terminal ``DoneEvent`` or ``ErrorEvent``.
+        """
+        ...
 
 
 @agent_facing(topic="providers")
@@ -91,15 +98,14 @@ class Provider(ABC):
 
     Reference: SUBPHASE-0.0.md, Phase 1 Subphase 0 — Provider interface.
 
-    Methods:
-        stream_chat(model, messages, tools, options):
-            Returns a StreamEventStream yielding typed StreamEvents.
-        aclose():
-            Releases whatever the instance holds open.
+    Attributes:
+        id: Vendor id (``"openai"``, ``"groq"``), matching ``Model.provider``.
+            Empty on the class; the :class:`ApiFactory` stamps it after construction.
+        name: Human-readable vendor label (``"OpenAI"``, ``"Groq"``). Same
+            stamping rule as ``id``.
     """
 
     id: str = ""
-    #: Human-readable vendor label ("OpenAI", "Groq"). Same stamping rule.
     name: str = ""
 
     @abstractmethod
@@ -220,7 +226,12 @@ class ProviderSpec:
             object.__setattr__(self, "name", self.id)
 
     def resolve_api_key(self) -> str | None:
-        """First non-empty value among ``api_key_env``, or None if none is set."""
+        """Look up this vendor's credential in the environment.
+
+        Returns:
+            The first non-empty value among ``api_key_env``, in order, or None
+            when none is set (including when ``api_key_env`` is empty).
+        """
         for var in self.api_key_env:
             value = os.environ.get(var)
             if value:
@@ -260,6 +271,9 @@ def register_api(api: str, factory: ApiFactory, *, replace: bool = False) -> Non
 def unregister_api(api: str) -> None:
     """Remove a wire-protocol registration.
 
+    Args:
+        api: Wire-protocol id previously passed to :func:`register_api`.
+
     Raises:
         KeyError: If nothing is registered under that id — undoing a
             registration that never happened means the caller's model of the
@@ -272,13 +286,23 @@ def unregister_api(api: str) -> None:
 
 @agent_facing(topic="providers")
 def registered_apis() -> tuple[str, ...]:
-    """Every registered wire-protocol id, sorted."""
+    """List the registered wire protocols.
+
+    Returns:
+        Every registered wire-protocol id, sorted.
+    """
     return tuple(sorted(_API_FACTORIES))
 
 
 @agent_facing(topic="providers")
 def get_api_factory(api: str) -> ApiFactory:
-    """The factory for ``api``.
+    """Look up the client factory for a wire protocol.
+
+    Args:
+        api: Wire-protocol id, as in ``Model.api``.
+
+    Returns:
+        The factory registered under ``api``.
 
     Raises:
         ValueError: If ``api`` is unknown. The message names what was asked for
@@ -320,6 +344,9 @@ def register_provider(spec: ProviderSpec, *, replace: bool = False) -> None:
 def unregister_provider(provider_id: str) -> None:
     """Remove a vendor registration.
 
+    Args:
+        provider_id: Vendor id, as in ``ProviderSpec.id``.
+
     Raises:
         KeyError: If that vendor was never registered.
     """
@@ -330,17 +357,26 @@ def unregister_provider(provider_id: str) -> None:
 
 @agent_facing(topic="providers")
 def registered_providers() -> tuple[str, ...]:
-    """Every registered vendor id, sorted."""
+    """List the registered vendors.
+
+    Returns:
+        Every registered vendor id, sorted.
+    """
     return tuple(sorted(_PROVIDER_SPECS))
 
 
 @agent_facing(topic="providers")
 def get_provider_spec(provider_id: str) -> ProviderSpec | None:
-    """The vendor's spec, or None if it was never registered.
+    """Look up a vendor's defaults.
 
-    None is not an error: an unregistered vendor id is a free-form label on a
-    ``Model`` that already carries its own endpoint. Only a model whose ``api``
-    is unknown cannot be served.
+    Args:
+        provider_id: Vendor id, as in ``Model.provider``.
+
+    Returns:
+        The registered spec, or None if that vendor was never registered. None
+        is not an error: an unregistered vendor id is a free-form label on a
+        ``Model`` that carries its own endpoint; only an unknown ``api`` cannot
+        be served.
     """
     return _PROVIDER_SPECS.get(provider_id)
 

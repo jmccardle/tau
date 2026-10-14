@@ -86,7 +86,11 @@ class ConversationSession(SessionLog, Protocol):
         ...
 
     def display_title(self) -> str:
-        """A short human label: the name, else the first user message, else model."""
+        """A short human label for the session.
+
+        Returns:
+            The name, else the first user message, else the model.
+        """
         ...
 
 
@@ -95,13 +99,26 @@ class ConversationSession(SessionLog, Protocol):
 class SessionInfo:
     """Lightweight listing metadata for one session — the picker's fast-list record.
 
-    ``ref`` replaces what used to be a concrete ``Path`` (``tau_coding_agent``'s
-    former ``session_store.SessionInfo.path``): a storage-agnostic handle that a
-    :class:`SessionCatalog`'s ``load()`` accepts back to reconstruct the full
-    session. For the file store it is ``str(path)``; a future JMFTS-backed catalog
-    would put a document id here instead. This dataclass does no I/O of its own —
-    building one from an on-disk file is ``tau_coding_agent.session_store``'s job
-    (``read_session_info``), which is file-store-specific and stays there.
+    Does no I/O; each catalog builds its own (the file store's is
+    ``tau_coding_agent.session_store.read_session_info``).
+
+    Attributes:
+        ref: The handle :meth:`SessionCatalog.load` accepts back: a file path for
+            the file store, a document id for JMFTS, a session id for a daemon.
+        id: The session id (what :meth:`SessionCatalog.resolve_ref` matches).
+        cwd: Working directory the session belongs to.
+        name: Session name, or ``None`` if never named.
+        created: When the session was created.
+        modified: When the session was last written; ``created`` if never since.
+        message_count: User and assistant messages on the path a resume would
+            continue (the file store counts ancestry, not every branch).
+        first_message: Text of the first user message; empty if none. A daemon
+            listing puts the session title here instead.
+        last_message: Text of the last user or assistant message; empty if none
+            or not listed.
+        parent: Id of the session this one was forked from, or ``None``.
+        error: Why the session could not be read, or ``None`` when it was; an
+            errored record's counts and messages are empty.
     """
 
     ref: str
@@ -117,6 +134,12 @@ class SessionInfo:
     error: str | None = None
 
     def display_title(self) -> str:
+        """A short human label for the picker.
+
+        Returns:
+            An "unreadable session" label when ``error`` is set; else the name;
+            else the first message's first 50 characters; else ``Session (<id8>)``.
+        """
         if self.error:
             return f"⚠ unreadable session ({self.ref}) — {self.error}"
         if self.name:
@@ -157,7 +180,18 @@ class SessionCatalog(ABC):
         system_prompt: str | None = None,
         name: str | None = None,
     ) -> ConversationSession:
-        """Create a new persisted session."""
+        """Create a new persisted session.
+
+        Args:
+            cwd: Working directory the session belongs to.
+            model: Config model name the session starts with.
+            backend: Backend name the session starts with.
+            system_prompt: System prompt text; ``None`` writes none.
+            name: Session name; ``None`` leaves it unnamed.
+
+        Returns:
+            The new session.
+        """
 
     @abstractmethod
     def create_ephemeral(
@@ -169,13 +203,31 @@ class SessionCatalog(ABC):
         system_prompt: str | None = None,
         name: str | None = None,
     ) -> ConversationSession:
-        """Create a new in-memory (unpersisted) session — ``--no-session``."""
+        """Create a new in-memory (unpersisted) session — ``--no-session``.
+
+        Args:
+            cwd: Working directory the session belongs to.
+            model: Config model name the session starts with.
+            backend: Backend name the session starts with.
+            system_prompt: System prompt text; ``None`` writes none.
+            name: Session name; ``None`` leaves it unnamed.
+
+        Returns:
+            The new session.
+        """
 
     @abstractmethod
     def load(self, ref: str) -> ConversationSession:
         """Reconstruct a session from a :class:`SessionInfo`'s ``ref``.
 
-        Raises when ``ref`` names nothing loadable (Fail-Early — never guess).
+        Raises when ``ref`` names nothing loadable (Fail-Early — never guess); the
+        exception type is the catalog's.
+
+        Args:
+            ref: A :attr:`SessionInfo.ref` from this catalog.
+
+        Returns:
+            The loaded session.
         """
 
     @abstractmethod
@@ -184,8 +236,14 @@ class SessionCatalog(ABC):
     ) -> ConversationSession:
         """A new session carrying ``source``'s history; ``source`` is untouched.
 
-        ``at`` given → only the path to that entry, so the fork continues from it.
-        ``None`` → every entry.
+        Args:
+            source: The session to copy from.
+            cwd: Working directory the new session belongs to.
+            at: Entry id to fork at: only the path to it is copied, so the fork
+                continues from there. ``None`` copies every entry.
+
+        Returns:
+            The new session.
 
         Raises:
             ValueError: ``at`` names no entry of ``source``.
@@ -195,14 +253,23 @@ class SessionCatalog(ABC):
     def list(self, cwd: str | None = None) -> list[SessionInfo]:
         """Listing metadata, newest (by ``modified``) first.
 
-        ``cwd`` given → that directory/scope only; ``None`` → every scope.
+        Args:
+            cwd: List that directory/scope only; ``None`` lists every scope.
+
+        Returns:
+            One record per session.
         """
 
     def most_recent(self, cwd: str | None = None) -> ConversationSession | None:
         """The most recently modified session in ``cwd``, loaded — or ``None``.
 
-        Shared across every catalog: built purely from ``list`` + ``load``, so a
-        second implementation gets "continue the last session" for free.
+        Built only from ``list`` + ``load``, so every catalog shares it.
+
+        Args:
+            cwd: Scope to search; ``None`` searches every scope.
+
+        Returns:
+            The newest session by ``modified``, or ``None`` if the scope is empty.
         """
         infos = self.list(cwd)
         if not infos:
@@ -212,20 +279,21 @@ class SessionCatalog(ABC):
     def resolve_ref(self, ref: str, *, cwd: str | None = None) -> ConversationSession:
         """Resolve a ``--session``/``--fork`` REF to a loaded session, **by id**.
 
-        Generalizes the file-store-era ``headless._resolve_session_ref``. The
-        storage-agnostic half lives here: a REF is a session **id** — an exact match
-        wins, else a unique id *prefix*. ``cwd`` scopes the search (``None`` searches
-        every scope, mirroring the old ``all_sessions`` widening, which no CLI flag
-        ever set, so the dead parameter is folded into ``cwd``). Zero or multiple
-        matches raise ``LookupError`` (Fail-Early: never guess which session was
-        meant).
+        An exact id match wins, else a unique id *prefix*. A catalog whose refs have
+        a directly addressable form (the file store's ``.jsonl`` path) overrides
+        this to try that form first, then delegates here via ``super()``; core
+        holds no filesystem knowledge.
 
-        A catalog whose refs have their own *directly addressable* form — the file
-        store's ``.jsonl`` path — OVERRIDES this to try that form first and then
-        delegates back here via ``super()``. That knowledge is deliberately NOT in
-        this base class: ``.jsonl`` and ``FileNotFoundError`` are filesystem
-        concepts, and core owns zero I/O. A JMFTS catalog's document ids resolve
-        through the id path below unchanged.
+        Args:
+            ref: A session id or unique id prefix.
+            cwd: Scope to search; ``None`` searches every scope.
+
+        Returns:
+            The matching session, loaded.
+
+        Raises:
+            LookupError: No session matches, or more than one does (Fail-Early:
+                never guess which was meant).
         """
         infos = self.list(cwd)
         exact = [i for i in infos if i.id == ref]

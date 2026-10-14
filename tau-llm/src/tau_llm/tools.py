@@ -108,7 +108,7 @@ TOOL_EXPOSURES: tuple[str, ...] = ("direct", "model-only", "callable", "deferred
 
 @agent_facing(topic="tools")
 class ToolDefinition(BaseModel):
-    """Tool definition for the LLM API.
+    """Tool definition for the LLM API. Build one with :func:`define_tool`.
 
     ``exposure``, ``namespace``, ``tags`` and ``output_schema`` are experimental
     (experiments/tool-exposure/RESULTS.md). None of them reaches the model:
@@ -124,6 +124,19 @@ class ToolDefinition(BaseModel):
             receives, or ``None`` when the tool returns text only.
 
     Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
+
+    Attributes:
+        name: The name the model calls; wire-safe (``[A-Za-z0-9_-]``, at most 64).
+        label: Human-readable name for display.
+        description: What the model is told the tool does.
+        parameters: JSON Schema object schema for the arguments.
+        execute: The implementation. tau_llm stores it and never calls it; the
+            calling convention belongs to whoever runs the tool.
+        prompt_snippet: The tool's line in the system prompt's tool list;
+            ``None`` renders no line.
+        prompt_guidelines: Usage notes rendered under the snippet.
+        execution_mode: ``"sequential"`` forces the whole batch of calls it
+            appears in to run one at a time in tau_agent_core's loop.
     """
 
     name: str
@@ -160,13 +173,19 @@ class ToolSpec(Protocol):
     """
 
     @property
-    def name(self) -> str: ...
+    def name(self) -> str:
+        """The name the model calls."""
+        ...
 
     @property
-    def description(self) -> str: ...
+    def description(self) -> str:
+        """What the model is told the tool does."""
+        ...
 
     @property
-    def parameters(self) -> dict[str, Any]: ...
+    def parameters(self) -> dict[str, Any]:
+        """JSON Schema object schema for the arguments."""
+        ...
 
 
 _KNOWN_FIELDS: tuple[str, ...] = tuple(ToolDefinition.model_fields)
@@ -252,16 +271,20 @@ def define_tool(definition: Mapping[str, Any] | None = None, /, **fields: Any) -
             execute=lambda text: {"words": len(text.split())},
         )
 
-    A single mapping may also be passed positionally —
-    ``define_tool({"name": ..., ...})`` — which is the shape this function
-    originally advertised. Passing both forms, or neither, is a caller error.
+    A single mapping may be passed positionally instead
+    (``define_tool({"name": ..., ...})``), but not both forms.
 
-    NOTE: this is not the shape ``tau_agent_core``'s
-    ``ExtensionAPI.register_tool()`` takes. That one is a plain dict whose
-    ``execute`` has the five-argument extension signature
-    ``execute(tool_call_id, params, signal, on_update, ctx)``, and it defaults a
-    missing ``label`` to ``name``. The two are separate contracts on purpose;
-    do not feed the result of this function to ``register_tool``.
+    Not the shape ``ExtensionAPI.register_tool()`` takes: that is a plain dict
+    whose ``execute`` has the five-argument extension signature
+    ``execute(tool_call_id, params, signal, on_update, ctx)``. Do not pass this
+    function's result to ``register_tool``.
+
+    Args:
+        definition: The fields as a single mapping, positional-only.
+        fields: The fields as keywords — the :class:`ToolDefinition` attributes.
+
+    Returns:
+        The validated definition.
 
     Raises:
         TypeError: if both forms or neither form is used, if the positional

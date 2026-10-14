@@ -117,6 +117,12 @@ class RPCHandler:
     Reference: docs/REMOTE-CONTROL.md §3/§4/§6
     Reference: docs/PHASE-6-SUBPHASE-1.md
     Reference: SUBPHASE-0.0.md AgentSession interface
+
+    Attributes:
+        exit_code: The process exit code a signal asked for (143 for SIGTERM, 129
+            for SIGHUP), or ``None`` when no signal ended the current ``run()``.
+        compaction_in_flight: The ``compaction_id`` of the running ``compact``,
+            or ``None``; the single-flight slot ``release_compaction`` frees.
     """
 
     def __init__(
@@ -222,36 +228,30 @@ class RPCHandler:
     def bind_compaction_aborter(self, cancel: Callable[[], None]) -> None:
         """Make the in-flight compaction reachable by `abort` (finding 5).
 
-        Called by `commands._handle_compact` from inside `_acknowledge`, i.e.
-        at the instant the acknowledgement carrying `compaction_id` is
-        enqueued. Not earlier, and the timing is load-bearing rather than
-        incidental: before that instant the compaction is still waiting on
-        D-1's `turn_lock`, the dispatch coroutine is still awaiting its own
-        acknowledgement future, and cancelling the task there would resolve
-        that future by CANCELLING it — wedging the `compact` request instead
-        of answering it. It is also the instant the host first learns the
-        compaction exists, so there is nothing it could have aborted before.
+        Call only at the instant the acknowledgement carrying `compaction_id`
+        is enqueued (`commands._handle_compact`'s `_acknowledge`). Earlier, the
+        dispatch coroutine is still awaiting its acknowledgement future, and
+        cancelling then would cancel that future and wedge the `compact`
+        request instead of answering it.
+
+        Args:
+            cancel: Cancels the compaction's background task; `abort_compaction`
+                calls it at most once.
         """
         self._compaction_aborter = cancel
 
     def abort_compaction(self) -> str | None:
         """Deliver `abort`'s signal to the in-flight compaction, if any.
 
-        Returns the `compaction_id` the signal was delivered to, or `None`
-        when no compaction was in flight. `commands._handle_abort` puts that
-        value on its response so a host knows to expect a `compaction_end`
-        with `cancelled: true` for it.
+        A SIGNAL, like `AgentSession.abort()`: this returns before the
+        compaction has unwound, and whether it stopped is reported by its
+        `compaction_end`, never here. The aborter is cleared on delivery, so a
+        second `abort` against the same compaction returns `None`.
 
-        A SIGNAL, exactly like the `AgentSession.abort()` beside it: this
-        returns before the compaction has unwound, and whether it actually
-        stopped is reported by that `compaction_end`, never here (see
-        `commands.ABORT_RESULT_SCHEMA`'s notes on why this verb reports no
-        cursor either — same reason, same shape).
-
-        The aborter is cleared here as well as in
-        `commands._handle_compact`'s `finally`, so a second `abort` against
-        the same compaction reports `None` rather than claiming a second
-        delivery: `abort` stays idempotent, and its answer stays true.
+        Returns:
+            The `compaction_id` the signal was delivered to, which
+            `commands._handle_abort` puts on its response; `None` when no
+            aborter was bound.
         """
         cancel = self._compaction_aborter
         if cancel is None:
@@ -275,23 +275,16 @@ class RPCHandler:
     def track_background_task(self, task: "asyncio.Task[Any]") -> None:
         """Hold a strong reference to a background task until it finishes.
 
-        Two callers today, both C3's dual completion:
-        `commands._submit_and_acknowledge` (the post-admission turn a
-        `submit`/`prompt` response has already returned for) and
-        `commands._handle_compact` (the summarization call a `compact`
-        acknowledgement has already returned for — Blocker 1, Tier B review:
-        that call is bounded only by the provider, so running it inline on
-        the dispatch path stopped `transport._read_stdin` from PARSING the
-        next line, `abort` included, for its whole duration).
+        For work a response has already returned for (C3's dual completion):
+        `commands._submit_and_acknowledge`'s turn and `commands._handle_compact`'s
+        summarization. Without the reference asyncio may garbage-collect the
+        task before it completes; `run()`'s teardown reaps whatever is still
+        tracked, so a registered task never outlives the process. A background
+        verb registers here rather than calling a bare `create_task`.
 
-        Without this, nothing holds either task alive once the handler
-        function's local variable goes out of scope, and asyncio is explicit
-        that it may then be garbage-collected before it completes.
-        `run()`'s teardown reaps whatever is still tracked here
-        (`_cancel_background_tasks`), so a task registered through this
-        method can never outlive the process — which is the other half of
-        why a background verb must register here rather than fire off a
-        bare `create_task`.
+        Args:
+            task: The task; dropped from tracking when it finishes, and a
+                pending shutdown is re-checked then.
         """
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -590,6 +583,9 @@ class RPCHandler:
         to carry). Everything wire-shaped lives on this side of that line.
 
         Today it does exactly one thing: E5's cursor (see below).
+
+        Args:
+            item: The dequeued outbound message, modified in place.
         """
         self._stamp_agent_end_cursor(item)
 

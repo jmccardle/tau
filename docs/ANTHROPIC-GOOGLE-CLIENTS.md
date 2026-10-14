@@ -627,6 +627,11 @@ than falling through to the OpenAI wire, because a model silently served over
 the wrong protocol is the failure `providers/__init__.py` already removed once
 for `openai-responses`. `backend: "anthropic"` alone is now a working config.
 
+**Corrected 2026-10-12:** `base_url` no longer has a historical default. An
+unregistered vendor with no `base_url` raises, because OpenAI's URL plus a
+vendor key registered later sent that key to OpenAI (`EXTENSION-PROVIDERS.md` §2).
+`api` keeps its `openai-completions` default.
+
 Covered by `tau-coding-agent/tests/test_config_names_a_wire.py`, whose first
 class asserts that every config shape that worked before builds the same Model.
 

@@ -1,0 +1,69 @@
+{
+ "meta": {
+  "provenance": "synthetic",
+  "written": "2026-10-12",
+  "source": "https://ai.google.dev/api/generate-content",
+  "note": "Hand-written from the vendor's documented stream shape, NOT captured. Replace by recording (docs/PROVIDER-COVERAGE.md \u00a75.2); a recorded cassette sets provenance to 'recorded' and names the capture date."
+ },
+ "expect": {
+  "text": "Hello, world",
+  "stop_reason": "stop",
+  "prompt_tokens": 2048,
+  "cache_read_tokens": 1024,
+  "reasoning_tokens": 3
+ },
+ "response": {
+  "status": 200,
+  "headers": {
+   "content-type": "text/event-stream"
+  },
+  "sse": [
+   {
+    "data": {
+     "candidates": [
+      {
+       "content": {
+        "role": "model",
+        "parts": [
+         {
+          "text": "Hello"
+         }
+        ]
+       },
+       "index": 0
+      }
+     ],
+     "modelVersion": "gemini-test",
+     "responseId": "r1"
+    }
+   },
+   {
+    "data": {
+     "candidates": [
+      {
+       "content": {
+        "role": "model",
+        "parts": [
+         {
+          "text": ", world"
+         }
+        ]
+       },
+       "index": 0,
+       "finishReason": "STOP"
+      }
+     ],
+     "modelVersion": "gemini-test",
+     "responseId": "r1",
+     "usageMetadata": {
+      "promptTokenCount": 2048,
+      "candidatesTokenCount": 4,
+      "thoughtsTokenCount": 3,
+      "cachedContentTokenCount": 1024,
+      "totalTokenCount": 2055
+     }
+    }
+   }
+  ]
+ }
+}

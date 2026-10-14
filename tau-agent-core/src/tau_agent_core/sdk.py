@@ -20,20 +20,23 @@ import inspect
 import os
 import re
 import sys
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from tau_llm.providers import get_provider_spec
+from tau_llm.providers import get_provider_spec, registered_providers
 from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.extension_types import ExtensionAPI
+from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
 from tau_agent_core.tau_home import resolve_tau_home
 from tau_agent_core.tool_schema import output_schema_of
+from tau_agent_core.skills import Skill, load_skills, render_skills_block
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 from tau_agent_core.tools.bash import BashTool
 from tau_agent_core.tools.edit import EditTool
@@ -85,39 +88,41 @@ def resolve_model(
 ) -> Model:
     """Resolve a model string to a Model object.
 
-    A model not in the built-in table takes its wire protocol and default
-    endpoint from the registered provider spec, so ``provider="anthropic"``
-    yields an ``anthropic-messages`` model. An unregistered provider is a
-    free-form label for an OpenAI-compatible server and needs ``base_url``.
+    A built-in id (``"gpt-4o"``) returns a copy of its default. Any other id gets
+    ``provider``'s registered wire protocol and endpoint, with ``base_url``
+    taking precedence over the endpoint.
 
     Args:
         model: Model identifier (e.g., "gpt-4o").
-        provider: Provider id (default: "openai").
+        provider: Registered vendor id (default: "openai").
         base_url: Optional custom API base URL.
 
     Returns:
-        A new Model; the built-in table is never mutated.
+        A new Model; the shared built-in defaults are never mutated. A
+        non-built-in id gets ``context_window=128000`` and ``max_tokens=4096``,
+        and speaks ``openai-completions`` when ``provider`` is unregistered.
 
     Raises:
-        ValueError: ``provider`` is not registered and ``base_url`` is None.
+        ValueError: No ``base_url`` and ``provider`` is not registered with a
+            default endpoint (docs/EXTENSION-PROVIDERS.md §2).
     """
     if model in _DEFAULT_MODELS:
-        m = _DEFAULT_MODELS[model]
-        return m.model_copy(update={"base_url": base_url}) if base_url else m.model_copy()
+        default = _DEFAULT_MODELS[model]
+        return default.model_copy(update={"base_url": base_url} if base_url else {})
     spec = get_provider_spec(provider)
-    api = spec.api if spec is not None else "openai-completions"
-    url = base_url or (spec.base_url if spec is not None else None)
-    if url is None:
+    endpoint = base_url or (spec.base_url if spec else None)
+    if not endpoint:
         raise ValueError(
-            f"resolve_model({model!r}): provider {provider!r} is not registered "
-            "or has no default endpoint, so base_url is required"
+            f"resolve_model({model!r}): provider {provider!r} is not registered with a "
+            f"default endpoint and no base_url was given. Registered providers: "
+            f"{', '.join(registered_providers())}."
         )
     return Model(
         id=model,
         name=model,
-        api=api,
+        api=spec.api if spec else "openai-completions",
         provider=provider,
-        base_url=url,
+        base_url=endpoint,
         context_window=128000,
         max_tokens=4096,
     )
@@ -292,25 +297,23 @@ class ExtensionCapabilityError(Exception):
 class LoadedExtension:
     """A successfully loaded extension.
 
-    Narrowed port of pi's ``Extension`` record (coding-agent types.ts:1577) to
-    what S1 needs: the source ``path``, the module-level ``register`` factory
-    that was invoked, and the ``ExtensionAPI`` it registered against.
+    Narrowed port of pi's ``Extension`` record (coding-agent types.ts:1577).
+    The hash and bus fields are H7/H8's addition (SIM_SPEC_v2 §16.6/§16.10).
 
-    ``config_schema`` is the extension's own ``CONFIG_SCHEMA`` module attribute,
-    normalized by :func:`~tau_agent_core.extension_types.validate_form_spec` at
-    load — the declaration that lets a head render a settings screen for keys
-    only the extension knows. ``None`` means the module declared none, which is
-    every extension written before the attribute existed.
-
-    ``content_hash``, ``subjects`` and ``touches_bus`` are H7/H8's addition
-    (SIM_SPEC_v2 §16.6/§16.10): the file's identity at load time, and its
-    declared bus subjects, if any. ``content_hash`` is a sha256 of the exact
-    bytes compiled — the same source read used to ``exec`` the module — so two
-    loads of the same path at different contents produce different hashes and
-    are never mistaken for one condition (the pattern §15.1's ``producer``,
-    ``Trace.arm``, and H5's compaction policy already established for this
-    program: a configuration that changes what a number means is a mandatory
-    partition key).
+    Attributes:
+        path: The source file it was loaded from.
+        register: The module-level ``register`` function that was invoked.
+        api: The ``ExtensionAPI`` it registered against.
+        content_hash: Hex sha256 of the exact bytes compiled, so two loads of
+            one path at different contents are never mistaken for one
+            condition.
+        subjects: The bus subjects the module's ``SUBJECTS`` declared; ``()``
+            unless ``touches_bus``.
+        touches_bus: The module's ``TOUCHES_BUS`` declaration.
+        config_schema: The module's ``CONFIG_SCHEMA`` normalized by
+            :func:`~tau_agent_core.extension_types.validate_form_spec` to
+            ``{"title", "fields"}``, so a head can render a settings screen.
+            ``None`` if the module declared none.
     """
 
     path: str
@@ -325,7 +328,12 @@ class LoadedExtension:
 @agent_facing(topic="extensions")
 @dataclass
 class ExtensionLoadError:
-    """A discovered extension that failed to load (pi types.ts:1590 errors[])."""
+    """A discovered extension that failed to load (pi types.ts:1590 errors[]).
+
+    Attributes:
+        path: The extension file that failed.
+        error: The exception's message.
+    """
 
     path: str
     error: str
@@ -338,6 +346,11 @@ class LoadExtensionsResult:
 
     Reference: pi agent/../types.ts:1590. The ``runtime`` field is intentionally
     omitted until the API is bound to the live session (E1/S3).
+
+    Attributes:
+        extensions: The extensions that loaded, in load order.
+        errors: The extensions that failed to load and were collected rather
+            than raised.
     """
 
     extensions: list[LoadedExtension] = field(default_factory=list)
@@ -349,16 +362,19 @@ class LoadExtensionsResult:
 class ExtensionInfo:
     """Read-only summary of one loaded extension for the ``/extensions`` surface.
 
-    Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). Carries an extension's
-    display ``name``, source ``path``, and the ``tools`` / ``commands`` /
-    ``shortcuts`` / ``hooks`` it registered — everything the palette listing shows
-    for a loaded extension (shortcuts E10 §6 / S69).
+    Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34); shortcuts E10 §6 / S69.
 
-    ``content_hash`` and ``subjects`` are H7's addition (SIM_SPEC_v2 §16.6): the
-    file's identity at load time and its declared bus subjects (``()`` for an
-    extension that does not touch the bus). This is the pair
-    :func:`~tau_agent_core.run_manifest.build_run_manifest` emits into
-    ``manifest.json`` beside ``harness`` and ``compaction``.
+    Attributes:
+        name: The display name: the file's stem.
+        path: The source file.
+        tools: Names of the tools it registered.
+        commands: Names of the commands it registered.
+        shortcuts: The shortcuts it registered.
+        hooks: The hook events it handles, sorted.
+        content_hash: Hex sha256 of the source at load time (H7, SIM_SPEC_v2
+            §16.6); :func:`~tau_agent_core.run_manifest.build_run_manifest`
+            writes it, with ``subjects``, into ``manifest.json``.
+        subjects: Its declared bus subjects; ``()`` if it does not touch the bus.
     """
 
     name: str
@@ -373,19 +389,23 @@ class ExtensionInfo:
 
 @agent_facing(topic="extensions")
 def summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]:
-    """Per-extension name/path/tools/commands/hooks from a ``LoadExtensionsResult``.
+    """Summarize each loaded extension for the ``/extensions`` listing.
 
-    Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). The palette (``/extensions``)
-    reads this to list each loaded extension; ``result.errors`` is surfaced
-    alongside by the caller (load failures).
+    Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34). Registrations are read
+    from each extension's runner bucket
+    (:class:`~tau_agent_core.extensions.runner.ExtensionHandlers`), the only
+    record of which extension registered what.
 
-    Each loaded extension's ``api`` is bound to its own runner bucket
-    (:class:`~tau_agent_core.extensions.runner.ExtensionHandlers`, labelled by the
-    extension's file path — see ``AgentSession._bind_extension_api`` /
-    ``_standalone_api_factory``), which is the ONLY place that records which
-    extension registered which tool/command/hook. A loaded extension whose api has
-    no bucket is a construction bug, so this raises rather than fabricating an empty
-    listing (Fail-Early).
+    Args:
+        result: The load result. Its ``errors`` are not summarized; the caller
+            surfaces them alongside.
+
+    Returns:
+        One :class:`ExtensionInfo` per loaded extension, in load order.
+
+    Raises:
+        RuntimeError: An extension's api has no runner bucket, a construction
+            bug (Fail-Early, not an empty listing).
     """
     infos: list[ExtensionInfo] = []
     for ext in result.extensions:
@@ -802,7 +822,12 @@ class ContextFileError(RuntimeError):
 @agent_facing(topic="sdk")
 @dataclass(frozen=True)
 class ContextFile:
-    """One discovered context file: its resolved path and its text."""
+    """One discovered context file.
+
+    Attributes:
+        path: The file's canonicalized path.
+        content: Its text, decoded as UTF-8 with any leading BOM dropped.
+    """
 
     path: Path
     content: str
@@ -938,27 +963,27 @@ def load_project_context_files(
 ) -> list[ContextFile]:
     """Discover the context files that apply to ``cwd``, weakest first.
 
-    A port of pi's ``loadProjectContextFiles`` (``resource-loader.ts:119`` at
-    ``5cd93f688``), plus τ's own ``.tau/SYSTEM.md``. The returned order is the
-    order they belong in a prompt — **general first, specific last** — because
-    the nearest file is the one that should have the last word:
+    Prompt order, so the nearest file has the last word:
 
-    1. τ home's context file (:func:`~tau_agent_core.tau_home.resolve_tau_home`), the user's global one.
-    2. Every ancestor of ``cwd`` that has one, **root-most first**, ending with
-       ``cwd``'s own — so a repo's ``AGENTS.md`` is read after ``$HOME``'s and
-       a package's after its monorepo's.
-    3. ``cwd``'s ``.tau/SYSTEM.md``, τ's own slot (see :data:`TAU_SYSTEM_FILE`).
+    1. ``agent_dir``'s context file (τ home's by default), the user's global one.
+    2. Every ancestor of ``cwd`` that has one, root-most first, ending with
+       ``cwd``'s own. The walk goes to ``/``. In a linked worktree nested inside
+       its main repo, the main checkout's copy is skipped
+       (:func:`_find_shadowed_context_file`).
+    3. ``cwd``'s ``.tau/SYSTEM.md`` (:data:`TAU_SYSTEM_FILE`).
 
-    Deduplicated by resolved path, so running τ from ``~`` does not load the
-    same file as both the agent-dir entry and an ancestor.
+    A file reached twice (by resolved path) is taken once, at its first slot.
 
-    On walking all the way to ``/``: this is pi's behaviour and it is kept
-    deliberately, because "put your standing instructions in ``~/AGENTS.md``" is
-    a real workflow. The cost is a handful of ``stat`` calls per ancestor, once
-    per session — not per turn. The *surprise* is answered by
-    :func:`_build_system_prompt`, which labels every block with the absolute
-    path it came from, so a prompt can never carry instructions whose origin it
-    does not name; and by ``--no-context-files`` for a run that wants none.
+    Args:
+        cwd: Where the ancestor walk starts; ``None`` means the process cwd.
+        agent_dir: The global context directory; ``None`` means τ home
+            (:func:`~tau_agent_core.tau_home.resolve_tau_home`).
+
+    Returns:
+        The context files in prompt order, weakest first.
+
+    Raises:
+        ContextFileError: A found file could not be read or is not valid UTF-8.
     """
     resolved_cwd = _canonicalize(Path(cwd).expanduser() if cwd else Path(os.getcwd()))
     resolved_agent_dir = _canonicalize(
@@ -1011,14 +1036,18 @@ def append_system_prompt(base: str, sections: list[str] | None) -> str:
     """Append ``--append-system-prompt`` sections to a base system prompt.
 
     Sections augment rather than replace the base (pi ``appendSystemPrompt``,
-    system-prompt.ts:48), joined by blank lines. An empty/absent list returns the
-    base unchanged; an empty base with sections yields just the sections.
+    system-prompt.ts:48). This composes only the base-text slot of
+    :func:`_build_system_prompt`, so the sections land ahead of the project
+    context and the tool list. ``tau_coding_agent.headless`` re-exports it.
 
-    Lives here, beside :func:`_build_system_prompt`, because it composes the
-    *base text* slot and nothing else — the appended sections land ahead of the
-    project context and the tool list, not after them. It was previously a
-    private helper in ``tau_coding_agent.headless`` that three frontends reached
-    across for; ``headless`` re-exports this name so those imports keep working.
+    Args:
+        base: The base system prompt; may be empty.
+        sections: The sections to append, in order; ``None`` or empty appends
+            nothing.
+
+    Returns:
+        ``base`` and the sections joined by blank lines: ``base`` unchanged with
+        no sections, just the sections with an empty ``base``.
     """
     if not sections:
         return base
@@ -1146,15 +1175,19 @@ def _build_system_prompt(
     no_context_files: bool = False,
     agent_dir: str | Path | None = None,
     model: str | None = None,
+    skills: Sequence[Skill] = (),
 ) -> str:
-    """Build the system prompt from a base prompt, context files and tools.
+    """Build the system prompt from a base prompt, context files, skills and tools.
 
     The system prompt is built from:
 
     1. ``custom_prompt`` if given, else :data:`BASE_SYSTEM_PROMPT`.
     2. Every context file :func:`load_project_context_files` discovers, unless
        ``no_context_files``.
-    3. Tool definitions for ``prompt_snippet`` and ``prompt_guidelines``.
+    3. The skill listing (:func:`~tau_agent_core.skills.render_skills_block`),
+       only when a tool named ``read`` is offered, since the listing tells the
+       model to read the skill's file.
+    4. Tool definitions for ``prompt_snippet`` and ``prompt_guidelines``.
 
     **Context files COMPOSE with (2 follows 1); they never replace it and are
     never replaced by it.** This is the whole point of the change: a caller who
@@ -1171,6 +1204,7 @@ def _build_system_prompt(
                          custom prompt WRAP τ's voice instead of replacing it.
                          Available only in a ``custom_prompt``.
     ``{{project_context}}`` the ``<project_context>`` block.
+    ``{{skills}}``       the ``<available_skills>`` block.
     ``{{tools}}``        the ``Available tools:`` block.
     ``{{tool_names}}``   just the names, comma-separated, for a one-line mention.
     ``{{cwd}}``          the working directory the tools run in.
@@ -1193,6 +1227,7 @@ def _build_system_prompt(
         no_context_files: Skip discovery entirely (``--no-context-files``/``-nc``).
         agent_dir: Override the ``~/.tau`` global-context directory.
         model: Model id for ``{{model}}``. Empty when the caller does not know it.
+        skills: The skills to list; pass ``SkillCatalog.listed()``.
 
     Returns:
         Complete system prompt string.
@@ -1204,9 +1239,12 @@ def _build_system_prompt(
 
     context_block = "" if no_context_files else _render_project_context(cwd, agent_dir)
     tools_block = _render_tool_list(tools)
+    can_read = any(tool.name == "read" for tool in (tools or []))
+    skills_block = render_skills_block(skills) if can_read else ""
 
     fields = {
         "project_context": context_block,
+        "skills": skills_block,
         "tools": tools_block,
         "tool_names": ", ".join(tool.name for tool in (tools or [])),
         "cwd": cwd,
@@ -1227,6 +1265,9 @@ def _build_system_prompt(
     if context_block and "project_context" not in used:
         lines.append("")
         lines.append(context_block)
+    if skills_block and "skills" not in used:
+        lines.append("")
+        lines.append(skills_block)
     if tools_block and "tools" not in used:
         lines.append("")
         lines.append(tools_block)
@@ -1254,6 +1295,10 @@ def create_agent_session(
     no_tools: Literal["all", "builtin"] | None = None,
     max_turns: int | None = None,
     tool_options: dict[str, dict[str, Any]] | None = None,
+    prompt_template_paths: Iterable[str | Path] = (),
+    no_prompt_templates: bool = False,
+    skill_paths: Iterable[str | Path] = (),
+    no_skills: bool = False,
 ) -> AgentSession:
     """Create an AgentSession with all defaults.
 
@@ -1363,6 +1408,12 @@ def create_agent_session(
             for tools not in ``tools``, and irrelevant when ``no_tools`` is set,
             since then no built-in is constructed at all. See
             :func:`_resolve_tools`.
+        prompt_template_paths: Template files or directories to load ahead of
+            the discovered ones (docs/PROMPT-TEMPLATES-AND-SKILLS.md §4).
+        no_prompt_templates: Skip template discovery; explicit paths still load.
+        skill_paths: Skill directories, ``SKILL.md`` files or directories of
+            skills to load ahead of the discovered ones (§5).
+        no_skills: Skip skill discovery; explicit paths still load.
 
     Raises:
         ValueError: if ``no_tools`` is given together with a non-empty ``tools``
@@ -1397,12 +1448,18 @@ def create_agent_session(
 
     ext_factories = list(extensions) if extensions else []
 
+    templates = load_prompt_templates(
+        cwd=cwd, paths=prompt_template_paths, discover=not no_prompt_templates
+    )
+    skills = load_skills(cwd=cwd, paths=skill_paths, discover=not no_skills)
+
     sys_prompt = _build_system_prompt(
         cwd,
         tool_objs,
         custom_prompt=system_prompt,
         no_context_files=no_context_files,
         model=model.id,
+        skills=skills.listed(),
     )
 
     if session_log is None:
@@ -1424,4 +1481,6 @@ def create_agent_session(
         no_tools=no_tools,
         max_turns=max_turns,
         cwd=cwd,
+        prompt_templates=templates,
+        skills=skills,
     )

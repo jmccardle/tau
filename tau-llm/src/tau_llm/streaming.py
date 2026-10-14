@@ -8,6 +8,7 @@ Streaming events:
     - ToolCallDeltaEvent: tool call data arriving in the stream
     - DoneEvent: stream complete with final message and usage
     - ErrorEvent: an error occurred during the stream
+    - RetryEvent: a request that failed before any output is being re-sent
 
 AssistantMessageEventStream:
     Async iterator that yields the above event types.
@@ -123,10 +124,7 @@ class DoneEvent:
 @agent_facing(topic="providers")
 @dataclass
 class ErrorEvent:
-    """An error event from the LLM stream.
-
-    Carries an error message. When the stream produces an ErrorEvent,
-    no further events will be produced.
+    """An error event from the LLM stream; no further events follow it.
 
     Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 
@@ -134,11 +132,41 @@ class ErrorEvent:
         type: Always "error".
         message: Description of the error.
         is_error: Always True.
+        exception: The exception the provider raised, e.g. a
+            :class:`~tau_llm.errors.ProviderHttpError`; None for an error the
+            provider reported in-band, such as an SSE ``error`` frame.
     """
 
     message: str
     is_error: Literal[True] = True
     type: Literal["error"] = "error"
+    exception: BaseException | None = None
+
+
+@agent_facing(topic="providers")
+@dataclass
+class RetryEvent:
+    """A request failed before producing anything, and is about to be sent again.
+
+    Emitted by :mod:`tau_llm.retry` BEFORE it waits, so a consumer can show the
+    wait. Nothing from the failed attempt was yielded, so there is nothing to
+    discard. See docs/PROVIDER-RETRY.md.
+
+    Attributes:
+        type: Always "retry".
+        attempt: Which retry this is, from 1.
+        max_retries: The most retries this request will make.
+        delay_seconds: How long τ waits before sending it again.
+        error: The failure being retried: a
+            :class:`~tau_llm.errors.ProviderHttpError` or
+            :class:`~tau_llm.errors.ProviderConnectionError`.
+    """
+
+    attempt: int
+    max_retries: int
+    delay_seconds: float
+    error: Exception
+    type: Literal["retry"] = "retry"
 
 
 @agent_facing(topic="providers")
@@ -197,7 +225,11 @@ class AssistantMessageEventStream:
         self._collector_task: asyncio.Task[None] | None = None
 
     def __aiter__(self) -> "AssistantMessageEventStream":
-        """Return self as the async iterator."""
+        """Return self as the async iterator.
+
+        Returns:
+            This stream; events come from :meth:`__anext__`.
+        """
         return self
 
     async def _ensure_collector(self) -> None:
@@ -253,11 +285,7 @@ class AssistantMessageEventStream:
         except Exception as e:
             self._error_exc = e
             await self._event_queue.put(
-                ErrorEvent(
-                    type="error",
-                    message=str(e),
-                    is_error=True,
-                )
+                ErrorEvent(type="error", message=str(e), is_error=True, exception=e)
             )
             self._done = True
 
@@ -276,7 +304,8 @@ class AssistantMessageEventStream:
         """
         if not (
             hasattr(chunk, "type")
-            and chunk.type in ("text_delta", "thinking_delta", "toolcall_delta", "done", "error")
+            and chunk.type
+            in ("text_delta", "thinking_delta", "toolcall_delta", "done", "error", "retry")
         ):
             raise TypeError(
                 "provider stream yielded a non-event chunk "
@@ -291,6 +320,8 @@ class AssistantMessageEventStream:
         elif chunk.type == "error":
             self._error = chunk.message
             self._done = True
+        elif chunk.type == "retry":
+            return
         elif getattr(chunk, "partial", None) is not None:
             self._partial = chunk.partial
 
@@ -313,9 +344,11 @@ class AssistantMessageEventStream:
             The fully accumulated AssistantMessage.
 
         Raises:
-            Exception: If the stream produced an ErrorEvent. The ORIGINAL exception is
-                re-raised with its type intact (e.g. ``ConstraintViolation``, which
-                carries the offending output), not flattened to a bare ``Exception``.
+            Exception: The stream failed. An exception the provider stream
+                raised is re-raised with its type intact (``ProviderHttpError``,
+                ``ConstraintViolation``); an ErrorEvent the provider yielded
+                raises a bare ``Exception`` carrying its message.
+            RuntimeError: The stream ended without a final message.
         """
         await self._ensure_collector()
         if not self._done:

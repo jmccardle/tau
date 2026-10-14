@@ -17,7 +17,7 @@ from uuid import uuid4
 from tau_llm.compat import Compat
 from tau_llm.models import EXTENDED_THINKING_LEVELS, is_valid_thinking_level
 from tau_llm.once import OnceSet
-from tau_llm.providers import get_provider_spec, registered_apis
+from tau_llm.providers import get_provider_spec, registered_apis, registered_providers
 from tau_llm.types import Model
 from tau_agent_core.agent_session import (
     AgentSession,
@@ -26,13 +26,17 @@ from tau_agent_core.agent_session import (
 )
 from tau_agent_core import tree_ops
 from tau_agent_core.attachments import elide_attachment_bodies, human_size
+from tau_agent_core.commands import CommandCompletion
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.extension_locks import ExtensionRequest
+from tau_agent_core.prompt_templates import load_prompt_templates
+from tau_agent_core.skills import load_skills
 from tau_agent_core.messages import CUSTOM_ROLE
 from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.rpc.wire_events import project_event
 from tau_agent_core.flows import Performed
 from tau_agent_core.projections import tool_result_for_user
+from tau_agent_core.provider_retry import retry_notice
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.prompt_cache import (
     CONVERSATION_PREFIX,
@@ -227,6 +231,7 @@ class TurnStream:
          "is_error": bool, "blocked": bool, "blocked_by": str | None}
         {"kind": "completion_end", "output": int, "context": int,
          "stop_reason": str | None, "dropped_tool_calls": int}
+        {"kind": "provider_retry", "text": str, "delay_seconds": float}
 
     Tool widgets are driven off ``tool_execution_start`` / ``tool_execution_end``
     (their detail carries arguments and result), NOT off ``message_end`` toolCall
@@ -334,6 +339,16 @@ class TurnStream:
             ]
         if kind == "tool_execution_end":
             return [self._feed_tool_execution_end(wire, detail.result)]
+        if kind == "provider_retry":
+            return [
+                self._tag(
+                    {
+                        "kind": "provider_retry",
+                        "text": retry_notice(wire),
+                        "delay_seconds": float(wire["delay_seconds"]),
+                    }
+                )
+            ]
         return []
 
     def _tag(self, structured: dict[str, Any]) -> dict[str, Any]:
@@ -990,21 +1005,21 @@ def _validate_thinking_level_map(value: Any, model_id: str) -> None:
 
 
 def build_model_from_config(config: dict[str, Any]) -> Model:
-    """Build a tau-agent-core ``Model`` from a TauApp/``~/.tau/config.json`` entry.
+    """Build a ``Model`` from a ``~/.tau/config.json`` ``models`` entry or a ``--model`` dict.
 
-    The single seam that turns a config ``models`` entry (or a ``--model`` ad-hoc
-    dict) into a ``Model`` — extracted from ``TauBackend.__init__`` so
-    :func:`make_model_resolver` (S45) reproduces exactly the same construction a
-    fresh backend would. Maps the ``backend`` provider field, derives the reasoning
-    flag from a non-``off`` ``thinking`` level (or an explicit ``reasoning: true``),
-    and carries the optional ``thinking_level_map``.
+    The one construction seam: :func:`make_model_resolver` goes through it too.
+    ``api`` and ``base_url`` resolve as the stated value, then the registered
+    vendor's (``backend`` names it). ``Model.name`` is ``config_name``, the key
+    ``set_model`` takes; an ad-hoc ``--model`` id is named by its id.
 
-    ``Model.name`` is ``config_name``, the config key the entry was found under,
-    so a head can name the running model as ``set_model`` takes it; an ad-hoc
-    ``--model`` id has no key and is named by its id.
+    Raises:
+        ValueError: An unimplemented ``api``; no ``base_url`` from either source —
+            never OpenAI's endpoint, which would send this vendor's key there
+            (docs/EXTENSION-PROVIDERS.md §2); or an invalid typed field.
     """
     model_id = config.get("model", "gpt-4")
     backend_type = config.get("backend", "openai").lower()
+    entry = config.get("config_name", model_id)
 
     # Map provider name (TauApp's "backend" field) to tau-agent-core provider.
     provider_map = {"openai": "openai", "anthropic": "anthropic", "gemini": "gemini"}
@@ -1014,13 +1029,18 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     api = config.get("api") or (spec.api if spec else "openai-completions")
     if api not in registered_apis():
         raise ValueError(
-            f"models.{model_id}.api is {api!r}, which τ does not implement. "
+            f"models.{entry}.api is {api!r}, which τ does not implement. "
             f"Registered wire protocols: {', '.join(sorted(registered_apis()))}."
         )
 
     base_url = config.get("base_url") or (spec.base_url if spec else None)
     if not base_url:
-        base_url = "https://api.openai.com/v1"
+        raise ValueError(
+            f"models.{entry}: backend {provider!r} is not a registered provider with a "
+            f"default endpoint, and the entry sets no base_url. Set base_url, or register "
+            f"the provider before this model is built (docs/EXTENSION-PROVIDERS.md §2). "
+            f"Registered providers: {', '.join(registered_providers())}."
+        )
 
     thinking_level = config.get("thinking")
     reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
@@ -1418,12 +1438,23 @@ class TauBackend(Backend):
             custom_prompt = append_system_prompt(
                 custom_prompt or BASE_SYSTEM_PROMPT, list(append_sections)
             )
+        templates = load_prompt_templates(
+            cwd=cwd,
+            paths=config.get("prompt_templates") or (),
+            discover=not config.get("no_prompt_templates", False),
+        )
+        skills = load_skills(
+            cwd=cwd,
+            paths=config.get("skills") or (),
+            discover=not config.get("no_skills", False),
+        )
         self.system_prompt = _build_system_prompt(
             cwd=cwd,
             tools=tools,
             custom_prompt=custom_prompt,
             no_context_files=bool(config.get("no_context_files", False)),
             model=config.get("model") or None,
+            skills=skills.listed(),
         )
 
         no_tools = config.get("no_tools")
@@ -1442,6 +1473,8 @@ class TauBackend(Backend):
             no_tools=no_tools,
             max_turns=max_turns,
             cwd=cwd,
+            prompt_templates=templates,
+            skills=skills,
         )
         self.comparisons: dict[str, Comparison] = {}
 
@@ -1645,6 +1678,13 @@ class TauBackend(Backend):
         built-ins.
         """
         return self.agent_session.get_extension_commands()
+
+    def get_prompt_commands(self) -> tuple[CommandCompletion, ...]:
+        """Template and skill command words, for a completion list.
+
+        Delegates to :meth:`AgentSession.get_prompt_commands`.
+        """
+        return self.agent_session.get_prompt_commands()
 
     def get_extension_command_args(self, name: str) -> str | None:
         """The declared argument placeholder for command ``name`` (E7 §3 / S51).

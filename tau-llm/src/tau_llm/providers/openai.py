@@ -34,6 +34,8 @@ import httpx
 from tau_llm import grammar as grammar_mod
 from tau_llm.compat import ResolvedCompat, resolve_compat
 from tau_llm.constraints import ConstraintViolation
+from tau_llm.errors import ProviderHttpError, connection_error_from, retry_after_seconds
+from tau_llm.errors import truncate_error_text as _truncate_error_text
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.json_parse import (
     parse_json_with_repair_info,
@@ -67,8 +69,6 @@ _WARNED_FOREIGN_SIGNATURES = OnceSet()
 
 _WARNED_FOREIGN_TOOL_SIGNATURES = OnceSet()
 
-_MAX_ERROR_BODY_CHARS = 4000
-
 _TRUNCATION_HINT = (
     "The model hit the output cap τ sent for it (max_tokens={max_tokens}); "
     "raise `max_tokens` on this model in ~/.tau/config.json, or lower the "
@@ -83,13 +83,6 @@ def _error_frame_text(error: Any) -> str:
         code = error.get("code") or error.get("type")
         return f"{message} (code {code})" if code else message
     return _truncate_error_text(str(error))
-
-
-def _truncate_error_text(text: str, max_chars: int = _MAX_ERROR_BODY_CHARS) -> str:
-    """Bound an error body, saying how much was dropped rather than eliding silently."""
-    if len(text) <= max_chars:
-        return text
-    return f"{text[:max_chars]}... [truncated {len(text) - max_chars} chars]"
 
 
 def _describe_exception(e: BaseException) -> str:
@@ -527,6 +520,39 @@ def _extract_reasoning(delta: dict) -> tuple[str, str]:
         if isinstance(value, str) and value:
             return value, field_name
     return "", ""
+
+
+def _split_content_chunks(chunks: list) -> tuple[str, str]:
+    """Return ``(text, thinking)`` from a list-valued ``content``.
+
+    Mistral's reasoning models send ``content`` as a list of chunks rather than a
+    string: ``{"type": "text", "text": ...}`` and
+    ``{"type": "thinking", "thinking": [{"type": "text", "text": ...}]}``.
+
+    Raises:
+        ValueError: A chunk of any other shape or type. Dropping it would lose
+            part of the reply without a trace.
+    """
+    text: list[str] = []
+    thinking: list[str] = []
+    for chunk in chunks:
+        kind = chunk.get("type") if isinstance(chunk, dict) else None
+        if kind == "text":
+            text.append(chunk.get("text") or "")
+        elif kind == "thinking":
+            inner = chunk.get("thinking")
+            if isinstance(inner, str):
+                thinking.append(inner)
+                continue
+            if not isinstance(inner, list):
+                raise ValueError(f"thinking chunk without a string or list body: {chunk!r}")
+            for part in inner:
+                if not (isinstance(part, dict) and part.get("type") == "text"):
+                    raise ValueError(f"thinking chunk with a non-text part: {part!r}")
+                thinking.append(part.get("text") or "")
+        else:
+            raise ValueError(f"unsupported content chunk: {chunk!r}")
+    return "".join(text), "".join(thinking)
 
 
 def _consolidate_text_and_thinking(accum: _Accumulator) -> list[Any]:
@@ -1555,6 +1581,7 @@ class OpenAICompletionsProvider(Provider):
         )
 
         async def event_generator() -> AsyncIterator[Any]:
+            started = False
             try:
                 state = _TransportState()
                 transport = (
@@ -1581,6 +1608,7 @@ class OpenAICompletionsProvider(Provider):
                     )
                 )
                 async for event in transport:
+                    started = True
                     yield event
                 if state.failed:
                     return
@@ -1630,7 +1658,7 @@ class OpenAICompletionsProvider(Provider):
                 )
                 return
 
-            except ConstraintViolation:
+            except (ConstraintViolation, ProviderHttpError):
                 raise
             except Exception as e:
                 described = _describe_exception(e)
@@ -1640,18 +1668,24 @@ class OpenAICompletionsProvider(Provider):
                     message = (
                         f"Streaming error from model {model.id!r} at {self.base_url!r}: {described}"
                     )
+                if not started:
+                    connection_error = connection_error_from(
+                        e, message=message, model_id=model.id, base_url=self.base_url
+                    )
+                    if connection_error is not None:
+                        raise connection_error from e
                 error_event = ErrorEvent(type="error", message=message, is_error=True)
                 yield error_event
                 return
 
         return event_generator()
 
-    def _error_event_from_response(self, response: Any, model: Model) -> ErrorEvent:
-        """Build the ErrorEvent for a non-200, from an ALREADY-READ body.
+    def _http_error_from_response(self, response: Any, model: Model) -> ProviderHttpError:
+        """Build the ProviderHttpError for a non-200, from an ALREADY-READ body.
 
         Shared by both transports so a gateway's 502 reads the same either way.
-        The streaming caller must ``await response.aread()`` first (a streaming
-        response's body is not read yet); the buffered caller already has it.
+        The streaming caller must ``await response.aread()`` first; the buffered
+        caller already has the body.
         """
         error_body: Any = None
         try:
@@ -1665,15 +1699,14 @@ class OpenAICompletionsProvider(Provider):
                 error_msg = str(err.get("message") or "")
             elif isinstance(err, str):
                 error_msg = err
-        if not error_msg:
-            error_msg = _truncate_error_text(response.text.strip())
-        return ErrorEvent(
-            type="error",
-            message=(
-                f"HTTP {response.status_code} from model {model.id!r} at "
-                f"{self.base_url!r}: {error_msg or '(empty response body)'}"
-            ),
-            is_error=True,
+        body = response.text.strip()
+        return ProviderHttpError(
+            response.status_code,
+            message=error_msg or _truncate_error_text(body),
+            body=body,
+            model_id=model.id,
+            base_url=self.base_url,
+            retry_after=retry_after_seconds(getattr(response, "headers", None)),
         )
 
     def _apply_tool_call_schema(self, tc: dict, compat: ResolvedCompat, model: Model) -> dict:
@@ -1707,9 +1740,7 @@ class OpenAICompletionsProvider(Provider):
         ) as response:
             if response.status_code != 200:
                 await response.aread()
-                yield self._error_event_from_response(response, model)
-                state.failed = True
-                return
+                raise self._http_error_from_response(response, model)
 
             # Read SSE lines as they arrive (no full-body buffering).
             async for line in response.aiter_lines():
@@ -1770,8 +1801,20 @@ class OpenAICompletionsProvider(Provider):
                 if choice_usage:
                     state.usage_data = choice_usage
 
-                # Process text delta
                 text = delta.get("content", "") or ""
+                if isinstance(text, list):
+                    try:
+                        text, chunk_thinking = _split_content_chunks(text)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"Model {model.id!r} at {self.base_url!r} streamed {exc}"
+                        ) from None
+                    if chunk_thinking:
+                        # no signature: there is no request field to replay it under
+                        accum.thinking_parts.append(chunk_thinking)
+                        accum.has_thinking = True
+                        partial = self._build_partial_message(accum, model)
+                        yield self._make_thinking_event(chunk_thinking, accum, partial)
                 if text:
                     accum.text_parts.append(text)
                     accum.has_text = True
@@ -1862,9 +1905,7 @@ class OpenAICompletionsProvider(Provider):
 
         response = await client.post("/chat/completions", json=payload, timeout=request_timeout)
         if response.status_code != 200:
-            yield self._error_event_from_response(response, model)
-            state.failed = True
-            return
+            raise self._http_error_from_response(response, model)
 
         body = response.json()
         if not isinstance(body, dict):
@@ -1919,11 +1960,25 @@ class OpenAICompletionsProvider(Provider):
             yield self._make_thinking_event(reasoning, accum, partial)
 
         content = message.get("content")
+        if isinstance(content, list):
+            try:
+                content, chunk_thinking = _split_content_chunks(content)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Non-streaming completion from model {model.id!r} at "
+                    f"{self.base_url!r} returned {exc}"
+                ) from None
+            if chunk_thinking:
+                # no signature: there is no request field to replay it under
+                accum.thinking_parts.append(chunk_thinking)
+                accum.has_thinking = True
+                partial = self._build_partial_message(accum, model)
+                yield self._make_thinking_event(chunk_thinking, accum, partial)
         if content is not None and not isinstance(content, str):
             raise ValueError(
                 f"Non-streaming completion from model {model.id!r} at {self.base_url!r} "
                 f"returned `message.content` of type {type(content).__name__}, "
-                f"expected a string or null: {content!r}"
+                f"expected a string, a list of chunks, or null: {content!r}"
             )
         if content:
             accum.text_parts.append(content)

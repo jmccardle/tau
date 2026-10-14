@@ -11,25 +11,22 @@ class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[
 
 `tau_agent_core.agent_loop.AgentLoop`
 
-The core agent loop.
+The core agent loop: drives conversations, executes tools, emits events.
 
-Drives conversations, executes tools, and emits events.
-
-Reference: PHASE-2-SUBPHASE-1.md, "Implementation Outline" section.
-Reference: SUBPHASE-0.0.md, "5. Agent Events" section.
+Events follow docs/SUBPHASE-0.0.md, "5. Agent Events".
 
 **Constructor parameters**
 
 - `config: AgentLoopConfig` — Agent loop configuration.
-- `emit: Callable[[AgentEvent], Awaitable[None]] | None = None` — Callback to emit AgentEvents (fire-and-forget; returns None).
-- `tools: list[AgentTool] | None = None` — *(no description)*
-- `model: Any = None` — *(no description)*
-- `abort_signal: AbortSignal | None = None` — *(no description)*
-- `hook_dispatcher: ExtensionRunner | None = None` — *(no description)*
-- `steer_queue: list[Any] | None = None` — *(no description)*
-- `mid_turn_compactor: MidTurnCompactor | None = None` — *(no description)*
-- `writer: TurnWriter | None = None` — *(no description)*
-- `call_gate: Callable[[str], str | None] | None = None` — *(no description)*
+- `emit: Callable[[AgentEvent], Awaitable[None]] | None = None` — Awaited with each AgentEvent; ``None`` emits nothing.
+- `tools: list[AgentTool] | None = None` — The tools the model may call, keyed by name (a later duplicate name wins).
+- `model: Any = None` — Overrides ``config.model`` when truthy.
+- `abort_signal: AbortSignal | None = None` — Checked between turns and passed to the stream and tools; ``None`` means the run cannot be aborted.
+- `hook_dispatcher: ExtensionRunner | None = None` — The return-collecting extension hook dispatcher, whose ``emit_*`` results the mutating-hook call-sites thread forward. ``None`` when standalone: no hook work at all.
+- `steer_queue: list[Any] | None = None` — The session's live steering queue (docs/SUBMISSION-LIFECYCLE.md phase 4). The list object itself is shared, not a drain callback, so the loop can peek before a would-be-final turn and drain only in the statement that delivers; a ``max_turns`` exit strands nothing.
+- `mid_turn_compactor: MidTurnCompactor | None = None` — Offered the context at each turn boundary; see :data:`MidTurnCompactor`. ``None`` never compacts mid-turn.
+- `writer: TurnWriter | None = None` — Where each message is written as it exists; ``None`` writes nothing and the loop only returns what it produced.
+- `call_gate: Callable[[str], str | None] | None = None` — Given a model-issued call's tool name, the reason to refuse it, or ``None`` to let it run; how a masked tool stays declared, so the ``tools`` block and the prompt cache hold. ``None`` gates nothing.
 
 ### add_tool
 
@@ -55,14 +52,16 @@ has_hook_handlers(event: str) -> bool
 
 Whether any extension has a handler for the mutating hook ``event``.
 
-The zero-extension fast path (pi ``agent-session.ts:407-411``): the four
-hook call-sites (S11-S14) call this before dispatching so a session with
-no extensions — or a standalone loop with no injected dispatcher — does
-no hook work at all. Returns ``False`` when no dispatcher was injected.
+The zero-extension fast path: the hook call-sites (S11-S14) check this
+before dispatching, so a loop with no extensions does no hook work.
 
 **Parameters**
 
-- `event: str` — *(no description)*
+- `event: str` — The hook name.
+
+**Returns**
+
+True if a dispatcher was injected and has a handler for ``event``.
 
 ### run
 
@@ -193,16 +192,11 @@ class BlockedCall(call: PreparedToolCall, error: str, blocked_by_extension: str 
 
 A tool call that was blocked (e.g., argument validation failed).
 
-``blocked_by_extension`` names the extension that VETOED the call via a
-``tool_call`` hook (S50, anchor G11); it is ``None`` for a block that is NOT an
-extension veto (argument-validation failure, fail-closed handler throw) — those
-stay a generic errored result rather than the "⛔ blocked by <ext>" render.
-
 **Constructor parameters**
 
-- `call: PreparedToolCall` — *(no description)*
-- `error: str` — *(no description)*
-- `blocked_by_extension: str | None = None` — *(no description)*
+- `call: PreparedToolCall` — The prepared call that will not run.
+- `error: str` — Why it was blocked; becomes the call's error result text.
+- `blocked_by_extension: str | None = None` — The extension that vetoed the call via a ``tool_call`` hook (S50, anchor G11). ``None`` for any other block (argument-validation failure, fail-closed handler throw), which renders as a generic errored result, not "⛔ blocked by <ext>".
 
 ## ErrorCall
 <!-- agent: yes -->
@@ -217,8 +211,8 @@ A tool call whose preparation raised ``exception``.
 
 **Constructor parameters**
 
-- `call: PreparedToolCall` — *(no description)*
-- `exception: Exception` — *(no description)*
+- `call: PreparedToolCall` — The prepared call that failed.
+- `exception: Exception` — What its preparation raised.
 
 ### result
 
@@ -228,7 +222,11 @@ result() -> AgentToolResult
 
 `tau_agent_core.tool_pipeline.ErrorCall.result`
 
-The call's result, by :meth:`AgentToolResult.from_exception`.
+Build the call's error result.
+
+**Returns**
+
+meth:`AgentToolResult.from_exception` over the call's name, id and ``exception``.
 
 ## FinalizedToolCall
 <!-- agent: yes -->
@@ -320,7 +318,7 @@ Write a message that is finished when it exists: a tool result, a steer, a node.
 
 **Parameters**
 
-- `message: Any` — *(no description)*
+- `message: Any` — The finished message, a dict or a pydantic message model.
 
 ### finalize
 
@@ -334,8 +332,8 @@ Complete the message :meth:`open` started.
 
 **Parameters**
 
-- `handle: Any` — *(no description)*
-- `message: Any` — *(no description)*
+- `handle: Any` — What :meth:`open` returned for this message.
+- `message: Any` — The finished assistant message.
 
 ### open
 
@@ -345,11 +343,15 @@ async open(message: dict[str, Any]) -> Any
 
 `tau_agent_core.agent_loop.TurnWriter.open`
 
-Record that an assistant message has started; return a handle for :meth:`finalize`.
+Record that an assistant message has started.
 
 **Parameters**
 
-- `message: dict[str, Any]` — *(no description)*
+- `message: dict[str, Any]` — The empty assistant message dict, before any content streams.
+
+**Returns**
+
+An opaque handle the loop passes back to :meth:`finalize`.
 
 ## apply_tool_result_hooks
 <!-- agent: yes -->
@@ -386,15 +388,17 @@ completed_messages(exc: BaseException) -> list[Any]
 
 The messages an agent-loop run had already completed when *exc* ended it.
 
-Empty for any other exception, so a caller can ask unconditionally. The
-caller that matters is
+The caller that matters is
 :meth:`~tau_agent_core.agent_session.AgentSession._run_one_turn`, which
-persists these before re-raising — the requirement in docs/PLAN-0.9.4.md §3:
-*every complete message or tool result should be persisted*.
+persists these before re-raising (docs/PLAN-0.9.4.md §3).
 
 **Parameters**
 
-- `exc: BaseException` — *(no description)*
+- `exc: BaseException` — Any exception; only one raised out of an agent-loop run carries messages.
+
+**Returns**
+
+A copy of the completed messages, or an empty list for any other exception, so a caller can ask unconditionally.
 
 ## execute_prepared_call
 <!-- agent: yes -->

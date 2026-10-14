@@ -120,6 +120,10 @@ __aiter__() -> 'AssistantMessageEventStream'
 
 Return self as the async iterator.
 
+**Returns**
+
+This stream; events come from :meth:`__anext__`.
+
 ### __anext__
 
 ```python
@@ -179,7 +183,8 @@ The fully accumulated AssistantMessage.
 
 **Raises**
 
-- `Exception` — If the stream produced an ErrorEvent. The ORIGINAL exception is re-raised with its type intact (e.g. ``ConstraintViolation``, which carries the offending output), not flattened to a bare ``Exception``.
+- `Exception` — The stream failed. An exception the provider stream raised is re-raised with its type intact (``ProviderHttpError``, ``ConstraintViolation``); an ErrorEvent the provider yielded raises a bare ``Exception`` carrying its message.
+- `RuntimeError` — The stream ended without a final message.
 
 ## Compat
 <!-- agent: yes -->
@@ -198,19 +203,22 @@ Set per-model in ``~/.tau/config.json`` (``models.<name>.compat``).
 
 `tau_llm.compat.Compat.max_tokens_field: MaxTokensField | None`
 
-*No description. This object is marked but undocumented.*
+Which request field carries the completion-token cap.
 
 ### supports_usage_in_streaming
 
 `tau_llm.compat.Compat.supports_usage_in_streaming: bool | None`
 
-*No description. This object is marked but undocumented.*
+Whether to send
+``stream_options.include_usage`` on a streaming request.
 
 ### tool_call_schema
 
 `tau_llm.compat.Compat.tool_call_schema: ToolCallSchema | None`
 
-*No description. This object is marked but undocumented.*
+``"anthropic"`` translates tool calls an
+OpenAI-compatible gateway returns in the Anthropic shape. Never
+detected; only an operator can state it.
 
 ## DoneEvent
 <!-- agent: yes -->
@@ -237,15 +245,12 @@ Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 <!-- agent: yes -->
 
 ```python
-class ErrorEvent(message: str, is_error: Literal[True] = True, type: Literal['error'] = 'error')
+class ErrorEvent(message: str, is_error: Literal[True] = True, type: Literal['error'] = 'error', exception: BaseException | None = None)
 ```
 
 `tau_llm.streaming.ErrorEvent`
 
-An error event from the LLM stream.
-
-Carries an error message. When the stream produces an ErrorEvent,
-no further events will be produced.
+An error event from the LLM stream; no further events follow it.
 
 Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 
@@ -254,6 +259,7 @@ Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 - `message: str` — Description of the error.
 - `is_error: Literal[True] = True` — Always True.
 - `type: Literal['error'] = 'error'` — Always "error".
+- `exception: BaseException | None = None` — The exception the provider raised, e.g. a :class:`~tau_llm.errors.ProviderHttpError`; None for an error the provider reported in-band, such as an SSE ``error`` frame.
 
 ## Provider
 <!-- agent: yes -->
@@ -292,13 +298,15 @@ idempotent — the pool may close an instance that never issued a request.
 
 `tau_llm.providers.base.Provider.id: str`
 
-*No description. This object is marked but undocumented.*
+Vendor id (``"openai"``, ``"groq"``), matching ``Model.provider``.
+Empty on the class; the :class:`ApiFactory` stamps it after construction.
 
 ### name
 
 `tau_llm.providers.base.Provider.name: str`
 
-*No description. This object is marked but undocumented.*
+Human-readable vendor label (``"OpenAI"``, ``"Groq"``). Same
+stamping rule as ``id``.
 
 ### stream_chat
 
@@ -324,6 +332,52 @@ A StreamEventStream — an async iterator of typed streaming events (TextDeltaEv
 **Raises**
 
 - `NotImplementedError` — If the provider hasn't implemented this method.
+
+## ProviderConnectionError
+<!-- agent: yes -->
+
+```python
+class ProviderConnectionError(message: str, *, model_id: str, base_url: str)
+```
+
+`tau_llm.errors.ProviderConnectionError`
+
+The connection failed before the provider produced any event.
+
+Refused, reset, or closed by the server before a response. Raised only while
+nothing has streamed, so the caller has received nothing from this request
+(docs/PROVIDER-RETRY.md §3). A timeout waiting for the response is NOT one
+of these: the server may still be working on the request.
+
+**Constructor parameters**
+
+- `message: str` — The provider's description of the failure; becomes ``str()``.
+- `model_id: str` — The requested model id.
+- `base_url: str` — The endpoint the request went to.
+
+## ProviderHttpError
+<!-- agent: yes -->
+
+```python
+class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str, retry_after: float | None = None)
+```
+
+`tau_llm.errors.ProviderHttpError`
+
+An endpoint answered a completion request with a non-2xx status.
+
+Every provider raises this for an HTTP refusal, and
+``AssistantMessageEventStream.result()`` re-raises it with its type intact.
+``str()`` is ``"HTTP <status> from model <id> at <base_url>: <message>"``.
+
+**Constructor parameters**
+
+- `status_code: int` — The HTTP status, e.g. 400 for an over-context prompt.
+- `message: str` — The server's ``error.message``. Without one, the OpenAI wire uses the bounded body and the Anthropic wire the SDK's text, so it is ``""`` only when there was nothing to report.
+- `body: str` — The raw response body, bounded to ``MAX_ERROR_BODY_CHARS``.
+- `model_id: str` — The requested model id.
+- `base_url: str` — The endpoint the request went to.
+- `retry_after: float | None = None` — Seconds the server asked the client to wait, from a ``retry-after-ms`` or ``retry-after`` header; None when it sent neither.
 
 ## ProviderSpec
 <!-- agent: yes -->
@@ -356,7 +410,11 @@ resolve_api_key() -> str | None
 
 `tau_llm.providers.base.ProviderSpec.resolve_api_key`
 
-First non-empty value among ``api_key_env``, or None if none is set.
+Look up this vendor's credential in the environment.
+
+**Returns**
+
+The first non-empty value among ``api_key_env``, in order, or None when none is set (including when ``api_key_env`` is empty).
 
 ## ResolvedCompat
 <!-- agent: yes -->
@@ -369,19 +427,105 @@ First non-empty value among ``api_key_env``, or None if none is set.
 
 `tau_llm.compat.ResolvedCompat.max_tokens_field: MaxTokensField`
 
-*No description. This object is marked but undocumented.*
+As :attr:`Compat.max_tokens_field`.
 
 ### supports_usage_in_streaming
 
 `tau_llm.compat.ResolvedCompat.supports_usage_in_streaming: bool`
 
-*No description. This object is marked but undocumented.*
+As :attr:`Compat.supports_usage_in_streaming`.
 
 ### tool_call_schema
 
 `tau_llm.compat.ResolvedCompat.tool_call_schema: ToolCallSchema`
 
-*No description. This object is marked but undocumented.*
+As :attr:`Compat.tool_call_schema`.
+
+## RetryEvent
+<!-- agent: yes -->
+
+```python
+class RetryEvent(attempt: int, max_retries: int, delay_seconds: float, error: Exception, type: Literal['retry'] = 'retry')
+```
+
+`tau_llm.streaming.RetryEvent`
+
+A request failed before producing anything, and is about to be sent again.
+
+Emitted by :mod:`tau_llm.retry` BEFORE it waits, so a consumer can show the
+wait. Nothing from the failed attempt was yielded, so there is nothing to
+discard. See docs/PROVIDER-RETRY.md.
+
+**Constructor parameters**
+
+- `attempt: int` — Which retry this is, from 1.
+- `max_retries: int` — The most retries this request will make.
+- `delay_seconds: float` — How long τ waits before sending it again.
+- `error: Exception` — The failure being retried: a :class:`~tau_llm.errors.ProviderHttpError` or :class:`~tau_llm.errors.ProviderConnectionError`.
+- `type: Literal['retry'] = 'retry'` — Always "retry".
+
+## RetryPolicy
+<!-- agent: yes -->
+
+```python
+class RetryPolicy(max_retries: int = 3, base_delay: float = 1.0, max_delay: float = 30.0, max_retry_after: float = 60.0, jitter: float = 0.2, statuses: frozenset[int] = RETRYABLE_STATUSES)
+```
+
+`tau_llm.retry.RetryPolicy`
+
+How :func:`retrying_stream` retries. The default is :data:`DEFAULT_RETRY_POLICY`.
+
+Pass one as ``options["retry"]`` to ``stream_simple`` or ``complete_simple``;
+pass ``False`` to send exactly once.
+
+**Constructor parameters**
+
+- `max_retries: int = 3` — Re-sends after the first attempt; 0 sends once.
+- `base_delay: float = 1.0` — Seconds before the first retry; each later one doubles it.
+- `max_delay: float = 30.0` — Ceiling on one computed backoff before jitter, in seconds.
+- `max_retry_after: float = 60.0` — The longest ``Retry-After`` honoured, in seconds. A server that asks for longer gets no retry: its error is raised at once.
+- `jitter: float = 0.2` — Each computed backoff is stretched by up to this fraction, so concurrent callers that failed together do not retry together. A ``Retry-After`` is honoured exactly.
+- `statuses: frozenset[int] = RETRYABLE_STATUSES` — The HTTP statuses retried.
+
+### delay
+
+```python
+delay(retry: int, exc: BaseException, rng: Callable[[], float]) -> float | None
+```
+
+`tau_llm.retry.RetryPolicy.delay`
+
+Compute the wait before one retry.
+
+A ``Retry-After`` replaces the backoff and gets no jitter.
+
+**Parameters**
+
+- `retry: int` — Which retry this is, counting from 1.
+- `exc: BaseException` — The failure being retried; its ``retry_after`` is read when it is a :class:`ProviderHttpError`.
+- `rng: Callable[[], float]` — Returns a float in [0, 1) that scales the jitter.
+
+**Returns**
+
+Seconds to wait: ``min(max_delay, base_delay * 2**(retry-1))`` stretched by up to ``jitter``, or the server's ``Retry-After``. None when that ``Retry-After`` exceeds ``max_retry_after``: do not retry.
+
+### retryable
+
+```python
+retryable(exc: BaseException) -> bool
+```
+
+`tau_llm.retry.RetryPolicy.retryable`
+
+Whether this policy re-sends after ``exc``.
+
+**Parameters**
+
+- `exc: BaseException` — What the attempt raised before producing any event.
+
+**Returns**
+
+True for a :class:`ProviderHttpError` whose status is in ``statuses``, and for any :class:`ProviderConnectionError`.
 
 ## StreamEventStream
 <!-- agent: yes -->
@@ -404,7 +548,11 @@ __aiter__() -> AsyncIterator[Any]
 
 `tau_llm.providers.base.StreamEventStream.__aiter__`
 
-*No description. This object is marked but undocumented.*
+Iterate the provider's events.
+
+**Returns**
+
+An async iterator of typed streaming events that ends after the terminal ``DoneEvent`` or ``ErrorEvent``.
 
 ## TextDeltaEvent
 <!-- agent: yes -->
@@ -519,7 +667,7 @@ every entry point here, this one included, keeps working unchanged.
 
 - `model: Any` — The Model configuration (has provider, id, etc.).
 - `context: dict[str, Any]` — Context dict (same shape as ``stream_simple``): ``messages`` and optional ``tools``. A leading ``{"role": "system", ...}`` message sets the system prompt (client.py does not read ``system_prompt``).
-- `options: dict[str, Any] | None = None` — Optional provider options (``max_tokens``, ``api_key``, ``reasoning``, ``temperature``, …).
+- `options: dict[str, Any] | None = None` — Optional provider options (``max_tokens``, ``api_key``, ``reasoning``, ``temperature``, ``retry``, …). A caller with its own retry loop passes ``retry=False``.
 - `on_text_delta: TextDeltaSink | None = None` — Called with each text fragment as it arrives, so a caller that wants the whole message can still SHOW the wait. ``None`` keeps the collapsed path exactly as it was — the stream is driven by ``result()`` alone and nothing iterates it. Sync or async; a coroutine is awaited before the next fragment is read, which paces the provider against the renderer rather than queueing deltas the screen never catches up with. See docs/STREAMING-SIDE-WORK.md.
 
 **Returns**
@@ -570,11 +718,15 @@ get_api_factory(api: str) -> ApiFactory
 
 `tau_llm.providers.base.get_api_factory`
 
-The factory for ``api``.
+Look up the client factory for a wire protocol.
 
 **Parameters**
 
-- `api: str` — *(no description)*
+- `api: str` — Wire-protocol id, as in ``Model.api``.
+
+**Returns**
+
+The factory registered under ``api``.
 
 **Raises**
 
@@ -589,15 +741,15 @@ get_provider_spec(provider_id: str) -> ProviderSpec | None
 
 `tau_llm.providers.base.get_provider_spec`
 
-The vendor's spec, or None if it was never registered.
-
-None is not an error: an unregistered vendor id is a free-form label on a
-``Model`` that already carries its own endpoint. Only a model whose ``api``
-is unknown cannot be served.
+Look up a vendor's defaults.
 
 **Parameters**
 
-- `provider_id: str` — *(no description)*
+- `provider_id: str` — Vendor id, as in ``Model.provider``.
+
+**Returns**
+
+The registered spec, or None if that vendor was never registered. None is not an error: an unregistered vendor id is a free-form label on a ``Model`` that carries its own endpoint; only an unknown ``api`` cannot be served.
 
 ## register_api
 <!-- agent: yes -->
@@ -649,6 +801,10 @@ registered_apis() -> tuple[str, ...]
 
 `tau_llm.providers.base.registered_apis`
 
+List the registered wire protocols.
+
+**Returns**
+
 Every registered wire-protocol id, sorted.
 
 ## registered_providers
@@ -659,6 +815,10 @@ registered_providers() -> tuple[str, ...]
 ```
 
 `tau_llm.providers.base.registered_providers`
+
+List the registered vendors.
+
+**Returns**
 
 Every registered vendor id, sorted.
 
@@ -676,11 +836,14 @@ The compat τ will actually use for ``model``.
 Detection first, then the operator's stated :class:`Compat` over the top,
 field by field — an unset field falls through to the detected value rather
 than to a type default, so stating one quirk never silently resets another.
-Mirrors pi's ``getCompat`` (``openai-completions.ts:1631``).
 
 **Parameters**
 
-- `model: Model` — *(no description)*
+- `model: Model` — The model whose ``base_url`` is detected and whose ``compat`` is applied over the result.
+
+**Returns**
+
+The merged compat; exactly the detected one when ``model.compat`` is ``None``.
 
 ## split_tool_result_content
 <!-- agent: yes -->
@@ -739,15 +902,16 @@ This is the ONLY entry point that τ-agent-core uses to talk to τ-llm.
 
 - `model: Any` — The Model configuration (has provider, id, etc.).
 - `context: dict[str, Any]` — Context dict with keys: - messages: List of message dicts (user/assistant/toolResult). - tools: Optional list of tool definitions. - system_prompt: Optional system prompt string.
-- `options: dict[str, Any] | None = None` — Optional provider-specific options (temperature, etc.). Two of them are TRANSPORT settings the provider strips from the request body rather than sending: ``request_timeout`` and ``stream`` (False = talk to a backend that does not implement SSE; the events below are produced either way — PLAN-0.9.3 §4.1).
+- `options: dict[str, Any] | None = None` — Optional provider-specific options (temperature, etc.). Two of them are TRANSPORT settings the provider strips from the request body rather than sending: ``request_timeout`` and ``stream`` (False = talk to a backend that does not implement SSE; the events below are produced either way — PLAN-0.9.3 §4.1). ``retry`` is read here and never reaches the provider: a :class:`~tau_llm.retry.RetryPolicy`, or ``False`` to send once. Absent means :data:`~tau_llm.retry.DEFAULT_RETRY_POLICY` (docs/PROVIDER-RETRY.md).
 
 **Returns**
 
-AssistantMessageEventStream yielding TextDeltaEvent, ToolCallDeltaEvent, DoneEvent, and ErrorEvent instances.
+AssistantMessageEventStream yielding TextDeltaEvent, ThinkingDeltaEvent, ToolCallDeltaEvent, RetryEvent, DoneEvent and ErrorEvent instances.
 
 **Raises**
 
 - `ValueError` — If the model names a wire protocol τ has no implementation for, contradicts its own vendor's protocol, resolves to no endpoint, or to no credential for a vendor that declares where its credential lives. See ``_resolve_request``.
+- `TypeError` — If ``options["retry"]`` is neither a RetryPolicy nor False.
 
 ## unregister_api
 <!-- agent: yes -->
@@ -762,7 +926,7 @@ Remove a wire-protocol registration.
 
 **Parameters**
 
-- `api: str` — *(no description)*
+- `api: str` — Wire-protocol id previously passed to :func:`register_api`.
 
 **Raises**
 
@@ -781,7 +945,7 @@ Remove a vendor registration.
 
 **Parameters**
 
-- `provider_id: str` — *(no description)*
+- `provider_id: str` — Vendor id, as in ``ProviderSpec.id``.
 
 **Raises**
 

@@ -17,6 +17,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.messages import convert_to_llm
 from tau_agent_core.session_log import InMemorySessionLog, is_incomplete
 from tau_agent_core.tools.base import INTERNAL_TOOL_ERROR, AgentTool, ToolError, ToolHalt
+from tau_llm.errors import ProviderHttpError
 from tau_llm.streaming import (
     DoneEvent,
     ErrorEvent,
@@ -156,6 +157,25 @@ def test_a_stream_that_errors_partway_keeps_its_text_as_an_error_message():
     assert assistant["stop_reason"] == "error"
     assert assistant["error_message"] == "upstream 503"
     assert marker["customType"] == "turn_error"
+    (kept,) = completed_messages(excinfo.value)
+    assert kept.stop_reason == "error"
+
+
+def test_a_provider_http_error_reaches_the_caller_with_its_type_and_status():
+    """docs/PROVIDER-HTTP-ERRORS.md: the loop raises the event's exception, not a RuntimeError copy."""
+    refusal = ProviderHttpError(
+        400, message="exceeds the context size", body="", model_id="gpt-4o", base_url="u"
+    )
+    session = _session()
+    stream = _Stream(
+        [*_text_deltas("partial"), ErrorEvent(message=str(refusal), exception=refusal)]
+    )
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_streams(stream)):
+        with pytest.raises(ProviderHttpError) as excinfo:
+            asyncio.run(session.prompt("summarize"))
+
+    assert excinfo.value is refusal
+    assert excinfo.value.status_code == 400
     (kept,) = completed_messages(excinfo.value)
     assert kept.stop_reason == "error"
 

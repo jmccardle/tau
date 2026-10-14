@@ -461,7 +461,9 @@ that a tool made through `ctx.execute_tool`, and is `null` for a call the model
 made (experiments/tool-exposure/RESULTS.md). The field is additive, but it is a
 minor bump on both wires so that a client has a version from which it can rely on
 the field. Serve's hello still refuses a mismatched version, so a 0.8 client is
-refused by a 0.9 daemon.
+refused by a 0.9 daemon. The same bump carries the `provider_retry` event
+(docs/PROVIDER-RETRY.md), which reached `master` on 2026-10-12 at RPC 2.1 /
+protocol 0.8 and was folded into 2.2 / 0.9 when code mode merged (2026-10-14).
 
 ## 6. `tau serve`
 

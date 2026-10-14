@@ -122,13 +122,28 @@ class CompactionPolicy:
     Construct through :meth:`disabled`, :meth:`local_summarizer` or
     :meth:`turn_cap` — the constructors are what make the mode/field pairing
     checkable. There is no default instance and no default mode.
+
+    Attributes:
+        mode: Which of the three admissible policies this is.
+        max_turns: Bound on user turns (``prompt()`` calls). Required by
+            ``disabled`` and ``turn_cap``; must be ``None`` otherwise.
+        max_tokens_per_turn: Bound on the context each user turn may add.
+            Required by ``turn_cap`` only.
+        summarizer_model: The summariser. Required by ``local_summarizer`` only.
+        summarizer_api_key: Key for ``summarizer_model``. Required by
+            ``local_summarizer`` only; never written to the manifest.
+        reserve_tokens: Copied into :attr:`compaction_settings`; the threshold is
+            ``context_window - reserve_tokens``. Must be positive.
+        keep_recent_tokens: Copied into :attr:`compaction_settings`.
+
+    Raises:
+        CompactionPolicyError: unknown mode, a required field unset, a field the
+            mode does not use set, or a non-positive bound.
     """
 
     mode: PolicyMode
     max_turns: int | None = None
-    #: Bound on the context each user turn may add. Required by ``turn_cap`` only.
     max_tokens_per_turn: int | None = None
-    #: The summariser. Required by ``local_summarizer`` only.
     summarizer_model: Model | None = None
     summarizer_api_key: str | None = None
     reserve_tokens: int = DEFAULT_COMPACTION_SETTINGS.reserve_tokens
@@ -171,11 +186,12 @@ class CompactionPolicy:
     def disabled(cls, *, max_turns: int) -> CompactionPolicy:
         """Compaction off, bounded by user-turn count (§16.8 option 1).
 
-        ``max_turns`` is not decoration: with compaction off, nothing else stops
-        the conversation growing past the model window, and the bound is the whole
-        of what makes this policy safe. Exceeding it raises rather than letting the
-        run continue into a provider-side overflow whose cause is not recoverable
-        from the artifact.
+        Args:
+            max_turns: Bound on user turns. With compaction off nothing else stops
+                the context outgrowing the window; :meth:`admit_turn` raises past it.
+
+        Returns:
+            A ``disabled`` policy.
         """
         return cls(mode="disabled", max_turns=max_turns)
 
@@ -183,13 +199,16 @@ class CompactionPolicy:
     def local_summarizer(cls, *, model: Model, api_key: str) -> CompactionPolicy:
         """Compaction on, through a separately declared model (§16.8 option 2).
 
-        ``api_key`` is required rather than inherited from the session: a
-        summariser on the near side of a partition is a different endpoint with
-        different credentials, and silently reusing the session's key is the kind
-        of guess that works in the lab and fails on the board. Pass the literal the
-        local server expects (many ignore it) — but pass it.
+        Args:
+            model: The summariser; :meth:`bind_to` requires its context window to
+                be at least the session model's.
+            api_key: Required, not inherited from the session: a near-side
+                summariser is a different endpoint with different credentials.
+                Pass the literal the local server expects, even if it ignores it.
+                Never written to a manifest.
 
-        The key is never written to a manifest; see :meth:`to_manifest`.
+        Returns:
+            A ``local_summarizer`` policy.
         """
         return cls(mode="local_summarizer", summarizer_model=model, summarizer_api_key=api_key)
 
@@ -197,10 +216,17 @@ class CompactionPolicy:
     def turn_cap(cls, *, max_turns: int, max_tokens_per_turn: int) -> CompactionPolicy:
         """Compaction as shipped, under a budget proven to keep it out of reach.
 
-        See the module docstring for the proof and for which half of it is checked
-        where. Both numbers are the caller's to supply: this module will not invent
-        a per-turn token bound, because an invented bound turns the proof back into
-        the estimate §16.8 refuses.
+        See the module docstring for the proof and where each half is checked. No
+        per-turn bound is invented here: that would turn the proof back into the
+        estimate §16.8 refuses.
+
+        Args:
+            max_turns: Bound on user turns, enforced by :meth:`admit_turn`.
+            max_tokens_per_turn: Bound on context growth per user turn, enforced
+                by :meth:`observe_context`.
+
+        Returns:
+            A ``turn_cap`` policy; :meth:`bind_to` checks the budget closes.
         """
         return cls(mode="turn_cap", max_turns=max_turns, max_tokens_per_turn=max_tokens_per_turn)
 
@@ -223,10 +249,14 @@ class CompactionPolicy:
     def summarizer_for(self, session_model: Model) -> tuple[Model, str | None]:
         """The (model, api_key) a compaction under this policy summarises through.
 
-        For every mode but ``local_summarizer`` that is the session's own model and
-        the session's own key — which is exactly the shipped behaviour, restated
-        rather than changed. Returning ``None`` for the key means "whatever the
-        session was constructed with"; the session substitutes its own.
+        Args:
+            session_model: The session's model, returned for every mode but
+                ``local_summarizer``.
+
+        Returns:
+            ``(summarizer_model, summarizer_api_key)`` under ``local_summarizer``;
+            otherwise ``(session_model, None)``, where ``None`` means the session
+            substitutes its own key.
         """
         if self.mode == "local_summarizer":
             assert self.summarizer_model is not None  # guaranteed by __post_init__
@@ -238,8 +268,17 @@ class CompactionPolicy:
     def bind_to(self, model: Model) -> None:
         """Check this declaration against the model it will run under; raise if not.
 
-        Called once, at session construction. Everything checkable before a token is
-        spent is checked here rather than discovered at turn 40 of a scenario run.
+        Called once, at session construction, so everything checkable before a
+        token is spent fails here rather than at turn 40.
+
+        Args:
+            model: The session model; its ``context_window`` is what is checked.
+
+        Raises:
+            CompactionPolicyError: ``context_window <= reserve_tokens``; under
+                ``local_summarizer``, a summariser window smaller than the
+                session's; under ``turn_cap``, ``max_turns * max_tokens_per_turn``
+                exceeding ``context_window - reserve_tokens``.
         """
         context_window = model.context_window
         if context_window <= self.reserve_tokens:
@@ -281,8 +320,13 @@ class CompactionPolicy:
     def admit_turn(self, turns_used: int) -> None:
         """Admit the ``turns_used``-th user turn, or raise (premise P2).
 
-        ``turns_used`` is 1-based and counts ``prompt()`` calls, which is the unit a
-        scripted scenario is written in.
+        A no-op for a policy without ``max_turns`` (``local_summarizer``).
+
+        Args:
+            turns_used: 1-based count of ``prompt()`` calls, including this one.
+
+        Raises:
+            CompactionPolicyViolation: ``turns_used > max_turns``.
         """
         if self.max_turns is not None and turns_used > self.max_turns:
             raise CompactionPolicyViolation(
@@ -300,9 +344,18 @@ class CompactionPolicy:
         dies here rather than making the full-window model call the policy exists to
         keep out of the measurement.
 
-        Modes other than ``turn_cap`` declare no per-turn token bound, so there is
-        nothing here for them to violate. That asymmetry is not an oversight: it is
-        the reason ``turn_cap`` is the stronger declaration.
+        Other modes declare no per-turn token bound, so this is a no-op for them —
+        which is why ``turn_cap`` is the stronger declaration.
+
+        Args:
+            turns_used: 1-based count of user turns so far.
+            context_tokens: Current context size, in tokens.
+            context_window: The session model's context window, in tokens.
+
+        Raises:
+            CompactionPolicyViolation: ``context_tokens`` exceeds
+                ``turns_used * max_tokens_per_turn`` (premise P1), or exceeds
+                ``context_window - reserve_tokens`` (the claim C).
         """
         if self.mode != "turn_cap":
             return
@@ -329,8 +382,11 @@ class CompactionPolicy:
     def to_manifest(self) -> dict[str, Any]:
         """The manifest fragment. JSON-serialisable, and it never carries a secret.
 
-        Everything a later reader needs to know what population a number came from,
-        and nothing that would make the artifact unsafe to keep.
+        Returns:
+            ``mode``; ``declared``, holding only the set fields among
+            ``max_turns``, ``max_tokens_per_turn`` and ``summarizer_model`` (as id,
+            provider, base_url, context_window — no key); ``compaction_enabled``;
+            ``reserve_tokens``; ``keep_recent_tokens``.
         """
         declared: dict[str, Any] = {}
         if self.max_turns is not None:
@@ -368,14 +424,17 @@ def policy_for_scenario(
 ) -> CompactionPolicy:
     """Build the declared policy for a lettered scenario (§7.3-§7.7).
 
-    Raises on an unknown scenario rather than falling back to anything: an
-    unrecognised scenario letter is a harness bug, and the failure mode a default
-    would produce is a run measured under a policy nobody chose.
+    An unknown letter raises rather than falling back: a default would be a run
+    measured under a policy nobody chose.
 
     Args:
-        scenario: the scenario letter, ``"A"``-``"E"``.
+        scenario: the scenario letter, ``"A"``-``"E"``; whitespace and case are
+            ignored.
         max_turns: the run's declared bound on user turns.
         max_tokens_per_turn: the run's declared bound on per-turn context growth.
+
+    Returns:
+        A ``turn_cap`` policy, the only mode this builder constructs.
 
     Raises:
         CompactionPolicyError: unknown scenario, or the scenario's declared mode is

@@ -516,6 +516,10 @@ class ReplRenderer:
         if self._steer_hook is not None:
             self._steer_hook()
 
+    def _on_provider_retry(self, event: dict[str, Any]) -> None:
+        """A request failed before any output and will be re-sent (docs/PROVIDER-RETRY.md)."""
+        self.line("system", event["text"])
+
     def _on_reasoning_delta(self, event: dict[str, Any]) -> None:
         stream = event["stream"]
         self._reasoning[stream] = self._reasoning.get(stream, "") + (event.get("delta") or "")
@@ -1169,7 +1173,9 @@ class ReplCompleter:
         word = text[lead:]
         if not word.startswith("/") or " " in word:
             return []
-        found = complete_command(text, self._extension_commands())
+        lister = getattr(self._backend, "get_prompt_commands", None)
+        prompt_commands = lister() if lister is not None else ()
+        found = complete_command(text, self._extension_commands(), prompt_commands)
         if found is None:
             return []
         if not found.matches:

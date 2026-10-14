@@ -18,6 +18,12 @@ Reference: docs/SUBMISSION-LIFECYCLE.md, "Provenance on events" (phase 2).
 
 Tool execution arguments (tool_execution_start)
 
+### attempt
+
+`tau_agent_core.events.AgentEvent.attempt: int | None`
+
+Which retry a ``provider_retry`` announces, from 1.
+
 ### blocked
 
 `tau_agent_core.events.AgentEvent.blocked: bool`
@@ -50,6 +56,12 @@ can fan out to the right stream. ``None`` alongside ``submission_id``
 The :class:`~tau_agent_core.cursor.Cursor` whose turn emitted
 this event. Several cursors run turns on one session at once, so a
 renderer routes by it (docs/CURSORS.md §6). ``None`` outside a turn.
+
+### delay_seconds
+
+`tau_agent_core.events.AgentEvent.delay_seconds: float | None`
+
+How long τ waits before re-sending it.
 
 ### delta
 
@@ -86,13 +98,21 @@ so a caller could not tell a truncated answer from a complete one.
 
 Why an ``agent_end`` closed, when the loop raised rather than
 finishing (``"RuntimeError: Connection refused"``). ``None`` on a
-normal close; always paired with ``is_error=True``.
+normal close; always paired with ``is_error=True``. On a
+``provider_retry`` it is the failure being retried, with
+``is_error=False`` because the turn goes on.
 
 ### is_error
 
 `tau_agent_core.events.AgentEvent.is_error: bool`
 
 Whether this event represents an error
+
+### max_retries
+
+`tau_agent_core.events.AgentEvent.max_retries: int | None`
+
+The most retries that request will make.
 
 ### message
 
@@ -147,6 +167,13 @@ The submission's origin (``"interactive"``, ``"bus"``, ``"agent"``,
 show a turn (Jupyter's rule: render every source, differently) without
 the core knowing any renderer exists. ``None`` alongside
 ``submission_id``.
+
+### status_code
+
+`tau_agent_core.events.AgentEvent.status_code: int | None`
+
+The HTTP status being retried; ``None`` for a connection
+failure. Set on ``provider_retry`` only (docs/PROVIDER-RETRY.md).
 
 ### submission_id
 
@@ -206,7 +233,7 @@ Turn number (turn_*)
 
 ### type
 
-`tau_agent_core.events.AgentEvent.type: Literal['agent_start', 'agent_end', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'side_completion_start', 'side_completion_update', 'side_completion_end']`
+`tau_agent_core.events.AgentEvent.type: Literal['agent_start', 'agent_end', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'side_completion_start', 'side_completion_update', 'side_completion_end', 'provider_retry']`
 
 Event type discriminator
 
@@ -279,8 +306,8 @@ Emit to all handlers on a specific channel.
 **Parameters**
 
 - `channel: str` — Channel name.
-- `*args: Any` — *(no description)*
-- `**kwargs: Any` — *(no description)*
+- `*args: Any` — Positional arguments passed to each handler.
+- `**kwargs: Any` — Keyword arguments passed to each handler.
 
 ### has_listeners
 
@@ -355,13 +382,42 @@ on_error(listener: ErrorListener) -> Callable[[], None]
 
 `tau_agent_core.events.EventBus.on_error`
 
-Register a listener for handler exceptions. Returns an unsubscribe.
+Register a listener for exceptions raised by this bus's handlers.
 
-S44 (anchor G3). A notify handler that raises is routed here instead of
-being swallowed — the session binds this to the same on_error surface the
-:class:`~tau_agent_core.extensions.runner.ExtensionRunner` uses, so a
-failing observer is as visible as a failing mutating hook.
+S44 (anchor G3). A handler that raises is routed here instead of being
+swallowed; the session binds this to the same on_error surface the
+:class:`~tau_agent_core.extensions.runner.ExtensionRunner` uses. With no
+listener bound, the error goes to stderr.
 
 **Parameters**
 
-- `listener: ErrorListener` — *(no description)*
+- `listener: ErrorListener` — Called with ``(error, channel)``.
+
+**Returns**
+
+A callable that removes ``listener``; calling it twice is harmless.
+
+## retry_notice
+<!-- agent: yes -->
+
+```python
+retry_notice(event: dict[str, Any]) -> str
+```
+
+`tau_agent_core.provider_retry.retry_notice`
+
+The line a head shows for a ``provider_retry`` event or its wire payload.
+
+Example: ``"HTTP 503 from model 'q' at 'http://h': loading — retry 1 of 3 in 1.2s"``.
+
+**Parameters**
+
+- `event: dict[str, Any]` — A ``provider_retry`` payload: ``AgentEvent.model_dump()`` or a ``WireEvent`` dict. Reads ``error``, ``attempt``, ``max_retries`` and ``delay_seconds``.
+
+**Returns**
+
+``"<error> — retry <attempt> of <max_retries> in <delay>s"``, the delay to one decimal place.
+
+**Raises**
+
+- `KeyError` — If the payload lacks one of them, i.e. is not a ``provider_retry``.

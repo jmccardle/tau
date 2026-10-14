@@ -89,6 +89,43 @@ def resolve_no_tools(args: "CLIArgs") -> Literal["all", "builtin"] | None:
     return None
 
 
+def apply_resource_flags(
+    model_config: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    prompt_templates: list[str],
+    no_prompt_templates: bool,
+    skills: list[str],
+    no_skills: bool,
+) -> None:
+    """Put the template and skill paths and switches into ``model_config``, in place.
+
+    Paths join in precedence order — the CLI's, then the model entry's, then
+    config.json's top-level ``prompt_templates``/``skills`` lists — and the first
+    file to claim a name keeps it (docs/PROMPT-TEMPLATES-AND-SKILLS.md §2.2).
+    Shared by ``resolve_model_config`` and the TUI, so every head reads one rule.
+
+    Raises:
+        CLIError: A config list is not a list of strings.
+    """
+    for key, cli_paths, switch, off in (
+        ("prompt_templates", prompt_templates, "no_prompt_templates", no_prompt_templates),
+        ("skills", skills, "no_skills", no_skills),
+    ):
+        joined = list(cli_paths)
+        for where, holder in (("model entry", model_config), ("config.json", config)):
+            listed = holder.get(key)
+            if listed is None:
+                continue
+            if not isinstance(listed, list) or not all(isinstance(p, str) for p in listed):
+                raise CLIError(f"{where} key {key!r} must be a list of paths, got {listed!r}")
+            joined.extend(p for p in listed if p not in joined)
+        if joined:
+            model_config[key] = joined
+        if off:
+            model_config[switch] = True
+
+
 def resolve_model_config(
     config: dict,
     args: "CLIArgs",
@@ -183,6 +220,15 @@ def resolve_model_config(
 
     if args.no_context_files:
         model_config["no_context_files"] = True
+
+    apply_resource_flags(
+        model_config,
+        config,
+        prompt_templates=args.prompt_templates,
+        no_prompt_templates=args.no_prompt_templates,
+        skills=args.skills,
+        no_skills=args.no_skills,
+    )
 
     if "reasoning_replay" not in model_config and config.get("reasoning_replay") is not None:
         model_config["reasoning_replay"] = config["reasoning_replay"]
@@ -497,6 +543,18 @@ def report_truncation(messages: list[dict[str, Any]], max_tokens: int | None) ->
     print(f"[τ] {notice}", file=sys.stderr)
     print(f"[τ] {TRUNCATION_ADVICE}", file=sys.stderr)
     return notice
+
+
+def report_provider_retry(event: dict[str, Any]) -> None:
+    """Say on stderr that a request failed before any output and is being re-sent.
+
+    The ``on_event`` sink for :meth:`Backend.stream_submission`; every other kind
+    is ignored. stderr for the reason :func:`report_cache_miss` gives, and in
+    both modes, because ``--mode json`` puts the event on stdout for a machine
+    and this line is for the person watching (docs/PROVIDER-RETRY.md §5).
+    """
+    if event.get("kind") == "provider_retry":
+        print(f"[τ] {event['text']}", file=sys.stderr, flush=True)
 
 
 def build_print_submission(prompt_text: str) -> Submission:
@@ -849,7 +907,11 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 pass
 
             _text, _usage, new_messages, _tcs, result = await backend.stream_submission(
-                submission, None, noop, on_json_event=on_json_event
+                submission,
+                None,
+                noop,
+                on_event=report_provider_retry,
+                on_json_event=on_json_event,
             )
         else:  # text
 
@@ -858,7 +920,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 sys.stdout.flush()
 
             _text, _usage, new_messages, _tcs, result = await backend.stream_submission(
-                submission, None, emit
+                submission, None, emit, on_event=report_provider_retry
             )
 
         if not result.accepted:

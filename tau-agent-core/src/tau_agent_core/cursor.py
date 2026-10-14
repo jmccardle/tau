@@ -118,6 +118,12 @@ class Cursor:
     ) -> None:
         """Place a cursor at ``leaf``.
 
+        Args:
+            log: The tree's storage.
+            leaf: The entry to sit on; ``None`` is before the root.
+            owner: The cursor that opened this one, or ``None``.
+            label: What the cursor was opened to do, for display.
+
         Raises:
             ValueError: ``leaf`` names no entry of ``log``.
         """
@@ -148,7 +154,16 @@ class Cursor:
 
     @classmethod
     def newest(cls, log: SessionLog, *, owner: Cursor | None = None, label: str = "") -> Cursor:
-        """A cursor at ``log``'s default leaf: where a reopened tree continues."""
+        """A cursor at ``log``'s default leaf: where a reopened tree continues.
+
+        Args:
+            log: The tree's storage.
+            owner: The cursor that opened this one, or ``None``.
+            label: What the cursor was opened to do, for display.
+
+        Returns:
+            A new cursor at :func:`default_leaf` of ``log``'s entries.
+        """
         return cls(log, default_leaf(log.entries()), owner=owner, label=label)
 
     @property
@@ -172,19 +187,34 @@ class Cursor:
         return self.log.id
 
     def entries(self) -> list[dict[str, Any]]:
-        """Every entry of the tree, all branches — not only this cursor's path."""
+        """Every entry of the tree, all branches — not only this cursor's path.
+
+        Returns:
+            The log's entries, in storage order.
+        """
         return self.log.entries()
 
     def tree(self) -> ConversationTree:
-        """The tree folded at this cursor's leaf."""
+        """The tree folded at this cursor's leaf.
+
+        Returns:
+            A fresh :class:`ConversationTree` over the log's current entries.
+        """
         return ConversationTree(self.log.entries(), self._leaf)
 
     def context(self) -> list[dict[str, Any]]:
-        """What the model receives from this position (``ConversationTree.context_for``)."""
+        """What the model receives from this position (``ConversationTree.context_for``).
+
+        Returns:
+            The context messages folded from this cursor's path.
+        """
         return self.tree().context_for()
 
     def move(self, target: str | None) -> None:
         """Move to ``target``; writes nothing.
+
+        Args:
+            target: The entry to sit on; ``None`` is before the root.
 
         Raises:
             ValueError: ``target`` names no entry.
@@ -193,7 +223,14 @@ class Cursor:
         self._leaf = target
 
     async def append(self, entry_type: str, **payload: Any) -> str:
-        """Write an entry at the leaf, move onto it, and return its id.
+        """Write an entry at the leaf and move onto it.
+
+        Args:
+            entry_type: The entry's ``type``.
+            payload: The entry's fields, written as given.
+
+        Returns:
+            The new entry's id.
 
         Raises:
             ValueError: the leaf is an incomplete entry; nothing grows from one.
@@ -210,6 +247,16 @@ class Cursor:
         The cursor moves onto the entry when :meth:`finalize` completes it, so
         the leaf never names an incomplete entry and a read of :meth:`context`
         mid-message still folds.
+
+        Args:
+            entry_type: The entry's ``type``.
+            payload: The entry's fields so far; ``status`` is set to incomplete.
+
+        Returns:
+            The incomplete entry's id, to pass to :meth:`finalize`.
+
+        Raises:
+            ValueError: the leaf is an incomplete entry.
         """
         self._refuse_incomplete_leaf()
         entry_id = await self.log.append_at(
@@ -220,6 +267,10 @@ class Cursor:
 
     async def finalize(self, entry_id: str, **payload: Any) -> None:
         """Complete the entry :meth:`open` wrote, and move onto it.
+
+        Args:
+            entry_id: The id :meth:`open` returned.
+            payload: The entry's whole final payload; it replaces the incomplete one.
 
         Raises:
             ValueError: this cursor did not open ``entry_id``, or the leaf moved
@@ -246,19 +297,48 @@ class Cursor:
             )
 
     async def append_message(self, message: dict[str, Any]) -> str:
-        """Append a ``message`` entry."""
+        """Append a ``message`` entry.
+
+        Args:
+            message: The message dict, stored under ``message``.
+
+        Returns:
+            The new entry's id.
+        """
         return await self.append("message", message=message)
 
     async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
-        """Append a ``customMessage``: extension content that does reach the model."""
+        """Append a ``customMessage``: extension content that does reach the model.
+
+        Args:
+            message: The message dict the model receives.
+            custom_type: The extension's type tag, stored as ``customType``.
+
+        Returns:
+            The new entry's id.
+        """
         return await self.append("customMessage", customType=custom_type, message=message)
 
     async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
-        """Append a ``customEntry``: durable data the model never sees."""
+        """Append a ``customEntry``: durable data the model never sees.
+
+        Args:
+            custom_type: The extension's type tag, stored as ``customType``.
+            data: The data to store.
+
+        Returns:
+            The new entry's id.
+        """
         return await self.append("customEntry", customType=custom_type, data=data)
 
     async def append_config(self, **keys: Any) -> str:
         """Append a config entry setting ``keys`` from here on (docs/CURSORS.md §5).
+
+        Args:
+            keys: The config values to set; unnamed keys keep their prior value.
+
+        Returns:
+            The new entry's id.
 
         Raises:
             ValueError: no keys, or a key outside :data:`~tau_agent_core.session_log.CONFIG_KEYS`.
@@ -285,12 +365,24 @@ class Cursor:
         """Append a compaction splice anchor and its provenance.
 
         The provenance keywords have no defaults (TREE-BROWSER-AS-EDITOR.md §8,
-        §11.3): every value exists at the call site, so a caller that cannot name one
-        fails there rather than recording ``None``.
+        §11.3): a caller that cannot name one fails there rather than recording ``None``.
+
+        Args:
+            summary: The summary text that stands in for the covered span.
+            first_kept_id: The first path entry the fold keeps after the summary.
+            tokens_before: Estimated context tokens of the path before compaction.
+            summarizer_model_id: The id of the model that wrote ``summary``.
+            summary_usage: The summarizer call's token usage.
+            covered_entries: How many entries the summary replaces.
+            covered_tokens: Estimated context tokens of those entries.
+            config_id: The nearest config-setting entry on the anchor's path, or ``None``.
+
+        Returns:
+            The new entry's id.
 
         Raises:
-            ValueError: ``first_kept_id`` names no entry. The fold never finds an
-                unknown anchor and would drop the whole kept region silently.
+            ValueError: ``first_kept_id`` names no entry (the fold would drop the
+                whole kept region silently), or the leaf is an incomplete entry.
         """
         _require_entry(self.log, first_kept_id, "compaction first_kept_id")
         return await self.append(
@@ -315,9 +407,18 @@ class Cursor:
     ) -> str:
         """Append a summary-less splice anchor (NODE-ADDRESSABLE-AGENTS.md W3).
 
+        Args:
+            first_kept_id: The first path entry the fold keeps after the anchor.
+            covered_entries: How many entries the anchor hides.
+            covered_tokens: Estimated context tokens of those entries.
+            config_id: The nearest config-setting entry on the anchor's path, or ``None``.
+
+        Returns:
+            The new entry's id.
+
         Raises:
-            ValueError: ``first_kept_id`` names no entry, for the reason
-                :meth:`append_compaction` gives.
+            ValueError: ``first_kept_id`` names no entry, or the leaf is an
+                incomplete entry, as for :meth:`append_compaction`.
         """
         _require_entry(self.log, first_kept_id, "elide first_kept_id")
         return await self.append(
@@ -334,8 +435,16 @@ class Cursor:
         Parenting at the branch point leaves the summarized children as a sibling
         branch, so they drop out of the context by ancestry alone.
 
+        Args:
+            summary: The summary of the abandoned branch.
+            from_id: The branch point; ``None`` is before the root.
+
+        Returns:
+            The new entry's id.
+
         Raises:
-            ValueError: ``from_id`` names no entry.
+            ValueError: ``from_id`` names no entry, or names an incomplete one;
+                the cursor has already moved there when the second is raised.
         """
         self.move(from_id)
         return await self.append("branch_summary", summary=summary, fromId=from_id)

@@ -61,10 +61,13 @@ MAX_RECORDED_ARGS_BYTES = 32 * 1024
 class BlockedCall:
     """A tool call that was blocked (e.g., argument validation failed).
 
-    ``blocked_by_extension`` names the extension that VETOED the call via a
-    ``tool_call`` hook (S50, anchor G11); it is ``None`` for a block that is NOT an
-    extension veto (argument-validation failure, fail-closed handler throw) — those
-    stay a generic errored result rather than the "⛔ blocked by <ext>" render.
+    Attributes:
+        call: The prepared call that will not run.
+        error: Why it was blocked; becomes the call's error result text.
+        blocked_by_extension: The extension that vetoed the call via a
+            ``tool_call`` hook (S50, anchor G11). ``None`` for any other block
+            (argument-validation failure, fail-closed handler throw), which
+            renders as a generic errored result, not "⛔ blocked by <ext>".
     """
 
     def __init__(
@@ -77,14 +80,24 @@ class BlockedCall:
 
 @agent_facing(topic="agent-loop")
 class ErrorCall:
-    """A tool call whose preparation raised ``exception``."""
+    """A tool call whose preparation raised ``exception``.
+
+    Attributes:
+        call: The prepared call that failed.
+        exception: What its preparation raised.
+    """
 
     def __init__(self, call: PreparedToolCall, exception: Exception) -> None:
         self.call = call
         self.exception = exception
 
     def result(self) -> AgentToolResult:
-        """The call's result, by :meth:`AgentToolResult.from_exception`."""
+        """Build the call's error result.
+
+        Returns:
+            :meth:`AgentToolResult.from_exception` over the call's name, id and
+            ``exception``.
+        """
         return AgentToolResult.from_exception(self.call.name, self.exception, self.call.id)
 
 
