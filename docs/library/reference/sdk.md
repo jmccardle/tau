@@ -460,22 +460,16 @@ load_project_context_files(cwd: str | Path | None = None, agent_dir: str | Path 
 
 Discover the context files that apply to ``cwd``, weakest first.
 
-A port of pi's ``loadProjectContextFiles`` (``resource-loader.ts:119`` at
-``5cd93f688``), plus τ's own ``.tau/SYSTEM.md``. The returned order is the
-order they belong in a prompt — **general first, specific last** — because
-the nearest file is the one that should have the last word:
+Prompt order, so the nearest file has the last word:
 
-1. ``~/.tau``'s context file (:data:`_AGENT_DIR`), the user's global one.
-2. Every ancestor of ``cwd`` that has one, **root-most first**, ending with
-   ``cwd``'s own — so a repo's ``AGENTS.md`` is read after ``$HOME``'s and
-   a package's after its monorepo's.
-3. ``cwd``'s ``.tau/SYSTEM.md``, τ's own slot (see :data:`TAU_SYSTEM_FILE`).
+1. ``agent_dir``'s context file, the user's global one.
+2. Every ancestor of ``cwd`` that has one, root-most first, ending with
+   ``cwd``'s own. The walk goes to ``/``. In a linked worktree nested inside
+   its main repo, the main checkout's copy is skipped
+   (:func:`_find_shadowed_context_file`).
+3. ``cwd``'s ``.tau/SYSTEM.md`` (:data:`TAU_SYSTEM_FILE`).
 
-Deduplicated by resolved path, so running τ from ``~`` does not load the
-same file as both the agent-dir entry and an ancestor. The walk to ``/`` is
-deliberate ("standing instructions in ``~/AGENTS.md``" is a real workflow);
-:func:`_build_system_prompt` labels every block with its absolute path, and
-``--no-context-files`` skips discovery.
+A file reached twice (by resolved path) is taken once, at its first slot.
 
 **Parameters**
 
@@ -625,6 +619,10 @@ taking precedence over the endpoint.
 - `model: str` — Model identifier (e.g., "gpt-4o").
 - `provider: str = 'openai'` — Registered vendor id (default: "openai").
 - `base_url: str | None = None` — Optional custom API base URL.
+
+**Returns**
+
+A new Model; the shared built-in defaults are never mutated. A non-built-in id gets ``context_window=128000`` and ``max_tokens=4096``, and speaks ``openai-completions`` when ``provider`` is unregistered.
 
 **Raises**
 

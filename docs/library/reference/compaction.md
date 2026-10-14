@@ -215,7 +215,7 @@ The (model, api_key) a compaction under this policy summarises through.
 
 **Parameters**
 
-- `session_model: Model` — The session's model, returned for every mode but ``local_summarizer`` — the shipped behaviour, unchanged.
+- `session_model: Model` — The session's model, returned for every mode but ``local_summarizer``.
 
 **Returns**
 
@@ -441,8 +441,7 @@ By default the hard limit is ``context_window - reserve_tokens`` — the margin
 a compaction needs for its own summarization call and output — and the soft
 limit sits at ``soft_limit_ratio`` of that, so an end-of-turn compaction fires
 with room to spare. Either can be pinned outright with ``hard_limit_tokens`` /
-``soft_limit_tokens``, which is how a test asks for a 20k ceiling on a 172k
-model.
+``soft_limit_tokens``.
 
 **Parameters**
 
@@ -524,18 +523,8 @@ estimate_span_tokens(entries: list[dict[str, Any]]) -> int
 
 Estimated context tokens a SPAN of active-path entries contributes.
 
-The one spelling of "what did this span cost the context", so the number a
-splice anchor RECORDS (``coveredTokens`` on a ``compaction``/``elide`` entry —
-TREE-BROWSER-AS-EDITOR.md §8.1, §8.2) is produced by the same arithmetic as the
-``tokensBefore`` it sits beside (``prepare_compaction``, :func:`estimate_tokens`
-via :func:`estimate_context_tokens`). Two spellings would let a browser row show
-"folds 12 entries, 8k tokens" against a ``tokensBefore`` computed on a different
-basis, and nothing would report the mismatch.
-
-Public because §11.3 makes the value a required keyword on the appenders, so
-it is computed at the call site (``AgentSession._perform_compaction``,
-``tree_ops.elide_span`` / ``commit_branch``) rather than in each of the five
-``SessionLog`` implementations.
+The ``coveredTokens`` a splice anchor records, computed on the same basis
+as the ``tokensBefore`` beside it (TREE-BROWSER-AS-EDITOR.md §8.1, §11.3).
 
 **Parameters**
 
@@ -657,7 +646,7 @@ measured under a policy nobody chose.
 
 **Returns**
 
-The scenario's policy; every scenario currently maps to ``turn_cap``.
+A ``turn_cap`` policy, the only mode this builder constructs.
 
 **Raises**
 

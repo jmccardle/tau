@@ -391,11 +391,8 @@ Discriminator, always ``"image"``.
 
 One model: which endpoint to call, how to speak to it, what it can do.
 
-Reference: SUBPHASE-0.0.md, "1. Messages" section.
-
-``prompt_cache`` asks for caching on every wire; ``prompt_cache_dialect``
-says how an OpenAI-compatible endpoint must be asked, and stays unset for a
-native or automatic wire (docs/PROMPT-CACHING.md §5).
+Reference: SUBPHASE-0.0.md, "1. Messages" section. Prompt caching:
+docs/PROMPT-CACHING.md §5.
 
 ### api
 
@@ -792,7 +789,7 @@ A counter named after ``path``.
 **Raises**
 
 - `TokenizerUnavailable` — the ``tokenizers`` package is not installed.
-- `OSError` — the file does not exist or does not parse.
+- `Exception` — the file does not exist or does not parse. ``tokenizers`` raises a bare ``Exception`` for both, not ``OSError``.
 
 ### from_pretrained
 
@@ -804,9 +801,7 @@ from_pretrained(repo_id: str) -> TokenizerCounter
 
 Fetch a tokenizer from the HuggingFace hub by repository id.
 
-Network-dependent and uncached by this class — the caller owns the cache,
-because where a downloaded file lands is a policy question this module has
-no business answering.
+Network-dependent and uncached by this class: the caller owns the cache.
 
 **Parameters**
 
@@ -1104,7 +1099,7 @@ class:`TokenizerCounter` (memoized per tokenizer spec; a ``.json`` suffix loads 
 **Raises**
 
 - `TokenizerUnavailable` — ``model.tokenizer`` is set, ``fallback`` is False, and the ``tokenizers`` package is missing.
-- `OSError` — ``model.tokenizer`` is set, ``fallback`` is False, and the file or repo id does not resolve.
+- `Exception` — ``model.tokenizer`` is set, ``fallback`` is False, and the file or repo id does not load; whatever ``tokenizers`` or the hub raised, unchanged (a bare ``Exception`` for a missing or malformed file).
 
 ## elide_attachment_bodies
 <!-- agent: yes -->

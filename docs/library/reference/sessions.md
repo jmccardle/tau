@@ -11,14 +11,11 @@ class AgentSession(*, model: Model, session_log: SessionLog | None = None, curso
 
 `tau_agent_core.agent_session.AgentSession`
 
-High-level session API. Combines agent loop, a session log, and events.
+One conversation: an agent loop, its events, and a cursor over a session log.
 
-This is the primary entry point for both SDK and TUI usage.
-
-Every turn extends one :class:`~tau_agent_core.cursor.Cursor` over a
-:class:`~tau_agent_core.session_log.SessionLog`. Construct with ``session_log``
-to open a cursor at the log's default leaf, or with ``cursor`` to extend a
-position someone already holds.
+The entry point for the SDK and every head. Every turn extends one
+:class:`~tau_agent_core.cursor.Cursor` over a
+:class:`~tau_agent_core.session_log.SessionLog`.
 
 Turn admission and the fork and thread-safe task registries follow
 docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
@@ -26,7 +23,7 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 **Constructor parameters**
 
 - `model: Model` — The model the head cursor's turns call.
-- `session_log: SessionLog | None = None` — The tree to extend, from a cursor at its newest leaf. Exactly one of ``session_log`` and ``cursor`` is required.
+- `session_log: SessionLog | None = None` — The tree to extend, from a new cursor at its :func:`~tau_agent_core.session_log.default_leaf`. Exactly one of ``session_log`` and ``cursor`` is required.
 - `cursor: Cursor | None = None` — A position someone already holds, to extend instead.
 - `system_prompt: str = ''` — The system prompt for the head cursor's turns.
 - `tools: list[AgentTool] | None = None` — The built-in tools offered to the model. Two with one name raise when the tool list is next assembled.
@@ -170,20 +167,12 @@ async compact_messages(messages: list[dict[str, Any]], custom_instructions: str 
 
 `tau_agent_core.agent_session.AgentSession.compact_messages`
 
-Compact a caller-supplied message list and return the shortened list.
+Summarize everything before the last user turn of a caller-held list.
 
-This is the **manual** compaction path (the TUI's ``/compact``): it
-summarizes everything before the most recent user turn and keeps that
-turn intact, returning a new list shaped ``[<system messages>, <summary
-as a user message>, <most recent user turn onward>]``. It is for callers
-whose own store — not the session manager — is the authoritative context
-they send to the model (the TUI's ``current_chat.messages`` is exactly
-this).
-
-The cut is **count-based** (keep the last user turn), deliberately unlike
-auto-compaction's token-budget cut: a manual compaction should visibly do
-something on a normal-sized chat, not no-op until the conversation
-exceeds ``keep_recent_tokens``. The summary's tokens go to the side ledger.
+For a caller whose own message list, not the session log, is the context
+it sends. Unlike auto-compaction's token-budget cut, the cut is by count:
+the most recent user turn onward is kept whole, whatever its size. The
+summary's tokens go to the side ledger.
 
 **Parameters**
 
@@ -192,11 +181,11 @@ exceeds ``keep_recent_tokens``. The summary's tokens go to the side ledger.
 
 **Returns**
 
-The shortened list, or ``None`` when there is nothing older to compact (zero or one user turn), so the caller can no-op.
+A new list ``[<system messages>, <summary as a user message>, <last user turn onward>]``, or ``None`` when there is at most one user turn and so nothing older to compact.
 
 **Raises**
 
-- `CompactionError` — if summary generation fails. Fail-Early.
+- `CompactionError` — The summarizer's completion failed or was aborted.
 
 ### context_estimate
 
@@ -208,22 +197,12 @@ context_estimate(messages: list[dict[str, Any]] | None = None) -> ContextUsageEs
 
 This session's context size, counted with its own counter and fit.
 
-The single place the harness answers "how big is the context": the header,
-``get_session_stats``, both compaction checks and every extension read the
-same number from here, so a display and a trigger can never disagree.
-
-``messages`` defaults to the active path — or, while an agent loop is
-mid-turn, to the context that loop is actually holding. The persisted path
-is stale there: nothing this turn produced reaches the log until the turn
-ends, so a bare reading during a twenty-tool-call turn would report the
-conversation as it stood before the turn began. The loop publishes its
-view at each turn boundary (:meth:`_compact_mid_turn`), which leaves one
-gap: the FIRST request of a turn is still measured against the persisted
-path, so it omits that turn's own user message.
+The one number the header, ``get_session_stats``, both compaction checks
+and every extension read, so a display and a trigger never disagree.
 
 **Parameters**
 
-- `messages: list[dict[str, Any]] | None = None` — The messages to measure; ``None`` means the default above.
+- `messages: list[dict[str, Any]] | None = None` — The messages to measure. ``None`` means the context the running turn holds (published at each turn boundary by :meth:`_compact_mid_turn`), else the active path. A turn's FIRST request is still measured on the persisted path, so it omits that turn's own user message.
 
 **Returns**
 
@@ -344,22 +323,13 @@ async emit_session_start(reason: str = 'startup') -> None
 
 `tau_agent_core.agent_session.AgentSession.emit_session_start`
 
-Fire the notify-grade ``session_start`` lifecycle hook (S41).
+Bind this session to the running loop, then fire ``session_start`` (S41).
 
-Dispatched through the session's :class:`ExtensionRunner` (not the notify
-``EventBus``) so a handler's exception is SURFACED (S44), not swallowed.
-Called by the frontends *after* extensions are loaded — so a
-``session_start`` handler can reconstruct state from ``ctx.entries()`` /
-install watchers with its registration already in place. Returns nothing:
-the hook has no path effect. Gated on ``has_handlers`` for the
-zero-extension fast path (no event dict built when nobody listens).
-
-Also claims the loop binding (:meth:`_bind_loop`), UNCONDITIONALLY — before
-the zero-extension fast path below, because the binding is about this
-session, not about who is listening. This is the earliest moment a frontend
-reliably runs the session on its loop, and a ``session_start`` handler is
-exactly where a driver opens the subscription/timer/socket whose callbacks
-will later need :meth:`submit_threadsafe` to have somewhere to marshal to.
+Call it after extensions are loaded, so a handler finds its registration
+in place. The loop binding (which :meth:`submit_threadsafe` marshals to)
+happens whether or not anything listens. Dispatched through the
+:class:`ExtensionRunner`: a handler's exception is reported through its
+error sink (S44) and the remaining handlers still run.
 
 **Parameters**
 
@@ -724,7 +694,9 @@ The extensions loaded and the failures collected. The failures also replace what
 
 **Raises**
 
-- `Exception` — An explicit extension's load failure, unless ``collect_explicit_errors``.
+- `FileNotFoundError` — An explicit path names no file.
+- `ExtensionCapabilityError` — An explicit extension declares a capability this session lacks, or an invalid ``CONFIG_SCHEMA``.
+- `Exception` — Whatever an explicit extension's import or ``register`` raises, unchanged. None of these is raised when ``collect_explicit_errors`` is set.
 
 ### messages
 
@@ -939,7 +911,9 @@ The outcome; ``ok=False`` only for an unknown extension.
 
 **Raises**
 
-- `Exception` — The file fails to load. The extension is left torn down (Fail-Early), so an import failure is never ``ok=False``.
+- `FileNotFoundError` — The file is gone from disk.
+- `ExtensionCapabilityError` — The new code declares a capability this session lacks, or an invalid ``CONFIG_SCHEMA``.
+- `Exception` — Whatever the module's import or ``register`` raises, unchanged. In every case the extension is left torn down, never reported as ``ok=False``.
 
 ### resolve_command
 
@@ -1062,7 +1036,8 @@ handler is called with ``(args, ctx)``, ``ctx`` being the session's one live
 
 **Raises**
 
-- `RuntimeError` — The command has no callable ``handler`` (Fail-Early).
+- `RuntimeError` — The command has no callable ``handler``.
+- `Exception` — Whatever the handler raises, unchanged.
 
 ### set_auto_compaction
 
@@ -1155,24 +1130,19 @@ set_headless_ui_defaults(policy: dict[str, str]) -> None
 
 `tau_agent_core.agent_session.AgentSession.set_headless_ui_defaults`
 
-Set the headless dialog-answer policy for this session (E7 §3 / S48).
+Set the headless dialog-answer policy for every loaded extension (E7 §3 / S48).
 
-Threads the resolved ``--ui-defaults`` / config ``"ui_defaults"`` map onto
-the session's ONE shared :class:`ExtensionUI` (via the context), so a
-headless dialog opened by any loaded extension auto-answers only for the
-methods the user explicitly opted into — every other headless dialog
-raises :class:`HeadlessDialogError` (Fail-Early, D-E6-2). This is run-scoped
-runtime config: it is NOT persisted onto the session tree (the policy is
-re-sourced each run, like ``--ext-config``). The TUI path never calls this —
-it sets a live delegate instead, so a human answers.
+A headless dialog auto-answers only for the methods in ``policy``; any
+other raises :class:`HeadlessDialogError`. Run-scoped: nothing is written
+to the session tree.
 
 **Parameters**
 
-- `policy: dict[str, str]` — Dialog method name to the answer token it auto-answers with.
+- `policy: dict[str, str]` — Dialog method name to the answer token it auto-answers with (the resolved ``--ui-defaults`` / config ``"ui_defaults"``).
 
 **Raises**
 
-- `ValueError` — an unknown method or answer token (propagated from :meth:`ExtensionUI.set_headless_defaults`); the frontend renders it as a clean CLI error.
+- `ValueError` — An unknown method or answer token.
 
 ### set_model
 
@@ -1300,11 +1270,12 @@ only ``tools``, ``model``/``system_prompt`` when given, ``max_turns``, and
 no extension hooks unless ``hooks``. Its turn is an ordinary submission
 (``source="agent"``, ``submitter="fork:<label>"``) whose events carry its
 cursor's id. Its first append records that frame as a config entry, so the
-sub-agent's spec is in the tree. The cursor is closed before this returns.
+sub-agent's spec is in the tree. The cursor is closed before this returns,
+unless a turn still holds it.
 
-**Failure is contained, not propagated** (§9.2/5): a sub-agent that raises
-marks its branch with a ``branch_error`` entry and returns ``ok=False``; one
-bad evaluator in a fan-out must not kill the turn that spawned it.
+Failure is contained, not propagated (§9.2/5): a sub-agent that raises
+leaves a ``branch_error`` entry and returns ``ok=False``, as does a
+refused submission (without the entry).
 
 **Parameters**
 
@@ -1398,6 +1369,7 @@ The outcome: ``accepted=False`` with a ``rejection_reason`` when refused; otherw
 
 **Raises**
 
+- `ValueError` — ``cursor`` was not opened by this session.
 - `RuntimeError` — Called off the session's own event loop (use :meth:`submit_threadsafe`); the derived depth exceeds ``MAX_SUBMISSION_DEPTH``; or the call is reentrant, from a hook on the task already running this cursor's turn, which would deadlock.
 - `NotImplementedError` — ``sub.multitask_strategy`` is unknown, or ``sub.silent`` is True (only its ``store_history=False`` half exists).
 - `UnsupportedCommandError` — A resolved command was unregistered before it ran.
@@ -1481,12 +1453,10 @@ subscribe_channel(channel: str, handler: Callable[..., Any]) -> Callable[[], Non
 
 `tau_agent_core.agent_session.AgentSession.subscribe_channel`
 
-Subscribe to one of the bus's NON-``AgentEvent`` channels.
+Subscribe to one of the bus's string channels, outside the ``AgentEvent`` stream.
 
-:meth:`subscribe` covers the ``AgentEvent`` stream, whose ``type`` Literal is
-deliberately closed (S49); lifecycle rides separate string channels.
-
-The channels a renderer cares about (handlers take these as keywords):
+:meth:`subscribe` covers ``AgentEvent``. The channels a renderer cares
+about (handlers take these as keywords):
 
 - ``"submission_start"`` — ``(submission, text, images, cursor)``, once per
   admitted submission that will actually run a turn, before the loop starts.
@@ -1618,23 +1588,12 @@ async watch_side_completion(purpose: SideCompletionPurpose, reason: SideCompleti
 
 `tau_agent_core.agent_session.AgentSession.watch_side_completion` · since 0.11.0
 
-Bracket one piece of side work with its three events.
+Bracket one piece of side work (a compaction or branch summary) with events.
 
-Side work — a compaction summary, a branch summary — spends tokens and
-produces text outside any turn, so nothing in the agent-loop vocabulary
-reports it and a head could only show a spinner. This emits
-``side_completion_start``, one ``side_completion_update`` per fragment
-through the yielded watch, and exactly one ``side_completion_end``.
-
-**Every exit emits the end**, including an exception, which then
-propagates. A renderer opens a box on the start and has no other way to
-learn the work is over; a failure that emitted nothing would leave that
-box open for the life of the session (docs/STREAMING-SIDE-WORK.md §3).
-
-Public because the second caller is outside this class:
-``TauBackend.navigate_tree`` brackets a branch summary, which
-:func:`tau_agent_core.tree_ops.summarize_and_navigate` performs against a
-log this session does not hold.
+Emits ``side_completion_start`` on entry, one ``side_completion_update``
+per fragment through the yielded watch, and exactly one
+``side_completion_end`` on every exit. An exception still gets the end
+(``is_error=True``) and then propagates (docs/STREAMING-SIDE-WORK.md §3).
 
 **Parameters**
 
@@ -2282,11 +2241,10 @@ entry(entry_id: str) -> dict[str, Any]
 
 `tau_agent_core.conversation_tree.ConversationTree.entry`
 
-The raw log entry ``entry_id`` names.
+The raw log entry ``entry_id`` names, whole body included.
 
-For the tree browser's detail pane: :class:`TreeNode` carries only the
-one-line ``preview``, and widening it would push every body onto every
-consumer of :meth:`tree`, the RPC surface included.
+:class:`TreeNode` carries only a one-line ``preview``; this is the full
+entry, for a detail view.
 
 **Parameters**
 
@@ -2298,7 +2256,7 @@ The entry itself, not a copy.
 
 **Raises**
 
-- `KeyError` — no entry has that id. The browser builds its rows from these same entries, so a miss is a broken index, not a missing body.
+- `KeyError` — no entry has that id.
 
 ### fork_admission_reason
 
@@ -2310,16 +2268,11 @@ fork_admission_reason(target_id: str | None) -> str | None
 
 Whether ``target_id`` is safe to fork FROM, or the reason it is not.
 
-docs/SUBMISSION-LIFECYCLE.md's admission check for
-``multitask_strategy="fork"``: a fork point must be TURN-COMPLETE. An
-assistant message whose ``toolCall`` blocks have no ``toolResult`` on this
-path is a prefix most providers reject, and a result appended later (a
-descendant) cannot rescue it, since a cursor reads ancestors only
-(I1, NODE-ADDRESSABLE-AGENTS.md §2).
-
-Walks the RAW chain (:meth:`path`), tracking the newest assistant message's
-unanswered call ids. The spliced view would agree: compaction never cuts
-mid-tool-call (``compaction.find_valid_cut_points``).
+The admission check for ``multitask_strategy="fork"``
+(docs/SUBMISSION-LIFECYCLE.md): a fork point must be turn-complete, i.e.
+no assistant ``toolCall`` on the raw path (:meth:`path`) up to it lacks
+its ``toolResult``. A result appended later cannot rescue it, since a
+cursor reads ancestors only (NODE-ADDRESSABLE-AGENTS.md §2).
 
 **Parameters**
 
@@ -2331,7 +2284,7 @@ A human-readable rejection naming the outstanding calls, or ``None`` if ``target
 
 **Raises**
 
-- `ValueError` — ``target_id`` names no entry — Fail-Early, mirroring the :class:`~tau_agent_core.cursor.Cursor` constructor's check on the same value (a dangling fork point would hand the second agent an empty or wrong context with no error).
+- `ValueError` — ``target_id`` names no entry, as the :class:`~tau_agent_core.cursor.Cursor` constructor checks.
 
 ### message_text
 
@@ -2343,10 +2296,8 @@ message_text(entry_id: str) -> str
 
 ``entry_id``'s message flattened to plain text, or ``""`` if it has none.
 
-The whole body, where :attr:`TreeNode.preview` is its first line elided to
-a row. Added for the tree browser's ``revise`` gesture (PLAN-0.9.4 §4,
-item 2), which puts a user message back in the input to be edited — a
-preview would hand back a truncated version of what the reader typed.
+The whole body, where :attr:`TreeNode.preview` is its first line elided
+to a row (the browser's ``revise`` gesture, PLAN-0.9.4 §4).
 
 **Parameters**
 
@@ -2500,7 +2451,7 @@ The new entry's id.
 
 **Raises**
 
-- `ValueError` — ``from_id`` names no entry.
+- `ValueError` — ``from_id`` names no entry, or names an incomplete one; the cursor has already moved there when the second is raised.
 
 ### append_compaction
 
@@ -2532,7 +2483,7 @@ The new entry's id.
 
 **Raises**
 
-- `ValueError` — ``first_kept_id`` names no entry. The fold never finds an unknown anchor and would drop the whole kept region silently.
+- `ValueError` — ``first_kept_id`` names no entry (the fold would drop the whole kept region silently), or the leaf is an incomplete entry.
 
 ### append_config
 
@@ -2617,7 +2568,7 @@ The new entry's id.
 
 **Raises**
 
-- `ValueError` — ``first_kept_id`` names no entry, for the reason :meth:`append_compaction` gives.
+- `ValueError` — ``first_kept_id`` names no entry, or the leaf is an incomplete entry, as for :meth:`append_compaction`.
 
 ### append_message
 
@@ -3738,7 +3689,8 @@ Current session status
 
 `tau_agent_core.session.SessionInfo.tool_count: int`
 
-*No description. This object is marked but undocumented.*
+Number of tool calls. No catalog in this repo populates
+it, so it reads 0 unless the constructor was given a value.
 
 ### turn_count
 
@@ -3895,7 +3847,7 @@ lines writes a second line with the same id, and its loader keeps the last.
 
 **Raises**
 
-- `ValueError` — ``entry_id`` names no entry, or one that is not incomplete.
+- `ValueError` — ``entry_id`` names no entry, the entry is not incomplete, or ``payload`` sets a ``status``.
 
 ### id
 
@@ -4074,7 +4026,8 @@ list_all() -> list[SessionInfo]
 
 List sessions; currently identical to :meth:`list_sessions`.
 
-Despite the name it reads only this manager's sessions directory.
+Despite the name it reads only this manager's sessions directory (or
+its in-memory store).
 
 **Returns**
 
@@ -4088,14 +4041,11 @@ list_sessions() -> list[SessionInfo]
 
 `tau_agent_core.session_manager.SessionManager.list_sessions`
 
-List the sessions in this manager's sessions directory.
-
-Named ``list_sessions`` rather than ``list`` so it does not shadow the
-builtin in this module's annotations.
+List the sessions in this manager's sessions directory, or in memory.
 
 **Returns**
 
-Sessions newest first by creation time; unreadable files are skipped.
+Sessions newest first by creation time. An in-memory manager lists the root ``session`` entries in its store instead of any directory. An empty, unreadable or non-JSON file is skipped.
 
 ### load
 
@@ -5418,7 +5368,8 @@ The running comparison; its ``turns`` are still in flight.
 **Raises**
 
 - `ValueError` — no models, no text, no model resolver, or ``leaf`` names no entry. Nothing was opened.
-- `KeyError` — a model name the resolver does not know. Nothing was opened.
+- `KeyError` — a model name ``ConfigModelResolver`` does not know; another resolver's error propagates as raised. Nothing was opened.
+- `TypeError` — the resolver returned something other than a ``Model``. Nothing was opened.
 
 ## step_form_spec
 <!-- agent: yes -->
@@ -5498,14 +5449,10 @@ async summarize_branch(branch_text: str, model: Any, *, api_key: str | None = No
 
 `tau_agent_core.session_manager.summarize_branch`
 
-Summarize an abandoned branch's text into a concise summary.
+Summarize an abandoned branch's text with one model call; persists nothing.
 
-The engine behind the tree-browser's "Summarize" modes; the caller
-(``tree_ops.summarize_and_navigate``) persists the result as a
-``branch_summary`` entry. Fail-Early: a failed, aborted or empty response
-raises; no summary is fabricated from raw text.
-
-Reference: SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3.
+The caller (``tree_ops.summarize_and_navigate``) writes the result as a
+``branch_summary`` entry (docs/SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3).
 
 **Parameters**
 
@@ -5522,7 +5469,7 @@ Reference: SESSION-TREE-IMPLEMENTATION.md §3.1, §3.3.
 **Raises**
 
 - `ValueError` — ``branch_text`` is empty or whitespace.
-- `RuntimeError` — ``model`` is a name, or the completion failed or returned no text.
+- `RuntimeError` — ``model`` is a name, or the completion failed, was aborted or returned no text.
 
 ## summary_message_of
 <!-- agent: yes -->

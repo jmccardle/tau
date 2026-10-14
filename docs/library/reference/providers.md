@@ -183,7 +183,8 @@ The fully accumulated AssistantMessage.
 
 **Raises**
 
-- `Exception` — If the stream produced an ErrorEvent. The ORIGINAL exception is re-raised with its type intact (e.g. ``ConstraintViolation``, which carries the offending output), not flattened to a bare ``Exception``.
+- `Exception` — The stream failed. An exception the provider stream raised is re-raised with its type intact (``ProviderHttpError``, ``ConstraintViolation``); an ErrorEvent the provider yielded raises a bare ``Exception`` carrying its message.
+- `RuntimeError` — The stream ended without a final message.
 
 ## Compat
 <!-- agent: yes -->
@@ -297,13 +298,15 @@ idempotent — the pool may close an instance that never issued a request.
 
 `tau_llm.providers.base.Provider.id: str`
 
-*No description. This object is marked but undocumented.*
+Vendor id (``"openai"``, ``"groq"``), matching ``Model.provider``.
+Empty on the class; the :class:`ApiFactory` stamps it after construction.
 
 ### name
 
 `tau_llm.providers.base.Provider.name: str`
 
-*No description. This object is marked but undocumented.*
+Human-readable vendor label (``"OpenAI"``, ``"Groq"``). Same
+stamping rule as ``id``.
 
 ### stream_chat
 
@@ -370,7 +373,7 @@ Every provider raises this for an HTTP refusal, and
 **Constructor parameters**
 
 - `status_code: int` — The HTTP status, e.g. 400 for an over-context prompt.
-- `message: str` — The server's own error text, or ``""`` when the body had none.
+- `message: str` — The server's ``error.message``. Without one, the OpenAI wire uses the bounded body and the Anthropic wire the SDK's text, so it is ``""`` only when there was nothing to report.
 - `body: str` — The raw response body, bounded to ``MAX_ERROR_BODY_CHARS``.
 - `model_id: str` — The requested model id.
 - `base_url: str` — The endpoint the request went to.
@@ -407,7 +410,11 @@ resolve_api_key() -> str | None
 
 `tau_llm.providers.base.ProviderSpec.resolve_api_key`
 
-First non-empty value among ``api_key_env``, or None if none is set.
+Look up this vendor's credential in the environment.
+
+**Returns**
+
+The first non-empty value among ``api_key_env``, in order, or None when none is set (including when ``api_key_env`` is empty).
 
 ## ResolvedCompat
 <!-- agent: yes -->
@@ -533,7 +540,11 @@ __aiter__() -> AsyncIterator[Any]
 
 `tau_llm.providers.base.StreamEventStream.__aiter__`
 
-*No description. This object is marked but undocumented.*
+Iterate the provider's events.
+
+**Returns**
+
+An async iterator of typed streaming events that ends after the terminal ``DoneEvent`` or ``ErrorEvent``.
 
 ## TextDeltaEvent
 <!-- agent: yes -->
@@ -699,11 +710,15 @@ get_api_factory(api: str) -> ApiFactory
 
 `tau_llm.providers.base.get_api_factory`
 
-The factory for ``api``.
+Look up the client factory for a wire protocol.
 
 **Parameters**
 
-- `api: str` — *(no description)*
+- `api: str` — Wire-protocol id, as in ``Model.api``.
+
+**Returns**
+
+The factory registered under ``api``.
 
 **Raises**
 
@@ -718,15 +733,15 @@ get_provider_spec(provider_id: str) -> ProviderSpec | None
 
 `tau_llm.providers.base.get_provider_spec`
 
-The vendor's spec, or None if it was never registered.
-
-None is not an error: an unregistered vendor id is a free-form label on a
-``Model`` that already carries its own endpoint. Only a model whose ``api``
-is unknown cannot be served.
+Look up a vendor's defaults.
 
 **Parameters**
 
-- `provider_id: str` — *(no description)*
+- `provider_id: str` — Vendor id, as in ``Model.provider``.
+
+**Returns**
+
+The registered spec, or None if that vendor was never registered. None is not an error: an unregistered vendor id is a free-form label on a ``Model`` that carries its own endpoint; only an unknown ``api`` cannot be served.
 
 ## register_api
 <!-- agent: yes -->
@@ -778,6 +793,10 @@ registered_apis() -> tuple[str, ...]
 
 `tau_llm.providers.base.registered_apis`
 
+List the registered wire protocols.
+
+**Returns**
+
 Every registered wire-protocol id, sorted.
 
 ## registered_providers
@@ -788,6 +807,10 @@ registered_providers() -> tuple[str, ...]
 ```
 
 `tau_llm.providers.base.registered_providers`
+
+List the registered vendors.
+
+**Returns**
 
 Every registered vendor id, sorted.
 
@@ -895,7 +918,7 @@ Remove a wire-protocol registration.
 
 **Parameters**
 
-- `api: str` — *(no description)*
+- `api: str` — Wire-protocol id previously passed to :func:`register_api`.
 
 **Raises**
 
@@ -914,7 +937,7 @@ Remove a vendor registration.
 
 **Parameters**
 
-- `provider_id: str` — *(no description)*
+- `provider_id: str` — Vendor id, as in ``ProviderSpec.id``.
 
 **Raises**
 

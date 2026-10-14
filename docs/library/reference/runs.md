@@ -175,16 +175,15 @@ build_run_manifest(*, harness: str = HARNESS, compaction_policy: CompactionPolic
 
 Build the manifest fragment this harness is responsible for.
 
-``compaction_policy`` is keyword-only and has no default, so a manifest cannot
-be built without making the §16.8 decision. That is the whole mechanism: the
-option "leave the default" is removed by there not being one.
+``compaction_policy`` has no default, so a manifest cannot be built without
+making the §16.8 decision.
 
 **Parameters**
 
-- `harness: str = HARNESS` — the harness identity §5.2 partitions latency by. Defaults to :data:`HARNESS`; a pi-era run records ``"pi"`` and the two are different populations that must never be pooled.
-- `compaction_policy: CompactionPolicy` — the run's declared policy.
-- `extensions: Sequence[Any] | None = None` — the run's loaded extensions, as returned by ``sdk.summarize_extensions()`` (H7, §16.6). ``None`` omits the ``extensions`` key entirely rather than writing an empty list, so a manifest built by a caller that hasn't threaded this through yet is visibly missing the key rather than silently claiming zero extensions loaded.
-- `**extra: Any` — further top-level manifest keys the caller owns (seed, run id, clock origin, DB snapshot id — §9's list). Passed through unchanged and refused if they would shadow a key this function owns.
+- `harness: str = HARNESS` — The harness identity §5.2 partitions latency by; a pi-era run records ``"pi"``, a separate population.
+- `compaction_policy: CompactionPolicy` — The run's declared policy.
+- `extensions: Sequence[Any] | None = None` — The run's loaded extensions, as ``sdk.summarize_extensions()`` returns them. ``None`` omits the ``extensions`` key rather than writing an empty list, so "not recorded" never reads as "none loaded".
+- `**extra: Any` — Further top-level keys the caller owns (seed, run id, clock origin — §9's list), passed through unchanged.
 
 **Returns**
 

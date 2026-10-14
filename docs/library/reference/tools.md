@@ -391,16 +391,13 @@ The keyword form is the one to reach for::
         execute=lambda text: {"words": len(text.split())},
     )
 
-A single mapping may also be passed positionally —
-``define_tool({"name": ..., ...})`` — which is the shape this function
-originally advertised. Passing both forms, or neither, is a caller error.
+A single mapping may be passed positionally instead
+(``define_tool({"name": ..., ...})``), but not both forms.
 
-NOTE: this is not the shape ``tau_agent_core``'s
-``ExtensionAPI.register_tool()`` takes. That one is a plain dict whose
-``execute`` has the five-argument extension signature
-``execute(tool_call_id, params, signal, on_update, ctx)``, and it defaults a
-missing ``label`` to ``name``. The two are separate contracts on purpose;
-do not feed the result of this function to ``register_tool``.
+Not the shape ``ExtensionAPI.register_tool()`` takes: that is a plain dict
+whose ``execute`` has the five-argument extension signature
+``execute(tool_call_id, params, signal, on_update, ctx)``. Do not pass this
+function's result to ``register_tool``.
 
 Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
 
