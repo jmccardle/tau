@@ -341,7 +341,7 @@ class TurnStream:
                     {
                         "kind": "provider_retry",
                         "text": retry_notice(wire),
-                        "delay_seconds": float(wire.get("delay_seconds") or 0.0),
+                        "delay_seconds": float(wire["delay_seconds"]),
                     }
                 )
             ]

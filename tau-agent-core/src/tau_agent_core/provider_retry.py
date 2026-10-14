@@ -40,9 +40,11 @@ def retry_notice(event: dict[str, Any]) -> str:
         event: A ``provider_retry`` payload: ``AgentEvent.model_dump()`` or a
             ``WireEvent`` dict. Reads ``error``, ``attempt``, ``max_retries`` and
             ``delay_seconds``.
+
+    Raises:
+        KeyError: If the payload lacks one of them, i.e. is not a ``provider_retry``.
     """
     return (
-        f"{event.get('error') or 'provider request failed'} — retry "
-        f"{event.get('attempt')} of {event.get('max_retries')} in "
-        f"{float(event.get('delay_seconds') or 0.0):.1f}s"
+        f"{event['error']} — retry {event['attempt']} of {event['max_retries']} in "
+        f"{float(event['delay_seconds']):.1f}s"
     )

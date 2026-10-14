@@ -401,3 +401,7 @@ Example: ``"HTTP 503 from model 'q' at 'http://h': loading — retry 1 of 3 in 1
 **Parameters**
 
 - `event: dict[str, Any]` — A ``provider_retry`` payload: ``AgentEvent.model_dump()`` or a ``WireEvent`` dict. Reads ``error``, ``attempt``, ``max_retries`` and ``delay_seconds``.
+
+**Raises**
+
+- `KeyError` — If the payload lacks one of them, i.e. is not a ``provider_retry``.

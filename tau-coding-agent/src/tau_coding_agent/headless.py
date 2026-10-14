@@ -508,7 +508,7 @@ def report_provider_retry(event: dict[str, Any]) -> None:
     and this line is for the person watching (docs/PROVIDER-RETRY.md §5).
     """
     if event.get("kind") == "provider_retry":
-        print(f"[τ] {event.get('text')}", file=sys.stderr, flush=True)
+        print(f"[τ] {event['text']}", file=sys.stderr, flush=True)
 
 
 def build_print_submission(prompt_text: str) -> Submission:
