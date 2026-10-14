@@ -5,10 +5,10 @@ Reference: SUBPHASE-0.0.md, "8. Extension API Surface" section.
 Components:
 - ExtensionAPI: Public API exposed to extension modules
 - ExtensionContext: Context passed to extension event handlers
-- ExtensionUI: User interaction methods (TUI only, no-op in headless)
+- ExtensionUI: User interaction surfaces; painted in the TUI, emitted as JSON
+  records or stderr lines headless (see :class:`ExtensionUI`)
 
 Constraint: Extensions must not import τ-agent-core internals.
-The ui property is a no-op in headless mode (RPC, SDK).
 """
 
 from __future__ import annotations
@@ -100,10 +100,7 @@ _FORM_EMPTY_VALUE: dict[str, Any] = {
 def validate_form_spec(spec: Any) -> tuple[str, list[dict[str, Any]]]:
     """Validate + normalize a ``ui.form`` spec into ``(title, fields)`` (S66).
 
-    The single source of truth for the declarative form contract, shared by
-    :meth:`ExtensionUI.form` (headless path + early-fail) and the TUI's
-    ``ExtensionFormScreen`` (which re-validates the same raw spec), so the two can
-    never disagree about what a field means.
+    Shared by :meth:`ExtensionUI.form` and the TUI's ``ExtensionFormScreen``.
 
     Args:
         spec: ``{title?: str, fields: [field, ...]}``; each field is ``{name: str,
@@ -309,10 +306,7 @@ def _validate_panel_actions(raw: Any) -> list[dict[str, str]]:
 def validate_panel_spec(spec: Any) -> dict[str, Any]:
     """Validate + normalize a ``ui.panel`` spec into ``{title, body, actions}`` (S68).
 
-    The single source of truth for the declarative panel contract, shared by
-    :meth:`ExtensionUI.panel` (headless record + early-fail) and the TUI's
-    ``ExtensionPanel`` widget (which re-validates the same raw spec), so the two can
-    never disagree about a panel's shape.
+    Shared by :meth:`ExtensionUI.panel` and the TUI's ``ExtensionPanel`` widget.
 
     Args:
         spec: ``{title?: str, <body>, actions?: [...]}`` where ``<body>`` is EXACTLY
@@ -580,19 +574,16 @@ class ExtensionUI:
         return token
 
     async def form(self, spec: dict[str, Any]) -> dict[str, Any] | None:
-        """Show a DECLARATIVE form and return ``{field_name: value}`` (E10 §6 / S66).
+        """Show a declarative form and return ``{field_name: value}`` (E10 §6 / S66).
 
-        A plain-data spec, not a widget factory (D-E6-4), validated up front so a
-        malformed form fails before any UI is shown, in every mode. Routing (S48):
+        The spec is validated before any UI is shown, in every mode. Routing:
 
-        - **TUI mode** with a delegate, and a driving submission that permits
-          asking a human (:meth:`_human_delegate`) → the frontend's generic
-          ``ExtensionFormScreen``. ``allow_user_input=False`` takes the policy
-          path below instead.
-        - **headless ``--mode json``** (a record sink is installed) → first emits one
-          ``{"type": "extension", "kind": "form", …}`` record, THEN resolves via policy.
-        - **headless policy** → ``--ui-defaults form=defaults`` returns each
-          field's declared default (:func:`form_headless_value`).
+        - a bound delegate and a driving submission that permits asking a human
+          (:meth:`_human_delegate`) → the TUI's ``ExtensionFormScreen``;
+        - otherwise, with a record sink installed (``--mode json``), one
+          ``{"type": "extension", "kind": "form", …}`` record is emitted first;
+        - then the headless policy: ``form=defaults`` answers each field with
+          :func:`form_headless_value`, and no policy raises.
 
         Args:
             spec: The form spec :func:`validate_form_spec` accepts; ``kind`` is one
@@ -682,20 +673,10 @@ class ExtensionUI:
     def set_status(self, key: str, text: str | None, *, source: str | None = None) -> None:
         """Set (or clear) a keyed slot in the extension status strip (E10 §6 / S67).
 
-        Ambient, live state painted in a one-line footer strip. ``key`` identifies
-        a SLOT — re-calling the same key UPDATES that slot in place (e.g. budget
-        proximity ticking each turn), never appending a new one. ``text=None``
-        CLEARS the slot. Unlike :meth:`form` this is non-blocking display, so it
-        needs no headless answer policy — it routes exactly like :meth:`notify`:
-
-        - **TUI mode** with a delegate → paints on the delegate's status strip.
-        - **headless ``--mode json``** (a :meth:`set_record_sink` is installed) →
-          emits one ``{"type": "extension", "kind": "status", …}`` record through the
-          sink so a parent reading a child ``tau -p --mode json`` stream sees the
-          ambient state change (S49 — anchor G10). A cleared slot rides the same
-          record with ``"text": null``.
-        - otherwise (headless ``--mode text`` / SDK) → prints to stderr, unchanged
-          from :meth:`notify`'s fallback (honest, never a silent no-op).
+        Re-calling a key updates its slot in place. Non-blocking, so it routes
+        like :meth:`notify`: the delegate's status strip in the TUI; one
+        ``{"type": "extension", "kind": "status", …}`` record under ``--mode json``
+        (a cleared slot carries ``"text": null``); otherwise a stderr line.
 
         Args:
             key: The slot to update or clear.
@@ -704,8 +685,7 @@ class ExtensionUI:
                 contract as :meth:`notify`'s.
 
         Raises:
-            ValueError: if ``key`` is not a non-empty string (Fail-Early: a status
-                slot with no key has nothing to update or clear).
+            ValueError: ``key`` is not a non-empty string.
         """
         if not isinstance(key, str) or not key:
             raise ValueError("ui.set_status: key must be a non-empty string")
@@ -729,38 +709,25 @@ class ExtensionUI:
         print(f"[τ] status {key}: {shown}", file=sys.stderr)
 
     def panel(self, key: str, spec: dict[str, Any] | None, *, source: str | None = None) -> None:
-        """Show, update, or clear a persistent keyed PANEL (E10 §6 / S68).
+        """Show, update, or clear a persistent keyed panel (E10 §6 / S68).
 
-        The fleet-dashboard primitive (D-E6-4: a plain-data SPEC, not a widget
-        factory). Pressing an action DISPATCHES its ``command`` back into the
-        extension as a ``register_command`` call. The spec is validated up front so
-        a malformed panel fails BEFORE any UI is shown, in every mode.
-
-        Like :meth:`set_status` this is NON-BLOCKING display, so it needs no
-        headless answer policy — it routes exactly like :meth:`notify`:
-
-        - **TUI mode** with a delegate → paints on the delegate's panel host, which
-          mounts / updates / removes the keyed :class:`ExtensionPanel`.
-        - **headless ``--mode json``** (a :meth:`set_record_sink` is installed) →
-          emits one ``{"type": "extension", "kind": "panel", "key": …, "spec": …}``
-          record through the sink (``spec`` is the normalized dict, or ``null`` on
-          clear) so a parent reading a child ``tau -p --mode json`` stream sees the
-          panel and its declared actions (anchor G10). This IS the non-interactive
-          headless policy (§6.3): the surface is visible on the stream, its actions
-          simply cannot be pressed without a TUI — a panel is never TUI-ONLY.
-        - otherwise (headless ``--mode text`` / SDK) → prints the title to stderr.
+        Pressing an action dispatches its ``command`` as a registered command. The
+        spec is validated before any UI is shown, in every mode. Non-blocking, so
+        it routes like :meth:`notify`: the delegate's panel host in the TUI; one
+        ``{"type": "extension", "kind": "panel", "key": …, "spec": …}`` record
+        under ``--mode json`` (``spec`` normalized, or ``null`` on clear), whose
+        actions cannot be pressed; otherwise the title on stderr.
 
         Args:
-            key: The panel; re-calling the same key UPDATES it in place.
+            key: The panel; re-calling the same key updates it in place.
             spec: ``{title?, <body>, actions?}`` as :func:`validate_panel_spec`
-                accepts; ``None`` CLEARS the panel.
+                accepts; ``None`` clears the panel.
             source: The originating extension's identity, or ``None``; same
                 contract as :meth:`notify`'s.
 
         Raises:
-            ValueError: if ``key`` is not a non-empty string (Fail-Early: a panel with
-                no key has nothing to update or clear); or (via
-                :func:`validate_panel_spec`) if ``spec`` is malformed.
+            ValueError: ``key`` is not a non-empty string, or ``spec`` is malformed
+                (:func:`validate_panel_spec`).
         """
         if not isinstance(key, str) or not key:
             raise ValueError("ui.panel: key must be a non-empty string")
@@ -894,11 +861,16 @@ class ExtensionContext:
     ) -> None:
         """Initialize ExtensionContext.
 
+        A session's context is built with every default (``ExtensionAPI`` makes
+        it); only ``_session`` is bound afterwards.
+
         Args:
-            cwd: Current working directory. Defaults to ".".
-            session_manager: SessionManager instance. Defaults to None.
-            signal: AbortSignal for this context. Defaults to None.
-            is_idle: Whether the agent is idle. Defaults to True.
+            cwd: Returned by :attr:`cwd` as given; nothing resolves it.
+            session_manager: Returned by :attr:`session_manager`; ``shutdown``
+                forwards to it when it has a ``shutdown()``.
+            signal: The abort signal :attr:`signal` returns while no session is
+                bound.
+            is_idle: Returned by :attr:`is_idle` as given; nothing updates it.
         """
         self._cwd = cwd
         self._session_manager = session_manager
@@ -910,12 +882,15 @@ class ExtensionContext:
 
     @property
     def cwd(self) -> str:
-        """Current working directory."""
+        """The ``cwd`` given at construction, ``"."`` for a session-built context.
+
+        Not the session's working directory: no session path passes one.
+        """
         return self._cwd
 
     @property
     def session_manager(self) -> Any:
-        """The SessionManager instance."""
+        """The ``session_manager`` given at construction; ``None`` in a session."""
         return self._session_manager
 
     @property
@@ -932,23 +907,19 @@ class ExtensionContext:
 
     @property
     def is_idle(self) -> bool:
-        """Whether the agent is idle."""
+        """The ``is_idle`` given at construction (default ``True``).
+
+        Never updated, so it does not track whether a turn is running.
+        """
         return self._is_idle
 
     @property
     def ui(self) -> ExtensionUI:
-        """UI surfaces: TUI-only, and no-ops or headless policy elsewhere.
+        """The session's one :class:`ExtensionUI`, the same object as ``api.ui``.
 
-        The same :class:`ExtensionUI` instance :attr:`ExtensionAPI.ui` exposes —
-        both read ``self._ui`` off this one context — so ``ctx.ui.notify(...)``
-        inside a handler paints on the delegate ``api.ui`` would. Every mutating
-        hook and every ``register_command`` handler is called as
-        ``handler(event_or_args, ctx)`` with the context and never the
-        :class:`ExtensionAPI`, so this property is a handler's only route to it.
-
-        ``notify``, ``status``, ``panel`` and ``form`` are the surface. 0.10.0
-        removed ``confirm``, ``select`` and ``input``; a question now goes through
-        :meth:`ExtensionAPI.request_user_action`, which every head can answer.
+        A hook or command handler receives ``ctx``, never the api, so this is its
+        route to ``notify``, ``set_status``, ``panel`` and ``form``. A question
+        that gates work goes through :meth:`ExtensionAPI.request_user_action`.
         """
         return self._ui
 
@@ -959,10 +930,11 @@ class ExtensionContext:
             signal.abort()
 
     def shutdown(self) -> None:
-        """Request a shutdown: marks `shutdown_requested` and, if a
-        `session_manager` is bound, additionally calls its `shutdown()` too
-        (the pre-existing pass-through — kept for whatever still relies on
-        it). Idempotent; safe to call more than once."""
+        """Request a shutdown by setting :attr:`shutdown_requested`; idempotent.
+
+        Also calls ``session_manager.shutdown()`` when one with that method was
+        given at construction.
+        """
         self._shutdown_requested = True
         if self._session_manager is not None and hasattr(self._session_manager, "shutdown"):
             self._session_manager.shutdown()
@@ -1010,21 +982,22 @@ class ExtensionContext:
         return model
 
     def set_model(self, name: str) -> dict[str, Any]:
-        """Switch the active model by NAME, effective next turn (S45).
+        """Switch the acting cursor's model by NAME, effective on its next turn (S45).
 
-        Delegates to :meth:`AgentSession.set_model` (pi ``setModel`` parity, adapted
-        to τ's name-based resolver). Whatever the resolver raises for an unknown
-        ``name`` propagates unchanged.
+        Delegates to :meth:`AgentSession.set_model`: at the head cursor that is
+        the session's model, at any other cursor that cursor's frame.
 
         Args:
-            name: The model name to resolve and switch to.
+            name: The config model name to resolve and switch to.
 
         Returns:
             The new :meth:`get_model` projection.
 
         Raises:
-            RuntimeError: if no session is bound, or the session has no model
-                resolver bound (both Fail-Early — no registry to resolve ``name``).
+            RuntimeError: No session is bound, or the session has no model resolver.
+            TypeError: The resolver returned something other than a ``Model``.
+            Exception: Whatever the resolver raises for an unknown ``name``,
+                unchanged.
         """
         model: dict[str, Any] = self._require_session().set_model(name)
         return model
@@ -1048,28 +1021,23 @@ class ExtensionContext:
     async def prompt(self, text: str) -> list[dict[str, Any]]:
         """DEPRECATED alias for :meth:`ExtensionAPI.submit` — use ``api.submit`` instead.
 
-        Exactly ``submit(text, multitask_strategy="enqueue")`` with
-        ``source="extension"`` (docs/SUBMISSION-LIFECYCLE.md phase 5), returning
-        only the messages: a refusal, a typed result through ``api.submit``, is
-        unreachable here. The ``submitter`` is :data:`UNATTRIBUTED_EXTENSION`,
-        because a session's one shared context cannot know which extension
-        called; ``api.submit`` is bucket-bound and reports the real name.
-
-        ``"enqueue"`` means a call from a different event source's coroutine
-        waits for the in-flight turn, then runs. A call from a hook of the SAME
-        in-flight turn (same ``asyncio.Task``) would deadlock on the admission
-        lock, so ``submit()`` detects it and raises instead.
+        Submits with ``multitask_strategy="enqueue"`` (waits for an in-flight
+        turn), ``source="extension"`` and the submitter
+        :data:`UNATTRIBUTED_EXTENSION`, because the shared context cannot know
+        which extension called (docs/SUBMISSION-LIFECYCLE.md phase 5).
 
         Args:
             text: The prompt to run as one agent turn on the bound session.
 
         Returns:
-            This turn's messages.
+            This turn's messages only; there is no refusal to see under
+            ``"enqueue"``.
 
         Raises:
-            RuntimeError: if no session is bound (Fail-Early — nothing to prompt).
-            RuntimeError: this call is reentrant on the in-flight turn's own
-                asyncio task (see above).
+            RuntimeError: No session is bound, or :meth:`AgentSession.submit`
+                refused the call: reentrant from a hook on the in-flight turn's
+                own task (it would deadlock), off the session's loop, or past
+                ``MAX_SUBMISSION_DEPTH``.
         """
         result: SubmissionResult = await self._require_session().submit(
             Submission(
@@ -1106,7 +1074,8 @@ class ExtensionContext:
             compact or ``defer`` was set.
 
         Raises:
-            RuntimeError: no session is bound.
+            RuntimeError: No session is bound.
+            CompactionError: Summary generation failed (not when deferred).
         """
         session = self._require_session()
         if defer:
@@ -1180,12 +1149,9 @@ class ExtensionContext:
     ) -> Any:
         """One LLM request/response — no agent loop, no tree writes (C1).
 
-        The primitive behind every "classify / extract / draft" story where the *result*
-        matters, not the process. Deliberately **stateless and session-free**: it touches
-        neither the entry log nor the cursor, so it is safe under ``asyncio.gather`` at
-        any fan-out. Errors propagate (no retry policy hidden inside).
-
-        With ``constraints``, this is the retrieval-review verdict primitive::
+        Touches neither the entry log nor the cursor, so it is safe under
+        ``asyncio.gather`` at any fan-out; its usage is banked on the session's
+        side ledger. No retries. With ``constraints``::
 
             verdicts = await asyncio.gather(*[
                 ctx.complete(
@@ -1210,7 +1176,10 @@ class ExtensionContext:
             A ``tau_llm.AssistantMessage``.
 
         Raises:
-            RuntimeError: the completion errored or was aborted.
+            RuntimeError: No session is bound; ``model`` is a name and the session
+                has no resolver; the completion errored or was aborted; or it
+                stopped at the token limit (``stop_reason="length"``), which is a
+                truncated prefix rather than an answer.
             ConstraintViolation: the constraint did not hold (see DecodeConstraints).
         """
         from tau_agent_core.completion import CompletionFailed, resolved_complete
@@ -1300,17 +1269,13 @@ class ExtensionContext:
     ) -> "BranchResult":
         """Run a tool-using sub-agent on its own cursor in THIS conversation (C2/W14).
 
-        Resolves ``model`` (a name, a ``Model`` or ``None`` for the session's) and
-        delegates to :meth:`AgentSession.spawn`, which documents the cursor it opens,
-        the frame it runs under and how failure is contained (docs/CURSORS.md §6).
+        Delegates to :meth:`AgentSession.spawn` (docs/CURSORS.md §6).
 
         Args:
             parent_id: The entry the sub-agent's cursor opens at, or ``None`` for
                 before the root.
             prompt: The sub-agent's task, sent as its one submission.
-            tools: A **required hard allowlist** of tool names; ``[]`` means none.
-                No default, because inheriting would silently hand an evaluator
-                ``write`` and ``bash``.
+            tools: A required hard allowlist of tool names; ``[]`` means none.
             model: A name, a ``Model``, or ``None`` for the session's.
             max_turns: Cap on the sub-agent's loop turns, or ``None`` for no cap.
             label: The cursor's label; defaults to the prompt's first 60 characters.
@@ -1322,6 +1287,8 @@ class ExtensionContext:
             result, it does not raise.
 
         Raises:
+            RuntimeError: No session is bound, or ``model`` is a name and the
+                session has no resolver.
             ValueError: a tool is not one the spawning turn offers, or ``parent_id``
                 names no entry.
         """
@@ -1356,7 +1323,9 @@ class ExtensionContext:
             The re-rendered active-path messages (``ConversationTree.context_for``).
 
         Raises:
-            RuntimeError: no session is bound.
+            RuntimeError: No session is bound.
+            ValueError: ``from_entry`` names no entry (checked before the model
+                call), or the summarizer returned nothing usable.
         """
         from tau_agent_core.tree_ops import summarize_and_navigate
 
@@ -1390,9 +1359,10 @@ class ExtensionContext:
             The context at the new position (``ConversationTree.context_for``).
 
         Raises:
-            RuntimeError: no session is bound.
-            ValueError: ``summarize`` with a ``None`` ``target_id`` while the cursor
-                is elsewhere.
+            RuntimeError: No session is bound.
+            ValueError: ``target_id`` names no entry, ``summarize`` with a ``None``
+                ``target_id`` while the cursor is elsewhere, or (with ``summarize``)
+                the summarizer returned nothing usable.
         """
         from tau_agent_core.tree_ops import navigate as _navigate
 
@@ -1409,7 +1379,7 @@ class ExtensionContext:
         mode: Literal["in_place", "export"] = "in_place",
         defer: bool = False,
     ) -> Any:
-        """Fork the conversation — one op, two modes (plan §7 decision E3-b).
+        """Fork the conversation in place or into a new session file.
 
         Args:
             entry_id: Where to fork. In place, the entry to move onto (``None`` is
@@ -1418,9 +1388,8 @@ class ExtensionContext:
             mode: ``"in_place"`` moves the session's head cursor so the next turn
                 appends a sibling branch there. ``"export"`` copies the session into
                 a NEW file via ``Session.fork``, never touching the source.
-            defer: Record the intent instead of forking now (S20 / decision 3); a
-                tool calling this mid-turn cannot re-parent the log under the live
-                loop, so it is applied exactly once at the tail of ``prompt()``.
+            defer: Record the intent instead of forking now; it is applied once at
+                the tail of ``prompt()``. A tool calling this mid-turn needs it.
 
         Returns:
             In place, the context at the new position; for export, the new session
@@ -1429,8 +1398,8 @@ class ExtensionContext:
         Raises:
             RuntimeError: no session is bound, or export from a log that is not
                 file-backed.
-            ValueError: an unknown ``mode``, or an export ``entry_id`` that names
-                no entry.
+            ValueError: an unknown ``mode``, or an ``entry_id`` that names no
+                entry.
         """
         session = self._require_session()
         if defer:
@@ -1574,24 +1543,19 @@ class ExtensionAPI:
         """Initialize ExtensionAPI.
 
         Args:
-            registry: ExtensionRegistry for tool/command/flag management.
-            event_bus: EventBus for event subscription.
-            context: ExtensionContext with session state.
-            session: AgentSession for messaging.
-            hook_handlers: This extension's OWN ``ExtensionHandlers`` bucket in the
-                session ``ExtensionRunner`` (load order preserved). ``api.on()``
-                routes the mutating and lifecycle hooks here (see :meth:`on`).
-                Left ``None`` for an api that is
-                not bound to a runner bucket; registering a hook on such an api then
-                RAISES (Fail-Early) rather than silently no-op'ing (S24).
-            config: This extension's OWN per-extension config slice (E6 §2 / S40).
-                Sourced from ``~/.tau/config.json`` ``"extensions": {"<name>": {…}}``
-                keyed by the extension's file stem, with per-run
-                ``--ext-config <name>.<key>=<value>`` overrides applied on top. The
-                session slices the right entry per extension in
-                ``AgentSession._bind_extension_api`` and passes it here; ``None`` →
-                an empty dict (an unconfigured extension reads ``{}``, never a
-                fabricated value — Fail-Early leaves defaulting to the extension).
+            registry: Where tools, commands and shortcuts land; ``None`` makes a
+                private, empty one.
+            event_bus: The notify bus :meth:`on` and :meth:`emit` use; ``None``
+                makes a private one.
+            context: The shared context; ``None`` makes a fresh one. Either way
+                ``session`` is bound onto it.
+            session: The ``AgentSession``, or ``None`` for an unbound api whose
+                session-backed methods raise.
+            hook_handlers: This extension's own runner bucket. ``None`` gives the
+                api no identity: hook registration, :meth:`emit`, :meth:`submit`
+                and command registration then raise.
+            config: This extension's config slice (:attr:`config`); copied, and
+                ``None`` reads as ``{}``.
         """
         # Lazy initialization for backward compatibility
         if registry is None:
@@ -1614,46 +1578,23 @@ class ExtensionAPI:
         self._context._session = session
 
     def on(self, event: str, handler: Callable) -> Callable[[], None]:
-        """Subscribe to an event — routed by KIND (S24 bridge).
+        """Subscribe to an event, routed by kind (S24).
 
-        The six MUTATING hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call`` /
-        ``tool_result`` / ``before_agent_start`` / ``input`` / ``turn_end`` /
-        ``user_turn_end``) AND the
-        two notify-grade session-lifecycle hooks (``ExtensionRunner.LIFECYCLE_EVENTS``:
-        ``session_start`` / ``session_shutdown``, S41) are dispatched by the
-        session's separate ``ExtensionRunner``, whose call-sites gate on
-        ``has_handlers(event)``. Those registrations must land in THIS extension's
-        runner bucket (``self._hook_handlers``), not on the notify ``EventBus`` —
-        otherwise they are a silent no-op in a real session (the bug S24 closes),
-        and the lifecycle hooks in particular route through the runner precisely so
-        their handler errors are SURFACED (S44) instead of swallowed like the bus.
-        Every other (notify) event keeps going to the ``EventBus``.
+        See docs/extensions.md, "Hook and event vocabulary".
 
-        ``turn_end`` (S43) is the mutating variant: ``api.on("turn_end", …)`` now
-        routes to the runner, where a handler may return ``{message}`` for a durable
-        append or return nothing to observe. The notify-grade ``turn_end``
-        ``AgentEvent`` on the ``EventBus`` is UNCHANGED — pure observers still reach
-        it via ``api.on("all", …)`` or :meth:`AgentSession.subscribe`.
+        The mutating hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call``,
+        ``tool_result``, ``before_agent_start``, ``input``, ``turn_end``,
+        ``user_turn_end``) and the lifecycle hooks (``LIFECYCLE_EVENTS``:
+        ``session_start``, ``session_shutdown``) go to this extension's runner
+        bucket, where handler errors are surfaced. Everything else — notify
+        events, ``"all"``, and ``ext:<name>:<topic>`` channels from :meth:`emit` —
+        goes to the notify ``EventBus``.
 
-        ``user_turn_end`` is ``turn_end``'s once-per-``prompt()`` sibling (§12.4 /
-        §16.5). ``turn_end`` fires per AGENT-LOOP turn — six times for an utterance
-        resolved in six tool round-trips — which is right for a per-completion
-        observer and wrong for anything that should happen once per utterance.
-        ``api.on("user_turn_end", …)`` fires exactly once, after the loop, the
-        followUp drain and auto-compaction, with the same durable ``{message}``
-        append. Choose by cadence: per completion, or per utterance.
-
-        The retired ``context`` hook (E5 §3.2 / S30) is rejected UP FRONT: it was
-        removed from ``HOOK_EVENTS``, so left unguarded it would fall through to the
-        notify ``EventBus`` and bind silently to a channel nothing ever emits — a
-        dead no-op. Fail-Early: raise an unknown-hook error naming the durable
-        replacement instead.
-
-        A custom **inter-extension channel** ``ext:<name>:<topic>`` (E7 §3 / S52) is
-        neither a hook nor a retired name, so it takes the same ``EventBus`` fallthrough
-        as a notify event: ``api.on("ext:pub:ping", handler)`` receives whatever the
-        ``pub`` extension broadcasts via :meth:`emit`. These channels are in-RAM,
-        fire-and-forget, and never model-visible — explicitly NOT a backplane.
+        ``turn_end`` fires once per agent-loop turn (per completion);
+        ``user_turn_end`` fires once per utterance, after the loop, the followUp
+        drain and auto-compaction. Either handler may return ``{message}`` for a
+        durable append. The notify-grade ``turn_end`` ``AgentEvent`` still reaches
+        ``api.on("all", …)``.
 
         Args:
             event: Event type (e.g., 'agent_start', 'tool_call', 'all').
@@ -1664,10 +1605,9 @@ class ExtensionAPI:
             An unsubscribe function.
 
         Raises:
-            RuntimeError: registering the retired ``context`` hook (removed in E5
-                §3.2 / S30), or registering a mutating hook on an api that was never
-                bound to a runner bucket (``hook_handlers is None``). Fail-Early — a
-                hook with nowhere to dispatch is a construction bug, not a no-op.
+            RuntimeError: the retired ``context`` hook (E5 §3.2 / S30), or a
+                runner-routed hook on an api with no runner bucket
+                (``hook_handlers is None``), where it could never fire.
         """
         from tau_agent_core.extensions.runner import ExtensionRunner
 
@@ -1706,17 +1646,16 @@ class ExtensionAPI:
         return self._event_bus.on(event, handler)
 
     def _emitting_extension_name(self, op: str = "api.emit") -> str:
-        """This api's OWN extension name — the unforgeable identity (E7 §3 / S52).
-
-        Derived from THIS api's runner bucket path (``Path(bucket.path).stem`` — the
-        same stem that keys :attr:`config`), so :meth:`emit` can only publish under
-        the caller's own name and :meth:`submit` can only submit under it. Fail-Early:
-        a bare :class:`ExtensionAPI` bound to no runner bucket has no extension
-        identity, so raise rather than emit on an anonymous ``ext::<topic>`` channel
-        or attribute a submission to nobody.
+        """This api's own extension name, the identity :meth:`emit` and :meth:`submit` act under.
 
         Args:
             op: The calling method, for the error message only.
+
+        Returns:
+            The runner bucket path's stem, the same stem that keys :attr:`config`.
+
+        Raises:
+            RuntimeError: No runner bucket is bound, so there is no identity.
         """
         if self._hook_handlers is None:
             raise RuntimeError(
@@ -1738,76 +1677,39 @@ class ExtensionAPI:
     ) -> SubmissionResult:
         """Originate an agent turn as THIS extension (docs/SUBMISSION-LIFECYCLE.md).
 
-        The extension half of "one door for every input source": an extension bound
-        to an external event source (a bus subscription, a timer, a webhook) is the
-        one deciding when a turn happens, and this is how it says so — the same
-        :meth:`AgentSession.submit` admission point the TUI, headless, and the SDK
-        funnel through, so concurrency policy is decided ONCE in the core instead of
-        re-invented per extension (``nats_bus``'s hand-rolled ``turn_in_flight`` flag
-        is the workaround this deletes).
-
-        ``source="extension"`` and ``submitter=<this extension's own name>`` are
-        supplied BY THIS BINDING from the caller's own runner bucket
-        (:meth:`_emitting_extension_name`) and are deliberately **not parameters**
-        — the same unforgeability :meth:`emit` has for ``ext:<name>:<topic>``
-        channels. **An extension cannot claim to be a human**, or to be another
-        extension. That matters because phase 2 put ``source``/``submitter`` on every
-        :class:`~tau_agent_core.events.AgentEvent` precisely so a renderer could tell
-        a bus-driven turn from a typed one; a spoofable field would make the
-        distinction worthless.
-
-        ``expand_commands`` is likewise not a parameter: it stays ``False`` (the
-        :class:`~tau_agent_core.submission.Submission` default) so injected text can
-        never smuggle a ``/compact`` through a bus payload — pi's
-        ``sendUserMessage(expandPromptTemplates: false)``. An extension that wants to
-        compact calls :meth:`ExtensionContext.compact`, the typed API, not a string.
+        Goes through :meth:`AgentSession.submit`, the one admission point. Not
+        parameters, so not forgeable: ``source="extension"``, ``submitter`` (this
+        extension's own name), ``expand_commands=False`` (a ``/compact`` in a bus
+        payload stays text) and ``depth`` (derived; a self-continuing chain raises
+        past ``MAX_SUBMISSION_DEPTH``). Call from the session's own loop; a
+        thread or foreign loop uses :meth:`submit_threadsafe`.
 
         Args:
             text: The utterance to run a turn on.
-            multitask_strategy: Policy against an in-flight turn — LangGraph's
-                parameter, on the submission rather than the submitter. Defaults to
-                ``"reject"`` (Fail-Early: a refusal you can see, not a queue you
-                forgot about), which returns ``accepted=False`` with a
-                ``rejection_reason`` rather than raising or dropping silently. See
-                :meth:`AgentSession.submit` for every strategy's exact semantics.
+            multitask_strategy: Policy against an in-flight turn, as
+                :meth:`AgentSession.submit` defines them. ``"reject"`` by default:
+                a busy session returns ``accepted=False``, never a silent queue.
             images: Optional image dicts for a multimodal submission.
-            correlation: Free-form origin detail — bus subject + binding id, cron id,
-                HTTP request id — carried onto every event this turn emits so a
-                renderer can fan out to the right consumer. Validated JSON-safe at
-                :class:`~tau_agent_core.submission.Submission` construction
-                (decision 4): a live object here raises HERE, naming the key, rather
-                than detonating in a JSON renderer three hops downstream.
-            allow_user_input: Jupyter ``allow_stdin`` — whether code running under
-                THIS submission may prompt a human. Default ``False``: a bus- or
-                timer-driven turn has nobody at a keyboard. ENFORCED: for the whole
-                of the admitted turn, :meth:`ExtensionUI.form`, the one blocking
-                dialog, bypasses the TUI delegate and takes the headless-answer
-                route, so with no ``--ui-defaults``
-                policy they raise :class:`HeadlessDialogError` instead of putting a
-                modal in front of whoever happens to be at the terminal. Pass
-                ``True`` only when a human really is expecting to be asked.
-
-        ``depth`` is likewise not a parameter: :meth:`AgentSession.submit` derives it
-        (decision 3). A self-continuing extension — one whose ``turn_end`` hook spawns
-        a task that calls this method, whose turn fires ``turn_end`` again — climbs one
-        per link because the spawned task inherits the turn's
-        :data:`~tau_agent_core.submission.DRIVING_SUBMISSION_DEPTH`, and the eleventh
-        link RAISES rather than looping forever. A submission delivered by a task that
-        PREDATES the turn (a bus subscription loop, a timer) is not self-submission and
-        stays at depth 0 however much traffic it delivers mid-turn.
+            correlation: JSON-safe origin detail (bus subject, cron id, request id)
+                carried onto every event this turn emits.
+            allow_user_input: Whether code under this submission may prompt a
+                human (Jupyter's ``allow_stdin``). ``False`` by default: for the
+                whole turn :meth:`ExtensionUI.form` skips the TUI delegate and
+                takes the headless policy, raising :class:`HeadlessDialogError`
+                without one.
 
         Returns:
-            The :class:`~tau_agent_core.submission.SubmissionResult` — ``accepted``
-            plus either this turn's ``messages`` or a ``rejection_reason``. A refusal
-            is a RESULT (LSP's ``ApplyWorkspaceEditResult``), not an exception.
+            The :class:`~tau_agent_core.submission.SubmissionResult`: ``accepted``
+            plus this turn's ``messages`` or a ``rejection_reason``. A refusal is a
+            result, not an exception.
 
         Raises:
-            RuntimeError: if this api is not bound to a runner bucket (no extension
-                identity to submit under) — Fail-Early, via
-                :meth:`_emitting_extension_name`.
-            RuntimeError: if this api is not bound to an ``AgentSession`` (nothing to
-                submit to).
-            ValueError: if ``correlation`` carries a non-JSON value (decision 4).
+            RuntimeError: No runner bucket (no identity) or no ``AgentSession`` is
+                bound; or :meth:`AgentSession.submit` refused the call (off its
+                loop, reentrant on the in-flight turn's task, or past
+                ``MAX_SUBMISSION_DEPTH``).
+            NotImplementedError: An unknown ``multitask_strategy``.
+            ValueError: ``correlation`` carries a non-JSON value.
         """
         submitter = self._emitting_extension_name("api.submit")
         if self._session is None:
@@ -1841,11 +1743,10 @@ class ExtensionAPI:
     ) -> Submission:
         """The record :meth:`submit` and :meth:`submit_threadsafe` both send.
 
-        One constructor for both doors so the unforgeable fields — ``source``,
-        ``submitter``, and ``expand_commands=False`` — cannot drift apart between
-        them. A marshalled submission that could claim to be interactive, or smuggle
-        a ``/compact`` through a bus payload, would be a hole in exactly the property
-        :meth:`submit`'s docstring spends two paragraphs establishing.
+        One constructor, so the unforgeable fields cannot drift between the two.
+
+        Raises:
+            ValueError: ``correlation`` carries a non-JSON value.
         """
         return Submission(
             text=text,
@@ -1869,25 +1770,12 @@ class ExtensionAPI:
     ) -> concurrent.futures.Future[SubmissionResult]:
         """Originate a turn from a FOREIGN loop or thread (docs/SUBMISSION-LIFECYCLE.md).
 
-        The marshalling counterpart to :meth:`submit`, for the driver whose callback
-        does not run on the session's loop: a ``paho-mqtt`` client thread, a
-        ``watchdog`` filesystem observer, a WSGI/webhook request thread, a
-        ``threading.Timer``. Those contexts have no event loop to ``await`` on, so
-        this is **synchronous** — it hands the submission to the session's own loop
-        (:meth:`AgentSession.submit_threadsafe`) and returns a
-        :class:`concurrent.futures.Future` for the result.
-
-        Which one to use is a question about the CALLBACK, not a matter of taste, and
-        it is answerable: if the library delivers events by awaiting your coroutine
-        on the loop the session runs on — as ``nats-py`` does, because its client was
-        connected from a ``session_start`` handler running on that very loop — the
-        callback is already home and :meth:`submit` is correct. If the library spawns
-        its own thread, this method is the only correct call, and :meth:`submit` will
-        say so by raising rather than corrupting a turn silently.
-
-        Every unforgeability property of :meth:`submit` holds here identically —
-        ``source="extension"`` and ``submitter`` come from this api's own runner
-        bucket, and ``expand_commands`` stays ``False``.
+        Synchronous: hands the submission to the session's own loop
+        (:meth:`AgentSession.submit_threadsafe`) and returns a future. Use it when
+        the callback runs on a thread the library spawned (``paho-mqtt``,
+        ``watchdog``, a WSGI thread, ``threading.Timer``); a callback awaited on
+        the session's loop (``nats-py`` connected from ``session_start``) uses
+        :meth:`submit`. The fixed fields are :meth:`submit`'s.
 
         Args:
             text: The utterance to run a turn on.
@@ -1907,12 +1795,11 @@ class ExtensionAPI:
             extension-error sink, never swallowed).
 
         Raises:
-            RuntimeError: if this api is bound to no runner bucket (no identity to
-                submit under) or no ``AgentSession`` (nothing to submit to).
-            RuntimeError: if the session is not bound to a running loop yet, or if
-                this is called from the session's own loop — see
-                :meth:`AgentSession.submit_threadsafe`, which owns both checks.
-            ValueError: if ``correlation`` carries a non-JSON value (decision 4).
+            RuntimeError: No runner bucket or no ``AgentSession`` is bound; the
+                session is not bound to a running loop yet; or this is called
+                from the session's own loop, where blocking on the future
+                deadlocks.
+            ValueError: ``correlation`` carries a non-JSON value.
         """
         submitter = self._emitting_extension_name("api.submit_threadsafe")
         if self._session is None:
@@ -1937,26 +1824,21 @@ class ExtensionAPI:
     async def emit(self, topic: str, payload: Any) -> None:
         """Publish ``payload`` on this extension's channel ``ext:<name>:<topic>`` (S52).
 
-        Fire-and-forget, in-RAM broadcast on the notify
-        :class:`~tau_agent_core.events.EventBus` to every handler subscribed with
-        ``api.on("ext:<name>:<topic>", handler)``. The channel is always namespaced
-        under this extension's own name, so a subscriber gets unforgeable provenance.
-
-        **NOT a backplane**: it touches neither the session tree nor the log, so the
-        payload is **NEVER model-visible** (E5 §1) and evaporates on restart; use
-        :meth:`append_entry` / :meth:`send_message` for anything durable. Handlers
-        run when this coroutine is awaited; one that raises is SURFACED through the
-        bus on_error path (S44).
+        In-RAM broadcast on the notify :class:`~tau_agent_core.events.EventBus` to
+        every ``api.on("ext:<name>:<topic>", handler)``; ``<name>`` is always this
+        extension's own. Never written to the tree, so never model-visible and
+        gone on restart — durable state uses :meth:`append_entry` or
+        :meth:`send_message`. Handlers run while this is awaited; one that raises
+        is surfaced through the bus's on_error path (S44), not here.
 
         Args:
             topic: The topic, the last segment of the channel name.
             payload: Delivered to each subscribed handler as-is.
 
         Raises:
-            ValueError: if ``topic`` is not a non-empty string.
-            RuntimeError: if this api is not bound to a runner bucket (no extension
-                identity to namespace under) — Fail-Early, via
-                :meth:`_emitting_extension_name`.
+            ValueError: ``topic`` is empty or whitespace.
+            RuntimeError: No runner bucket is bound, so there is no name to
+                namespace under.
         """
         if not isinstance(topic, str) or not topic.strip():
             raise ValueError("api.emit: topic must be a non-empty string")
@@ -2004,10 +1886,11 @@ class ExtensionAPI:
             self._hook_handlers.tools.append(resolved.name)
 
     def get_all_tools(self) -> list[Any]:
-        """Get all registered tools.
+        """List every registered tool, active or not.
 
         Returns:
-            List of tool info from the registry.
+            One ``ToolInfo`` (name, description, parameters, source) per tool in
+            the registry, built-in and extension alike.
         """
         return self._registry.get_all_tools()
 
@@ -2058,6 +1941,9 @@ class ExtensionAPI:
             ``None`` when ``/name`` now runs this command. Otherwise the qualified name
             that holds it instead — pass it to :meth:`run_command` to wrap, chain or
             defer to whatever got there first.
+
+        Raises:
+            RuntimeError: No runner bucket is bound (:attr:`extension_name`).
         """
         qualified = qualified_command(self.extension_name, name)
         assert self._hook_handlers is not None  # extension_name raised otherwise
@@ -2143,23 +2029,10 @@ class ExtensionAPI:
     ) -> str | None:
         """Register a slash command AND say what it takes (docs/EXTENSION-FLOWS.md).
 
-        :meth:`register_command` gives a command a name and a handler, and nothing
-        else: every head then shows the name and hands the handler whatever was typed,
-        because nothing anywhere says what it should have been. This adds that
-        statement, in the vocabulary τ's own gestures already use — so a command
-        registered here gets tab completion, a rendered form, and a palette entry that
-        asks for its argument, in the TUI and over the RPC wire alike, with no head
-        code written for it.
-
-        The handler contract does not change: it is still called with
-        ``(args, ctx)``, where ``args`` is the argument's bound value as text. A
-        command that later declares a flow keeps working for callers that never
-        learned about the declaration.
-
-        **One argument at most**, refused rather than truncated. An extension flow
-        ends in a handler taking one typed line, and splitting one line across two
-        arguments has no rule — the same refusal ``bind_command_args`` makes for
-        built-ins. A gesture needing several fields drives ``ui.form`` itself.
+        The declaration gives the command completion, a rendered form and a
+        palette entry in every head. The handler is still called with
+        ``(args, ctx)``, ``args`` being the argument's bound value as text. At
+        most one argument; a gesture needing several fields drives ``ui.form``.
 
         Args:
             name: The slash command. A name τ already declares is refused, because
@@ -2175,17 +2048,18 @@ class ExtensionAPI:
                 a callable ``(query, limit) -> [(value, label)]``. Not needed for a
                 domain that is ``free`` or has fixed ``values``.
 
-        Raises:
-            ValueError: ``name`` or ``description`` is empty, ``handler`` is not
-                callable, ``domain`` does not match what ``argument`` names, or a
-                domain with an enumerator was declared with no ``values`` callable.
-                The last one is Fail-Early: the flow would reach a step that offers
-                nothing and read as an empty set rather than a missing registration.
-
         Returns:
             What :meth:`register_command` returns — ``None`` when ``/name`` is this
             flow, else the qualified name that holds it. The flow itself is always
             reachable at ``ext:<extension>.<name>``.
+
+        Raises:
+            ValueError: ``name`` or ``description`` is empty; ``handler`` is not
+                callable; ``name`` is already a built-in flow or view; ``domain``
+                does not match what ``argument`` names; a domain with an enumerator
+                has no ``values`` callable; or an ``argument`` came with ``values``
+                but no ``domain``.
+            RuntimeError: No runner bucket is bound (:attr:`extension_name`).
         """
         if not isinstance(name, str) or not name:
             raise ValueError("register_flow: 'name' must be a non-empty string")
@@ -2247,21 +2121,10 @@ class ExtensionAPI:
     ) -> None:
         """Bind a key to a command in the guarded extension chord namespace (E10 §6 / S69).
 
-        Mirrors pi's ``registerShortcut(shortcut, options)`` (types.ts:1182), adapted
-        to τ's dispatch model: instead of a raw handler callable, a shortcut names a
-        ``command`` an extension registered via :meth:`register_command`, dispatched
-        exactly like a panel action (S68) or a typed ``/name args``. Keeping the
-        binding a command name (not an opaque callable) means the SAME verb is
-        reachable three ways — chord, palette, and ``/command`` — and stays runnable
-        headless (a keyboard shortcut has no headless surface, but the command it
-        fires does).
-
-        ``key`` is the chord TAIL — the second key pressed after the ``ctrl+e``
-        extension leader. This is the "guarded namespace": the TUI only ever binds
-        extension shortcuts under that leader, never as bare global keys, so an
-        extension physically cannot clobber a core binding (``ctrl+c``/``ctrl+n``/…).
-        Registering ``key="g"`` for ``command="fleet_status"`` makes ``ctrl+e`` then
-        ``g`` dispatch ``/fleet_status``.
+        ``key`` is the chord tail after the ``ctrl+e`` extension leader, so an
+        extension cannot clobber a core binding: ``key="g"`` with
+        ``command="fleet_status"`` makes ``ctrl+e g`` dispatch ``/fleet_status``,
+        exactly as a panel action or a typed command would.
 
         Args:
             key: The chord-tail key (e.g. ``"g"``, ``"1"``). A non-empty token with
@@ -2477,10 +2340,10 @@ class ExtensionAPI:
 
     @property
     def ui(self) -> ExtensionUI:
-        """UI methods (TUI-only, no-ops in headless mode).
+        """The session's one :class:`ExtensionUI`, the same object as ``ctx.ui``.
 
-        Returns:
-            The ExtensionUI instance from the context.
+        Painted in the TUI; headless it emits records or stderr lines, and
+        ``form`` follows the ``--ui-defaults`` policy.
         """
         return self._context._ui
 
@@ -2502,5 +2365,5 @@ class ExtensionAPI:
 
     @property
     def context(self) -> ExtensionContext:
-        """The ExtensionContext for this API."""
+        """The shared :class:`ExtensionContext` handlers receive as ``ctx``."""
         return self._context
