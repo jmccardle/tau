@@ -214,8 +214,7 @@ class TestAnthropicMessagesContract(ProviderContract):
         )
 
     def provider(self, replay: _Replay) -> Any:
-        from anthropic import AsyncAnthropic
-
+        AsyncAnthropic = pytest.importorskip("anthropic").AsyncAnthropic
         http = pytest.importorskip("httpx2")
         provider = AnthropicMessagesProvider(api_key="test", base_url="http://llm.test")
         provider._client = AsyncAnthropic(
@@ -248,8 +247,7 @@ class TestGoogleGenerativeAIContract(ProviderContract):
         )
 
     def provider(self, replay: _Replay) -> Any:
-        from google.genai import Client
-
+        Client = pytest.importorskip("google.genai").Client
         provider = GoogleGenerativeAIProvider(api_key="test", base_url="http://llm.test")
         provider._client = Client(
             api_key="test",
