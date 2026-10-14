@@ -99,6 +99,7 @@ Findings, which means writing the finding rather than lengthening the clause.
 `PROVIDER-COVERAGE.md` (pi's 44 providers classified against τ's three wires, the three official APIs feature by feature, and a cassette-replayed provider contract suite; partly built — the suite prototype, no provider changed) ·
 `CONSTRAINED-GEN-AND-BRANCHING-PLAN.md` · `JMFTS-INTEGRATION-PLAN.md` ·
 `RESEARCH-INTEGRATION-EVALUATION.md` · `ALPHA-SELECTOR-SPEC.md` ·
+`TRUST-GATE.md` (Tier 8; research record 2026-10-12, nothing built — six open questions) ·
 `M2-RESULTS.md` · `M3-DESIGN.md` · `WORKSTREAM-CROSSWALK.md` (the status index across the four vocabularies).
 
 **Upstream llama.cpp:** `UPSTREAM-LLAMACPP-SILENT-OVERRIDES.md` (two reproduced silent constraint overrides) ·
