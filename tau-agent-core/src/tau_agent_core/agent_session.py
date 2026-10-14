@@ -519,6 +519,10 @@ class AgentSession:
             omits built-ins from ``tools``.
         cwd: Where tools and ``@path`` references resolve; ``None`` means the
             process cwd. Stored absolute.
+        prompt_templates: The templates ``submit`` expands for ``/name args``;
+            none by default.
+        skills: The skills ``submit`` expands for ``/skill:name args``; none by
+            default.
 
     Raises:
         ValueError: Both or neither of ``session_log`` and ``cursor``; both
@@ -4302,6 +4306,9 @@ class AgentSession:
 
         Leaves out a template whose name a built-in or an extension command holds,
         since dispatch reaches those first; lists a broken one with its error.
+
+        Returns:
+            One completion per offered template and skill command.
         """
         taken = {name for name, _ in self.get_extension_commands()}
         return prompt_command_completions(self._prompt_templates, self._skills, taken)

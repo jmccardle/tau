@@ -66,6 +66,8 @@ class ProviderHttpError(RuntimeError):
             body: The raw response body, any length.
             model_id: The requested model id.
             base_url: The endpoint the request went to.
+            retry_after: Seconds the server asked for, already parsed from its
+                header; None when it named none.
         """
         self.status_code = status_code
         self.message = message
@@ -94,6 +96,13 @@ class ProviderConnectionError(RuntimeError):
     """
 
     def __init__(self, message: str, *, model_id: str, base_url: str) -> None:
+        """Record the failure.
+
+        Args:
+            message: The provider's description of the failure; becomes ``str()``.
+            model_id: The requested model id.
+            base_url: The endpoint the request went to.
+        """
         self.model_id = model_id
         self.base_url = base_url
         super().__init__(message)

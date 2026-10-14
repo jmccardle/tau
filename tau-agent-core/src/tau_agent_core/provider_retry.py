@@ -41,6 +41,10 @@ def retry_notice(event: dict[str, Any]) -> str:
             ``WireEvent`` dict. Reads ``error``, ``attempt``, ``max_retries`` and
             ``delay_seconds``.
 
+    Returns:
+        ``"<error> — retry <attempt> of <max_retries> in <delay>s"``, the delay to
+        one decimal place.
+
     Raises:
         KeyError: If the payload lacks one of them, i.e. is not a ``provider_retry``.
     """
