@@ -37,7 +37,12 @@ from tau_agent_core.events import (
     SideCompletionPurpose,
     SideCompletionReason,
 )
-from tau_agent_core.extension_types import BranchResult, ExtensionAPI, validate_form_values
+from tau_agent_core.extension_types import (
+    BranchResult,
+    ExtensionAPI,
+    ExtensionContext,
+    validate_form_values,
+)
 from tau_agent_core.extension_locks import (
     RESPONSE_ENTRY_TYPE,
     ExtensionRequest,
@@ -4340,14 +4345,17 @@ class AgentSession:
         in the runner: ``api.on`` routes the four mutating hooks there (S24).
         ``context`` shares the live :class:`ExtensionContext` — passed for the
         per-extension apis so every handler sees the one context the session binds
-        the abort signal / live session onto; ``None`` lets ``ExtensionAPI`` make a
-        fresh context (used only for the session-shared api built at construction).
+        the abort signal / live session onto; ``None`` (the session-shared api built
+        at construction) makes a fresh one at the session's cwd, never ``"."``.
         ``config`` is this extension's per-extension config slice (S40); ``None``
         for the session-shared api (which no extension file receives).
 
         Returns:
             An ExtensionAPI bound to this session, its event bus, and registry.
         """
+        if context is None:
+            # The session's cwd, where built-in tools resolve paths; "." is the process cwd.
+            context = ExtensionContext(cwd=self._cwd)
         return ExtensionAPI(
             session=self,
             event_bus=self._events,
