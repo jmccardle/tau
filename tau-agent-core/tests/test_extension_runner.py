@@ -129,7 +129,12 @@ async def test_tool_result_chained_patch_later_sees_earlier() -> None:
     )
 
     assert seen_by_b["content"] == "patched-by-a"  # b saw a's patch
-    assert result == {"content": "patched-by-a", "details": None, "is_error": True}
+    assert result == {
+        "content": "patched-by-a",
+        "details": None,
+        "is_error": True,
+        "patched": ["content", "is_error"],
+    }
 
 
 async def test_tool_result_no_patch_returns_none() -> None:
@@ -158,7 +163,12 @@ async def test_tool_result_handler_error_is_surfaced_not_dropped() -> None:
 
     result = await runner.emit_tool_result({"type": "tool_result", "content": "orig"})
 
-    assert result == {"content": "recovered", "details": None, "is_error": None}
+    assert result == {
+        "content": "recovered",
+        "details": None,
+        "is_error": None,
+        "patched": ["content"],
+    }
     assert len(errors) == 1
     assert errors[0].extension_path == "/ext/a.py"
     assert errors[0].event == "tool_result"
@@ -224,7 +234,12 @@ async def test_async_handler_is_awaited() -> None:
     ext.on("tool_result", a_handler)
 
     result = await runner.emit_tool_result({"type": "tool_result", "content": "orig"})
-    assert result == {"content": "async-patched", "details": None, "is_error": None}
+    assert result == {
+        "content": "async-patched",
+        "details": None,
+        "is_error": None,
+        "patched": ["content"],
+    }
 
 
 async def test_bound_context_is_passed_to_handlers() -> None:
@@ -263,7 +278,12 @@ async def test_constructor_accepts_prebuilt_extensions_in_order() -> None:
     result = await runner.emit_tool_result({"type": "tool_result", "content": "orig"})
 
     assert order == ["a", "b"]
-    assert result == {"content": "b", "details": None, "is_error": None}
+    assert result == {
+        "content": "b",
+        "details": None,
+        "is_error": None,
+        "patched": ["content"],
+    }
 
 
 def test_lifecycle_events_are_owned_by_the_runner() -> None:

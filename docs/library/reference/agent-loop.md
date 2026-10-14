@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None)
+class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, call_gate: Callable[[str], str | None] | None = None)
 ```
 
 `tau_agent_core.agent_loop.AgentLoop`
@@ -26,6 +26,7 @@ Events follow docs/SUBPHASE-0.0.md, "5. Agent Events".
 - `steer_queue: list[Any] | None = None` — The session's live steering queue (docs/SUBMISSION-LIFECYCLE.md phase 4). The list object itself is shared, not a drain callback, so the loop can peek before a would-be-final turn and drain only in the statement that delivers; a ``max_turns`` exit strands nothing.
 - `mid_turn_compactor: MidTurnCompactor | None = None` — Offered the context at each turn boundary; see :data:`MidTurnCompactor`. ``None`` never compacts mid-turn.
 - `writer: TurnWriter | None = None` — Where each message is written as it exists; ``None`` writes nothing and the loop only returns what it produced.
+- `call_gate: Callable[[str], str | None] | None = None` — Given a model-issued call's tool name, the reason to refuse it, or ``None`` to let it run; how a masked tool stays declared, so the ``tools`` block and the prompt cache hold. ``None`` gates nothing.
 
 ### add_tool
 
@@ -187,7 +188,7 @@ How tools are executed
 class BlockedCall(call: PreparedToolCall, error: str, blocked_by_extension: str | None = None)
 ```
 
-`tau_agent_core.agent_loop.BlockedCall`
+`tau_agent_core.tool_pipeline.BlockedCall`
 
 A tool call that was blocked (e.g., argument validation failed).
 
@@ -204,7 +205,7 @@ A tool call that was blocked (e.g., argument validation failed).
 class ErrorCall(call: PreparedToolCall, exception: Exception)
 ```
 
-`tau_agent_core.agent_loop.ErrorCall`
+`tau_agent_core.tool_pipeline.ErrorCall`
 
 A tool call whose preparation raised ``exception``.
 
@@ -219,7 +220,7 @@ A tool call whose preparation raised ``exception``.
 result() -> AgentToolResult
 ```
 
-`tau_agent_core.agent_loop.ErrorCall.result`
+`tau_agent_core.tool_pipeline.ErrorCall.result`
 
 Build the call's error result.
 
@@ -352,6 +353,34 @@ Record that an assistant message has started.
 
 An opaque handle the loop passes back to :meth:`finalize`.
 
+## apply_tool_result_hooks
+<!-- agent: yes -->
+
+```python
+async apply_tool_result_hooks(dispatcher: ExtensionRunner | None, result: AgentToolResult, input_args: dict[str, Any] | None = None, *, parent_tool_call_id: str | None = None) -> AgentToolResult
+```
+
+`tau_agent_core.tool_pipeline.apply_tool_result_hooks`
+
+Apply the ``tool_result`` mutating hook to ``result``.
+
+A patched-to-``None`` field keeps its original value, so a handler clears
+``details`` by patching ``{}``. The event carries ``value`` when the tool
+returned one, and a handler that rewrites ``content`` without rewriting
+``value`` drops it: a value that no longer matches the text it came with
+would let a redaction leak to a nested caller.
+
+**Parameters**
+
+- `dispatcher: ExtensionRunner | None` — The hook runner, or ``None`` for no hooks.
+- `result: AgentToolResult` — The tool's result; patched in place.
+- `input_args: dict[str, Any] | None = None` — The call's arguments for the event; ``None`` sends ``{}``.
+- `parent_tool_call_id: str | None = None` — Put on the event for a nested call.
+
+**Returns**
+
+``result`` itself, after any patch.
+
 ## completed_messages
 <!-- agent: yes -->
 
@@ -374,3 +403,52 @@ persists these before re-raising (docs/PLAN-0.9.4.md §3).
 **Returns**
 
 A copy of the completed messages, or an empty list for any other exception, so a caller can ask unconditionally.
+
+## execute_prepared_call
+<!-- agent: yes -->
+
+```python
+async execute_prepared_call(tools: Mapping[str, AgentTool], call: PreparedToolCall, signal: Any) -> AgentToolResult
+```
+
+`tau_agent_core.tool_pipeline.execute_prepared_call`
+
+Run a prepared call; any exception becomes an error result.
+
+While the tool runs, :data:`CURRENT_TOOL_CALL` names it and its prints are
+captured.
+
+**Parameters**
+
+- `tools: Mapping[str, AgentTool]` — The tools by name; a name not here is an ``Unknown tool`` error.
+- `call: PreparedToolCall` — The prepared call.
+- `signal: Any` — The abort signal handed to the tool's ``execute``.
+
+**Returns**
+
+The tool's result, with its nested calls in ``details["nested_calls"]`` and its output in ``details["captured_output"]`` when there were any.
+
+## prepare_tool_call
+<!-- agent: yes -->
+
+```python
+async prepare_tool_call(tools: Mapping[str, AgentTool], dispatcher: ExtensionRunner | None, tool_call: ToolCall, *, parent_tool_call_id: str | None = None, gate: Callable[[str], str | None] | None = None) -> PreparedToolCall | BlockedCall | ErrorCall
+```
+
+`tau_agent_core.tool_pipeline.prepare_tool_call`
+
+Validate ``tool_call``'s arguments and run the ``tool_call`` hook.
+
+A name not in ``tools`` is not validated and passes; execution reports it.
+
+**Parameters**
+
+- `tools: Mapping[str, AgentTool]` — The tools by name, for argument validation.
+- `dispatcher: ExtensionRunner | None` — The hook runner, or ``None`` for no hooks.
+- `tool_call: ToolCall` — The call to prepare.
+- `parent_tool_call_id: str | None = None` — Put on the hook event for a nested call; a model-issued call's event has no such key.
+- `gate: Callable[[str], str | None] | None = None` — Given the tool name, a reason to refuse it before validation, or ``None`` to let it through.
+
+**Returns**
+
+The prepared call, a :class:`BlockedCall` (validation failed, a handler vetoed, or a handler raised: fail-closed), or an :class:`ErrorCall`.

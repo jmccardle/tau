@@ -13,6 +13,8 @@ from dataclasses import dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from tau_llm.docs import agent_facing
 
+from tau_agent_core.tau_home import resolve_tau_home
+
 
 @agent_facing(topic="sdk")
 @dataclass
@@ -39,7 +41,7 @@ class Settings:
     compaction_enabled: bool = True
     context_margin: int = 2000
     extension_dirs: list[str] = field(
-        default_factory=lambda: [str(Path.home() / ".tau" / "extensions")],
+        default_factory=lambda: [str(resolve_tau_home() / "extensions")],
     )
     api_keys: dict[str, str] = field(default_factory=dict)
     custom_system_prompt: str | None = None
@@ -67,7 +69,7 @@ class Settings:
         settings = cls()  # Start with defaults
 
         # Load global settings
-        global_path = Path.home() / ".tau" / "settings.json"
+        global_path = resolve_tau_home() / "settings.json"
         if global_path.exists():
             settings = settings._merge_from_file(global_path)
 

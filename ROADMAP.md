@@ -467,7 +467,7 @@ Released as `v0.12.0` → `bebdedf`.
 | Cursors, steps 1–6 | `9b0095d` `64dca80` `b275de0` `27565b9` `b418524` | Built. Every writer is a `Cursor`; config lives in the tree. |
 | M0: schema generator, concurrent cursors | `7e9e6d6` | Built. RPC counts are generated, which closes defect 5. |
 | M1: durable writes | `0c373a9` | Built. |
-| M2: `tau serve` | `836a0d4`, then protocol 0.2–0.8 | Built. Serve protocol is now **0.8**, JSON-RPC 2.0. |
+| M2: `tau serve` | `836a0d4`, then protocol 0.2–0.8 | Built. Serve protocol is now **0.9** (0.9 adds `parent_tool_call_id` on events), JSON-RPC 2.0. |
 | M3: `tau --connect`, autostart | `8ff102f` | Built. |
 | M4: tau-code on `tau serve` | tau-code `a738df6` … `26499fc` | Built and verified live by the tau-code session. 20 tau-code commits are unpushed, and its version is still 0.5.2. |
 | M5: `/compare` | `ff1f62a` | Built. |

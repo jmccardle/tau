@@ -1,0 +1,222 @@
+"""The bridge from a script's ``tools.<name>(...)`` to τ's real tools.
+
+:class:`DirectToolInvoker` calls a tool's ``execute`` directly. That BYPASSES the
+hook pipeline: no ``tool_call`` veto, no ``tool_result`` rewrite, no
+``tool_execution_*`` events, so a permission gate written as a hook does not see
+script calls. It is a stand-in until ``ctx.execute_tool`` (docs/CODE-MODE.md
+§5.1) lands; swapping it is one class behind the :class:`ToolInvoker` protocol.
+"""
+
+from __future__ import annotations
+
+import inspect
+import json
+import math
+import re
+import time
+from collections import Counter
+from collections.abc import Iterable, Sequence
+from typing import Any
+
+from tau_llm.tools import validate_tool_arguments
+
+from tau_agent_core.codemode.prompt import describe_stub
+from tau_agent_core.codemode.protocol import NestedCall, ToolOutcome, ToolStub, elapsed_ms
+from tau_agent_core.tools.base import AgentTool, AgentToolResult
+
+_IDENT = re.compile(r"^[A-Za-z_]\w*$")
+_TOKEN = re.compile(r"[a-z0-9]+")
+_ARGS_CAP = 2048
+
+
+def _text_of(content: Any) -> str:
+    """The joined text blocks of a tool result's content."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        return "\n".join(parts)
+    return str(content)
+
+
+def _outcome(result: Any) -> ToolOutcome:
+    """Normalize whatever ``execute`` returned, as ``AgentLoop._execute_tool`` does."""
+    if isinstance(result, AgentToolResult):
+        return ToolOutcome(_text_of(result.content), result.is_error)
+    if isinstance(result, dict):
+        return ToolOutcome(_text_of(result.get("content", "")), bool(result.get("is_error")))
+    return ToolOutcome(_text_of(result))
+
+
+def _tokens(text: str) -> list[str]:
+    """Lower-case word tokens, with ``snake_case`` split."""
+    return _TOKEN.findall(text.lower().replace("_", " "))
+
+
+class _Bm25:
+    """BM25 over each tool's name, description and parameter names."""
+
+    def __init__(self, stubs: Sequence[ToolStub]) -> None:
+        self._docs = [
+            Counter(
+                _tokens(
+                    f"{s.name} {s.name} {s.description} {' '.join(s.parameters.get('properties') or {})}"
+                )
+            )
+            for s in stubs
+        ]
+        self._stubs = list(stubs)
+        n = len(self._docs) or 1
+        self._avg = sum(sum(d.values()) for d in self._docs) / n
+        df: Counter[str] = Counter()
+        for d in self._docs:
+            df.update(d.keys())
+        self._idf = {t: math.log(1 + (n - f + 0.5) / (f + 0.5)) for t, f in df.items()}
+
+    def rank(self, query: str, limit: int) -> list[ToolStub]:
+        """The ``limit`` best stubs with a positive score, best first."""
+        terms = _tokens(query)
+        scored: list[tuple[float, int]] = []
+        for i, doc in enumerate(self._docs):
+            length = sum(doc.values())
+            score = 0.0
+            for t in terms:
+                tf = doc.get(t, 0)
+                if tf:
+                    score += (
+                        self._idf[t] * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * length / self._avg))
+                    )
+            if score > 0:
+                scored.append((score, i))
+        scored.sort(key=lambda p: (-p[0], p[1]))
+        return [self._stubs[i] for _, i in scored[:limit]]
+
+
+class DirectToolInvoker:
+    """A :class:`~tau_agent_core.codemode.protocol.ToolInvoker` over ``AgentTool`` objects.
+
+    Validates arguments against the tool's schema, then awaits its ``execute``.
+    Hooks are not run (see the module docstring). A tool whose name is not a
+    Python identifier is left out, since ``tools.<name>`` could not reach it.
+
+    Args:
+        tools: The tools a script may call, e.g. the turn's tool list.
+        exclude: Names never callable from a script (``codemode`` itself).
+        language: Stub language for :meth:`describe`.
+        max_calls: Calls answered before every further call fails.
+        signal: The turn's abort signal, handed to each tool.
+        parent_call_id: The ``codemode`` call's id; nested ids extend it.
+    """
+
+    def __init__(
+        self,
+        tools: Iterable[AgentTool],
+        *,
+        exclude: Iterable[str] = ("codemode",),
+        language: str = "python",
+        max_calls: int = 1000,
+        signal: Any = None,
+        parent_call_id: str = "codemode",
+    ) -> None:
+        excluded = set(exclude)
+        self._tools = {t.name: t for t in tools if t.name not in excluded and _IDENT.match(t.name)}
+        self._stubs = [
+            ToolStub(t.name, t.description, dict(t.parameters)) for t in self._tools.values()
+        ]
+        self._language = language
+        self._max_calls = max_calls
+        self._signal = signal
+        self._parent = parent_call_id
+        self._calls: list[NestedCall] = []
+        self._started = 0
+        self._index: _Bm25 | None = None
+        self.budget_exhausted = False
+
+    def stubs(self) -> list[ToolStub]:
+        """The callable tools, in the order they were given."""
+        return list(self._stubs)
+
+    @property
+    def calls(self) -> list[NestedCall]:
+        """Every call answered so far, in completion order."""
+        return list(self._calls)
+
+    async def invoke(self, name: str, args: dict[str, Any]) -> ToolOutcome:
+        """Run ``name`` with ``args``; a failure is an error outcome, never a raise."""
+        start = time.perf_counter()
+        self._started += 1
+        if self._started > self._max_calls:
+            self.budget_exhausted = True
+            return self._record(
+                name,
+                args,
+                start,
+                ToolOutcome(
+                    f"call budget exhausted: a script may make {self._max_calls} tool calls", True
+                ),
+            )
+        tool = self._tools.get(name)
+        if tool is None:
+            return self._record(name, args, start, ToolOutcome(f"Unknown tool: {name}", True))
+        try:
+            validated = validate_tool_arguments(tool, args)
+        except ValueError as exc:
+            return self._record(
+                name, args, start, ToolOutcome(f"Invalid arguments for {name}: {exc}", True)
+            )
+        try:
+            result = tool.execute(
+                tool_call_id=f"{self._parent}.{self._started}", args=validated, signal=self._signal
+            )
+            if inspect.isawaitable(result):
+                result = await result
+            outcome = _outcome(result)
+        except Exception as exc:
+            outcome = ToolOutcome(_text_of(AgentToolResult.from_exception(name, exc).content), True)
+        return self._record(name, args, start, outcome)
+
+    def _record(
+        self, name: str, args: dict[str, Any], start: float, outcome: ToolOutcome
+    ) -> ToolOutcome:
+        """Append the call record and pass the outcome through."""
+        try:
+            text = json.dumps(args, default=str)
+        except (TypeError, ValueError):
+            text = repr(args)
+        self._calls.append(
+            NestedCall(
+                name=name,
+                args=text[:_ARGS_CAP],
+                ok=not outcome.is_error,
+                duration_ms=elapsed_ms(start),
+                error=outcome.text[:_ARGS_CAP] if outcome.is_error else None,
+            )
+        )
+        return outcome
+
+    def search(self, query: str, limit: int = 8) -> list[dict[str, str]]:
+        """BM25 over the callable tools; ``[{name, description}]``, best first."""
+        if self._index is None:
+            self._index = _Bm25(self._stubs)
+        return [
+            {
+                "name": s.name,
+                "description": s.description.strip().splitlines()[0]
+                if s.description.strip()
+                else "",
+            }
+            for s in self._index.rank(query, max(1, int(limit)))
+        ]
+
+    def describe(self, name: str) -> str:
+        """Signature, description and schema of one tool.
+
+        Raises:
+            KeyError: ``name`` is not callable from a script.
+        """
+        for stub in self._stubs:
+            if stub.name == name:
+                return describe_stub(stub, self._language)
+        raise KeyError(f"no tool named {name!r} is callable from scripts")

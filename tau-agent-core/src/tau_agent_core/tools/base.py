@@ -207,6 +207,16 @@ class AgentTool(BaseModel):
         """Alias for definition.execution_mode."""
         return self.definition.execution_mode
 
+    @property
+    def exposure(self) -> str:
+        """Alias for definition.exposure, the author's default."""
+        return self.definition.exposure
+
+    @property
+    def output_schema(self) -> dict[str, Any] | None:
+        """Alias for definition.output_schema."""
+        return self.definition.output_schema
+
     def __hash__(self) -> int:
         return hash(self.name)
 
@@ -229,6 +239,10 @@ class AgentToolResult(BaseModel):
             built-in tool sets it; it rides the ``toolResult`` message and the
             ``tool_execution_end`` event so a head can render more than the text
             block. ``None`` means the tool declared none, never "dropped".
+        value: The JSON-compatible structured value a nested caller receives,
+            shaped by the tool's ``output_schema``; never sent to the model and
+            never written to the tree. ``None`` for a text-only tool
+            (experimental; experiments/tool-exposure/RESULTS.md).
         is_error: Whether the execution failed
         error_message: Error description (if is_error=True)
         terminate: Whether the agent loop should terminate after this tool
@@ -238,6 +252,7 @@ class AgentToolResult(BaseModel):
     tool_call_id: str | None = None
     content: list[dict[str, Any]] = Field(default_factory=list)
     details: dict[str, Any] | None = None
+    value: Any = None
     is_error: bool = False
     error_message: str | None = None
     terminate: bool = False

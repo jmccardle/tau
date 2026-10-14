@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, cast
 
 from tau_llm.errors import connection_error_from, http_error_from_google
 from tau_llm.models import clamp_thinking_level
+from tau_llm.once import OnceSet
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.streaming import (
     DoneEvent,
@@ -87,8 +88,8 @@ _STOP_REASONS: dict[str, StopReason] = {
     "MALFORMED_FUNCTION_CALL": "error",
 }
 
-_WARNED_FOREIGN_SIGNATURE: set[str] = set()
-_WARNED_UNSIGNED_TOOL_CALL: set[str] = set()
+_WARNED_FOREIGN_SIGNATURE = OnceSet()
+_WARNED_UNSIGNED_TOOL_CALL = OnceSet()
 
 
 def signature_payload(thought_signature: str) -> dict[str, Any]:
@@ -210,8 +211,7 @@ class GoogleGenerativeAIProvider(Provider):
                 f"{detail} Refusing to continue because "
                 "models.<name>.strict_reasoning_formats is set."
             )
-        if model.id not in _WARNED_FOREIGN_SIGNATURE:
-            _WARNED_FOREIGN_SIGNATURE.add(model.id)
+        if _WARNED_FOREIGN_SIGNATURE.first(model.id):
             _logger.warning(
                 "%s Replaying the call without it. Set "
                 "models.<name>.strict_reasoning_formats to raise instead. "
@@ -243,8 +243,7 @@ class GoogleGenerativeAIProvider(Provider):
                 f"{detail} Refusing to continue because "
                 "models.<name>.strict_reasoning_formats is set."
             )
-        if model.id not in _WARNED_UNSIGNED_TOOL_CALL:
-            _WARNED_UNSIGNED_TOOL_CALL.add(model.id)
+        if _WARNED_UNSIGNED_TOOL_CALL.first(model.id):
             _logger.warning("%s (docs/ANTHROPIC-GOOGLE-CLIENTS.md O4)", detail)
 
     # ── message conversion ───────────────────────────────────────────────

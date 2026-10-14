@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 
 import pytest
+from print_fakes import BoundPrintFake
 
 import tau_coding_agent.session_store as store
 from tau_agent_core.cursor import Cursor
@@ -70,7 +71,7 @@ def _config() -> dict:
     }
 
 
-class _FakeBackend:
+class _FakeBackend(BoundPrintFake):
     def __init__(self, config):
         self.config = config
 
@@ -85,14 +86,13 @@ class _FakeBackend:
         self, submission, context, callback, on_event=None, on_pi_event=None
     ):
         self.submission = submission
-        self.messages = context  # capture the context the loop was given
         callback("ANSWER")
         if on_event is not None:
             on_event({"kind": "text_delta", "delta": "ANSWER"})
         new_messages = [
-            {"role": "user", "content": submission.text},
             {"role": "assistant", "content": [{"type": "text", "text": "ANSWER"}]},
         ]
+        self.messages = await self.persist_turn(submission, new_messages)
         return (
             "ANSWER",
             {"total_tokens": 1},
@@ -173,10 +173,10 @@ async def test_continue_loads_most_recent_and_updates_in_place(env):
     )
     assert rc == 0
 
-    # Context handed to the backend = B's stored transcript; the turn builds the user message.
+    # Context handed to the backend = B's stored transcript + the new user turn.
     ctx = env["backend"].messages
-    assert ctx == _seeded_convo("b1")
-    assert env["backend"].submission.text == "next"
+    assert ctx[:3] == _seeded_convo("b1")
+    assert _no_ts(ctx[-1]) == {"role": "user", "content": "next"}
 
     # No new file; B grew in place; A untouched.
     assert _files(env) == sorted([a.path, b.path])

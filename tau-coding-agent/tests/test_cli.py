@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from print_fakes import BoundPrintFake
 
 from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent import cli
@@ -565,7 +566,7 @@ def test_assemble_missing_file_raises():
 # ── headless run_print (fake backend) ───────────────────────────────────────
 
 
-class _FakeBackend:
+class _FakeBackend(BoundPrintFake):
     def __init__(self, config):
         self.config = config
         from tau_agent_core.sdk import BASE_SYSTEM_PROMPT, append_system_prompt
@@ -589,7 +590,6 @@ class _FakeBackend:
         self, submission, context, callback, on_event=None, on_json_event=None
     ):
         self.submission = submission
-        self.messages = context
         deltas = ["Hello ", "world"]
         if on_event is not None:
             on_event({"kind": "turn_start", "turn_index": 0})
@@ -620,9 +620,9 @@ class _FakeBackend:
                 }
             )
         new_messages = [
-            {"role": "user", "content": submission.text},
             {"role": "assistant", "content": [{"type": "text", "text": "Hello world"}]},
         ]
+        self.messages = await self.persist_turn(submission, new_messages)
         return (
             "Hello world",
             {"total_tokens": 3},
@@ -661,10 +661,10 @@ async def test_run_print_text_mode(fake_backend, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert out == "Hello world\n"
-    # the system prompt is the context; the prompt rides on the submission
+    # system prompt + the user message the core wrote are the turn's context
     msgs = fake_backend["backend"].messages
-    assert msgs == [{"role": "system", "content": "You are helpful."}]
-    assert fake_backend["backend"].submission.text == "hi"
+    assert msgs[0] == {"role": "system", "content": "You are helpful."}
+    assert _no_ts(msgs[-1]) == {"role": "user", "content": "hi"}
 
 
 async def test_run_print_json_mode(fake_backend, capsys):

@@ -131,7 +131,7 @@ Where one kind of resource is looked for, in precedence order.
 **Constructor parameters**
 
 - `explicit: tuple[Path, ...]` — Paths the operator named, in the order named.
-- `user: Path | None` — ``~/.tau/<kind>/``, or ``None`` when discovery is off.
+- `user: Path | None` — ``<τ home>/<kind>/``, or ``None`` when discovery is off.
 - `project: Path | None` — ``<cwd>/.tau/<kind>/``, or ``None`` when discovery is off or the project scope is not admitted (:data:`PROJECT_SCOPE_ADMITTED`).
 
 ### roots
@@ -168,7 +168,7 @@ The file a resource was read from, and the scope it was found in.
 <!-- agent: yes -->
 
 ```python
-class Settings(default_model: str = 'gpt-4o', thinking_level: str = 'off', compaction_enabled: bool = True, context_margin: int = 2000, extension_dirs: list[str] = (lambda: [str(Path.home() / '.tau' / 'extensions')])(), api_keys: dict[str, str] = dict(), custom_system_prompt: str | None = None, tool_execution_mode: str = 'parallel', max_retries: int = 3, temperature: float | None = None, max_tokens: int | None = None, reasoning_level: str = 'off')
+class Settings(default_model: str = 'gpt-4o', thinking_level: str = 'off', compaction_enabled: bool = True, context_margin: int = 2000, extension_dirs: list[str] = (lambda: [str(resolve_tau_home() / 'extensions')])(), api_keys: dict[str, str] = dict(), custom_system_prompt: str | None = None, tool_execution_mode: str = 'parallel', max_retries: int = 3, temperature: float | None = None, max_tokens: int | None = None, reasoning_level: str = 'off')
 ```
 
 `tau_agent_core.settings.Settings`
@@ -181,7 +181,7 @@ class Settings(default_model: str = 'gpt-4o', thinking_level: str = 'off', compa
 - `thinking_level: str = 'off'` — Thinking mode ("off", "low", "high")
 - `compaction_enabled: bool = True` — Whether automatic session compaction is enabled
 - `context_margin: int = 2000` — Token margin before hitting context limit
-- `extension_dirs: list[str] = (lambda: [str(Path.home() / '.tau' / 'extensions')])()` — Directories to search for extension modules
+- `extension_dirs: list[str] = (lambda: [str(resolve_tau_home() / 'extensions')])()` — Directories to search for extension modules
 - `api_keys: dict[str, str] = dict()` — Mapping of provider name to API key
 - `custom_system_prompt: str | None = None` — Optional custom system prompt override
 - `tool_execution_mode: str = 'parallel'` — Default tool execution mode ("parallel", "sequential")
@@ -462,7 +462,7 @@ Discover the context files that apply to ``cwd``, weakest first.
 
 Prompt order, so the nearest file has the last word:
 
-1. ``agent_dir``'s context file, the user's global one.
+1. ``agent_dir``'s context file (τ home's by default), the user's global one.
 2. Every ancestor of ``cwd`` that has one, root-most first, ending with
    ``cwd``'s own. The walk goes to ``/``. In a linked worktree nested inside
    its main repo, the main checkout's copy is skipped
@@ -474,7 +474,7 @@ A file reached twice (by resolved path) is taken once, at its first slot.
 **Parameters**
 
 - `cwd: str | Path | None = None` — Where the ancestor walk starts; ``None`` means the process cwd.
-- `agent_dir: str | Path | None = None` — The global context directory; ``None`` means ``~/.tau``.
+- `agent_dir: str | Path | None = None` — The global context directory; ``None`` means τ home (:func:`~tau_agent_core.tau_home.resolve_tau_home`).
 
 **Returns**
 
@@ -495,7 +495,7 @@ load_prompt_templates(locations: ResourceLocations | None = None, *, cwd: str | 
 
 Discover and read every prompt template, first name wins.
 
-Order: explicit paths, then ``~/.tau/prompts/``, then ``<cwd>/.tau/prompts/``
+Order: explicit paths, then ``<τ home>/prompts/``, then ``<cwd>/.tau/prompts/``
 when :data:`~tau_agent_core.resources.PROJECT_SCOPE_ADMITTED` admits it.
 Within a directory, files load in name order. A file that cannot be read
 becomes a :class:`~tau_agent_core.resources.BrokenResource` and keeps its
@@ -527,7 +527,7 @@ load_skills(locations: ResourceLocations | None = None, *, cwd: str | Path | Non
 
 Discover and read every skill, first name wins.
 
-Order: explicit paths, then ``~/.tau/skills/``, then ``<cwd>/.tau/skills/``
+Order: explicit paths, then ``<τ home>/skills/``, then ``<cwd>/.tau/skills/``
 when :data:`~tau_agent_core.resources.PROJECT_SCOPE_ADMITTED` admits it —
 which, until the trust gate exists, it does not.
 
@@ -641,9 +641,9 @@ The locations for ``kind`` (``"prompts"`` or ``"skills"``).
 
 **Parameters**
 
-- `kind: str` — The subdirectory name under ``~/.tau`` and ``<cwd>/.tau``.
+- `kind: str` — The subdirectory name under τ home and ``<cwd>/.tau``.
 - `cwd: str | Path | None = None` — The working directory. ``None`` is the process cwd.
-- `agent_dir: str | Path | None = None` — Override for ``~/.tau``.
+- `agent_dir: str | Path | None = None` — Override for τ home.
 - `paths: Iterable[str | Path] = ()` — Explicit paths, relative ones resolved against ``cwd``. They load even when ``discover`` is False, the rule ``-e`` follows for extensions.
 - `discover: bool = True` — Whether to read the user and project directories at all.
 - `project: bool | None = None` — Whether the project directory is admitted. ``None`` reads :data:`PROJECT_SCOPE_ADMITTED`, which is the trust gate's seam.

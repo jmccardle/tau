@@ -16,6 +16,7 @@ from typing import Any, Awaitable, Callable, Iterator, Literal, Sequence, cast
 from uuid import uuid4
 from tau_llm.compat import Compat
 from tau_llm.models import EXTENDED_THINKING_LEVELS, is_valid_thinking_level
+from tau_llm.once import OnceSet
 from tau_llm.providers import get_provider_spec, registered_apis, registered_providers
 from tau_llm.types import Model
 from tau_agent_core.agent_session import (
@@ -937,7 +938,7 @@ def compute_cost_usd(
     )
 
 
-_WARNED_UNDECLARED_REASONING: set[str] = set()
+_WARNED_UNDECLARED_REASONING = OnceSet()
 
 
 def _warn_undeclared_reasoning(model_id: str) -> None:
@@ -949,9 +950,8 @@ def _warn_undeclared_reasoning(model_id: str) -> None:
     break every working config on upgrade. The message names the exact key to add,
     so the warning is actionable rather than merely ignorable.
     """
-    if model_id in _WARNED_UNDECLARED_REASONING:
+    if not _WARNED_UNDECLARED_REASONING.first(model_id):
         return
-    _WARNED_UNDECLARED_REASONING.add(model_id)
     print(
         f"[τ] warning: a thinking level was requested for model {model_id!r}, which "
         "does not declare reasoning support, so no thinking level is being sent. Add "
@@ -1257,7 +1257,7 @@ class Backend(ABC):
     async def stream_submission(
         self,
         submission: Submission,
-        context: list[dict],
+        context: list[dict] | None,
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
         on_json_event: Callable[[dict], None] | None = None,
@@ -2198,7 +2198,7 @@ class TauBackend(Backend):
     async def stream_submission(
         self,
         submission: Submission,
-        context: list[dict],
+        context: list[dict] | None,
         callback: Callable[[str], None],
         on_event: Callable[[dict], None] | None = None,
         on_json_event: Callable[[dict], None] | None = None,

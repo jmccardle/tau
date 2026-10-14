@@ -21,6 +21,7 @@ import os
 import signal
 
 import pytest
+from print_fakes import BoundPrintFake
 
 import tau_coding_agent.session_store as store
 from tau_agent_core.submission import SubmissionResult
@@ -43,7 +44,7 @@ def _config() -> dict:
     }
 
 
-class _LifecycleBackend:
+class _LifecycleBackend(BoundPrintFake):
     """A fake backend that records lifecycle-hook calls and (optionally) blocks in
     ``stream_submission`` until ``abort()`` is tripped (to exercise the signal path)."""
 
@@ -79,6 +80,7 @@ class _LifecycleBackend:
             await self._aborted.wait()
         callback("ANSWER")
         new_messages = [{"role": "assistant", "content": [{"type": "text", "text": "ANSWER"}]}]
+        await self.persist_turn(submission, new_messages)
         return (
             "ANSWER",
             {"total_tokens": 1},

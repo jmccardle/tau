@@ -6,7 +6,7 @@
 >
 > Design of record: `docs/TAU-SERVE.md` §5–§7.
 
-- **Protocol version:** `0.8`
+- **Protocol version:** `0.9`
 - **Default port:** `8256`
 - **Counts:** 50 requests (35 of them RPC verbs), 10 event kinds, 198 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
@@ -2072,6 +2072,7 @@ The wire projection of ``AgentEvent`` (D3) — REMOTE-CONTROL.md's designed shap
 | `end_reason` | `"done"` \| `"terminate"` \| `"aborted"` \| `"max_turns"` \| `"repeat_tool_calls"` \| `"error"` \| null | no | How an agent_end closed: 'done' (the model had nothing more to say), 'terminate' (a tool asked to stop), 'aborted', 'max_turns' (the ceiling truncated the run), 'repeat_tool_calls' (the loop stopped itself because the model kept repeating an identical, wholly-failing batch) or 'error'. None on every other event type. `error` says whether the loop raised; this says how it stopped when it did not, which is what tells a host that an answer is TRUNCATED rather than finished. |
 | `blocked` | boolean | no | Whether a tool_execution_end is an extension veto (S50), distinct from a generic errored result. |
 | `blocked_by` | string \| null | no | The extension that vetoed the call; paired with blocked. |
+| `parent_tool_call_id` | string \| null | no | On a tool_execution_* event for a call a tool made, the calling tool's call id; None for a call the model made. Experimental. |
 | `cursor_id` | string \| null | no | The cursor whose turn emitted this event (docs/CURSORS.md §6). Several cursors run turns on one session at once; a host routes by this. None outside a turn. |
 | `submission_id` | string \| null | no | The Submission that drove this turn, if any (E4/G6). None for an event from a call that never went through submit()/prompt() — never a fabricated id. |
 | `source` | `"interactive"` \| `"rpc"` \| `"extension"` \| `"bus"` \| `"timer"` \| `"webhook"` \| `"voice"` \| `"agent"` \| null | no | The submission's origin (E4). None alongside submission_id. |

@@ -268,6 +268,26 @@ than discarded. Supervised: :meth:`emit_session_shutdown` cancels it, and
 
 - `ValueError` — ``cursor`` is the head's, or this session did not open it.
 
+### describe_tools
+
+```python
+describe_tools(*, include_hidden: bool = False) -> list[ToolDescription]
+```
+
+`tau_agent_core.agent_session.AgentSession.describe_tools`
+
+Every tool on the acting cursor, as discovery reports it (experimental).
+
+A cursor frame's allowlist applies.
+
+**Parameters**
+
+- `include_hidden: bool = False` — Also report tools whose effective exposure is ``hidden``.
+
+**Returns**
+
+One description per tool, in registry order, with the effective exposure and whether the ``tools`` block declares it.
+
 ### disable_extension
 
 ```python
@@ -357,6 +377,30 @@ watcher re-installs.
 **Returns**
 
 The outcome; ``ok=False`` for an unknown or already-enabled extension.
+
+### execute_tool
+
+```python
+async execute_tool(name: str, args: dict[str, Any], *, parent_tool_call_id: str | None = None) -> NestedToolResult
+```
+
+`tau_agent_core.agent_session.AgentSession.execute_tool`
+
+Run tool ``name`` through the pipeline a model-issued call takes (experimental).
+
+See :func:`~tau_agent_core.tool_pipeline.run_nested_call`, which raises
+on every failure; the tools it may reach are the acting cursor's callable
+ones, and the hooks are the ones that cursor's turns run.
+
+**Parameters**
+
+- `name: str` — The tool to run.
+- `args: dict[str, Any]` — Its arguments.
+- `parent_tool_call_id: str | None = None` — The parent call, only when not inside a running tool.
+
+**Returns**
+
+The tool's structured value, content and details.
 
 ### extension_runner
 
@@ -654,6 +698,20 @@ changes it under a reader's feet, exactly as the active model does.
 
 Whether the agent loop is currently streaming.
 
+### list_extensions
+
+```python
+list_extensions() -> list[ExtensionInfo]
+```
+
+`tau_agent_core.agent_session.AgentSession.list_extensions`
+
+The extensions loaded and enabled now, in load order (experimental).
+
+**Returns**
+
+class:`~tau_agent_core.tool_catalog.ExtensionInfo` per extension.
+
 ### list_managed_extensions
 
 ```python
@@ -810,6 +868,28 @@ It cannot deadlock against the T3 credit pool: persistence emits no
 events of its own, so nothing it does needs a credit the blocked writer
 would have to release.
 
+### preview_redeclare
+
+```python
+preview_redeclare(changes: dict[str, bool]) -> ToolBlockChange
+```
+
+`tau_agent_core.agent_session.AgentSession.preview_redeclare`
+
+What :meth:`redeclare_tools` with ``changes`` would do to the ``tools`` block.
+
+A head calls this to warn the user before a change that re-bills the
+prompt. Writes nothing, and unlike :meth:`redeclare_tools` it ignores a
+name that is not a tool here instead of raising.
+
+**Parameters**
+
+- `changes: dict[str, bool]` — Tool name to ``True`` (declare) or ``False`` (withdraw), laid over the declarations already on the path.
+
+**Returns**
+
+func:`~tau_agent_core.prompt_cache.tool_block_change` from the current block to the one ``changes`` would produce.
+
 ### prompt
 
 ```python
@@ -888,6 +968,32 @@ before/after DELTA to attribute the spend to a particular exchange.
 **Parameters**
 
 - `usage: dict[str, int]` — The completion's token counts, added key by key.
+
+### redeclare_tools
+
+```python
+async redeclare_tools(changes: dict[str, bool]) -> ToolBlockChange
+```
+
+`tau_agent_core.agent_session.AgentSession.redeclare_tools`
+
+Declare (``True``) or withdraw (``False``) tools from the model's ``tools`` block.
+
+A user action, never something a tool or extension does on its own: any
+change here costs a full prompt-cache miss on the next request. Recorded as
+a ``tool_declaration`` config entry, so a resume declares the same set.
+
+**Parameters**
+
+- `changes: dict[str, bool]` — Tool name to ``True`` (declare) or ``False`` (withdraw).
+
+**Returns**
+
+The change, as :meth:`preview_redeclare` reported it.
+
+**Raises**
+
+- `ValueError` — a name is not a tool here.
 
 ### reload_extension
 
@@ -1213,6 +1319,32 @@ Name this session: a ``session_info`` entry at the cursor, never model input.
 **Raises**
 
 - `ValueError` — ``name`` is empty.
+
+### set_tool_exposure
+
+```python
+async set_tool_exposure(name: str, exposure: str) -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.set_tool_exposure`
+
+Override ``name``'s exposure from the acting cursor's leaf on (experimental).
+
+The declared ``tools`` block does not change, so the prompt cache holds.
+The override is a ``tool_exposure`` config entry, and the model is told by
+an appended ``tool_exposure`` message on the path: now when no turn is
+running, before the next completion when one is. A masked tool stays
+declared and a model call to it is refused with the reason. Repeating the
+override already on the path writes nothing.
+
+**Parameters**
+
+- `name: str` — The tool to override.
+- `exposure: str` — The new exposure.
+
+**Raises**
+
+- `ValueError` — ``exposure`` is not one of :data:`~tau_llm.tools.ToolExposure`, or no tool is named ``name``.
 
 ### set_ui_delegate
 
@@ -4243,6 +4375,34 @@ which covers messages appended since that completion.
 - `last_compaction: CompactionRecord | None` — The newest compaction entry, or ``None`` if this session has never compacted.
 - `usage: dict[str, Any] | None` — :meth:`AgentSession.get_usage` — ``None`` before the first completion.
 
+## ToolBlockChange
+<!-- agent: yes -->
+
+```python
+class ToolBlockChange(added: tuple[str, ...], removed: tuple[str, ...], changed: tuple[str, ...], reordered: bool)
+```
+
+`tau_agent_core.prompt_cache.ToolBlockChange`
+
+How a change to the declared tools would alter the request's ``tools`` block.
+
+Every provider renders ``tools`` before ``system`` and the messages
+(docs/PROMPT-CACHING.md), so any difference here re-bills the whole prompt
+at the cache-write price on the next request.
+
+**Constructor parameters**
+
+- `added: tuple[str, ...]` — Names declared after and not before.
+- `removed: tuple[str, ...]` — Names declared before and not after.
+- `changed: tuple[str, ...]` — Names in both whose description or parameters differ.
+- `reordered: bool` — The common names appear in a different order.
+
+### invalidates_cache
+
+`tau_agent_core.prompt_cache.ToolBlockChange.invalidates_cache: bool`
+
+Whether the next request misses the prompt cache because of this change.
+
 ## ToolResultEntry
 <!-- agent: yes -->
 
@@ -5503,6 +5663,29 @@ and the two would drift the first time the wrapper changed.
 **Returns**
 
 ``(purpose, body)`` — ``"compaction"`` or ``"branch_summary"``, and the summary with the marker stripped — or ``None`` for an ordinary message.
+
+## tool_block_change
+<!-- agent: yes -->
+
+```python
+tool_block_change(before: Sequence[Any], after: Sequence[Any]) -> ToolBlockChange
+```
+
+`tau_agent_core.prompt_cache.tool_block_change`
+
+Compare two declared tool lists, as a provider would serialize them.
+
+Pure, so every head reaches the same verdict before it applies a change
+(experimental; experiments/tool-exposure/RESULTS.md).
+
+**Parameters**
+
+- `before: Sequence[Any]` — The tools declared now, in block order; each item has ``name``, ``description`` and ``parameters``.
+- `after: Sequence[Any]` — The tools that would be declared, likewise.
+
+**Returns**
+
+Names added, removed and changed (description or parameters differ), and whether the names in both lists appear in a different order.
 
 ## tool_group
 <!-- agent: yes -->

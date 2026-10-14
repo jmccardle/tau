@@ -93,9 +93,35 @@ def _validate_json_schema(schema: dict[str, Any], data: dict[str, Any]) -> dict[
         raise ValueError(f"Schema validation failed: {e}")
 
 
+ToolExposure = Literal["direct", "model-only", "callable", "deferred", "hidden"]
+"""Who may see and call a tool (experimental; experiments/tool-exposure/RESULTS.md).
+
+- ``direct``: declared to the model, callable from a tool or script.
+- ``model-only``: declared to the model, never callable from a tool or script.
+- ``callable``: not declared to the model, callable from a tool or script.
+- ``deferred``: not declared until something loads it, callable meanwhile.
+- ``hidden``: neither.
+"""
+
+TOOL_EXPOSURES: tuple[str, ...] = ("direct", "model-only", "callable", "deferred", "hidden")
+
+
 @agent_facing(topic="tools")
 class ToolDefinition(BaseModel):
     """Tool definition for the LLM API. Build one with :func:`define_tool`.
+
+    ``exposure``, ``namespace``, ``tags`` and ``output_schema`` are experimental
+    (experiments/tool-exposure/RESULTS.md). None of them reaches the model:
+    the wire carries ``name``, ``description`` and ``parameters`` only.
+
+    Attributes:
+        exposure: The author's default :data:`ToolExposure`; a session may
+            override it per cursor.
+        namespace: ``"core"`` for a built-in, the declaring extension's name
+            (or ``<extension>.<sub>``) for an extension tool.
+        tags: Free labels for discovery.
+        output_schema: JSON Schema of the structured value a nested caller
+            receives, or ``None`` when the tool returns text only.
 
     Reference: SUBPHASE-0.0.md, "2. Tool Definitions" section.
 
@@ -121,6 +147,10 @@ class ToolDefinition(BaseModel):
     prompt_snippet: str | None = None
     prompt_guidelines: list[str] | None = None
     execution_mode: Literal["sequential", "parallel"] = "parallel"
+    exposure: ToolExposure = "direct"
+    namespace: str | None = None
+    tags: list[str] = []
+    output_schema: dict[str, Any] | None = None
 
 
 @agent_facing(topic="tools")

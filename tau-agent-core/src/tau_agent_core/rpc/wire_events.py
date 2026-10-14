@@ -186,6 +186,7 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
         blocked=event.blocked,
         blocked_by=event.blocked_by,
         cursor_id=event.cursor_id,
+        parent_tool_call_id=event.parent_tool_call_id,
         submission_id=event.submission_id,
         source=event.source,
         submitter=event.submitter,

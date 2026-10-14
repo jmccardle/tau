@@ -42,6 +42,7 @@ from tau_llm.json_parse import (
     parse_streaming_json,
 )
 from tau_llm.models import clamp_thinking_level
+from tau_llm.once import OnceSet
 from tau_llm.streaming import (
     DoneEvent,
     ErrorEvent,
@@ -64,9 +65,9 @@ from tau_llm.types import (
 
 _logger = logging.getLogger(__name__)
 
-_WARNED_FOREIGN_SIGNATURES: set[str] = set()
+_WARNED_FOREIGN_SIGNATURES = OnceSet()
 
-_WARNED_FOREIGN_TOOL_SIGNATURES: set[str] = set()
+_WARNED_FOREIGN_TOOL_SIGNATURES = OnceSet()
 
 _TRUNCATION_HINT = (
     "The model hit the output cap τ sent for it (max_tokens={max_tokens}); "
@@ -1075,8 +1076,7 @@ class OpenAICompletionsProvider(Provider):
                 f"{detail} Refusing to continue because "
                 "models.<name>.strict_reasoning_formats is set."
             )
-        if origin not in _WARNED_FOREIGN_SIGNATURES:
-            _WARNED_FOREIGN_SIGNATURES.add(origin)
+        if _WARNED_FOREIGN_SIGNATURES.first(origin):
             _logger.warning(
                 "%s Keeping the reasoning as text content and not replaying it under "
                 "a signature field. Set models.<name>.strict_reasoning_formats to "
@@ -1116,8 +1116,7 @@ class OpenAICompletionsProvider(Provider):
                 f"{detail} Refusing to continue because "
                 "models.<name>.strict_reasoning_formats is set."
             )
-        if origin not in _WARNED_FOREIGN_TOOL_SIGNATURES:
-            _WARNED_FOREIGN_TOOL_SIGNATURES.add(origin)
+        if _WARNED_FOREIGN_TOOL_SIGNATURES.first(origin):
             _logger.warning(
                 "%s Replaying the tool call without it. Set "
                 "models.<name>.strict_reasoning_formats to raise instead.",

@@ -24,16 +24,15 @@ from typing import Literal
 
 from tau_llm.docs import agent_facing
 
+from tau_agent_core.tau_home import resolve_tau_home
+
 ResourceScope = Literal["explicit", "user", "project"]
 """Where a resource was found, strongest first.
 
 ``explicit`` is a path the operator named (a CLI flag or a config list), ``user``
-is ``~/.tau/<kind>/``, and ``project`` is ``<cwd>/.tau/<kind>/``. Two resources
+is ``<τ home>/<kind>/`` (:func:`~tau_agent_core.tau_home.resolve_tau_home`), and ``project`` is ``<cwd>/.tau/<kind>/``. Two resources
 with one name resolve to the one found first in this order (§2.2).
 """
-
-AGENT_DIR = "~/.tau"
-"""The user's τ directory, the same one context files and extensions read."""
 
 PROJECT_DIR_NAME = ".tau"
 """The per-project directory under the working directory."""
@@ -244,7 +243,7 @@ class ResourceLocations:
 
     Attributes:
         explicit: Paths the operator named, in the order named.
-        user: ``~/.tau/<kind>/``, or ``None`` when discovery is off.
+        user: ``<τ home>/<kind>/``, or ``None`` when discovery is off.
         project: ``<cwd>/.tau/<kind>/``, or ``None`` when discovery is off or the
             project scope is not admitted (:data:`PROJECT_SCOPE_ADMITTED`).
     """
@@ -280,9 +279,9 @@ def resource_locations(
     """The locations for ``kind`` (``"prompts"`` or ``"skills"``).
 
     Args:
-        kind: The subdirectory name under ``~/.tau`` and ``<cwd>/.tau``.
+        kind: The subdirectory name under τ home and ``<cwd>/.tau``.
         cwd: The working directory. ``None`` is the process cwd.
-        agent_dir: Override for ``~/.tau``.
+        agent_dir: Override for τ home.
         paths: Explicit paths, relative ones resolved against ``cwd``. They load
             even when ``discover`` is False, the rule ``-e`` follows for extensions.
         discover: Whether to read the user and project directories at all.
@@ -301,7 +300,7 @@ def resource_locations(
     if not discover:
         return ResourceLocations(explicit=explicit, user=None, project=None)
     admitted = PROJECT_SCOPE_ADMITTED[kind] if project is None else project
-    user = (Path(agent_dir or AGENT_DIR).expanduser() / kind).resolve()
+    user = ((Path(agent_dir).expanduser() if agent_dir else resolve_tau_home()) / kind).resolve()
     project_dir = (base / PROJECT_DIR_NAME / kind).resolve() if admitted else None
     return ResourceLocations(explicit=explicit, user=user, project=project_dir)
 

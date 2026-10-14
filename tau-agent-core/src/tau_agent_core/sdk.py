@@ -34,6 +34,8 @@ from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
+from tau_agent_core.tau_home import resolve_tau_home
+from tau_agent_core.tool_schema import output_schema_of
 from tau_agent_core.skills import Skill, load_skills, render_skills_block
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 from tau_agent_core.tools.bash import BashTool
@@ -240,6 +242,7 @@ def _resolve_tools(
         kwargs: dict[str, Any] = {"cwd": cwd} if cwd is not None else {}
         kwargs.update(options.get(name, {}))
         tool_obj = _BUILTIN_TOOL_CLASSES[name](**kwargs)
+        typed_run = getattr(tool_obj, "run", None)
         tool_objs.append(
             AgentTool(
                 definition=ToolDefinition(
@@ -250,14 +253,14 @@ def _resolve_tools(
                     execute=tool_obj.execute,
                     prompt_snippet=f"{tool_obj.name}: {tool_obj.label}",
                     execution_mode=tool_obj.execution_mode,
+                    namespace="core",
+                    output_schema=None if typed_run is None else output_schema_of(typed_run),
                 )
             )
         )
 
     return tool_objs
 
-
-_GLOBAL_EXTENSIONS_DIR = "~/.tau/extensions"
 
 _ext_load_counter = 0
 
@@ -697,7 +700,7 @@ async def _load_extensions(
         work.append((path, is_explicit))
 
     if discover:
-        discover_dir = user_dir if user_dir is not None else _GLOBAL_EXTENSIONS_DIR
+        discover_dir = user_dir if user_dir is not None else str(resolve_tau_home() / "extensions")
         for p in _discover_extension_paths(discover_dir):
             _add(p, False)
 
@@ -790,8 +793,6 @@ Style: Sardonic, dry, brief.
 
 {{tools}}"""
 
-
-_AGENT_DIR = "~/.tau"
 
 CONTEXT_FILE_NAMES: tuple[str, ...] = (
     "AGENTS.override.md",
@@ -964,7 +965,7 @@ def load_project_context_files(
 
     Prompt order, so the nearest file has the last word:
 
-    1. ``agent_dir``'s context file, the user's global one.
+    1. ``agent_dir``'s context file (τ home's by default), the user's global one.
     2. Every ancestor of ``cwd`` that has one, root-most first, ending with
        ``cwd``'s own. The walk goes to ``/``. In a linked worktree nested inside
        its main repo, the main checkout's copy is skipped
@@ -975,7 +976,8 @@ def load_project_context_files(
 
     Args:
         cwd: Where the ancestor walk starts; ``None`` means the process cwd.
-        agent_dir: The global context directory; ``None`` means ``~/.tau``.
+        agent_dir: The global context directory; ``None`` means τ home
+            (:func:`~tau_agent_core.tau_home.resolve_tau_home`).
 
     Returns:
         The context files in prompt order, weakest first.
@@ -984,7 +986,9 @@ def load_project_context_files(
         ContextFileError: A found file could not be read or is not valid UTF-8.
     """
     resolved_cwd = _canonicalize(Path(cwd).expanduser() if cwd else Path(os.getcwd()))
-    resolved_agent_dir = _canonicalize(Path(agent_dir or _AGENT_DIR).expanduser())
+    resolved_agent_dir = _canonicalize(
+        Path(agent_dir).expanduser() if agent_dir else resolve_tau_home()
+    )
 
     context_files: list[ContextFile] = []
     seen: set[Path] = set()

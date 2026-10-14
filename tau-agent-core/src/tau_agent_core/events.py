@@ -96,6 +96,9 @@ class AgentEvent(BaseModel):
             "⛔ blocked by <ext>: <reason>" rather than a plain error box.
         blocked_by: The extension that vetoed the call (its runner path label),
             paired with ``blocked`` on a ``tool_execution_end``; ``None`` otherwise.
+        parent_tool_call_id: On a ``tool_execution_*`` event for a call a tool
+            made (``ctx.execute_tool``), the calling tool's call id. ``None`` for
+            a call the model made. Experimental.
         tool_results: List of tool result messages (turn_end)
         messages: List of messages produced (agent_end)
         error: Why an ``agent_end`` closed, when the loop raised rather than
@@ -184,6 +187,7 @@ class AgentEvent(BaseModel):
     is_error: bool = False
     blocked: bool = False
     blocked_by: str | None = None
+    parent_tool_call_id: str | None = None
     tool_results: list[dict[str, Any]] | None = None
     messages: list[dict[str, Any]] | None = None
     error: str | None = None

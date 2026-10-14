@@ -29,8 +29,8 @@ _TS = 1_700_000_000_000
 
 @pytest.fixture(autouse=True)
 def _no_user_dir(tmp_path, monkeypatch):
-    """Point ``~/.tau`` discovery at an empty directory, so the developer's own files stay out."""
-    monkeypatch.setattr("tau_agent_core.resources.AGENT_DIR", str(tmp_path / "home"))
+    """Point τ-home discovery at an empty directory, so the developer's own files stay out."""
+    monkeypatch.setattr("tau_agent_core.resources.resolve_tau_home", lambda: tmp_path / "home")
 
 
 def _write(path: Path, text: str) -> Path:

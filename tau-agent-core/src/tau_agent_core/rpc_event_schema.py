@@ -139,6 +139,11 @@ class WireEvent(BaseModel):
         default=None,
         description="The extension that vetoed the call; paired with blocked.",
     )
+    parent_tool_call_id: str | None = Field(
+        default=None,
+        description="On a tool_execution_* event for a call a tool made, the "
+        "calling tool's call id; None for a call the model made. Experimental.",
+    )
     cursor_id: str | None = Field(
         default=None,
         description="The cursor whose turn emitted this event (docs/CURSORS.md "

@@ -87,6 +87,29 @@ EXPOSED: dict[str, str] = {
 }
 
 NOT_EXPOSED: dict[str, str] = {
+    "describe_tools": (
+        "Experimental tool discovery for extensions (experiments/tool-exposure). A wire "
+        "verb waits on the decision whether a host may see callable and deferred tools."
+    ),
+    "execute_tool": (
+        "Experimental nested tool call, meant for code running inside a tool. A host "
+        "running a tool outside any turn has no parent call, and that case is undecided."
+    ),
+    "preview_redeclare": (
+        "Experimental; a host verb for changing the declared tools waits on that "
+        "user action getting a command (experiments/tool-exposure/RESULTS.md)."
+    ),
+    "redeclare_tools": (
+        "Experimental; it re-bills the prompt cache, so it must arrive as a user "
+        "command with a warning, and that command does not exist yet."
+    ),
+    "list_extensions": (
+        "Experimental; `list_managed_extensions` already gives a host the loaded extensions."
+    ),
+    "set_tool_exposure": (
+        "Experimental; a host verb for masking tools waits on the exposure vocabulary "
+        "being settled (experiments/tool-exposure/RESULTS.md)."
+    ),
     "prompt_templates": (
         "The loaded template catalog, bodies and file paths included. A host needs "
         "the names and descriptions, which `get_commands` lists with origin "

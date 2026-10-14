@@ -2,7 +2,7 @@
 
 Reference: docs/PROMPT-TEMPLATES-AND-SKILLS.md §4.
 
-A template is ``<name>.md`` in ``~/.tau/prompts/``, ``<cwd>/.tau/prompts/`` or a
+A template is ``<name>.md`` in ``<τ home>/prompts/``, ``<cwd>/.tau/prompts/`` or a
 path the operator named. Its body is the prompt; ``$ARGUMENTS`` and ``$1``…``$N``
 take what was typed after the name. The format is Claude Code's custom-command
 format, so a directory of those loads as it is.
@@ -160,7 +160,7 @@ def load_prompt_templates(
 ) -> PromptTemplateCatalog:
     """Discover and read every prompt template, first name wins.
 
-    Order: explicit paths, then ``~/.tau/prompts/``, then ``<cwd>/.tau/prompts/``
+    Order: explicit paths, then ``<τ home>/prompts/``, then ``<cwd>/.tau/prompts/``
     when :data:`~tau_agent_core.resources.PROJECT_SCOPE_ADMITTED` admits it.
     Within a directory, files load in name order. A file that cannot be read
     becomes a :class:`~tau_agent_core.resources.BrokenResource` and keeps its

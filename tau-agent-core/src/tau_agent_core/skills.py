@@ -183,7 +183,7 @@ def load_skills(
 ) -> SkillCatalog:
     """Discover and read every skill, first name wins.
 
-    Order: explicit paths, then ``~/.tau/skills/``, then ``<cwd>/.tau/skills/``
+    Order: explicit paths, then ``<τ home>/skills/``, then ``<cwd>/.tau/skills/``
     when :data:`~tau_agent_core.resources.PROJECT_SCOPE_ADMITTED` admits it —
     which, until the trust gate exists, it does not.
 

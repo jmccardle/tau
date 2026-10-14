@@ -418,18 +418,19 @@ def select_session(args: "CLIArgs", catalog: SessionCatalog) -> ConversationSess
         raise CLIError(str(exc)) from exc
 
 
-async def _apply_resume_metadata(
-    cursor: Cursor,
-    model_name: str,
-    backend_name: str,
-    prior: ConversationSession,
-    title: str | None,
-) -> None:
-    """On resume/fork, record a model switch and/or a rename at ``cursor`` if they changed."""
-    if model_name != prior.model or backend_name != prior.backend:
-        await cursor.append_config(model=model_name, backend=backend_name)
-    if title is not None:
-        await cursor.append("session_info", name=title)
+def _bound_member(backend: Any, name: str) -> Any:
+    """The backend member print mode needs to bind its cursor, or a :class:`CLIError`.
+
+    Print mode binds and lets the core write the log (docs/REPL-HEAD.md §3), so a
+    backend without these members cannot run it without dropping entries.
+    """
+    member = getattr(backend, name, None)
+    if member is None:
+        raise CLIError(
+            f"print mode needs {type(backend).__name__}.{name}: it binds its cursor and "
+            "lets the core write the session (docs/REPL-HEAD.md §3)"
+        )
+    return member
 
 
 def _emit_command_output(mode: str, command: str, text: str | None) -> None:
@@ -701,12 +702,6 @@ def _perform_command_outcome(dispatched: Dispatched, mode: str) -> None:
     the session already ran the command and all that is left is to show what it
     returned, on the S46 channel — stdout text, or one ``command_output`` record
     under ``--mode json``. :func:`refuse_unperformable` raises for the other three.
-
-    ``/compact`` is the one that looks performable and is not: ``run_print`` does
-    NOT bind its :class:`ConversationSession` as the AgentSession's log (unlike the
-    TUI and the REPL — it owns persistence itself and appends produced messages by
-    hand), so ``compact_messages`` would summarize a working list this process
-    discards milliseconds later.
     """
     performed = refuse_unperformable(dispatched, "print mode (tau -p)")
     _emit_command_output(mode, performed.mutation, performed.data.get("output"))
@@ -827,9 +822,12 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         )
     else:
         session = catalog.fork(prior, cwd) if args.fork is not None else prior
-    cursor = Cursor.newest(session)
+    _bound_member(backend, "bind_cursor")(Cursor.newest(session))
     if prior is not None:
-        await _apply_resume_metadata(cursor, model_name, backend_name, prior, args.name)
+        if args.name is not None:
+            await _bound_member(backend, "set_session_name")(args.name)
+        if model_name != prior.model or backend_name != prior.backend:
+            await _bound_member(backend, "record_model_change")(model_name)
 
     agent_session = getattr(backend, "agent_session", None)
     if agent_session is not None and hasattr(agent_session, "set_model_resolver"):
@@ -897,8 +895,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
             await _dispatch_command_submission(backend, submission, args.mode)
             return 0
 
-        messages: list[dict] = cursor.context()
-
         if args.mode == "json":
             sys.stdout.write(json.dumps(session.header) + "\n")
             sys.stdout.flush()
@@ -912,7 +908,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
             _text, _usage, new_messages, _tcs, result = await backend.stream_submission(
                 submission,
-                messages,
+                None,
                 noop,
                 on_event=report_provider_retry,
                 on_json_event=on_json_event,
@@ -924,7 +920,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 sys.stdout.flush()
 
             _text, _usage, new_messages, _tcs, result = await backend.stream_submission(
-                submission, messages, emit, on_event=report_provider_retry
+                submission, None, emit, on_event=report_provider_retry
             )
 
         if not result.accepted:
@@ -943,10 +939,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         report_cache_miss(new_messages, model_name)
         # create_backend already refused a bad max_tokens, so this read is the wire's.
         report_truncation(new_messages, model_config.get("max_tokens", DEFAULT_MAX_TOKENS))
-
-        # The core's user message, not prompt_text: a hook or a template may have rewritten it.
-        for message in new_messages:
-            await cursor.append_message(message)
 
         return 0
     finally:

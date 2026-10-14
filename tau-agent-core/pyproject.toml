@@ -6,6 +6,8 @@ name = "ffwf-tau-agent-core"
 dynamic = ["version"]
 description = "τ-agent-core: Agent runtime, loop, tools, sessions, extensions"
 requires-python = ">=3.11"
+# Held against publish.yml's "t" matrix entry by tests/test_packaging.py.
+classifiers = ["Programming Language :: Python :: Free Threading :: 3 - Stable"]
 readme = "README.md"
 # SPDX expression + the file itself (PEP 639), which is why build-system below
 # needs setuptools >= 77.0.3: earlier versions ignore `license-files` and the
@@ -18,6 +20,7 @@ authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
     "ffwf-tau-llm==0.12.0",
     "pydantic>=2.0",
+    "typing_extensions>=4.6",
 ]
 
 [project.optional-dependencies]
@@ -47,8 +50,11 @@ testing = ["pytest"]
 # and the measured cost of an unbounded image was a dead vision server, not a
 # large bill. `ffwf-tau` includes this extra, so the guessable install has it.
 images = ["pillow>=10.0"]
+# Code mode's Monty provider (tau_agent_core.codemode.monty), imported only when
+# that provider starts. Pinned to a minor: 1.x changes its limit defaults.
+codemode-monty = ["pydantic-monty>=1.1,<1.2"]
 dev = [
-    "ffwf-tau-agent-core[bus,testing,images]==0.12.0",
+    "ffwf-tau-agent-core[bus,testing,images,codemode-monty]==0.12.0",
     "pytest-asyncio",
     "ruff",
     # The agent-facing documentation build (tau_agent_core.docs_build). Reads the

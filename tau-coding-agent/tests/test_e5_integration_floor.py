@@ -152,10 +152,9 @@ def demo_run(tmp_path, fake_provider):
 def _custom_entries(entries: list[dict]) -> list[dict]:
     """The durable extension-injected nodes on disk.
 
-    Headless persists a ``before_agent_start`` injection as a ``message`` appended
-    at the session's cursor (the loop RETURNS it in prompt()'s messages), so on
-    disk it is a ``message`` entry whose stored message carries ``role: "custom"``
-    plus its ``customType`` — the durable, reloadable form (E5 §3.1).
+    Print mode binds its cursor, so the core persists a ``before_agent_start``
+    injection as a ``customMessage`` entry, as the TUI does; the ``message`` arm
+    is the pre-bind form older session files carry (E5 §3.1).
     """
     out = []
     for e in entries:
@@ -197,7 +196,7 @@ def test_headless_subprocess_injects_durable_node(demo_run):
     roles = [
         e["message"]["role"]
         for e in entries
-        if e.get("type") == "message" and isinstance(e.get("message"), dict)
+        if e.get("type") in ("message", "customMessage") and isinstance(e.get("message"), dict)
     ]
     assert roles == ["system", "user", "custom", "assistant"]
 

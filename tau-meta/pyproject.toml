@@ -13,6 +13,8 @@ name = "ffwf-tau"
 dynamic = ["version"]
 description = "τ: the guessable name. The `tau` command with its TUI, all three wire protocols, and image support."
 requires-python = ">=3.11"
+# Held against publish.yml's "t" matrix entry by tests/test_packaging.py.
+classifiers = ["Programming Language :: Python :: Free Threading :: 3 - Stable"]
 readme = "README.md"
 # SPDX expression + the file itself (PEP 639), which is why build-system below
 # needs setuptools >= 77.0.3: earlier versions ignore `license-files` and the
@@ -47,6 +49,13 @@ dependencies = [
 # websockets; the base install stays a program that works on its own.
 [project.optional-dependencies]
 serve = ["ffwf-tau-coding-agent[tui,serve]==0.12.0"]
+
+# The same two commands ffwf-tau-coding-agent declares. `uv tool install ffwf-tau`
+# and `pipx install ffwf-tau` link only the NAMED package's scripts, so without
+# these that install fails with "No executables are provided by package ffwf-tau".
+[project.scripts]
+tau = "tau_coding_agent.cli:main"
+ffwf-tau = "tau_coding_agent.cli:main"
 
 # The PUBLIC repository only. This tree has a second, private git remote whose
 # history is unfiltered; its hostname must never reach this file or a README,

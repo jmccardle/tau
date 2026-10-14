@@ -14,6 +14,7 @@ Constraint: Extensions must not import τ-agent-core internals.
 from __future__ import annotations
 
 import concurrent.futures
+import fnmatch
 from pathlib import Path
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
@@ -28,6 +29,8 @@ from tau_agent_core.commands import (
 )
 from tau_agent_core.compaction import estimate_context_tokens
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_data
+from tau_agent_core.tool_catalog import ExtensionInfo, ToolDescription, match_tools
+from tau_agent_core.tool_pipeline import NestedToolResult
 from tau_agent_core.tools.base import ExtensionToolDefinition
 from tau_agent_core.submission import (
     MultitaskStrategy,
@@ -917,6 +920,21 @@ class ExtensionContext:
         return self._is_idle
 
     @property
+    def session_id(self) -> str:
+        """The id of the conversation this context's session is on right now.
+
+        ``new_session``, ``fork`` and ``switch_session`` swap the log under a live
+        session and fire no lifecycle hook, so reading this before and after an
+        ``await`` is how an extension learns whether it is still in the same
+        conversation.
+
+        Raises:
+            RuntimeError: if no session is bound.
+        """
+        session_id: str = self._require_session().session_log.id
+        return session_id
+
+    @property
     def ui(self) -> ExtensionUI:
         """The session's one :class:`ExtensionUI`, the same object as ``api.ui``.
 
@@ -1086,6 +1104,143 @@ class ExtensionContext:
             return None
         return await session.compact(custom_instructions=custom_instructions)
 
+    def list_tools(
+        self,
+        pattern: str | None = None,
+        *,
+        namespace: str | None = None,
+        tag: str | None = None,
+        exposure: str | None = None,
+        include_hidden: bool = False,
+    ) -> list[ToolDescription]:
+        """The tools on this cursor, filtered (experimental; :func:`match_tools`).
+
+        Metadata only: the way to run one is :meth:`execute_tool`.
+
+        Args:
+            pattern: A glob over tool names.
+            namespace: A glob over namespaces (``"core"``, an extension's name).
+            tag: A tag the tool must carry.
+            exposure: The effective exposure it must have.
+            include_hidden: Include ``hidden`` tools.
+
+        Returns:
+            The matching tools, in registry order.
+
+        Raises:
+            RuntimeError: No session is bound.
+        """
+        session = self._require_session()
+        return match_tools(
+            session.describe_tools(include_hidden=include_hidden),
+            pattern,
+            namespace=namespace,
+            tag=tag,
+            exposure=exposure,
+        )
+
+    def describe_tool(self, name: str) -> ToolDescription:
+        """One tool's description, ``hidden`` ones included (experimental).
+
+        Args:
+            name: The tool's exact name.
+
+        Returns:
+            Its description on this cursor.
+
+        Raises:
+            KeyError: no tool is named ``name`` on this cursor.
+            RuntimeError: No session is bound.
+        """
+        found: list[ToolDescription] = self._require_session().describe_tools(include_hidden=True)
+        for d in found:
+            if d.name == name:
+                return d
+        raise KeyError(f"describe_tool: no tool named {name!r} on this cursor")
+
+    async def execute_tool(
+        self,
+        name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        parent_tool_call_id: str | None = None,
+    ) -> NestedToolResult:
+        """Call another tool through the hooks, as the model's calls go (experimental).
+
+        Inside a tool, it is recorded as that tool's ``details["nested_calls"]``.
+        The tool must be ``direct``, ``callable`` or ``deferred`` on this cursor.
+
+        Args:
+            name: The tool to call.
+            args: Its arguments; ``None`` is ``{}``.
+            parent_tool_call_id: The parent call, only when not inside a running tool.
+
+        Returns:
+            The tool's structured value, content and details.
+
+        Raises:
+            ToolCallBlocked: a ``tool_call`` hook vetoed it.
+            NestedCallError: it is unreachable, invalid, too deep, or it errored.
+            ToolHalt: it asked to stop the turn.
+            ValueError: ``parent_tool_call_id`` contradicts the running tool.
+            RuntimeError: No session is bound.
+        """
+        result: NestedToolResult = await self._require_session().execute_tool(
+            name, dict(args or {}), parent_tool_call_id=parent_tool_call_id
+        )
+        return result
+
+    async def set_tool_exposure(self, name: str, exposure: str) -> None:
+        """Override a tool's exposure from this cursor's leaf on, recorded in the tree.
+
+        See :meth:`~tau_agent_core.agent_session.AgentSession.set_tool_exposure`.
+
+        Args:
+            name: The tool to override.
+            exposure: The new exposure.
+
+        Raises:
+            ValueError: ``exposure`` is not a known exposure, or no tool is named
+                ``name``.
+            RuntimeError: No session is bound.
+        """
+        await self._require_session().set_tool_exposure(name, exposure)
+
+    def list_extensions(self, pattern: str | None = None) -> list[ExtensionInfo]:
+        """Loaded, enabled extensions, in load order (experimental).
+
+        Args:
+            pattern: A glob over extension names; ``None`` matches all.
+
+        Returns:
+            The matching extensions.
+
+        Raises:
+            RuntimeError: No session is bound.
+        """
+        found = self._require_session().list_extensions()
+        if pattern is None:
+            return list(found)
+        return [e for e in found if fnmatch.fnmatchcase(e.name, pattern)]
+
+    def find_extension(self, name: str) -> ExtensionInfo | None:
+        """The loaded extension called ``name`` (experimental).
+
+        Args:
+            name: The extension's exact name.
+
+        Returns:
+            Its info, or ``None`` if no loaded, enabled extension has that name.
+
+        Raises:
+            RuntimeError: No session is bound.
+        """
+        loaded: list[ExtensionInfo] = self._require_session().list_extensions()
+        for info in loaded:
+            if info.name == name:
+                return info
+        return None
+
     @property
     def cursor(self) -> Any:
         """The :class:`~tau_agent_core.cursor.Cursor` this handler acts on.
@@ -1095,6 +1250,16 @@ class ExtensionContext:
         :meth:`entries` (docs/CURSORS.md §4, §7).
         """
         return self._require_session().acting_cursor
+
+    @property
+    def cursors(self) -> tuple[Any, ...]:
+        """Every live cursor on the bound session, the head's included, oldest first.
+
+        A cursor absent from here was closed: a finished sub-agent, a client's
+        cursor under ``tau serve``, or a head cursor a swap retired.
+        """
+        cursors: tuple[Any, ...] = self._require_session().cursors
+        return cursors
 
     def entries(self) -> list[dict[str, Any]]:
         """Read the bound session log's raw, append-only entries (all kinds).
@@ -1677,6 +1842,7 @@ class ExtensionAPI:
         images: list[dict[str, Any]] | None = None,
         correlation: dict[str, Any] | None = None,
         allow_user_input: bool = False,
+        cursor: Any = None,
     ) -> SubmissionResult:
         """Originate an agent turn as THIS extension (docs/SUBMISSION-LIFECYCLE.md).
 
@@ -1700,6 +1866,10 @@ class ExtensionAPI:
                 whole turn :meth:`ExtensionUI.form` skips the TUI delegate and
                 takes the headless policy, raising :class:`HeadlessDialogError`
                 without one.
+            cursor: The live cursor the turn extends (``ctx.cursors``), so a
+                strategy acts on that cursor's lock and queues. ``None`` is the
+                head's cursor, which is not the cursor of the turn that called
+                this unless the head ran it.
 
         Returns:
             The :class:`~tau_agent_core.submission.SubmissionResult`: ``accepted``
@@ -1722,16 +1892,18 @@ class ExtensionAPI:
                 "AgentSession's extension load path (each factory is handed a "
                 "session-bound api)."
             )
-        result: SubmissionResult = await self._session.submit(
-            self._build_submission(
-                text,
-                multitask_strategy=multitask_strategy,
-                images=images,
-                correlation=correlation,
-                allow_user_input=allow_user_input,
-                submitter=submitter,
-            )
+        sub = self._build_submission(
+            text,
+            multitask_strategy=multitask_strategy,
+            images=images,
+            correlation=correlation,
+            allow_user_input=allow_user_input,
+            submitter=submitter,
         )
+        if cursor is None:
+            result: SubmissionResult = await self._session.submit(sub)
+        else:
+            result = await self._session.submit(sub, cursor=cursor)
         return result
 
     def _build_submission(
@@ -1883,10 +2055,32 @@ class ExtensionAPI:
             raise TypeError("register_tool: 'execute' must be callable")
 
         fields["_source"] = "extension"
+        fields["namespace"] = self._tool_namespace(fields["name"], fields.get("namespace"))
         resolved = ExtensionToolDefinition.model_validate(fields)
         self._registry.register_tool(resolved)
         if self._hook_handlers is not None:
             self._hook_handlers.tools.append(resolved.name)
+
+    def _tool_namespace(self, tool: str, requested: str | None) -> str:
+        """The namespace a tool registered here lands in (experimental).
+
+        The extension's own name, or ``<name>.<sub>`` when the tool asks for a
+        sub-namespace (one MCP server of several, say). An api bound to no
+        extension has no name, so its tools are in ``"extension"``.
+
+        Raises:
+            ValueError: ``requested`` is outside this extension's namespace —
+                an extension cannot file a tool under ``core`` or another's name.
+        """
+        if self._hook_handlers is None:
+            return requested or "extension"
+        own = self.extension_name
+        if requested is None or requested == own or requested.startswith(own + "."):
+            return requested or own
+        raise ValueError(
+            f"register_tool({tool!r}): namespace {requested!r} is not {own!r} or "
+            f"{own!r}.<sub>; an extension declares tools only in its own namespace"
+        )
 
     def get_all_tools(self) -> list[Any]:
         """List every registered tool, active or not.
