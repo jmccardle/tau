@@ -219,7 +219,12 @@ cache mid-session (`docs/PROMPT-CACHING.md`).
 
 An unknown name returns `None` and is sent as typed, which is the same
 fall-through an unknown command already has. A broken entry or a refused
-substitution raises `ResourceError` out of `submit()`.
+substitution raises `ResourceError` out of `submit()`, before admission, so
+nothing is persisted and the session takes the next submission. Each head
+reports it on its existing failure path: RPC answers the `prompt`/`submit`
+request with an error, the TUI and the REPL show it, and `tau` itself (`-p`,
+or a missing explicit path at startup in any mode) prints `tau: error: …` and
+exits 2, as it does for a `ConfigError`.
 
 Consequences, each of which needed no head code:
 
@@ -236,8 +241,8 @@ Consequences, each of which needed no head code:
   expands at delivery.
 
 The listing goes through `AgentSession.get_prompt_commands()`. It drops a
-template whose name a built-in or an extension command holds, since that
-template is unreachable. `command_vocabulary` appends these rows with `origin`
+template or skill whose command word a built-in or an extension command holds,
+since that entry is unreachable. `command_vocabulary` appends these rows with `origin`
 `"template"` or `"skill"` and `flow: false`, so RPC `get_commands` and the serve
 `Surface` list them. The TUI popup, the REPL Tab and `--connect` (from the
 surface) pass them to `complete_command`.
@@ -279,6 +284,13 @@ lands, the core persists the turn itself and this loop goes away.
   which is code execution, so it belongs behind the trust gate if it is added
   at all.
 - **Escaping a literal `$1`** in a template body.
+- **A report of a template that a command holds.** A `compact.md` template is
+  unreachable behind the built-in `/compact`, and an extension command takes
+  its name from a template the same way. The listing leaves such a template
+  out and nothing says so. A broken entry can show its reason in the completion
+  list because it still owns its name; a held template owns nothing to show it
+  on, and a startup warning needs the per-head channel §2.4 declined. The same
+  holds for `catalog.shadowed`: it is kept for an SDK caller, and no head reads it.
 - **Frontmatter flow syntax.** `[a, b]` and `{k: v}` are refused (§2.3).
 - **Reload.** Catalogs are read when the backend is built. A `/model` switch
   rebuilds the backend and so re-reads them. There is no `/reload`.

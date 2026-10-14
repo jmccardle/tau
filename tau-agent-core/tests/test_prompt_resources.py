@@ -11,6 +11,7 @@ expansion (§5); and that the expansion happens inside ``submit()`` behind
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
@@ -434,9 +435,19 @@ class TestOneDoor:
             prompt_templates=templates,
             skills=skills,
         )
-        with pytest.raises(ResourceError, match="/broken cannot run"):
+        with pytest.raises(
+            ResourceError, match=r"/broken cannot run: .*broken\.md: frontmatter line 2"
+        ):
             await session.submit(_sub("/broken"))
         assert _user_texts(session) == []
+
+        async def _stream_simple(model, context, options=None):
+            return _Stream()
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_simple):
+            result = await session.submit(_sub("/review after the refusal"))
+        assert result.accepted
+        assert _user_texts(session) == ["Review after the refusal"]
 
     def test_built_ins_and_extension_commands_resolve_before_a_template(self, tmp_path):
         templates, skills = _catalogs(tmp_path)
@@ -444,6 +455,8 @@ class TestOneDoor:
         assert resolve_command("/ledger", ["ledger"]) is not None
         listed = prompt_command_completions(templates, skills, taken={"ledger"})
         assert [c.name for c in listed] == ["review", "skill:pdf"]
+        listed = prompt_command_completions(templates, skills, taken={"skill:pdf"})
+        assert "skill:pdf" not in [c.name for c in listed]
 
     def test_expand_prompt_command_routes_by_prefix(self, tmp_path):
         templates, skills = _catalogs(tmp_path)
@@ -473,3 +486,54 @@ class TestOneDoor:
         assert rows["review"]["origin"] == "template" and rows["review"]["flow"] is False
         assert rows["skill:pdf"]["origin"] == "skill"
         assert rows["compact"]["origin"] == "builtin"
+
+
+class TestRpcHead:
+    """``tau --mode rpc`` reaches the expansion through ``prompt`` with ``expand_commands``."""
+
+    async def _response(self, handler, params: dict) -> dict:
+        await handler._handle_request(
+            {"jsonrpc": "2.0", "id": 7, "method": "prompt", "params": params}
+        )
+        for _ in range(50):
+            message = await handler._output_queue.get()
+            if message.get("id") == 7:
+                return message
+        raise AssertionError("no response to prompt in the first 50 outbound messages")
+
+    def _handler(self, tmp_path: Path):
+        from tau_agent_core.rpc.handler import RPCHandler
+
+        _write(tmp_path / "p" / "broken.md", "---\nx: [1]\n---\n")
+        templates, skills = _catalogs(tmp_path)
+        session = AgentSession(
+            session_log=InMemorySessionLog(),
+            model=_model(),
+            tools=[],
+            prompt_templates=templates,
+            skills=skills,
+        )
+        return RPCHandler(session), session
+
+    async def test_a_template_expands_over_the_wire(self, tmp_path):
+        handler, session = self._handler(tmp_path)
+
+        async def _stream_simple(model, context, options=None):
+            return _Stream()
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_simple):
+            got = await self._response(
+                handler, {"text": "/review the parser", "expand_commands": True}
+            )
+            assert "error" not in got
+            for _ in range(200):
+                if any(m.get("role") == "assistant" for m in session.messages):
+                    break
+                await asyncio.sleep(0.01)
+        assert _user_texts(session) == ["Review the parser"]
+
+    async def test_a_broken_template_answers_with_an_error(self, tmp_path):
+        handler, session = self._handler(tmp_path)
+        got = await self._response(handler, {"text": "/broken", "expand_commands": True})
+        assert "/broken cannot run" in got["error"]["message"]
+        assert _user_texts(session) == []

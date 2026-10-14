@@ -316,6 +316,14 @@ def expand_prompt_command(
     in ``templates``. An unknown name returns ``None``, the same fall-through an
     unknown command has.
 
+    Args:
+        text: The submitted line, after the ``input`` hooks.
+        templates: The session's templates.
+        skills: The session's skills.
+
+    Returns:
+        The expanded prompt, or ``None``.
+
     Raises:
         ResourceError: The name belongs to a file that could not be read, or the
             template cannot be expanded with these arguments.
@@ -345,26 +353,28 @@ def prompt_command_completions(
 ) -> tuple[CommandCompletion, ...]:
     """The template and skill command words a reader can type, for a completion list.
 
-    A template whose name is a built-in or in ``taken`` (the extension commands)
-    is left out, because :func:`resolve_command` would never reach it. A broken
-    entry is listed, with its error as the description, so the reader sees why
-    the command will refuse.
+    A word that is a built-in or in ``taken`` (the extension commands) is left
+    out, because :func:`resolve_command` would never reach it. A broken entry is
+    listed, with its error as the description, so the reader sees why the
+    command will refuse.
 
     Args:
         templates: The session's templates.
         skills: The session's skills, listed as ``skill:<name>``.
-        taken: Command names that resolve before a template does.
+        taken: Command names that resolve before a template or skill does.
+
+    Returns:
+        One candidate per reachable template, then per reachable skill.
     """
-    out: list[CommandCompletion] = []
-    for template in templates.entries:
-        if template.name in FRONTEND_COMMANDS or template.name in taken:
-            continue
-        out.append(CommandCompletion(template.name, _completion_text(template), "template"))
-    for skill in skills.entries:
-        out.append(
-            CommandCompletion(f"{SKILL_PREFIX}{skill.name}", _completion_text(skill), "skill")
-        )
-    return tuple(out)
+    rows = [
+        CommandCompletion(template.name, _completion_text(template), "template")
+        for template in templates.entries
+    ]
+    rows.extend(
+        CommandCompletion(f"{SKILL_PREFIX}{skill.name}", _completion_text(skill), "skill")
+        for skill in skills.entries
+    )
+    return tuple(row for row in rows if row.name not in FRONTEND_COMMANDS and row.name not in taken)
 
 
 def _completion_text(entry: PromptTemplate | Skill | BrokenResource) -> str:

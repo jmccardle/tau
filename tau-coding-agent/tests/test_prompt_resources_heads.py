@@ -166,3 +166,24 @@ class TestPrintMode:
         content = users[0]["content"]
         text = content if isinstance(content, str) else "".join(b["text"] for b in content)
         assert text == "Review the parser carefully"
+
+    def test_a_template_error_is_a_cli_error_not_a_traceback(self, tmp_path, monkeypatch, capsys):
+        from tau_coding_agent import cli
+
+        monkeypatch.chdir(tmp_path)
+        _write(tmp_path / "p" / "pair.md", "Make $1 with $2")
+        config = {
+            "models": {"local-llm": _model_config(tmp_path, tools=[])},
+            "default_model": "local-llm",
+        }
+        monkeypatch.setattr(cli, "load_config", lambda: config)
+
+        rc = cli.main(["-p", "--no-session", "--prompt-template", "missing", "hi"])
+        assert rc == 2
+        assert "tau: error: prompt template path" in capsys.readouterr().err
+
+        rc = cli.main(
+            ["-p", "--no-session", "--no-extensions", "--prompt-template", "p", "/pair Button"]
+        )
+        assert rc == 2
+        assert "tau: error: /pair uses $2 but was given 1 argument(s)" in capsys.readouterr().err
