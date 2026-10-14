@@ -6,6 +6,7 @@ states the exact tree it renders. docs/HTML-EXPORT.md is the design.
 
 from __future__ import annotations
 
+import html
 import re
 from html.parser import HTMLParser
 
@@ -153,30 +154,103 @@ def test_the_page_can_fetch_nothing():
     ]
     page = render_session_html(entries)
     assert "<script" not in page
-    assert "default-src 'none'" in page
+    assert "default-src 'none'" in page and "base-uri 'none'" in page
     assert 'src="data:image/png;base64,iVBORw0K"' in page
     assert not re.search(r'\b(?:src|href)="(?!data:|#)', page)
 
 
-def test_an_image_with_no_image_mime_type_is_reported_not_embedded():
-    entries = [
-        _msg("u", None, 0, "user", [{"type": "image", "data": "x", "mime_type": "text/html"}])
-    ]
-    page = render_session_html(entries)
-    assert "<img" not in page
-    assert "cannot draw" in page
+_HOSTILE = '"><script>alert(1)</script><img src=x onerror=alert(1)></details></section>'
+
+_PAGE_TAGS = {
+    "html", "head", "meta", "title", "style", "body", "h1", "dl", "dt", "dd", "section",
+    "header", "span", "time", "div", "pre", "details", "summary", "p", "img",
+}  # fmt: skip
+
+
+class _Tags(HTMLParser):
+    """Every start tag and attribute name the browser would build from the page."""
+
+    def __init__(self):
+        super().__init__()
+        self.tags: set[str] = set()
+        self.attrs: set[str] = set()
+        self.img_srcs: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.add(tag)
+        self.attrs.update(name for name, _ in attrs)
+        if tag == "img":
+            self.img_srcs.extend(value for name, value in attrs if name == "src")
 
 
 def test_markup_from_every_source_is_escaped():
-    hostile = '<script>alert("x")</script>'
+    """Every string a session carries reaches the page as text, never as markup."""
+    h = _HOSTILE
     entries = [
-        _msg("u", None, 0, "user", _text(hostile)),
-        _msg("b", "u", 1, "assistant", _text(hostile), stop_reason="stop"),
-        _msg("a", "u", 2, "toolResult", _text(hostile), tool_call_id=hostile, tool_name=hostile),
-    ]
-    page = render_session_html(entries, header={"id": hostile, "cwd": hostile})
-    assert "<script" not in page
+        _msg("s", None, 0, "system", [*_text(h), {"type": h, "x": h}]),
+        _msg("u", "s", 1, "user", [*_text(h), {"type": "image", "data": "AAAA", "mime_type": h}]),
+        _msg(
+            "a",
+            "u",
+            2,
+            "assistant",
+            [
+                {"type": "thinking", "thinking": h},
+                {"type": "toolCall", "id": h, "name": h, "arguments": {h: h}},
+            ],
+            model=h,
+            stop_reason=h,
+            error_message=h,
+        ),
+        _msg("r", "a", 3, "toolResult", _text(h), tool_call_id=h, tool_name=h, is_error=True),
+        _msg("side", "u", 4, "user", _text(h + "\nfirst line of a side branch")),
+        _entry("n", "r", 5, kind="session_info", name=h),
+        _entry("c", "n", 6, kind="compaction", summary=h, firstKeptId="u"),
+        _entry("x", "c", 7, kind="customEntry", customType=h, data={h: h}),
+        _entry("m", "x", 8, kind="customMessage", message={"role": "custom", "customType": h,
+                                                          "content": h, "display": False}),
+        _entry(h, "m", 9, kind=h, payload=h),
+    ]  # fmt: skip
+    page = render_session_html(
+        entries,
+        header={"id": h, "cwd": h, "parent": h, "timestamp": h},
+        config=ExportConfig(format="html", include_timestamps=True),
+    )
     _assert_balanced(page)
+    parsed = _Tags()
+    parsed.feed(page)
+    assert parsed.tags <= _PAGE_TAGS
+    assert not any(name.startswith("on") for name in parsed.attrs)
+    assert parsed.img_srcs == []
+    assert "<script" not in page and "<img src=x" not in page
+    assert page.count(html.escape(h)) >= 20
+
+
+@pytest.mark.parametrize(
+    "block,reason",
+    [
+        ({"type": "image", "data": "x", "mime_type": "text/html"}, "mime_type="),
+        ({"type": "image", "data": "x", "mime_type": 'image/png"x'}, "mime_type="),
+        ({"type": "image", "data": 'AAAA"><b>', "mime_type": "image/png"}, "not base64"),
+        ({"type": "image", "mime_type": "image/png"}, "not base64"),
+    ],
+)
+def test_an_image_that_is_not_a_base64_image_is_reported_not_embedded(block, reason):
+    page = render_session_html([_msg("u", None, 0, "user", [block])])
+    assert "<img" not in page
+    assert "cannot draw" in page and reason in page
+
+
+def test_content_of_an_unexpected_shape_is_drawn_raw_not_dropped():
+    entries = [
+        _msg("u", None, 0, "user", {"type": "text", "text": "A DICT, NOT A LIST"}),
+        _msg("v", "u", 1, "user", 42),
+        _msg("s", "v", 2, "system", [*_text("prompt"), {"type": "mystery", "v": "SYSTEM EXTRA"}]),
+    ]
+    page = render_session_html(entries)
+    assert "A DICT, NOT A LIST" in page
+    assert "content block that is not an object" in page and "42" in page
+    assert "mystery block" in page and "SYSTEM EXTRA" in page
 
 
 def test_a_deep_linear_conversation_does_not_recurse():

@@ -44,8 +44,13 @@ disabled.
 
 τ renders on the Python side. The page has no script at all, and a
 `Content-Security-Policy` meta (`default-src 'none'; img-src data:; style-src
-'unsafe-inline'`) makes "fetches nothing" something the browser enforces, so it
-does not rest on the renderer escaping correctly. Images are `data:` URIs.
+'unsafe-inline'; base-uri 'none'; form-action 'none'`) makes "fetches nothing"
+something the browser enforces, so it does not rest on the renderer escaping
+correctly. `base-uri` and `form-action` are named because `default-src` does
+not cover them. Escaping is still tested on its own: every string a session
+carries, from message text to entry ids, model ids and `customType`, is fed a
+tag-and-attribute payload, and the parsed page may hold only the renderer's own
+tags. Images are `data:` URIs.
 Folding uses `<details>`, which needs no script. Colours are `:root` tokens with
 a `prefers-color-scheme: dark` override.
 
@@ -97,8 +102,10 @@ view, and it is a different document.
 - **Anything else is drawn raw, never dropped.** Another `customEntry` gets its
   line plus a folded JSON dump of `data`. An unknown kind, such as the JMFTS
   store's `jmfts:document`, gets a folded dump of the whole entry. The same goes
-  for a content block of an unknown type. An image whose `mime_type` is not
-  `image/*` is reported in a line and not embedded.
+  for a content block of an unknown type, and for a `content` that is neither
+  a string nor a list. An image whose `mime_type` is not `image/<subtype>`, or
+  whose `data` is not base64, is reported in a line and not embedded. A system
+  prompt's non-text blocks are drawn after its folded text.
 - An interrupted (`status: incomplete`) entry carries an "interrupted" badge.
 
 `ExportConfig`'s three switches still apply. `include_tool_calls=False` drops

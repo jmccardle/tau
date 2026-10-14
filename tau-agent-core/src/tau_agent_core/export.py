@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -220,8 +221,17 @@ _META_CUSTOM_TYPES = ("config", "agent_spec")
 _META_KINDS = ("session_info", "model_change", "thinking_change", "navigate")
 """Bookkeeping kinds rendered as one line from :class:`TreeNode`'s preview."""
 
-_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'"
-"""The page's Content-Security-Policy: no script, and no fetch of any kind."""
+_CSP = (
+    "default-src 'none'; img-src data:; style-src 'unsafe-inline'; "
+    "base-uri 'none'; form-action 'none'"
+)
+"""The page's Content-Security-Policy: no script, no fetch, no ``<base>``, no form submit."""
+
+_IMAGE_MIME = re.compile(r"image/[a-z0-9][a-z0-9.+-]*", re.IGNORECASE)
+"""A ``mime_type`` safe to put in a ``data:`` URI: ``image/`` and a bare subtype."""
+
+_BASE64 = re.compile(r"[A-Za-z0-9+/]*={0,2}")
+"""Standard base64 without whitespace, the form :class:`~tau_llm.types.ImageContent` stores."""
 
 _HTML_STYLES = """\
 :root {
@@ -305,20 +315,30 @@ def _raw_html(label: str, payload: object) -> str:
 
 
 def _blocks(content: Any) -> list[Any]:
-    """A message's ``content`` as a block list; a bare string is one text block."""
+    """A message's ``content`` as a block list.
+
+    A bare string is one text block and ``None`` is none; anything else is one
+    block, so a malformed ``content`` is drawn raw rather than dropped.
+    """
     if isinstance(content, str):
         return [{"type": "text", "text": content}]
     if isinstance(content, list):
         return content
-    return []
+    return [] if content is None else [content]
 
 
 def _image_html(block: Mapping[str, Any]) -> str:
-    """An ``image`` block as an inline ``data:`` image, so the page fetches nothing."""
+    """An ``image`` block as an inline ``data:`` image, so the page fetches nothing.
+
+    One whose ``mime_type`` is not ``image/<subtype>`` or whose ``data`` is not
+    base64 is reported in a line instead of embedded.
+    """
     mime = block.get("mime_type")
     data = block.get("data")
-    if not isinstance(mime, str) or not mime.startswith("image/") or not isinstance(data, str):
+    if not (isinstance(mime, str) and _IMAGE_MIME.fullmatch(mime)):
         return f'<p class="notice">image block τ cannot draw (mime_type={_esc(repr(mime))})</p>'
+    if not (isinstance(data, str) and _BASE64.fullmatch(data)):
+        return f'<p class="notice">{_esc(mime)} image block τ cannot draw (data is not base64)</p>'
     return f'<img alt="{_esc(mime)} image" src="data:{_esc(mime)};base64,{_esc(data)}">'
 
 
@@ -407,11 +427,15 @@ def _message_html(
             label += ' <span class="badge">error</span>'
         body = "".join(_tool_output_html(b, config) for b in blocks)
     elif role == "system":
-        text = "".join(str(b.get("text", "")) for b in blocks if isinstance(b, Mapping))
+        is_text = [isinstance(b, Mapping) and b.get("type") == "text" for b in blocks]
+        text = "".join(str(b.get("text", "")) for b, t in zip(blocks, is_text, strict=True) if t)
         css, label = "system", "System prompt"
         body = (
             f"<details><summary>{len(text):,} chars</summary>"
             f'<div class="text">{_esc(text)}</div></details>'
+        )
+        body += "".join(
+            _block_html(b, config) for b, t in zip(blocks, is_text, strict=True) if not t
         )
     else:
         if role == "user":
