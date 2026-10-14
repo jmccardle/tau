@@ -71,11 +71,19 @@ def _tool_key(tool: Any) -> tuple[str, str]:
 
 @agent_facing(topic="sessions")
 def tool_block_change(before: Sequence[Any], after: Sequence[Any]) -> ToolBlockChange:
-    """Compare two declared tool lists, each item having ``name``/``description``/``parameters``.
+    """Compare two declared tool lists, as a provider would serialize them.
 
     Pure, so every head reaches the same verdict before it applies a change
-    and can warn the user that it costs a cache miss (experimental;
-    experiments/tool-exposure/RESULTS.md).
+    (experimental; experiments/tool-exposure/RESULTS.md).
+
+    Args:
+        before: The tools declared now, in block order; each item has
+            ``name``, ``description`` and ``parameters``.
+        after: The tools that would be declared, likewise.
+
+    Returns:
+        Names added, removed and changed (description or parameters differ),
+        and whether the names in both lists appear in a different order.
     """
     old = {t.name: _tool_key(t) for t in before}
     new = {t.name: _tool_key(t) for t in after}

@@ -203,7 +203,11 @@ as_details() -> dict[str, Any] | None
 
 `tau_agent_core.tool_output.CapturedOutput.as_details`
 
-``{stdout, stderr, dropped}`` with empty parts left out; ``None`` if nothing was written.
+This call's output for a result's ``details["captured_output"]``.
+
+**Returns**
+
+``{stdout, stderr, dropped}`` with empty or zero parts left out, or ``None`` if nothing was written.
 
 ### write
 
@@ -213,12 +217,12 @@ write(stream: str, text: str) -> None
 
 `tau_agent_core.tool_output.CapturedOutput.write`
 
-Append ``text`` to ``stream`` (``"stdout"``/``"stderr"``) up to the cap.
+Append ``text`` to one stream's buffer, counting what the cap drops.
 
 **Parameters**
 
-- `stream: str` — *(no description)*
-- `text: str` — *(no description)*
+- `stream: str` — ``"stdout"``; any other value writes stderr.
+- `text: str` — What was written.
 
 ## ExtensionToolDefinition
 <!-- agent: yes -->
@@ -270,8 +274,8 @@ to the model as its own failure.
 
 **Constructor parameters**
 
-- `message: str` — *(no description)*
-- `result: AgentToolResult | None = None` — The failed call's result, or ``None`` if it never ran.
+- `message: str` — The text the model would read.
+- `result: AgentToolResult | None = None` — The failed call's result; ``None`` when it was refused before running (unavailable, too deep, blocked).
 
 ## NestedToolResult
 <!-- agent: yes -->
@@ -300,11 +304,15 @@ as_type(tp: Any) -> Any
 
 `tau_agent_core.tool_pipeline.NestedToolResult.as_type`
 
-:attr:`value` validated as ``tp`` (a ``TypedDict``, dataclass or model).
+:attr:`value` validated as ``tp``.
 
 **Parameters**
 
-- `tp: Any` — *(no description)*
+- `tp: Any` — A ``TypedDict``, dataclass, pydantic model or any type pydantic validates.
+
+**Returns**
+
+What pydantic's ``TypeAdapter(tp).validate_python`` builds.
 
 **Raises**
 
@@ -357,7 +365,7 @@ A ``tool_call`` hook vetoed a nested call.
 
 **Constructor parameters**
 
-- `message: str` — *(no description)*
+- `message: str` — The hook's reason.
 - `blocked_by: str` — The extension that vetoed it.
 
 ## tau_agent_core.tools.base.ToolDefinition
@@ -550,6 +558,10 @@ call_tool_definition() -> dict[str, Any]
 
 The ``register_tool`` dict for ``call_tool``, the fixed dispatcher to deferred tools.
 
+**Returns**
+
+A ``model-only`` tool taking ``name`` and ``arguments`` that runs a ``direct`` or ``deferred`` tool through ``ctx.execute_tool`` and returns its content and value; any other target is a tool error.
+
 ## capture_tool_output
 <!-- agent: yes -->
 
@@ -560,6 +572,13 @@ capture_tool_output() -> Iterator[CapturedOutput]
 `tau_agent_core.tool_output.capture_tool_output`
 
 Capture this context's writes to ``sys.stdout``/``sys.stderr`` for the block.
+
+Installs the routing proxies on ``sys.stdout``/``sys.stderr`` if they are
+not already there; they stay installed afterwards.
+
+**Returns**
+
+A context manager yielding the :class:`CapturedOutput` the block fills.
 
 ## define_tool
 <!-- agent: yes -->
@@ -623,7 +642,11 @@ The JSON Schema of values of type ``tp``.
 
 **Parameters**
 
-- `tp: Any` — *(no description)*
+- `tp: Any` — Any type pydantic can describe.
+
+**Returns**
+
+``TypeAdapter(tp).json_schema()``; nested types sit under ``$defs``.
 
 **Raises**
 
@@ -645,11 +668,16 @@ of the annotation, so nothing is unwrapped.
 
 **Parameters**
 
-- `fn: Callable[..., Any]` — *(no description)*
+- `fn: Callable[..., Any]` — The function to read.
+
+**Returns**
+
+func:`output_schema_for` the return annotation, or ``None``.
 
 **Raises**
 
 - `TypeError` — the annotation names a type pydantic cannot describe.
+- `NameError` — any of ``fn``'s annotations does not resolve.
 
 ## render_stub
 <!-- agent: yes -->
@@ -663,15 +691,18 @@ render_stub(name: str, description: str, parameters: dict[str, Any], output_sche
 A Python stub for one tool, preceded by the ``TypedDict`` classes it uses.
 
 Required parameters come first, optional ones default to ``None`` because
-the schema states no default. A tool with no ``output_schema`` returns
-``str``, which is what a nested caller gets from it: the text.
+the schema states no default.
 
 **Parameters**
 
-- `name: str` — *(no description)*
-- `description: str` — *(no description)*
-- `parameters: dict[str, Any]` — *(no description)*
-- `output_schema: dict[str, Any] | None` — *(no description)*
+- `name: str` — The tool name; made into a Python identifier.
+- `description: str` — The stub's docstring, whitespace-collapsed.
+- `parameters: dict[str, Any]` — The argument JSON Schema.
+- `output_schema: dict[str, Any] | None` — The value's JSON Schema; ``None`` renders ``-> str``, which is what a nested caller gets from it: the text.
+
+**Returns**
+
+The classes, then the ``async def``, separated by blank lines.
 
 ## render_stubs
 <!-- agent: yes -->
@@ -682,12 +713,15 @@ render_stubs(descriptions: list[Any]) -> str
 
 `tau_agent_core.tool_schema.render_stubs`
 
-Stubs for several tools, sharing one import header; each needs the
-``name``/``description``/``parameters``/``output_schema`` attributes.
+Stubs for several tools under one ``typing`` import header.
 
 **Parameters**
 
-- `descriptions: list[Any]` — *(no description)*
+- `descriptions: list[Any]` — Objects with ``name``, ``description``, ``parameters`` and ``output_schema``, such as :class:`~tau_agent_core.tool_catalog.ToolDescription`.
+
+**Returns**
+
+One module's text, ending in a newline; a class whose text repeats an earlier one exactly is written once.
 
 ## run_nested_call
 <!-- agent: yes -->
@@ -738,14 +772,19 @@ search_deferred(descriptions: list[ToolDescription], query: str, limit: int = 8)
 
 The deferred tools whose name, description or tags contain a word of ``query``.
 
-Ranked by how many query words match, then registry order. A plain keyword
-match; a BM25 or JMFTS ranker can replace it behind the same signature.
+Case-insensitive substring match per whitespace-separated word, ranked by
+how many words match, then registry order. Only an effective exposure of
+``deferred`` is searched.
 
 **Parameters**
 
-- `descriptions: list[ToolDescription]` — *(no description)*
-- `query: str` — *(no description)*
-- `limit: int = 8` — *(no description)*
+- `descriptions: list[ToolDescription]` — The tools to search, as ``ctx.list_tools()`` returns them.
+- `query: str` — Keywords; one with no words matches nothing.
+- `limit: int = 8` — The most matches returned.
+
+**Returns**
+
+At most ``limit`` matches, best first.
 
 ## suspend_capture
 <!-- agent: yes -->
@@ -761,6 +800,10 @@ Let this context's writes reach the real streams for the block.
 For harness code that runs inside a tool's context but writes for a head:
 an event emitted from a nested call reaches a synchronous subscriber, such as
 the ``--mode json`` writer, in the calling tool's context.
+
+**Returns**
+
+A context manager yielding ``None``.
 
 ## tool_from_function
 <!-- agent: yes -->
@@ -799,9 +842,13 @@ or the value as compact JSON when ``render`` is ``None``::
 - `tags: list[str] | None = None` — Discovery labels.
 - `execution_mode: str = 'parallel'` — ``"parallel"`` or ``"sequential"``.
 
+**Returns**
+
+``name``, ``description``, ``parameters``, ``execute``, ``exposure``, ``tags``, ``execution_mode`` and ``output_schema``, plus ``label`` when given.
+
 **Raises**
 
-- `TypeError` — a parameter or the return is unannotated, or a type has no JSON Schema.
+- `TypeError` — a parameter or the return is unannotated, a parameter is ``*args``/``**kwargs``, or a type has no JSON Schema.
 - `ValueError` — there is no description to give the model.
 
 ## tool_search_definition
@@ -814,6 +861,10 @@ tool_search_definition() -> dict[str, Any]
 `tau_agent_core.tool_dispatch.tool_search_definition`
 
 The ``register_tool`` dict for ``tool_search``; its description never changes.
+
+**Returns**
+
+A ``model-only`` tool taking ``query`` whose result lists each deferred match as a Python stub; an empty query is a tool error.
 
 ## validate_tool_arguments
 <!-- agent: yes -->

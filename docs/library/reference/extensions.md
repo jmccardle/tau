@@ -740,11 +740,16 @@ One tool's description, ``hidden`` ones included (experimental).
 
 **Parameters**
 
-- `name: str` — *(no description)*
+- `name: str` — The tool's exact name.
+
+**Returns**
+
+Its description on this cursor.
 
 **Raises**
 
 - `KeyError` — no tool is named ``name`` on this cursor.
+- `RuntimeError` — No session is bound.
 
 ### emit_veto_record
 
@@ -794,22 +799,26 @@ async execute_tool(name: str, args: dict[str, Any] | None = None, *, parent_tool
 
 Call another tool through the hooks, as the model's calls go (experimental).
 
-Inside a tool, the call is recorded on that tool's result as
-``details["nested_calls"]`` and its events carry its id as
-``parent_tool_call_id``. The tool must be ``direct``, ``callable`` or
-``deferred`` on this cursor.
+Inside a tool, it is recorded as that tool's ``details["nested_calls"]``.
+The tool must be ``direct``, ``callable`` or ``deferred`` on this cursor.
 
 **Parameters**
 
-- `name: str` — *(no description)*
-- `args: dict[str, Any] | None = None` — *(no description)*
-- `parent_tool_call_id: str | None = None` — *(no description)*
+- `name: str` — The tool to call.
+- `args: dict[str, Any] | None = None` — Its arguments; ``None`` is ``{}``.
+- `parent_tool_call_id: str | None = None` — The parent call, only when not inside a running tool.
+
+**Returns**
+
+The tool's structured value, content and details.
 
 **Raises**
 
 - `ToolCallBlocked` — a ``tool_call`` hook vetoed it.
-- `NestedCallError` — it is unreachable, its arguments were invalid, or it reported an error; the message is the tool's text.
+- `NestedCallError` — it is unreachable, invalid, too deep, or it errored.
 - `ToolHalt` — it asked to stop the turn.
+- `ValueError` — ``parent_tool_call_id`` contradicts the running tool.
+- `RuntimeError` — No session is bound.
 
 ### find_extension
 
@@ -819,11 +828,19 @@ find_extension(name: str) -> ExtensionInfo | None
 
 `tau_agent_core.extension_types.ExtensionContext.find_extension`
 
-The loaded extension called ``name``, or ``None`` (experimental).
+The loaded extension called ``name`` (experimental).
 
 **Parameters**
 
-- `name: str` — *(no description)*
+- `name: str` — The extension's exact name.
+
+**Returns**
+
+Its info, or ``None`` if no loaded, enabled extension has that name.
+
+**Raises**
+
+- `RuntimeError` — No session is bound.
 
 ### fork
 
@@ -915,11 +932,19 @@ list_extensions(pattern: str | None = None) -> list[ExtensionInfo]
 
 `tau_agent_core.extension_types.ExtensionContext.list_extensions`
 
-Loaded, enabled extensions whose name matches the glob ``pattern`` (experimental).
+Loaded, enabled extensions, in load order (experimental).
 
 **Parameters**
 
-- `pattern: str | None = None` — *(no description)*
+- `pattern: str | None = None` — A glob over extension names; ``None`` matches all.
+
+**Returns**
+
+The matching extensions.
+
+**Raises**
+
+- `RuntimeError` — No session is bound.
 
 ### list_tools
 
@@ -940,6 +965,14 @@ Metadata only: the way to run one is :meth:`execute_tool`.
 - `tag: str | None = None` — A tag the tool must carry.
 - `exposure: str | None = None` — The effective exposure it must have.
 - `include_hidden: bool = False` — Include ``hidden`` tools.
+
+**Returns**
+
+The matching tools, in registry order.
+
+**Raises**
+
+- `RuntimeError` — No session is bound.
 
 ### navigate
 
@@ -1115,8 +1148,13 @@ See :meth:`~tau_agent_core.agent_session.AgentSession.set_tool_exposure`.
 
 **Parameters**
 
-- `name: str` — *(no description)*
-- `exposure: str` — *(no description)*
+- `name: str` — The tool to override.
+- `exposure: str` — The new exposure.
+
+**Raises**
+
+- `ValueError` — ``exposure`` is not a known exposure, or no tool is named ``name``.
+- `RuntimeError` — No session is bound.
 
 ### set_ui_delegate
 
@@ -1653,7 +1691,11 @@ stub() -> str
 
 `tau_agent_core.tool_catalog.ToolDescription.stub`
 
-This tool as a Python stub (:func:`~tau_agent_core.tool_schema.render_stub`).
+This tool as a Python stub.
+
+**Returns**
+
+func:`~tau_agent_core.tool_schema.render_stub` over this tool's name, description, parameters and output schema.
 
 ## apply_session_name
 <!-- agent: yes -->
@@ -1745,6 +1787,10 @@ Filter ``descriptions``; every filter given must match, in registry order.
 - `namespace: str | None = None` — A glob over the namespace (``"mcp.*"``, ``"core"``).
 - `tag: str | None = None` — A tag the tool must carry.
 - `exposure: str | None = None` — The effective exposure the tool must have.
+
+**Returns**
+
+The matching descriptions; a new list, possibly empty.
 
 ## read_session_name
 <!-- agent: yes -->

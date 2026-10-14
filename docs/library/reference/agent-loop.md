@@ -372,10 +372,14 @@ would let a redaction leak to a nested caller.
 
 **Parameters**
 
-- `dispatcher: ExtensionRunner | None` — *(no description)*
-- `result: AgentToolResult` — *(no description)*
-- `input_args: dict[str, Any] | None = None` — *(no description)*
-- `parent_tool_call_id: str | None = None` — *(no description)*
+- `dispatcher: ExtensionRunner | None` — The hook runner, or ``None`` for no hooks.
+- `result: AgentToolResult` — The tool's result; patched in place.
+- `input_args: dict[str, Any] | None = None` — The call's arguments for the event; ``None`` sends ``{}``.
+- `parent_tool_call_id: str | None = None` — Put on the event for a nested call.
+
+**Returns**
+
+``result`` itself, after any patch.
 
 ## completed_messages
 <!-- agent: yes -->
@@ -412,14 +416,17 @@ async execute_prepared_call(tools: Mapping[str, AgentTool], call: PreparedToolCa
 Run a prepared call; any exception becomes an error result.
 
 While the tool runs, :data:`CURRENT_TOOL_CALL` names it and its prints are
-captured. Nested calls it made land in ``details["nested_calls"]`` and its
-output in ``details["captured_output"]``.
+captured.
 
 **Parameters**
 
-- `tools: Mapping[str, AgentTool]` — *(no description)*
-- `call: PreparedToolCall` — *(no description)*
-- `signal: Any` — *(no description)*
+- `tools: Mapping[str, AgentTool]` — The tools by name; a name not here is an ``Unknown tool`` error.
+- `call: PreparedToolCall` — The prepared call.
+- `signal: Any` — The abort signal handed to the tool's ``execute``.
+
+**Returns**
+
+The tool's result, with its nested calls in ``details["nested_calls"]`` and its output in ``details["captured_output"]`` when there were any.
 
 ## prepare_tool_call
 <!-- agent: yes -->
@@ -432,17 +439,15 @@ async prepare_tool_call(tools: Mapping[str, AgentTool], dispatcher: ExtensionRun
 
 Validate ``tool_call``'s arguments and run the ``tool_call`` hook.
 
-A nested call's hook event carries ``parent_tool_call_id``; a model-issued
-call's event has no such key. ``gate``, given the tool name, returns a reason
-to refuse the call before validation, or ``None``.
+A name not in ``tools`` is not validated and passes; execution reports it.
 
 **Parameters**
 
-- `tools: Mapping[str, AgentTool]` — *(no description)*
-- `dispatcher: ExtensionRunner | None` — *(no description)*
-- `tool_call: ToolCall` — *(no description)*
-- `parent_tool_call_id: str | None = None` — *(no description)*
-- `gate: Callable[[str], str | None] | None = None` — *(no description)*
+- `tools: Mapping[str, AgentTool]` — The tools by name, for argument validation.
+- `dispatcher: ExtensionRunner | None` — The hook runner, or ``None`` for no hooks.
+- `tool_call: ToolCall` — The call to prepare.
+- `parent_tool_call_id: str | None = None` — Put on the hook event for a nested call; a model-issued call's event has no such key.
+- `gate: Callable[[str], str | None] | None = None` — Given the tool name, a reason to refuse it before validation, or ``None`` to let it through.
 
 **Returns**
 

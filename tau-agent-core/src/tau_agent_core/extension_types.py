@@ -1123,6 +1123,12 @@ class ExtensionContext:
             tag: A tag the tool must carry.
             exposure: The effective exposure it must have.
             include_hidden: Include ``hidden`` tools.
+
+        Returns:
+            The matching tools, in registry order.
+
+        Raises:
+            RuntimeError: No session is bound.
         """
         session = self._require_session()
         return match_tools(
@@ -1136,8 +1142,15 @@ class ExtensionContext:
     def describe_tool(self, name: str) -> ToolDescription:
         """One tool's description, ``hidden`` ones included (experimental).
 
+        Args:
+            name: The tool's exact name.
+
+        Returns:
+            Its description on this cursor.
+
         Raises:
             KeyError: no tool is named ``name`` on this cursor.
+            RuntimeError: No session is bound.
         """
         found: list[ToolDescription] = self._require_session().describe_tools(include_hidden=True)
         for d in found:
@@ -1154,16 +1167,23 @@ class ExtensionContext:
     ) -> NestedToolResult:
         """Call another tool through the hooks, as the model's calls go (experimental).
 
-        Inside a tool, the call is recorded on that tool's result as
-        ``details["nested_calls"]`` and its events carry its id as
-        ``parent_tool_call_id``. The tool must be ``direct``, ``callable`` or
-        ``deferred`` on this cursor.
+        Inside a tool, it is recorded as that tool's ``details["nested_calls"]``.
+        The tool must be ``direct``, ``callable`` or ``deferred`` on this cursor.
+
+        Args:
+            name: The tool to call.
+            args: Its arguments; ``None`` is ``{}``.
+            parent_tool_call_id: The parent call, only when not inside a running tool.
+
+        Returns:
+            The tool's structured value, content and details.
 
         Raises:
             ToolCallBlocked: a ``tool_call`` hook vetoed it.
-            NestedCallError: it is unreachable, its arguments were invalid, or it
-                reported an error; the message is the tool's text.
+            NestedCallError: it is unreachable, invalid, too deep, or it errored.
             ToolHalt: it asked to stop the turn.
+            ValueError: ``parent_tool_call_id`` contradicts the running tool.
+            RuntimeError: No session is bound.
         """
         result: NestedToolResult = await self._require_session().execute_tool(
             name, dict(args or {}), parent_tool_call_id=parent_tool_call_id
@@ -1174,18 +1194,47 @@ class ExtensionContext:
         """Override a tool's exposure from this cursor's leaf on, recorded in the tree.
 
         See :meth:`~tau_agent_core.agent_session.AgentSession.set_tool_exposure`.
+
+        Args:
+            name: The tool to override.
+            exposure: The new exposure.
+
+        Raises:
+            ValueError: ``exposure`` is not a known exposure, or no tool is named
+                ``name``.
+            RuntimeError: No session is bound.
         """
         await self._require_session().set_tool_exposure(name, exposure)
 
     def list_extensions(self, pattern: str | None = None) -> list[ExtensionInfo]:
-        """Loaded, enabled extensions whose name matches the glob ``pattern`` (experimental)."""
+        """Loaded, enabled extensions, in load order (experimental).
+
+        Args:
+            pattern: A glob over extension names; ``None`` matches all.
+
+        Returns:
+            The matching extensions.
+
+        Raises:
+            RuntimeError: No session is bound.
+        """
         found = self._require_session().list_extensions()
         if pattern is None:
             return list(found)
         return [e for e in found if fnmatch.fnmatchcase(e.name, pattern)]
 
     def find_extension(self, name: str) -> ExtensionInfo | None:
-        """The loaded extension called ``name``, or ``None`` (experimental)."""
+        """The loaded extension called ``name`` (experimental).
+
+        Args:
+            name: The extension's exact name.
+
+        Returns:
+            Its info, or ``None`` if no loaded, enabled extension has that name.
+
+        Raises:
+            RuntimeError: No session is bound.
+        """
         loaded: list[ExtensionInfo] = self._require_session().list_extensions()
         for info in loaded:
             if info.name == name:

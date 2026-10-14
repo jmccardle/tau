@@ -278,12 +278,15 @@ describe_tools(*, include_hidden: bool = False) -> list[ToolDescription]
 
 Every tool on the acting cursor, as discovery reports it (experimental).
 
-A cursor frame's allowlist applies; a ``hidden`` tool is left out unless
-``include_hidden``.
+A cursor frame's allowlist applies.
 
 **Parameters**
 
-- `include_hidden: bool = False` — *(no description)*
+- `include_hidden: bool = False` — Also report tools whose effective exposure is ``hidden``.
+
+**Returns**
+
+One description per tool, in registry order, with the effective exposure and whether the ``tools`` block declares it.
 
 ### disable_extension
 
@@ -385,15 +388,19 @@ async execute_tool(name: str, args: dict[str, Any], *, parent_tool_call_id: str 
 
 Run tool ``name`` through the pipeline a model-issued call takes (experimental).
 
-See :func:`~tau_agent_core.tool_pipeline.run_nested_call`; the tools it may
-reach are the acting cursor's callable ones, and the hooks are the ones
-that cursor's turns run.
+See :func:`~tau_agent_core.tool_pipeline.run_nested_call`, which raises
+on every failure; the tools it may reach are the acting cursor's callable
+ones, and the hooks are the ones that cursor's turns run.
 
 **Parameters**
 
-- `name: str` — *(no description)*
-- `args: dict[str, Any]` — *(no description)*
-- `parent_tool_call_id: str | None = None` — *(no description)*
+- `name: str` — The tool to run.
+- `args: dict[str, Any]` — Its arguments.
+- `parent_tool_call_id: str | None = None` — The parent call, only when not inside a running tool.
+
+**Returns**
+
+The tool's structured value, content and details.
 
 ### extension_runner
 
@@ -701,6 +708,10 @@ list_extensions() -> list[ExtensionInfo]
 
 The extensions loaded and enabled now, in load order (experimental).
 
+**Returns**
+
+class:`~tau_agent_core.tool_catalog.ExtensionInfo` per extension.
+
 ### list_managed_extensions
 
 ```python
@@ -868,11 +879,16 @@ preview_redeclare(changes: dict[str, bool]) -> ToolBlockChange
 What :meth:`redeclare_tools` with ``changes`` would do to the ``tools`` block.
 
 A head calls this to warn the user before a change that re-bills the
-prompt (:func:`~tau_agent_core.prompt_cache.tool_block_change`).
+prompt. Writes nothing, and unlike :meth:`redeclare_tools` it ignores a
+name that is not a tool here instead of raising.
 
 **Parameters**
 
-- `changes: dict[str, bool]` — *(no description)*
+- `changes: dict[str, bool]` — Tool name to ``True`` (declare) or ``False`` (withdraw), laid over the declarations already on the path.
+
+**Returns**
+
+func:`~tau_agent_core.prompt_cache.tool_block_change` from the current block to the one ``changes`` would produce.
 
 ### prompt
 
@@ -969,7 +985,7 @@ a ``tool_declaration`` config entry, so a resume declares the same set.
 
 **Parameters**
 
-- `changes: dict[str, bool]` — *(no description)*
+- `changes: dict[str, bool]` — Tool name to ``True`` (declare) or ``False`` (withdraw).
 
 **Returns**
 
@@ -1318,12 +1334,13 @@ The declared ``tools`` block does not change, so the prompt cache holds.
 The override is a ``tool_exposure`` config entry, and the model is told by
 an appended ``tool_exposure`` message on the path: now when no turn is
 running, before the next completion when one is. A masked tool stays
-declared and a model call to it is refused with the reason.
+declared and a model call to it is refused with the reason. Repeating the
+override already on the path writes nothing.
 
 **Parameters**
 
-- `name: str` — *(no description)*
-- `exposure: str` — *(no description)*
+- `name: str` — The tool to override.
+- `exposure: str` — The new exposure.
 
 **Raises**
 
@@ -5656,16 +5673,19 @@ tool_block_change(before: Sequence[Any], after: Sequence[Any]) -> ToolBlockChang
 
 `tau_agent_core.prompt_cache.tool_block_change`
 
-Compare two declared tool lists, each item having ``name``/``description``/``parameters``.
+Compare two declared tool lists, as a provider would serialize them.
 
 Pure, so every head reaches the same verdict before it applies a change
-and can warn the user that it costs a cache miss (experimental;
-experiments/tool-exposure/RESULTS.md).
+(experimental; experiments/tool-exposure/RESULTS.md).
 
 **Parameters**
 
-- `before: Sequence[Any]` — *(no description)*
-- `after: Sequence[Any]` — *(no description)*
+- `before: Sequence[Any]` — The tools declared now, in block order; each item has ``name``, ``description`` and ``parameters``.
+- `after: Sequence[Any]` — The tools that would be declared, likewise.
+
+**Returns**
+
+Names added, removed and changed (description or parameters differ), and whether the names in both lists appear in a different order.
 
 ## tool_group
 <!-- agent: yes -->

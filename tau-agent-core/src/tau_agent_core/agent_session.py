@@ -1973,8 +1973,14 @@ class AgentSession:
     def describe_tools(self, *, include_hidden: bool = False) -> list[ToolDescription]:
         """Every tool on the acting cursor, as discovery reports it (experimental).
 
-        A cursor frame's allowlist applies; a ``hidden`` tool is left out unless
-        ``include_hidden``.
+        A cursor frame's allowlist applies.
+
+        Args:
+            include_hidden: Also report tools whose effective exposure is ``hidden``.
+
+        Returns:
+            One description per tool, in registry order, with the effective
+            exposure and whether the ``tools`` block declares it.
         """
         overrides = self._exposure_overrides()
         declared = {t.name for t in self._turn_tools()}
@@ -1994,7 +2000,12 @@ class AgentSession:
         The override is a ``tool_exposure`` config entry, and the model is told by
         an appended ``tool_exposure`` message on the path: now when no turn is
         running, before the next completion when one is. A masked tool stays
-        declared and a model call to it is refused with the reason.
+        declared and a model call to it is refused with the reason. Repeating the
+        override already on the path writes nothing.
+
+        Args:
+            name: The tool to override.
+            exposure: The new exposure.
 
         Raises:
             ValueError: ``exposure`` is not one of :data:`~tau_llm.tools.ToolExposure`,
@@ -2032,7 +2043,16 @@ class AgentSession:
         """What :meth:`redeclare_tools` with ``changes`` would do to the ``tools`` block.
 
         A head calls this to warn the user before a change that re-bills the
-        prompt (:func:`~tau_agent_core.prompt_cache.tool_block_change`).
+        prompt. Writes nothing, and unlike :meth:`redeclare_tools` it ignores a
+        name that is not a tool here instead of raising.
+
+        Args:
+            changes: Tool name to ``True`` (declare) or ``False`` (withdraw),
+                laid over the declarations already on the path.
+
+        Returns:
+            :func:`~tau_agent_core.prompt_cache.tool_block_change` from the
+            current block to the one ``changes`` would produce.
         """
         before = self._turn_tools()
         declaration = {**self._declaration_overrides(), **changes}
@@ -2053,6 +2073,9 @@ class AgentSession:
         change here costs a full prompt-cache miss on the next request. Recorded as
         a ``tool_declaration`` config entry, so a resume declares the same set.
 
+        Args:
+            changes: Tool name to ``True`` (declare) or ``False`` (withdraw).
+
         Returns:
             The change, as :meth:`preview_redeclare` reported it.
 
@@ -2072,7 +2095,11 @@ class AgentSession:
 
     @agent_facing(topic="extensions")
     def list_extensions(self) -> list[ExtensionInfo]:
-        """The extensions loaded and enabled now, in load order (experimental)."""
+        """The extensions loaded and enabled now, in load order (experimental).
+
+        Returns:
+            One :class:`~tau_agent_core.tool_catalog.ExtensionInfo` per extension.
+        """
         found = []
         for bucket in self._extension_runner._extensions:
             found.append(
@@ -2091,9 +2118,17 @@ class AgentSession:
     ) -> NestedToolResult:
         """Run tool ``name`` through the pipeline a model-issued call takes (experimental).
 
-        See :func:`~tau_agent_core.tool_pipeline.run_nested_call`; the tools it may
-        reach are the acting cursor's callable ones, and the hooks are the ones
-        that cursor's turns run.
+        See :func:`~tau_agent_core.tool_pipeline.run_nested_call`, which raises
+        on every failure; the tools it may reach are the acting cursor's callable
+        ones, and the hooks are the ones that cursor's turns run.
+
+        Args:
+            name: The tool to run.
+            args: Its arguments.
+            parent_tool_call_id: The parent call, only when not inside a running tool.
+
+        Returns:
+            The tool's structured value, content and details.
         """
         cursor = self.acting_cursor
         return await run_nested_call(

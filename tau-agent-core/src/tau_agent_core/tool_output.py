@@ -51,14 +51,24 @@ class CapturedOutput:
     dropped: int = 0
 
     def write(self, stream: str, text: str) -> None:
-        """Append ``text`` to ``stream`` (``"stdout"``/``"stderr"``) up to the cap."""
+        """Append ``text`` to one stream's buffer, counting what the cap drops.
+
+        Args:
+            stream: ``"stdout"``; any other value writes stderr.
+            text: What was written.
+        """
         buf = self.stdout if stream == "stdout" else self.stderr
         room = MAX_CAPTURED_CHARS - buf.tell()
         buf.write(text[: max(room, 0)])
         self.dropped += max(len(text) - max(room, 0), 0)
 
     def as_details(self) -> dict[str, Any] | None:
-        """``{stdout, stderr, dropped}`` with empty parts left out; ``None`` if nothing was written."""
+        """This call's output for a result's ``details["captured_output"]``.
+
+        Returns:
+            ``{stdout, stderr, dropped}`` with empty or zero parts left out, or
+            ``None`` if nothing was written.
+        """
         out = {"stdout": self.stdout.getvalue(), "stderr": self.stderr.getvalue()}
         found: dict[str, Any] = {k: v for k, v in out.items() if v}
         if self.dropped:
@@ -112,7 +122,14 @@ def _ensure_proxies() -> None:
 @agent_facing(topic="tools")
 @contextmanager
 def capture_tool_output() -> Iterator[CapturedOutput]:
-    """Capture this context's writes to ``sys.stdout``/``sys.stderr`` for the block."""
+    """Capture this context's writes to ``sys.stdout``/``sys.stderr`` for the block.
+
+    Installs the routing proxies on ``sys.stdout``/``sys.stderr`` if they are
+    not already there; they stay installed afterwards.
+
+    Returns:
+        A context manager yielding the :class:`CapturedOutput` the block fills.
+    """
     _ensure_proxies()
     sink = CapturedOutput()
     token = _CAPTURE.set(sink)
@@ -130,6 +147,9 @@ def suspend_capture() -> Iterator[None]:
     For harness code that runs inside a tool's context but writes for a head:
     an event emitted from a nested call reaches a synchronous subscriber, such as
     the ``--mode json`` writer, in the calling tool's context.
+
+    Returns:
+        A context manager yielding ``None``.
     """
     token = _CAPTURE.set(None)
     try:

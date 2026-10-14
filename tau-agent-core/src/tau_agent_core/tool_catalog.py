@@ -103,7 +103,12 @@ class ToolDescription:
         return self.exposure in CALLABLE_EXPOSURES
 
     def stub(self) -> str:
-        """This tool as a Python stub (:func:`~tau_agent_core.tool_schema.render_stub`)."""
+        """This tool as a Python stub.
+
+        Returns:
+            :func:`~tau_agent_core.tool_schema.render_stub` over this tool's name,
+            description, parameters and output schema.
+        """
         return render_stub(self.name, self.description, self.parameters, self.output_schema)
 
 
@@ -160,6 +165,9 @@ def match_tools(
         namespace: A glob over the namespace (``"mcp.*"``, ``"core"``).
         tag: A tag the tool must carry.
         exposure: The effective exposure the tool must have.
+
+    Returns:
+        The matching descriptions; a new list, possibly empty.
     """
     found = []
     for d in descriptions:

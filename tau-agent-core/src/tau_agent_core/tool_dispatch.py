@@ -45,8 +45,17 @@ def search_deferred(
 ) -> list[ToolDescription]:
     """The deferred tools whose name, description or tags contain a word of ``query``.
 
-    Ranked by how many query words match, then registry order. A plain keyword
-    match; a BM25 or JMFTS ranker can replace it behind the same signature.
+    Case-insensitive substring match per whitespace-separated word, ranked by
+    how many words match, then registry order. Only an effective exposure of
+    ``deferred`` is searched.
+
+    Args:
+        descriptions: The tools to search, as ``ctx.list_tools()`` returns them.
+        query: Keywords; one with no words matches nothing.
+        limit: The most matches returned.
+
+    Returns:
+        At most ``limit`` matches, best first.
     """
     words = [w for w in query.lower().split() if w]
     scored = []
@@ -100,7 +109,12 @@ async def _call_tool(
 
 @agent_facing(topic="tools")
 def tool_search_definition() -> dict[str, Any]:
-    """The ``register_tool`` dict for ``tool_search``; its description never changes."""
+    """The ``register_tool`` dict for ``tool_search``; its description never changes.
+
+    Returns:
+        A ``model-only`` tool taking ``query`` whose result lists each deferred
+        match as a Python stub; an empty query is a tool error.
+    """
     return {
         "name": "tool_search",
         "label": "Tool search",
@@ -117,7 +131,13 @@ def tool_search_definition() -> dict[str, Any]:
 
 @agent_facing(topic="tools")
 def call_tool_definition() -> dict[str, Any]:
-    """The ``register_tool`` dict for ``call_tool``, the fixed dispatcher to deferred tools."""
+    """The ``register_tool`` dict for ``call_tool``, the fixed dispatcher to deferred tools.
+
+    Returns:
+        A ``model-only`` tool taking ``name`` and ``arguments`` that runs a
+        ``direct`` or ``deferred`` tool through ``ctx.execute_tool`` and returns
+        its content and value; any other target is a tool error.
+    """
     return {
         "name": "call_tool",
         "label": "Call tool",

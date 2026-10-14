@@ -44,6 +44,12 @@ _CTX_PARAM = "ctx"
 def output_schema_for(tp: Any) -> dict[str, Any]:
     """The JSON Schema of values of type ``tp``.
 
+    Args:
+        tp: Any type pydantic can describe.
+
+    Returns:
+        ``TypeAdapter(tp).json_schema()``; nested types sit under ``$defs``.
+
     Raises:
         TypeError: pydantic cannot build a schema for ``tp``.
     """
@@ -67,8 +73,15 @@ def output_schema_of(fn: Callable[..., Any]) -> dict[str, Any] | None:
     An ``async def f() -> X`` declares ``X``; the coroutine wrapper is not part
     of the annotation, so nothing is unwrapped.
 
+    Args:
+        fn: The function to read.
+
+    Returns:
+        :func:`output_schema_for` the return annotation, or ``None``.
+
     Raises:
         TypeError: the annotation names a type pydantic cannot describe.
+        NameError: any of ``fn``'s annotations does not resolve.
     """
     returns = _return_type(fn)
     if returns is inspect.Signature.empty:
@@ -124,9 +137,13 @@ def tool_from_function(
         tags: Discovery labels.
         execution_mode: ``"parallel"`` or ``"sequential"``.
 
+    Returns:
+        ``name``, ``description``, ``parameters``, ``execute``, ``exposure``,
+        ``tags``, ``execution_mode`` and ``output_schema``, plus ``label`` when given.
+
     Raises:
-        TypeError: a parameter or the return is unannotated, or a type has no
-            JSON Schema.
+        TypeError: a parameter or the return is unannotated, a parameter is
+            ``*args``/``**kwargs``, or a type has no JSON Schema.
         ValueError: there is no description to give the model.
     """
     tool_name = name or fn.__name__
@@ -289,8 +306,17 @@ def render_stub(
     """A Python stub for one tool, preceded by the ``TypedDict`` classes it uses.
 
     Required parameters come first, optional ones default to ``None`` because
-    the schema states no default. A tool with no ``output_schema`` returns
-    ``str``, which is what a nested caller gets from it: the text.
+    the schema states no default.
+
+    Args:
+        name: The tool name; made into a Python identifier.
+        description: The stub's docstring, whitespace-collapsed.
+        parameters: The argument JSON Schema.
+        output_schema: The value's JSON Schema; ``None`` renders ``-> str``,
+            which is what a nested caller gets from it: the text.
+
+    Returns:
+        The classes, then the ``async def``, separated by blank lines.
     """
     defs = {**(parameters.get("$defs") or {}), **((output_schema or {}).get("$defs") or {})}
     writer = _StubWriter(defs)
@@ -308,8 +334,17 @@ def render_stub(
 
 @agent_facing(topic="tools")
 def render_stubs(descriptions: list[Any]) -> str:
-    """Stubs for several tools, sharing one import header; each needs the
-    ``name``/``description``/``parameters``/``output_schema`` attributes."""
+    """Stubs for several tools under one ``typing`` import header.
+
+    Args:
+        descriptions: Objects with ``name``, ``description``, ``parameters`` and
+            ``output_schema``, such as
+            :class:`~tau_agent_core.tool_catalog.ToolDescription`.
+
+    Returns:
+        One module's text, ending in a newline; a class whose text repeats an
+        earlier one exactly is written once.
+    """
     header = "from typing import Any, Literal, NotRequired, TypedDict"
     bodies: list[str] = []
     seen: set[str] = set()

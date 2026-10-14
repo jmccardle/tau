@@ -163,8 +163,12 @@ class NestedCallError(ToolError):
     A :class:`ToolError`, so a tool that lets it propagate reports the same text
     to the model as its own failure.
 
+    Args:
+        message: The text the model would read.
+
     Attributes:
-        result: The failed call's result, or ``None`` if it never ran.
+        result: The failed call's result; ``None`` when it was refused before
+            running (unavailable, too deep, blocked).
     """
 
     def __init__(self, message: str, result: AgentToolResult | None = None) -> None:
@@ -175,6 +179,9 @@ class NestedCallError(ToolError):
 @agent_facing(topic="tools")
 class ToolCallBlocked(NestedCallError):
     """A ``tool_call`` hook vetoed a nested call.
+
+    Args:
+        message: The hook's reason.
 
     Attributes:
         blocked_by: The extension that vetoed it.
@@ -212,7 +219,14 @@ class NestedToolResult:
         return "\n".join(str(b.get("text", "")) for b in self.content if b.get("type") == "text")
 
     def as_type(self, tp: Any) -> Any:
-        """:attr:`value` validated as ``tp`` (a ``TypedDict``, dataclass or model).
+        """:attr:`value` validated as ``tp``.
+
+        Args:
+            tp: A ``TypedDict``, dataclass, pydantic model or any type pydantic
+                validates.
+
+        Returns:
+            What pydantic's ``TypeAdapter(tp).validate_python`` builds.
 
         Raises:
             ValueError: the tool returned no structured value.
@@ -243,9 +257,16 @@ async def prepare_tool_call(
 ) -> PreparedToolCall | BlockedCall | ErrorCall:
     """Validate ``tool_call``'s arguments and run the ``tool_call`` hook.
 
-    A nested call's hook event carries ``parent_tool_call_id``; a model-issued
-    call's event has no such key. ``gate``, given the tool name, returns a reason
-    to refuse the call before validation, or ``None``.
+    A name not in ``tools`` is not validated and passes; execution reports it.
+
+    Args:
+        tools: The tools by name, for argument validation.
+        dispatcher: The hook runner, or ``None`` for no hooks.
+        tool_call: The call to prepare.
+        parent_tool_call_id: Put on the hook event for a nested call; a
+            model-issued call's event has no such key.
+        gate: Given the tool name, a reason to refuse it before validation,
+            or ``None`` to let it through.
 
     Returns:
         The prepared call, a :class:`BlockedCall` (validation failed, a handler
@@ -323,8 +344,16 @@ async def execute_prepared_call(
     """Run a prepared call; any exception becomes an error result.
 
     While the tool runs, :data:`CURRENT_TOOL_CALL` names it and its prints are
-    captured. Nested calls it made land in ``details["nested_calls"]`` and its
-    output in ``details["captured_output"]``.
+    captured.
+
+    Args:
+        tools: The tools by name; a name not here is an ``Unknown tool`` error.
+        call: The prepared call.
+        signal: The abort signal handed to the tool's ``execute``.
+
+    Returns:
+        The tool's result, with its nested calls in ``details["nested_calls"]``
+        and its output in ``details["captured_output"]`` when there were any.
     """
     tool = tools.get(call.name)
     if tool is None:
@@ -365,6 +394,15 @@ async def apply_tool_result_hooks(
     returned one, and a handler that rewrites ``content`` without rewriting
     ``value`` drops it: a value that no longer matches the text it came with
     would let a redaction leak to a nested caller.
+
+    Args:
+        dispatcher: The hook runner, or ``None`` for no hooks.
+        result: The tool's result; patched in place.
+        input_args: The call's arguments for the event; ``None`` sends ``{}``.
+        parent_tool_call_id: Put on the event for a nested call.
+
+    Returns:
+        ``result`` itself, after any patch.
     """
     if dispatcher is None or not dispatcher.has_handlers("tool_result"):
         return result
