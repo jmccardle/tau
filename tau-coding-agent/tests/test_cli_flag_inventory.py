@@ -42,6 +42,7 @@ REJECTED_UNDER_RPC = {
     "store",
     "connect",
     "cwd",
+    "export_html",
 }
 
 HONORED_UNDER_RPC = {

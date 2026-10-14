@@ -96,6 +96,7 @@ from tau_agent_core.export import (
     MarkdownExporter,
     HTMLExporter,
     export_session,
+    render_session_html,
 )
 
 __all__ = [
@@ -183,4 +184,5 @@ __all__ = [
     "MarkdownExporter",
     "HTMLExporter",
     "export_session",
+    "render_session_html",
 ]
