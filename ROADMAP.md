@@ -17,7 +17,7 @@ cassette contract suite (`docs/PROVIDER-COVERAGE.md`), the trust-gate research
 record (`docs/TRUST-GATE.md`, nothing built) and docstring coverage 1152/1152.
 Suite on `df6143d`: **6616 passed, 158 skipped, 6 deselected, 3 xfailed, 0
 failed**; the release matrix has not run. Open work is tracked as issues on the
-`john/tau` forgejo repo from this date (#1–#16), milestone `0.13.0`; #1 tracks the cut.
+`john/tau` forgejo repo from this date (R2/R5/R6 are #17–#19), milestone `0.13.0`; #1 tracks the cut.
 
 **State (2026-10-04): 0.12.0 shipped.** Tag `v0.12.0` → `bebdedf`, all five
 distributions on PyPI (`publish.yml` run 37225374694). Local, `origin` and
@@ -605,8 +605,8 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   typed to their leaves, with `$defs`.
 - **Code mode: the model writes a Python script and the tools run inside it**
   (added 2026-10-12). **Status: researched, prototyped on an unmerged branch, not
-  on master, not scheduled.** The owner calls it a strong centrepiece candidate
-  for 0.13.0, not yet its committed target. The record is `docs/CODE-MODE.md`
+  on master. Scheduled 2026-10-14 (owner) as 0.13.0's major priority**; forgejo
+  #2, and #1's cut waits on it. The record is `docs/CODE-MODE.md`
   (`7303954`). The prototypes are on the local, unpushed branch
   `feat/code-mode-experiments` (tip `1039fd8`, 2026-10-06). It merges six
   experiments, and three of them are code mode:
