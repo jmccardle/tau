@@ -6,8 +6,10 @@ See docs/PROVIDER-HTTP-ERRORS.md, and docs/PROVIDER-RETRY.md for which of them
 
 from __future__ import annotations
 
+import datetime
 import email.utils
 import json
+import math
 import sys
 import time
 from typing import Any
@@ -119,31 +121,38 @@ def retry_after_seconds(headers: Any) -> float | None:
     """Seconds a response asked the client to wait, or None when it did not say.
 
     Reads ``retry-after-ms`` first, then ``retry-after`` as seconds or as an
-    HTTP-date. A value that parses to neither is None, as if absent.
+    HTTP-date (a zoneless date is GMT, as RFC 9110 says). A value that parses to
+    no finite number is None, as if absent; a past date or negative value is 0.
     """
     if headers is None:
         return None
-    try:
-        millis = headers.get("retry-after-ms")
-        value = headers.get("retry-after")
-    except Exception:
-        return None
+    millis = _finite(headers.get("retry-after-ms"))
     if millis is not None:
-        try:
-            return max(0.0, float(millis) / 1000.0)
-        except ValueError:
-            pass
+        return max(0.0, millis / 1000.0)
+    value = headers.get("retry-after")
     if value is None:
         return None
-    try:
-        return max(0.0, float(value))
-    except ValueError:
-        pass
+    seconds = _finite(value)
+    if seconds is not None:
+        return max(0.0, seconds)
     try:
         when = email.utils.parsedate_to_datetime(str(value))
     except (TypeError, ValueError):
         return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
     return max(0.0, when.timestamp() - time.time())
+
+
+def _finite(value: Any) -> float | None:
+    """``value`` as a finite float, or None when it is absent or not a number."""
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        return None
+    return number if math.isfinite(number) else None
 
 
 def http_error_from_anthropic(

@@ -45,8 +45,9 @@ reaches a request body. Absent means `DEFAULT_RETRY_POLICY`. Anything else is a
 the typo.
 
 **The default is on.** A caller with its own retry loop has to opt out. JMFTS
-is one: it retries at the task-queue level, and without `retry=False` the two
-layers multiply (4 × its own attempts). The opposite default would leave every
+is one: it retries at the task-queue level, and until its `llm_client.complete`
+passes `retry=False` the two layers multiply (4 × its own attempts). That change
+belongs to the JMFTS repo and is not made here (§6). The opposite default would leave every
 TUI user, who has no retry loop, with the failure this record exists to fix.
 
 ## 3. What is retried, and the one rule that keeps it safe
@@ -100,7 +101,8 @@ This respects the rule that τ never busts the prompt cache on its own.
   loading server should not all come back in the same millisecond.
 - **`Retry-After`** replaces the backoff and is honoured exactly. `retry-after-ms`
   is read first, then `retry-after` as seconds or as an HTTP-date
-  (`retry_after_seconds`). It reaches the policy as
+  (`retry_after_seconds`). A zoneless date is GMT; a value that is not a finite
+  number or a date counts as absent; a past date or negative value is 0. It reaches the policy as
   `ProviderHttpError.retry_after`, a new field that each provider fills from the
   response headers.
 - **A server that asks for longer than `max_retry_after` gets no retry.** The error
@@ -108,8 +110,9 @@ This respects the rule that τ never busts the prompt cache on its own.
   reset inside a turn is not recovery. This is pi's `maxRetryDelayMs` rule.
 - **Worst case** for the default is 3 × 60s, when the server keeps asking for a
   minute. It is visible the whole time and can be aborted.
-- **The abort signal** is polled every 100 ms during a wait. An abort ends the
-  stream with an empty `stop_reason: "aborted"` message. That is what an abort
+- **The abort signal** is checked when an attempt fails and polled every 100 ms
+  during a wait. An abort ends the stream with an empty `stop_reason: "aborted"`
+  message, and an abort already set when the attempt failed announces no retry. That is what an abort
   before any output already produced, so no head needs a new case. The request
   is not sent again.
 - **The Anthropic SDK's own retries are off** (`max_retries=0`), so τ's retry is
@@ -152,6 +155,11 @@ Loading model — retry 1 of 3 in 1.2s`. `TurnStream.feed_wire` renders it into 
   A `retry` key in `~/.tau/config.json` would be a separate decision.
 - **No retry of an in-band error frame**, including Anthropic's `overloaded_error`
   sent after a 200. Neither has an HTTP status for the policy to judge.
+- **JMFTS is not updated.** Its `llm_client.complete` should pass `retry=False`
+  (§2), and it maps only a bare `Exception` from `complete_simple` to its
+  `LlmCallError`. A refused connection used to arrive that way, as an in-band
+  error; it is now a `ProviderConnectionError` and propagates past that mapping,
+  as a `ProviderHttpError` already has since e8a9bd9.
 - **No `aiohttp` errors for `google-genai`.** `google-genai` uses `aiohttp` instead
   of `httpx` when `aiohttp` is installed, and its connection errors are not
   recognised.

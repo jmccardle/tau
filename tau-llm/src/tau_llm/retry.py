@@ -43,7 +43,7 @@ class RetryPolicy:
     Attributes:
         max_retries: Re-sends after the first attempt; 0 sends once.
         base_delay: Seconds before the first retry; each later one doubles it.
-        max_delay: Ceiling on one computed backoff, in seconds.
+        max_delay: Ceiling on one computed backoff before jitter, in seconds.
         max_retry_after: The longest ``Retry-After`` honoured, in seconds. A
             server that asks for longer gets no retry: its error is raised at once.
         jitter: Each computed backoff is stretched by up to this fraction, so
@@ -148,8 +148,9 @@ async def retrying_stream(
 
     A failure is retried only when the attempt yielded nothing, so a caller never
     sees output from two attempts. Each retry yields a :class:`RetryEvent` and
-    logs a warning before its wait. An abort during the wait ends the stream with
-    an empty ``"aborted"`` message, as an abort before any output does.
+    logs a warning before its wait. An abort already set when the attempt fails,
+    or set during the wait, ends the stream with an empty ``"aborted"`` message
+    and no retry announced, as an abort before any output does.
 
     Args:
         first: The first attempt's provider stream.
@@ -181,6 +182,10 @@ async def retrying_stream(
                 )
                 raise
             failure = exc
+        if abort_signal is not None and abort_signal.is_aborted():
+            message = _aborted_message(model)
+            yield DoneEvent(final=message, usage=message.usage)
+            return
         retries += 1
         _logger.warning("retry %d of %d in %.1fs: %s", retries, policy.max_retries, wait, failure)
         yield RetryEvent(

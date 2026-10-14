@@ -468,7 +468,7 @@ pass ``False`` to send exactly once.
 
 - `max_retries: int = 3` — Re-sends after the first attempt; 0 sends once.
 - `base_delay: float = 1.0` — Seconds before the first retry; each later one doubles it.
-- `max_delay: float = 30.0` — Ceiling on one computed backoff, in seconds.
+- `max_delay: float = 30.0` — Ceiling on one computed backoff before jitter, in seconds.
 - `max_retry_after: float = 60.0` — The longest ``Retry-After`` honoured, in seconds. A server that asks for longer gets no retry: its error is raised at once.
 - `jitter: float = 0.2` — Each computed backoff is stretched by up to this fraction, so concurrent callers that failed together do not retry together. A ``Retry-After`` is honoured exactly.
 - `statuses: frozenset[int] = RETRYABLE_STATUSES` — The HTTP statuses retried.

@@ -235,6 +235,18 @@ def test_an_abort_during_the_wait_ends_the_stream_as_aborted(serve):
     assert len(server.bodies) == 1
 
 
+def test_an_abort_set_before_the_failure_announces_no_retry(serve):
+    """The user already stopped the turn; a "retrying in Ns" notice would contradict them."""
+    server = serve(_refusal(503), _ok())
+    signal = AbortSignal()
+    signal.abort()
+    events = _drive({"abort_signal": signal, "retry": FAST})
+    assert not [e for e in events if isinstance(e, RetryEvent)]
+    assert isinstance(events[-1], DoneEvent)
+    assert events[-1].final.stop_reason == "aborted"
+    assert len(server.bodies) == 1
+
+
 def test_a_refused_connection_is_retried(serve):
     server = serve(httpx.ConnectError("Connection refused"), _ok("back"))
     events = _drive({"retry": FAST})
@@ -316,6 +328,9 @@ def test_backoff_doubles_up_to_the_ceiling_and_jitter_only_stretches_it():
         ({"retry-after-ms": "250", "retry-after": "9"}, 0.25),
         ({"retry-after": "soon"}, None),
         ({"retry-after": "-3"}, 0.0),
+        ({"retry-after": "inf"}, None),
+        ({"retry-after": "nan"}, None),
+        ({"retry-after-ms": "soon", "retry-after": "2"}, 2.0),
     ],
 )
 def test_retry_after_seconds(headers, expected):
@@ -327,6 +342,13 @@ def test_retry_after_as_an_http_date():
     seconds = retry_after_seconds(
         httpx.Headers({"retry-after": format_datetime(when, usegmt=True)})
     )
+    assert seconds is not None and 25 < seconds <= 30
+
+
+def test_a_zoneless_http_date_is_read_as_gmt():
+    when = datetime.now(timezone.utc) + timedelta(seconds=30)
+    zoneless = when.strftime("%a, %d %b %Y %H:%M:%S -0000")
+    seconds = retry_after_seconds(httpx.Headers({"retry-after": zoneless}))
     assert seconds is not None and 25 < seconds <= 30
 
 
