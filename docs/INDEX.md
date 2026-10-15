@@ -108,6 +108,7 @@ Findings, which means writing the finding rather than lengthening the clause.
 `lazy-grammar-thinking-pr.md` (the tested PR that would retire `REASONING-VS-CONSTRAINED-DECODING.md`'s workaround).
 
 **Operations:** `BLOCKING-PERSISTENCE.md` (the analysis `ASYNC-SESSION-LOG.md` built) · `PROVIDER-LIFETIME.md` ·
+`RESPONSE-HEADERS.md` (`DoneEvent.response_headers` and `ProviderHttpError.headers`; `None` means not captured) ·
 `ANTHROPIC-GOOGLE-CLIENTS.md` · `textual-headless-testing.md` (how to drive the TUI with no terminal).
 
 **pi provenance, not authority:** `pi_orchestration_patterns.md` ·

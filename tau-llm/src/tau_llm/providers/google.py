@@ -43,7 +43,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, cast
 
-from tau_llm.errors import connection_error_from, http_error_from_google
+from tau_llm.errors import connection_error_from, http_error_from_google, response_headers_of
 from tau_llm.models import clamp_thinking_level
 from tau_llm.once import OnceSet
 from tau_llm.providers.base import Provider, split_tool_result_content
@@ -519,6 +519,7 @@ class GoogleGenerativeAIProvider(Provider):
         async def event_generator() -> AsyncIterator[Any]:
             state = _StreamState(model=model, provider=self)
             started = False
+            headers: dict[str, str] | None = None
             try:
                 stream = await client.aio.models.generate_content_stream(
                     model=model.id,
@@ -527,9 +528,13 @@ class GoogleGenerativeAIProvider(Provider):
                 )
                 async for chunk in stream:
                     started = True
+                    if headers is None:
+                        headers = response_headers_of(getattr(chunk, "sdk_http_response", None))
                     if abort_signal is not None and abort_signal.is_aborted():
                         yield DoneEvent(
-                            final=state.build_message(stop_reason="aborted"), usage=state.usage
+                            final=state.build_message(stop_reason="aborted"),
+                            usage=state.usage,
+                            response_headers=headers,
                         )
                         return
 
@@ -548,7 +553,7 @@ class GoogleGenerativeAIProvider(Provider):
                         partial=final_msg,
                     )
 
-                yield DoneEvent(final=final_msg, usage=final_msg.usage)
+                yield DoneEvent(final=final_msg, usage=final_msg.usage, response_headers=headers)
                 return
 
             except Exception as exc:

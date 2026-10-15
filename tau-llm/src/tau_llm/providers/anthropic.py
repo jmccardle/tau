@@ -49,7 +49,7 @@ import time
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from tau_llm.errors import connection_error_from, http_error_from_anthropic
+from tau_llm.errors import connection_error_from, http_error_from_anthropic, response_headers_of
 from tau_llm.models import clamp_thinking_level
 from tau_llm.once import OnceSet
 from tau_llm.providers.base import Provider, split_tool_result_content
@@ -650,12 +650,14 @@ class AnthropicMessagesProvider(Provider):
             started = False
             try:
                 async with client.messages.stream(**request) as stream:
+                    headers = response_headers_of(stream.response)
                     async for event in stream:
                         started = True
                         if abort_signal is not None and abort_signal.is_aborted():
                             yield DoneEvent(
                                 final=state.build_message(stop_reason="aborted"),
                                 usage=state.usage,
+                                response_headers=headers,
                             )
                             return
 
@@ -684,7 +686,7 @@ class AnthropicMessagesProvider(Provider):
                         partial=final_msg,
                     )
 
-                yield DoneEvent(final=final_msg, usage=final_msg.usage)
+                yield DoneEvent(final=final_msg, usage=final_msg.usage, response_headers=headers)
                 return
 
             except Exception as exc:

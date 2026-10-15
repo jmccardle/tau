@@ -114,6 +114,7 @@ class _FakeStream:
     def __init__(self, events, final):
         self._events = list(events)
         self._final = final
+        self.response = SimpleNamespace(headers={"Request-Id": "req_01", "Retry-After": "3"})
 
     def __aiter__(self):
         async def gen():

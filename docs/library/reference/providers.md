@@ -167,6 +167,12 @@ which the provider polls between chunks. Reach for that, not this.
 
 The partial state is preserved either way.
 
+### response_headers
+
+`tau_llm.streaming.AssistantMessageEventStream.response_headers: dict[str, str] | None`
+
+The finished response's headers, as on :class:`DoneEvent`; None before it or uncaptured.
+
 ### result
 
 ```python
@@ -224,7 +230,7 @@ detected; only an operator can state it.
 <!-- agent: yes -->
 
 ```python
-class DoneEvent(final: AssistantMessage, usage: Usage, type: Literal['done'] = 'done')
+class DoneEvent(final: AssistantMessage, usage: Usage, type: Literal['done'] = 'done', response_headers: dict[str, str] | None = None)
 ```
 
 `tau_llm.streaming.DoneEvent`
@@ -240,6 +246,7 @@ Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 - `final: AssistantMessage` — The fully accumulated AssistantMessage.
 - `usage: Usage` — Token usage information for the response.
 - `type: Literal['done'] = 'done'` — Always "done".
+- `response_headers: dict[str, str] | None = None` — The HTTP response headers, names lowercased, e.g. a vendor's rate-limit counters; None when the provider did not capture them. Not persisted on ``final``. See docs/RESPONSE-HEADERS.md.
 
 ## ErrorEvent
 <!-- agent: yes -->
@@ -359,7 +366,7 @@ of these: the server may still be working on the request.
 <!-- agent: yes -->
 
 ```python
-class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str, retry_after: float | None = None)
+class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str, retry_after: float | None = None, headers: dict[str, str] | None = None)
 ```
 
 `tau_llm.errors.ProviderHttpError`
@@ -378,6 +385,7 @@ Every provider raises this for an HTTP refusal, and
 - `model_id: str` — The requested model id.
 - `base_url: str` — The endpoint the request went to.
 - `retry_after: float | None = None` — Seconds the server asked the client to wait, from a ``retry-after-ms`` or ``retry-after`` header; None when it sent neither.
+- `headers: dict[str, str] | None = None` — The response headers, names lowercased, unparsed; None when the transport could not read them. Read the wait from ``retry_after``.
 
 ## ProviderSpec
 <!-- agent: yes -->

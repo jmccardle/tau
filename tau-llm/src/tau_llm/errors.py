@@ -28,6 +28,18 @@ def truncate_error_text(text: str, max_chars: int = MAX_ERROR_BODY_CHARS) -> str
     return f"{text[:max_chars]}... [truncated {len(text) - max_chars} chars]"
 
 
+def response_headers_of(response: Any) -> dict[str, str] | None:
+    """An HTTP response's headers with lowercased names; None when it has none to read.
+
+    None means the headers were not captured, not that the server sent none. See
+    docs/RESPONSE-HEADERS.md.
+    """
+    headers = getattr(response, "headers", None) if response is not None else None
+    if headers is None:
+        return None
+    return {str(k).lower(): str(v) for k, v in headers.items()}
+
+
 @agent_facing(topic="providers")
 class ProviderHttpError(RuntimeError):
     """An endpoint answered a completion request with a non-2xx status.
@@ -46,6 +58,8 @@ class ProviderHttpError(RuntimeError):
         base_url: The endpoint the request went to.
         retry_after: Seconds the server asked the client to wait, from a
             ``retry-after-ms`` or ``retry-after`` header; None when it sent neither.
+        headers: The response headers, names lowercased, unparsed; None when the
+            transport could not read them. Read the wait from ``retry_after``.
     """
 
     def __init__(
@@ -57,6 +71,7 @@ class ProviderHttpError(RuntimeError):
         model_id: str,
         base_url: str,
         retry_after: float | None = None,
+        headers: dict[str, str] | None = None,
     ) -> None:
         """Record the refusal; ``body`` is bounded here, so pass it whole.
 
@@ -68,6 +83,7 @@ class ProviderHttpError(RuntimeError):
             base_url: The endpoint the request went to.
             retry_after: Seconds the server asked for, already parsed from its
                 header; None when it named none.
+            headers: The response headers, names lowercased; None when not captured.
         """
         self.status_code = status_code
         self.message = message
@@ -75,6 +91,7 @@ class ProviderHttpError(RuntimeError):
         self.model_id = model_id
         self.base_url = base_url
         self.retry_after = retry_after
+        self.headers = headers
         super().__init__(
             f"HTTP {status_code} from model {model_id!r} at {base_url!r}: "
             f"{message or '(empty response body)'}"
@@ -204,6 +221,7 @@ def http_error_from_anthropic(
         model_id=model_id,
         base_url=base_url,
         retry_after=retry_after_seconds(getattr(exc.response, "headers", None)),
+        headers=response_headers_of(exc.response),
     )
 
 
@@ -231,6 +249,7 @@ def http_error_from_google(
         model_id=model_id,
         base_url=base_url,
         retry_after=retry_after_seconds(getattr(exc.response, "headers", None)),
+        headers=response_headers_of(exc.response),
     )
 
 
