@@ -46,8 +46,10 @@ The three admissible policies
 
 ``local_summarizer``
     Compaction on, summarising through a **separate model** that is declared
-    explicitly. Survives a partition only if that model actually runs on the near
-    side of it. Note this is the only one of the three under which a compaction may
+    explicitly, by its config NAME. The session resolves the name, and its key,
+    through ``AgentSession.resolve_model`` — the one way a model and a credential
+    enter the harness (docs/PRICING-AND-COMPACTION-CONFIG.md §4). Survives a
+    partition only if that model actually runs on the near side of it. Note this is the only one of the three under which a compaction may
     still fire, so a run declaring it must partition its latency population
     (:mod:`tau_agent_core.latency`) rather than merely observe that the population
     is unimodal.
@@ -129,9 +131,8 @@ class CompactionPolicy:
             ``disabled`` and ``turn_cap``; must be ``None`` otherwise.
         max_tokens_per_turn: Bound on the context each user turn may add.
             Required by ``turn_cap`` only.
-        summarizer_model: The summariser. Required by ``local_summarizer`` only.
-        summarizer_api_key: Key for ``summarizer_model``. Required by
-            ``local_summarizer`` only; never written to the manifest.
+        summarizer: The summariser's config model NAME, resolved (model and
+            key) by the session's resolver. Required by ``local_summarizer`` only.
         reserve_tokens: Copied into :attr:`compaction_settings`; the threshold is
             ``context_window - reserve_tokens``. Must be positive.
         keep_recent_tokens: Copied into :attr:`compaction_settings`.
@@ -144,8 +145,7 @@ class CompactionPolicy:
     mode: PolicyMode
     max_turns: int | None = None
     max_tokens_per_turn: int | None = None
-    summarizer_model: Model | None = None
-    summarizer_api_key: str | None = None
+    summarizer: str | None = None
     reserve_tokens: int = DEFAULT_COMPACTION_SETTINGS.reserve_tokens
     keep_recent_tokens: int = DEFAULT_COMPACTION_SETTINGS.keep_recent_tokens
 
@@ -154,7 +154,7 @@ class CompactionPolicy:
     def __post_init__(self) -> None:
         required: dict[PolicyMode, tuple[str, ...]] = {
             "disabled": ("max_turns",),
-            "local_summarizer": ("summarizer_model", "summarizer_api_key"),
+            "local_summarizer": ("summarizer",),
             "turn_cap": ("max_turns", "max_tokens_per_turn"),
         }
         if self.mode not in required:
@@ -162,7 +162,7 @@ class CompactionPolicy:
                 f"unknown compaction policy mode {self.mode!r}; "
                 f"§16.8 admits exactly {sorted(required)}"
             )
-        every = ("max_turns", "max_tokens_per_turn", "summarizer_model", "summarizer_api_key")
+        every = ("max_turns", "max_tokens_per_turn", "summarizer")
         for field_name in every:
             value = getattr(self, field_name)
             if field_name in required[self.mode]:
@@ -177,6 +177,8 @@ class CompactionPolicy:
                     f"but it was set to {value!r}; a field that is read nowhere "
                     "advertises a capability the mode does not have"
                 )
+        if self.summarizer == "":
+            raise CompactionPolicyError("summarizer must name a model, got an empty string")
         for positive in ("max_turns", "max_tokens_per_turn", "reserve_tokens"):
             value = getattr(self, positive)
             if value is not None and value <= 0:
@@ -196,21 +198,19 @@ class CompactionPolicy:
         return cls(mode="disabled", max_turns=max_turns)
 
     @classmethod
-    def local_summarizer(cls, *, model: Model, api_key: str) -> CompactionPolicy:
+    def local_summarizer(cls, *, summarizer: str) -> CompactionPolicy:
         """Compaction on, through a separately declared model (§16.8 option 2).
 
         Args:
-            model: The summariser; :meth:`bind_to` requires its context window to
-                be at least the session model's.
-            api_key: Required, not inherited from the session: a near-side
-                summariser is a different endpoint with different credentials.
-                Pass the literal the local server expects, even if it ignores it.
-                Never written to a manifest.
+            summarizer: A config model NAME. The session resolves it, and its
+                key, through ``AgentSession.resolve_model``, so it needs a bound
+                model resolver; :meth:`bind_to` then requires the resolved
+                model's context window to be at least the session model's.
 
         Returns:
             A ``local_summarizer`` policy.
         """
-        return cls(mode="local_summarizer", summarizer_model=model, summarizer_api_key=api_key)
+        return cls(mode="local_summarizer", summarizer=summarizer)
 
     @classmethod
     def turn_cap(cls, *, max_turns: int, max_tokens_per_turn: int) -> CompactionPolicy:
@@ -246,39 +246,25 @@ class CompactionPolicy:
             keep_recent_tokens=self.keep_recent_tokens,
         )
 
-    def summarizer_for(self, session_model: Model) -> tuple[Model, str | None]:
-        """The (model, api_key) a compaction under this policy summarises through.
-
-        Args:
-            session_model: The session's model, returned for every mode but
-                ``local_summarizer``.
-
-        Returns:
-            ``(summarizer_model, summarizer_api_key)`` under ``local_summarizer``;
-            otherwise ``(session_model, None)``, where ``None`` means the session
-            substitutes its own key.
-        """
-        if self.mode == "local_summarizer":
-            assert self.summarizer_model is not None  # guaranteed by __post_init__
-            return self.summarizer_model, self.summarizer_api_key
-        return session_model, None
-
     # ── binding, and the arithmetic half of the proof ─────────────────────
 
-    def bind_to(self, model: Model) -> None:
+    def bind_to(self, model: Model, summarizer_model: Model | None = None) -> None:
         """Check this declaration against the model it will run under; raise if not.
 
-        Called once, at session construction, so everything checkable before a
-        token is spent fails here rather than at turn 40.
+        Called at session construction and on every model switch, so everything
+        checkable before a token is spent fails here rather than at turn 40.
 
         Args:
             model: The session model; its ``context_window`` is what is checked.
+            summarizer_model: :attr:`summarizer` as the session resolved it.
+                Required under ``local_summarizer``, ignored otherwise.
 
         Raises:
             CompactionPolicyError: ``context_window <= reserve_tokens``; under
-                ``local_summarizer``, a summariser window smaller than the
-                session's; under ``turn_cap``, ``max_turns * max_tokens_per_turn``
-                exceeding ``context_window - reserve_tokens``.
+                ``local_summarizer``, no ``summarizer_model`` or one whose window
+                is smaller than the session's; under ``turn_cap``,
+                ``max_turns * max_tokens_per_turn`` exceeding
+                ``context_window - reserve_tokens``.
         """
         context_window = model.context_window
         if context_window <= self.reserve_tokens:
@@ -290,11 +276,16 @@ class CompactionPolicy:
             )
 
         if self.mode == "local_summarizer":
-            assert self.summarizer_model is not None
-            if self.summarizer_model.context_window < context_window:
+            if summarizer_model is None:
                 raise CompactionPolicyError(
-                    f"summarizer {self.summarizer_model.id!r} has context_window="
-                    f"{self.summarizer_model.context_window}, smaller than session model "
+                    f"local_summarizer policy names {self.summarizer!r} but was bound "
+                    "without the model it resolves to; the session resolves it through "
+                    "its model resolver"
+                )
+            if summarizer_model.context_window < context_window:
+                raise CompactionPolicyError(
+                    f"summarizer {summarizer_model.id!r} has context_window="
+                    f"{summarizer_model.context_window}, smaller than session model "
                     f"{model.id!r}'s {context_window}. Compaction summarises a full "
                     "session window, so this summariser cannot ingest what it would be "
                     "asked to summarise — the call fails at the provider, mid-partition, "
@@ -384,8 +375,8 @@ class CompactionPolicy:
 
         Returns:
             ``mode``; ``declared``, holding only the set fields among
-            ``max_turns``, ``max_tokens_per_turn`` and ``summarizer_model`` (as id,
-            provider, base_url, context_window — no key); ``compaction_enabled``;
+            ``max_turns``, ``max_tokens_per_turn`` and ``summarizer`` (the config
+            name — the policy holds no model and no key); ``compaction_enabled``;
             ``reserve_tokens``; ``keep_recent_tokens``.
         """
         declared: dict[str, Any] = {}
@@ -393,13 +384,8 @@ class CompactionPolicy:
             declared["max_turns"] = self.max_turns
         if self.max_tokens_per_turn is not None:
             declared["max_tokens_per_turn"] = self.max_tokens_per_turn
-        if self.summarizer_model is not None:
-            declared["summarizer_model"] = {
-                "id": self.summarizer_model.id,
-                "provider": self.summarizer_model.provider,
-                "base_url": self.summarizer_model.base_url,
-                "context_window": self.summarizer_model.context_window,
-            }
+        if self.summarizer is not None:
+            declared["summarizer"] = self.summarizer
         return {
             "mode": self.mode,
             "declared": declared,

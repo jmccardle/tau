@@ -117,8 +117,9 @@ tests and for SDK callers, and nobody asked to tune them from the config.
 `--model` override. It also runs at the top of `TauApp._apply_run_config`, which
 every TUI `create_backend` goes through: new chat, `/model` and resume.
 `TauBackend` sees only one model's config. So the helper copies the block onto
-`model_config["compaction"]`, and copies the summarizer's `models` entry onto
-`model_config["compaction_summarizer"]`. It returns a new dict and never mutates
+`model_config["compaction"]`. When the block names a summarizer, it also copies
+`config["models"]` onto `model_config["models"]`, so `TauBackend` can hand its
+session a resolver at construction (§4). It returns a new dict and never mutates
 the shared entry.
 
 `TauBackend` validates the block again, so a direct construction is checked too.
@@ -132,38 +133,65 @@ asserts `true` and turns it off, so the verb is still seen changing the state.
 No other test noticed the change, because test models have
 `context_window=128000` and test transcripts stay small.
 
-## 4. The summarizer goes through `CompactionPolicy.local_summarizer`
+## 4. The summarizer is a model NAME, resolved like any other
 
-`compaction.summarizer` names an entry in `models`. `TauBackend` resolves it with
-`ConfigModelResolver`, the same class `--model`, `set_model` and RPC
-`get_models` use. It then declares `CompactionPolicy(mode="local_summarizer")`.
-That is the existing seam `AgentSession.summarizer()` reads for compaction and
-for branch summaries. Nothing new was added to `AgentSession`.
+`compaction.summarizer` names an entry in `models`. `TauBackend` declares
+`CompactionPolicy.local_summarizer(summarizer=<name>)`. The policy holds only the
+name. `AgentSession.summarizer()` resolves it through `AgentSession.resolve_model`,
+which calls `ConfigModelResolver`: the same path `--model`, `ctx.set_model` and the
+RPC `set_model` verb use. The key is therefore the summarizer entry's `api_key`,
+or `None`, which makes the provider read its own environment variable.
+`summarizer()` is what compaction and branch summaries read.
 
-The policy brings two checks from its measured-run design, and both are kept:
+### 4.1 Correction (2026-10-15, same day)
 
-- **The summarizer must declare its own `api_key`.** `local_summarizer` refuses
-  to inherit the session's key, because a separate summarizer is a different
-  endpoint. A summarizer entry with no `api_key` raises `ConfigError` at
-  construction. The alternative was to let `None` mean "the provider's
-  environment variable", as it does for `--model`. That loses here, because
-  `AgentSession.summarizer()` turns a `None` key into the *session's* key, so a
-  local session key would be sent to the summarizer's vendor. Supporting the env
-  var properly means changing how `summarizer_for` signals "no key". That is a
-  change to the policy's contract, so it is not made here.
-- **The summarizer's `context_window` must be at least the session model's.**
-  `bind_to` raises `CompactionPolicyError` at construction and again on
-  `set_model`. A compaction summarises a full window, so a smaller summarizer
-  would fail mid-session as a `CompactionError`.
+As first built, the policy carried a ready-built `Model` and an API-key string.
+`TauBackend` resolved the entry itself and refused a summarizer entry with no
+`api_key`. John rejected that: "can't we use the model by name out of the Tau
+model configuration? Why would we have a separate path to making LLM calls? It
+makes sense for it to be outside of a conversation, but not for two paths for API
+keys to get into the harness."
+
+The hazard was real, but it was in the core, not the config. When a policy named
+no key, `summarizer()` substituted the *session's* key. That fallback is deleted.
+The policy's `summarizer_model`/`summarizer_api_key` fields and `summarizer_for`
+are gone, and `local_summarizer` takes `summarizer: str`. So a credential now has
+one way into the harness, `resolve_model`, and the session's key cannot reach
+another model's endpoint by default.
+
+Consequences:
+
+- **The session must have a resolver before the policy is bound.**
+  `AgentSession.__init__` now assigns `model_resolver` before binding. A
+  `local_summarizer` policy with no resolver raises `CompactionPolicyError` at
+  construction. `TauBackend` builds the `ConfigModelResolver` from
+  `model_config["models"]` and passes it as `model_resolver=`, so the CLI heads
+  never reach that error. The heads' later `set_model_resolver` calls bind an
+  equivalent resolver. `set_model_resolver` re-checks the policy and keeps the
+  old resolver if the new one fails. `create_agent_session` gained a
+  `model_resolver` argument so an SDK caller can declare the policy at all.
+- **A plain `name -> Model` resolver has no `api_key`.** `resolve_model` then
+  uses the session's key, for the summarizer exactly as for `set_model`. That is
+  the existing contract of the one path, not a second path.
+- **The run manifest records the summarizer by name only.** It used to record id,
+  provider, `base_url` and `context_window`. The policy no longer holds a model,
+  and `to_manifest()` takes no session.
+
+The window check is kept: **the summarizer's `context_window` must be at least the
+session model's.** `bind_to(model, summarizer_model)` raises
+`CompactionPolicyError` at construction, on `set_model` and on
+`set_model_resolver`, always against the resolved model. A compaction summarises
+a full window, so a smaller summarizer would fail mid-session as a
+`CompactionError`.
 
 `enabled: false` with a summarizer still builds the policy, and then turns auto
 compaction off with `set_auto_compaction(False)`. So a manual `/compact` still
 uses the named summarizer.
 
-The policy's other machinery does nothing in this mode. `admit_turn` and
-`observe_context` are no-ops under `local_summarizer`, and no manifest is
-written. The RPC `set_auto_compaction` notes used to argue "no RPC session ever
-carries a policy". That argument now rests on the mode bounding no turns.
+The policy's other machinery does nothing in this mode: `admit_turn` and
+`observe_context` are no-ops under `local_summarizer`. The RPC
+`set_auto_compaction` notes used to argue "no RPC session ever carries a policy".
+That argument now rests on the mode bounding no turns.
 
 ## 5. Placement: top-level, with a per-model replacement
 
@@ -188,8 +216,6 @@ mentions.
   prices its bucket at 0, as before. Rejecting unknown price keys would break
   every config that carries an extra key in that block today, so it needs its
   own decision.
-- **An env-var key for the summarizer.** §4. The change belongs in
-  `CompactionPolicy`, not in the config reader.
 - **`soft_limit_ratio`, `hard_limit_tokens`, `soft_limit_tokens` in the block.**
   §3.
 - **A submission id on an auto-compaction's `agent_start`/`agent_end`.** The RPC

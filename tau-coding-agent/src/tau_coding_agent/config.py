@@ -175,13 +175,14 @@ def parse_compaction_config(block: Any) -> CompactionConfig:
 def apply_compaction_config(
     model_config: dict[str, Any], config: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """``model_config`` with the compaction block in force and its summarizer's entry resolved.
+    """``model_config`` with the compaction block in force.
 
     A model entry's own ``"compaction"`` replaces the top-level one whole. With
     neither, ``model_config`` comes back as it is, which ``TauBackend`` reads as
-    compaction on with the defaults. A named summarizer's ``config["models"]``
-    entry is copied onto ``"compaction_summarizer"``, because ``TauBackend`` sees
-    only the one model's config.
+    compaction on with the defaults. When the block names a summarizer,
+    ``config["models"]`` rides along as ``"models"``: ``TauBackend`` sees only
+    the one model's config, and its session must resolve the summarizer by name
+    from construction (docs/PRICING-AND-COMPACTION-CONFIG.md §4).
 
     Args:
         model_config: The config ``create_backend`` is about to receive; not mutated.
@@ -202,7 +203,7 @@ def apply_compaction_config(
         return model_config
     parsed = parse_compaction_config(block)
     resolved = {**model_config, "compaction": block}
-    resolved.pop("compaction_summarizer", None)
+    resolved.pop("models", None)
     if parsed.summarizer is not None:
         models = config.get("models") or {}
         if parsed.summarizer not in models:
@@ -211,8 +212,5 @@ def apply_compaction_config(
                 f"'compaction.summarizer' names unknown model {parsed.summarizer!r}; "
                 f"configured models: {known}"
             )
-        resolved["compaction_summarizer"] = {
-            **models[parsed.summarizer],
-            "config_name": parsed.summarizer,
-        }
+        resolved["models"] = dict(models)
     return resolved

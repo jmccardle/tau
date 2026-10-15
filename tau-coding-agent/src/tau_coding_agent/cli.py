@@ -502,7 +502,9 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
     if args.model or args.provider or args.thinking:
         name, model_config = resolve_model_config(config, args)
         existing = config.get("models", {}).get(name, {})
-        overrides["models"] = {name: {**existing, **model_config}}
+        entry = {**existing, **model_config}
+        entry.pop("models", None)
+        overrides["models"] = {name: entry}
         overrides["default_model"] = name
     if args.system_prompt is not None:
         overrides["system_prompt"] = args.system_prompt

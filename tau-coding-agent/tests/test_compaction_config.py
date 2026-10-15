@@ -133,13 +133,15 @@ def test_a_model_entry_block_replaces_the_global_one_whole():
     assert apply_compaction_config(entry, config)["compaction"] == {"enabled": False}
 
 
-def test_summarizer_entry_is_resolved_from_the_models_map():
+def test_a_named_summarizer_brings_the_models_map_for_the_resolver():
     config = _config(compaction={"summarizer": "small"})
     resolved = apply_compaction_config(dict(config["models"]["main"]), config)
-    assert resolved["compaction_summarizer"] == {
-        **config["models"]["small"],
-        "config_name": "small",
-    }
+    assert resolved["models"] == config["models"]
+
+
+def test_no_summarizer_brings_no_models_map():
+    config = _config(compaction={"enabled": True})
+    assert "models" not in apply_compaction_config(dict(config["models"]["main"]), config)
 
 
 def test_unknown_summarizer_raises_listing_the_configured_models():
@@ -199,13 +201,31 @@ def test_backend_keeps_the_summarizer_when_auto_compaction_is_off():
     assert backend.agent_session.summarizer()[0].id == "small"
 
 
-def test_summarizer_without_api_key_raises():
+def test_summarizer_without_api_key_gets_none_so_the_provider_reads_its_env_var():
     small = _entry("small")
     del small["api_key"]
     config = _config(compaction={"summarizer": "small"})
     config["models"]["small"] = small
-    with pytest.raises(ConfigError, match="no api_key"):
-        TauBackend(apply_compaction_config(dict(config["models"]["main"]), config))
+    backend = TauBackend(apply_compaction_config(dict(config["models"]["main"]), config))
+    model, key = backend.agent_session.summarizer()
+    assert model.id == "small"
+    assert key is None
+
+
+def test_the_session_key_never_reaches_the_summarizer():
+    small = _entry("small")
+    del small["api_key"]
+    config = _config(compaction={"summarizer": "small"})
+    config["models"]["small"] = small
+    backend = TauBackend(apply_compaction_config(dict(config["models"]["main"]), config))
+    assert backend.agent_session.summarizer()[1] != "key-main"
+
+
+def test_the_summarizer_key_is_the_one_set_model_would_use():
+    config = _config(compaction={"summarizer": "small"})
+    backend = TauBackend(apply_compaction_config(dict(config["models"]["main"]), config))
+    session = backend.agent_session
+    assert session.summarizer() == session.resolve_model("small")
 
 
 def test_summarizer_with_a_smaller_window_raises_at_construction():
@@ -228,7 +248,7 @@ def test_resolve_model_config_applies_the_block():
     config = _config(compaction={"summarizer": "small", "keep_recent_tokens": 77})
     _name, mc = resolve_model_config(config, CLIArgs(model="main"))
     assert mc["compaction"] == {"summarizer": "small", "keep_recent_tokens": 77}
-    assert mc["compaction_summarizer"]["config_name"] == "small"
+    assert set(mc["models"]) == {"main", "small"}
 
 
 def test_resolve_model_config_applies_the_block_to_an_ad_hoc_model():
@@ -242,5 +262,5 @@ def test_tui_applies_the_block(make_app):
     app = make_app(create_backend=lambda _mc: None, config=config)
     mc = app._apply_run_config(app.config["models"]["main"])
     assert mc["compaction"] == {"summarizer": "small", "enabled": False}
-    assert mc["compaction_summarizer"]["config_name"] == "small"
+    assert set(mc["models"]) == {"main", "small"}
     assert "compaction" not in app.config["models"]["main"]

@@ -31,9 +31,9 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 - `api_key: str | None = None` — The key ``model`` is called with; ``None`` passes no key.
 - `reasoning: str | None = None` — Requested thinking level for every turn and compaction, or ``None``.
 - `compaction_settings: CompactionSettings | None = None` — Settings when no ``compaction_policy`` is given; ``None`` means the defaults.
-- `compaction_policy: CompactionPolicy | None = None` — A declared policy that supplies its own settings and summarizer. Mutually exclusive with ``compaction_settings``.
+- `compaction_policy: CompactionPolicy | None = None` — A declared policy that supplies its own settings and summarizer. Mutually exclusive with ``compaction_settings``. One naming a summarizer needs ``model_resolver``, or construction raises.
 - `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by file stem; each extension's ``api.config`` is its slice.
-- `model_resolver: Callable[[str], Model] | None = None` — Turns a config model name into a ``Model`` for :meth:`set_model`; see :meth:`set_model_resolver`.
+- `model_resolver: Callable[[str], Model] | None = None` — Turns a config model name into a ``Model`` for :meth:`set_model` and the policy's summarizer; see :meth:`set_model_resolver`.
 - `max_turns: int | None = None` — The loop's turn ceiling, at least 1; ``None`` is no ceiling.
 - `tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel'` — Whether one response's tool calls run in parallel or one at a time.
 - `bus_available: bool = False` — Whether a bus transport backs this session. An extension declaring ``TOUCHES_BUS`` is refused at load when False.
@@ -1302,6 +1302,10 @@ seam through which a head supplies its config's models.
 
 - `resolver: Callable[[str], Model]` — Maps a config model name to a ``Model``. An ``api_key(name)`` method on it, when present, supplies that model's key (:meth:`resolve_model`).
 
+**Raises**
+
+- `CompactionPolicyError` — a ``local_summarizer`` policy's summarizer, as ``resolver`` resolves it, fails :meth:`CompactionPolicy.bind_to`; the old resolver stays bound.
+
 ### set_session_name
 
 ```python
@@ -1654,11 +1658,11 @@ summarizer() -> tuple[Model, str | None]
 
 The model and key a compaction or a branch summary runs on (H5 / §16.8).
 
-Read live, so it tracks :meth:`set_model`.
+Read live, so it tracks :meth:`set_model` and :meth:`set_model_resolver`.
 
 **Returns**
 
-``(model, key)``: the session's model and key with no compaction policy; otherwise the policy's summarizer, falling back to the session's key when the policy names none.
+``(model, key)``: the session's own model and key unless the policy names a summarizer; then :meth:`resolve_model` of that name, the one way a credential enters the session (docs/PRICING-AND-COMPACTION-CONFIG.md §4).
 
 ### turn_lock
 

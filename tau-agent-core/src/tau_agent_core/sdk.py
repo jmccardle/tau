@@ -1291,6 +1291,7 @@ def create_agent_session(
     tool_execution_mode: Literal["sequential", "parallel"] = "parallel",
     compaction_policy: CompactionPolicy | None = None,
     compaction_settings: CompactionSettings | None = None,
+    model_resolver: Callable[[str], Model] | None = None,
     bus_available: bool = False,
     no_tools: Literal["all", "builtin"] | None = None,
     max_turns: int | None = None,
@@ -1371,6 +1372,9 @@ def create_agent_session(
             — the two thresholds and the retention size. Mutually exclusive with
             ``compaction_policy``, which supplies its own; ``AgentSession`` raises
             on both. ``None`` takes the shipped defaults.
+        model_resolver: Config model name to ``Model``, forwarded to
+            ``AgentSession``. Required by a ``local_summarizer`` policy, whose
+            summarizer it resolves together with its key.
         bus_available: Whether this session has a bus transport a loaded
             extension may declare against (H8, SIM_SPEC_v2 §16.10). ``False``
             — the default — refuses to load any file extension that declares
@@ -1476,6 +1480,7 @@ def create_agent_session(
         reasoning=reasoning_arg,
         compaction_policy=compaction_policy,
         compaction_settings=compaction_settings,
+        model_resolver=model_resolver,
         tool_execution_mode=tool_execution_mode,
         bus_available=bus_available,
         no_tools=no_tools,

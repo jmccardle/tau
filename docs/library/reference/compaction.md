@@ -62,7 +62,7 @@ rather than return a pair that does not.
 <!-- agent: yes -->
 
 ```python
-class CompactionPolicy(mode: PolicyMode, max_turns: int | None = None, max_tokens_per_turn: int | None = None, summarizer_model: Model | None = None, summarizer_api_key: str | None = None, reserve_tokens: int = DEFAULT_COMPACTION_SETTINGS.reserve_tokens, keep_recent_tokens: int = DEFAULT_COMPACTION_SETTINGS.keep_recent_tokens)
+class CompactionPolicy(mode: PolicyMode, max_turns: int | None = None, max_tokens_per_turn: int | None = None, summarizer: str | None = None, reserve_tokens: int = DEFAULT_COMPACTION_SETTINGS.reserve_tokens, keep_recent_tokens: int = DEFAULT_COMPACTION_SETTINGS.keep_recent_tokens)
 ```
 
 `tau_agent_core.compaction_policy.CompactionPolicy`
@@ -78,8 +78,7 @@ checkable. There is no default instance and no default mode.
 - `mode: PolicyMode` — Which of the three admissible policies this is.
 - `max_turns: int | None = None` — Bound on user turns (``prompt()`` calls). Required by ``disabled`` and ``turn_cap``; must be ``None`` otherwise.
 - `max_tokens_per_turn: int | None = None` — Bound on the context each user turn may add. Required by ``turn_cap`` only.
-- `summarizer_model: Model | None = None` — The summariser. Required by ``local_summarizer`` only.
-- `summarizer_api_key: str | None = None` — Key for ``summarizer_model``. Required by ``local_summarizer`` only; never written to the manifest.
+- `summarizer: str | None = None` — The summariser's config model NAME, resolved (model and key) by the session's resolver. Required by ``local_summarizer`` only.
 - `reserve_tokens: int = DEFAULT_COMPACTION_SETTINGS.reserve_tokens` — Copied into :attr:`compaction_settings`; the threshold is ``context_window - reserve_tokens``. Must be positive.
 - `keep_recent_tokens: int = DEFAULT_COMPACTION_SETTINGS.keep_recent_tokens` — Copied into :attr:`compaction_settings`.
 
@@ -110,23 +109,24 @@ A no-op for a policy without ``max_turns`` (``local_summarizer``).
 ### bind_to
 
 ```python
-bind_to(model: Model) -> None
+bind_to(model: Model, summarizer_model: Model | None = None) -> None
 ```
 
 `tau_agent_core.compaction_policy.CompactionPolicy.bind_to`
 
 Check this declaration against the model it will run under; raise if not.
 
-Called once, at session construction, so everything checkable before a
-token is spent fails here rather than at turn 40.
+Called at session construction and on every model switch, so everything
+checkable before a token is spent fails here rather than at turn 40.
 
 **Parameters**
 
 - `model: Model` — The session model; its ``context_window`` is what is checked.
+- `summarizer_model: Model | None = None` — :attr:`summarizer` as the session resolved it. Required under ``local_summarizer``, ignored otherwise.
 
 **Raises**
 
-- `CompactionPolicyError` — ``context_window <= reserve_tokens``; under ``local_summarizer``, a summariser window smaller than the session's; under ``turn_cap``, ``max_turns * max_tokens_per_turn`` exceeding ``context_window - reserve_tokens``.
+- `CompactionPolicyError` — ``context_window <= reserve_tokens``; under ``local_summarizer``, no ``summarizer_model`` or one whose window is smaller than the session's; under ``turn_cap``, ``max_turns * max_tokens_per_turn`` exceeding ``context_window - reserve_tokens``.
 
 ### compaction_settings
 
@@ -159,7 +159,7 @@ A ``disabled`` policy.
 ### local_summarizer
 
 ```python
-local_summarizer(*, model: Model, api_key: str) -> CompactionPolicy
+local_summarizer(*, summarizer: str) -> CompactionPolicy
 ```
 
 `tau_agent_core.compaction_policy.CompactionPolicy.local_summarizer`
@@ -168,8 +168,7 @@ Compaction on, through a separately declared model (§16.8 option 2).
 
 **Parameters**
 
-- `model: Model` — The summariser; :meth:`bind_to` requires its context window to be at least the session model's.
-- `api_key: str` — Required, not inherited from the session: a near-side summariser is a different endpoint with different credentials. Pass the literal the local server expects, even if it ignores it. Never written to a manifest.
+- `summarizer: str` — A config model NAME. The session resolves it, and its key, through ``AgentSession.resolve_model``, so it needs a bound model resolver; :meth:`bind_to` then requires the resolved model's context window to be at least the session model's.
 
 **Returns**
 
@@ -203,24 +202,6 @@ which is why ``turn_cap`` is the stronger declaration.
 
 - `CompactionPolicyViolation` — ``context_tokens`` exceeds ``turns_used * max_tokens_per_turn`` (premise P1), or exceeds ``context_window - reserve_tokens`` (the claim C).
 
-### summarizer_for
-
-```python
-summarizer_for(session_model: Model) -> tuple[Model, str | None]
-```
-
-`tau_agent_core.compaction_policy.CompactionPolicy.summarizer_for`
-
-The (model, api_key) a compaction under this policy summarises through.
-
-**Parameters**
-
-- `session_model: Model` — The session's model, returned for every mode but ``local_summarizer``.
-
-**Returns**
-
-``(summarizer_model, summarizer_api_key)`` under ``local_summarizer``; otherwise ``(session_model, None)``, where ``None`` means the session substitutes its own key.
-
 ### to_manifest
 
 ```python
@@ -233,7 +214,7 @@ The manifest fragment. JSON-serialisable, and it never carries a secret.
 
 **Returns**
 
-``mode``; ``declared``, holding only the set fields among ``max_turns``, ``max_tokens_per_turn`` and ``summarizer_model`` (as id, provider, base_url, context_window — no key); ``compaction_enabled``; ``reserve_tokens``; ``keep_recent_tokens``.
+``mode``; ``declared``, holding only the set fields among ``max_turns``, ``max_tokens_per_turn`` and ``summarizer`` (the config name — the policy holds no model and no key); ``compaction_enabled``; ``reserve_tokens``; ``keep_recent_tokens``.
 
 ### turn_cap
 

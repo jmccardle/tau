@@ -1185,39 +1185,17 @@ def make_model_resolver(models: dict[str, Any]) -> ConfigModelResolver:
     return ConfigModelResolver(models)
 
 
-def _compaction_policy(
-    compaction: CompactionConfig, summarizer_entry: dict[str, Any] | None
-) -> CompactionPolicy | None:
+def _compaction_policy(compaction: CompactionConfig) -> CompactionPolicy | None:
     """The ``local_summarizer`` policy a named ``compaction.summarizer`` declares, else ``None``.
 
-    The summarizer resolves through :class:`ConfigModelResolver`, the resolver
-    ``--model`` and ``set_model`` use (docs/PRICING-AND-COMPACTION-CONFIG.md §4).
-
-    Raises:
-        ConfigError: a summarizer is named but ``apply_compaction_config`` did
-            not resolve its entry, or the entry declares no ``api_key``.
-        CompactionPolicyError: at bind time, from ``AgentSession``, when the
-            summarizer's ``context_window`` is smaller than the session model's.
+    The policy holds the NAME only. The session resolves it, model and key, through
+    its :class:`ConfigModelResolver` (docs/PRICING-AND-COMPACTION-CONFIG.md §4).
     """
-    name = compaction.summarizer
-    if name is None:
+    if compaction.summarizer is None:
         return None
-    if summarizer_entry is None:
-        raise ConfigError(
-            f"'compaction.summarizer' is {name!r} but its model entry was not resolved; "
-            "the head must pass the config through apply_compaction_config"
-        )
-    resolver = ConfigModelResolver({name: summarizer_entry})
-    api_key = resolver.api_key(name)
-    if api_key is None:
-        raise ConfigError(
-            f"'compaction.summarizer' model {name!r} has no api_key in its models entry; "
-            "a separate summarizer must declare its own key, even one its server ignores"
-        )
     return CompactionPolicy(
         mode="local_summarizer",
-        summarizer_model=resolver(name),
-        summarizer_api_key=api_key,
+        summarizer=compaction.summarizer,
         reserve_tokens=compaction.settings.reserve_tokens,
         keep_recent_tokens=compaction.settings.keep_recent_tokens,
     )
@@ -1473,7 +1451,13 @@ class TauBackend(Backend):
         max_turns = config.get("max_turns")
 
         compaction = parse_compaction_config(config.get("compaction", {}))
-        policy = _compaction_policy(compaction, config.get("compaction_summarizer"))
+        policy = _compaction_policy(compaction)
+        if policy is not None and "models" not in config:
+            raise ConfigError(
+                f"'compaction.summarizer' is {compaction.summarizer!r} but no models map "
+                "came with the config; the head must pass it through apply_compaction_config"
+            )
+        resolver = ConfigModelResolver(config["models"]) if "models" in config else None
 
         self.agent_session = AgentSession(
             session_log=InMemorySessionLog(),
@@ -1484,6 +1468,7 @@ class TauBackend(Backend):
             reasoning=reasoning_arg,
             compaction_settings=compaction.settings if policy is None else None,
             compaction_policy=policy,
+            model_resolver=resolver,
             bus_available=bool(config.get("bus_available", False)),
             no_tools=no_tools,
             max_turns=max_turns,

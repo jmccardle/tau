@@ -232,9 +232,10 @@ Every head compacts automatically: when the context nears a model's
 
 `reserve_tokens` is the margin kept free below the window for the summary call
 itself. `keep_recent_tokens` is how much recent conversation stays verbatim.
-`summarizer` names another entry in `models` to summarise with. That entry must
-carry its own `api_key` and a `context_window` at least as large as the session
-model's. Without `summarizer`, the session's own model summarises. A model entry
+`summarizer` names another entry in `models` to summarise with. It is resolved
+the way `--model` resolves a name, so its key is that entry's `api_key`, or the
+provider's environment variable when the entry has none. Its `context_window`
+must be at least as large as the session model's. Without `summarizer`, the session's own model summarises. A model entry
 can carry its own `compaction` block, which replaces the top-level one for that
 model. An unknown key, a wrong type or an unknown summarizer stops τ at startup.
 `docs/PRICING-AND-COMPACTION-CONFIG.md` has the reasoning.
