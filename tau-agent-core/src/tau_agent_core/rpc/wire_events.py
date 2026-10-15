@@ -197,5 +197,6 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
         max_retries=event.max_retries,
         delay_seconds=event.delay_seconds,
         status_code=event.status_code,
+        dropped=event.dropped,
         **extra,
     )

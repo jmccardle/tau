@@ -6420,6 +6420,21 @@
           "default": null,
           "description": "One text fragment that arrived. On message_update (E1) it is a diffable content-block's prefix-diff against the previous message_update in the same turn, never the cumulative message; only a diffable block kind sets it (see block_type), and a non-diffable block change (e.g. a growing toolCall) produces no wire event. On side_completion_update it is the next fragment of the summary. Both are applied the same way, which is why they share a field rather than asking a client to keep two accumulators \u2014 see `replace`. None for all other event types."
         },
+        "dropped": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The queued followUp texts a user abort discarded, in queue order, on follow_ups_dropped. They were never written to the session, so this is the one field here that carries content no verb can pull afterwards. None for all other event types. See docs/TURN-SETTINGS.md \u00a75."
+        },
         "dropped_tool_calls": {
           "anyOf": [
             {
@@ -6689,7 +6704,8 @@
             "side_completion_start",
             "side_completion_update",
             "side_completion_end",
-            "provider_retry"
+            "provider_retry",
+            "follow_ups_dropped"
           ],
           "type": "string"
         }

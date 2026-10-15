@@ -2893,7 +2893,7 @@ class AgentSession:
             rollback_target = cur.pre_turn_leaf
             aborted_token = cur.turn_token
             if was_in_flight:
-                cur.abort_signal.abort()
+                cur.abort_signal.abort(reason="user")
                 cur.steer_queue.clear()
             await cur.turn_lock.acquire()
             if was_in_flight:
@@ -3518,17 +3518,33 @@ class AgentSession:
            EXACTLY ONCE here, never mid-turn (decision 3). No loop reentrancy.
         3. **followUp** — messages queued ``deliver_as="followUp"`` re-enter the
            agent loop WITHIN this same ``prompt()`` call; each new turn's messages
-           are appended to ``turn_messages`` and itself drains at its tail.
+           are appended to ``turn_messages`` and itself drains at its tail. After
+           an ``"extension"`` abort each runs on a fresh signal; after a
+           ``"user"`` abort all are dropped and announced (docs/TURN-SETTINGS.md §5).
         """
         await self._maybe_auto_compact()
         await self._drain_deferred_ops()
 
-        while self.acting_cursor.follow_up_queue:
-            follow_up = self.acting_cursor.follow_up_queue.pop(0)
+        cursor = self.acting_cursor
+        while cursor.follow_up_queue:
+            if cursor.abort_signal.is_aborted():
+                if cursor.abort_signal.reason == "user":
+                    await self._drop_follow_ups(cursor)
+                    break
+                cursor.abort_signal = AbortSignal()
+            follow_up = cursor.follow_up_queue.pop(0)
             follow_up_messages = await self._run_one_turn(follow_up, None, None)
             turn_messages.extend(follow_up_messages)
             await self._maybe_auto_compact()
             await self._drain_deferred_ops()
+
+    async def _drop_follow_ups(self, cursor: Cursor) -> None:
+        """Empty ``cursor``'s followUp queue, write nothing, and emit ``follow_ups_dropped``."""
+        dropped = list(cursor.follow_up_queue)
+        cursor.follow_up_queue.clear()
+        await self._emit_stamped(
+            AgentEvent(type="follow_ups_dropped", timestamp=self._timestamp(), dropped=dropped)
+        )
 
     async def _run_user_turn_end(self, turn_messages: list[dict[str, Any]]) -> None:
         """Fire the ``user_turn_end`` hook once, at the user-turn boundary (§16.5).
@@ -4053,10 +4069,13 @@ class AgentSession:
     def abort(self, cursor: Cursor | None = None) -> None:
         """Abort ``cursor``'s turn, every cursor it owns, and every still-running forked branch.
 
-        Owned cursors are aborted first, deepest first, so a sub-agent stops before
-        the turn that spawned it (docs/CURSORS.md §6). Each loses its queued steers:
-        the turn they were aimed at is gone. A fork's background task is cancelled,
-        since no caller holds its cursor (docs/SUBMISSION-LIFECYCLE.md "fork").
+        A ``"user"`` abort: every head's stop key lands here, and the followUps
+        queued for the aborted turn are dropped and announced rather than run
+        (docs/TURN-SETTINGS.md §4-5). Owned cursors are aborted first, deepest
+        first, so a sub-agent stops before the turn that spawned it
+        (docs/CURSORS.md §6). Each loses its queued steers: the turn they were
+        aimed at is gone. A fork's background task is cancelled, since no caller
+        holds its cursor (docs/SUBMISSION-LIFECYCLE.md "fork").
 
         Marshalled :meth:`submit_threadsafe` submissions are deliberately NOT
         cancelled: one in flight is an ordinary turn the signal already aborts,
@@ -4069,10 +4088,10 @@ class AgentSession:
         """
         target = self.acting_cursor if cursor is None else self._registered(cursor)
         for owned in reversed(self._owned_by(target)):
-            owned.abort_signal.abort()
+            owned.abort_signal.abort(reason="user")
             owned.steer_queue.clear()
         target.is_streaming = False
-        target.abort_signal.abort()
+        target.abort_signal.abort(reason="user")
         target.steer_queue.clear()
         for task in self._forked_tasks.values():
             task.cancel()

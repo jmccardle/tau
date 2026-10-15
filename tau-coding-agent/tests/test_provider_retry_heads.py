@@ -14,7 +14,7 @@ from tau_agent_core.events import AgentEvent
 from tau_agent_core.provider_retry import retry_notice
 from tau_coding_agent import chat_widgets, transcript
 from tau_coding_agent.backends import TurnStream
-from tau_coding_agent.headless import report_provider_retry
+from tau_coding_agent.headless import report_stream_notice
 from tau_coding_agent.repl import ReplRenderer
 from tau_coding_agent.repl_input import MemoryReader
 
@@ -45,8 +45,8 @@ def test_turn_stream_renders_a_retry_as_the_core_notice():
 
 def test_print_mode_writes_the_notice_on_stderr_only(capsys):
     (structured,) = TurnStream("s1").feed(_RETRY)
-    report_provider_retry(structured)
-    report_provider_retry({"kind": "text_delta", "delta": "x"})
+    report_stream_notice(structured)
+    report_stream_notice({"kind": "text_delta", "delta": "x"})
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == f"[τ] {structured['text']}\n"

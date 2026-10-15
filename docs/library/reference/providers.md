@@ -9,24 +9,31 @@
 
 Signal that can be checked during async operations.
 
-When abort() is called, all subsequent is_aborted() checks return True.
-Async operations should check this periodically (e.g., every 100ms)
-and raise asyncio.CancelledError if aborted.
+Once :meth:`abort` is called, every :meth:`is_aborted` returns True. Async
+operations check it periodically and stop. Thread-safe.
 
 Reference: SUBPHASE-0.0.md, "3. AbortSignal" section.
 
 ### abort
 
 ```python
-abort() -> None
+abort(reason: AbortReason = 'user') -> None
 ```
 
 `tau_llm.abort.AbortSignal.abort`
 
 Signal that the current operation should be aborted.
 
-Idempotent: calling multiple times has no additional effect.
-Thread-safe: uses threading.Lock internally.
+Idempotent. A ``"user"`` abort overrides an earlier ``"extension"`` one;
+the reverse changes nothing (docs/TURN-SETTINGS.md §4).
+
+**Parameters**
+
+- `reason: AbortReason = 'user'` — ``"user"`` (the default, so an unreasoned caller means a person asked) or ``"extension"``.
+
+**Raises**
+
+- `ValueError` — ``reason`` is neither; the signal is left untripped.
 
 ### is_aborted
 
@@ -36,14 +43,17 @@ is_aborted() -> bool
 
 `tau_llm.abort.AbortSignal.is_aborted`
 
-Check if the signal has been aborted.
-
-Thread-safe: uses threading.Lock internally.
-Idempotent: multiple calls return the same value.
+Whether :meth:`abort` has been called.
 
 **Returns**
 
 True if abort() has been called, False otherwise.
+
+### reason
+
+`tau_llm.abort.AbortSignal.reason: AbortReason | None`
+
+Who aborted: ``"user"`` or ``"extension"``; ``None`` until aborted.
 
 ## ApiFactory
 <!-- agent: yes -->

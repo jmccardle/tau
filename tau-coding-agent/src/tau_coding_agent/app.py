@@ -2299,6 +2299,9 @@ class TauApp(App):
             delay = float(event["delay_seconds"])
             self.notify(event["text"], severity="warning", timeout=max(5.0, delay))
             return
+        if kind == "follow_ups_dropped":
+            self.notify(event["text"], severity="warning")
+            return
         if kind == "tool_call":
             self._flush_pending_steer(at_tool_call=True)
         await display.handle_stream_event(event)

@@ -56,6 +56,10 @@ unbounded nor pullable in time to matter — a host that learns from
 ``get_messages`` that the answer it already rendered was a truncated prefix
 learns it too late.
 
+``dropped`` is the one unbounded field ON the wire: the followUp texts a user
+abort discarded were never written anywhere, so there is nothing to pull
+(docs/TURN-SETTINGS.md §5).
+
 E3 (additive and versioned): every field below is optional/defaulted and
 :class:`WireEvent` does not set ``model_config["extra"] = "forbid"`` — a
 client MUST ignore a field it does not recognize, so this module (and any
@@ -106,6 +110,7 @@ class WireEvent(BaseModel):
         "side_completion_update",
         "side_completion_end",
         "provider_retry",
+        "follow_ups_dropped",
     ] = Field(description="Event type discriminator.")
     timestamp: int = Field(ge=0, description="Milliseconds since epoch.")
     turn_index: int | None = Field(default=None, description="Turn number (turn_*).")
@@ -280,6 +285,13 @@ class WireEvent(BaseModel):
         description="The HTTP status being retried, on provider_retry (e.g. 429, "
         "503). None for a connection that failed before any response, and for "
         "all other event types.",
+    )
+    dropped: list[str] | None = Field(
+        default=None,
+        description="The queued followUp texts a user abort discarded, in queue "
+        "order, on follow_ups_dropped. They were never written to the session, "
+        "so this is the one field here that carries content no verb can pull "
+        "afterwards. None for all other event types. See docs/TURN-SETTINGS.md §5.",
     )
     leaf: str | None = Field(
         default=None,

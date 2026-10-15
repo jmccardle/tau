@@ -612,7 +612,10 @@ abort() -> None
 
 `tau_agent_core.extension_types.ExtensionContext.abort`
 
-Trip :attr:`signal`, the running turn's, if there is one.
+Trip :attr:`signal`, the running turn's, as an ``"extension"`` abort.
+
+The loop stops at its next check; followUps queued for this turn still
+run, each on a fresh signal (docs/TURN-SETTINGS.md §5). No-op without a signal.
 
 ### compact
 

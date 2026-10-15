@@ -2062,7 +2062,7 @@ The wire projection of ``AgentEvent`` (D3) — REMOTE-CONTROL.md's designed shap
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `type` | `"agent_start"` \| `"agent_end"` \| `"turn_start"` \| `"turn_end"` \| `"message_start"` \| `"message_update"` \| `"message_end"` \| `"tool_execution_start"` \| `"tool_execution_update"` \| `"tool_execution_end"` \| `"side_completion_start"` \| `"side_completion_update"` \| `"side_completion_end"` \| `"provider_retry"` | yes | Event type discriminator. |
+| `type` | `"agent_start"` \| `"agent_end"` \| `"turn_start"` \| `"turn_end"` \| `"message_start"` \| `"message_update"` \| `"message_end"` \| `"tool_execution_start"` \| `"tool_execution_update"` \| `"tool_execution_end"` \| `"side_completion_start"` \| `"side_completion_update"` \| `"side_completion_end"` \| `"provider_retry"` \| `"follow_ups_dropped"` | yes | Event type discriminator. |
 | `timestamp` | integer | yes | Milliseconds since epoch. |
 | `turn_index` | integer \| null | no | Turn number (turn_*). |
 | `tool_call_id` | string \| null | no | Tool call id (tool_*). |
@@ -2091,4 +2091,5 @@ The wire projection of ``AgentEvent`` (D3) — REMOTE-CONTROL.md's designed shap
 | `max_retries` | integer \| null | no | The most retries that request will make, on provider_retry. None for all other event types. |
 | `delay_seconds` | number \| null | no | Seconds τ waits before re-sending, on provider_retry: the server's Retry-After when it sent one, else an exponential backoff. None for all other event types. |
 | `status_code` | integer \| null | no | The HTTP status being retried, on provider_retry (e.g. 429, 503). None for a connection that failed before any response, and for all other event types. |
+| `dropped` | list of string \| null | no | The queued followUp texts a user abort discarded, in queue order, on follow_ups_dropped. They were never written to the session, so this is the one field here that carries content no verb can pull afterwards. None for all other event types. See docs/TURN-SETTINGS.md §5. |
 | `leaf` | string \| null | no | The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |

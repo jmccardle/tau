@@ -100,6 +100,7 @@ class TestEventTypesReflectAgentEvent:
             "side_completion_update",
             "side_completion_end",
             "provider_retry",
+            "follow_ups_dropped",
         }
 
     def test_raises_if_agent_event_type_is_no_longer_a_literal(self, monkeypatch):

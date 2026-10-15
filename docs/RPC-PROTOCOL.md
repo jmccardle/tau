@@ -18,7 +18,7 @@
 
 - **Protocol version:** `2.2`
 - **Dialect:** `jsonrpc-2.0`
-- **Counts:** 40 live verbs, 7 declined verbs, 14 event types, 62 type definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 40 live verbs, 7 declined verbs, 15 event types, 62 type definitions. Cite this line; never copy the numbers into hand-written prose.
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
 
@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 170,489 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 170,937 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -2537,14 +2537,14 @@ C1: every verb τ deliberately does not implement is declined here, with a reaso
 
 Every `type: "event"` notification carries a `WireEvent` payload (generated from `AgentEvent`, §6 point 3) as `params`. No unbounded field is ever pushed (G3): `message_update` carries a bounded per-chunk `delta`, never the cumulative message; `agent_end` carries a `message_count`, never the message array (pull it with `get_messages`).
 
-**Event types:** `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `side_completion_start`, `side_completion_update`, `side_completion_end`, `provider_retry`
+**Event types:** `agent_start`, `agent_end`, `turn_start`, `turn_end`, `message_start`, `message_update`, `message_end`, `tool_execution_start`, `tool_execution_update`, `tool_execution_end`, `side_completion_start`, `side_completion_update`, `side_completion_end`, `provider_retry`, `follow_ups_dropped`
 
 **Fields** (every event carries the full set; unpopulated fields are
 `null`/`false`, never omitted — a fixed record shape, not a variant one):
 
 | Field | Type | Description |
 |---|---|---|
-| `type` | `agent_start` \| `agent_end` \| `turn_start` \| `turn_end` \| `message_start` \| `message_update` \| `message_end` \| `tool_execution_start` \| `tool_execution_update` \| `tool_execution_end` \| `side_completion_start` \| `side_completion_update` \| `side_completion_end` \| `provider_retry` | Event type discriminator. |
+| `type` | `agent_start` \| `agent_end` \| `turn_start` \| `turn_end` \| `message_start` \| `message_update` \| `message_end` \| `tool_execution_start` \| `tool_execution_update` \| `tool_execution_end` \| `side_completion_start` \| `side_completion_update` \| `side_completion_end` \| `provider_retry` \| `follow_ups_dropped` | Event type discriminator. |
 | `timestamp` | integer | Milliseconds since epoch. |
 | `turn_index` | integer \| `null` | Turn number (turn_*). |
 | `tool_call_id` | string \| `null` | Tool call id (tool_*). |
@@ -2573,6 +2573,7 @@ Every `type: "event"` notification carries a `WireEvent` payload (generated from
 | `max_retries` | integer \| `null` | The most retries that request will make, on provider_retry. None for all other event types. |
 | `delay_seconds` | number \| `null` | Seconds τ waits before re-sending, on provider_retry: the server's Retry-After when it sent one, else an exponential backoff. None for all other event types. |
 | `status_code` | integer \| `null` | The HTTP status being retried, on provider_retry (e.g. 429, 503). None for a connection that failed before any response, and for all other event types. |
+| `dropped` | array \| `null` | The queued followUp texts a user abort discarded, in queue order, on follow_ups_dropped. They were never written to the session, so this is the one field here that carries content no verb can pull afterwards. None for all other event types. See docs/TURN-SETTINGS.md §5. |
 | `leaf` | string \| `null` | The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |
 
 ## Error codes

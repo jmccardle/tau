@@ -80,6 +80,14 @@ count, the diff. What ``result`` holds is what the MODEL reads; this
 is what a head can render beside it. ``None`` when the tool declared
 none, and on every other event type.
 
+### dropped
+
+`tau_agent_core.events.AgentEvent.dropped: list[str] | None`
+
+The queued followUp texts a user abort discarded, in queue
+order, on ``follow_ups_dropped`` only (docs/TURN-SETTINGS.md §5).
+Written nowhere else.
+
 ### end_reason
 
 `tau_agent_core.events.AgentEvent.end_reason: AgentEndReason | None`
@@ -233,7 +241,7 @@ Turn number (turn_*)
 
 ### type
 
-`tau_agent_core.events.AgentEvent.type: Literal['agent_start', 'agent_end', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'side_completion_start', 'side_completion_update', 'side_completion_end', 'provider_retry']`
+`tau_agent_core.events.AgentEvent.type: Literal['agent_start', 'agent_end', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'side_completion_start', 'side_completion_update', 'side_completion_end', 'provider_retry', 'follow_ups_dropped']`
 
 Event type discriminator
 
@@ -396,6 +404,25 @@ listener bound, the error goes to stderr.
 **Returns**
 
 A callable that removes ``listener``; calling it twice is harmless.
+
+## follow_ups_dropped_notice
+<!-- agent: yes -->
+
+```python
+follow_ups_dropped_notice(event: dict[str, Any]) -> str
+```
+
+`tau_agent_core.follow_ups.follow_ups_dropped_notice`
+
+The line a head shows for a ``follow_ups_dropped`` event or its wire payload.
+
+**Parameters**
+
+- `event: dict[str, Any]` — ``AgentEvent.model_dump()`` or a ``WireEvent`` dict; reads ``dropped``.
+
+**Returns**
+
+One line, e.g. ``"Aborted: dropped 1 queued follow-up: 'continue on the cheap model'"``. Each text is cut at 40 characters with ``…``; the event keeps it whole.
 
 ## retry_notice
 <!-- agent: yes -->

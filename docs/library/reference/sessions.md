@@ -56,10 +56,13 @@ abort(cursor: Cursor | None = None) -> None
 
 Abort ``cursor``'s turn, every cursor it owns, and every still-running forked branch.
 
-Owned cursors are aborted first, deepest first, so a sub-agent stops before
-the turn that spawned it (docs/CURSORS.md §6). Each loses its queued steers:
-the turn they were aimed at is gone. A fork's background task is cancelled,
-since no caller holds its cursor (docs/SUBMISSION-LIFECYCLE.md "fork").
+A ``"user"`` abort: every head's stop key lands here, and the followUps
+queued for the aborted turn are dropped and announced rather than run
+(docs/TURN-SETTINGS.md §4-5). Owned cursors are aborted first, deepest
+first, so a sub-agent stops before the turn that spawned it
+(docs/CURSORS.md §6). Each loses its queued steers: the turn they were
+aimed at is gone. A fork's background task is cancelled, since no caller
+holds its cursor (docs/SUBMISSION-LIFECYCLE.md "fork").
 
 Marshalled :meth:`submit_threadsafe` submissions are deliberately NOT
 cancelled: one in flight is an ordinary turn the signal already aborts,

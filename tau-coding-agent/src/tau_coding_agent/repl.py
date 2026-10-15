@@ -520,6 +520,10 @@ class ReplRenderer:
         """A request failed before any output and will be re-sent (docs/PROVIDER-RETRY.md)."""
         self.line("system", event["text"])
 
+    def _on_follow_ups_dropped(self, event: dict[str, Any]) -> None:
+        """A user abort discarded queued followUps (docs/TURN-SETTINGS.md §5)."""
+        self.line("system", event["text"])
+
     def _on_reasoning_delta(self, event: dict[str, Any]) -> None:
         stream = event["stream"]
         self._reasoning[stream] = self._reasoning.get(stream, "") + (event.get("delta") or "")

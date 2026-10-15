@@ -13,6 +13,7 @@ Event types:
 - message_start, message_update, message_end
 - tool_execution_start, tool_execution_update, tool_execution_end
 - provider_retry
+- follow_ups_dropped
 
 Constraint: "fire-and-forget" here means FAILURE ISOLATION, never scheduling.
 A handler that raises does not kill its siblings or its emitter; it is surfaced
@@ -155,6 +156,9 @@ class AgentEvent(BaseModel):
         delay_seconds: How long τ waits before re-sending it.
         status_code: The HTTP status being retried; ``None`` for a connection
             failure. Set on ``provider_retry`` only (docs/PROVIDER-RETRY.md).
+        dropped: The queued followUp texts a user abort discarded, in queue
+            order, on ``follow_ups_dropped`` only (docs/TURN-SETTINGS.md §5).
+            Written nowhere else.
     """
 
     type: Literal[
@@ -172,6 +176,7 @@ class AgentEvent(BaseModel):
         "side_completion_update",
         "side_completion_end",
         "provider_retry",
+        "follow_ups_dropped",
     ]
 
     timestamp: int = Field(ge=0)
@@ -209,6 +214,8 @@ class AgentEvent(BaseModel):
     max_retries: int | None = None
     delay_seconds: float | None = None
     status_code: int | None = None
+
+    dropped: list[str] | None = None
 
 
 @agent_facing(topic="events")
@@ -258,6 +265,7 @@ class EventBus:
             "side_completion_update": [],
             "side_completion_end": [],
             "provider_retry": [],
+            "follow_ups_dropped": [],
         }
         self._error_listeners: list[ErrorListener] = []
 
