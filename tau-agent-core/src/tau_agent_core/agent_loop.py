@@ -41,7 +41,7 @@ from tau_agent_core.agent_loop_types import (
     AgentLoopConfig,
     PreparedToolCall,
 )
-from tau_agent_core.events import AgentEndReason, AgentEvent
+from tau_agent_core.events import AgentEndReason, AgentEvent, ErrorDetail
 from tau_agent_core.provider_retry import provider_retry_event
 from tau_agent_core.messages import convert_to_llm, create_custom_message
 from tau_agent_core.tool_pipeline import (
@@ -664,6 +664,7 @@ class AgentLoop:
                     if error is None
                     else (f"{type(error).__name__}: {detail}" if detail else type(error).__name__)
                 ),
+                error_detail=None if error is None else ErrorDetail.of(error),
                 end_reason=("error" if error is not None else end_reason),
             )
         )
@@ -967,6 +968,7 @@ class AgentLoop:
                                 "model": final_msg.model,
                                 "stop_reason": final_msg.stop_reason,
                             },
+                            response_headers=event.response_headers,
                         )
                     )
                     return final_msg

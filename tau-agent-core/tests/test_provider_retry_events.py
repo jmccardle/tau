@@ -47,8 +47,16 @@ def server(monkeypatch: pytest.MonkeyPatch) -> list[httpx.Request]:
     """503 'loading' once, then an answer; the default policy made instant."""
     monkeypatch.setattr("tau_llm.retry.DEFAULT_RETRY_POLICY", RetryPolicy(base_delay=0.0))
     replies = [
-        httpx.Response(503, json={"error": {"message": "Loading model"}}),
-        httpx.Response(200, content=_sse("ready"), headers={"content-type": "text/event-stream"}),
+        httpx.Response(
+            503,
+            json={"error": {"message": "Loading model"}},
+            headers={"set-cookie": "__cf_bm=x", "x-ratelimit-remaining-requests": "0"},
+        ),
+        httpx.Response(
+            200,
+            content=_sse("ready"),
+            headers={"content-type": "text/event-stream", "x-ratelimit-remaining-requests": "4"},
+        ),
     ]
     seen: list[httpx.Request] = []
 
@@ -118,3 +126,23 @@ def test_retry_notice_reads_as_one_line():
         }
     )
     assert notice == "HTTP 503 from model 'm' at 'u': Loading model — retry 2 of 3 in 2.0s"
+
+
+def test_the_headers_reach_the_bus_whole_and_the_wire_without_cookies(server):
+    """docs/RESPONSE-HEADERS.md §5, through the real OpenAI provider."""
+    session = AgentSession(session_log=InMemorySessionLog(), model=_model(), api_key="x")
+    events = _run(session)
+    (retry,) = [e for e in events if e.type == "provider_retry"]
+    (end,) = [e for e in events if e.type == "message_end" and e.response_headers is not None]
+
+    assert retry.error_detail is not None and retry.error_detail.headers is not None
+    assert retry.error_detail.headers["set-cookie"] == "__cf_bm=x"
+    assert (retry.error_detail.status, retry.error_detail.retryable) == (503, True)
+    assert end.response_headers["x-ratelimit-remaining-requests"] == "4"
+
+    projector = WireEventProjector()
+    (wire_retry,) = projector.project(retry)
+    assert "set-cookie" not in wire_retry["error_detail"]["headers"]
+    assert wire_retry["error_detail"]["headers"]["x-ratelimit-remaining-requests"] == "0"
+    (wire_end,) = projector.project(end)
+    assert wire_end["response_headers"]["x-ratelimit-remaining-requests"] == "4"

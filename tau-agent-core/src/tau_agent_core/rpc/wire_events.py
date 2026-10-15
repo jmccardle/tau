@@ -41,7 +41,7 @@ from __future__ import annotations
 from typing import Any
 
 from tau_agent_core.event_projection import MessageDeltaProjector
-from tau_agent_core.events import AgentEvent
+from tau_agent_core.events import AgentEvent, ErrorDetail
 from tau_agent_core.prompt_cache import PromptCacheObserver
 from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.truncation import dropped_tool_calls
@@ -86,6 +86,7 @@ def project_event(
 
     ``message_end`` gains ``stop_reason`` and ``dropped_tool_calls``, which ARE
     projections — of the excluded ``message``, see :func:`_truncation_fields`.
+    Response and error headers cross without their cookies (:func:`strip_cookies`).
 
     Returns a LIST because ``message_update`` is not 1:1: a single incoming
     event may project into zero deltas (an unchanged block re-sent, or a
@@ -107,6 +108,7 @@ def project_event(
         projector.reset()
 
     if event.type != "message_update":
+        event = strip_cookies(event)
         extra: dict[str, Any] = {}
         if event.type == "agent_end":
             extra["message_count"] = len(event.messages) if event.messages is not None else None
@@ -135,6 +137,37 @@ def project_event(
             ).model_dump(mode="json")
         )
     return payloads
+
+
+COOKIE_HEADERS = frozenset({"set-cookie", "set-cookie2"})
+"""Response headers no machine-readable output carries (docs/RESPONSE-HEADERS.md §5)."""
+
+
+def strip_cookie_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
+    """``headers`` without :data:`COOKIE_HEADERS`; None stays None, so "not captured" survives."""
+    if headers is None:
+        return None
+    return {k: v for k, v in headers.items() if k not in COOKIE_HEADERS}
+
+
+def strip_cookies(event: AgentEvent) -> AgentEvent:
+    """``event`` without cookies in its headers, for output that leaves the process.
+
+    The RPC/serve wire and ``tau -p --mode json`` both call this; the in-process
+    bus does not. Returns ``event`` itself when it carries no headers.
+    """
+    detail = event.error_detail
+    if event.response_headers is None and (detail is None or detail.headers is None):
+        return event
+    stripped: ErrorDetail | None = None
+    if detail is not None:
+        stripped = detail.model_copy(update={"headers": strip_cookie_headers(detail.headers)})
+    return event.model_copy(
+        update={
+            "response_headers": strip_cookie_headers(event.response_headers),
+            "error_detail": stripped,
+        }
+    )
 
 
 def _truncation_fields(message: dict[str, Any]) -> dict[str, Any]:
@@ -182,7 +215,9 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
         tool_name=event.tool_name,
         is_error=event.is_error,
         error=event.error,
+        error_detail=event.error_detail,
         end_reason=event.end_reason,
+        response_headers=event.response_headers,
         blocked=event.blocked,
         blocked_by=event.blocked_by,
         cursor_id=event.cursor_id,
