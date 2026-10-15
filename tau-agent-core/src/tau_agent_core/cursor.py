@@ -46,6 +46,7 @@ class TurnFrame:
         model: The model to run, or ``None`` for the session's.
         api_key: ``model``'s key, ``None`` for the provider's environment
             variable. Ignored when ``model`` is ``None``. Never recorded.
+        reasoning: The thinking level to request, or ``None`` for the session's.
         system_prompt: The prompt to run under, or ``None`` for the session's.
         max_turns: The loop's turn ceiling for this cursor; ``None`` is no ceiling.
         hooks: Whether extension hooks run on this cursor's turns. Off by default:
@@ -55,6 +56,7 @@ class TurnFrame:
     tools: tuple[str, ...]
     model: Any = None
     api_key: str | None = None
+    reasoning: str | None = None
     system_prompt: str | None = None
     max_turns: int | None = None
     hooks: bool = False

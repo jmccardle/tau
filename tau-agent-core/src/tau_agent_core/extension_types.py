@@ -1003,10 +1003,10 @@ class ExtensionContext:
         return model
 
     def set_model(self, name: str) -> dict[str, Any]:
-        """Switch the acting cursor's model by NAME, effective on its next turn (S45).
+        """Switch the acting cursor's model by NAME, effective on its next request.
 
-        Delegates to :meth:`AgentSession.set_model`: at the head cursor that is
-        the session's model, at any other cursor that cursor's frame.
+        Delegates to :meth:`AgentSession.set_model`. From a ``turn_end`` hook the
+        running loop's next request already uses it.
 
         Args:
             name: The config model name to resolve and switch to.
@@ -1022,6 +1022,26 @@ class ExtensionContext:
         """
         model: dict[str, Any] = self._require_session().set_model(name)
         return model
+
+    def set_reasoning(self, level: str) -> str:
+        """Set the acting cursor's thinking level, effective on its next request.
+
+        Delegates to :meth:`AgentSession.set_reasoning`, placed and recorded as
+        :meth:`set_model` is.
+
+        Args:
+            level: ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``, ``"high"``
+                or ``"xhigh"``.
+
+        Returns:
+            ``level``.
+
+        Raises:
+            RuntimeError: No session is bound.
+            ValueError: ``level`` is not a thinking level.
+        """
+        result: str = self._require_session().set_reasoning(level)
+        return result
 
     def get_usage(self) -> dict[str, Any] | None:
         """Read the most recent completion's token usage (S45, anchor G14).

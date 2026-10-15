@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal
 from uuid import uuid4
 
 from tau_llm.abort import AbortSignal
+from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_llm.types import Model, UserMessage
 
 from tau_agent_core.events import (
@@ -72,7 +73,7 @@ from tau_agent_core.session_log import (
 )
 from tau_agent_core.cursor import TURN_CURSOR, Cursor, TurnFrame
 from tau_agent_core.agent_loop import AgentLoop
-from tau_agent_core.agent_loop_types import AgentLoopConfig
+from tau_agent_core.agent_loop_types import AgentLoopConfig, TurnSettings
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
 from tau_agent_core.commands import (
     CommandCompletion,
@@ -284,6 +285,9 @@ def _ends_with_user_text(messages: list[Any], text: str) -> bool:
 
 
 _UNSET: Any = object()
+
+_REQUEST_KEYS: frozenset[str] = frozenset({"model", "model_spec", "thinking"})
+"""The frame keys a request reads, so the only ones recorded between two requests."""
 
 
 def _leading_system_prompt(messages: list[Any]) -> str | None:
@@ -668,7 +672,7 @@ class AgentSession:
                 "provider": model.provider,
                 "context_window": model.context_window,
             },
-            "thinking": self._reasoning,
+            "thinking": self._turn_reasoning(),
             "tools": [t.name for t in self._tools if t.name in declared]
             if frame is None
             else [t.name for t in self._turn_tools()],
@@ -678,18 +682,47 @@ class AgentSession:
             "system_prompt_digest": _system_prompt_digest(self._turn_system_prompt()),
         }
 
-    async def _record_config(self) -> None:
+    async def _record_config(self, keys: frozenset[str] | None = None) -> None:
         """Write the frame keys that differ from the walk at the turn's cursor.
 
-        Called before a turn's first append, so the config entry sits ahead of the
-        turn it governs: config takes effect where it is recorded (docs/CURSORS.md
-        §5). Writes nothing when the path already says the same.
+        Called before a turn's first append and before each later request, so the
+        entry sits ahead of what it governs: config takes effect where it is
+        recorded (docs/CURSORS.md §5). Writes nothing when the path already says
+        the same.
+
+        Args:
+            keys: Only these frame keys; ``None`` is all of them.
         """
         cursor = self.acting_cursor
         recorded = config_at(cursor.entries(), cursor.leaf)
-        changed = {k: v for k, v in self._frame_config().items() if recorded.get(k, _UNSET) != v}
+        changed = {
+            k: v
+            for k, v in self._frame_config().items()
+            if (keys is None or k in keys) and recorded.get(k, _UNSET) != v
+        }
         if changed:
             await cursor.append_config(**changed)
+
+    async def _request_settings(self, persist: bool) -> TurnSettings:
+        """The acting cursor's settings for its next request, recorded first if they changed.
+
+        The :class:`~tau_agent_core.agent_loop.AgentLoop` ``turn_settings``
+        source. Only the keys a request reads are compared, so a mid-loop config
+        entry never claims a change the running loop does not make
+        (docs/TURN-SETTINGS.md §3).
+
+        Args:
+            persist: The turn's ``store_history``; ``False`` records nothing.
+        """
+        if persist:
+            await self._record_config(_REQUEST_KEYS)
+        model = self._turn_model()
+        return TurnSettings(
+            model=model,
+            api_key=self._turn_api_key(),
+            reasoning=self._turn_reasoning(),
+            temperature=model.temperature,
+        )
 
     @agent_facing(topic="sessions")
     async def start(self) -> None:
@@ -1091,14 +1124,15 @@ class AgentSession:
         await apply_session_name(self, name)
 
     def set_model(self, name: str) -> dict[str, Any]:
-        """Switch the acting cursor's model by NAME, effective on its NEXT turn (S45).
+        """Switch the acting cursor's model by NAME, effective on its next request.
 
-        At the head cursor this is the session's model. At any other cursor it is
-        that cursor's :class:`~tau_agent_core.cursor.TurnFrame` model; a cursor with
-        no frame gets one that changes nothing else (every tool, hooks on). The key
-        switches with the model, by :meth:`resolve_model`. Every turn builds a new
-        loop, so the switch never lands mid-stream; and it is not written to the
-        session header, so a reload resumes on the stored model.
+        At the head cursor this is the session's model; at any other cursor that
+        cursor's :class:`~tau_agent_core.cursor.TurnFrame` (a cursor with no frame
+        gets one that changes nothing else). The key switches with the model, by
+        :meth:`resolve_model`. Called between two requests of a running loop — a
+        ``turn_end`` hook — the next request already uses it, never one in flight.
+        Nothing is written here: the next request records the change ahead of
+        itself (docs/TURN-SETTINGS.md §2-3).
 
         Args:
             name: A config model name, resolved through :meth:`set_model_resolver`'s
@@ -1122,14 +1156,47 @@ class AgentSession:
         model, api_key = self.resolve_model(name)
         cursor = self.acting_cursor
         if cursor is not self._cursor:
-            frame = cursor.frame or TurnFrame(tools=tuple(t.name for t in self._tools), hooks=True)
-            cursor.frame = replace(frame, model=model, api_key=api_key)
+            cursor.frame = replace(self._frame_or_default(cursor), model=model, api_key=api_key)
             return self.get_model()
         if self._compaction_policy is not None:
             self._compaction_policy.bind_to(model)
         self._model = model
         self._api_key = api_key
         return self.get_model()
+
+    def set_reasoning(self, level: str) -> str:
+        """Set the acting cursor's requested thinking level, effective on its next request.
+
+        Placed and recorded as :meth:`set_model` is: the head's level is the
+        session's, another cursor's lives on its frame, and the next request
+        records ``thinking`` ahead of itself. The provider clamps the level to
+        what the model supports, as it does the constructor's ``reasoning``.
+
+        Args:
+            level: One of ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``,
+                ``"high"``, ``"xhigh"``.
+
+        Returns:
+            ``level``.
+
+        Raises:
+            ValueError: ``level`` is not one of those.
+        """
+        if level not in EXTENDED_THINKING_LEVELS:
+            raise ValueError(
+                f"set_reasoning({level!r}): not a thinking level; "
+                f"expected one of {', '.join(EXTENDED_THINKING_LEVELS)}"
+            )
+        cursor = self.acting_cursor
+        if cursor is not self._cursor:
+            cursor.frame = replace(self._frame_or_default(cursor), reasoning=level)
+        else:
+            self._reasoning = level
+        return level
+
+    def _frame_or_default(self, cursor: Cursor) -> TurnFrame:
+        """``cursor``'s frame, or one that changes nothing (every tool, hooks on)."""
+        return cursor.frame or TurnFrame(tools=tuple(t.name for t in self._tools), hooks=True)
 
     def resolve_model(self, name: str) -> tuple[Model, str | None]:
         """The model a config NAME resolves to, and the key it is called with.
@@ -1898,6 +1965,11 @@ class AgentSession:
         """The key :meth:`_turn_model` is called with: its frame's, else the session's."""
         frame = self.acting_cursor.frame
         return self._api_key if frame is None or frame.model is None else frame.api_key
+
+    def _turn_reasoning(self) -> str | None:
+        """The thinking level the running turn requests: its frame's, else the session's."""
+        frame = self.acting_cursor.frame
+        return self._reasoning if frame is None or frame.reasoning is None else frame.reasoning
 
     def _turn_system_prompt(self) -> str:
         """The prompt the running turn runs under: its cursor frame's, else the session's."""
@@ -3372,13 +3444,9 @@ class AgentSession:
                         post_user_messages.append(node)
 
         # Build the agent loop config
-        model = self._turn_model()
         config = AgentLoopConfig(
             system_prompt=self._turn_system_prompt(),
             system_prompt_override=system_prompt_override,
-            temperature=model.temperature,
-            api_key=self._turn_api_key(),
-            reasoning=self._reasoning,
             tool_execution_mode=self._tool_execution_mode,
             **self._turn_cap(),
         )
@@ -3388,7 +3456,7 @@ class AgentSession:
             config=config,
             emit=self._emit_stamped,
             tools=self._turn_tools(),
-            model=model,
+            turn_settings=lambda: self._request_settings(persist),
             abort_signal=self.acting_cursor.abort_signal,
             hook_dispatcher=hooks,
             steer_queue=self.acting_cursor.steer_queue,
@@ -3536,13 +3604,8 @@ class AgentSession:
             # Get existing messages from session for context
             context_messages = self.messages
 
-            # Build the agent loop config
-            model = self._turn_model()
             config = AgentLoopConfig(
                 system_prompt=self._turn_system_prompt(),
-                temperature=model.temperature,
-                api_key=self._turn_api_key(),
-                reasoning=self._reasoning,
                 tool_execution_mode=self._tool_execution_mode,
                 **self._turn_cap(),
             )
@@ -3552,7 +3615,7 @@ class AgentSession:
                 config=config,
                 emit=self._emit_stamped,
                 tools=self._turn_tools(),
-                model=model,
+                turn_settings=lambda: self._request_settings(True),
                 abort_signal=cur.abort_signal,
                 hook_dispatcher=self._hooks(),
                 steer_queue=cur.steer_queue,

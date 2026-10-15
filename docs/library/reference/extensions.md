@@ -1097,10 +1097,10 @@ set_model(name: str) -> dict[str, Any]
 
 `tau_agent_core.extension_types.ExtensionContext.set_model`
 
-Switch the acting cursor's model by NAME, effective on its next turn (S45).
+Switch the acting cursor's model by NAME, effective on its next request.
 
-Delegates to :meth:`AgentSession.set_model`: at the head cursor that is
-the session's model, at any other cursor that cursor's frame.
+Delegates to :meth:`AgentSession.set_model`. From a ``turn_end`` hook the
+running loop's next request already uses it.
 
 **Parameters**
 
@@ -1115,6 +1115,32 @@ The new :meth:`get_model` projection.
 - `RuntimeError` — No session is bound, or the session has no model resolver.
 - `TypeError` — The resolver returned something other than a ``Model``.
 - `Exception` — Whatever the resolver raises for an unknown ``name``, unchanged.
+
+### set_reasoning
+
+```python
+set_reasoning(level: str) -> str
+```
+
+`tau_agent_core.extension_types.ExtensionContext.set_reasoning`
+
+Set the acting cursor's thinking level, effective on its next request.
+
+Delegates to :meth:`AgentSession.set_reasoning`, placed and recorded as
+:meth:`set_model` is.
+
+**Parameters**
+
+- `level: str` — ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``, ``"high"`` or ``"xhigh"``.
+
+**Returns**
+
+``level``.
+
+**Raises**
+
+- `RuntimeError` — No session is bound.
+- `ValueError` — ``level`` is not a thinking level.
 
 ### set_record_sink
 

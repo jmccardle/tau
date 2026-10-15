@@ -6,13 +6,15 @@ Types:
 - PreparedToolCall: A tool call prepared for execution (from LLM response)
 - FinalizedToolCall: A tool call after execution has completed
 - AgentLoopConfig: Configuration for the agent loop
+- TurnSettings: What one request is sent with, read per request
 
 These types bridge τ-llm (Phase 1) and the agent loop (Phase 2.1).
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field
 from tau_llm.docs import agent_facing
@@ -77,6 +79,9 @@ class AgentLoopConfig(BaseModel):
         temperature: Sampling temperature, or ``None`` (the default) to send none
         api_key: API key forwarded to the provider (None = use env/provider default)
         reasoning: Requested thinking level ("off".."xhigh"), or None
+
+    ``temperature``, ``api_key`` and ``reasoning`` are ignored by a loop given a
+    ``turn_settings`` source, which supplies them per request instead.
     """
 
     model: str | None = None
@@ -89,3 +94,29 @@ class AgentLoopConfig(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     api_key: str | None = None
     reasoning: str | None = None
+
+
+@agent_facing(topic="agent-loop")
+@dataclass(frozen=True)
+class TurnSettings:
+    """What one request is sent with, read immediately before it (docs/TURN-SETTINGS.md §2).
+
+    Attributes:
+        model: The ``Model`` the request calls.
+        api_key: The key it is called with; ``None`` for the provider's default.
+        reasoning: The requested thinking level, or ``None`` to send none.
+        temperature: The sampling temperature, or ``None`` to send none.
+    """
+
+    model: Any
+    api_key: str | None = None
+    reasoning: str | None = None
+    temperature: float | None = None
+
+
+TurnSettingsSource = Callable[[], Awaitable[TurnSettings]]
+"""Awaited by :class:`~tau_agent_core.agent_loop.AgentLoop` before every request.
+
+May write to the tree (the session records a changed config there), so the loop
+calls it only while no message entry is open.
+"""
