@@ -170,7 +170,7 @@ class TestTheChangeIsRecordedAheadOfItsRequest:
         ]
         assert kinds == ["config", "user", "assistant", "toolResult", "config", "assistant"]
         mid_loop = path[4]["data"]
-        assert set(mid_loop) == {"model_spec"}
+        assert set(mid_loop) == {"model", "model_spec"}
         assert mid_loop["model_spec"]["id"] == "cheap"
         assert (path[5]["message"] or {}).get("model") == "cheap"
 
@@ -196,6 +196,41 @@ class TestTheChangeIsRecordedAheadOfItsRequest:
             await session.submit(_sub("go", store_history=False))
         assert provider.calls == ["m", "cheap"]
         assert session.session_log.entries() == []
+
+
+class TestTheModelNameIsRecordedForResume:
+    async def test_ctx_set_model_is_recorded_as_the_config_name(self):
+        session = _session(_on_first_turn_end(lambda ctx: ctx.set_model("cheap")))
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_Provider()):
+            await session.submit(_sub("one"))
+            await session.submit(_sub("two"))
+        recorded = config_at(session.cursor.entries(), session.cursor.leaf)
+        assert recorded["model"] == "cheap"
+        assert recorded["model_spec"]["id"] == "cheap"
+
+    async def test_no_name_is_recorded_until_one_is_resolved(self):
+        session = _session()
+        await session.start()
+        assert "model" not in config_at(session.cursor.entries(), session.cursor.leaf)
+
+    async def test_a_name_already_on_the_path_is_not_written_again(self):
+        session = _session()
+        session.set_model("cheap")
+        await session.cursor.append_config(model="cheap", backend="openai")
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_Provider()):
+            await session.submit(_sub("one"))
+        assert [e["data"].get("model") for e in _config_entries(session)] == ["cheap", None]
+
+    async def test_a_non_head_cursor_records_its_own_name(self):
+        session = _session()
+        other = await session.open_cursor(None, owner=session.cursor, label="sub")
+        token = TURN_CURSOR.set(other)
+        try:
+            session.set_model("side")
+        finally:
+            TURN_CURSOR.reset(token)
+        assert other.frame is not None and other.frame.model_name == "side"
+        assert session._turn_model_name() is None
 
 
 class TestSetReasoning:

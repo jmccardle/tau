@@ -4513,7 +4513,7 @@ A node in the browsable session tree (pi ``SessionTreeNode``).
 <!-- agent: yes -->
 
 ```python
-class TurnFrame(tools: tuple[str, ...], model: Any = None, api_key: str | None = None, reasoning: str | None = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = False)
+class TurnFrame(tools: tuple[str, ...], model: Any = None, api_key: str | None = None, model_name: str | None = None, reasoning: str | None = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = False)
 ```
 
 `tau_agent_core.cursor.TurnFrame`
@@ -4529,6 +4529,7 @@ config the first time the cursor's turn appends.
 - `tools: tuple[str, ...]` — Names the turn may call, a subset of the session's; required, so a sub-agent never inherits ``write`` and ``bash`` by accident. ``()`` is none.
 - `model: Any = None` — The model to run, or ``None`` for the session's.
 - `api_key: str | None = None` — ``model``'s key, ``None`` for the provider's environment variable. Ignored when ``model`` is ``None``. Never recorded.
+- `model_name: str | None = None` — The config name ``model`` was resolved from, recorded as the ``model`` config key; ``None`` when ``model`` was handed in directly.
 - `reasoning: str | None = None` — The thinking level to request, or ``None`` for the session's.
 - `system_prompt: str | None = None` — The prompt to run under, or ``None`` for the session's.
 - `max_turns: int | None = None` — The loop's turn ceiling for this cursor; ``None`` is no ceiling.

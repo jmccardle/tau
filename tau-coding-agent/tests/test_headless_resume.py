@@ -20,13 +20,17 @@ raise (Fail-Early), never guess.
 from __future__ import annotations
 
 import os
+from unittest.mock import patch
 
 import pytest
 from print_fakes import BoundPrintFake
+from tau_llm.streaming import DoneEvent
+from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
 import tau_coding_agent.session_store as store
+from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.cursor import Cursor
-from tau_agent_core.submission import SubmissionResult
+from tau_agent_core.submission import Submission, SubmissionResult
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import CLIError, run_print
 from tau_coding_agent.session_store import Session
@@ -223,6 +227,65 @@ async def test_explicit_model_overrides_stored_on_resume(env):
     assert env["backend"].config["model"] == "gpt-4o"
     # A model_change entry was appended; latest wins on load.
     assert Session.load(b.path).model == "gpt-4o"
+
+
+async def test_continue_resumes_on_the_model_an_extension_switched_to(env):
+    """``ctx.set_model`` mid-session is recorded as the config name ``--continue`` reads."""
+    b = await env["seed"]("local-llm", "b1")
+
+    def switcher(api) -> None:
+        api.on("turn_end", lambda event, ctx: ctx.set_model("gpt-4o"))
+
+    def model(name: str) -> Model:
+        return Model(
+            id=name,
+            name=name,
+            api="openai-completions",
+            provider="openai",
+            base_url="http://127.0.0.1:1/v1",
+            context_window=8192,
+            max_tokens=256,
+        )
+
+    async def answer(model, context, options=None, **_):
+        final = AssistantMessage(
+            content=[TextContent(text="ok")],
+            api="openai-completions",
+            provider="openai",
+            model=model.id,
+            stop_reason="stop",
+            timestamp=1_700_000_000_000,
+            usage=Usage(),
+        )
+
+        class _Stream:
+            def __aiter__(self):
+                async def gen():
+                    yield DoneEvent(final=final, usage=final.usage)
+
+                return gen()
+
+            def abort(self) -> None:
+                pass
+
+        return _Stream()
+
+    session = AgentSession(cursor=Cursor.newest(b), model=model("qwen3"), extensions=[switcher])
+    session.set_model_resolver(model)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=answer):
+        await session.submit(
+            Submission(text="a", source="interactive", submitter="human", submission_id="a")
+        )
+        await session.submit(
+            Submission(text="b", source="interactive", submitter="human", submission_id="b")
+        )
+    assert Session.load(b.path).model == "gpt-4o"
+
+    await run_print(
+        CLIArgs(messages=["next"], print_mode=True, continue_session=True),
+        _config(),
+    )
+    assert env["backend"].config["model"] == "gpt-4o"
 
 
 # ── --session REF ───────────────────────────────────────────────────────────

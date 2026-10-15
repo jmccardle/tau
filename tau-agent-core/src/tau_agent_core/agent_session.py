@@ -579,6 +579,7 @@ class AgentSession:
         self._cursor = cursor
         self._cursors: dict[str, Cursor] = {cursor.id: cursor}
         self._model = model
+        self._model_name: str | None = None
         self._cwd = os.path.abspath(cwd) if cwd is not None else os.getcwd()
         self._system_prompt = system_prompt
         self._prompt_templates = prompt_templates
@@ -655,10 +656,12 @@ class AgentSession:
     def _frame_config(self) -> dict[str, Any]:
         """The config keys this session's frame sets (docs/CURSORS.md §5).
 
-        ``model_spec`` is the :meth:`get_model` projection; ``system_prompt_digest``
-        a sha256 of the prompt, never the text; ``extensions`` the inline-factory
-        labels plus every loaded file extension not disabled. The API key is never
-        part of it, hashed or otherwise.
+        ``model_spec`` is the :meth:`get_model` projection; ``model`` the config
+        name :meth:`set_model` resolved, present only once one is known, which
+        is what ``--continue`` resumes on (docs/TURN-SETTINGS.md §6);
+        ``system_prompt_digest`` a sha256 of the prompt, never the text;
+        ``extensions`` the inline-factory labels plus every loaded file extension
+        not disabled. The API key is never part of it, hashed or otherwise.
         """
         loaded_paths = [
             path for path in self._loaded_extensions if path not in self._disabled_paths
@@ -666,7 +669,9 @@ class AgentSession:
         frame = self.acting_cursor.frame
         model = self._turn_model()
         declared = {t.name for t in self._turn_tools()}
+        name = self._turn_model_name()
         return {
+            **({} if name is None else {"model": name}),
             "model_spec": {
                 "id": model.id,
                 "provider": model.provider,
@@ -1156,11 +1161,14 @@ class AgentSession:
         model, api_key = self.resolve_model(name)
         cursor = self.acting_cursor
         if cursor is not self._cursor:
-            cursor.frame = replace(self._frame_or_default(cursor), model=model, api_key=api_key)
+            cursor.frame = replace(
+                self._frame_or_default(cursor), model=model, api_key=api_key, model_name=name
+            )
             return self.get_model()
         if self._compaction_policy is not None:
             self._compaction_policy.bind_to(model)
         self._model = model
+        self._model_name = name
         self._api_key = api_key
         return self.get_model()
 
@@ -1965,6 +1973,11 @@ class AgentSession:
         """The key :meth:`_turn_model` is called with: its frame's, else the session's."""
         frame = self.acting_cursor.frame
         return self._api_key if frame is None or frame.model is None else frame.api_key
+
+    def _turn_model_name(self) -> str | None:
+        """The config name of :meth:`_turn_model`, or ``None`` when none is known."""
+        frame = self.acting_cursor.frame
+        return self._model_name if frame is None or frame.model is None else frame.model_name
 
     def _turn_reasoning(self) -> str | None:
         """The thinking level the running turn requests: its frame's, else the session's."""
