@@ -215,6 +215,13 @@ marker buys nothing. `docs/PROMPT-CACHING.md` has the measured matrix, including
 what an undeclared dialect costs on an Anthropic model (full input price on every
 request) and why the marker cannot simply be sent to everyone.
 
+### Cost
+
+`models.<name>.cost` is `{input, output, cache_read, cache_write}` in USD per
+million tokens. When an entry has one, the usage `tau -p` and the TUI report
+includes `cost_usd`. When it has none, no dollar figure is shown at all; τ never
+reports a `$0` it does not know.
+
 ## Credits
 
 τ carries work from two MIT-licensed projects, and neither is a dependency —

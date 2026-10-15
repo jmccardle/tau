@@ -28,8 +28,8 @@ E4.cost rule that an absent price block yields tokens-only, never a made-up
 dollar figure:
 
 * **USD mode** — a per-model ``cost`` block is supplied (``{input, output,
-  cache_read}`` in USD per 1M tokens, the same shape ``config.json`` carries and
-  ``backends.compute_cost_usd`` prices). The running total is real dollars and the
+  cache_read, cache_write}`` in USD per 1M tokens, the same shape ``config.json``
+  carries and ``tau_agent_core.usage.price_usage`` prices). The running total is real dollars and the
   ceiling is ``max_usd``.
 * **token mode** — no ``cost`` block is known, so pricing the run would require
   inventing numbers. The guard instead sums raw tokens and the ceiling is
@@ -41,10 +41,9 @@ degradation to a fictional price).
 
 ## How the cost is computed
 
-``completion_cost_usd`` is the collapsed pi ``calculateCost`` (``models.ts:39-48``;
-τ ``backends.compute_cost_usd``): ``sum(price[k] / 1e6 * tokens[k])`` over the
-priced buckets. ``cache_write`` is inert against today's provider (the bucket is
-never populated), so it is left out of the sum — a real 0, not an omission.
+``completion_cost_usd`` is ``tau_agent_core.usage.price_usage``:
+``sum(price[k] / 1e6 * tokens[k])`` over the four priced buckets, ``cache_write``
+included.
 
 ## Accumulation vs. the threshold check — the timing
 
@@ -145,12 +144,10 @@ DEFAULT_MAX_TOKENS = 500_000
 def completion_cost_usd(usage: dict[str, Any], cost: dict[str, Any]) -> float:
     """Dollar cost of one completion's ``usage`` under the ``cost`` price block.
 
-    Thin wrapper over :meth:`ext_kit.ledger.Pricing.cost_of` (S57 — the same
-    collapsed pi ``calculateCost`` / τ ``backends.compute_cost_usd`` formula:
-    ``sum(price[k] / 1e6 * tokens[k])`` over the priced buckets). ``cost`` is a
-    present price block (USD per 1M tokens), so the priced result is always a real
-    float — a missing price key prices that bucket at ``0.0`` (unbilled), not a
-    fabricated total.
+    Thin wrapper over :meth:`ext_kit.ledger.Pricing.cost_of`, which is
+    ``tau_agent_core.usage.price_usage``. ``cost`` is a present price block (USD
+    per 1M tokens), so the result is always a real float; a missing price key
+    prices that bucket at ``0.0``.
     """
     priced = ledger.Pricing(model=None, cost=cost).cost_of(usage)
     # ``cost`` is a present block, so Pricing is priced and never returns None.

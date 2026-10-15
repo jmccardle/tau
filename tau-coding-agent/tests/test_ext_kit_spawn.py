@@ -176,10 +176,15 @@ def test_roll_message_usage_prices_when_seeded():
 
 
 def test_price_increment_none_when_unpriced():
-    assert (
-        spawn.price_increment(None, input_tokens=100, output_tokens=100, cache_read_tokens=0)
-        is None
-    )
+    assert spawn.price_increment(None, {"input_tokens": 100, "output_tokens": 100}) is None
+
+
+def test_roll_message_usage_prices_cache_write():
+    cost = {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 1_000_000.0}
+    usage = spawn.ChildUsage(cost=0.0)
+    message = {"role": "assistant", "usage": {"input_tokens": 1, "cache_write_tokens": 3}}
+    spawn.roll_message_usage(usage, message, cost)
+    assert usage.cost == pytest.approx(3.0)
 
 
 def test_tool_call_signature_and_message_text():

@@ -600,7 +600,7 @@ def _usage_from_openai(data: dict, timings: dict[str, Any] | None = None) -> Usa
     ``prompt_tokens`` INCLUDES both ``prompt_tokens_details.cached_tokens`` and
     ``prompt_tokens_details.cache_write_tokens``, so both are subtracted out of
     ``input_tokens`` — the three partition the prompt rather than overlapping,
-    and overlapping made ``compute_cost_usd`` bill the cached span twice
+    and overlapping made pricing bill the cached span twice
     (docs/PROMPT-CACHING.md §3 has the measured field names per endpoint).
     ``total_tokens`` is unaffected — it comes from the server.
 

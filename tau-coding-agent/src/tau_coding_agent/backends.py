@@ -57,6 +57,7 @@ from tau_agent_core.sdk import (
 )
 from tau_agent_core.submission import Submission, SubmissionResult
 from tau_agent_core.truncation import dropped_tool_calls
+from tau_agent_core.usage import price_usage
 
 DEFAULT_STREAM = "main"
 
@@ -904,38 +905,6 @@ def _image_line(block: dict[str, Any]) -> str:
     """``[mime, size]`` — what a transcript shows in place of an image it cannot draw."""
     encoded = str(block.get("data", ""))
     return f"[{block.get('mime_type', 'image')}, {human_size(len(encoded) * 3 // 4)}]"
-
-
-def compute_cost_usd(
-    cost: dict[str, Any] | None,
-    *,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int,
-) -> float | None:
-    """Dollar cost of one completed exchange, or ``None`` when the price is unknown.
-
-    Port of pi ``calculateCost`` (``models.ts:39-48``), collapsed to a single
-    total: τ stores no per-key ``cost`` breakdown on the frozen ``Usage`` (the
-    E4.cost decision D2 leaves ``Usage`` untouched and prices at the emit
-    boundary), so this is just ``sum(price[k] / 1e6 * tokens[k])`` over the
-    priced buckets.
-
-    ``cost`` is the optional per-model ``{input, output, cache_read,
-    cache_write}`` block (USD per 1M tokens) declared on a ``~/.tau/config.json``
-    model entry. Fail-Early — an **absent** block returns ``None`` (the caller
-    emits tokens only, never a fabricated ``$0``); a **present** block whose
-    prices are all ``0`` (a genuinely free/local model) returns ``0.0``. The two
-    read differently on the wire (``cost_usd`` absent vs ``cost_usd: 0.0``),
-    which is the whole point of the option.
-    """
-    if cost is None:
-        return None
-    return float(
-        float(cost.get("input", 0.0)) / 1_000_000 * input_tokens
-        + float(cost.get("output", 0.0)) / 1_000_000 * output_tokens
-        + float(cost.get("cache_read", 0.0)) / 1_000_000 * cache_read_tokens
-    )
 
 
 _WARNED_UNDECLARED_REASONING = OnceSet()
@@ -2304,12 +2273,7 @@ class TauBackend(Backend):
         }
         if last_extra:
             usage_out["extra"] = last_extra
-        cost_usd = compute_cost_usd(
-            self.config.get("cost"),
-            input_tokens=usage_totals["input_tokens"],
-            output_tokens=usage_totals["output_tokens"],
-            cache_read_tokens=usage_totals["cache_read_tokens"],
-        )
+        cost_usd = price_usage(self.config.get("cost"), usage_totals)
         if cost_usd is not None:
             usage_out["cost_usd"] = cost_usd
         return (

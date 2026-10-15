@@ -21,12 +21,17 @@ cheaper than it is. A cost readout that silently omits the most expensive automa
 call in the system is worse than no readout, because it is believed.
 
 So the completions that spend tokens off-loop report what they spent, and the
-session keeps a ledger the meter reads. These helpers are the shared arithmetic.
+session keeps a ledger the meter reads. These helpers are the shared arithmetic,
+and :func:`price_usage` is the one place a usage dict becomes dollars
+(docs/PRICING-AND-COMPACTION-CONFIG.md §2).
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
+
+from tau_llm.docs import agent_facing
 
 USAGE_FIELDS = (
     "input_tokens",
@@ -65,3 +70,52 @@ def add_usage(into: dict[str, int], *others: dict[str, int]) -> dict[str, int]:
         for field in USAGE_FIELDS:
             total[field] = total.get(field, 0) + int(other.get(field, 0) or 0)
     return total
+
+
+PRICED_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("input_tokens", "input"),
+    ("output_tokens", "output"),
+    ("cache_read_tokens", "cache_read"),
+    ("cache_write_tokens", "cache_write"),
+)
+
+_WIRE_SPELLINGS = ("prompt_tokens", "completion_tokens")
+
+
+@agent_facing(topic="messages")
+def price_usage(cost: Mapping[str, Any] | None, usage: Mapping[str, Any]) -> float | None:
+    """Dollar cost of ``usage`` under the price block ``cost``, or ``None`` when unpriced.
+
+    ``sum(cost[p] / 1e6 * usage[b])`` over the four :data:`PRICED_BUCKETS`. Every
+    provider partitions the prompt into ``input_tokens``, ``cache_read_tokens``
+    and ``cache_write_tokens``, so each is priced once and none overlaps.
+
+    Args:
+        cost: A config model entry's ``{input, output, cache_read, cache_write}``
+            block, USD per 1M tokens. A missing price key prices that bucket at 0.
+        usage: τ usage names (``input_tokens``, ``output_tokens``,
+            ``cache_read_tokens``, ``cache_write_tokens``); a missing bucket is 0
+            and any other key is ignored.
+
+    Returns:
+        ``None`` when ``cost`` is ``None`` — unknown, never a fabricated ``$0``;
+        otherwise a float, ``0.0`` for a present all-zero block.
+
+    Raises:
+        ValueError: ``usage`` uses the OpenAI wire spelling (``prompt_tokens`` /
+            ``completion_tokens``) without τ's, which would price as zero.
+    """
+    wire = [k for k in _WIRE_SPELLINGS if k in usage]
+    if wire and not any(bucket in usage for bucket, _ in PRICED_BUCKETS):
+        raise ValueError(
+            f"price_usage takes τ usage names (input_tokens, output_tokens, ...); got "
+            f"{wire}, the OpenAI wire spelling, which would price every bucket at 0"
+        )
+    if cost is None:
+        return None
+    return float(
+        sum(
+            float(cost.get(price, 0.0)) / 1_000_000 * int(usage.get(bucket, 0) or 0)
+            for bucket, price in PRICED_BUCKETS
+        )
+    )

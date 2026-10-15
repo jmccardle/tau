@@ -274,7 +274,7 @@ A model entry in the `models` map may carry an **optional** `cost` block giving 
 }
 ```
 
-When the block is present, the final `done` / `agent_end` emit carries a `cost_usd` total inside its `usage` dict, priced at the emit boundary (`backends.py` `compute_cost_usd`) as `sum(price[k] / 1e6 * tokens[k])` over `input`/`output`/`cache_read`. **`cost_usd` is emitted only when the block is present** — an absent block yields tokens-only (**Fail-Early: never a fabricated `$0`**), so an *unknown* price (`cost_usd` absent) reads differently from a genuinely free/local model (`"cost": {…: 0}` → `cost_usd: 0.0`). `cache_write` is accepted but currently inert — today's provider never reports cache-write tokens, so its price term is always 0. The frozen `Usage` object is untouched; `24_budget` computes its own running `$` from per-message tokens × these same prices.
+When the block is present, the final `done` / `agent_end` emit carries a `cost_usd` total inside its `usage` dict, priced at the emit boundary (`tau_agent_core.usage.price_usage`) as `sum(price[k] / 1e6 * tokens[k])` over `input`/`output`/`cache_read`/`cache_write`. **`cost_usd` is emitted only when the block is present** — an absent block yields tokens-only (**Fail-Early: never a fabricated `$0`**), so an *unknown* price (`cost_usd` absent) reads differently from a genuinely free/local model (`"cost": {…: 0}` → `cost_usd: 0.0`). The frozen `Usage` object is untouched; `24_budget` computes its own running `$` from per-message tokens × these same prices.
 
 ### `--max-turns` and the ceiling that used to be unreachable (τ-only)
 

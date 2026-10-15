@@ -7,7 +7,7 @@ Four atoms, four stories:
 * **Pricing** — ``from_config`` resolves a model's ``cost`` block (missing model
   raises; a model with no ``cost`` is unpriced), and ``cost_of`` prices one
   completion's usage (unpriced → ``None``, present all-zero → real ``0.0``) with
-  the same formula as ``backends.compute_cost_usd``.
+  ``tau_agent_core.usage.price_usage``.
 * **UsageMeter** — folds ``message_end`` / S45 usage into running token + dollar
   totals; the empty tool-turn ``message_end`` contributes nothing; unpriced keeps
   ``usd`` at ``None`` (never a fabricated ``$0``).
@@ -81,8 +81,8 @@ def test_pricing_from_config_missing_model_raises() -> None:
         ledger.Pricing.from_config({}, "nope")
 
 
-def test_pricing_cost_of_matches_compute_cost_formula() -> None:
-    # sum(price[k] / 1e6 * tokens[k]) over input/output/cache_read.
+def test_pricing_cost_of_matches_price_usage_formula() -> None:
+    # sum(price[k] / 1e6 * tokens[k]) over the priced buckets.
     pricing = ledger.Pricing(model="m", cost={"input": 3.0, "output": 15.0, "cache_read": 0.3})
     usage = {"input_tokens": 1_000_000, "output_tokens": 2_000_000, "cache_read_tokens": 1_000_000}
     # 3.0 + 30.0 + 0.3 = 33.3
@@ -95,11 +95,11 @@ def test_pricing_cost_of_all_zero_block_is_real_zero() -> None:
     assert pricing.cost_of({"input_tokens": 10_000, "output_tokens": 10_000}) == 0.0
 
 
-def test_pricing_cost_of_ignores_cache_write() -> None:
-    # cache_write is inert (never populated by today's provider); no price term.
+def test_pricing_cost_of_prices_cache_write() -> None:
+    # Both providers report cache writes outside input_tokens, so the bucket is priced.
     pricing = ledger.Pricing(model="m", cost={"input": 2.0, "cache_write": 99.0})
     usage = {"input_tokens": 1_000_000, "cache_write_tokens": 1_000_000}
-    assert pricing.cost_of(usage) == pytest.approx(2.0)
+    assert pricing.cost_of(usage) == pytest.approx(101.0)
 
 
 def test_usage_tokens_sums_all_buckets() -> None:
