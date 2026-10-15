@@ -78,6 +78,8 @@ the session it chose could not keep.
 session with `compaction_settings=CompactionSettings(enabled=False)`
 (`backends.py:885`). So `set_auto_compaction` is not a parity checkbox: it is
 the only route to a capability a host currently cannot reach at all.
+*Superseded 2026-10-15:* `TauBackend` now reads a `compaction` config block and
+compacts by default (`docs/PRICING-AND-COMPACTION-CONFIG.md` §3).
 
 ### 1.2 `CompactionPolicy` is not in scope
 

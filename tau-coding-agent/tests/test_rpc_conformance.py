@@ -1318,7 +1318,8 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
         await _send(proc, {"jsonrpc": "2.0", "id": 6, "method": "get_session_stats"})
         stats, _ = await _recv_response(proc, 6)
         _check("get_session_stats", stats["result"])
-        assert stats["result"]["compaction_settings"]["enabled"] is False
+        # On by default since docs/PRICING-AND-COMPACTION-CONFIG.md §3.
+        assert stats["result"]["compaction_settings"]["enabled"] is True
         assert stats["result"]["usage"] is None
         assert stats["result"]["last_compaction"] is None
 
@@ -1336,12 +1337,12 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
                 "jsonrpc": "2.0",
                 "id": 8,
                 "method": "set_auto_compaction",
-                "params": {"enabled": True},
+                "params": {"enabled": False},
             },
         )
         auto_compact, _ = await _recv_response(proc, 8)
         _check("set_auto_compaction", auto_compact["result"])
-        assert auto_compact["result"]["enabled"] is True
+        assert auto_compact["result"]["enabled"] is False
 
         # schema (stated in the verb's own notes); the bytes are still the
         # child's.

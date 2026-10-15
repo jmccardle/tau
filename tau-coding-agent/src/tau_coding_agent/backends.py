@@ -27,7 +27,8 @@ from tau_agent_core.agent_session import (
 from tau_agent_core import tree_ops
 from tau_agent_core.attachments import elide_attachment_bodies, human_size
 from tau_agent_core.commands import CommandCompletion
-from tau_agent_core.compaction import CompactionSettings
+from tau_agent_core.compaction_policy import CompactionPolicy
+from tau_coding_agent.config import CompactionConfig, ConfigError, parse_compaction_config
 from tau_agent_core.extension_locks import ExtensionRequest
 from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.skills import load_skills
@@ -1184,6 +1185,44 @@ def make_model_resolver(models: dict[str, Any]) -> ConfigModelResolver:
     return ConfigModelResolver(models)
 
 
+def _compaction_policy(
+    compaction: CompactionConfig, summarizer_entry: dict[str, Any] | None
+) -> CompactionPolicy | None:
+    """The ``local_summarizer`` policy a named ``compaction.summarizer`` declares, else ``None``.
+
+    The summarizer resolves through :class:`ConfigModelResolver`, the resolver
+    ``--model`` and ``set_model`` use (docs/PRICING-AND-COMPACTION-CONFIG.md §4).
+
+    Raises:
+        ConfigError: a summarizer is named but ``apply_compaction_config`` did
+            not resolve its entry, or the entry declares no ``api_key``.
+        CompactionPolicyError: at bind time, from ``AgentSession``, when the
+            summarizer's ``context_window`` is smaller than the session model's.
+    """
+    name = compaction.summarizer
+    if name is None:
+        return None
+    if summarizer_entry is None:
+        raise ConfigError(
+            f"'compaction.summarizer' is {name!r} but its model entry was not resolved; "
+            "the head must pass the config through apply_compaction_config"
+        )
+    resolver = ConfigModelResolver({name: summarizer_entry})
+    api_key = resolver.api_key(name)
+    if api_key is None:
+        raise ConfigError(
+            f"'compaction.summarizer' model {name!r} has no api_key in its models entry; "
+            "a separate summarizer must declare its own key, even one its server ignores"
+        )
+    return CompactionPolicy(
+        mode="local_summarizer",
+        summarizer_model=resolver(name),
+        summarizer_api_key=api_key,
+        reserve_tokens=compaction.settings.reserve_tokens,
+        keep_recent_tokens=compaction.settings.keep_recent_tokens,
+    )
+
+
 class Backend(ABC):
     """Abstract base class for LLM backends."""
 
@@ -1370,7 +1409,10 @@ class TauBackend(Backend):
     Wraps tau-agent-core's AgentSession to provide TauApp-compatible
     chat/stream_chat interfaces. ``config["cwd"]`` is the directory the tools run
     in and the system prompt names; absent, it is the process cwd. ``tau serve``
-    sets it per session (docs/TAU-SERVE.md §3).
+    sets it per session (docs/TAU-SERVE.md §3). Auto-compaction is on unless
+    ``config["compaction"]`` says otherwise; a head resolves that block with
+    :func:`~tau_coding_agent.config.apply_compaction_config` first
+    (docs/PRICING-AND-COMPACTION-CONFIG.md §3).
 
     Attributes:
         comparisons: The open comparisons (:meth:`compare`), by id, until ended.
@@ -1430,6 +1472,9 @@ class TauBackend(Backend):
 
         max_turns = config.get("max_turns")
 
+        compaction = parse_compaction_config(config.get("compaction", {}))
+        policy = _compaction_policy(compaction, config.get("compaction_summarizer"))
+
         self.agent_session = AgentSession(
             session_log=InMemorySessionLog(),
             model=model,
@@ -1437,7 +1482,8 @@ class TauBackend(Backend):
             tools=tools,
             api_key=api_key,
             reasoning=reasoning_arg,
-            compaction_settings=CompactionSettings(enabled=False),
+            compaction_settings=compaction.settings if policy is None else None,
+            compaction_policy=policy,
             bus_available=bool(config.get("bus_available", False)),
             no_tools=no_tools,
             max_turns=max_turns,
@@ -1445,6 +1491,8 @@ class TauBackend(Backend):
             prompt_templates=templates,
             skills=skills,
         )
+        if policy is not None:
+            self.agent_session.set_auto_compaction(compaction.settings.enabled)
         self.comparisons: dict[str, Comparison] = {}
 
     def bind_cursor(self, cursor: Cursor) -> None:
@@ -1786,9 +1834,9 @@ class TauBackend(Backend):
     def set_auto_compaction(self, enabled: bool) -> Performed:
         """Turn automatic compaction on or off for the live session.
 
-        Delegates to :meth:`AgentSession.set_auto_compaction`, which writes the one
-        in-memory field on ``CompactionSettings``. Nothing is appended, so this does
-        not survive a restart; the config file is where a durable answer lives.
+        Delegates to :meth:`AgentSession.set_auto_compaction`. Nothing is appended,
+        so this does not survive a restart; ``compaction.enabled`` in
+        ``~/.tau/config.json`` is the durable answer.
 
         Args:
             enabled: The state to put it in.

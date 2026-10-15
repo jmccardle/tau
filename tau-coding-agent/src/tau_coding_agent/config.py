@@ -12,16 +12,20 @@ One reader, one writer, one ``TAU_DIR``, one default template.
 
 Reference: docs/CONSTRAINED-GEN-AND-BRANCHING-PLAN.md §2 (``models.<name>.grammar``
 / ``extra_body``), docs/JMFTS-INTEGRATION-PLAN.md §3.1 (``session_store``) — both
-add keys here, so the divergence is fixed first.
+add keys here, so the divergence is fixed first. The ``compaction`` block is
+validated here too (docs/PRICING-AND-COMPACTION-CONFIG.md §3).
 """
 
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.tau_home import resolve_tau_home
 
 TAU_DIR = resolve_tau_home()
@@ -106,3 +110,109 @@ def bootstrap_config(path: Path | None = None) -> dict[str, Any]:
     config: dict[str, Any] = template
     save_config(config, config_path)
     return config
+
+
+COMPACTION_KEYS: dict[str, type] = {
+    "enabled": bool,
+    "reserve_tokens": int,
+    "keep_recent_tokens": int,
+    "summarizer": str,
+}
+
+
+@dataclass(frozen=True)
+class CompactionConfig:
+    """A validated ``"compaction"`` block (docs/PRICING-AND-COMPACTION-CONFIG.md §3).
+
+    Attributes:
+        settings: The :class:`CompactionSettings` the block puts in force; an
+            omitted key keeps that dataclass's default.
+        summarizer: The config model name compaction summarises through, or
+            ``None`` for the session's own model.
+    """
+
+    settings: CompactionSettings
+    summarizer: str | None
+
+
+def parse_compaction_config(block: Any) -> CompactionConfig:
+    """Validate a ``"compaction"`` block; ``{}`` is the all-defaults answer.
+
+    Args:
+        block: The block as loaded from JSON.
+
+    Returns:
+        The block as settings plus an optional summarizer name.
+
+    Raises:
+        ConfigError: ``block`` is not an object, names a key outside
+            :data:`COMPACTION_KEYS`, gives a key the wrong type, gives a token
+            count that is not positive, or gives an empty ``summarizer``.
+    """
+    if not isinstance(block, dict):
+        raise ConfigError(f"'compaction' must be an object; got {type(block).__name__}")
+    for key, value in block.items():
+        expected = COMPACTION_KEYS.get(key)
+        if expected is None:
+            raise ConfigError(
+                f"unknown key 'compaction.{key}'; known keys: {', '.join(COMPACTION_KEYS)}"
+            )
+        if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
+            raise ConfigError(f"'compaction.{key}' must be {expected.__name__}; got {value!r}")
+        if isinstance(value, int) and not isinstance(value, bool) and value <= 0:
+            raise ConfigError(f"'compaction.{key}' must be positive; got {value}")
+    summarizer = block.get("summarizer")
+    if summarizer == "":
+        raise ConfigError("'compaction.summarizer' must name a model; got an empty string")
+    overrides = {
+        key: block[key]
+        for key in ("enabled", "reserve_tokens", "keep_recent_tokens")
+        if key in block
+    }
+    return CompactionConfig(settings=CompactionSettings(**overrides), summarizer=summarizer)
+
+
+def apply_compaction_config(
+    model_config: dict[str, Any], config: Mapping[str, Any]
+) -> dict[str, Any]:
+    """``model_config`` with the compaction block in force and its summarizer's entry resolved.
+
+    A model entry's own ``"compaction"`` replaces the top-level one whole. With
+    neither, ``model_config`` comes back as it is, which ``TauBackend`` reads as
+    compaction on with the defaults. A named summarizer's ``config["models"]``
+    entry is copied onto ``"compaction_summarizer"``, because ``TauBackend`` sees
+    only the one model's config.
+
+    Args:
+        model_config: The config ``create_backend`` is about to receive; not mutated.
+        config: The loaded ``config.json``.
+
+    Returns:
+        A new dict when a block applies; ``model_config`` itself otherwise.
+
+    Raises:
+        ConfigError: the block is malformed (:func:`parse_compaction_config`) or
+            ``summarizer`` names no configured model.
+    """
+    if "compaction" in model_config:
+        block = model_config["compaction"]
+    elif "compaction" in config:
+        block = config["compaction"]
+    else:
+        return model_config
+    parsed = parse_compaction_config(block)
+    resolved = {**model_config, "compaction": block}
+    resolved.pop("compaction_summarizer", None)
+    if parsed.summarizer is not None:
+        models = config.get("models") or {}
+        if parsed.summarizer not in models:
+            known = ", ".join(sorted(models)) or "(none configured)"
+            raise ConfigError(
+                f"'compaction.summarizer' names unknown model {parsed.summarizer!r}; "
+                f"configured models: {known}"
+            )
+        resolved["compaction_summarizer"] = {
+            **models[parsed.summarizer],
+            "config_name": parsed.summarizer,
+        }
+    return resolved

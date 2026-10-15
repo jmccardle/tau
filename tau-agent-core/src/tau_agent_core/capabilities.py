@@ -825,12 +825,12 @@ _GET_SESSION_STATS_RETURNS: dict[str, Any] = {
                 "reserve_tokens, keep_recent_tokens}, read off "
                 "AgentSession.compaction_settings, which hands back a COPY so "
                 "a reader cannot retune a turn already in flight. An RPC "
-                "session is CONSTRUCTED with enabled=False (backends.py:885) "
-                "— that is how a host discovers auto-compaction is off "
-                "(§1.1) — and set_auto_compaction (D-4, shipped in this same "
-                "tier) is the one thing that changes it, so this reports the "
-                "session's LIVE effective setting at call time, never a "
-                "constant."
+                "session starts from the child's config.json `compaction` "
+                "block — enabled unless it says otherwise "
+                "(docs/PRICING-AND-COMPACTION-CONFIG.md §3) — and "
+                "set_auto_compaction (D-4) is the one thing that changes it "
+                "afterwards, so this reports the session's LIVE effective "
+                "setting at call time, never a constant."
             ),
         },
         "last_compaction": {

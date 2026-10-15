@@ -3141,7 +3141,7 @@
       "properties": {
         "compaction_settings": {
           "$ref": "#/$defs/CompactionSettingsRecord",
-          "description": "The session's EFFECTIVE CompactionSettings \u2014 {enabled, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. An RPC session is CONSTRUCTED with enabled=False (backends.py:885) \u2014 that is how a host discovers auto-compaction is off (\u00a71.1) \u2014 and set_auto_compaction (D-4, shipped in this same tier) is the one thing that changes it, so this reports the session's LIVE effective setting at call time, never a constant."
+          "description": "The session's EFFECTIVE CompactionSettings \u2014 {enabled, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. An RPC session starts from the child's config.json `compaction` block \u2014 enabled unless it says otherwise (docs/PRICING-AND-COMPACTION-CONFIG.md \u00a73) \u2014 and set_auto_compaction (D-4) is the one thing that changes it afterwards, so this reports the session's LIVE effective setting at call time, never a constant."
         },
         "context": {
           "$ref": "#/$defs/ContextEstimate",
@@ -5093,7 +5093,7 @@
           "type": "string"
         },
         "enabled": {
-          "description": "Desired auto-compaction state. RPC sessions are constructed with CompactionSettings(enabled=False) (backends.py:885, RPC-TIER-B.md \u00a71.1), so a host that wants it on says so here; AgentSession.set_auto_compaction is the same setter in process.",
+          "description": "Desired auto-compaction state. An RPC session starts from the child's config.json `compaction` block, enabled unless it says otherwise (docs/PRICING-AND-COMPACTION-CONFIG.md \u00a73); AgentSession.set_auto_compaction is the same setter in process.",
           "type": "boolean"
         },
         "session_id": {
