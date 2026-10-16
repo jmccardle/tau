@@ -96,8 +96,8 @@ async def test_an_ordinary_completion_says_nothing(make_app):
 
 
 async def test_the_box_counts_the_calls_the_cut_lost(make_app):
-    """The case that made this matter, said in numbers: the provider dropped N
-    calls rather than run them on a prefix, and the box now names N."""
+    """The case that made this matter, said in numbers: N calls were not run
+    on a prefix, and the box names N."""
     app = _app(make_app)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -111,7 +111,7 @@ async def test_the_box_counts_the_calls_the_cut_lost(make_app):
             }
         )
         await pilot.pause()
-        assert "2 tool calls were dropped" in _system_text(app)
+        assert "2 tool calls were not run" in _system_text(app)
 
 
 async def test_a_completion_end_without_the_count_still_reports(make_app):

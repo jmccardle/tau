@@ -393,6 +393,37 @@ def test_a_length_truncation_mid_arguments_finalizes_instead_of_erroring(monkeyp
     )
     final = _done(events).final
     assert final.stop_reason == "length"
+    calls = final.get_tool_calls()
+    assert [(c.id, c.name, c.arguments) for c in calls] == [
+        ("call_1", "bash", {"command": "find / -na"})
+    ], "a cut-off call keeps its partial arguments for the loop to record and refuse"
+    assert "dropped_partial_tool_calls" not in final.usage.extra
+
+
+def test_a_cut_inside_a_long_string_keeps_the_text_written_so_far(monkeypatch):
+    """TRUNCATED-TOOL-CALLS.md §3.2: the draft survives, so the model can resume it."""
+    chunks = [
+        _tool_call_chunk(0, call_id="call_1", name="write", arguments='{"path": "notes.md", '),
+        _tool_call_chunk(0, arguments='"content": "# Notes\\n1. Apples'),
+        _tool_call_chunk(0, arguments=" are rosaceae\\n2. Ban"),
+        _finish_chunk("length"),
+    ]
+    final = _done(_run(monkeypatch, _response(chunks))).final
+
+    assert final.get_tool_calls()[0].arguments == {
+        "path": "notes.md",
+        "content": "# Notes\n1. Apples are rosaceae\n2. Ban",
+    }
+
+
+def test_a_cut_before_any_json_object_drops_and_counts_the_call(monkeypatch):
+    """No object to keep: the call is dropped, and the drop is stated."""
+    chunks = [
+        _tool_call_chunk(0, call_id="call_1", name="bash", arguments=""),
+        _finish_chunk("length"),
+    ]
+    final = _done(_run(monkeypatch, _response(chunks))).final
+
     assert final.get_tool_calls() == []
     assert final.usage.extra["dropped_partial_tool_calls"] == 1
 
@@ -417,8 +448,8 @@ def test_text_written_before_the_cap_survives_it(monkeypatch):
     )
 
 
-def test_a_call_completed_before_the_cap_still_runs(monkeypatch):
-    """Dropping is per-call. A call whose arguments closed is a call the model made."""
+def test_a_call_completed_before_the_cap_is_kept_whole(monkeypatch):
+    """Each call keeps what it wrote; the agent loop, not the provider, refuses them."""
     chunks = [
         _tool_call_chunk(0, call_id="call_1", name="read", arguments='{"path": "a.txt"}'),
         _tool_call_chunk(1, call_id="call_2", name="bash", arguments='{"command":"find / -na'),
@@ -427,8 +458,11 @@ def test_a_call_completed_before_the_cap_still_runs(monkeypatch):
     final = _done(_run(monkeypatch, _response(chunks))).final
 
     calls = final.get_tool_calls()
-    assert [c.name for c in calls] == ["read"]
-    assert final.usage.extra["dropped_partial_tool_calls"] == 1
+    assert [(c.name, c.arguments) for c in calls] == [
+        ("read", {"path": "a.txt"}),
+        ("bash", {"command": "find / -na"}),
+    ]
+    assert "dropped_partial_tool_calls" not in final.usage.extra
 
 
 def test_a_call_cut_off_before_its_name_arrived_is_dropped_too(monkeypatch):

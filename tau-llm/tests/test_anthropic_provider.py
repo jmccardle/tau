@@ -835,6 +835,78 @@ class TestStreaming:
         assert "api.anthropic.com" in events[-1].message
 
 
+def _json_delta(index, partial_json):
+    return SimpleNamespace(
+        type="content_block_delta",
+        index=index,
+        delta=SimpleNamespace(type="input_json_delta", partial_json=partial_json),
+    )
+
+
+class TestACutOffToolCall:
+    """docs/TRUNCATED-TOOL-CALLS.md §3.2: on max_tokens the raw argument text is read.
+
+    The SDK's ``block.input`` is a partial parse that discards an unterminated
+    string, so a ``write`` cut inside ``content`` arrives as ``{"path": ...}``.
+    """
+
+    def test_the_text_written_so_far_is_kept(self):
+        events, _ = _run(
+            _provider(),
+            _model(),
+            [{"role": "user", "content": "write"}],
+            events=[
+                _json_delta(1, ""),
+                _json_delta(1, '{"path": "docs/x.md", '),
+                _json_delta(1, '"content": "# T\\n- it'),
+                _json_delta(1, "em"),
+            ],
+            final=_final(
+                content=[
+                    SimpleNamespace(type="text", text="Writing."),
+                    SimpleNamespace(
+                        type="tool_use", id="t1", name="write", input={"path": "docs/x.md"}
+                    ),
+                ],
+                stop_reason="max_tokens",
+            ),
+        )
+        final = events[-1].final
+        assert final.stop_reason == "length"
+        assert final.get_tool_calls()[0].arguments == {
+            "path": "docs/x.md",
+            "content": "# T\n- item",
+        }
+        assert "dropped_partial_tool_calls" not in final.usage.extra
+
+    def test_a_call_with_no_argument_text_is_dropped_and_counted(self):
+        events, _ = _run(
+            _provider(),
+            _model(),
+            [{"role": "user", "content": "write"}],
+            final=_final(
+                content=[SimpleNamespace(type="tool_use", id="t1", name="write", input={})],
+                stop_reason="max_tokens",
+            ),
+        )
+        final = events[-1].final
+        assert final.get_tool_calls() == []
+        assert final.usage.extra["dropped_partial_tool_calls"] == 1
+
+    def test_any_other_stop_reason_keeps_the_sdk_input(self):
+        events, _ = _run(
+            _provider(),
+            _model(),
+            [{"role": "user", "content": "list"}],
+            events=[_json_delta(0, '{"path": "raw"}')],
+            final=_final(
+                content=[SimpleNamespace(type="tool_use", id="t1", name="ls", input={"path": "."})],
+                stop_reason="tool_use",
+            ),
+        )
+        assert events[-1].final.get_tool_calls()[0].arguments == {"path": "."}
+
+
 class TestFinalMessage:
     def test_a_tool_use_block_becomes_a_tool_call(self):
         events, _ = _run(

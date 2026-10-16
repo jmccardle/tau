@@ -103,7 +103,7 @@ class TestTheFunction:
 
     def test_a_dropped_tool_call_is_counted_in_the_line(self, capsys):
         report_truncation([_assistant("length", 2)], 4096)
-        assert "2 tool calls were dropped" in capsys.readouterr().err
+        assert "2 tool calls were not run" in capsys.readouterr().err
 
     def test_a_clean_turn_writes_nothing(self, capsys):
         assert report_truncation([_assistant("stop")], 4096) is None

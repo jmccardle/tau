@@ -55,7 +55,11 @@ from tau_agent_core.tool_pipeline import (
     prepare_tool_call,
 )
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolBatchResult
-from tau_agent_core.truncation import without_tool_calls_if_truncated
+from tau_agent_core.truncation import (
+    TRUNCATED_STOP_REASON,
+    unrun_tool_result_text,
+    with_unrun_tool_calls_counted,
+)
 from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
@@ -212,6 +216,7 @@ class AgentLoop:
         self._call_gate = call_gate
         self._turn_settings = turn_settings
         self._recorded: dict[int, dict[str, Any]] = {}
+        self._request_max_tokens: int | None = None
 
     @staticmethod
     async def _noop_emit(event: AgentEvent) -> None:
@@ -334,8 +339,11 @@ class AgentLoop:
                     )
                 )
 
-                # Execute tool calls
-                batch = await self._execute_tool_calls(assistant, tool_calls)
+                cut_off = assistant.stop_reason == TRUNCATED_STOP_REASON
+                if cut_off:
+                    batch = await self._refuse_cut_off_calls(assistant, tool_calls)
+                else:
+                    batch = await self._execute_tool_calls(assistant, tool_calls)
 
                 # Add tool results to messages
                 for msg in batch.messages:
@@ -372,6 +380,12 @@ class AgentLoop:
                     messages,
                     final_messages,
                 )
+
+                if cut_off:
+                    turn_index += 1
+                    if self._steer_queue:
+                        continue
+                    break
 
                 if batch.terminate:
                     end_reason = "terminate"
@@ -507,7 +521,11 @@ class AgentLoop:
                     )
                 )
 
-                batch = await self._execute_tool_calls(assistant, tool_calls)
+                cut_off = assistant.stop_reason == TRUNCATED_STOP_REASON
+                if cut_off:
+                    batch = await self._refuse_cut_off_calls(assistant, tool_calls)
+                else:
+                    batch = await self._execute_tool_calls(assistant, tool_calls)
 
                 for msg in batch.messages:
                     messages.append(msg)
@@ -543,6 +561,12 @@ class AgentLoop:
                     messages,
                     final_messages,
                 )
+
+                if cut_off:
+                    turn_index += 1
+                    if self._steer_queue:
+                        continue
+                    break
 
                 if batch.terminate:
                     end_reason = "terminate"
@@ -865,6 +889,7 @@ class AgentLoop:
 
         settings = await self._request_settings()
         model = settings.model
+        self._request_max_tokens = getattr(model, "max_tokens", None)
 
         options: dict[str, Any] = {}
         if settings.temperature is not None:
@@ -972,7 +997,7 @@ class AgentLoop:
                         )
                     )
                 elif isinstance(event, DoneEvent):
-                    final_msg = without_tool_calls_if_truncated(event.final)
+                    final_msg = with_unrun_tool_calls_counted(event.final)
                     final_blocks = [
                         c.model_dump() if hasattr(c, "model_dump") else c for c in final_msg.content
                     ]
@@ -1132,13 +1157,32 @@ class AgentLoop:
             return await self._execute_sequential(assistant, tool_calls)
         return await self._execute_parallel(assistant, tool_calls)
 
+    async def _refuse_cut_off_calls(
+        self, assistant: AssistantMessage, tool_calls: list[ToolCall]
+    ) -> ToolBatchResult:
+        """Answer every call in a completion the output cap cut off, running none.
+
+        Each gets an error result saying why (docs/TRUNCATED-TOOL-CALLS.md §3.2),
+        so the session stays valid for the next request and the model reads
+        whatever of its arguments the provider recovered.
+        """
+        self._recorded = {}
+        cap = self._request_max_tokens
+        return await self._aborted_batch(
+            tool_calls,
+            prior=[],
+            text=lambda tc: unrun_tool_result_text(assistant, tc, max_tokens=cap),
+        )
+
     async def _aborted_batch(
         self,
         tool_calls: list[ToolCall],
         prior: list[AgentToolResult],
-        text: str = ABORTED_TOOL_RESULT,
+        text: str | Callable[[ToolCall], str] = ABORTED_TOOL_RESULT,
     ) -> ToolBatchResult:
         """Answer every outstanding tool call with an error ``text`` (docs/PLAN-0.9.4.md §3).
+
+        ``text`` is one string for every call, or a function giving each its own.
 
         The defect this replaces: the sequential executor simply ``break``\\ed on
         abort and synthesized nothing. That was invisible while an aborted turn
@@ -1164,6 +1208,7 @@ class AgentLoop:
         for tc in tool_calls:
             if tc.id in answered:
                 continue
+            reason = text if isinstance(text, str) else text(tc)
             await self._emit(
                 AgentEvent(
                     type="tool_execution_start",
@@ -1179,11 +1224,11 @@ class AgentLoop:
                     timestamp=int(time.time() * 1000),
                     tool_call_id=tc.id,
                     tool_name=tc.name,
-                    result=text,
+                    result=reason,
                     is_error=True,
                 )
             )
-            aborted = AgentToolResult.from_error(tc.name, text, tc.id)
+            aborted = AgentToolResult.from_error(tc.name, reason, tc.id)
             await self._record(aborted)
             results.append(aborted)
         return self._build_batch_result(results)
