@@ -274,7 +274,7 @@ async def test_compaction_settings_reflects_the_bound_session_settings(
 ) -> None:
     result = await _call(handler)
     assert result["compaction_settings"] == {
-        "enabled": True,
+        "auto": True,
         "reserve_tokens": 16384,
         "keep_recent_tokens": 20000,
     }
@@ -285,15 +285,15 @@ async def test_rpc_mode_settings_reveal_auto_compaction_is_off() -> None:
     auto-compaction is off.' `_rpc_mode_session()` mirrors backends.py:885
     exactly — this is the literal shape a real RPC host would read.
 
-    MUTATION TARGET 2: hardcode `"enabled": True` in the handler instead of
-    reading `settings.enabled`. This test goes red (expects `False`); the
+    MUTATION TARGET 2: hardcode `"auto": True` in the handler instead of
+    reading `settings.auto`. This test goes red (expects `False`); the
     default-session test above stays green (it also expects `True`, by
     coincidence) — which is exactly why this second, differently-configured
     fixture exists: only it can catch a hardcoded constant."""
     rpc_session = _rpc_mode_session()
     rpc_handler = RPCHandler(rpc_session)
     result = await _call(rpc_handler)
-    assert result["compaction_settings"]["enabled"] is False
+    assert result["compaction_settings"]["auto"] is False
 
 
 async def test_compaction_settings_tracks_set_auto_compaction_not_a_construction_constant() -> None:
@@ -309,7 +309,7 @@ async def test_compaction_settings_tracks_set_auto_compaction_not_a_construction
     is what the prose denied was possible.
     """
     rpc_handler = RPCHandler(_rpc_mode_session())
-    assert (await _call(rpc_handler))["compaction_settings"]["enabled"] is False
+    assert (await _call(rpc_handler))["compaction_settings"]["auto"] is False
 
     await rpc_handler._handle_request(
         {"jsonrpc": "2.0", "id": 2, "method": "set_auto_compaction", "params": {"enabled": True}}
@@ -317,7 +317,7 @@ async def test_compaction_settings_tracks_set_auto_compaction_not_a_construction
     setter = await rpc_handler._output_queue.get()
     assert setter["result"]["enabled"] is True
 
-    assert (await _call(rpc_handler))["compaction_settings"]["enabled"] is True
+    assert (await _call(rpc_handler))["compaction_settings"]["auto"] is True
 
 
 async def test_custom_compaction_settings_are_not_the_defaults(handler: RPCHandler) -> None:
@@ -326,7 +326,7 @@ async def test_custom_compaction_settings_are_not_the_defaults(handler: RPCHandl
     custom_handler = RPCHandler(custom_session)
     result = await _call(custom_handler)
     assert result["compaction_settings"] == {
-        "enabled": False,
+        "auto": False,
         "reserve_tokens": 111,
         "keep_recent_tokens": 222,
     }

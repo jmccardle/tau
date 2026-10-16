@@ -474,6 +474,11 @@ It also carries two event fields from docs/RESPONSE-HEADERS.md §5 (2026-10-15):
 `status_code` field went in the same change, because `error_detail.status`
 carries the same fact and no released client read it.
 
+One change in the same bump breaks a 2.1 client: `get_session_stats`'
+`compaction_settings.enabled` is renamed `auto`, matching the config key and
+`CompactionSettings.auto` (docs/PRICING-AND-COMPACTION-CONFIG.md §6). It means
+automatic compaction only; the `compact` verb ignores it.
+
 ## 6. `tau serve`
 
 ```

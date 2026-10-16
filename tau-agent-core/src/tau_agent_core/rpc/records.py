@@ -541,7 +541,7 @@ class ContextEstimate:
 class CompactionSettingsRecord:
     """When compaction runs (``compaction.CompactionSettings``)."""
 
-    enabled: bool
+    auto: bool
     reserve_tokens: int
     keep_recent_tokens: int
 

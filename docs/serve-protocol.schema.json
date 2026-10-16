@@ -1013,7 +1013,7 @@
     "CompactionSettingsRecord": {
       "description": "When compaction runs (`compaction.CompactionSettings`).",
       "properties": {
-        "enabled": {
+        "auto": {
           "type": "boolean"
         },
         "keep_recent_tokens": {
@@ -1024,7 +1024,7 @@
         }
       },
       "required": [
-        "enabled",
+        "auto",
         "reserve_tokens",
         "keep_recent_tokens"
       ],
@@ -3200,7 +3200,7 @@
       "properties": {
         "compaction_settings": {
           "$ref": "#/$defs/CompactionSettingsRecord",
-          "description": "The session's EFFECTIVE CompactionSettings \u2014 {enabled, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. `enabled` is CompactionSettings.auto: AUTOMATIC compaction only; the `compact` verb ignores it. An RPC session starts from the child's config.json `compaction` block \u2014 enabled unless it says otherwise (docs/PRICING-AND-COMPACTION-CONFIG.md \u00a73) \u2014 and set_auto_compaction (D-4) is the one thing that changes it afterwards, so this reports the session's LIVE effective setting at call time, never a constant."
+          "description": "The session's EFFECTIVE CompactionSettings \u2014 {auto, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. `auto` is AUTOMATIC compaction only; the `compact` verb ignores it. An RPC session starts from the child's config.json `compaction` block \u2014 on unless its `auto` says otherwise (docs/PRICING-AND-COMPACTION-CONFIG.md \u00a73) \u2014 and set_auto_compaction (D-4) is the one thing that changes it afterwards, so this reports the session's LIVE effective setting at call time, never a constant."
         },
         "context": {
           "$ref": "#/$defs/ContextEstimate",
@@ -5152,7 +5152,7 @@
           "type": "string"
         },
         "enabled": {
-          "description": "Desired auto-compaction state. An RPC session starts from the child's config.json `compaction` block, enabled unless it says otherwise (docs/PRICING-AND-COMPACTION-CONFIG.md \u00a73); AgentSession.set_auto_compaction is the same setter in process.",
+          "description": "Desired auto-compaction state. An RPC session starts from the child's config.json `compaction` block, on unless its `auto` says otherwise (docs/PRICING-AND-COMPACTION-CONFIG.md \u00a73); AgentSession.set_auto_compaction is the same setter in process.",
           "type": "boolean"
         },
         "session_id": {

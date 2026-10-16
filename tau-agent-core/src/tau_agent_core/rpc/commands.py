@@ -1151,7 +1151,7 @@ async def _handle_abort(
         "extension_types.read_session_name; still not an AgentSession "
         "property, which is why it is not folded in here), and pi's "
         "autoCompactionEnabled is get_session_stats' "
-        "compaction_settings.enabled (D-3), the field set_auto_compaction "
+        "compaction_settings.auto (D-3), the field set_auto_compaction "
         "(D-4) writes. This verb answers 'what is running'; get_session_stats' "
         "own notes state that division of labour. `addressable` is the one "
         "field here that is not about the turn: it answers whether the CURRENT "
@@ -2275,7 +2275,7 @@ async def _handle_get_session_stats(
         "context_window": stats.context_window,
         "context_headroom": stats.context_headroom,
         "compaction_settings": {
-            "enabled": stats.compaction_settings.auto,
+            "auto": stats.compaction_settings.auto,
             "reserve_tokens": stats.compaction_settings.reserve_tokens,
             "keep_recent_tokens": stats.compaction_settings.keep_recent_tokens,
         },
@@ -2394,7 +2394,7 @@ SET_AUTO_COMPACTION_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
         "enabled": {
             "description": (
                 "Desired auto-compaction state. An RPC session starts from the "
-                "child's config.json `compaction` block, enabled unless it says "
+                "child's config.json `compaction` block, on unless its `auto` says "
                 "otherwise (docs/PRICING-AND-COMPACTION-CONFIG.md §3); "
                 "AgentSession.set_auto_compaction is the same setter in process."
             ),
@@ -2412,7 +2412,7 @@ SET_AUTO_COMPACTION_RESULT_SCHEMA: dict[str, Any] = result_schema_for("set_auto_
     notes=(
         "D-4: a plain, idempotent setter — `AgentSession.set_auto_compaction`, "
         "which this verb calls rather than writing the field itself. It used to "
-        "write `session._compaction_settings.enabled` directly, on the ground "
+        "write `session._compaction_settings` directly, on the ground "
         "that no accessor existed (§1's ground truth) and that `get_tools` set "
         "the precedent with `session._tools`. Both reaches are gone: the method "
         "exists, the TUI and the CLI can call it too, and this verb is no longer "

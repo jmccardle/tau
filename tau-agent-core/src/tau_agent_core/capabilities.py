@@ -821,14 +821,14 @@ _GET_SESSION_STATS_RETURNS: dict[str, Any] = {
         "compaction_settings": {
             "type": "object",
             "description": (
-                "The session's EFFECTIVE CompactionSettings — {enabled, "
+                "The session's EFFECTIVE CompactionSettings — {auto, "
                 "reserve_tokens, keep_recent_tokens}, read off "
                 "AgentSession.compaction_settings, which hands back a COPY so "
-                "a reader cannot retune a turn already in flight. `enabled` "
-                "is CompactionSettings.auto: AUTOMATIC compaction only; the "
+                "a reader cannot retune a turn already in flight. `auto` is "
+                "AUTOMATIC compaction only; the "
                 "`compact` verb ignores it. An RPC "
                 "session starts from the child's config.json `compaction` "
-                "block — enabled unless it says otherwise "
+                "block — on unless its `auto` says otherwise "
                 "(docs/PRICING-AND-COMPACTION-CONFIG.md §3) — and "
                 "set_auto_compaction (D-4) is the one thing that changes it "
                 "afterwards, so this reports the session's LIVE effective "

@@ -268,9 +268,11 @@ autocompaction?" The config key is now `auto`, and so is the core field
 `CompactionSettings.auto` ("whether automatic compaction runs; /compact and
 AgentSession.compact() ignore it"). There is no alias: τ is pre-1.0, and a
 misleading name is a bug. The rename touched 24 Python files: 7 in `src`, 17 in
-tests. The RPC and serve wire keep the key `enabled` in `get_session_stats`'
-`compaction_settings` and in `set_auto_compaction`'s params, because renaming a
-wire key needs a protocol bump. Its description now says it is `auto`.
+tests. The wire followed in the same release: `get_session_stats`'
+`compaction_settings` reports `auto`, riding the RPC 2.2 / serve 0.9 bump
+(`TAU-SERVE.md`), and breaking a 2.1 client that read `enabled` there.
+`set_auto_compaction` keeps its `enabled` argument, because the verb's name
+already says which compaction it sets.
 
 **A model switch resets `auto`.** A switch re-reads the new model's config, so
 an earlier `set_auto_compaction` does not survive it. That toggle was always

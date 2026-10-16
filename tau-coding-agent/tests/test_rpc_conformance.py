@@ -1319,7 +1319,7 @@ async def test_tier_b_results_match_their_published_schemas_and_set_model_persis
         stats, _ = await _recv_response(proc, 6)
         _check("get_session_stats", stats["result"])
         # On by default since docs/PRICING-AND-COMPACTION-CONFIG.md §3.
-        assert stats["result"]["compaction_settings"]["enabled"] is True
+        assert stats["result"]["compaction_settings"]["auto"] is True
         assert stats["result"]["usage"] is None
         assert stats["result"]["last_compaction"] is None
 
