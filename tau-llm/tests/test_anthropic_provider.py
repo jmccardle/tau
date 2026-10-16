@@ -742,7 +742,14 @@ class TestToolConversion:
         tools = _provider()._convert_tools(
             [_tool(name="read", description="Read a file", parameters=schema)]
         )
-        assert tools == [{"name": "read", "description": "Read a file", "input_schema": schema}]
+        assert tools == [
+            {
+                "name": "read",
+                "description": "Read a file",
+                "input_schema": schema,
+                "eager_input_streaming": True,
+            }
+        ]
 
 
 # ── streaming ────────────────────────────────────────────────────────────

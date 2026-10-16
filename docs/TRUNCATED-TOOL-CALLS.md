@@ -279,11 +279,19 @@ raw stream explains it: 4 `input_json_delta` events, 19 characters in all,
 default the API buffers a tool input and sends only finished values, so the
 draft never reaches τ and no parse mode can recover it. The same request with
 `eager_input_streaming: true` on the tool definition delivered 374 deltas, and
-the kept call held `content` with 3,919 characters. τ does not send that flag
-today. Until it does, the Anthropic path recovers the finished arguments, such
-as `path`, and the refusal still ends the turn, but the draft of the cut string
-is lost. The OpenAI-compatible path streams raw argument text and recovers the
-draft. The next request after the refusal was accepted. Asked only to
+the kept call held `content` with 3,919 characters. A raw SSE capture with no
+SDK and no τ (thinking off, so all 1500 output tokens were the call) confirmed
+it is the API, not the client: 19 characters without the flag, 4,042 with it,
+and in neither case a `content_block_stop` before `message_delta`.
+
+**So τ sets `eager_input_streaming: true` on every Anthropic tool** (same day,
+`AnthropicMessagesProvider._convert_tools`). τ is the user's agent; requesting a
+billable completion and then declining to receive most of it is poor
+stewardship, whatever the edge case costs to clean up. The flag changes the
+tools block once, so each cached Anthropic prefix misses once after the
+upgrade; it is a code change, not a runtime cache break. With it the API
+streams arguments unvalidated, which the OpenAI-compatible path has always
+done and which this section's parse already handles. The next request after the refusal was accepted. Asked only to
 "continue in smaller pieces", the model started one `write` and was cut again;
 asked for 40-line pieces, it wrote them.
 

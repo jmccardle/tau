@@ -518,14 +518,17 @@ class AnthropicMessagesProvider(Provider):
     def _convert_tools(self, tools: list[ToolSpec]) -> list[dict[str, Any]]:
         """τ tool specs → Anthropic tool definitions.
 
-        The only rename is ``parameters`` → ``input_schema``; the JSON Schema
-        itself travels unchanged.
+        ``parameters`` becomes ``input_schema``, unchanged. ``eager_input_streaming``
+        is set on every tool: without it the API withholds an argument value until
+        it closes, so a completion cut off at the cap bills every token and
+        delivers only the finished values (docs/TRUNCATED-TOOL-CALLS.md §3.2).
         """
         return [
             {
                 "name": tool.name,
                 "description": tool.description,
                 "input_schema": tool.parameters,
+                "eager_input_streaming": True,
             }
             for tool in tools
         ]
