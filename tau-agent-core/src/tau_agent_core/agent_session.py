@@ -1314,10 +1314,14 @@ class AgentSession:
         Args:
             name: A config model name.
 
+        The one way a credential enters the session: no other path hands one
+        provider's key to another provider's model (docs/CURSORS.md §6).
+
         Returns:
             ``(model, key)``. The key is the resolver's ``api_key(name)`` when it
             has one, as ``ConfigModelResolver`` does; a plain ``name -> Model``
-            resolver knows no keys, and its models run with the session's key.
+            resolver knows no keys, so the key is ``None`` (the provider's
+            environment variable) unless ``model`` equals the session's model.
 
         Raises:
             RuntimeError: no resolver is bound.
@@ -1332,7 +1336,31 @@ class AgentSession:
                 "expected a tau_llm.types.Model"
             )
         key_for = getattr(self._model_resolver, "api_key", None)
-        return model, (key_for(name) if callable(key_for) else self._api_key)
+        if callable(key_for):
+            return model, key_for(name)
+        return model, self._api_key if model == self._model else None
+
+    def model_and_key(self, model: str | Model | None) -> tuple[Model, str | None]:
+        """The model ``model`` names and the key it is called with.
+
+        Args:
+            model: ``None`` for the session's model and key; a config name,
+                through :meth:`resolve_model`; or a ``Model``, which keeps the
+                session's key only if it equals the session's model and otherwise
+                gets ``None``, the provider's environment variable.
+
+        Returns:
+            ``(model, key)``.
+
+        Raises:
+            RuntimeError: a name was given and no resolver is bound.
+            TypeError: the resolver returned something other than a ``Model``.
+        """
+        if model is None:
+            return self._model, self._api_key
+        if isinstance(model, str):
+            return self.resolve_model(model)
+        return model, self._api_key if model == self._model else None
 
     def summarizer(self) -> tuple[Model, str | None]:
         """The model and key a compaction or a branch summary runs on (H5 / §16.8).
@@ -3128,7 +3156,7 @@ class AgentSession:
         prompt: str,
         *,
         tools: list[str],
-        model: Model | None = None,
+        model: str | Model | None = None,
         max_turns: int | None = None,
         label: str | None = None,
         system_prompt: str | None = None,
@@ -3155,8 +3183,9 @@ class AgentSession:
             prompt: The sub-agent's user message.
             tools: Names of the tools it may call, each one the spawning turn
                 offers.
-            model: Its model; ``None`` means the session's. It runs with the
-                session's API key either way.
+            model: Its model and key, by :meth:`model_and_key`: a config name
+                (recorded as the branch's ``model``), a ``Model``, or ``None`` for
+                the session's.
             max_turns: Its turn ceiling; ``None`` is no ceiling, not the session's.
             label: What it is for, for display; ``None`` means the prompt's first
                 60 characters.
@@ -3170,7 +3199,9 @@ class AgentSession:
         Raises:
             ValueError: a name in ``tools`` is not one the spawning turn offers, or
                 ``at`` names no entry.
+            RuntimeError: ``model`` is a name and no resolver is bound.
         """
+        resolved, key = (None, None) if model is None else self.model_and_key(model)
         available = {t.name for t in self._turn_tools()}
         missing = [t for t in tools if t not in available]
         if missing:
@@ -3184,8 +3215,9 @@ class AgentSession:
         )
         cursor.frame = TurnFrame(
             tools=tuple(tools),
-            model=model,
-            api_key=self._api_key,
+            model=resolved,
+            api_key=key,
+            model_name=model if isinstance(model, str) else None,
             system_prompt=system_prompt,
             max_turns=max_turns,
             hooks=hooks,

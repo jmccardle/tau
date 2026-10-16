@@ -1308,28 +1308,24 @@ class ExtensionContext:
 
         Args:
             model: ``None`` for the session's current model; a name, looked up by
-                the resolver bound on the session (the config ``models`` registry
-                the TUI picks from); or a ``Model``, used as-is.
+                ``AgentSession.resolve_model`` (the config ``models`` registry the
+                TUI picks from); or a ``Model``, used as-is.
 
         Returns:
-            The resolved ``Model``.
+            The resolved ``Model``; ``AgentSession.model_and_key`` also gives its key.
 
         Raises:
             RuntimeError: no session is bound, or a name was given and the session
                 has no model resolver.
+            TypeError: the resolver returned something other than a ``Model``.
         """
         session = self._require_session()
-        if model is None:
-            return session._model
-        if isinstance(model, str):
-            resolver = session.model_resolver
-            if resolver is None:
-                raise RuntimeError(
-                    f"cannot resolve model {model!r} by name: no model resolver is bound to "
-                    "this session (the TUI/headless frontends bind one from config 'models')"
-                )
-            return resolver(model)
-        return model
+        if isinstance(model, str) and session.model_resolver is None:
+            raise RuntimeError(
+                f"cannot resolve model {model!r} by name: no model resolver is bound to "
+                "this session (the TUI/headless frontends bind one from config 'models')"
+            )
+        return session.model_and_key(model)[0]
 
     async def complete(
         self,
@@ -1362,7 +1358,7 @@ class ExtensionContext:
             model: model name (resolved via the config registry), a ``Model``, or None
                 for the session's current model.
             constraints: an optional ``tau_llm.DecodeConstraints``.
-            api_key: overrides the session's key.
+            api_key: overrides the key ``AgentSession.model_and_key`` gives ``model``.
 
         Returns:
             A ``tau_llm.AssistantMessage``.
@@ -1378,10 +1374,10 @@ class ExtensionContext:
         from tau_agent_core.usage import usage_of
 
         session = self._require_session()
-        resolved = self.resolve_model(model)
+        resolved, model_key = session.model_and_key(model)
 
         options: dict[str, Any] = {}
-        key = api_key if api_key is not None else session._api_key
+        key = api_key if api_key is not None else model_key
         if key is not None:
             options["api_key"] = key
         if constraints is not None:
@@ -1425,7 +1421,7 @@ class ExtensionContext:
             model: A name, a ``Model``, or ``None`` for the session's, as for
                 :meth:`complete`.
             constraints: An optional ``tau_llm.DecodeConstraints``.
-            api_key: Overrides the session's key.
+            api_key: Overrides the model's key, as for :meth:`complete`.
 
         Returns:
             The text blocks joined, VERBATIM: under a constraint whitespace is part
@@ -1468,7 +1464,8 @@ class ExtensionContext:
                 before the root.
             prompt: The sub-agent's task, sent as its one submission.
             tools: A required hard allowlist of tool names; ``[]`` means none.
-            model: A name, a ``Model``, or ``None`` for the session's.
+            model: A config name, a ``Model``, or ``None`` for the session's; the
+                key goes with it (``AgentSession.model_and_key``).
             max_turns: Cap on the sub-agent's loop turns, or ``None`` for no cap.
             label: The cursor's label; defaults to the prompt's first 60 characters.
             system_prompt: Replaces the session's system prompt for this branch.
@@ -1489,7 +1486,7 @@ class ExtensionContext:
             parent_id,
             prompt,
             tools=tools,
-            model=None if model is None else self.resolve_model(model),
+            model=model,
             max_turns=max_turns,
             label=label,
             system_prompt=system_prompt,

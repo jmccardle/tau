@@ -675,7 +675,7 @@ grammar raises rather than returning free prose as a verdict.
 - `messages: list[dict[str, Any]]` — τ message dicts (``{"role": ..., "content": ...}``).
 - `model: Any = None` — model name (resolved via the config registry), a ``Model``, or None for the session's current model.
 - `constraints: Any = None` — an optional ``tau_llm.DecodeConstraints``.
-- `api_key: str | None = None` — overrides the session's key.
+- `api_key: str | None = None` — overrides the key ``AgentSession.model_and_key`` gives ``model``.
 
 **Returns**
 
@@ -701,7 +701,7 @@ Run :meth:`complete` and return the response's text (the common case).
 - `messages: list[dict[str, Any]]` — τ message dicts, as for :meth:`complete`.
 - `model: Any = None` — A name, a ``Model``, or ``None`` for the session's, as for :meth:`complete`.
 - `constraints: Any = None` — An optional ``tau_llm.DecodeConstraints``.
-- `api_key: str | None = None` — Overrides the session's key.
+- `api_key: str | None = None` — Overrides the model's key, as for :meth:`complete`.
 
 **Returns**
 
@@ -1046,15 +1046,16 @@ extension-private client plumbing.
 
 **Parameters**
 
-- `model: Any = None` — ``None`` for the session's current model; a name, looked up by the resolver bound on the session (the config ``models`` registry the TUI picks from); or a ``Model``, used as-is.
+- `model: Any = None` — ``None`` for the session's current model; a name, looked up by ``AgentSession.resolve_model`` (the config ``models`` registry the TUI picks from); or a ``Model``, used as-is.
 
 **Returns**
 
-The resolved ``Model``.
+The resolved ``Model``; ``AgentSession.model_and_key`` also gives its key.
 
 **Raises**
 
 - `RuntimeError` — no session is bound, or a name was given and the session has no model resolver.
+- `TypeError` — the resolver returned something other than a ``Model``.
 
 ### session_id
 
@@ -1240,7 +1241,7 @@ Delegates to :meth:`AgentSession.spawn` (docs/CURSORS.md §6).
 - `parent_id: str | None` — The entry the sub-agent's cursor opens at, or ``None`` for before the root.
 - `prompt: str` — The sub-agent's task, sent as its one submission.
 - `tools: list[str]` — A required hard allowlist of tool names; ``[]`` means none.
-- `model: Any = None` — A name, a ``Model``, or ``None`` for the session's.
+- `model: Any = None` — A config name, a ``Model``, or ``None`` for the session's; the key goes with it (``AgentSession.model_and_key``).
 - `max_turns: int | None = None` — Cap on the sub-agent's loop turns, or ``None`` for no cap.
 - `label: str | None = None` — The cursor's label; defaults to the prompt's first 60 characters.
 - `system_prompt: str | None = None` — Replaces the session's system prompt for this branch.

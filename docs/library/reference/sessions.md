@@ -769,6 +769,29 @@ The extensions loaded and the failures collected. The failures also replace what
 
 The model-input context at this session's cursor.
 
+### model_and_key
+
+```python
+model_and_key(model: str | Model | None) -> tuple[Model, str | None]
+```
+
+`tau_agent_core.agent_session.AgentSession.model_and_key`
+
+The model ``model`` names and the key it is called with.
+
+**Parameters**
+
+- `model: str | Model | None` — ``None`` for the session's model and key; a config name, through :meth:`resolve_model`; or a ``Model``, which keeps the session's key only if it equals the session's model and otherwise gets ``None``, the provider's environment variable.
+
+**Returns**
+
+``(model, key)``.
+
+**Raises**
+
+- `RuntimeError` — a name was given and no resolver is bound.
+- `TypeError` — the resolver returned something other than a ``Model``.
+
 ### model_name
 
 `tau_agent_core.agent_session.AgentSession.model_name: str`
@@ -1105,13 +1128,16 @@ resolve_model(name: str) -> tuple[Model, str | None]
 
 The model a config NAME resolves to, and the key it is called with.
 
+The one way a credential enters the session: no other path hands one
+provider's key to another provider's model (docs/CURSORS.md §6).
+
 **Parameters**
 
 - `name: str` — A config model name.
 
 **Returns**
 
-``(model, key)``. The key is the resolver's ``api_key(name)`` when it has one, as ``ConfigModelResolver`` does; a plain ``name -> Model`` resolver knows no keys, and its models run with the session's key.
+``(model, key)``. The key is the resolver's ``api_key(name)`` when it has one, as ``ConfigModelResolver`` does; a plain ``name -> Model`` resolver knows no keys, so the key is ``None`` (the provider's environment variable) unless ``model`` equals the session's model.
 
 **Raises**
 
@@ -1454,7 +1480,7 @@ would let one reader's arithmetic rewrite it (see :meth:`get_usage`).
 ### spawn
 
 ```python
-async spawn(at: str | None, prompt: str, *, tools: list[str], model: Model | None = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = False, owner: Cursor | None = None) -> BranchResult
+async spawn(at: str | None, prompt: str, *, tools: list[str], model: str | Model | None = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = False, owner: Cursor | None = None) -> BranchResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.spawn`
@@ -1479,7 +1505,7 @@ refused submission (without the entry).
 - `at: str | None` — The entry to branch from; ``None`` is before the root.
 - `prompt: str` — The sub-agent's user message.
 - `tools: list[str]` — Names of the tools it may call, each one the spawning turn offers.
-- `model: Model | None = None` — Its model; ``None`` means the session's. It runs with the session's API key either way.
+- `model: str | Model | None = None` — Its model and key, by :meth:`model_and_key`: a config name (recorded as the branch's ``model``), a ``Model``, or ``None`` for the session's.
 - `max_turns: int | None = None` — Its turn ceiling; ``None`` is no ceiling, not the session's.
 - `label: str | None = None` — What it is for, for display; ``None`` means the prompt's first 60 characters.
 - `system_prompt: str | None = None` — Its system prompt; ``None`` means the session's.
@@ -1493,6 +1519,7 @@ What the sub-agent came back with; check ``ok`` first.
 **Raises**
 
 - `ValueError` — a name in ``tools`` is not one the spawning turn offers, or ``at`` names no entry.
+- `RuntimeError` — ``model`` is a name and no resolver is bound.
 
 ### start
 
