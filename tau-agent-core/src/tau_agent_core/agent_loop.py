@@ -40,6 +40,8 @@ from tau_llm.types import (
 from tau_agent_core.agent_loop_types import (
     AgentLoopConfig,
     PreparedToolCall,
+    TurnSettings,
+    TurnSettingsSource,
 )
 from tau_agent_core.events import AgentEndReason, AgentEvent
 from tau_agent_core.provider_retry import provider_retry_event
@@ -153,7 +155,7 @@ class AgentLoop:
         emit: Awaited with each AgentEvent; ``None`` emits nothing.
         tools: The tools the model may call, keyed by name (a later duplicate
             name wins).
-        model: Overrides ``config.model`` when truthy.
+        model: Overrides ``config.model`` when truthy. Ignored with ``turn_settings``.
         abort_signal: Checked between turns and passed to the stream and tools;
             ``None`` means the run cannot be aborted.
         hook_dispatcher: The return-collecting extension hook dispatcher, whose
@@ -170,6 +172,10 @@ class AgentLoop:
         call_gate: Given a model-issued call's tool name, the reason to refuse
             it, or ``None`` to let it run; how a masked tool stays declared, so
             the ``tools`` block and the prompt cache hold. ``None`` gates nothing.
+        turn_settings: Awaited before every request for its model, key,
+            reasoning and temperature, so a switch made between two requests
+            reaches the second (docs/TURN-SETTINGS.md §2). ``None`` sends every
+            request with ``model`` and ``config``'s values.
 
     Attributes:
         config: The configuration passed in.
@@ -187,6 +193,7 @@ class AgentLoop:
         mid_turn_compactor: MidTurnCompactor | None = None,
         writer: TurnWriter | None = None,
         call_gate: Callable[[str], str | None] | None = None,
+        turn_settings: TurnSettingsSource | None = None,
     ) -> None:
         self.config = config
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
@@ -201,6 +208,7 @@ class AgentLoop:
         self._mid_turn_compactor: MidTurnCompactor | None = mid_turn_compactor
         self._writer: TurnWriter | None = writer
         self._call_gate = call_gate
+        self._turn_settings = turn_settings
         self._recorded: dict[int, dict[str, Any]] = {}
 
     @staticmethod
@@ -801,6 +809,17 @@ class AgentLoop:
             timestamp=int(time.time() * 1000),
         )
 
+    async def _request_settings(self) -> TurnSettings:
+        """The settings the next request is sent with: the source's, else the static ones."""
+        if self._turn_settings is not None:
+            return await self._turn_settings()
+        return TurnSettings(
+            model=self._model or self.config.model,
+            api_key=self.config.api_key,
+            reasoning=self.config.reasoning,
+            temperature=self.config.temperature,
+        )
+
     async def _stream_response(self, context: list[Any]) -> AssistantMessage:
         """Stream assistant response from LLM.
 
@@ -841,15 +860,16 @@ class AgentLoop:
             "tools": list(self._tools.values()) if self._tools else None,
         }
 
-        model = self._model or self.config.model
+        settings = await self._request_settings()
+        model = settings.model
 
         options: dict[str, Any] = {}
-        if self.config.temperature is not None:
-            options["temperature"] = self.config.temperature
-        if self.config.api_key:
-            options["api_key"] = self.config.api_key
-        if self.config.reasoning is not None:
-            options["reasoning"] = self.config.reasoning
+        if settings.temperature is not None:
+            options["temperature"] = settings.temperature
+        if settings.api_key:
+            options["api_key"] = settings.api_key
+        if settings.reasoning is not None:
+            options["reasoning"] = settings.reasoning
         if self._abort_signal is not None:
             options["abort_signal"] = self._abort_signal
 

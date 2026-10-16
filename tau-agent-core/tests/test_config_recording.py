@@ -149,8 +149,9 @@ class TestAChangeIsRecordedWhereItTakesEffect:
 
         entries = await _config_entries(session)
         assert len(entries) == 2
-        assert set(entries[1]["data"]) == {"model_spec"}
+        assert set(entries[1]["data"]) == {"model", "model_spec"}
         assert _effective(session)["model_spec"]["id"] == "model-b"
+        assert _effective(session)["model"] == "model-b"
 
     async def test_a_loaded_file_extension_appears_in_the_next_record(self, tmp_path):
         ext_path = tmp_path / "my_ext.py"

@@ -464,6 +464,9 @@ the field. Serve's hello still refuses a mismatched version, so a 0.8 client is
 refused by a 0.9 daemon. The same bump carries the `provider_retry` event
 (docs/PROVIDER-RETRY.md), which reached `master` on 2026-10-12 at RPC 2.1 /
 protocol 0.8 and was folded into 2.2 / 0.9 when code mode merged (2026-10-14).
+It also carries the `follow_ups_dropped` event and its `dropped` field
+(docs/TURN-SETTINGS.md §5, 2026-10-15): the followUps a user abort discarded,
+which were written nowhere else.
 
 ## 6. `tau serve`
 

@@ -1052,7 +1052,7 @@ class TestExtensionContext:
         mock_signal = MagicMock()
         ctx = ExtensionContext(signal=mock_signal)
         ctx.abort()
-        mock_signal.abort.assert_called_once()
+        mock_signal.abort.assert_called_once_with(reason="extension")
 
     def test_context_shutdown_no_manager(self):
         """ExtensionContext.shutdown() is a no-op when session_manager is None."""

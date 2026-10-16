@@ -41,6 +41,41 @@ class TestAbortSignalBasic:
         assert signal.is_aborted() is True
 
 
+class TestAbortReason:
+    """Who aborted: a user, or an extension (docs/TURN-SETTINGS.md §4)."""
+
+    def test_no_reason_before_an_abort(self):
+        assert AbortSignal().reason is None
+
+    def test_an_unreasoned_abort_is_a_user_abort(self):
+        signal = AbortSignal()
+        signal.abort()
+        assert signal.reason == "user"
+
+    def test_an_extension_abort_says_so(self):
+        signal = AbortSignal()
+        signal.abort(reason="extension")
+        assert signal.reason == "extension"
+
+    def test_a_user_abort_after_an_extension_abort_wins(self):
+        signal = AbortSignal()
+        signal.abort(reason="extension")
+        signal.abort(reason="user")
+        assert signal.reason == "user"
+
+    def test_an_extension_abort_after_a_user_abort_changes_nothing(self):
+        signal = AbortSignal()
+        signal.abort(reason="user")
+        signal.abort(reason="extension")
+        assert signal.reason == "user"
+
+    def test_an_unknown_reason_raises_and_does_not_abort(self):
+        signal = AbortSignal()
+        with pytest.raises(ValueError, match="abort reason"):
+            signal.abort(reason="timeout")  # type: ignore[arg-type]
+        assert signal.is_aborted() is False
+
+
 class TestAbortSignalIdempotent:
     """Tests for abort() idempotency."""
 

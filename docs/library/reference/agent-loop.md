@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, call_gate: Callable[[str], str | None] | None = None)
+class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, call_gate: Callable[[str], str | None] | None = None, turn_settings: TurnSettingsSource | None = None)
 ```
 
 `tau_agent_core.agent_loop.AgentLoop`
@@ -20,13 +20,14 @@ Events follow docs/SUBPHASE-0.0.md, "5. Agent Events".
 - `config: AgentLoopConfig` — Agent loop configuration.
 - `emit: Callable[[AgentEvent], Awaitable[None]] | None = None` — Awaited with each AgentEvent; ``None`` emits nothing.
 - `tools: list[AgentTool] | None = None` — The tools the model may call, keyed by name (a later duplicate name wins).
-- `model: Any = None` — Overrides ``config.model`` when truthy.
+- `model: Any = None` — Overrides ``config.model`` when truthy. Ignored with ``turn_settings``.
 - `abort_signal: AbortSignal | None = None` — Checked between turns and passed to the stream and tools; ``None`` means the run cannot be aborted.
 - `hook_dispatcher: ExtensionRunner | None = None` — The return-collecting extension hook dispatcher, whose ``emit_*`` results the mutating-hook call-sites thread forward. ``None`` when standalone: no hook work at all.
 - `steer_queue: list[Any] | None = None` — The session's live steering queue (docs/SUBMISSION-LIFECYCLE.md phase 4). The list object itself is shared, not a drain callback, so the loop can peek before a would-be-final turn and drain only in the statement that delivers; a ``max_turns`` exit strands nothing.
 - `mid_turn_compactor: MidTurnCompactor | None = None` — Offered the context at each turn boundary; see :data:`MidTurnCompactor`. ``None`` never compacts mid-turn.
 - `writer: TurnWriter | None = None` — Where each message is written as it exists; ``None`` writes nothing and the loop only returns what it produced.
 - `call_gate: Callable[[str], str | None] | None = None` — Given a model-issued call's tool name, the reason to refuse it, or ``None`` to let it run; how a masked tool stays declared, so the ``tools`` block and the prompt cache hold. ``None`` gates nothing.
+- `turn_settings: TurnSettingsSource | None = None` — Awaited before every request for its model, key, reasoning and temperature, so a switch made between two requests reaches the second (docs/TURN-SETTINGS.md §2). ``None`` sends every request with ``model`` and ``config``'s values.
 
 ### add_tool
 
@@ -115,6 +116,9 @@ List of messages produced.
 `tau_agent_core.agent_loop_types.AgentLoopConfig`
 
 Configuration for the agent loop.
+
+``temperature``, ``api_key`` and ``reasoning`` are ignored by a loop given a
+``turn_settings`` source, which supplies them per request instead.
 
 ### api_key
 
@@ -294,6 +298,24 @@ Unique tool call ID (from model response)
 `tau_agent_core.agent_loop_types.PreparedToolCall.name: str`
 
 Name of the tool to execute
+
+## TurnSettings
+<!-- agent: yes -->
+
+```python
+class TurnSettings(model: Any, api_key: str | None = None, reasoning: str | None = None, temperature: float | None = None)
+```
+
+`tau_agent_core.agent_loop_types.TurnSettings`
+
+What one request is sent with, read immediately before it (docs/TURN-SETTINGS.md §2).
+
+**Constructor parameters**
+
+- `model: Any` — The ``Model`` the request calls.
+- `api_key: str | None = None` — The key it is called with; ``None`` for the provider's default.
+- `reasoning: str | None = None` — The requested thinking level, or ``None`` to send none.
+- `temperature: float | None = None` — The sampling temperature, or ``None`` to send none.
 
 ## TurnWriter
 <!-- agent: yes -->

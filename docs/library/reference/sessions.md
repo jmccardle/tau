@@ -56,10 +56,13 @@ abort(cursor: Cursor | None = None) -> None
 
 Abort ``cursor``'s turn, every cursor it owns, and every still-running forked branch.
 
-Owned cursors are aborted first, deepest first, so a sub-agent stops before
-the turn that spawned it (docs/CURSORS.md §6). Each loses its queued steers:
-the turn they were aimed at is gone. A fork's background task is cancelled,
-since no caller holds its cursor (docs/SUBMISSION-LIFECYCLE.md "fork").
+A ``"user"`` abort: every head's stop key lands here, and the followUps
+queued for the aborted turn are dropped and announced rather than run
+(docs/TURN-SETTINGS.md §4-5). Owned cursors are aborted first, deepest
+first, so a sub-agent stops before the turn that spawned it
+(docs/CURSORS.md §6). Each loses its queued steers: the turn they were
+aimed at is gone. A fork's background task is cancelled, since no caller
+holds its cursor (docs/SUBMISSION-LIFECYCLE.md "fork").
 
 Marshalled :meth:`submit_threadsafe` submissions are deliberately NOT
 cancelled: one in flight is an ordinary turn the signal already aborts,
@@ -1262,14 +1265,15 @@ set_model(name: str) -> dict[str, Any]
 
 `tau_agent_core.agent_session.AgentSession.set_model`
 
-Switch the acting cursor's model by NAME, effective on its NEXT turn (S45).
+Switch the acting cursor's model by NAME, effective on its next request.
 
-At the head cursor this is the session's model. At any other cursor it is
-that cursor's :class:`~tau_agent_core.cursor.TurnFrame` model; a cursor with
-no frame gets one that changes nothing else (every tool, hooks on). The key
-switches with the model, by :meth:`resolve_model`. Every turn builds a new
-loop, so the switch never lands mid-stream; and it is not written to the
-session header, so a reload resumes on the stored model.
+At the head cursor this is the session's model; at any other cursor that
+cursor's :class:`~tau_agent_core.cursor.TurnFrame` (a cursor with no frame
+gets one that changes nothing else). The key switches with the model, by
+:meth:`resolve_model`. Called between two requests of a running loop — a
+``turn_end`` hook — the next request already uses it, never one in flight.
+Nothing is written here: the next request records the change ahead of
+itself (docs/TURN-SETTINGS.md §2-3).
 
 **Parameters**
 
@@ -1301,6 +1305,33 @@ seam through which a head supplies its config's models.
 **Parameters**
 
 - `resolver: Callable[[str], Model]` — Maps a config model name to a ``Model``. An ``api_key(name)`` method on it, when present, supplies that model's key (:meth:`resolve_model`).
+
+### set_reasoning
+
+```python
+set_reasoning(level: str) -> str
+```
+
+`tau_agent_core.agent_session.AgentSession.set_reasoning`
+
+Set the acting cursor's requested thinking level, effective on its next request.
+
+Placed and recorded as :meth:`set_model` is: the head's level is the
+session's, another cursor's lives on its frame, and the next request
+records ``thinking`` ahead of itself. The provider clamps the level to
+what the model supports, as it does the constructor's ``reasoning``.
+
+**Parameters**
+
+- `level: str` — One of ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``, ``"high"``, ``"xhigh"``.
+
+**Returns**
+
+``level``.
+
+**Raises**
+
+- `ValueError` — ``level`` is not one of those.
 
 ### set_session_name
 
@@ -4485,7 +4516,7 @@ A node in the browsable session tree (pi ``SessionTreeNode``).
 <!-- agent: yes -->
 
 ```python
-class TurnFrame(tools: tuple[str, ...], model: Any = None, api_key: str | None = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = False)
+class TurnFrame(tools: tuple[str, ...], model: Any = None, api_key: str | None = None, model_name: str | None = None, reasoning: str | None = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = False)
 ```
 
 `tau_agent_core.cursor.TurnFrame`
@@ -4501,6 +4532,8 @@ config the first time the cursor's turn appends.
 - `tools: tuple[str, ...]` — Names the turn may call, a subset of the session's; required, so a sub-agent never inherits ``write`` and ``bash`` by accident. ``()`` is none.
 - `model: Any = None` — The model to run, or ``None`` for the session's.
 - `api_key: str | None = None` — ``model``'s key, ``None`` for the provider's environment variable. Ignored when ``model`` is ``None``. Never recorded.
+- `model_name: str | None = None` — The config name ``model`` was resolved from, recorded as the ``model`` config key; ``None`` when ``model`` was handed in directly.
+- `reasoning: str | None = None` — The thinking level to request, or ``None`` for the session's.
 - `system_prompt: str | None = None` — The prompt to run under, or ``None`` for the session's.
 - `max_turns: int | None = None` — The loop's turn ceiling for this cursor; ``None`` is no ceiling.
 - `hooks: bool = False` — Whether extension hooks run on this cursor's turns. Off by default: a sub-agent stays as constrained as its spawner asked.

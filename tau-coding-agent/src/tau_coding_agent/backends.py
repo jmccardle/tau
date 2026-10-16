@@ -36,6 +36,7 @@ from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.rpc.wire_events import project_event
 from tau_agent_core.flows import Performed
 from tau_agent_core.projections import tool_result_for_user
+from tau_agent_core.follow_ups import follow_ups_dropped_notice
 from tau_agent_core.provider_retry import retry_notice
 from tau_agent_core.events import AgentEvent
 from tau_agent_core.prompt_cache import (
@@ -232,6 +233,7 @@ class TurnStream:
         {"kind": "completion_end", "output": int, "context": int,
          "stop_reason": str | None, "dropped_tool_calls": int}
         {"kind": "provider_retry", "text": str, "delay_seconds": float}
+        {"kind": "follow_ups_dropped", "text": str, "dropped": list[str]}
 
     Tool widgets are driven off ``tool_execution_start`` / ``tool_execution_end``
     (their detail carries arguments and result), NOT off ``message_end`` toolCall
@@ -346,6 +348,16 @@ class TurnStream:
                         "kind": "provider_retry",
                         "text": retry_notice(wire),
                         "delay_seconds": float(wire["delay_seconds"]),
+                    }
+                )
+            ]
+        if kind == "follow_ups_dropped":
+            return [
+                self._tag(
+                    {
+                        "kind": "follow_ups_dropped",
+                        "text": follow_ups_dropped_notice(wire),
+                        "dropped": list(wire["dropped"]),
                     }
                 )
             ]

@@ -545,15 +545,20 @@ def report_truncation(messages: list[dict[str, Any]], max_tokens: int | None) ->
     return notice
 
 
-def report_provider_retry(event: dict[str, Any]) -> None:
-    """Say on stderr that a request failed before any output and is being re-sent.
+STDERR_NOTICE_KINDS = frozenset({"provider_retry", "follow_ups_dropped"})
+"""Render kinds :func:`report_stream_notice` writes to stderr: a retry, a dropped followUp."""
+
+
+def report_stream_notice(event: dict[str, Any]) -> None:
+    """Write a render event's notice on stderr when its kind is in :data:`STDERR_NOTICE_KINDS`.
 
     The ``on_event`` sink for :meth:`Backend.stream_submission`; every other kind
     is ignored. stderr for the reason :func:`report_cache_miss` gives, and in
     both modes, because ``--mode json`` puts the event on stdout for a machine
-    and this line is for the person watching (docs/PROVIDER-RETRY.md §5).
+    and this line is for the person watching (docs/PROVIDER-RETRY.md §5,
+    docs/TURN-SETTINGS.md §5).
     """
-    if event.get("kind") == "provider_retry":
+    if event.get("kind") in STDERR_NOTICE_KINDS:
         print(f"[τ] {event['text']}", file=sys.stderr, flush=True)
 
 
@@ -910,7 +915,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 submission,
                 None,
                 noop,
-                on_event=report_provider_retry,
+                on_event=report_stream_notice,
                 on_json_event=on_json_event,
             )
         else:  # text
@@ -920,7 +925,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 sys.stdout.flush()
 
             _text, _usage, new_messages, _tcs, result = await backend.stream_submission(
-                submission, None, emit, on_event=report_provider_retry
+                submission, None, emit, on_event=report_stream_notice
             )
 
         if not result.accepted:
