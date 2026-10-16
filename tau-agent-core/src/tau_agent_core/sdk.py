@@ -49,6 +49,9 @@ from tau_llm.docs import agent_facing
 
 # ─── Default model definitions ───────────────────────────────────────
 
+#: Output cap for a model whose config or id states none (docs/TRUNCATED-TOOL-CALLS.md §7).
+DEFAULT_MAX_TOKENS = 32 * 1024
+
 _DEFAULT_MODELS: dict[str, Model] = {
     "gpt-4o": Model(
         id="gpt-4o",
@@ -99,7 +102,7 @@ def resolve_model(
 
     Returns:
         A new Model; the shared built-in defaults are never mutated. A
-        non-built-in id gets ``context_window=128000`` and ``max_tokens=4096``,
+        non-built-in id gets ``context_window=128000`` and ``DEFAULT_MAX_TOKENS``,
         and speaks ``openai-completions`` when ``provider`` is unregistered.
 
     Raises:
@@ -124,7 +127,7 @@ def resolve_model(
         provider=provider,
         base_url=endpoint,
         context_window=128000,
-        max_tokens=4096,
+        max_tokens=DEFAULT_MAX_TOKENS,
     )
 
 

@@ -22,12 +22,11 @@ from tau_coding_agent.backends import build_model_from_config
 
 
 class TestLimits:
-    def test_absent_limits_keep_the_historical_defaults(self):
-        """Changing what an EXISTING config resolves to is a separate decision
-        from making the keys reachable, so the old numbers still stand."""
+    def test_absent_limits_take_the_defaults(self):
+        """An unstated output cap is 32 KiB (docs/TRUNCATED-TOOL-CALLS.md §7)."""
         model = build_model_from_config({"model": "m"})
         assert model.context_window == 128000
-        assert model.max_tokens == 4096
+        assert model.max_tokens == 32768
 
     def test_both_limits_are_carried(self):
         model = build_model_from_config(

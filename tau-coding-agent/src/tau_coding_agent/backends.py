@@ -56,6 +56,7 @@ from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.sdk import (
     BASE_SYSTEM_PROMPT,
+    DEFAULT_MAX_TOKENS,
     LoadExtensionsResult,
     _build_system_prompt,
     _resolve_tools,
@@ -70,7 +71,6 @@ DEFAULT_STREAM = "main"
 
 DEFAULT_TOOL_NAMES: tuple[str, ...] = ("read", "write", "edit", "bash", "ls", "grep", "find")
 
-DEFAULT_MAX_TOKENS = 4096
 
 RenderHandler = Callable[[dict[str, Any]], Awaitable[None] | None]
 

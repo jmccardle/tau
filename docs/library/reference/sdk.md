@@ -623,7 +623,7 @@ taking precedence over the endpoint.
 
 **Returns**
 
-A new Model; the shared built-in defaults are never mutated. A non-built-in id gets ``context_window=128000`` and ``max_tokens=4096``, and speaks ``openai-completions`` when ``provider`` is unregistered.
+A new Model; the shared built-in defaults are never mutated. A non-built-in id gets ``context_window=128000`` and ``DEFAULT_MAX_TOKENS``, and speaks ``openai-completions`` when ``provider`` is unregistered.
 
 **Raises**
 

@@ -53,8 +53,9 @@ that the field was declared and never consulted, so a local server ran with
 `n_predict = -1` — unbounded. After it, every request carries a cap.
 
 A model entry that states no `max_tokens` resolves to `DEFAULT_MAX_TOKENS`, which
-is **4096** (`backends.py`). The `local-llm` entry in the reporting operator's
-`~/.tau/config.json` states none, and sets `enable_thinking: true`. Reasoning is
+was **4096** (`backends.py`) at the time; §7 records the 2026-10-16 raise to
+32768. The `local-llm` entry in the reporting operator's `~/.tau/config.json`
+states none, and sets `enable_thinking: true`. Reasoning is
 charged against the same 4096, so the budget can be most of the way gone before
 the tool call starts.
 
@@ -254,10 +255,13 @@ shape this clips worst.
   completed `{"command":"rm -rf /ho"}` is not what the model meant, and running it
   is worse than every other outcome on this page.
 
-- **No change to `DEFAULT_MAX_TOKENS`.** 4096 is low for a reasoning model with a
-  large context, and raising it would change what every existing config resolves
-  to. That is a separate decision from making the failure legible, which is what
-  this is.
+- **No change to `DEFAULT_MAX_TOKENS`** — as built 2026-08-29. The separate
+  decision was made 2026-10-16: the default is now **32768** (`32 * 1024`), held
+  in `tau_agent_core.sdk` and shared by `build_model_from_config` and
+  `resolve_model`'s non-built-in fallback. The operator's reason was that 4096
+  "breaks basically all agent workflows". The three built-in OpenAI entries keep their own 4096,
+  which is a per-model figure, not this default. A config that states
+  `max_tokens` is unaffected.
 
 - **No inferred cap.** τ does not read the server's `n_ctx` and pick a number.
 

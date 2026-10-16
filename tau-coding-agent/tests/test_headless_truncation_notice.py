@@ -138,7 +138,7 @@ class TestTheRun:
 
     async def test_an_unstated_cap_reports_the_default(self, run, capsys):
         await run([_assistant("length")])
-        assert "max_tokens = 4096" in capsys.readouterr().err
+        assert "max_tokens = 32768" in capsys.readouterr().err
 
     async def test_a_clean_run_says_nothing(self, run, capsys):
         await run([_assistant("stop")])

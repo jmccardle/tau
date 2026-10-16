@@ -78,7 +78,7 @@ async def test_an_unstated_cap_reports_the_default(make_app):
             {"kind": "completion_end", "output": 1, "context": 1, "stop_reason": "length"}
         )
         await pilot.pause()
-        assert "max_tokens = 4096" in _system_text(app)
+        assert "max_tokens = 32768" in _system_text(app)
 
 
 async def test_an_ordinary_completion_says_nothing(make_app):
