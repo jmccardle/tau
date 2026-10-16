@@ -189,7 +189,7 @@ The fully accumulated AssistantMessage.
 
 **Raises**
 
-- `Exception` — The stream failed. An exception the provider stream raised is re-raised with its type intact (``ProviderHttpError``, ``ConstraintViolation``); an ErrorEvent the provider yielded raises a bare ``Exception`` carrying its message.
+- `Exception` — The stream failed. An exception the provider stream raised, or an ErrorEvent carries, is re-raised with its type intact (``ProviderHttpError``, ``ProviderStreamError``, ``ConstraintViolation``); an ErrorEvent with no exception raises a bare ``Exception`` carrying its message.
 - `RuntimeError` — The stream ended without a final message.
 
 ## Compat
@@ -266,7 +266,7 @@ Reference: SUBPHASE-0.0.md, "4. Streaming Events" section.
 - `message: str` — Description of the error.
 - `is_error: Literal[True] = True` — Always True.
 - `type: Literal['error'] = 'error'` — Always "error".
-- `exception: BaseException | None = None` — The exception the provider raised, e.g. a :class:`~tau_llm.errors.ProviderHttpError`; None for an error the provider reported in-band, such as an SSE ``error`` frame.
+- `exception: BaseException | None = None` — The typed failure: a :class:`~tau_llm.errors.ProviderHttpError` the provider raised, or the :class:`~tau_llm.errors.ProviderStreamError` for an SSE ``error`` frame. None when the provider gave no type.
 
 ## Provider
 <!-- agent: yes -->
@@ -423,6 +423,38 @@ Look up this vendor's credential in the environment.
 **Returns**
 
 The first non-empty value among ``api_key_env``, in order, or None when none is set (including when ``api_key_env`` is empty).
+
+## ProviderStreamError
+<!-- agent: yes -->
+
+```python
+class ProviderStreamError(message: str, *, model_id: str, base_url: str | None, code: str | None = None, body: str | None = None)
+```
+
+`tau_llm.errors.ProviderStreamError`
+
+The provider accepted the request, then reported a failure inside the stream.
+
+The usual case is an SSE ``error`` frame after an HTTP 200, such as
+Anthropic's ``overloaded_error`` or an OpenAI-compatible server's
+``{"error": ...}`` chunk. It is also what the agent loop raises for an
+``ErrorEvent`` that names no exception. τ never retries one
+(docs/PROVIDER-RETRY.md §3). ``str()`` is ``message``.
+
+**Constructor parameters**
+
+- `message: str` — The description of the failure, naming the model and endpoint.
+- `model_id: str` — The requested model id.
+- `base_url: str | None` — The endpoint the request went to; None when the raiser did not know it.
+- `code: str | None = None` — The frame's own error code or type, e.g. ``"overloaded_error"`` or ``"500"``; None when the frame had none, or there was no frame.
+- `body: str | None = None` — The error frame as JSON, bounded to ``MAX_ERROR_BODY_CHARS``; None when there was no frame.
+
+### status
+
+`tau_llm.errors.ProviderStreamError.status`
+
+``code`` as an HTTP status when it is an integer from 100 to
+599; None otherwise. The response itself was a 2xx.
 
 ## ResolvedCompat
 <!-- agent: yes -->

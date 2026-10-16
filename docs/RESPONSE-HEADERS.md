@@ -5,7 +5,8 @@ Built 2026-10-13. Every provider now hands back the HTTP response headers: on
 for a success, and on `ProviderHttpError.headers` for a refusal. Built
 2026-10-15 (§5): the agent loop passes both on, as `AgentEvent.response_headers`
 on `message_end` and `AgentEvent.error_detail` on `agent_end` and
-`provider_retry`, to extensions and to all three heads.
+`provider_retry`, to extensions and to all three heads; an in-band failure is a
+`ProviderStreamError` (§5.5).
 
 ## 1. What was wrong
 
@@ -93,11 +94,11 @@ on an `agent_end` that closed because the loop raised, and on every
 
 | Field | Type | Set when |
 |---|---|---|
-| `type` | `str` | Always. The exception's class name, e.g. `"ProviderHttpError"`, `"ProviderConnectionError"`, `"ValueError"`. |
-| `status` | `int \| None` | `ProviderHttpError`: its `status_code`. |
+| `type` | `str` | Always. The exception's class name, e.g. `"ProviderHttpError"`, `"ProviderConnectionError"`, `"ProviderStreamError"`, `"ValueError"`. |
+| `status` | `int \| None` | `ProviderHttpError`: its `status_code`. `ProviderStreamError`: the frame's code, when it reads as an HTTP status (§5.5). |
 | `retry_after` | `float \| None` | `ProviderHttpError` whose server asked for a wait: its parsed `retry_after`. |
 | `headers` | `dict[str, str] \| None` | `ProviderHttpError` whose transport read headers: its `headers`. |
-| `retryable` | `bool \| None` | `ProviderHttpError` or `ProviderConnectionError`: `DEFAULT_RETRY_POLICY.retryable(exc)`. |
+| `retryable` | `bool \| None` | `ProviderHttpError`, `ProviderConnectionError` or `ProviderStreamError`: `DEFAULT_RETRY_POLICY.retryable(exc)`. |
 
 `ErrorDetail.of(exc)` builds it. `retryable` calls `RetryPolicy.retryable`
 instead of copying its status list, so `PROVIDER-RETRY.md` §3's table stays the
@@ -148,6 +149,57 @@ in-process.** An extension runs with the transport's own privileges and could
 read the cookie from the client anyway, so filtering there would hide data
 without protecting anything.
 
+### 5.5 An in-band failure has its own type
+
+Added 2026-10-15. Until then, a failure the provider reported inside an accepted
+stream reached `agent_end` as `error_detail = {type: "RuntimeError", retryable:
+None}`. A host could not tell that from a bug in τ or in an extension. Two
+paths produced it:
+
+- The OpenAI provider turned an SSE `{"error": …}` frame into an `ErrorEvent`
+  with no exception, and the agent loop raised `RuntimeError(detail)` for it.
+- The `anthropic` SDK raises an SSE `error` event, such as `overloaded_error`,
+  as an `APIStatusError` that carries the stream's own 200 response.
+  `http_error_from_anthropic` turned that into `ProviderHttpError(200, …)`: a
+  refusal with a success status.
+
+`tau_llm.errors.ProviderStreamError(RuntimeError)` names this case. Its fields
+are `message` (which is also `str()`), `model_id`, `base_url` (None when the
+raiser does not know it), `code`, `status` and `body`. `code` is the frame's
+`code`, or failing that its `type`, as a string. `status` is `code` as an int
+only when `code` is an integer from 100 to 599. A llama.cpp
+`{"code": 500, …}` frame gives 500, while Anthropic's `overloaded_error` gives
+None. τ does not map a vendor's error type to a status it never sent. `body` is
+the frame as bounded JSON.
+
+Who produces it:
+
+- **OpenAI frame:** `stream_error_from_frame`, attached as the `ErrorEvent`'s
+  `exception`.
+- **Anthropic in-band error:** `stream_error_from_anthropic`, for an
+  `APIStatusError` whose status is below 400. It runs before
+  `http_error_from_anthropic`, so that function now sees only refusals.
+- **The agent loop's fallback:** for any `ErrorEvent` that still carries no
+  exception, such as a transport failure after output had started.
+
+An exception a provider already attaches is kept. `AssistantMessageEventStream`
+now re-raises an `ErrorEvent`'s exception from `result()`, so a
+`complete_simple` caller gets the same type. Google is unchanged: its SDK
+raises a mid-stream error as an `APIError` with the frame's own code, which
+`http_error_from_google` already turns into a `ProviderHttpError`.
+
+**`retryable` is `False`.** `DEFAULT_RETRY_POLICY.retryable` answers `False`
+for this type. That matches the policy's own table (`PROVIDER-RETRY.md` §3),
+which lists an in-band error frame as "not retried": the frame has no status
+for the policy to judge, and output has usually reached the caller already.
+`None` is kept for exceptions the table does not cover. This one it covers
+explicitly. A host that wants to retry the turn anyway can read `code` and
+`status`.
+
+The stream that ends with no `DoneEvent` still raises `RuntimeError`. It means
+a provider broke τ's event contract, not that a server reported a failure, so
+it is a different fact.
+
 ## 6. Not built
 
 - **No parsing beyond `Retry-After`.** τ parses that one header, for its own
@@ -155,9 +207,9 @@ without protecting anything.
   counters. Their formats differ per vendor and change without notice; the
   consumer that acts on them owns that table. A retried refusal's headers reach
   the caller on `RetryEvent.error`, and on `provider_retry`'s `error_detail`.
-- **No headers on an in-band `ErrorEvent`.** An SSE `error` frame arrives after
+- **No headers on a `ProviderStreamError`.** An SSE `error` frame arrives after
   a 200, whose headers are already on the success path's state but are not
-  reported, because no consumer has asked.
+  reported, because no consumer has asked. Its `error_detail.headers` is None.
 - **No request id on `AssistantMessage`.** `request-id` is among the headers; to
   promote it to a persisted field would be §2's trade made the other way, and it
   needs its own reason.

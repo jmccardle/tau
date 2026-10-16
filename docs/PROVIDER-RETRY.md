@@ -73,7 +73,7 @@ What counts as retryable (`RetryPolicy.retryable`):
 | 524 | no | Cloudflare already waited 100s for this answer, and the server may still be computing it. |
 | `ProviderConnectionError` | yes | Refused, reset, or closed before any response. |
 | `httpx.ReadTimeout` / `anthropic.APITimeoutError` | no | The server may still be working. A retry would double its load and wait the full timeout again. |
-| In-band `ErrorEvent` (an SSE `error` frame) | no | It has no status to judge by, as `PROVIDER-HTTP-ERRORS.md` §6 says. |
+| `ProviderStreamError` (an SSE `error` frame after a 200) | no | It has no status to judge by, as `PROVIDER-HTTP-ERRORS.md` §6 says. Named since 2026-10-15 (`RESPONSE-HEADERS.md` §5.5). |
 
 `ProviderConnectionError(RuntimeError)` is new (`tau_llm/errors.py`). Each provider
 raises it in place of the in-band `ErrorEvent`, and only while it has yielded

@@ -1,13 +1,17 @@
 """Response headers and a structured error reach the bus, an extension and the wire.
 
-Reference: docs/RESPONSE-HEADERS.md §5.
+Reference: docs/RESPONSE-HEADERS.md §5; §5.5 for ``ProviderStreamError``.
 """
 
 from __future__ import annotations
 
+import json
+import sys
+import types
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from tau_agent_core.agent_session import AgentSession
@@ -15,7 +19,13 @@ from tau_agent_core.events import AgentEvent, ErrorDetail
 from tau_agent_core.rpc.wire_events import WireEventProjector, strip_cookies
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
-from tau_llm.errors import ProviderConnectionError, ProviderHttpError
+from tau_llm.errors import (
+    ProviderConnectionError,
+    ProviderHttpError,
+    ProviderStreamError,
+    stream_error_from_anthropic,
+    stream_error_from_frame,
+)
 from tau_llm.streaming import DoneEvent, ErrorEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
@@ -223,3 +233,100 @@ def test_strip_cookies_keeps_none_and_returns_a_headerless_event_unchanged():
     assert strip_cookies(detail_only) is detail_only
     (wire,) = WireEventProjector().project(bare)
     assert wire["response_headers"] is None and wire["error_detail"] is None
+
+
+def _sse_error_after_text(error: dict[str, Any]) -> bytes:
+    frames = [
+        {"choices": [{"index": 0, "delta": {"content": "par"}, "finish_reason": None}]},
+        {"error": error},
+    ]
+    return "".join(f"data: {json.dumps(f)}\n\n" for f in frames).encode()
+
+
+@pytest.fixture
+def error_frame_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An OpenAI-compatible server that answers 200, streams a word, then an error frame."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        body = _sse_error_after_text(
+            {"code": 500, "message": "out of memory", "type": "server_error"}
+        )
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    real_client = httpx.AsyncClient
+
+    def client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(handle)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("tau_llm.providers.openai.httpx.AsyncClient", client)
+
+
+async def test_an_sse_error_frame_reaches_agent_end_as_a_provider_stream_error(error_frame_server):
+    seen: list[AgentEvent] = []
+
+    def governor(api: Any) -> None:
+        api.on("agent_end", seen.append)
+
+    session = AgentSession(
+        session_log=InMemorySessionLog(), model=_model(), api_key="x", extensions=[governor]
+    )
+    with pytest.raises(ProviderStreamError) as excinfo:
+        await session.submit(_sub("go"))
+
+    assert (excinfo.value.code, excinfo.value.status) == ("500", 500)
+    assert "out of memory" in str(excinfo.value)
+    (end,) = seen
+    assert end.error is not None and end.error.startswith("ProviderStreamError: ")
+    assert end.error_detail == ErrorDetail(type="ProviderStreamError", status=500, retryable=False)
+
+
+async def test_an_error_event_with_no_exception_is_a_provider_stream_error_too():
+    session, seen = _session_with_extension()
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=lambda *a, **k: _Stream([ErrorEvent(message="upstream went away")]),
+    ):
+        with pytest.raises(ProviderStreamError) as excinfo:
+            await session.submit(_sub("go"))
+
+    assert (excinfo.value.model_id, excinfo.value.base_url) == ("m", "http://127.0.0.1:1/v1")
+    (end,) = [e for e in seen if e.type == "agent_end"]
+    assert end.error_detail == ErrorDetail(type="ProviderStreamError", retryable=False)
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "status"),
+    [
+        ({"code": 500, "message": "boom"}, "500", 500),
+        ({"type": "overloaded_error", "message": "Overloaded"}, "overloaded_error", None),
+        ({"code": 42, "message": "odd"}, "42", None),
+        ("plain text", None, None),
+    ],
+)
+def test_a_frame_names_a_status_only_when_its_code_reads_as_http(error, code, status):
+    exc = stream_error_from_frame(error, message="m failed", model_id="m", base_url="u")
+    assert (exc.code, exc.status) == (code, status)
+    assert exc.body == json.dumps(error)
+    assert str(exc) == exc.message == "m failed"
+
+
+def test_an_anthropic_in_band_error_is_a_stream_error_not_an_http_200(monkeypatch):
+    class APIStatusError(Exception):
+        def __init__(self, status_code: int, body: Any) -> None:
+            super().__init__(str(body))
+            self.status_code = status_code
+            self.body = body
+
+    monkeypatch.setitem(
+        sys.modules, "anthropic", types.SimpleNamespace(APIStatusError=APIStatusError)
+    )
+    frame = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+
+    exc = stream_error_from_anthropic(APIStatusError(200, frame), model_id="m", base_url="u")
+    assert exc is not None
+    assert (exc.code, exc.status) == ("overloaded_error", None)
+    assert "Overloaded" in str(exc)
+    assert (
+        stream_error_from_anthropic(APIStatusError(529, frame), model_id="m", base_url="u") is None
+    )

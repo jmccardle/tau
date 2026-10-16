@@ -49,7 +49,12 @@ import time
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
-from tau_llm.errors import connection_error_from, http_error_from_anthropic, response_headers_of
+from tau_llm.errors import (
+    connection_error_from,
+    http_error_from_anthropic,
+    response_headers_of,
+    stream_error_from_anthropic,
+)
 from tau_llm.models import clamp_thinking_level
 from tau_llm.once import OnceSet
 from tau_llm.providers.base import Provider, split_tool_result_content
@@ -690,6 +695,12 @@ class AnthropicMessagesProvider(Provider):
                 return
 
             except Exception as exc:
+                stream_error = stream_error_from_anthropic(
+                    exc, model_id=model.id, base_url=self.base_url
+                )
+                if stream_error is not None:
+                    yield ErrorEvent(message=str(stream_error), exception=stream_error)
+                    return
                 http_error = http_error_from_anthropic(
                     exc, model_id=model.id, base_url=self.base_url
                 )

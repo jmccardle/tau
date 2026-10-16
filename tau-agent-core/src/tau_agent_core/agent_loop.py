@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 from tau_llm.abort import AbortSignal
 from tau_llm.client import stream_simple
+from tau_llm.errors import ProviderStreamError
 from tau_llm.streaming import (
     DoneEvent,
     ErrorEvent,
@@ -627,8 +628,8 @@ class AgentLoop:
 
         This used to be reachable only by falling out of the ``while``, so a loop
         that RAISED — a provider ``ErrorEvent`` is raised as its ``exception``, or
-        as a ``RuntimeError`` (:meth:`_stream_response`); a dropped connection — or one that was
-        CANCELLED (``abort()`` cancels every forked task) emitted no ``agent_end``
+        as a ``ProviderStreamError`` (:meth:`_stream_response`); a dropped
+        connection — or one that was CANCELLED (``abort()`` cancels every forked task) emitted no ``agent_end``
         at all, leaving the bracket open for the rest of the session.
 
         pi never has this problem because a provider error is a *value* there:
@@ -983,7 +984,11 @@ class AgentLoop:
                     failure = (
                         event.exception
                         if isinstance(event.exception, Exception)
-                        else RuntimeError(detail)
+                        else ProviderStreamError(
+                            detail,
+                            model_id=str(getattr(model, "id", model)),
+                            base_url=getattr(model, "base_url", None),
+                        )
                     )
                     await self._stream_failed(failure, handle, latest, detail)
                     raise failure

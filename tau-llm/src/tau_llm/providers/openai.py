@@ -39,6 +39,7 @@ from tau_llm.errors import (
     connection_error_from,
     response_headers_of,
     retry_after_seconds,
+    stream_error_from_frame,
 )
 from tau_llm.errors import truncate_error_text as _truncate_error_text
 from tau_llm.providers.base import Provider, split_tool_result_content
@@ -1779,13 +1780,20 @@ class OpenAICompletionsProvider(Provider):
                     continue
 
                 if "error" in chunk:
+                    message = (
+                        f"model {model.id!r} at {self.base_url!r} failed mid-stream: "
+                        f"{_error_frame_text(chunk['error'])}"
+                    )
                     yield ErrorEvent(
                         type="error",
-                        message=(
-                            f"model {model.id!r} at {self.base_url!r} failed mid-stream: "
-                            f"{_error_frame_text(chunk['error'])}"
-                        ),
+                        message=message,
                         is_error=True,
+                        exception=stream_error_from_frame(
+                            chunk["error"],
+                            message=message,
+                            model_id=model.id,
+                            base_url=self.base_url,
+                        ),
                     )
                     state.failed = True
                     return

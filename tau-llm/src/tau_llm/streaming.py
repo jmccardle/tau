@@ -136,9 +136,10 @@ class ErrorEvent:
         type: Always "error".
         message: Description of the error.
         is_error: Always True.
-        exception: The exception the provider raised, e.g. a
-            :class:`~tau_llm.errors.ProviderHttpError`; None for an error the
-            provider reported in-band, such as an SSE ``error`` frame.
+        exception: The typed failure: a
+            :class:`~tau_llm.errors.ProviderHttpError` the provider raised, or
+            the :class:`~tau_llm.errors.ProviderStreamError` for an SSE
+            ``error`` frame. None when the provider gave no type.
     """
 
     message: str
@@ -326,6 +327,8 @@ class AssistantMessageEventStream:
             self._done = True
         elif chunk.type == "error":
             self._error = chunk.message
+            if isinstance(chunk.exception, Exception):
+                self._error_exc = chunk.exception
             self._done = True
         elif chunk.type == "retry":
             return
@@ -352,9 +355,10 @@ class AssistantMessageEventStream:
 
         Raises:
             Exception: The stream failed. An exception the provider stream
-                raised is re-raised with its type intact (``ProviderHttpError``,
-                ``ConstraintViolation``); an ErrorEvent the provider yielded
-                raises a bare ``Exception`` carrying its message.
+                raised, or an ErrorEvent carries, is re-raised with its type
+                intact (``ProviderHttpError``, ``ProviderStreamError``,
+                ``ConstraintViolation``); an ErrorEvent with no exception raises
+                a bare ``Exception`` carrying its message.
             RuntimeError: The stream ended without a final message.
         """
         await self._ensure_collector()

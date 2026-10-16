@@ -290,7 +290,7 @@ The detail for ``exc``.
 
 **Returns**
 
-Every field filled for a ``ProviderHttpError``; ``type`` and ``retryable`` for a ``ProviderConnectionError``; ``type`` alone for anything else.
+Every field filled for a ``ProviderHttpError``; ``type`` and ``retryable`` for a ``ProviderConnectionError``, plus ``status`` for a ``ProviderStreamError`` whose frame named an HTTP-like code; ``type`` alone for anything else.
 
 ### retry_after
 
@@ -305,8 +305,9 @@ Seconds the server asked the client to wait, parsed from
 
 Whether ``tau_llm.retry.DEFAULT_RETRY_POLICY`` counts this
 failure as transient: True for a retryable status or a connection
-failure, False for any other HTTP refusal, None for an exception τ
-makes no transience judgement about. On ``agent_end`` a True means
+failure, False for any other HTTP refusal and for a
+``ProviderStreamError``, None for an exception τ makes no
+transience judgement about. On ``agent_end`` a True means
 τ's own retries ran out, or the server asked for a longer wait than
 τ will make inside a turn.
 
@@ -314,7 +315,8 @@ makes no transience judgement about. On ``agent_end`` a True means
 
 `tau_agent_core.events.ErrorDetail.status: int | None`
 
-The HTTP status of a ``ProviderHttpError``; None otherwise.
+The HTTP status of a ``ProviderHttpError``, or the HTTP-like
+code a ``ProviderStreamError``'s frame named; None otherwise.
 
 ### type
 

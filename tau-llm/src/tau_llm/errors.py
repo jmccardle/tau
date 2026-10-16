@@ -125,6 +125,84 @@ class ProviderConnectionError(RuntimeError):
         super().__init__(message)
 
 
+@agent_facing(topic="providers")
+class ProviderStreamError(RuntimeError):
+    """The provider accepted the request, then reported a failure inside the stream.
+
+    The usual case is an SSE ``error`` frame after an HTTP 200, such as
+    Anthropic's ``overloaded_error`` or an OpenAI-compatible server's
+    ``{"error": ...}`` chunk. It is also what the agent loop raises for an
+    ``ErrorEvent`` that names no exception. τ never retries one
+    (docs/PROVIDER-RETRY.md §3). ``str()`` is ``message``.
+
+    Attributes:
+        message: The description of the failure, naming the model and endpoint.
+        model_id: The requested model id.
+        base_url: The endpoint the request went to; None when the raiser did
+            not know it.
+        code: The frame's own error code or type, e.g. ``"overloaded_error"``
+            or ``"500"``; None when the frame had none, or there was no frame.
+        status: ``code`` as an HTTP status when it is an integer from 100 to
+            599; None otherwise. The response itself was a 2xx.
+        body: The error frame as JSON, bounded to ``MAX_ERROR_BODY_CHARS``;
+            None when there was no frame.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        model_id: str,
+        base_url: str | None,
+        code: str | None = None,
+        body: str | None = None,
+    ) -> None:
+        """Record the failure; ``status`` is derived from ``code``.
+
+        Args:
+            message: The description of the failure; becomes ``str()``.
+            model_id: The requested model id.
+            base_url: The endpoint the request went to, or None if unknown.
+            code: The frame's error code or type, if it named one.
+            body: The error frame, any length.
+        """
+        self.message = message
+        self.model_id = model_id
+        self.base_url = base_url
+        self.code = code
+        self.status = _http_like(code)
+        self.body = truncate_error_text(body) if body is not None else None
+        super().__init__(message)
+
+
+def _http_like(code: str | None) -> int | None:
+    """``code`` as an int when it reads as an HTTP status (100-599); None otherwise."""
+    if code is None or not code.isdigit():
+        return None
+    number = int(code)
+    return number if 100 <= number <= 599 else None
+
+
+def stream_error_from_frame(
+    error: Any, *, message: str, model_id: str, base_url: str
+) -> ProviderStreamError:
+    """The ProviderStreamError for the ``error`` value of an SSE ``{"error": ...}`` frame.
+
+    ``code`` is the value's ``code``, else its ``type``; a non-object value has none.
+    """
+    code = None
+    if isinstance(error, dict):
+        raw = error.get("code") or error.get("type")
+        code = str(raw) if raw is not None else None
+    return ProviderStreamError(
+        message,
+        model_id=model_id,
+        base_url=base_url,
+        code=code,
+        body=json.dumps(error, default=str),
+    )
+
+
 _HTTPX_CONNECTION_ERRORS = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
@@ -222,6 +300,38 @@ def http_error_from_anthropic(
         base_url=base_url,
         retry_after=retry_after_seconds(getattr(exc.response, "headers", None)),
         headers=response_headers_of(exc.response),
+    )
+
+
+def stream_error_from_anthropic(
+    exc: BaseException, *, model_id: str, base_url: str
+) -> ProviderStreamError | None:
+    """Translate an in-band ``error`` event the ``anthropic`` SDK raised.
+
+    The SDK raises an SSE ``error`` event as an ``APIStatusError`` carrying the
+    stream's own response, whose status is the 200 that opened it. That is not a
+    refusal, so :func:`http_error_from_anthropic` must not see it.
+
+    Args:
+        exc: Any exception the SDK call raised.
+        model_id: The requested model id.
+        base_url: The endpoint the request went to.
+
+    Returns:
+        The translated error, or None when ``exc`` is not an ``APIStatusError``
+        with a status below 400.
+    """
+    sdk = sys.modules.get("anthropic")
+    if sdk is None or not isinstance(exc, sdk.APIStatusError) or exc.status_code >= 400:
+        return None
+    payload = exc.body
+    error = payload.get("error") if isinstance(payload, dict) else payload
+    text = str(error.get("message") or "") if isinstance(error, dict) else ""
+    return stream_error_from_frame(
+        error,
+        message=f"model {model_id!r} at {base_url!r} failed mid-stream: {text or exc}",
+        model_id=model_id,
+        base_url=base_url,
     )
 
 

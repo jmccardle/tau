@@ -267,7 +267,7 @@ def test_turn_error_is_shown_and_never_sent():
     marker = _messages(session.session_log)[-1]
     assert marker["display"] is True
     assert marker["content"] == [
-        {"type": "text", "text": "The turn failed: RuntimeError: upstream 503"}
+        {"type": "text", "text": "The turn failed: ProviderStreamError: upstream 503"}
     ]
     assert convert_to_llm([marker]) == []
 

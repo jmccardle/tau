@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 
 from tau_agent_core.submission import SubmissionSource
 from tau_llm.docs import agent_facing
-from tau_llm.errors import ProviderConnectionError, ProviderHttpError
+from tau_llm.errors import ProviderConnectionError, ProviderHttpError, ProviderStreamError
 from tau_llm.retry import DEFAULT_RETRY_POLICY
 
 ErrorListener = Callable[[BaseException, str], None]
@@ -79,7 +79,8 @@ class ErrorDetail(BaseModel):
 
     Attributes:
         type: The exception's class name, e.g. ``"ProviderHttpError"``. Always set.
-        status: The HTTP status of a ``ProviderHttpError``; None otherwise.
+        status: The HTTP status of a ``ProviderHttpError``, or the HTTP-like
+            code a ``ProviderStreamError``'s frame named; None otherwise.
         retry_after: Seconds the server asked the client to wait, parsed from
             ``Retry-After``; None when it sent none or this is not an HTTP refusal.
         headers: The refusal's response headers, names lowercased; None when
@@ -87,8 +88,9 @@ class ErrorDetail(BaseModel):
             refusal.
         retryable: Whether ``tau_llm.retry.DEFAULT_RETRY_POLICY`` counts this
             failure as transient: True for a retryable status or a connection
-            failure, False for any other HTTP refusal, None for an exception τ
-            makes no transience judgement about. On ``agent_end`` a True means
+            failure, False for any other HTTP refusal and for a
+            ``ProviderStreamError``, None for an exception τ makes no
+            transience judgement about. On ``agent_end`` a True means
             τ's own retries ran out, or the server asked for a longer wait than
             τ will make inside a turn.
     """
@@ -108,8 +110,9 @@ class ErrorDetail(BaseModel):
 
         Returns:
             Every field filled for a ``ProviderHttpError``; ``type`` and
-            ``retryable`` for a ``ProviderConnectionError``; ``type`` alone for
-            anything else.
+            ``retryable`` for a ``ProviderConnectionError``, plus ``status`` for
+            a ``ProviderStreamError`` whose frame named an HTTP-like code;
+            ``type`` alone for anything else.
         """
         if isinstance(exc, ProviderHttpError):
             return cls(
@@ -119,8 +122,12 @@ class ErrorDetail(BaseModel):
                 headers=exc.headers,
                 retryable=DEFAULT_RETRY_POLICY.retryable(exc),
             )
-        if isinstance(exc, ProviderConnectionError):
-            return cls(type=type(exc).__name__, retryable=DEFAULT_RETRY_POLICY.retryable(exc))
+        if isinstance(exc, (ProviderConnectionError, ProviderStreamError)):
+            return cls(
+                type=type(exc).__name__,
+                status=exc.status if isinstance(exc, ProviderStreamError) else None,
+                retryable=DEFAULT_RETRY_POLICY.retryable(exc),
+            )
         return cls(type=type(exc).__name__)
 
 

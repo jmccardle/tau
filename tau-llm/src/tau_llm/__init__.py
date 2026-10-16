@@ -41,7 +41,7 @@ from tau_llm.tokens import (
     counter_for,
 )
 from tau_llm.constraints import ConstraintViolation, DecodeConstraints
-from tau_llm.errors import ProviderConnectionError, ProviderHttpError
+from tau_llm.errors import ProviderConnectionError, ProviderHttpError, ProviderStreamError
 from tau_llm.retry import DEFAULT_RETRY_POLICY, NO_RETRY, RetryPolicy
 from tau_llm.streaming import RetryEvent
 from tau_llm import grammar
@@ -57,6 +57,7 @@ __all__ = [
     # Provider failures and their retry
     "ProviderHttpError",
     "ProviderConnectionError",
+    "ProviderStreamError",
     "RetryPolicy",
     "RetryEvent",
     "DEFAULT_RETRY_POLICY",
