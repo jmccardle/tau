@@ -3,7 +3,9 @@
 Built 2026-10-15. Cache-write tokens are now priced, by one function in
 `tau_agent_core.usage` that all three former copies of the formula call. And
 auto-compaction is now on in every CLI head, tuned by a `compaction` block in
-`~/.tau/config.json`.
+`~/.tau/config.json`. The compaction design was corrected twice in review the
+same day: §4.1 and §6 say what changed and why, and they supersede the earlier
+sections where the two disagree.
 
 ## 1. What was wrong
 
@@ -80,13 +82,13 @@ pulling in `tau_coding_agent`. It is `@agent_facing(topic="messages")`, next to
 reports usage through `get_usage()` and `get_session_stats`. It has no price,
 because the `cost` block lives in the coding agent's config and never reaches
 `AgentSession` or `Model`. The function is head-neutral now, but carrying a price
-onto the session is a wire change and not a small one. It is not built (§6).
+onto the session is a wire change and not a small one. It is not built (§7).
 
 ## 3. Compaction is on, and configured by one block
 
 ```json
 "compaction": {
-  "enabled": true,
+  "auto": true,
   "reserve_tokens": 16384,
   "keep_recent_tokens": 20000,
   "summarizer": "local-llm"
@@ -101,7 +103,7 @@ Every key is optional. An absent block means compaction is on with
 | Input | Message |
 |---|---|
 | a non-object block (`null` included) | `'compaction' must be an object; got NoneType` |
-| a key outside the four | `unknown key 'compaction.<k>'; known keys: enabled, reserve_tokens, keep_recent_tokens, summarizer` |
+| a key outside the four | `unknown key 'compaction.<k>'; known keys: auto, reserve_tokens, keep_recent_tokens, summarizer` |
 | a wrong type (`true` is not an int) | `'compaction.<k>' must be int; got True` |
 | a token count ≤ 0 | `'compaction.<k>' must be positive; got 0` |
 | `"summarizer": ""` | `'compaction.summarizer' must name a model; got an empty string` |
@@ -117,10 +119,9 @@ tests and for SDK callers, and nobody asked to tune them from the config.
 `--model` override. It also runs at the top of `TauApp._apply_run_config`, which
 every TUI `create_backend` goes through: new chat, `/model` and resume.
 `TauBackend` sees only one model's config. So the helper copies the block onto
-`model_config["compaction"]`. When the block names a summarizer, it also copies
-`config["models"]` onto `model_config["models"]`, so `TauBackend` can hand its
-session a resolver at construction (§4). It returns a new dict and never mutates
-the shared entry.
+`model_config["compaction"]`, which is the block the session starts under. It
+returns a new dict and never mutates the shared entry. (§4.1 had it also copy
+every model's entry onto `model_config["models"]`; §6 removed that.)
 
 `TauBackend` validates the block again, so a direct construction is checked too.
 With no block it builds a fresh `CompactionSettings()`. It never passes `None`:
@@ -164,9 +165,8 @@ Consequences:
 - **The session must have a resolver before the policy is bound.**
   `AgentSession.__init__` now assigns `model_resolver` before binding. A
   `local_summarizer` policy with no resolver raises `CompactionPolicyError` at
-  construction. `TauBackend` builds the `ConfigModelResolver` from
-  `model_config["models"]` and passes it as `model_resolver=`, so the CLI heads
-  never reach that error. The heads' later `set_model_resolver` calls bind an
+  construction. (As built here, `TauBackend` built that resolver from a copy of
+  `config["models"]`; §6 replaced this with binding at `set_model_resolver`.) The heads' later `set_model_resolver` calls bind an
   equivalent resolver. `set_model_resolver` re-checks the policy and keeps the
   old resolver if the new one fails. `create_agent_session` gained a
   `model_resolver` argument so an SDK caller can declare the policy at all.
@@ -184,9 +184,9 @@ session model's.** `bind_to(model, summarizer_model)` raises
 a full window, so a smaller summarizer would fail mid-session as a
 `CompactionError`.
 
-`enabled: false` with a summarizer still builds the policy, and then turns auto
-compaction off with `set_auto_compaction(False)`. So a manual `/compact` still
-uses the named summarizer.
+`auto: false` with a summarizer still puts the summarizer in force and only
+turns automatic compaction off. So a manual `/compact` still uses the named
+summarizer.
 
 The policy's other machinery does nothing in this mode: `admit_turn` and
 `observe_context` are no-ops under `local_summarizer`. The RPC
@@ -204,10 +204,79 @@ Compaction follows the third shape. Its main settings are about the session, not
 the model, and `summarizer` names a model, so it reads oddly inside another
 model's entry. But a model entry may carry its own `compaction`, which **replaces**
 the top-level block whole. It does not merge with it. Merging would make an
-entry's `{"enabled": false}` inherit a top-level summarizer that the entry never
+entry's `{"auto": false}` inherit a top-level summarizer that the entry never
 mentions.
 
-## 6. What is absent
+## 6. Compaction follows the model: second correction (2026-10-15)
+
+John's second review found three faults in §4.1's build.
+
+**Every model's key rode along with one model's config.** §4.1's
+`apply_compaction_config` copied all of `config["models"]` onto the config of
+the one model `TauBackend` was built for, so that the session could resolve a
+summarizer during construction. That copy is gone, along with the `cli.py`
+strip that tidied it up. `TauBackend`'s config now carries only its own model's
+`api_key` (a test checks this).
+
+**A per-model block reached only one head.** The TUI's `/model` rebuilds the
+backend through `_apply_run_config`, so the new model's own block applied there.
+`ctx.set_model` and the RPC `set_model` verb (and so `tau -p` extensions and
+`tau serve`) switch in place, and `AgentSession.set_model` only re-checked the
+window. Switch to an entry carrying `"compaction": {…}` and the two paths
+compacted under different settings: §1's "a fix that reached one head" fault,
+inside one feature.
+
+The fix hands out compaction per model by name, the way the resolver already
+hands out a model and its key:
+
+- `ConfigModelResolver(config)` takes the whole loaded config, not just
+  `models`, because the top-level block is part of what a name resolves to.
+  `make_model_resolver(config)` does the same, and all five call sites pass the
+  config: the TUI, `tau -p`, `--mode rpc`, `--mode repl` and `tau serve`'s
+  `_host_for`. The resolver validates every block when it is constructed.
+- `ConfigModelResolver.compaction(name)` returns a
+  `tau_agent_core.compaction.CompactionConfig(settings, summarizer)`. It uses
+  the model's own block, else the top-level block, else the defaults. A name
+  that is not a configured model gets the top-level block.
+- `AgentSession` re-reads it whenever its model changes. It does so in
+  `set_model_resolver` for the current model, and in `set_model` at the head
+  cursor. A summarizer becomes a `local_summarizer` policy, which is checked
+  against the new model before anything is committed. A refused switch changes
+  nothing. A plain `name -> Model` resolver (an SDK caller's) has no
+  `compaction` method, so the session keeps whatever it was constructed with.
+- The TUI now passes `config_name` when it builds a backend, as `-p` already did,
+  so the session's `Model.name` is the config key that `compaction(name)` looks up.
+
+**Binding happens when the resolver is bound, not during construction.**
+`TauBackend` starts its session under the block `apply_compaction_config`
+copied, so `auto`, `reserve_tokens` and `keep_recent_tokens` hold from the first
+moment. If that block names a summarizer, `TauBackend` calls
+`AgentSession.require_compaction_resolver(name)`. Until a resolver with a
+`compaction` method is bound, every turn and every summary raises
+`CompactionPolicyError`, so nothing ever compacts through the wrong model.
+Every head calls `set_model_resolver` right after `create_backend`, so that call
+is where compaction is configured. `tau serve`'s `_new_session` builds a
+throwaway backend only to read its system prompt, and runs no turn on it. An
+unknown summarizer, or one whose window is too small, raises when the resolver is
+constructed or bound (`ConfigError`, or `CompactionPolicyError`).
+
+**`enabled` said the wrong thing.** `CompactionSettings.enabled` was read only by
+the two automatic paths: the mid-turn compactor and the end-of-turn check.
+`AgentSession.compact()`, which `/compact` calls, never read it. John asked:
+"`compaction: false` doesn't make sense. Does it refuse /compact? Do we mean
+autocompaction?" The config key is now `auto`, and so is the core field
+`CompactionSettings.auto` ("whether automatic compaction runs; /compact and
+AgentSession.compact() ignore it"). There is no alias: τ is pre-1.0, and a
+misleading name is a bug. The rename touched 24 Python files: 7 in `src`, 17 in
+tests. The RPC and serve wire keep the key `enabled` in `get_session_stats`'
+`compaction_settings` and in `set_auto_compaction`'s params, because renaming a
+wire key needs a protocol bump. Its description now says it is `auto`.
+
+**A model switch resets `auto`.** A switch re-reads the new model's config, so
+an earlier `set_auto_compaction` does not survive it. That toggle was always
+in-memory and per-run.
+
+## 7. What is absent
 
 - **Cost on the RPC wire.** §2: the price block would have to reach the session
   or the `Model`, and `get_session_stats` would need a `cost_usd` field and a
@@ -218,6 +287,10 @@ mentions.
   own decision.
 - **`soft_limit_ratio`, `hard_limit_tokens`, `soft_limit_tokens` in the block.**
   §3.
+- **Compaction settings in the tree, decided.** A resumed conversation compacts
+  under the config as it is now. These settings decide when a summary happens;
+  they are not input the model sees, and the summary itself is recorded.
+- **KV-cache-aware compaction.** Filed as forgejo john/tau#21.
 - **A submission id on an auto-compaction's `agent_start`/`agent_end`.** The RPC
   `set_auto_compaction` notes record this as a known gap: the pair goes through
   `_events.emit` directly. An RPC host used to meet it only after opting in. With

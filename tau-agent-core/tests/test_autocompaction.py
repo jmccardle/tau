@@ -211,7 +211,7 @@ def test_the_two_predicates_fire_in_the_right_order() -> None:
 
 
 def test_disabled_settings_never_fire_either_check() -> None:
-    settings = CompactionSettings(enabled=False, hard_limit_tokens=100, soft_limit_tokens=50)
+    settings = CompactionSettings(auto=False, hard_limit_tokens=100, soft_limit_tokens=50)
     assert should_compact(10_000, 40_000, settings) is False
     assert must_compact(10_000, 40_000, settings) is False
 
@@ -406,7 +406,7 @@ async def test_disabling_compaction_leaves_a_long_turn_alone(monkeypatch) -> Non
     """Fail-Early's opposite number: opting out must actually opt out."""
     monkeypatch.setattr("tau_agent_core.compaction.complete_simple", _summary)
     settings = CompactionSettings(
-        enabled=False, hard_limit_tokens=6_000, soft_limit_tokens=5_000, reserve_tokens=1_000
+        auto=False, hard_limit_tokens=6_000, soft_limit_tokens=5_000, reserve_tokens=1_000
     )
     session = _session(settings)
     responses = [_tool_call(f"c{i}", 9000) for i in range(4)] + [_text("done", billed=900)]

@@ -2275,7 +2275,7 @@ async def _handle_get_session_stats(
         "context_window": stats.context_window,
         "context_headroom": stats.context_headroom,
         "compaction_settings": {
-            "enabled": stats.compaction_settings.enabled,
+            "enabled": stats.compaction_settings.auto,
             "reserve_tokens": stats.compaction_settings.reserve_tokens,
             "keep_recent_tokens": stats.compaction_settings.keep_recent_tokens,
         },

@@ -54,10 +54,10 @@ def _session(**kwargs) -> AgentSession:
 
 def _rpc_mode_session() -> AgentSession:
     """Mirrors `backends.py:885`'s RPC-mode construction — the ONE place
-    `compaction_settings=CompactionSettings(enabled=False)` is passed —
+    `compaction_settings=CompactionSettings(auto=False)` is passed —
     so a test against this fixture stands in for the real "over RPC" case
     the verb's `notes` claim (§1.1: auto-compaction is hard-disabled)."""
-    return _session(compaction_settings=CompactionSettings(enabled=False))
+    return _session(compaction_settings=CompactionSettings(auto=False))
 
 
 def _user_message(text: str) -> dict:
@@ -298,7 +298,7 @@ async def test_rpc_mode_settings_reveal_auto_compaction_is_off() -> None:
 
 async def test_compaction_settings_tracks_set_auto_compaction_not_a_construction_constant() -> None:
     """Finding 10 of the Tier B review: this verb's notes asserted
-    "compaction_settings.enabled is False on every session reachable through
+    "compaction_settings.auto is False on every session reachable through
     this verb today" — untrue the moment `set_auto_compaction`, shipped in
     the SAME tier, is called. §1.1's premise is about the value an RPC
     session is CONSTRUCTED with, not an invariant this verb may promise, and
@@ -321,7 +321,7 @@ async def test_compaction_settings_tracks_set_auto_compaction_not_a_construction
 
 
 async def test_custom_compaction_settings_are_not_the_defaults(handler: RPCHandler) -> None:
-    custom = CompactionSettings(enabled=False, reserve_tokens=111, keep_recent_tokens=222)
+    custom = CompactionSettings(auto=False, reserve_tokens=111, keep_recent_tokens=222)
     custom_session = _session(compaction_settings=custom)
     custom_handler = RPCHandler(custom_session)
     result = await _call(custom_handler)

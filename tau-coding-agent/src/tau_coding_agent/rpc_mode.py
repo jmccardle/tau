@@ -235,7 +235,7 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
 
         agent_session = getattr(backend, "agent_session", None)
         if agent_session is not None and hasattr(agent_session, "set_model_resolver"):
-            agent_session.set_model_resolver(make_model_resolver(config.get("models", {})))
+            agent_session.set_model_resolver(make_model_resolver(config))
 
         from tau_agent_core.agent_session_runtime import AgentSessionRuntime
         from tau_coding_agent.store_factory import build_session_catalog, resolve_backend_name

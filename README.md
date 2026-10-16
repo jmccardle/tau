@@ -223,22 +223,30 @@ Every head compacts automatically: when the context nears a model's
 
 ```json
 "compaction": {
-  "enabled": true,
+  "auto": true,
   "reserve_tokens": 16384,
   "keep_recent_tokens": 20000,
   "summarizer": "local-llm"
 }
 ```
 
-`reserve_tokens` is the margin kept free below the window for the summary call
-itself. `keep_recent_tokens` is how much recent conversation stays verbatim.
+`auto` is automatic compaction only. `"auto": false` stops it firing on its own,
+and `/compact` still works. `reserve_tokens` is the margin kept free below the
+window for the summary call itself. `keep_recent_tokens` is how much recent
+conversation stays verbatim.
+
 `summarizer` names another entry in `models` to summarise with. It is resolved
 the way `--model` resolves a name, so its key is that entry's `api_key`, or the
 provider's environment variable when the entry has none. Its `context_window`
-must be at least as large as the session model's. Without `summarizer`, the session's own model summarises. A model entry
-can carry its own `compaction` block, which replaces the top-level one for that
-model. An unknown key, a wrong type or an unknown summarizer stops τ at startup.
-`docs/PRICING-AND-COMPACTION-CONFIG.md` has the reasoning.
+must be at least as large as the session model's. Without `summarizer`, the
+session's own model summarises.
+
+A model entry can carry its own `compaction` block. It replaces the top-level one
+for that model, and it takes effect whenever the conversation switches to that
+model, by `/model`, by an extension or over RPC. A resumed conversation compacts
+under the config as it is now. An unknown key, a wrong type or an unknown
+summarizer stops τ at startup. `docs/PRICING-AND-COMPACTION-CONFIG.md` has the
+reasoning.
 
 ### Cost
 

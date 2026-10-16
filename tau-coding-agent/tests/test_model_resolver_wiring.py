@@ -63,14 +63,14 @@ def test_build_model_reasoning_replay_invalid_raises():
 
 
 def test_make_model_resolver_resolves_known_name():
-    resolve = make_model_resolver(_models())
+    resolve = make_model_resolver({"models": _models()})
     model = resolve("local-llm")
     assert model.id == "qwen"
     assert model.base_url == "http://localhost/v1"
 
 
 def test_make_model_resolver_unknown_name_raises():
-    resolve = make_model_resolver(_models())
+    resolve = make_model_resolver({"models": _models()})
     with pytest.raises(KeyError, match="unknown model"):
         resolve("does-not-exist")
 
@@ -82,7 +82,7 @@ def test_make_model_resolver_enumerates_the_config_names_sorted():
     live. Sorted, and a copy — mutating the caller's map afterwards must not
     change what a bound resolver advertises or resolves."""
     models = _models()
-    resolve = make_model_resolver(models)
+    resolve = make_model_resolver({"models": models})
 
     assert resolve.model_names() == ["cloud", "local-llm"]
 
@@ -100,7 +100,7 @@ def test_the_shipped_resolver_answers_the_probe_get_models_makes():
     RPC layer refuses rather than assuming when the probe fails, so renaming
     `model_names` costs a loud refusal — and this test, which names the
     constant rather than the string, fails right here instead of distantly."""
-    resolve = make_model_resolver(_models())
+    resolve = make_model_resolver({"models": _models()})
     assert hasattr(resolve, commands._MODEL_CATALOG_ATTR)
 
 
@@ -108,7 +108,7 @@ def test_backend_session_switches_model_by_name():
     """A resolver bound onto a TauBackend's session drives ctx.set_model end-to-end."""
     backend = TauBackend(_models()["local-llm"])
     session = backend.agent_session
-    session.set_model_resolver(make_model_resolver(_models()))
+    session.set_model_resolver(make_model_resolver({"models": _models()}))
 
     assert session.get_model()["id"] == "qwen"
     result = session._extension_api.context.set_model("cloud")

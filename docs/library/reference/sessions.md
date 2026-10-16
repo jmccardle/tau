@@ -1025,6 +1025,25 @@ The outcome; ``ok=False`` only for an unknown extension.
 - `ExtensionCapabilityError` — The new code declares a capability this session lacks, or an invalid ``CONFIG_SCHEMA``.
 - `Exception` — Whatever the module's import or ``register`` raises, unchanged. In every case the extension is left torn down, never reported as ``ok=False``.
 
+### require_compaction_resolver
+
+```python
+require_compaction_resolver(summarizer: str) -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.require_compaction_resolver`
+
+Refuse turns and summaries until a resolver supplies the compaction config.
+
+A head whose config names ``summarizer`` calls this at construction, before
+it has bound the resolver that can resolve the name; binding one with a
+``compaction(name)`` method clears it. Until then no turn runs and nothing
+is summarised, rather than compacting through the wrong model.
+
+**Parameters**
+
+- `summarizer: str` — The summarizer the config names, for the refusal message.
+
 ### resolve_command
 
 ```python
@@ -1267,7 +1286,9 @@ Switch the acting cursor's model by NAME, effective on its NEXT turn (S45).
 At the head cursor this is the session's model. At any other cursor it is
 that cursor's :class:`~tau_agent_core.cursor.TurnFrame` model; a cursor with
 no frame gets one that changes nothing else (every tool, hooks on). The key
-switches with the model, by :meth:`resolve_model`. Every turn builds a new
+switches with the model, by :meth:`resolve_model`, and so does a head
+switch's compaction when the resolver supplies it (:meth:`set_model_resolver`).
+Every turn builds a new
 loop, so the switch never lands mid-stream; and it is not written to the
 session header, so a reload resumes on the stored model.
 
@@ -1284,6 +1305,7 @@ The new :meth:`get_model` projection.
 - `RuntimeError` — No resolver is bound.
 - `TypeError` — The resolver returned something other than a ``Model``.
 - `Exception` — Whatever the resolver raises for an unknown ``name``, unchanged.
+- `CompactionPolicyError` — the new model's compaction refuses it; the model does not change.
 
 ### set_model_resolver
 
@@ -1296,15 +1318,20 @@ set_model_resolver(resolver: Callable[[str], Model]) -> None
 Bind the model-name resolver used by :meth:`set_model` (S45).
 
 The core does not read ``~/.tau/config.json`` itself; the resolver is the
-seam through which a head supplies its config's models.
+seam through which a head supplies its config's models. A resolver with a
+``compaction(name)`` method is also where compaction comes from: the
+settings and summarizer are re-read from it now, for the current model, and
+on every :meth:`set_model` (docs/PRICING-AND-COMPACTION-CONFIG.md §6). A
+plain ``name -> Model`` resolver keeps whatever settings or policy the
+session was constructed with.
 
 **Parameters**
 
-- `resolver: Callable[[str], Model]` — Maps a config model name to a ``Model``. An ``api_key(name)`` method on it, when present, supplies that model's key (:meth:`resolve_model`).
+- `resolver: Callable[[str], Model]` — Maps a config model name to a ``Model``. An ``api_key(name)`` method supplies that model's key (:meth:`resolve_model`); a ``compaction(name)`` method returning a :class:`~tau_agent_core.compaction.CompactionConfig` supplies its compaction.
 
 **Raises**
 
-- `CompactionPolicyError` — a ``local_summarizer`` policy's summarizer, as ``resolver`` resolves it, fails :meth:`CompactionPolicy.bind_to`; the old resolver stays bound.
+- `CompactionPolicyError` — the summarizer, as ``resolver`` resolves it, fails :meth:`CompactionPolicy.bind_to`. Nothing changes, and the old resolver stays bound.
 
 ### set_session_name
 
@@ -1663,6 +1690,10 @@ Read live, so it tracks :meth:`set_model` and :meth:`set_model_resolver`.
 **Returns**
 
 ``(model, key)``: the session's own model and key unless the policy names a summarizer; then :meth:`resolve_model` of that name, the one way a credential enters the session (docs/PRICING-AND-COMPACTION-CONFIG.md §4).
+
+**Raises**
+
+- `CompactionPolicyError` — :meth:`require_compaction_resolver` is outstanding.
 
 ### turn_lock
 

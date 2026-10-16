@@ -44,7 +44,7 @@ def _session_on(tmp_path) -> tuple[AgentSession, Session]:
     agent = AgentSession(
         session_log=live,
         model=_model(),
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
     return agent, live
 

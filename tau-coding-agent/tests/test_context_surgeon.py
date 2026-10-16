@@ -193,7 +193,7 @@ async def test_compact_now_defers_and_applies_at_end_of_prompt(monkeypatch) -> N
         session_log=InMemorySessionLog(),
         model=_model(),
         extensions=[surgeon.context_surgeon_extension],
-        compaction_settings=CompactionSettings(enabled=True, keep_recent_tokens=1),
+        compaction_settings=CompactionSettings(auto=True, keep_recent_tokens=1),
     )
     log = session.session_log
     for i in range(2):
@@ -229,7 +229,7 @@ async def test_summarize_history_appends_a_branch_summary(monkeypatch) -> None:
         session_log=InMemorySessionLog(),
         model=_model(),
         extensions=[surgeon.context_surgeon_extension],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
     log = session.session_log
     await session.cursor.append_message(_msg("user", "u0"))
@@ -257,7 +257,7 @@ async def test_summarize_history_requires_from_entry() -> None:
         session_log=InMemorySessionLog(),
         model=_model(),
         extensions=[surgeon.context_surgeon_extension],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
     ctx = session._extension_api.context
     with pytest.raises(ValueError, match="from_entry"):
@@ -280,7 +280,7 @@ def _file_session(tmp_path) -> tuple[AgentSession, Session]:
         session_log=live,
         model=_model(),
         extensions=[surgeon.context_surgeon_extension],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
     return agent, live
 
@@ -311,7 +311,7 @@ async def test_fork_session_export_on_in_memory_log_raises() -> None:
         session_log=InMemorySessionLog(),
         model=_model(),
         extensions=[surgeon.context_surgeon_extension],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
     ctx = session._extension_api.context
     with pytest.raises(RuntimeError, match="not file-backed"):
@@ -400,7 +400,7 @@ async def test_fork_session_spawns_a_delegate(fake_home) -> None:
         session_log=live,
         model=_model(),
         extensions=[surgeon.context_surgeon_extension],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
     ctx = agent._extension_api.context
     ctx._cwd = str(fake_home)
@@ -436,7 +436,7 @@ def test_surgeon_registers_the_three_tools() -> None:
         session_log=InMemorySessionLog(),
         model=_model(),
         extensions=[surgeon.context_surgeon_extension],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
     active = session._registry.get_active_tools()
     assert set(active) == {"compact_now", "summarize_history", "fork_session"}
@@ -457,7 +457,7 @@ async def test_gatekeeper_veto_composes_with_surgeon_tools(tmp_path, monkeypatch
         session_log=InMemorySessionLog(),
         model=_model(),
         extensions=[surgeon.context_surgeon_extension],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
 
     def _veto_extension(api: object) -> None:

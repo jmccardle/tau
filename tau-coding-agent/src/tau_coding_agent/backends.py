@@ -12,7 +12,7 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Iterator, Literal, Sequence, cast
+from typing import Any, Awaitable, Callable, Iterator, Literal, Mapping, Sequence, cast
 from uuid import uuid4
 from tau_llm.compat import Compat
 from tau_llm.models import EXTENDED_THINKING_LEVELS, is_valid_thinking_level
@@ -27,8 +27,12 @@ from tau_agent_core.agent_session import (
 from tau_agent_core import tree_ops
 from tau_agent_core.attachments import elide_attachment_bodies, human_size
 from tau_agent_core.commands import CommandCompletion
-from tau_agent_core.compaction_policy import CompactionPolicy
-from tau_coding_agent.config import CompactionConfig, ConfigError, parse_compaction_config
+from tau_agent_core.compaction import CompactionConfig
+from tau_coding_agent.config import (
+    compaction_for,
+    parse_compaction_config,
+    validate_compaction_config,
+)
 from tau_agent_core.extension_locks import ExtensionRequest
 from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.skills import load_skills
@@ -1131,8 +1135,10 @@ class ConfigModelResolver:
     and a config with no models are different facts and stay different on the wire.
     """
 
-    def __init__(self, models: dict[str, Any]) -> None:
-        self._models = dict(models)
+    def __init__(self, config: Mapping[str, Any]) -> None:
+        validate_compaction_config(config)
+        self._config = dict(config)
+        self._models = dict(config.get("models") or {})
 
     def model_names(self) -> list[str]:
         """Every config model NAME this resolver resolves, sorted.
@@ -1170,35 +1176,32 @@ class ConfigModelResolver:
         key = self._models[name].get("api_key")
         return None if key is None else str(key)
 
+    def compaction(self, name: str) -> CompactionConfig:
+        """The compaction ``name`` runs under, handed out the way :meth:`api_key` is.
 
-def make_model_resolver(models: dict[str, Any]) -> ConfigModelResolver:
-    """The ``name -> Model`` resolver a frontend binds onto a live ``AgentSession``
-    (``set_model_resolver``) so an extension's ``ctx.set_model(name)`` — and the RPC
-    ``set_model`` verb — resolve the NAME through the SAME ``config["models"]`` map
-    ``--model`` resolution uses.
+        The model's own ``"compaction"`` block, else the top-level one, else the
+        defaults; a name that is not a configured model (an ad-hoc ``provider/id``)
+        gets the top-level block. ``AgentSession`` reads this whenever its model
+        changes (docs/PRICING-AND-COMPACTION-CONFIG.md §6). Every block was
+        validated at construction, so this does not raise for a configured config.
+        """
+        return compaction_for(self._config, name)
 
-    Kept as a factory function (three call sites: ``app.py``, ``headless.py``,
-    ``rpc_mode.py``) even though it now just constructs a
-    :class:`ConfigModelResolver`; see that class for the resolution contract and for
-    why the map lives on an object rather than in a closure.
+
+def make_model_resolver(config: Mapping[str, Any]) -> ConfigModelResolver:
+    """The resolver a frontend binds onto a live ``AgentSession`` (``set_model_resolver``).
+
+    An extension's ``ctx.set_model(name)`` and the RPC ``set_model`` verb then
+    resolve the NAME, its key and its compaction through the SAME config ``--model``
+    resolution uses. Takes the whole loaded config, because the top-level
+    ``"compaction"`` block is part of what a model resolves to. Binding it is
+    where a session's compaction is configured
+    (docs/PRICING-AND-COMPACTION-CONFIG.md §6).
+
+    Raises:
+        ConfigError: a ``"compaction"`` block in ``config`` is malformed.
     """
-    return ConfigModelResolver(models)
-
-
-def _compaction_policy(compaction: CompactionConfig) -> CompactionPolicy | None:
-    """The ``local_summarizer`` policy a named ``compaction.summarizer`` declares, else ``None``.
-
-    The policy holds the NAME only. The session resolves it, model and key, through
-    its :class:`ConfigModelResolver` (docs/PRICING-AND-COMPACTION-CONFIG.md §4).
-    """
-    if compaction.summarizer is None:
-        return None
-    return CompactionPolicy(
-        mode="local_summarizer",
-        summarizer=compaction.summarizer,
-        reserve_tokens=compaction.settings.reserve_tokens,
-        keep_recent_tokens=compaction.settings.keep_recent_tokens,
-    )
+    return ConfigModelResolver(config)
 
 
 class Backend(ABC):
@@ -1387,10 +1390,12 @@ class TauBackend(Backend):
     Wraps tau-agent-core's AgentSession to provide TauApp-compatible
     chat/stream_chat interfaces. ``config["cwd"]`` is the directory the tools run
     in and the system prompt names; absent, it is the process cwd. ``tau serve``
-    sets it per session (docs/TAU-SERVE.md §3). Auto-compaction is on unless
-    ``config["compaction"]`` says otherwise; a head resolves that block with
-    :func:`~tau_coding_agent.config.apply_compaction_config` first
-    (docs/PRICING-AND-COMPACTION-CONFIG.md §3).
+    sets it per session (docs/TAU-SERVE.md §3). The session starts under
+    ``config["compaction"]`` (copied there by
+    :func:`~tau_coding_agent.config.apply_compaction_config`), auto-compaction on
+    unless it says otherwise. The head's ``set_model_resolver`` call is what
+    configures compaction from then on, and a block naming a summarizer refuses
+    turns until it happens (docs/PRICING-AND-COMPACTION-CONFIG.md §6).
 
     Attributes:
         comparisons: The open comparisons (:meth:`compare`), by id, until ended.
@@ -1451,13 +1456,6 @@ class TauBackend(Backend):
         max_turns = config.get("max_turns")
 
         compaction = parse_compaction_config(config.get("compaction", {}))
-        policy = _compaction_policy(compaction)
-        if policy is not None and "models" not in config:
-            raise ConfigError(
-                f"'compaction.summarizer' is {compaction.summarizer!r} but no models map "
-                "came with the config; the head must pass it through apply_compaction_config"
-            )
-        resolver = ConfigModelResolver(config["models"]) if "models" in config else None
 
         self.agent_session = AgentSession(
             session_log=InMemorySessionLog(),
@@ -1466,9 +1464,7 @@ class TauBackend(Backend):
             tools=tools,
             api_key=api_key,
             reasoning=reasoning_arg,
-            compaction_settings=compaction.settings if policy is None else None,
-            compaction_policy=policy,
-            model_resolver=resolver,
+            compaction_settings=compaction.settings,
             bus_available=bool(config.get("bus_available", False)),
             no_tools=no_tools,
             max_turns=max_turns,
@@ -1476,8 +1472,8 @@ class TauBackend(Backend):
             prompt_templates=templates,
             skills=skills,
         )
-        if policy is not None:
-            self.agent_session.set_auto_compaction(compaction.settings.enabled)
+        if compaction.summarizer is not None:
+            self.agent_session.require_compaction_resolver(compaction.summarizer)
         self.comparisons: dict[str, Comparison] = {}
 
     def bind_cursor(self, cursor: Cursor) -> None:
@@ -1820,7 +1816,7 @@ class TauBackend(Backend):
         """Turn automatic compaction on or off for the live session.
 
         Delegates to :meth:`AgentSession.set_auto_compaction`. Nothing is appended,
-        so this does not survive a restart; ``compaction.enabled`` in
+        so this does not survive a restart; ``compaction.auto`` in
         ``~/.tau/config.json`` is the durable answer.
 
         Args:

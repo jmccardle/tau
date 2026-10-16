@@ -259,6 +259,12 @@ NOT_EXPOSED: dict[str, str] = {
         "— not a per-call verb any host would invoke over the wire; the RPC "
         "process wires this during setup exactly as the TUI does."
     ),
+    "require_compaction_resolver": (
+        "A construction-time guard the backend sets when its config names a "
+        "summarizer, cleared by that same setup-time set_model_resolver; a host "
+        "has nothing to say about it, and the refusal it causes already reaches "
+        "the wire as the failed turn's error."
+    ),
     "record_side_usage": (
         "An internal ledger write invoked by out-of-loop completion paths "
         "(compaction, branch summaries) inside AgentSession itself — never "

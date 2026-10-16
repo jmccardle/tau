@@ -24,7 +24,7 @@ def app(make_app):
 
 def _model_id(app, name: str) -> str:
     """The model id `name` resolves to, read the way the backend resolves it."""
-    return make_model_resolver(app.config["models"])(name).id
+    return make_model_resolver(app.config)(name).id
 
 
 def _active_model_id(app) -> str:

@@ -156,7 +156,7 @@ def _make_session() -> AgentSession:
         session_log=InMemorySessionLog(),
         model=model,
         extensions=[],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
 
 

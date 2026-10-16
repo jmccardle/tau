@@ -237,15 +237,15 @@ class TestPolicyDeclarationIsAdmissibleOrRefused:
         assert local.summarizer == "board"
 
     def test_only_disabled_switches_compaction_off(self):
-        assert CompactionPolicy.disabled(max_turns=3).compaction_settings.enabled is False
+        assert CompactionPolicy.disabled(max_turns=3).compaction_settings.auto is False
         assert (
             CompactionPolicy.turn_cap(
                 max_turns=3, max_tokens_per_turn=9
-            ).compaction_settings.enabled
+            ).compaction_settings.auto
             is True
         )
         assert (
-            CompactionPolicy.local_summarizer(summarizer="board").compaction_settings.enabled
+            CompactionPolicy.local_summarizer(summarizer="board").compaction_settings.auto
             is True
         )
 
@@ -585,8 +585,8 @@ class TestLocalSummarizerPolicy:
 
 class TestShippedCompactionBehaviourIsUnchanged:
     def test_auto_compaction_is_still_enabled_by_default(self):
-        assert DEFAULT_COMPACTION_SETTINGS.enabled is True
-        assert _session()._compaction_settings.enabled is True
+        assert DEFAULT_COMPACTION_SETTINGS.auto is True
+        assert _session()._compaction_settings.auto is True
 
     def test_a_session_with_no_policy_carries_none(self):
         assert _session()._compaction_policy is None
@@ -649,7 +649,7 @@ class TestShippedCompactionBehaviourIsUnchanged:
 
     def test_a_policy_supplies_the_settings_it_declares(self):
         session = _session(CompactionPolicy.disabled(max_turns=3))
-        assert session._compaction_settings.enabled is False
+        assert session._compaction_settings.auto is False
         assert session._compaction_settings.reserve_tokens == (
             DEFAULT_COMPACTION_SETTINGS.reserve_tokens
         )

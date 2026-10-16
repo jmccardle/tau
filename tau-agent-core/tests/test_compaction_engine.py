@@ -333,7 +333,7 @@ _TWO_LIMITS = CompactionSettings(reserve_tokens=100)
         pytest.param(950, _TWO_LIMITS, True, True, id="over-both"),
         pytest.param(
             999999,
-            CompactionSettings(enabled=False, reserve_tokens=100),
+            CompactionSettings(auto=False, reserve_tokens=100),
             False,
             False,
             id="disabled-never-triggers",

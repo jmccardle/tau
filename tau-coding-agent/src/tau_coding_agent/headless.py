@@ -832,7 +832,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
     agent_session = getattr(backend, "agent_session", None)
     if agent_session is not None and hasattr(agent_session, "set_model_resolver"):
-        agent_session.set_model_resolver(make_model_resolver(config.get("models", {})))
+        agent_session.set_model_resolver(make_model_resolver(config))
 
     set_ui_defaults = getattr(backend, "set_headless_ui_defaults", None)
     if set_ui_defaults is not None:

@@ -2528,7 +2528,7 @@ class TauApp(App):
             self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
             binder = getattr(agent_session, "set_model_resolver", None)
             if binder is not None:
-                binder(make_model_resolver(self.config.get("models", {})))
+                binder(make_model_resolver(self.config))
 
         self._bind_render_subscription()
 
@@ -2708,7 +2708,9 @@ class TauApp(App):
 
         # Create backend
         try:
-            self.current_backend = create_backend(self._apply_run_config(model_config))
+            self.current_backend = create_backend(
+                self._apply_run_config({**model_config, "config_name": model})
+            )
             self.log(f"Created backend: {model_config.get('backend')} for model {model}")
         except Exception as e:
             self.notify(f"Failed to create backend: {str(e)}", severity="error")
@@ -3919,7 +3921,7 @@ class TauApp(App):
                 return
 
             recorded = session.config
-            resumed = dict(model_config)
+            resumed = {**model_config, "config_name": session.model}
             if "thinking" in recorded:
                 resumed["thinking"] = recorded["thinking"] or "off"
             self.current_backend = create_backend(self._apply_run_config(resumed))

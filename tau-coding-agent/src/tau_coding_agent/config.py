@@ -21,11 +21,10 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tau_agent_core.compaction import CompactionSettings
+from tau_agent_core.compaction import CompactionConfig, CompactionSettings
 from tau_agent_core.tau_home import resolve_tau_home
 
 TAU_DIR = resolve_tau_home()
@@ -113,26 +112,11 @@ def bootstrap_config(path: Path | None = None) -> dict[str, Any]:
 
 
 COMPACTION_KEYS: dict[str, type] = {
-    "enabled": bool,
+    "auto": bool,
     "reserve_tokens": int,
     "keep_recent_tokens": int,
     "summarizer": str,
 }
-
-
-@dataclass(frozen=True)
-class CompactionConfig:
-    """A validated ``"compaction"`` block (docs/PRICING-AND-COMPACTION-CONFIG.md §3).
-
-    Attributes:
-        settings: The :class:`CompactionSettings` the block puts in force; an
-            omitted key keeps that dataclass's default.
-        summarizer: The config model name compaction summarises through, or
-            ``None`` for the session's own model.
-    """
-
-    settings: CompactionSettings
-    summarizer: str | None
 
 
 def parse_compaction_config(block: Any) -> CompactionConfig:
@@ -142,7 +126,8 @@ def parse_compaction_config(block: Any) -> CompactionConfig:
         block: The block as loaded from JSON.
 
     Returns:
-        The block as settings plus an optional summarizer name.
+        The block as settings plus an optional summarizer name
+        (docs/PRICING-AND-COMPACTION-CONFIG.md §3).
 
     Raises:
         ConfigError: ``block`` is not an object, names a key outside
@@ -165,24 +150,73 @@ def parse_compaction_config(block: Any) -> CompactionConfig:
     if summarizer == "":
         raise ConfigError("'compaction.summarizer' must name a model; got an empty string")
     overrides = {
-        key: block[key]
-        for key in ("enabled", "reserve_tokens", "keep_recent_tokens")
-        if key in block
+        key: block[key] for key in ("auto", "reserve_tokens", "keep_recent_tokens") if key in block
     }
     return CompactionConfig(settings=CompactionSettings(**overrides), summarizer=summarizer)
+
+
+def compaction_for(config: Mapping[str, Any], name: str | None) -> CompactionConfig:
+    """The compaction config model ``name`` runs under.
+
+    The model entry's own ``"compaction"`` block replaces the top-level one whole;
+    with neither, the defaults. A ``name`` that is not a configured model (an
+    ad-hoc ``provider/id``) gets the top-level block.
+
+    Args:
+        config: The loaded ``config.json``.
+        name: A config model name, or ``None``.
+
+    Returns:
+        The parsed block.
+
+    Raises:
+        ConfigError: the block in force is malformed, or its ``summarizer``
+            names no configured model.
+    """
+    models = config.get("models") or {}
+    entry = models.get(name) if name is not None else None
+    if isinstance(entry, Mapping) and "compaction" in entry:
+        block, where = entry["compaction"], f"models.{name}.compaction"
+    elif "compaction" in config:
+        block, where = config["compaction"], "compaction"
+    else:
+        return CompactionConfig(settings=CompactionSettings())
+    try:
+        parsed = parse_compaction_config(block)
+    except ConfigError as exc:
+        if where == "compaction":
+            raise
+        raise ConfigError(f"{where}: {exc}") from exc
+    if parsed.summarizer is not None and parsed.summarizer not in models:
+        known = ", ".join(sorted(models)) or "(none configured)"
+        raise ConfigError(
+            f"'{where}.summarizer' names unknown model {parsed.summarizer!r}; "
+            f"configured models: {known}"
+        )
+    return parsed
+
+
+def validate_compaction_config(config: Mapping[str, Any]) -> None:
+    """Parse the top-level ``"compaction"`` block and every model's own, so a bad one fails at startup.
+
+    Raises:
+        ConfigError: any block fails :func:`compaction_for`.
+    """
+    compaction_for(config, None)
+    for name in config.get("models") or {}:
+        compaction_for(config, name)
 
 
 def apply_compaction_config(
     model_config: dict[str, Any], config: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """``model_config`` with the compaction block in force.
+    """``model_config`` with the compaction block it starts under copied onto it.
 
-    A model entry's own ``"compaction"`` replaces the top-level one whole. With
-    neither, ``model_config`` comes back as it is, which ``TauBackend`` reads as
-    compaction on with the defaults. When the block names a summarizer,
-    ``config["models"]`` rides along as ``"models"``: ``TauBackend`` sees only
-    the one model's config, and its session must resolve the summarizer by name
-    from construction (docs/PRICING-AND-COMPACTION-CONFIG.md §4).
+    The model entry's own block (already on ``model_config``) replaces the
+    top-level one whole; with neither, ``model_config`` comes back as it is.
+    ``TauBackend`` reads the copied block for the settings it starts with, and for
+    whether a summarizer must wait for the resolver; the resolver is what supplies
+    compaction from then on (docs/PRICING-AND-COMPACTION-CONFIG.md §6).
 
     Args:
         model_config: The config ``create_backend`` is about to receive; not mutated.
@@ -192,8 +226,8 @@ def apply_compaction_config(
         A new dict when a block applies; ``model_config`` itself otherwise.
 
     Raises:
-        ConfigError: the block is malformed (:func:`parse_compaction_config`) or
-            ``summarizer`` names no configured model.
+        ConfigError: the block is malformed or ``summarizer`` names no
+            configured model.
     """
     if "compaction" in model_config:
         block = model_config["compaction"]
@@ -201,16 +235,5 @@ def apply_compaction_config(
         block = config["compaction"]
     else:
         return model_config
-    parsed = parse_compaction_config(block)
-    resolved = {**model_config, "compaction": block}
-    resolved.pop("models", None)
-    if parsed.summarizer is not None:
-        models = config.get("models") or {}
-        if parsed.summarizer not in models:
-            known = ", ".join(sorted(models)) or "(none configured)"
-            raise ConfigError(
-                f"'compaction.summarizer' names unknown model {parsed.summarizer!r}; "
-                f"configured models: {known}"
-            )
-        resolved["models"] = dict(models)
-    return resolved
+    compaction_for({**config, "compaction": block}, None)
+    return {**model_config, "compaction": block}

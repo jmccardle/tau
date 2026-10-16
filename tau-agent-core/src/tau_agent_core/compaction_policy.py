@@ -241,7 +241,7 @@ class CompactionPolicy:
         kept out of reach by the budget rather than by switching the mechanism off.
         """
         return CompactionSettings(
-            enabled=self.mode != "disabled",
+            auto=self.mode != "disabled",
             reserve_tokens=self.reserve_tokens,
             keep_recent_tokens=self.keep_recent_tokens,
         )
@@ -389,7 +389,7 @@ class CompactionPolicy:
         return {
             "mode": self.mode,
             "declared": declared,
-            "compaction_enabled": self.compaction_settings.enabled,
+            "compaction_enabled": self.compaction_settings.auto,
             "reserve_tokens": self.reserve_tokens,
             "keep_recent_tokens": self.keep_recent_tokens,
         }

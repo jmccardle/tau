@@ -44,7 +44,7 @@ def _session(model: Model | None = None, resolver=None) -> AgentSession:
     return AgentSession(
         session_log=InMemorySessionLog(),
         model=model or _model(),
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
         model_resolver=resolver,
     )
 
