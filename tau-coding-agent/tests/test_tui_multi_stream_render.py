@@ -68,7 +68,7 @@ def _script(backend: TauBackend, gate: asyncio.Event | None = None) -> None:
     session = backend.agent_session
 
     async def fake_run_one_turn(
-        text, images, context, queued=None, strip_ref_text=None, persist=True
+        text, images, context, queued=None, strip_ref_text=None, persist=True, seed=None
     ):
         if gate is not None:
             await gate.wait()

@@ -50,6 +50,7 @@ from tau_agent_core.conversation_tree import (
     entries_to_messages,
     is_system_message,
 )
+from tau_agent_core.messages import convert_to_llm
 
 
 @agent_facing(topic="sessions", since="0.9.7")
@@ -388,16 +389,17 @@ def admission_reason(messages: list[dict[str, Any]]) -> str | None:
 
     The plan-level counterpart of
     :meth:`~tau_agent_core.conversation_tree.ConversationTree.fork_admission_reason`,
-    which asks the same question of a real path. Two faults, and the first is the one
-    a hand-built selection produces:
+    and the check a seeded branch runs on its context plus seed
+    (docs/SEEDED-BRANCHES.md §6). Three faults, each naming the call:
 
     * an **orphan result** — a ``toolResult`` whose ``tool_call_id`` no preceding
-      assistant message declared. Copying a result without its call, or eliding the
-      call out from under it, both land here;
-    * a **pending call** — the sequence ends on an assistant message with tool calls
-      that nothing answered. This is what ``fork_admission_reason`` rejects, and it
-      matters here for the same reason: the branch's tip becomes the cursor, so the
-      next turn starts from exactly this prefix.
+      assistant message declared;
+    * an **interrupted call** — a message the model sees (after
+      :func:`~tau_agent_core.messages.convert_to_llm`) other than a ``toolResult`` follows an assistant message whose calls are not all
+      answered. Providers reject it as they reject a pending call (Mistral: "Not
+      the same number of function calls and responses");
+    * a **pending call** — the sequence ends on unanswered tool calls; the next
+      turn would start from exactly this prefix.
 
     Args:
         messages: The composed message list, root→leaf.
@@ -407,15 +409,9 @@ def admission_reason(messages: list[dict[str, Any]]) -> str | None:
         turn-complete.
     """
     pending: dict[str, str] = {}
-    for message in messages:
+    for message in convert_to_llm(messages):
         role = message.get("role")
-        if role == "assistant":
-            pending = {
-                str(block["id"]): str(block.get("name", "?"))
-                for block in message.get("content", [])
-                if isinstance(block, dict) and block.get("type") == "toolCall" and "id" in block
-            }
-        elif role == "toolResult":
+        if role == "toolResult":
             call_id = message.get("tool_call_id")
             if call_id is None:
                 continue
@@ -425,6 +421,19 @@ def admission_reason(messages: list[dict[str, Any]]) -> str | None:
                     "path — the message that made the call is not in the selection."
                 )
             pending.pop(str(call_id))
+            continue
+        if pending:
+            names = ", ".join(f"{name}({call_id})" for call_id, name in pending.items())
+            return (
+                f"tool call(s) {names} are interrupted by a {role!r} message before their "
+                "results — providers reject a call that is not answered immediately."
+            )
+        if role == "assistant":
+            pending = {
+                str(block["id"]): str(block.get("name", "?"))
+                for block in message.get("content", [])
+                if isinstance(block, dict) and block.get("type") == "toolCall" and "id" in block
+            }
 
     if pending:
         names = ", ".join(f"{name}({call_id})" for call_id, name in pending.items())

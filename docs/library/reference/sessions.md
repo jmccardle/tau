@@ -1480,14 +1480,17 @@ would let one reader's arithmetic rewrite it (see :meth:`get_usage`).
 ### spawn
 
 ```python
-async spawn(at: str | None, prompt: str, *, tools: list[str], model: str | Model | None = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = False, owner: Cursor | None = None) -> BranchResult
+async spawn(at: str | None, prompt: str | None = None, *, seed: list[dict[str, Any]] | None = None, tools: list[str], model: str | Model | None = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = False, owner: Cursor | None = None) -> BranchResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.spawn`
 
-Run ``prompt`` as a sub-agent turn on a new cursor at ``at`` (docs/CURSORS.md §6).
+Run a sub-agent turn on a new cursor at ``at`` (docs/CURSORS.md §6).
 
-The cursor is owned by ``owner`` (default: the running turn's), so aborting
+The turn answers ``prompt``, or continues from ``seed``
+(docs/SEEDED-BRANCHES.md): the seed's messages are written on the branch
+first, then the prompt as a user message if one is given, and with no
+prompt the loop answers the seed directly. The cursor is owned by ``owner`` (default: the running turn's), so aborting
 the owner aborts it, and it runs under a :class:`~tau_agent_core.cursor.TurnFrame`:
 only ``tools``, ``model``/``system_prompt`` when given, ``max_turns``, and
 no extension hooks unless ``hooks``. Its turn is an ordinary submission
@@ -1502,12 +1505,13 @@ refused submission (without the entry).
 
 **Parameters**
 
-- `at: str | None` — The entry to branch from; ``None`` is before the root.
-- `prompt: str` — The sub-agent's user message.
+- `at: str | None` — The entry to branch from; ``None`` is before the root. Inside a tool call, the parent of the calling assistant message, never that message itself.
+- `prompt: str | None = None` — The sub-agent's user message; ``None`` needs a ``seed``.
+- `seed: list[dict[str, Any]] | None = None` — Messages the branch starts from (:func:`~tau_agent_core.seed.normalise_seed` lists the shapes; :func:`~tau_agent_core.seed.seed_tool_call` builds an injected call and its result).
 - `tools: list[str]` — Names of the tools it may call, each one the spawning turn offers.
 - `model: str | Model | None = None` — Its model and key, by :meth:`model_and_key`: a config name (recorded as the branch's ``model``), a ``Model``, or ``None`` for the session's.
 - `max_turns: int | None = None` — Its turn ceiling; ``None`` is no ceiling, not the session's.
-- `label: str | None = None` — What it is for, for display; ``None`` means the prompt's first 60 characters.
+- `label: str | None = None` — What it is for, for display; ``None`` means the prompt's first 60 characters, or the seed's tool names.
 - `system_prompt: str | None = None` — Its system prompt; ``None`` means the session's.
 - `hooks: bool = False` — Whether extension hooks fire in its turn.
 - `owner: Cursor | None = None` — The cursor it answers to; ``None`` means :attr:`acting_cursor`.
@@ -1518,7 +1522,7 @@ What the sub-agent came back with; check ``ok`` first.
 
 **Raises**
 
-- `ValueError` — a name in ``tools`` is not one the spawning turn offers, or ``at`` names no entry.
+- `ValueError` — a name in ``tools`` is not one the spawning turn offers; ``at`` names no entry; neither ``prompt`` nor ``seed`` is given; or the seed is malformed or would leave the context invalid (:func:`~tau_agent_core.seed.check_seed`, naming the call id). Raised before anything is written or any model is called.
 - `RuntimeError` — ``model`` is a name and no resolver is bound.
 
 ### start
@@ -4641,16 +4645,17 @@ Why this message sequence would be rejected as a turn, or ``None``.
 
 The plan-level counterpart of
 :meth:`~tau_agent_core.conversation_tree.ConversationTree.fork_admission_reason`,
-which asks the same question of a real path. Two faults, and the first is the one
-a hand-built selection produces:
+and the check a seeded branch runs on its context plus seed
+(docs/SEEDED-BRANCHES.md §6). Three faults, each naming the call:
 
 * an **orphan result** — a ``toolResult`` whose ``tool_call_id`` no preceding
-  assistant message declared. Copying a result without its call, or eliding the
-  call out from under it, both land here;
-* a **pending call** — the sequence ends on an assistant message with tool calls
-  that nothing answered. This is what ``fork_admission_reason`` rejects, and it
-  matters here for the same reason: the branch's tip becomes the cursor, so the
-  next turn starts from exactly this prefix.
+  assistant message declared;
+* an **interrupted call** — a message the model sees (after
+  :func:`~tau_agent_core.messages.convert_to_llm`) other than a ``toolResult`` follows an assistant message whose calls are not all
+  answered. Providers reject it as they reject a pending call (Mistral: "Not
+  the same number of function calls and responses");
+* a **pending call** — the sequence ends on unanswered tool calls; the next
+  turn would start from exactly this prefix.
 
 **Parameters**
 

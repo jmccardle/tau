@@ -11,10 +11,13 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.seed import seed_tool_call
 from tau_agent_core.session_log import InMemorySessionLog, config_at
 
 
@@ -107,31 +110,38 @@ async def _session(resolver: Any = None) -> AgentSession:
     return session
 
 
-async def _spawn(session: AgentSession, model: Any, provider: _Provider) -> Any:
+async def _spawn(
+    session: AgentSession, model: Any, provider: _Provider, *, seeded: bool = False
+) -> Any:
+    shape: dict[str, Any] = (
+        {"seed": [*seed_tool_call("start_subagent", {}, "go")]} if seeded else {"prompt": "go"}
+    )
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
         result = await session._extension_api.context.spawn_branch(
-            session.cursor.leaf, "go", tools=[], model=model
+            session.cursor.leaf, tools=[], model=model, **shape
         )
     assert result.ok, result.error
     return result
 
 
-async def test_a_child_named_on_another_provider_gets_that_providers_key():
+@pytest.mark.parametrize("seeded", [False, True])
+async def test_a_child_named_on_another_provider_gets_that_providers_key(seeded: bool):
     session = await _session()
     provider = _Provider()
 
-    result = await _spawn(session, "child-model", provider)
+    result = await _spawn(session, "child-model", provider, seeded=seeded)
 
     assert provider.calls[0][0].id == "child-model"
     assert provider.key() == "key-B", "the parent's key-A must never reach provider B"
     assert config_at(session.session_log.entries(), result.leaf)["model"] == "child-model"
 
 
-async def test_a_child_whose_config_has_no_key_gets_none_not_the_parents():
+@pytest.mark.parametrize("seeded", [False, True])
+async def test_a_child_whose_config_has_no_key_gets_none_not_the_parents(seeded: bool):
     session = await _session()
     provider = _Provider()
 
-    await _spawn(session, "keyless-model", provider)
+    await _spawn(session, "keyless-model", provider, seeded=seeded)
 
     assert provider.key() is None, "None means the provider's environment variable"
 

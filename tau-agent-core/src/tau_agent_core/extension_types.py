@@ -1446,8 +1446,9 @@ class ExtensionContext:
     async def spawn_branch(
         self,
         parent_id: str | None,
-        prompt: str,
+        prompt: str | None = None,
         *,
+        seed: list[dict[str, Any]] | None = None,
         tools: list[str],
         model: Any = None,
         max_turns: int | None = None,
@@ -1457,12 +1458,24 @@ class ExtensionContext:
     ) -> "BranchResult":
         """Run a tool-using sub-agent on its own cursor in THIS conversation (C2/W14).
 
-        Delegates to :meth:`AgentSession.spawn` (docs/CURSORS.md §6).
+        Delegates to :meth:`AgentSession.spawn` (docs/CURSORS.md §6). From inside a
+        tool, seed the branch instead of prompting it, and hang it from the parent
+        of the calling message, whose call is still unanswered
+        (docs/SEEDED-BRANCHES.md)::
+
+            parent = next(e["parentId"] for e in ctx.entries() if e["id"] == ctx.cursor.leaf)
+            note = {"customType": "planner", "content": "You are the sub-agent now."}
+            result = await ctx.spawn_branch(
+                parent, seed=[note, *seed_tool_call("start_subagent", {}, task)],
+                tools=["write"], model="mistral-small",
+            )
 
         Args:
             parent_id: The entry the sub-agent's cursor opens at, or ``None`` for
                 before the root.
-            prompt: The sub-agent's task, sent as its one submission.
+            prompt: The sub-agent's task as a user message; ``None`` needs ``seed``.
+            seed: Messages written on the branch before the prompt; with no prompt
+                the sub-agent answers them (``tau_agent_core.seed``).
             tools: A required hard allowlist of tool names; ``[]`` means none.
             model: A config name, a ``Model``, or ``None`` for the session's; the
                 key goes with it (``AgentSession.model_and_key``).
@@ -1478,13 +1491,15 @@ class ExtensionContext:
         Raises:
             RuntimeError: No session is bound, or ``model`` is a name and the
                 session has no resolver.
-            ValueError: a tool is not one the spawning turn offers, or ``parent_id``
-                names no entry.
+            ValueError: a tool is not one the spawning turn offers; ``parent_id``
+                names no entry; neither ``prompt`` nor ``seed`` is given; or the seed
+                is malformed or leaves a tool call unanswered (named by id).
         """
         session = self._require_session()
         result: BranchResult = await session.spawn(
             parent_id,
             prompt,
+            seed=seed,
             tools=tools,
             model=model,
             max_turns=max_turns,

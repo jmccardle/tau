@@ -55,7 +55,7 @@ def _stub_turn(backend: TauBackend) -> None:
     session = backend.agent_session
 
     async def fake_run_one_turn(
-        text, images, context, queued=None, strip_ref_text=None, persist=True
+        text, images, context, queued=None, strip_ref_text=None, persist=True, seed=None
     ):
         await session._emit_stamped(AgentEvent(type="turn_start", timestamp=_TS, turn_index=0))
         await session._emit_stamped(

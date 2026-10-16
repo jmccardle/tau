@@ -272,7 +272,16 @@ when it equals the session's model, and otherwise gets `None`, which means the
 provider's environment variable. `ctx.complete` and `ctx.resolve_model` take the
 same path. A plain `name -> Model` resolver knows no keys, so it also gives
 `None` for any model other than the session's; it used to give the session's
-key.
+key. docs/SEEDED-BRANCHES.md §7 has the audit.
+
+**Seeded branches** (2026-10-15, docs/SEEDED-BRANCHES.md). `spawn(at, prompt=None,
+*, seed=[…])` writes the seed's messages on the branch after the frame's config
+entry. With no prompt, the turn adds no user message and the model answers the
+seed. From inside a tool, `at` must be the *parent* of the calling assistant
+message, never `ctx.cursor.leaf`, whose call is still unanswered. The branch is
+then a sibling of the planner's call, and the planner's walk never contains it.
+A seed or anchor that would leave a call unanswered is refused before anything
+is written.
 
 **A consequence of §4:** a sub-agent writes entries into the shared log. If it is
 the last writer, a reopened tree places its cursor on the sub-agent's newest entry.
