@@ -38,7 +38,7 @@ from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.skills import load_skills
 from tau_agent_core.messages import CUSTOM_ROLE
 from tau_agent_core.event_projection import MessageDeltaProjector
-from tau_agent_core.rpc.wire_events import project_event
+from tau_agent_core.rpc.wire_events import project_event, strip_cookies
 from tau_agent_core.flows import Performed
 from tau_agent_core.projections import tool_result_for_user
 from tau_agent_core.follow_ups import follow_ups_dropped_notice
@@ -128,6 +128,8 @@ def json_mode_payloads(projector: MessageDeltaProjector, event: AgentEvent) -> l
     ``run()``/``run_continue`` (content only). Keep the usage-bearing one and
     drop the content-only duplicate, so every emitted ``message_end`` carries
     usage — which is what a supervising parent reads for its per-child limits.
+
+    Headers lose their cookies, as on the RPC wire (docs/RESPONSE-HEADERS.md §5).
     """
     if event.type == "turn_start":
         projector.reset()
@@ -135,7 +137,7 @@ def json_mode_payloads(projector: MessageDeltaProjector, event: AgentEvent) -> l
     if event.type != "message_update":
         if event.type == "message_end" and "usage" not in (event.message or {}):
             return []
-        return [_json_line(event.model_dump(exclude_none=True))]
+        return [_json_line(strip_cookies(event).model_dump(exclude_none=True))]
 
     if event.message is None:
         return []

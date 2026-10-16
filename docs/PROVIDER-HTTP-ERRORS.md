@@ -47,6 +47,8 @@ The agent loop does not call `result()`. It iterates events and raised
 `ErrorEvent` it enqueues (`exception=e`), and the agent loop raises that object
 when it is present. An in-band error, such as an SSE `error` frame after a 200 or a
 dropped connection, still has `exception=None` and still raises `RuntimeError`.
+That changed on 2026-10-15: it is now a `ProviderStreamError`
+(`RESPONSE-HEADERS.md` §5.5).
 
 `ProviderHttpError` subclasses `RuntimeError`, as `ConstraintViolation` does. Any
 `except RuntimeError` around a turn therefore behaves exactly as before.
@@ -85,6 +87,8 @@ body may not have been read when the error is raised.
   `retry=False`.
 - **No classification of in-band errors.** An SSE `{"error": …}` frame after a 200
   has no HTTP status to carry. It stays an `ErrorEvent` with `exception=None`.
+  Built later: `ProviderStreamError` (`RESPONSE-HEADERS.md` §5.5) types it,
+  without claiming a status the response did not have.
 - **No "context too long" subtype.** Servers phrase it differently, and a
   subtype keyed on that phrasing would be the string match this change removes.
   `status_code == 400` plus `message` is what callers get.

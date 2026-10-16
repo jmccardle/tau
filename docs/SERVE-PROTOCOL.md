@@ -8,7 +8,7 @@
 
 - **Protocol version:** `0.9`
 - **Default port:** `8256`
-- **Counts:** 50 requests (35 of them RPC verbs), 10 event kinds, 198 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 50 requests (35 of them RPC verbs), 10 event kinds, 199 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
@@ -1111,6 +1111,18 @@ Why a request failed. `code` is stable; `message` is for a human.
 | `message` | string | yes |  |
 | `data` | object \| null | no | RPC's `error.data` for an RPC verb's refusal (a submission's `lock`, the offending `name`), else `None`. |
 
+### ErrorDetail
+
+A failure as fields, beside the ``error`` string on ``agent_end`` and ``provider_retry``.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `type` | string | yes |  |
+| `status` | integer \| null | no |  |
+| `retry_after` | number \| null | no |  |
+| `headers` | object of string \| null | no |  |
+| `retryable` | boolean \| null | no |  |
+
 ### Event
 
 A push for an attached session, numbered per session within an `epoch`; an `event` notification's `params`.
@@ -2069,6 +2081,8 @@ The wire projection of ``AgentEvent`` (D3) — REMOTE-CONTROL.md's designed shap
 | `tool_name` | string \| null | no | Tool name (tool_*). |
 | `is_error` | boolean | no | Whether this event represents an error. |
 | `error` | string \| null | no | Why an agent_end closed when the loop raised rather than finishing (e.g. 'RuntimeError: Connection refused'). None on a normal close; always paired with is_error=True when set. Without it 'the agent finished' and 'the agent died mid-turn' are the same event on the wire. |
+| `error_detail` | [ErrorDetail](#errordetail) \| null | no | `error` as fields, set exactly when `error` is (agent_end, provider_retry): `type` (the exception class name, always set), `status` (the HTTP status of a refusal), `retry_after` (seconds the server asked for), `headers` (the refusal's response headers, lowercased, set-cookie removed) and `retryable` (true for a transient failure — 408/429/502/503/504/529 or a connection failure — false for any other refusal, null when τ makes no judgement). Each is null when not known. See docs/RESPONSE-HEADERS.md §5. |
+| `response_headers` | object of string \| null | no | The HTTP response headers of the completion this message_end closes, names lowercased, set-cookie removed. Set on the message_end that carries stop_reason; null there when the transport did not capture them, {} when the server sent none. τ parses none of them: rate-limit counters differ per vendor. None for all other event types. See docs/RESPONSE-HEADERS.md §5. |
 | `end_reason` | `"done"` \| `"terminate"` \| `"aborted"` \| `"max_turns"` \| `"repeat_tool_calls"` \| `"error"` \| null | no | How an agent_end closed: 'done' (the model had nothing more to say), 'terminate' (a tool asked to stop), 'aborted', 'max_turns' (the ceiling truncated the run), 'repeat_tool_calls' (the loop stopped itself because the model kept repeating an identical, wholly-failing batch) or 'error'. None on every other event type. `error` says whether the loop raised; this says how it stopped when it did not, which is what tells a host that an answer is TRUNCATED rather than finished. |
 | `blocked` | boolean | no | Whether a tool_execution_end is an extension veto (S50), distinct from a generic errored result. |
 | `blocked_by` | string \| null | no | The extension that vetoed the call; paired with blocked. |
@@ -2090,6 +2104,5 @@ The wire projection of ``AgentEvent`` (D3) — REMOTE-CONTROL.md's designed shap
 | `attempt` | integer \| null | no | Which retry a provider_retry announces, counting from 1. A provider_retry says a request failed before producing any output and will be sent again, byte-identical, after delay_seconds; `error` is the failure. A host renders it as a passing warning: if the retries run out, the turn's agent_end carries the final error as usual. None for all other event types. See docs/PROVIDER-RETRY.md. |
 | `max_retries` | integer \| null | no | The most retries that request will make, on provider_retry. None for all other event types. |
 | `delay_seconds` | number \| null | no | Seconds τ waits before re-sending, on provider_retry: the server's Retry-After when it sent one, else an exponential backoff. None for all other event types. |
-| `status_code` | integer \| null | no | The HTTP status being retried, on provider_retry (e.g. 429, 503). None for a connection that failed before any response, and for all other event types. |
 | `dropped` | list of string \| null | no | The queued followUp texts a user abort discarded, in queue order, on follow_ups_dropped. They were never written to the session, so this is the one field here that carries content no verb can pull afterwards. None for all other event types. See docs/TURN-SETTINGS.md §5. |
 | `leaf` | string \| null | no | The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |

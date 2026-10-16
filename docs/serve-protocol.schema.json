@@ -2286,6 +2286,65 @@
       ],
       "type": "object"
     },
+    "ErrorDetail": {
+      "description": "A failure as fields, beside the ``error`` string on ``agent_end`` and ``provider_retry``.\n\nSee docs/RESPONSE-HEADERS.md \u00a75.\n\nAttributes:\n    type: The exception's class name, e.g. ``\"ProviderHttpError\"``. Always set.\n    status: The HTTP status of a ``ProviderHttpError``, or the HTTP-like\n        code a ``ProviderStreamError``'s frame named; None otherwise.\n    retry_after: Seconds the server asked the client to wait, parsed from\n        ``Retry-After``; None when it sent none or this is not an HTTP refusal.\n    headers: The refusal's response headers, names lowercased; None when\n        none were captured, which includes every failure that is not an HTTP\n        refusal.\n    retryable: Whether ``tau_llm.retry.DEFAULT_RETRY_POLICY`` counts this\n        failure as transient: True for a retryable status or a connection\n        failure, False for any other HTTP refusal and for a\n        ``ProviderStreamError``, None for an exception \u03c4 makes no\n        transience judgement about. On ``agent_end`` a True means\n        \u03c4's own retries ran out, or the server asked for a longer wait than\n        \u03c4 will make inside a turn.",
+      "properties": {
+        "headers": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "retry_after": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "retryable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
     "Event": {
       "description": "A push for an attached session, numbered per session within an `epoch`; an `event` notification's `params`.",
       "oneOf": [
@@ -6479,6 +6538,18 @@
           "default": null,
           "description": "Why an agent_end closed when the loop raised rather than finishing (e.g. 'RuntimeError: Connection refused'). None on a normal close; always paired with is_error=True when set. Without it 'the agent finished' and 'the agent died mid-turn' are the same event on the wire."
         },
+        "error_detail": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorDetail"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "`error` as fields, set exactly when `error` is (agent_end, provider_retry): `type` (the exception class name, always set), `status` (the HTTP status of a refusal), `retry_after` (seconds the server asked for), `headers` (the refusal's response headers, lowercased, set-cookie removed) and `retryable` (true for a transient failure \u2014 408/429/502/503/504/529 or a connection failure \u2014 false for any other refusal, null when \u03c4 makes no judgement). Each is null when not known. See docs/RESPONSE-HEADERS.md \u00a75."
+        },
         "is_error": {
           "default": false,
           "description": "Whether this event represents an error.",
@@ -6570,6 +6641,21 @@
           "description": "Only meaningful when delta is set. False (the common case): delta is an incremental suffix \u2014 append it to whatever was already accumulated for this block_type this turn. True: the provider replaced rather than extended the block's content \u2014 delta is the block's ENTIRE new value, and the receiver must RESET its accumulator to delta rather than appending. Mirrors event_projection.BlockDelta.replace exactly.",
           "type": "boolean"
         },
+        "response_headers": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The HTTP response headers of the completion this message_end closes, names lowercased, set-cookie removed. Set on the message_end that carries stop_reason; null there when the transport did not capture them, {} when the server sent none. \u03c4 parses none of them: rate-limit counters differ per vendor. None for all other event types. See docs/RESPONSE-HEADERS.md \u00a75."
+        },
         "source": {
           "anyOf": [
             {
@@ -6591,18 +6677,6 @@
           ],
           "default": null,
           "description": "The submission's origin (E4). None alongside submission_id."
-        },
-        "status_code": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The HTTP status being retried, on provider_retry (e.g. 429, 503). None for a connection that failed before any response, and for all other event types."
         },
         "stop_reason": {
           "anyOf": [

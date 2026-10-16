@@ -81,6 +81,7 @@ from pydantic import BaseModel, Field
 from tau_agent_core.events import (
     AgentEndReason,
     AgentEvent,
+    ErrorDetail,
     SideCompletionPurpose,
     SideCompletionReason,
 )
@@ -124,6 +125,26 @@ class WireEvent(BaseModel):
         "close; always paired with is_error=True when set. Without it 'the "
         "agent finished' and 'the agent died mid-turn' are the same event on "
         "the wire.",
+    )
+    error_detail: ErrorDetail | None = Field(
+        default=None,
+        description="`error` as fields, set exactly when `error` is (agent_end, "
+        "provider_retry): `type` (the exception class name, always set), "
+        "`status` (the HTTP status of a refusal), `retry_after` (seconds the "
+        "server asked for), `headers` (the refusal's response headers, "
+        "lowercased, set-cookie removed) and `retryable` (true for a transient "
+        "failure — 408/429/502/503/504/529 or a connection failure — false for "
+        "any other refusal, null when τ makes no judgement). Each is null when "
+        "not known. See docs/RESPONSE-HEADERS.md §5.",
+    )
+    response_headers: dict[str, str] | None = Field(
+        default=None,
+        description="The HTTP response headers of the completion this "
+        "message_end closes, names lowercased, set-cookie removed. Set on the "
+        "message_end that carries stop_reason; null there when the transport did "
+        "not capture them, {} when the server sent none. τ parses none of them: "
+        "rate-limit counters differ per vendor. None for all other event types. "
+        "See docs/RESPONSE-HEADERS.md §5.",
     )
     end_reason: AgentEndReason | None = Field(
         default=None,
@@ -279,12 +300,6 @@ class WireEvent(BaseModel):
         description="Seconds τ waits before re-sending, on provider_retry: the "
         "server's Retry-After when it sent one, else an exponential backoff. "
         "None for all other event types.",
-    )
-    status_code: int | None = Field(
-        default=None,
-        description="The HTTP status being retried, on provider_retry (e.g. 429, "
-        "503). None for a connection that failed before any response, and for "
-        "all other event types.",
     )
     dropped: list[str] | None = Field(
         default=None,

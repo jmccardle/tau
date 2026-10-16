@@ -468,6 +468,12 @@ It also carries the `follow_ups_dropped` event and its `dropped` field
 (docs/TURN-SETTINGS.md §5, 2026-10-15): the followUps a user abort discarded,
 which were written nowhere else.
 
+It also carries two event fields from docs/RESPONSE-HEADERS.md §5 (2026-10-15):
+`response_headers` on `message_end` and `error_detail` on `agent_end` and
+`provider_retry`, both without cookies on the wire. `provider_retry`'s own
+`status_code` field went in the same change, because `error_detail.status`
+carries the same fact and no released client read it.
+
 ## 6. `tau serve`
 
 ```

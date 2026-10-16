@@ -44,6 +44,7 @@ from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.tools.base import AgentTool
+from tau_llm.errors import ProviderStreamError
 from tau_llm.streaming import DoneEvent, ErrorEvent, TextDeltaEvent
 from tau_llm.tools import ToolDefinition
 from tau_llm.types import (
@@ -200,7 +201,7 @@ def test_the_failure_still_reaches_the_caller():
     """Persisting the remains must not turn a failed turn into a quiet one.
 
     The exception type is preserved too, not wrapped: the loop raises several
-    (``RuntimeError`` from a provider error, ``ValueError`` from a malformed tool
+    (``ProviderStreamError`` from a provider error, ``ValueError`` from a malformed tool
     call, ``CancelledError`` from a hard cancel) and a caller that catches one of
     them specifically must keep working.
     """
@@ -212,7 +213,7 @@ def test_the_failure_still_reaches_the_caller():
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_boom):
         with pytest.raises(RuntimeError) as excinfo:
             asyncio.run(session.prompt("hello"))
-    assert type(excinfo.value) is RuntimeError
+    assert type(excinfo.value) is ProviderStreamError
     assert "upstream 503" in str(excinfo.value)
 
 

@@ -25,7 +25,7 @@ from unittest.mock import patch
 import pytest
 
 import tau_coding_agent.session_store as store
-from tau_agent_core.events import AgentEvent
+from tau_agent_core.events import AgentEvent, ErrorDetail
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, TextContent, Usage
 from tau_agent_core.event_projection import MessageDeltaProjector
@@ -98,6 +98,42 @@ def test_serializer_drops_duplicate_content_only_message_end():
         message={"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
     )
     assert _one(event) is None
+
+
+def test_a_json_line_carries_response_headers_without_cookies():
+    """docs/RESPONSE-HEADERS.md §5: the same cookie rule as the RPC wire."""
+    headers = {"x-ratelimit-remaining-requests": "9", "set-cookie": "a=b"}
+    out = _one(
+        AgentEvent(
+            type="message_end",
+            timestamp=_TS,
+            message={"role": "assistant", "content": [], "usage": {}, "stop_reason": "stop"},
+            response_headers=headers,
+        )
+    )
+    assert out is not None
+    assert out["response_headers"] == {"x-ratelimit-remaining-requests": "9"}
+
+
+def test_a_json_agent_end_carries_the_error_detail():
+    out = _one(
+        AgentEvent(
+            type="agent_end",
+            timestamp=_TS,
+            is_error=True,
+            error="ProviderHttpError: HTTP 429",
+            error_detail=ErrorDetail(
+                type="ProviderHttpError", status=429, headers={"set-cookie": "a=b"}, retryable=True
+            ),
+        )
+    )
+    assert out is not None
+    assert out["error_detail"] == {
+        "type": "ProviderHttpError",
+        "status": 429,
+        "headers": {},
+        "retryable": True,
+    }
 
 
 STOCK_TIMINGS = {

@@ -61,7 +61,8 @@ renderer routes by it (docs/CURSORS.md §6). ``None`` outside a turn.
 
 `tau_agent_core.events.AgentEvent.delay_seconds: float | None`
 
-How long τ waits before re-sending it.
+How long τ waits before re-sending it; the status being
+retried is ``error_detail.status`` (docs/PROVIDER-RETRY.md §5).
 
 ### delta
 
@@ -109,6 +110,14 @@ finishing (``"RuntimeError: Connection refused"``). ``None`` on a
 normal close; always paired with ``is_error=True``. On a
 ``provider_retry`` it is the failure being retried, with
 ``is_error=False`` because the turn goes on.
+
+### error_detail
+
+`tau_agent_core.events.AgentEvent.error_detail: ErrorDetail | None`
+
+``error`` as fields (:class:`ErrorDetail`), set exactly
+when ``error`` is, so a handler branches on a status or a class name
+instead of parsing the string.
 
 ### is_error
 
@@ -160,6 +169,16 @@ What asked for it — ``"manual"``, ``"threshold"`` or
 reader that joins late still learns whether the compaction it is
 watching was requested or imposed. ``None`` on every other type.
 
+### response_headers
+
+`tau_agent_core.events.AgentEvent.response_headers: dict[str, str] | None`
+
+The HTTP response headers of the completion a
+``message_end`` closes, names lowercased. Set only on the
+usage-bearing ``message_end``; None there when the transport did not
+capture them, and ``{}`` when the server sent none. Not persisted:
+the message in the session log never carries them.
+
 ### result
 
 `tau_agent_core.events.AgentEvent.result: Any | None`
@@ -175,13 +194,6 @@ The submission's origin (``"interactive"``, ``"bus"``, ``"agent"``,
 show a turn (Jupyter's rule: render every source, differently) without
 the core knowing any renderer exists. ``None`` alongside
 ``submission_id``.
-
-### status_code
-
-`tau_agent_core.events.AgentEvent.status_code: int | None`
-
-The HTTP status being retried; ``None`` for a connection
-failure. Set on ``provider_retry`` only (docs/PROVIDER-RETRY.md).
 
 ### submission_id
 
@@ -252,6 +264,73 @@ Event type discriminator
 What a side completion SPENT, on ``side_completion_end``. This is
 the only place those tokens are observable: the work runs outside the
 agent loop, so no ``turn_end`` counts it (docs/STREAMING-SIDE-WORK.md).
+
+## ErrorDetail
+<!-- agent: yes -->
+
+`tau_agent_core.events.ErrorDetail`
+
+A failure as fields, beside the ``error`` string on ``agent_end`` and ``provider_retry``.
+
+See docs/RESPONSE-HEADERS.md §5.
+
+### headers
+
+`tau_agent_core.events.ErrorDetail.headers: dict[str, str] | None`
+
+The refusal's response headers, names lowercased; None when
+none were captured, which includes every failure that is not an HTTP
+refusal.
+
+### of
+
+```python
+of(exc: BaseException) -> 'ErrorDetail'
+```
+
+`tau_agent_core.events.ErrorDetail.of`
+
+The detail for ``exc``.
+
+**Parameters**
+
+- `exc: BaseException` — The exception that ended the loop or was retried.
+
+**Returns**
+
+Every field filled for a ``ProviderHttpError``; ``type`` and ``retryable`` for a ``ProviderConnectionError``, plus ``status`` for a ``ProviderStreamError`` whose frame named an HTTP-like code; ``type`` alone for anything else.
+
+### retry_after
+
+`tau_agent_core.events.ErrorDetail.retry_after: float | None`
+
+Seconds the server asked the client to wait, parsed from
+``Retry-After``; None when it sent none or this is not an HTTP refusal.
+
+### retryable
+
+`tau_agent_core.events.ErrorDetail.retryable: bool | None`
+
+Whether ``tau_llm.retry.DEFAULT_RETRY_POLICY`` counts this
+failure as transient: True for a retryable status or a connection
+failure, False for any other HTTP refusal and for a
+``ProviderStreamError``, None for an exception τ makes no
+transience judgement about. On ``agent_end`` a True means
+τ's own retries ran out, or the server asked for a longer wait than
+τ will make inside a turn.
+
+### status
+
+`tau_agent_core.events.ErrorDetail.status: int | None`
+
+The HTTP status of a ``ProviderHttpError``, or the HTTP-like
+code a ``ProviderStreamError``'s frame named; None otherwise.
+
+### type
+
+`tau_agent_core.events.ErrorDetail.type: str`
+
+The exception's class name, e.g. ``"ProviderHttpError"``. Always set.
 
 ## EventBus
 <!-- agent: yes -->

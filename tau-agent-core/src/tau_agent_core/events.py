@@ -35,6 +35,8 @@ from pydantic import BaseModel, Field
 
 from tau_agent_core.submission import SubmissionSource
 from tau_llm.docs import agent_facing
+from tau_llm.errors import ProviderConnectionError, ProviderHttpError, ProviderStreamError
+from tau_llm.retry import DEFAULT_RETRY_POLICY
 
 ErrorListener = Callable[[BaseException, str], None]
 
@@ -68,6 +70,66 @@ after a request came back over the window. τ has no such recovery path
 (``_perform_compaction`` has exactly two callers), so declaring the value would
 put a branch on the wire that nothing can reach.
 """
+
+
+@agent_facing(topic="events")
+class ErrorDetail(BaseModel):
+    """A failure as fields, beside the ``error`` string on ``agent_end`` and ``provider_retry``.
+
+    See docs/RESPONSE-HEADERS.md §5.
+
+    Attributes:
+        type: The exception's class name, e.g. ``"ProviderHttpError"``. Always set.
+        status: The HTTP status of a ``ProviderHttpError``, or the HTTP-like
+            code a ``ProviderStreamError``'s frame named; None otherwise.
+        retry_after: Seconds the server asked the client to wait, parsed from
+            ``Retry-After``; None when it sent none or this is not an HTTP refusal.
+        headers: The refusal's response headers, names lowercased; None when
+            none were captured, which includes every failure that is not an HTTP
+            refusal.
+        retryable: Whether ``tau_llm.retry.DEFAULT_RETRY_POLICY`` counts this
+            failure as transient: True for a retryable status or a connection
+            failure, False for any other HTTP refusal and for a
+            ``ProviderStreamError``, None for an exception τ makes no
+            transience judgement about. On ``agent_end`` a True means
+            τ's own retries ran out, or the server asked for a longer wait than
+            τ will make inside a turn.
+    """
+
+    type: str
+    status: int | None = None
+    retry_after: float | None = None
+    headers: dict[str, str] | None = None
+    retryable: bool | None = None
+
+    @classmethod
+    def of(cls, exc: BaseException) -> "ErrorDetail":
+        """The detail for ``exc``.
+
+        Args:
+            exc: The exception that ended the loop or was retried.
+
+        Returns:
+            Every field filled for a ``ProviderHttpError``; ``type`` and
+            ``retryable`` for a ``ProviderConnectionError``, plus ``status`` for
+            a ``ProviderStreamError`` whose frame named an HTTP-like code;
+            ``type`` alone for anything else.
+        """
+        if isinstance(exc, ProviderHttpError):
+            return cls(
+                type=type(exc).__name__,
+                status=exc.status_code,
+                retry_after=exc.retry_after,
+                headers=exc.headers,
+                retryable=DEFAULT_RETRY_POLICY.retryable(exc),
+            )
+        if isinstance(exc, (ProviderConnectionError, ProviderStreamError)):
+            return cls(
+                type=type(exc).__name__,
+                status=exc.status if isinstance(exc, ProviderStreamError) else None,
+                retryable=DEFAULT_RETRY_POLICY.retryable(exc),
+            )
+        return cls(type=type(exc).__name__)
 
 
 @agent_facing(topic="events")
@@ -107,6 +169,14 @@ class AgentEvent(BaseModel):
             normal close; always paired with ``is_error=True``. On a
             ``provider_retry`` it is the failure being retried, with
             ``is_error=False`` because the turn goes on.
+        error_detail: ``error`` as fields (:class:`ErrorDetail`), set exactly
+            when ``error`` is, so a handler branches on a status or a class name
+            instead of parsing the string.
+        response_headers: The HTTP response headers of the completion a
+            ``message_end`` closes, names lowercased. Set only on the
+            usage-bearing ``message_end``; None there when the transport did not
+            capture them, and ``{}`` when the server sent none. Not persisted:
+            the message in the session log never carries them.
         end_reason: How an ``agent_end`` closed, as one of ``"done"``,
             ``"terminate"``, ``"aborted"``, ``"max_turns"``,
             ``"repeat_tool_calls"`` or ``"error"``. ``None`` on every other event
@@ -153,9 +223,8 @@ class AgentEvent(BaseModel):
             agent loop, so no ``turn_end`` counts it (docs/STREAMING-SIDE-WORK.md).
         attempt: Which retry a ``provider_retry`` announces, from 1.
         max_retries: The most retries that request will make.
-        delay_seconds: How long τ waits before re-sending it.
-        status_code: The HTTP status being retried; ``None`` for a connection
-            failure. Set on ``provider_retry`` only (docs/PROVIDER-RETRY.md).
+        delay_seconds: How long τ waits before re-sending it; the status being
+            retried is ``error_detail.status`` (docs/PROVIDER-RETRY.md §5).
         dropped: The queued followUp texts a user abort discarded, in queue
             order, on ``follow_ups_dropped`` only (docs/TURN-SETTINGS.md §5).
             Written nowhere else.
@@ -196,7 +265,9 @@ class AgentEvent(BaseModel):
     tool_results: list[dict[str, Any]] | None = None
     messages: list[dict[str, Any]] | None = None
     error: str | None = None
+    error_detail: ErrorDetail | None = None
     end_reason: AgentEndReason | None = None
+    response_headers: dict[str, str] | None = None
 
     cursor_id: str | None = None
     submission_id: str | None = None
@@ -213,7 +284,6 @@ class AgentEvent(BaseModel):
     attempt: int | None = None
     max_retries: int | None = None
     delay_seconds: float | None = None
-    status_code: int | None = None
 
     dropped: list[str] | None = None
 

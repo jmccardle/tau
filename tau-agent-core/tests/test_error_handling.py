@@ -355,7 +355,7 @@ def test_provider_error_event_paints_the_turn_then_raises_with_the_bracket_close
 
     closing = events[-1]
     assert closing.is_error is True
-    assert closing.error == "RuntimeError: Connection refused"
+    assert closing.error == "ProviderStreamError: Connection refused"
 
 
 def test_an_empty_provider_error_message_still_raises_something_attributable():
@@ -392,7 +392,7 @@ def test_an_empty_provider_error_message_still_raises_something_attributable():
     assert raised.strip()
     assert "empty message" in raised
     assert "gpt-4o" in raised
-    assert events[-1].error == f"RuntimeError: {raised}"
+    assert events[-1].error == f"ProviderStreamError: {raised}"
 
 
 def test_a_normal_close_carries_no_error_so_the_two_are_distinguishable():
@@ -493,7 +493,7 @@ def test_provider_error_propagates_uncaught_through_session_prompt():
         marker = session.messages[-1]
         assert marker["customType"] == "turn_error"
         assert marker["visibleToModel"] is False
-        assert marker["details"] == {"exception": "RuntimeError: upstream 503"}
+        assert marker["details"] == {"exception": "ProviderStreamError: upstream 503"}
 
 
 def test_tool_error_result_is_the_exact_payload_the_next_llm_call_receives():
