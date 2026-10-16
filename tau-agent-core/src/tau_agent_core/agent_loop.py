@@ -55,6 +55,7 @@ from tau_agent_core.tool_pipeline import (
     prepare_tool_call,
 )
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolBatchResult
+from tau_agent_core.truncation import without_tool_calls_if_truncated
 from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
@@ -971,7 +972,7 @@ class AgentLoop:
                         )
                     )
                 elif isinstance(event, DoneEvent):
-                    final_msg = event.final
+                    final_msg = without_tool_calls_if_truncated(event.final)
                     final_blocks = [
                         c.model_dump() if hasattr(c, "model_dump") else c for c in final_msg.content
                     ]

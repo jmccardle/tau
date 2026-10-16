@@ -4,7 +4,9 @@
 at: line 1 column 12` was killing the turn against a local llama.cpp server. This
 document records what that column number proves, why the finalizer used to raise
 on it, what it does now, and why grammar-constrained decoding would not have
-prevented it.
+prevented it. **§3.2 (built 2026-10-16)** replaced the per-provider drop with
+one rule in the agent loop: a cut-off completion runs no tool call, and the turn
+ends.
 
 ---
 
@@ -182,6 +184,49 @@ it; the TUI holds a live event and reports `Truncation(1, n)` per completion.
 dropped calls. The count is real and the telemetry row still shows it, but this
 notice tells an operator to raise a cap, and an Esc the user pressed is not a cap
 to raise.
+
+### 3.2 A cut-off completion runs no tool call, and the turn ends
+
+Built 2026-10-16. The drop above lived in one provider and keyed on whether the
+buffer decoded. Both halves leaked.
+
+**Measured.** A sandbox session on `claude-haiku-5-5` with `max_tokens = 4096`,
+asked to write a markdown template, stopped at the cap three times in a row
+(`output_tokens: 4096`, `stop_reason: "length"` each). Each time the persisted
+message held `write` with `arguments: {"path": "docs/SECURITY_TEST_TEMPLATE.md"}`
+and no `content`. The Anthropic provider builds `ToolCall.arguments` from the
+SDK's `block.input`, which is the partially parsed JSON of the cut-off stream, so
+the call reached the tool, which answered `Missing required field: 'content'`.
+The model tried again, identically, and `repeat_tool_call_limit` (3) ended the
+turn as `repeat_tool_calls`. 12288 output tokens produced nothing, and the
+operator saw a failure where a partial answer existed.
+
+The OpenAI path leaks differently. It drops a call only when
+`parse_json_with_repair_info` raises, and repair can close an open string, so a
+`write` cut inside `content` decodes and runs with the content truncated.
+
+**The rule.** `without_tool_calls_if_truncated` (`tau_agent_core.truncation`)
+removes every `ToolCall` from a completion whose `stop_reason` is `"length"`
+and adds the number to `usage.extra["dropped_partial_tool_calls"]`.
+`AgentLoop._stream_response` applies it to the `DoneEvent`'s final message
+before the writer persists it and before `message_end`. The loop then sees no
+tool calls and ends the turn the way it ends a text-only answer. The text and
+thinking stay, the session tree holds no unanswered `tool_use`, and the next
+user message continues from the partial answer.
+
+- **Every call goes, including complete ones before the cut.** The loop cannot
+  tell which calls the cut spared: a partially parsed `input` and a repaired
+  string both look complete. Running the earlier calls and refusing the last
+  would need a per-provider completeness signal that nothing carries today.
+- **The turn ends; nothing retries.** A retry at the same cap reproduces the
+  same cut, which is what the measured session did three times.
+- **In the loop, not in each provider.** One site covers Anthropic, Gemini and
+  OpenAI-compatible endpoints, and every head, because all three heads run the
+  same loop. The OpenAI provider's own drop stays. It still keeps an
+  undecodable buffer from raising, and the loop adds to its count.
+- **The notice is unchanged.** §3.1's box, stderr lines and `message_end` fields
+  already report the cut and the dropped count, so the operator learns why the
+  turn ended where it did.
 
 ## 4. A grammar would not have prevented this
 

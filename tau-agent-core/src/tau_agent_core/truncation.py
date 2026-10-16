@@ -3,10 +3,11 @@
 Reference: docs/TRUNCATED-TOOL-CALLS.md §3.
 
 ``stop_reason == "length"`` means the server stopped because generation reached
-the ``max_tokens`` τ sent, so the content is a PREFIX rather than an answer. When
-the cut lands inside a tool call's ``arguments`` the provider drops that call —
-never repairs it, never gives it ``{}`` — and records how many it lost in
-``usage.extra["dropped_partial_tool_calls"]``. Both halves are the report.
+the ``max_tokens`` τ sent, so the content is a PREFIX rather than an answer. No
+tool call in such a completion runs: :func:`without_tool_calls_if_truncated`
+removes them all and records how many in
+``usage.extra["dropped_partial_tool_calls"]``, and the turn ends on the partial
+text (§3.2). Both halves are the report.
 
 The reading is head-agnostic and lives here so the TUI, print mode and an RPC
 host reach the same verdict from the same evidence; a head owns only the delivery
@@ -18,6 +19,8 @@ already the whole fact.
 from __future__ import annotations
 
 from typing import Any, NamedTuple
+
+from tau_llm.types import AssistantMessage, ToolCall
 
 #: The ``stop_reason`` that means the output cap, not the model, ended the text.
 TRUNCATED_STOP_REASON = "length"
@@ -58,6 +61,29 @@ def dropped_tool_calls(usage: dict[str, Any]) -> int:
     if isinstance(count, bool) or not isinstance(count, int) or count < 0:
         return 0
     return count
+
+
+def without_tool_calls_if_truncated(message: AssistantMessage) -> AssistantMessage:
+    """``message`` with every tool call removed when it stopped at the output cap.
+
+    A provider cannot say which calls the cut spared: the Anthropic SDK hands
+    back a partially parsed ``input``, and JSON repair can close an open string,
+    so a cut-off ``write`` arrives looking complete (docs/TRUNCATED-TOOL-CALLS.md
+    §3.2). The count is added to any the provider already dropped. Any other
+    stop reason, or a truncated message with no calls, is returned unchanged.
+    """
+    if message.stop_reason != TRUNCATED_STOP_REASON:
+        return message
+    kept = [block for block in message.content if not isinstance(block, ToolCall)]
+    removed = len(message.content) - len(kept)
+    if not removed:
+        return message
+    extra = message.usage.extra
+    prior = extra.get(DROPPED_TOOL_CALLS_KEY, 0)
+    usage = message.usage.model_copy(
+        update={"extra": {**extra, DROPPED_TOOL_CALLS_KEY: prior + removed}}
+    )
+    return message.model_copy(update={"content": kept, "usage": usage})
 
 
 def completion_truncation(message: dict[str, Any]) -> Truncation:

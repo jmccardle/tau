@@ -13,6 +13,7 @@ from tau_agent_core.truncation import (
     dropped_tool_calls,
     truncation_from_messages,
     truncation_notice,
+    without_tool_calls_if_truncated,
 )
 
 
@@ -110,3 +111,130 @@ class TestTheNotice:
         notice = truncation_notice(Truncation(1, 0), max_tokens=4096)
         assert notice is not None
         assert "dropped" not in notice
+
+
+def _message(stop_reason: str, *blocks, extra: dict | None = None):
+    from tau_llm.types import AssistantMessage, Usage
+
+    return AssistantMessage(
+        content=list(blocks),
+        api="anthropic-messages",
+        provider="anthropic",
+        model="m",
+        stop_reason=stop_reason,
+        usage=Usage(extra=extra or {}),
+    )
+
+
+class TestWithoutToolCallsIfTruncated:
+    """docs/TRUNCATED-TOOL-CALLS.md §3.2: a cut-off completion runs no tool call."""
+
+    def test_every_call_is_removed_and_counted(self):
+        from tau_llm.types import TextContent, ToolCall
+
+        text = TextContent(text="Writing the file now.")
+        msg = _message(
+            "length",
+            text,
+            ToolCall(id="a", name="read", arguments={"path": "x"}),
+            ToolCall(id="b", name="write", arguments={"path": "y"}),
+        )
+        out = without_tool_calls_if_truncated(msg)
+        assert out.content == [text]
+        assert out.usage.extra["dropped_partial_tool_calls"] == 2
+        assert msg.get_tool_calls(), "the input message is not mutated"
+
+    def test_a_provider_count_is_added_to(self):
+        from tau_llm.types import ToolCall
+
+        msg = _message(
+            "length",
+            ToolCall(id="a", name="write", arguments={"path": "y"}),
+            extra={"dropped_partial_tool_calls": 1},
+        )
+        assert without_tool_calls_if_truncated(msg).usage.extra["dropped_partial_tool_calls"] == 2
+
+    def test_other_stop_reasons_and_call_free_messages_are_unchanged(self):
+        from tau_llm.types import TextContent, ToolCall
+
+        complete = _message("toolUse", ToolCall(id="a", name="ls", arguments={}))
+        assert without_tool_calls_if_truncated(complete) is complete
+        prose = _message("length", TextContent(text="cut"))
+        assert without_tool_calls_if_truncated(prose) is prose
+
+
+class TestTheLoopEndsTheTurn:
+    """A cut-off tool call never executes, and the turn ends on the partial text."""
+
+    async def test_the_tool_is_not_run_and_no_second_request_is_made(self):
+        from unittest.mock import patch
+
+        from tau_llm.streaming import DoneEvent
+        from tau_llm.types import Model, TextContent, ToolCall
+        from tau_agent_core.agent_session import AgentSession
+        from tau_agent_core.session_log import InMemorySessionLog
+        from tau_agent_core.tools.base import AgentTool, ToolDefinition
+
+        ran: list[dict] = []
+        requests: list[int] = []
+        tool = AgentTool(
+            definition=ToolDefinition(
+                name="write",
+                label="Write",
+                description="Write a file",
+                parameters={"type": "object", "properties": {}, "required": []},
+                execute=lambda ctx: ran.append(ctx) or "ok",
+            )
+        )
+
+        class _Stream:
+            def __aiter__(self):
+                async def _gen():
+                    final = _message(
+                        "length",
+                        TextContent(text="Here is the file."),
+                        ToolCall(id="w", name="write", arguments={"path": "docs/x.md"}),
+                    )
+                    yield DoneEvent(final=final, usage=final.usage)
+
+                return _gen()
+
+            async def result(self):
+                return None
+
+        async def _stream_simple(model, context, options=None):
+            requests.append(1)
+            return _Stream()
+
+        session = AgentSession(
+            session_log=InMemorySessionLog(),
+            model=Model(
+                id="m",
+                name="m",
+                api="anthropic-messages",
+                provider="anthropic",
+                base_url="https://example.invalid",
+                context_window=128000,
+                max_tokens=64,
+            ),
+            tools=[tool],
+        )
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_simple):
+            new = await session.prompt("write docs/x.md")
+
+        assert ran == []
+        assert len(requests) == 1
+        assistant = [m for m in new if _role(m) == "assistant"]
+        assert len(assistant) == 1
+        assert [b["type"] for b in _dump(assistant[0])["content"]] == ["text"]
+        assert _dump(assistant[0])["usage"]["extra"]["dropped_partial_tool_calls"] == 1
+        persisted = [m for m in session.messages if _role(m) == "assistant"]
+        assert [b["type"] for b in _dump(persisted[-1])["content"]] == ["text"]
+
+
+def _dump(message) -> dict:
+    return message if isinstance(message, dict) else message.model_dump()
+
+
+def _role(message) -> str | None:
+    return _dump(message).get("role")
