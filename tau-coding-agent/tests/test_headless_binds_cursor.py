@@ -28,6 +28,10 @@ _EXTENSION = (
     "    async def hook(event, ctx):\n"
     "        await api.append_entry('probe', {'prompt': event['prompt']})\n"
     "    api.on('before_agent_start', hook)\n"
+    "    async def spawn(args, ctx):\n"
+    "        result = await ctx.spawn_branch(None, 'branch task', tools=[], label='probe')\n"
+    "        return f'ok={result.ok}'\n"
+    "    api.register_command('spawn', {'description': 'spawn a branch', 'handler': spawn})\n"
 )
 
 _SSE_BODY = (
@@ -109,3 +113,15 @@ def test_an_extension_entry_survives_print_mode_and_continue(tau_p):
     roles = [e["message"]["role"] for e in entries if e.get("type") == "message"]
     assert roles.count("user") == 2, roles
     assert roles.count("assistant") == 2, roles
+
+
+def test_a_branch_a_command_spawns_reaches_the_session_file(tau_p):
+    """docs/SEEDED-BRANCHES.md §8: a command returns before any head-turn copy-back, so
+    without the bound cursor its branch stayed in memory and the file held only the
+    header, the config and the system message."""
+    entries = tau_p("/spawn")
+
+    messages = [e["message"] for e in entries if e.get("type") == "message"]
+    users = [m for m in messages if m["role"] == "user"]
+    assert [m["content"][0]["text"] for m in users] == ["branch task"]
+    assert [m["role"] for m in messages].count("assistant") == 1
