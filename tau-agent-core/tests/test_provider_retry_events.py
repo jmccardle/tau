@@ -86,7 +86,8 @@ def test_a_retried_turn_emits_provider_retry_and_finishes(server):
     events = _run(session)
 
     (retry,) = [e for e in events if e.type == "provider_retry"]
-    assert (retry.attempt, retry.max_retries, retry.status_code) == (1, 3, 503)
+    assert (retry.attempt, retry.max_retries) == (1, 3)
+    assert retry.error_detail is not None and retry.error_detail.status == 503
     assert retry.delay_seconds == 0.0
     assert retry.error is not None and "HTTP 503" in retry.error and "Loading model" in retry.error
     assert retry.is_error is False
@@ -110,7 +111,8 @@ def test_the_wire_carries_the_retry_fields(server):
 
     (wire,) = WireEventProjector().project(retry)
     assert wire["type"] == "provider_retry"
-    assert (wire["attempt"], wire["max_retries"], wire["status_code"]) == (1, 3, 503)
+    assert (wire["attempt"], wire["max_retries"]) == (1, 3)
+    assert "status_code" not in wire and wire["error_detail"]["status"] == 503
     assert wire["delay_seconds"] == 0.0
     assert wire["error"] == retry.error
     assert retry_notice(wire) == retry_notice(retry.model_dump())

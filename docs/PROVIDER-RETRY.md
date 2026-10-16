@@ -127,8 +127,11 @@ the only signal a `complete_simple` caller gets.
 
 The agent loop turns the event into an `AgentEvent` of the new type
 `provider_retry`. That event carries `attempt`, `max_retries`, `delay_seconds`,
-`status_code` (None for a connection failure) and `error`, with `is_error=False`
-because the turn goes on. `WireEvent` carries the same fields, so it reaches
+`error` and `error_detail`, with `is_error=False` because the turn goes on. The
+status being retried is `error_detail.status`, None for a connection failure. A
+`status_code` field carried it until 2026-10-15, when `error_detail`
+(`RESPONSE-HEADERS.md` §5.2) made it a second copy; it never shipped in a
+release, so it was removed rather than kept. `WireEvent` carries the same fields, so it reaches
 `tau --mode rpc` and `tau serve`, and `--mode json` writes it as a JSONL line.
 
 The sentence comes from `tau_agent_core.provider_retry.retry_notice`, a pure function
@@ -166,7 +169,8 @@ Loading model — retry 1 of 3 in 1.2s`. `TurnStream.feed_wire` renders it into 
 - **No `x-should-retry` header.** pi reads it. The probe's 2026-08-21 results
   predate its retry-header recording, so τ has no measurement of any endpoint
   sending it.
-- **No protocol version bump.** `provider_retry` is a new event type with four new
-  optional fields. `tau serve` stays at 0.8 and RPC at 2.1. Whether an added event
-  type is a bump is a release decision: a serve client's hello refuses any
-  version mismatch below 1.0.
+- **No protocol version bump.** `provider_retry` is a new event type with three new
+  optional fields (a fourth, `status_code`, was removed before release; §5).
+  `tau serve` stays at 0.8 and RPC at 2.1. Whether an added event type is a bump
+  is a release decision: a serve client's hello refuses any version mismatch
+  below 1.0.

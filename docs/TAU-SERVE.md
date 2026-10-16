@@ -466,7 +466,9 @@ refused by a 0.9 daemon. The same bump carries the `provider_retry` event
 protocol 0.8 and was folded into 2.2 / 0.9 when code mode merged (2026-10-14).
 It also carries two event fields from docs/RESPONSE-HEADERS.md §5 (2026-10-15):
 `response_headers` on `message_end` and `error_detail` on `agent_end` and
-`provider_retry`, both without cookies on the wire.
+`provider_retry`, both without cookies on the wire. `provider_retry`'s own
+`status_code` field went in the same change, because `error_detail.status`
+carries the same fact and no released client read it.
 
 ## 6. `tau serve`
 

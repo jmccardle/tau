@@ -108,15 +108,15 @@ no judgement about a `ValueError` from a tool-call parser, and `False` would be
 a judgement. A host still learns what failed without parsing `error`, because
 `type` names the class.
 
-`provider_retry` already had `status_code`. It gets `error_detail` too because a
-retried 429's counters are exactly what a quota governor reads, and
-`RetryEvent.error` had them with nothing passing them on.
+`provider_retry` gets `error_detail` too because a retried 429's counters are
+exactly what a quota governor reads, and `RetryEvent.error` had them with
+nothing passing them on. Its own `status_code` field, which predated
+`error_detail`, was then a second copy of `error_detail.status`. Neither had
+shipped in a release, so `status_code` was removed (2026-10-15).
 
 **Rejected: separate top-level fields** (`error_status`, `error_headers`, …).
-They would add five fields to every event type for two of them, and
-`status_code` already means "the status being retried" on `provider_retry`.
-One nested value keeps the error's facts together and leaves `status_code` as
-it is.
+They would add five fields to every event type for two of them. One nested
+value keeps the error's facts together.
 
 ### 5.3 Every head
 

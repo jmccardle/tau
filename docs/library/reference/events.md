@@ -61,7 +61,8 @@ renderer routes by it (docs/CURSORS.md §6). ``None`` outside a turn.
 
 `tau_agent_core.events.AgentEvent.delay_seconds: float | None`
 
-How long τ waits before re-sending it.
+How long τ waits before re-sending it; the status being
+retried is ``error_detail.status`` (docs/PROVIDER-RETRY.md §5).
 
 ### delta
 
@@ -185,13 +186,6 @@ The submission's origin (``"interactive"``, ``"bus"``, ``"agent"``,
 show a turn (Jupyter's rule: render every source, differently) without
 the core knowing any renderer exists. ``None`` alongside
 ``submission_id``.
-
-### status_code
-
-`tau_agent_core.events.AgentEvent.status_code: int | None`
-
-The HTTP status being retried; ``None`` for a connection
-failure. Set on ``provider_retry`` only (docs/PROVIDER-RETRY.md).
 
 ### submission_id
 

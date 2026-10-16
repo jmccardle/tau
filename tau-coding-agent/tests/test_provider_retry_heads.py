@@ -27,7 +27,6 @@ _RETRY = AgentEvent(
     attempt=1,
     max_retries=3,
     delay_seconds=1.25,
-    status_code=503,
     submission_id="s1",
 )
 

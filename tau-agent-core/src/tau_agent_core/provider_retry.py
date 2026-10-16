@@ -10,7 +10,6 @@ import time
 from typing import Any
 
 from tau_llm.docs import agent_facing
-from tau_llm.errors import ProviderHttpError
 from tau_llm.streaming import RetryEvent
 
 from tau_agent_core.events import AgentEvent, ErrorDetail
@@ -27,7 +26,6 @@ def provider_retry_event(event: RetryEvent) -> AgentEvent:
         attempt=event.attempt,
         max_retries=event.max_retries,
         delay_seconds=event.delay_seconds,
-        status_code=error.status_code if isinstance(error, ProviderHttpError) else None,
     )
 
 

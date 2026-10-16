@@ -215,9 +215,8 @@ class AgentEvent(BaseModel):
             agent loop, so no ``turn_end`` counts it (docs/STREAMING-SIDE-WORK.md).
         attempt: Which retry a ``provider_retry`` announces, from 1.
         max_retries: The most retries that request will make.
-        delay_seconds: How long τ waits before re-sending it.
-        status_code: The HTTP status being retried; ``None`` for a connection
-            failure. Set on ``provider_retry`` only (docs/PROVIDER-RETRY.md).
+        delay_seconds: How long τ waits before re-sending it; the status being
+            retried is ``error_detail.status`` (docs/PROVIDER-RETRY.md §5).
     """
 
     type: Literal[
@@ -273,7 +272,6 @@ class AgentEvent(BaseModel):
     attempt: int | None = None
     max_retries: int | None = None
     delay_seconds: float | None = None
-    status_code: int | None = None
 
 
 @agent_facing(topic="events")

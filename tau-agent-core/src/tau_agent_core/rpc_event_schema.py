@@ -296,12 +296,6 @@ class WireEvent(BaseModel):
         "server's Retry-After when it sent one, else an exponential backoff. "
         "None for all other event types.",
     )
-    status_code: int | None = Field(
-        default=None,
-        description="The HTTP status being retried, on provider_retry (e.g. 429, "
-        "503). None for a connection that failed before any response, and for "
-        "all other event types.",
-    )
     leaf: str | None = Field(
         default=None,
         description="The emitting cursor's resulting leaf, on agent_end (E5/F3). "

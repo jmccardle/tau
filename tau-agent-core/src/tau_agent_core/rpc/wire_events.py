@@ -231,6 +231,5 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
         attempt=event.attempt,
         max_retries=event.max_retries,
         delay_seconds=event.delay_seconds,
-        status_code=event.status_code,
         **extra,
     )
