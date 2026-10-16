@@ -23,45 +23,49 @@ import pytest
 
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, TextContent, Usage
-from tau_coding_agent.backends import TauBackend, compute_cost_usd
+from tau_agent_core.usage import price_usage
+from tau_coding_agent.backends import TauBackend
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
 _TS = 1_700_000_000_000
 
-# --- the pure port of pi calculateCost, collapsed --------------------------
+# --- the pure pricing function ---------------------------------------------
 
 
 def test_absent_cost_block_is_unknown_not_zero():
     # Fail-Early: no configured prices → None (caller emits tokens only), NEVER 0.0.
-    assert compute_cost_usd(None, input_tokens=1000, output_tokens=500, cache_read_tokens=0) is None
+    assert price_usage(None, {"input_tokens": 1000, "output_tokens": 500}) is None
 
 
 def test_present_cost_block_sums_priced_buckets():
-    cost = {"input": 2.5, "output": 10.0, "cache_read": 1.25, "cache_write": 99.0}
-    total = compute_cost_usd(cost, input_tokens=1000, output_tokens=500, cache_read_tokens=200)
-    assert total == pytest.approx(0.00775)
+    cost = {"input": 2.5, "output": 10.0, "cache_read": 1.25, "cache_write": 3.125}
+    usage = {
+        "input_tokens": 1000,
+        "output_tokens": 500,
+        "cache_read_tokens": 200,
+        "cache_write_tokens": 400,
+    }
+    # 0.0025 + 0.005 + 0.00025 + 0.00125
+    assert price_usage(cost, usage) == pytest.approx(0.009)
 
 
 def test_free_model_reads_zero_not_absent():
     # A real free/local model prices to 0.0 — DISTINCT from an unknown price (None).
-    total = compute_cost_usd(
-        {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0},
-        input_tokens=1000,
-        output_tokens=500,
-        cache_read_tokens=0,
-    )
+    zero = {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0}
+    total = price_usage(zero, {"input_tokens": 1000, "cache_write_tokens": 50})
     assert total == 0.0
     assert total is not None
 
 
-def test_cache_write_is_inert_not_priced():
-    with_price = compute_cost_usd(
-        {"input": 1.0, "output": 0.0, "cache_read": 0.0, "cache_write": 1000.0},
-        input_tokens=1000,
-        output_tokens=0,
-        cache_read_tokens=0,
-    )
-    assert with_price == pytest.approx(0.001)  # only the input bucket counts
+def test_cache_write_is_priced():
+    cost = {"input": 1.0, "output": 0.0, "cache_read": 0.0, "cache_write": 1000.0}
+    total = price_usage(cost, {"input_tokens": 1000, "cache_write_tokens": 1000})
+    assert total == pytest.approx(1.001)
+
+
+def test_wire_spelling_is_refused():
+    with pytest.raises(ValueError, match="prompt_tokens"):
+        price_usage({"input": 1.0}, {"prompt_tokens": 1000, "completion_tokens": 5})
 
 
 # --- through the real backend loop -----------------------------------------
@@ -75,7 +79,13 @@ def _assistant(text: str) -> AssistantMessage:
         model="qwen",
         stop_reason="stop",
         timestamp=_TS,
-        usage=Usage(input_tokens=1000, output_tokens=500, total_tokens=1500, cache_read_tokens=0),
+        usage=Usage(
+            input_tokens=1000,
+            output_tokens=500,
+            total_tokens=1700,
+            cache_read_tokens=0,
+            cache_write_tokens=200,
+        ),
     )
 
 
@@ -159,19 +169,20 @@ def _isolate_cwd(tmp_path, monkeypatch):
 
 def test_backend_emits_cost_usd_when_block_present(fake_llm):
     usage = _run_usage(
-        _cfg(cost={"input": 2.5, "output": 10.0, "cache_read": 1.25, "cache_write": 0.0})
+        _cfg(cost={"input": 2.5, "output": 10.0, "cache_read": 1.25, "cache_write": 5.0})
     )
-    # Real summed tokens reached the emit boundary and were priced.
+    # Real summed tokens reached the emit boundary and were priced, cache writes included.
     assert usage["prompt_tokens"] == 1000
     assert usage["completion_tokens"] == 500
+    assert usage["cache_write_tokens"] == 200
     assert "cost_usd" in usage
-    assert usage["cost_usd"] == pytest.approx(0.0075)  # 0.0025 + 0.005
+    assert usage["cost_usd"] == pytest.approx(0.0085)  # 0.0025 + 0.005 + 0.001
 
 
 def test_backend_omits_cost_usd_when_block_absent(fake_llm):
     usage = _run_usage(_cfg())  # no cost block
     # Tokens still flow; cost stays UNKNOWN (key absent), never a fabricated $0.
-    assert usage["total_tokens"] == 1500
+    assert usage["total_tokens"] == 1700
     assert "cost_usd" not in usage
 
 

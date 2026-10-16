@@ -67,7 +67,7 @@ class TestZeroLlmOps:
         session = AgentSession(
             session_log=InMemorySessionLog(),
             model=_model(),
-            compaction_settings=CompactionSettings(enabled=False),
+            compaction_settings=CompactionSettings(auto=False),
         )
         await session.prompt("first")
         await session.prompt("second")
@@ -166,7 +166,7 @@ class TestCompact:
         session = AgentSession(
             session_log=InMemorySessionLog(),
             model=_model(),
-            compaction_settings=CompactionSettings(enabled=True, keep_recent_tokens=1),
+            compaction_settings=CompactionSettings(auto=True, keep_recent_tokens=1),
         )
         log = session.session_log
         # Before `before`, so the compact below adds exactly its own entry.
@@ -197,7 +197,7 @@ class TestSummarizeBranch:
         session = AgentSession(
             session_log=InMemorySessionLog(),
             model=_model(),
-            compaction_settings=CompactionSettings(enabled=False),
+            compaction_settings=CompactionSettings(auto=False),
         )
         log = session.session_log
         cursor = session.cursor
@@ -223,7 +223,7 @@ class TestSummarizeBranch:
         session = AgentSession(
             session_log=InMemorySessionLog(),
             model=_model(),
-            compaction_settings=CompactionSettings(enabled=False),
+            compaction_settings=CompactionSettings(auto=False),
         )
         log = session.session_log
         cursor = session.cursor

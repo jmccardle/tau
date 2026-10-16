@@ -790,8 +790,10 @@ visible, not a real debt.
   `compaction_policy.py:255`, which refuses a summarizer whose window is smaller
   than the session model's. `CompactionSettings.hard_limit_tokens` and
   `soft_limit_tokens` already exist as absolute overrides and are simply
-  unreachable from `~/.tau/config.json`; no compaction key exists in `config.py`
-  or `tau_default_config.json`. **Consequence if unsplit:** a percentage can
+  unreachable from `~/.tau/config.json`. Since 2026-10-15 a `compaction` block
+  reaches `reserve_tokens` and `keep_recent_tokens`
+  (`docs/PRICING-AND-COMPACTION-CONFIG.md` §3), but still not the two limits,
+  so the split is still open. **Consequence if unsplit:** a percentage can
   never exceed 100%, because `must_compact` cuts mid-turn at
   `window − reserve_tokens`, so the "blow through the budget within one turn,
   fold at the end of it" behaviour has no expression.

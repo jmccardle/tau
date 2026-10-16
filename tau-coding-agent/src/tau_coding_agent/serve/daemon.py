@@ -807,7 +807,7 @@ class Daemon:
             model_config["system_prompt"] = self.config["system_prompt"]
         model_config["cwd"] = cwd
         backend: Any = create_backend(model_config)
-        backend.agent_session.set_model_resolver(make_model_resolver(self.config.get("models", {})))
+        backend.agent_session.set_model_resolver(make_model_resolver(self.config))
         host = SessionHost(self, log, backend)
         await host.start(cwd)
         return host

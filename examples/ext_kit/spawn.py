@@ -49,6 +49,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from dataclasses import dataclass, field
 from typing import Any, TypeVar, cast
 
+from tau_agent_core.usage import price_usage
+
 TauEvent = dict[str, Any]
 
 DEFAULT_STUCK_LIMIT = 3
@@ -143,28 +145,14 @@ class ChildResult:
 # ── cost roll-up ─────────────────────────────────────────────────────────────
 
 
-def price_increment(
-    cost: Mapping[str, Any] | None,
-    *,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int,
-) -> float | None:
-    """Dollar cost of one completion, or ``None`` when unpriced.
+def price_increment(cost: Mapping[str, Any] | None, usage: Mapping[str, Any]) -> float | None:
+    """Dollar cost of one completion's ``usage``, or ``None`` when unpriced.
 
-    ``cost`` is a per-model ``{input, output, cache_read, cache_write}`` price in
-    USD per 1M tokens (the shape of a ``~/.tau/config.json`` model ``cost`` block;
-    same formula as ``tau_coding_agent.backends.compute_cost_usd``). Resolving that
-    price is the caller's job (formalised by S57 ``ext_kit.ledger``); this module
+    :func:`tau_agent_core.usage.price_usage` under the name this kit exports.
+    Resolving ``cost`` is the caller's job (S57 ``ext_kit.ledger``); this module
     only folds a known price into the running total.
     """
-    if cost is None:
-        return None
-    return (
-        float(cost.get("input", 0.0)) / 1_000_000 * input_tokens
-        + float(cost.get("output", 0.0)) / 1_000_000 * output_tokens
-        + float(cost.get("cache_read", 0.0)) / 1_000_000 * cache_read_tokens
-    )
+    return price_usage(cost, usage)
 
 
 def roll_message_usage(
@@ -183,12 +171,7 @@ def roll_message_usage(
     usage.cache_read += int(reported.get("cache_read_tokens") or 0)
     usage.cache_write += int(reported.get("cache_write_tokens") or 0)
     usage.context_tokens = int(reported.get("total_tokens") or 0)
-    inc = price_increment(
-        cost,
-        input_tokens=int(reported.get("input_tokens") or 0),
-        output_tokens=int(reported.get("output_tokens") or 0),
-        cache_read_tokens=int(reported.get("cache_read_tokens") or 0),
-    )
+    inc = price_increment(cost, reported)
     if inc is not None and usage.cost is not None:
         usage.cost += inc
 

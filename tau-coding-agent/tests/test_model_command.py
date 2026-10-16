@@ -73,7 +73,7 @@ async def test_a_named_model_switches_and_an_unknown_one_says_so(app, wait_for_w
             (message, kw.get("severity", ""))
         )
 
-        wanted = make_model_resolver(app.config["models"])(known)
+        wanted = make_model_resolver(app.config)(known)
 
         await _submit(app, f"/model {known}")
         await pilot.pause()

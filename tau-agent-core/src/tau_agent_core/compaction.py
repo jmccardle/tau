@@ -93,7 +93,8 @@ class CompactionSettings:
     """Compaction thresholds and retention settings.
 
     Attributes:
-        enabled: Whether automatic compaction runs at all.
+        auto: Whether automatic compaction runs; ``/compact`` and
+            ``AgentSession.compact()`` ignore it.
         reserve_tokens: The margin ``m``. The hard limit is
             ``context_window - reserve_tokens``, so this is what a compaction has
             left to spend on its own summarization call and output.
@@ -111,7 +112,7 @@ class CompactionSettings:
     compared against, and raises rather than return an unusable pair.
     """
 
-    enabled: bool = True
+    auto: bool = True
     reserve_tokens: int = 16384
     keep_recent_tokens: int = 20000
     soft_limit_ratio: float = 0.8
@@ -121,6 +122,24 @@ class CompactionSettings:
 
 # Default compaction settings used by the harness (pi: DEFAULT_COMPACTION_SETTINGS).
 DEFAULT_COMPACTION_SETTINGS = CompactionSettings()
+
+
+@agent_facing(topic="compaction")
+@dataclass(frozen=True)
+class CompactionConfig:
+    """How one model compacts, as a resolver hands it out by config name.
+
+    ``AgentSession`` asks a resolver's ``compaction(name)`` for one of these each
+    time its model changes (docs/PRICING-AND-COMPACTION-CONFIG.md §6).
+
+    Attributes:
+        settings: The settings in force for that model.
+        summarizer: The config model NAME compaction summarises through, or
+            ``None`` for the session's own model.
+    """
+
+    settings: CompactionSettings
+    summarizer: str | None = None
 
 
 @agent_facing(topic="compaction")
@@ -598,10 +617,10 @@ def should_compact(context_tokens: int, context_window: int, settings: Compactio
         settings: The compaction settings in force.
 
     Returns:
-        True when ``settings.enabled`` and ``context_tokens`` exceeds the soft
-        limit; False when disabled or :func:`try_compaction_limits` gives None.
+        True when ``settings.auto`` and ``context_tokens`` exceeds the soft
+        limit; False when ``auto`` is off or :func:`try_compaction_limits` gives None.
     """
-    if not settings.enabled:
+    if not settings.auto:
         return False
     limits = try_compaction_limits(context_window, settings)
     return limits is not None and context_tokens > limits.soft
@@ -620,10 +639,10 @@ def must_compact(context_tokens: int, context_window: int, settings: CompactionS
         settings: The compaction settings in force.
 
     Returns:
-        True when ``settings.enabled`` and ``context_tokens`` exceeds the hard
-        limit; False when disabled or :func:`try_compaction_limits` gives None.
+        True when ``settings.auto`` and ``context_tokens`` exceeds the hard
+        limit; False when ``auto`` is off or :func:`try_compaction_limits` gives None.
     """
-    if not settings.enabled:
+    if not settings.auto:
         return False
     limits = try_compaction_limits(context_window, settings)
     return limits is not None and context_tokens > limits.hard

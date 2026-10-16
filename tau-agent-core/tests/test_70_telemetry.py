@@ -107,7 +107,7 @@ async def _run_turn_with_usage(monkeypatch, usage: Usage) -> _Delegate:
         session_log=InMemorySessionLog(),
         model=_model(),
         api_key="k",
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
     delegate = _Delegate()
     session.set_ui_delegate(delegate)
@@ -186,7 +186,7 @@ async def test_get_usage_does_not_hand_out_the_sessions_own_extra_dict(monkeypat
         session_log=InMemorySessionLog(),
         model=_model(),
         api_key="k",
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
 
     async def fake_stream_simple(model, context, options=None):

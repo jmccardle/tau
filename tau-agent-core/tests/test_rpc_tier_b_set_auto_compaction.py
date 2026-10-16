@@ -143,7 +143,7 @@ def real_session() -> AgentSession:
         model=_model(),
         tools=[],
         compaction_settings=CompactionSettings(
-            enabled=False, reserve_tokens=100, keep_recent_tokens=1
+            auto=False, reserve_tokens=100, keep_recent_tokens=1
         ),
     )
 
@@ -187,7 +187,7 @@ def _events_of_type(items: list[dict[str, Any]], event_type: str) -> list[dict[s
 async def test_set_auto_compaction_enables_and_returns_the_effective_state(
     real_handler: RPCHandler, real_session: AgentSession
 ) -> None:
-    assert real_session._compaction_settings.enabled is False
+    assert real_session._compaction_settings.auto is False
     # The agent_spec is queued until something drains it; `tip` is that record.
     await real_session.start()
     tip = real_session.cursor.leaf
@@ -201,13 +201,13 @@ async def test_set_auto_compaction_enables_and_returns_the_effective_state(
         "leaf": tip,
         "method": "set_auto_compaction",
     }
-    assert real_session._compaction_settings.enabled is True
+    assert real_session._compaction_settings.auto is True
 
 
 async def test_set_auto_compaction_disables_and_is_idempotent(
     real_handler: RPCHandler, real_session: AgentSession
 ) -> None:
-    real_session._compaction_settings.enabled = True
+    real_session._compaction_settings.auto = True
     tip = real_session.cursor.leaf
     for msg_id in (1, 2):
         await real_handler._handle_request(
@@ -222,7 +222,7 @@ async def test_set_auto_compaction_disables_and_is_idempotent(
     expected = {"enabled": False, "leaf": tip, "method": "set_auto_compaction"}
     assert responses[1]["result"] == expected
     assert responses[2]["result"] == expected
-    assert real_session._compaction_settings.enabled is False
+    assert real_session._compaction_settings.auto is False
 
 
 async def test_set_auto_compaction_returns_the_live_tip_although_it_moves_nothing(
@@ -347,7 +347,7 @@ async def test_set_auto_compaction_refuses_while_a_turn_is_in_flight(
     finally:
         real_session.turn_lock.release()
     # Refused, not applied — the setting is untouched by the timed-out call.
-    assert real_session._compaction_settings.enabled is False
+    assert real_session._compaction_settings.auto is False
 
 
 async def _drain(handler: RPCHandler) -> list[dict[str, Any]]:

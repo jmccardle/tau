@@ -180,7 +180,7 @@ async def test_trigger_compact_command_compacts_immediately_and_reports(monkeypa
         session_log=InMemorySessionLog(),
         model=_model(),
         extensions=[trigger_compact.trigger_compact_extension],
-        compaction_settings=CompactionSettings(enabled=True, keep_recent_tokens=1),
+        compaction_settings=CompactionSettings(auto=True, keep_recent_tokens=1),
     )
     log = session.session_log
     for i in range(3):
@@ -213,7 +213,7 @@ async def test_trigger_compact_command_reports_nothing_to_compact() -> None:
         session_log=InMemorySessionLog(),
         model=_model(),
         extensions=[trigger_compact.trigger_compact_extension],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
     with patch(
         "tau_agent_core.agent_session.AgentSession._perform_compaction",

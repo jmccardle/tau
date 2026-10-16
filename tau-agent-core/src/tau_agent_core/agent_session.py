@@ -98,6 +98,7 @@ from tau_agent_core.submission import (
 )
 from tau_agent_core.compaction import (
     DEFAULT_COMPACTION_SETTINGS,
+    CompactionConfig,
     CompactionPreparation,
     CompactionResult,
     CompactionSettings,
@@ -111,7 +112,7 @@ from tau_agent_core.compaction import (
     should_compact,
     try_compaction_limits,
 )
-from tau_agent_core.compaction_policy import CompactionPolicy
+from tau_agent_core.compaction_policy import CompactionPolicy, CompactionPolicyError
 from tau_agent_core.compaction_utils import create_file_ops, extract_file_ops_from_message
 from tau_agent_core.prompt_cache import prompt_tokens
 from tau_agent_core.usage import add_usage, zero_usage
@@ -521,11 +522,13 @@ class AgentSession:
         compaction_settings: Settings when no ``compaction_policy`` is given;
             ``None`` means the defaults.
         compaction_policy: A declared policy that supplies its own settings and
-            summarizer. Mutually exclusive with ``compaction_settings``.
+            summarizer. Mutually exclusive with ``compaction_settings``. One
+            naming a summarizer needs ``model_resolver``, or construction raises.
         extensions_config: Per-extension config keyed by file stem; each
             extension's ``api.config`` is its slice.
         model_resolver: Turns a config model name into a ``Model`` for
-            :meth:`set_model`; see :meth:`set_model_resolver`.
+            :meth:`set_model` and the policy's summarizer; see
+            :meth:`set_model_resolver`.
         max_turns: The loop's turn ceiling, at least 1; ``None`` is no ceiling.
         tool_execution_mode: Whether one response's tool calls run in
             parallel or one at a time.
@@ -627,13 +630,14 @@ class AgentSession:
                 "the threshold the policy proves itself against unknowable"
             )
         self._compaction_policy = compaction_policy
+        self._model_resolver = model_resolver
         if compaction_policy is not None:
-            compaction_policy.bind_to(model)
             self._compaction_settings = compaction_policy.compaction_settings
         else:
             self._compaction_settings = compaction_settings or DEFAULT_COMPACTION_SETTINGS
+        self._pending_summarizer: str | None = None
+        self._configure_compaction(model)
         self._policy_turns_used = 0
-        self._model_resolver = model_resolver
 
         self._token_counter: TextCounter = counter_for(model, fallback=True)
         self._calibrator = ContextCalibrator()
@@ -989,14 +993,110 @@ class AgentSession:
         """Bind the model-name resolver used by :meth:`set_model` (S45).
 
         The core does not read ``~/.tau/config.json`` itself; the resolver is the
-        seam through which a head supplies its config's models.
+        seam through which a head supplies its config's models. A resolver with a
+        ``compaction(name)`` method is also where compaction comes from: the
+        settings and summarizer are re-read from it now, for the current model, and
+        on every :meth:`set_model` (docs/PRICING-AND-COMPACTION-CONFIG.md §6). A
+        plain ``name -> Model`` resolver keeps whatever settings or policy the
+        session was constructed with.
 
         Args:
             resolver: Maps a config model name to a ``Model``. An ``api_key(name)``
-                method on it, when present, supplies that model's key
-                (:meth:`resolve_model`).
+                method supplies that model's key (:meth:`resolve_model`); a
+                ``compaction(name)`` method returning a
+                :class:`~tau_agent_core.compaction.CompactionConfig` supplies its
+                compaction.
+
+        Raises:
+            CompactionPolicyError: the summarizer, as ``resolver`` resolves it,
+                fails :meth:`CompactionPolicy.bind_to`. Nothing changes, and the
+                old resolver stays bound.
         """
+        previous = self._model_resolver
         self._model_resolver = resolver
+        try:
+            self._configure_compaction(self._model)
+        except Exception:
+            self._model_resolver = previous
+            raise
+        if callable(getattr(resolver, "compaction", None)):
+            self._pending_summarizer = None
+
+    def require_compaction_resolver(self, summarizer: str) -> None:
+        """Refuse turns and summaries until a resolver supplies the compaction config.
+
+        A head whose config names ``summarizer`` calls this at construction, before
+        it has bound the resolver that can resolve the name; binding one with a
+        ``compaction(name)`` method clears it. Until then no turn runs and nothing
+        is summarised, rather than compacting through the wrong model.
+
+        Args:
+            summarizer: The summarizer the config names, for the refusal message.
+        """
+        self._pending_summarizer = summarizer
+
+    def _require_compaction_ready(self) -> None:
+        """Raise while :meth:`require_compaction_resolver` is outstanding.
+
+        Raises:
+            CompactionPolicyError: no compaction-capable resolver is bound yet.
+        """
+        if self._pending_summarizer is not None:
+            raise CompactionPolicyError(
+                f"this session's config summarises through {self._pending_summarizer!r}, "
+                "but no resolver supplying compaction config is bound; the head must "
+                "call set_model_resolver before any turn or summary"
+            )
+
+    def _configure_compaction(self, model: Model) -> None:
+        """Put in force the compaction the resolver gives ``model``, or re-check the current one.
+
+        Raises:
+            CompactionPolicyError: the policy refuses ``model`` or its summarizer.
+            TypeError: ``compaction(name)`` returned something other than a
+                :class:`~tau_agent_core.compaction.CompactionConfig`.
+        """
+        compaction_for = getattr(self._model_resolver, "compaction", None)
+        if not callable(compaction_for):
+            self._bind_policy(self._compaction_policy, model)
+            return
+        config = compaction_for(model.name)
+        if not isinstance(config, CompactionConfig):
+            raise TypeError(
+                f"resolver.compaction({model.name!r}) returned {type(config).__name__}, "
+                "expected a tau_agent_core.compaction.CompactionConfig"
+            )
+        policy = None
+        if config.summarizer is not None:
+            policy = CompactionPolicy(
+                mode="local_summarizer",
+                summarizer=config.summarizer,
+                reserve_tokens=config.settings.reserve_tokens,
+                keep_recent_tokens=config.settings.keep_recent_tokens,
+            )
+        self._bind_policy(policy, model)
+        self._compaction_policy = policy
+        self._compaction_settings = replace(config.settings)
+
+    def _bind_policy(self, policy: CompactionPolicy | None, model: Model) -> None:
+        """Check ``policy`` against ``model`` and its resolved summarizer.
+
+        Raises:
+            CompactionPolicyError: the policy refuses the pair, or it names a
+                summarizer and no model resolver is bound to resolve it.
+        """
+        if policy is None:
+            return
+        if policy.summarizer is None:
+            policy.bind_to(model)
+            return
+        if self._model_resolver is None:
+            raise CompactionPolicyError(
+                f"compaction policy summarises through {policy.summarizer!r}, but this "
+                "session has no model resolver to resolve that name; pass "
+                "model_resolver= at construction"
+            )
+        policy.bind_to(model, self.resolve_model(policy.summarizer)[0])
 
     @property
     @agent_facing(topic="sessions")
@@ -1049,8 +1149,8 @@ class AgentSession:
             The state after the call, read back off the settings rather than echoed
             from the argument.
         """
-        self._compaction_settings.enabled = bool(enabled)
-        return self._compaction_settings.enabled
+        self._compaction_settings.auto = bool(enabled)
+        return self._compaction_settings.auto
 
     @agent_facing(topic="sessions")
     def performed(
@@ -1134,10 +1234,11 @@ class AgentSession:
         At the head cursor this is the session's model; at any other cursor that
         cursor's :class:`~tau_agent_core.cursor.TurnFrame` (a cursor with no frame
         gets one that changes nothing else). The key switches with the model, by
-        :meth:`resolve_model`. Called between two requests of a running loop — a
-        ``turn_end`` hook — the next request already uses it, never one in flight.
-        Nothing is written here: the next request records the change ahead of
-        itself (docs/TURN-SETTINGS.md §2-3).
+        :meth:`resolve_model`, and so does a head switch's compaction when the
+        resolver supplies it (:meth:`set_model_resolver`). Called between two
+        requests of a running loop — a ``turn_end`` hook — the next request already
+        uses it, never one in flight. Nothing is written here: the next request
+        records the change ahead of itself (docs/TURN-SETTINGS.md §2-3).
 
         Args:
             name: A config model name, resolved through :meth:`set_model_resolver`'s
@@ -1151,6 +1252,8 @@ class AgentSession:
             TypeError: The resolver returned something other than a ``Model``.
             Exception: Whatever the resolver raises for an unknown ``name``,
                 unchanged.
+            CompactionPolicyError: the new model's compaction refuses it; the
+                model does not change.
         """
         if self._model_resolver is None:
             raise RuntimeError(
@@ -1165,8 +1268,7 @@ class AgentSession:
                 self._frame_or_default(cursor), model=model, api_key=api_key, model_name=name
             )
             return self.get_model()
-        if self._compaction_policy is not None:
-            self._compaction_policy.bind_to(model)
+        self._configure_compaction(model)
         self._model = model
         self._model_name = name
         self._api_key = api_key
@@ -1235,17 +1337,21 @@ class AgentSession:
     def summarizer(self) -> tuple[Model, str | None]:
         """The model and key a compaction or a branch summary runs on (H5 / §16.8).
 
-        Read live, so it tracks :meth:`set_model`.
+        Read live, so it tracks :meth:`set_model` and :meth:`set_model_resolver`.
 
         Returns:
-            ``(model, key)``: the session's model and key with no compaction
-            policy; otherwise the policy's summarizer, falling back to the
-            session's key when the policy names none.
+            ``(model, key)``: the session's own model and key unless the policy
+            names a summarizer; then :meth:`resolve_model` of that name, the one
+            way a credential enters the session (docs/PRICING-AND-COMPACTION-CONFIG.md §4).
+
+        Raises:
+            CompactionPolicyError: :meth:`require_compaction_resolver` is outstanding.
         """
-        if self._compaction_policy is None:
+        self._require_compaction_ready()
+        policy = self._compaction_policy
+        if policy is None or policy.summarizer is None:
             return self._model, self._api_key
-        model, key = self._compaction_policy.summarizer_for(self._model)
-        return model, (key if key is not None else self._api_key)
+        return self.resolve_model(policy.summarizer)
 
     def get_usage(self) -> dict[str, Any] | None:
         """The acting cursor's most recent completion's token usage (S45, anchor G14).
@@ -2966,6 +3072,7 @@ class AgentSession:
             if on_admitted is not None:
                 on_admitted()
 
+            self._require_compaction_ready()
             if self._compaction_policy is not None:
                 self._policy_turns_used += 1
                 self._compaction_policy.admit_turn(self._policy_turns_used)
@@ -3905,7 +4012,7 @@ class AgentSession:
 
         Returns the post-compaction active path, or None to leave the loop alone.
         """
-        if not self._compaction_settings.enabled:
+        if not self._compaction_settings.auto:
             return None
         context_window = int(getattr(self._turn_model(), "context_window", 0) or 0)
         if context_window <= 0:
@@ -3961,7 +4068,7 @@ class AgentSession:
                 context_window=context_window,
             )
 
-        if not settings.enabled:
+        if not settings.auto:
             return
         if try_compaction_limits(context_window, settings) is None:
             return

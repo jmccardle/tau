@@ -98,7 +98,7 @@ def _file_session(tmp_path) -> tuple[AgentSession, Session]:
         session_log=live,
         model=_model(),
         extensions=[handoff.handoff_extension],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
     return agent, live
 

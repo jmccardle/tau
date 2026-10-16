@@ -52,11 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_PRICED_BUCKETS: tuple[tuple[str, str], ...] = (
-    ("input_tokens", "input"),
-    ("output_tokens", "output"),
-    ("cache_read_tokens", "cache_read"),
-)
+from tau_agent_core.usage import price_usage
 
 #: Every token bucket, summed for a completion's raw token count.
 _ALL_BUCKETS: tuple[str, ...] = (
@@ -118,21 +114,11 @@ class Pricing:
         return self.cost is not None
 
     def cost_of(self, usage: Mapping[str, Any]) -> float | None:
-        """Dollar cost of one completion's ``usage``, or ``None`` when unpriced.
+        """Dollar cost of one completion's ``usage``: :func:`tau_agent_core.usage.price_usage`.
 
-        Same formula as ``tau_coding_agent.backends.compute_cost_usd`` /
-        ``ext_kit.spawn.price_increment``: ``sum(price[k] / 1e6 * tokens[k])`` over
-        the priced buckets. An unpriced :class:`Pricing` returns ``None`` (cost
-        unknown); a present all-zero block returns a real ``0.0``.
+        ``None`` when unpriced (cost unknown); a present all-zero block is a real ``0.0``.
         """
-        if self.cost is None:
-            return None
-        return float(
-            sum(
-                float(self.cost.get(price_key, 0.0)) / 1_000_000 * int(usage.get(bucket, 0) or 0)
-                for bucket, price_key in _PRICED_BUCKETS
-            )
-        )
+        return price_usage(self.cost, usage)
 
 
 # ── metering ──────────────────────────────────────────────────────────────────

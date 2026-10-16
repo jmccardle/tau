@@ -125,7 +125,7 @@ def _make_session(model_id: str = "gpt-4o") -> AgentSession:
         session_log=InMemorySessionLog(),
         model=_make_model(model_id),
         extensions=[],
-        compaction_settings=CompactionSettings(enabled=False),
+        compaction_settings=CompactionSettings(auto=False),
     )
 
 

@@ -36,7 +36,13 @@ from tau_agent_core.compare import COMPARE_KEY
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import config_at
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
-from tau_coding_agent.config import TAU_DIR, ConfigError, bootstrap_config, update_config
+from tau_coding_agent.config import (
+    TAU_DIR,
+    ConfigError,
+    apply_compaction_config,
+    bootstrap_config,
+    update_config,
+)
 from tau_coding_agent.session_picker import SCOPE_ALL, SCOPE_CWD, SessionPickerModal
 from tau_coding_agent.session_store import (
     subscribe_session_events,
@@ -2525,7 +2531,7 @@ class TauApp(App):
             self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
             binder = getattr(agent_session, "set_model_resolver", None)
             if binder is not None:
-                binder(make_model_resolver(self.config.get("models", {})))
+                binder(make_model_resolver(self.config))
 
         self._bind_render_subscription()
 
@@ -2568,8 +2574,10 @@ class TauApp(App):
         This runs at EVERY ``create_backend``, which is what makes these flags
         survive a mid-session ``/model`` switch: the policy is re-applied to
         whichever model entry the switch selected, instead of having been baked
-        into the one entry the process started on.
+        into the one entry the process started on. The compaction block applies
+        here too (:func:`~tau_coding_agent.config.apply_compaction_config`).
         """
+        model_config = apply_compaction_config(model_config, self.config)
         global_replay = self.config.get("reasoning_replay")
         inject_replay = global_replay is not None and "reasoning_replay" not in model_config
         base_prompt = model_config.get("system_prompt") or self.config.get("system_prompt")
@@ -2703,7 +2711,9 @@ class TauApp(App):
 
         # Create backend
         try:
-            self.current_backend = create_backend(self._apply_run_config(model_config))
+            self.current_backend = create_backend(
+                self._apply_run_config({**model_config, "config_name": model})
+            )
             self.log(f"Created backend: {model_config.get('backend')} for model {model}")
         except Exception as e:
             self.notify(f"Failed to create backend: {str(e)}", severity="error")
@@ -3914,7 +3924,7 @@ class TauApp(App):
                 return
 
             recorded = session.config
-            resumed = dict(model_config)
+            resumed = {**model_config, "config_name": session.model}
             if "thinking" in recorded:
                 resumed["thinking"] = recorded["thinking"] or "off"
             self.current_backend = create_backend(self._apply_run_config(resumed))

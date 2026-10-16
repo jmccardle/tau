@@ -31,9 +31,9 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 - `api_key: str | None = None` — The key ``model`` is called with; ``None`` passes no key.
 - `reasoning: str | None = None` — Requested thinking level for every turn and compaction, or ``None``.
 - `compaction_settings: CompactionSettings | None = None` — Settings when no ``compaction_policy`` is given; ``None`` means the defaults.
-- `compaction_policy: CompactionPolicy | None = None` — A declared policy that supplies its own settings and summarizer. Mutually exclusive with ``compaction_settings``.
+- `compaction_policy: CompactionPolicy | None = None` — A declared policy that supplies its own settings and summarizer. Mutually exclusive with ``compaction_settings``. One naming a summarizer needs ``model_resolver``, or construction raises.
 - `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by file stem; each extension's ``api.config`` is its slice.
-- `model_resolver: Callable[[str], Model] | None = None` — Turns a config model name into a ``Model`` for :meth:`set_model`; see :meth:`set_model_resolver`.
+- `model_resolver: Callable[[str], Model] | None = None` — Turns a config model name into a ``Model`` for :meth:`set_model` and the policy's summarizer; see :meth:`set_model_resolver`.
 - `max_turns: int | None = None` — The loop's turn ceiling, at least 1; ``None`` is no ceiling.
 - `tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel'` — Whether one response's tool calls run in parallel or one at a time.
 - `bus_available: bool = False` — Whether a bus transport backs this session. An extension declaring ``TOUCHES_BUS`` is refused at load when False.
@@ -1028,6 +1028,25 @@ The outcome; ``ok=False`` only for an unknown extension.
 - `ExtensionCapabilityError` — The new code declares a capability this session lacks, or an invalid ``CONFIG_SCHEMA``.
 - `Exception` — Whatever the module's import or ``register`` raises, unchanged. In every case the extension is left torn down, never reported as ``ok=False``.
 
+### require_compaction_resolver
+
+```python
+require_compaction_resolver(summarizer: str) -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.require_compaction_resolver`
+
+Refuse turns and summaries until a resolver supplies the compaction config.
+
+A head whose config names ``summarizer`` calls this at construction, before
+it has bound the resolver that can resolve the name; binding one with a
+``compaction(name)`` method clears it. Until then no turn runs and nothing
+is summarised, rather than compacting through the wrong model.
+
+**Parameters**
+
+- `summarizer: str` — The summarizer the config names, for the refusal message.
+
 ### resolve_command
 
 ```python
@@ -1270,10 +1289,11 @@ Switch the acting cursor's model by NAME, effective on its next request.
 At the head cursor this is the session's model; at any other cursor that
 cursor's :class:`~tau_agent_core.cursor.TurnFrame` (a cursor with no frame
 gets one that changes nothing else). The key switches with the model, by
-:meth:`resolve_model`. Called between two requests of a running loop — a
-``turn_end`` hook — the next request already uses it, never one in flight.
-Nothing is written here: the next request records the change ahead of
-itself (docs/TURN-SETTINGS.md §2-3).
+:meth:`resolve_model`, and so does a head switch's compaction when the
+resolver supplies it (:meth:`set_model_resolver`). Called between two
+requests of a running loop — a ``turn_end`` hook — the next request already
+uses it, never one in flight. Nothing is written here: the next request
+records the change ahead of itself (docs/TURN-SETTINGS.md §2-3).
 
 **Parameters**
 
@@ -1288,6 +1308,7 @@ The new :meth:`get_model` projection.
 - `RuntimeError` — No resolver is bound.
 - `TypeError` — The resolver returned something other than a ``Model``.
 - `Exception` — Whatever the resolver raises for an unknown ``name``, unchanged.
+- `CompactionPolicyError` — the new model's compaction refuses it; the model does not change.
 
 ### set_model_resolver
 
@@ -1300,11 +1321,20 @@ set_model_resolver(resolver: Callable[[str], Model]) -> None
 Bind the model-name resolver used by :meth:`set_model` (S45).
 
 The core does not read ``~/.tau/config.json`` itself; the resolver is the
-seam through which a head supplies its config's models.
+seam through which a head supplies its config's models. A resolver with a
+``compaction(name)`` method is also where compaction comes from: the
+settings and summarizer are re-read from it now, for the current model, and
+on every :meth:`set_model` (docs/PRICING-AND-COMPACTION-CONFIG.md §6). A
+plain ``name -> Model`` resolver keeps whatever settings or policy the
+session was constructed with.
 
 **Parameters**
 
-- `resolver: Callable[[str], Model]` — Maps a config model name to a ``Model``. An ``api_key(name)`` method on it, when present, supplies that model's key (:meth:`resolve_model`).
+- `resolver: Callable[[str], Model]` — Maps a config model name to a ``Model``. An ``api_key(name)`` method supplies that model's key (:meth:`resolve_model`); a ``compaction(name)`` method returning a :class:`~tau_agent_core.compaction.CompactionConfig` supplies its compaction.
+
+**Raises**
+
+- `CompactionPolicyError` — the summarizer, as ``resolver`` resolves it, fails :meth:`CompactionPolicy.bind_to`. Nothing changes, and the old resolver stays bound.
 
 ### set_reasoning
 
@@ -1685,11 +1715,15 @@ summarizer() -> tuple[Model, str | None]
 
 The model and key a compaction or a branch summary runs on (H5 / §16.8).
 
-Read live, so it tracks :meth:`set_model`.
+Read live, so it tracks :meth:`set_model` and :meth:`set_model_resolver`.
 
 **Returns**
 
-``(model, key)``: the session's model and key with no compaction policy; otherwise the policy's summarizer, falling back to the session's key when the policy names none.
+``(model, key)``: the session's own model and key unless the policy names a summarizer; then :meth:`resolve_model` of that name, the one way a credential enters the session (docs/PRICING-AND-COMPACTION-CONFIG.md §4).
+
+**Raises**
+
+- `CompactionPolicyError` — :meth:`require_compaction_resolver` is outstanding.
 
 ### turn_lock
 

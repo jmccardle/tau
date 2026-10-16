@@ -23,7 +23,7 @@ def _completer(*, session: bool = True, runtime: Any = None) -> ReplCompleter:
     """A completer over a fake backend, with the resolver ``run_repl`` binds."""
     backend = FakeBackend(dict(CONFIG))
     if session:
-        backend.agent_session.model_resolver = make_model_resolver(CONFIG["models"])
+        backend.agent_session.model_resolver = make_model_resolver(CONFIG)
     else:
         backend.agent_session = None  # type: ignore[assignment]
     return ReplCompleter(backend, runtime)

@@ -143,7 +143,28 @@ def _summarizer_stub(record: list | None = None, delay_s: float = 0.0):
     return fake_complete_simple
 
 
+class _Resolver:
+    """A config-shaped resolver: ``name -> Model`` plus ``api_key(name)``, like ``ConfigModelResolver``."""
+
+    def __init__(self, entries: dict[str, tuple[Model, str | None]]) -> None:
+        self._entries = entries
+
+    def __call__(self, name: str) -> Model:
+        return self._entries[name][0]
+
+    def api_key(self, name: str) -> str | None:
+        return self._entries[name][1]
+
+
+def _board_resolver(
+    model: Model | None = None, key: str | None = "board-key", name: str = "board"
+) -> _Resolver:
+    return _Resolver({name: (model or _model("board-summariser"), key)})
+
+
 def _session(policy: CompactionPolicy | None = None, **kwargs) -> AgentSession:
+    if policy is not None and policy.summarizer is not None:
+        kwargs.setdefault("model_resolver", _board_resolver(name=policy.summarizer))
     return AgentSession(
         session_log=InMemorySessionLog(),
         model=kwargs.pop("model", _model()),
@@ -180,22 +201,21 @@ class TestPolicyDeclarationIsAdmissibleOrRefused:
         with pytest.raises(CompactionPolicyError, match="requires max_turns"):
             CompactionPolicy(mode="turn_cap", max_tokens_per_turn=5)
 
-    def test_local_summarizer_requires_model_and_key(self):
-        with pytest.raises(CompactionPolicyError, match="requires summarizer_model"):
+    def test_local_summarizer_requires_a_summarizer_name(self):
+        with pytest.raises(CompactionPolicyError, match="requires summarizer"):
             CompactionPolicy(mode="local_summarizer")
-        with pytest.raises(CompactionPolicyError, match="requires summarizer_api_key"):
-            CompactionPolicy(mode="local_summarizer", summarizer_model=_model())
+        with pytest.raises(CompactionPolicyError, match="empty string"):
+            CompactionPolicy(mode="local_summarizer", summarizer="")
+
+    def test_only_local_summarizer_takes_a_summarizer(self):
+        with pytest.raises(CompactionPolicyError, match="does not use summarizer"):
+            CompactionPolicy(mode="disabled", max_turns=3, summarizer="board")
 
     def test_a_field_the_mode_does_not_read_is_refused(self):
         with pytest.raises(CompactionPolicyError, match="does not use max_tokens_per_turn"):
             CompactionPolicy(mode="disabled", max_turns=3, max_tokens_per_turn=100)
         with pytest.raises(CompactionPolicyError, match="does not use max_turns"):
-            CompactionPolicy(
-                mode="local_summarizer",
-                summarizer_model=_model(),
-                summarizer_api_key="k",
-                max_turns=3,
-            )
+            CompactionPolicy(mode="local_summarizer", summarizer="board", max_turns=3)
 
     @pytest.mark.parametrize(
         "kwargs",
@@ -212,22 +232,20 @@ class TestPolicyDeclarationIsAdmissibleOrRefused:
     def test_constructors_produce_the_declared_mode(self):
         assert CompactionPolicy.disabled(max_turns=3).mode == "disabled"
         assert CompactionPolicy.turn_cap(max_turns=3, max_tokens_per_turn=9).mode == "turn_cap"
-        local = CompactionPolicy.local_summarizer(model=_model("board"), api_key="local")
+        local = CompactionPolicy.local_summarizer(summarizer="board")
         assert local.mode == "local_summarizer"
-        assert local.summarizer_model is not None and local.summarizer_model.id == "board"
+        assert local.summarizer == "board"
 
     def test_only_disabled_switches_compaction_off(self):
-        assert CompactionPolicy.disabled(max_turns=3).compaction_settings.enabled is False
+        assert CompactionPolicy.disabled(max_turns=3).compaction_settings.auto is False
         assert (
             CompactionPolicy.turn_cap(
                 max_turns=3, max_tokens_per_turn=9
-            ).compaction_settings.enabled
+            ).compaction_settings.auto
             is True
         )
         assert (
-            CompactionPolicy.local_summarizer(
-                model=_model(), api_key="k"
-            ).compaction_settings.enabled
+            CompactionPolicy.local_summarizer(summarizer="board").compaction_settings.auto
             is True
         )
 
@@ -335,7 +353,7 @@ class TestTurnCapPremisesAreEnforcedAtRuntime:
         CompactionPolicy.disabled(max_turns=3).observe_context(
             turns_used=99, context_tokens=10**9, context_window=128_000
         )
-        CompactionPolicy.local_summarizer(model=_model(), api_key="k").observe_context(
+        CompactionPolicy.local_summarizer(summarizer="board").observe_context(
             turns_used=99, context_tokens=10**9, context_window=128_000
         )
 
@@ -406,8 +424,7 @@ class TestTurnCapOverARealSession:
 
 class TestLocalSummarizerPolicy:
     async def test_compaction_summarises_through_the_declared_model(self):
-        board = _model("board-summariser", context_window=128_000)
-        policy = CompactionPolicy.local_summarizer(model=board, api_key="board-key")
+        policy = CompactionPolicy.local_summarizer(summarizer="board")
         session = _session(policy)
         summarizer_calls: list = []
         with (
@@ -448,8 +465,7 @@ class TestLocalSummarizerPolicy:
         which is also what ``record_side_usage`` was already being handed — the
         number was in the same scope and going nowhere durable.
         """
-        board = _model("board-summariser", context_window=128_000)
-        session = _session(CompactionPolicy.local_summarizer(model=board, api_key="board-key"))
+        session = _session(CompactionPolicy.local_summarizer(summarizer="board"))
         assert session._model.id == "session-model", "the two models must actually differ"
 
         with (
@@ -502,11 +518,56 @@ class TestLocalSummarizerPolicy:
         assert spec["type"] == "customEntry" and spec["customType"] == "config"
 
     def test_a_summariser_that_cannot_hold_the_window_is_refused(self):
-        policy = CompactionPolicy.local_summarizer(
-            model=_model("tiny", context_window=32_000), api_key="k"
-        )
+        policy = CompactionPolicy.local_summarizer(summarizer="tiny")
         with pytest.raises(CompactionPolicyError, match="cannot ingest"):
-            policy.bind_to(_model(context_window=128_000))
+            policy.bind_to(
+                _model(context_window=128_000), _model("tiny", context_window=32_000)
+            )
+
+    def test_the_window_check_runs_on_the_resolved_model_at_construction(self):
+        tiny = _board_resolver(_model("tiny", context_window=32_000))
+        with pytest.raises(CompactionPolicyError, match="cannot ingest"):
+            _session(CompactionPolicy.local_summarizer(summarizer="board"), model_resolver=tiny)
+
+    def test_binding_without_the_resolved_model_is_refused(self):
+        with pytest.raises(CompactionPolicyError, match="bound without the model"):
+            CompactionPolicy.local_summarizer(summarizer="board").bind_to(_model())
+
+    def test_a_session_without_a_resolver_refuses_a_named_summarizer(self):
+        with pytest.raises(CompactionPolicyError, match="no model resolver"):
+            AgentSession(
+                session_log=InMemorySessionLog(),
+                model=_model(),
+                api_key="session-key",
+                compaction_policy=CompactionPolicy.local_summarizer(summarizer="board"),
+            )
+
+    def test_the_summarizer_key_comes_from_the_resolver(self):
+        session = _session(CompactionPolicy.local_summarizer(summarizer="board"))
+        model, key = session.summarizer()
+        assert (model.id, key) == ("board-summariser", "board-key")
+
+    def test_a_summarizer_with_no_configured_key_gets_none_for_its_env_var(self):
+        session = _session(
+            CompactionPolicy.local_summarizer(summarizer="board"),
+            model_resolver=_board_resolver(key=None),
+        )
+        assert session.summarizer()[1] is None
+
+    def test_the_session_key_never_reaches_the_summarizer(self):
+        for key in (None, "board-key"):
+            session = _session(
+                CompactionPolicy.local_summarizer(summarizer="board"),
+                model_resolver=_board_resolver(key=key),
+                api_key="session-key",
+            )
+            assert session.summarizer()[1] != "session-key"
+
+    def test_a_replacement_resolver_is_checked_before_it_is_kept(self):
+        session = _session(CompactionPolicy.local_summarizer(summarizer="board"))
+        with pytest.raises(CompactionPolicyError, match="cannot ingest"):
+            session.set_model_resolver(_board_resolver(_model("tiny", context_window=32_000)))
+        assert session.summarizer()[0].id == "board-summariser"
 
     def test_without_a_policy_the_summariser_is_the_session_model(self):
         session = _session()
@@ -524,8 +585,8 @@ class TestLocalSummarizerPolicy:
 
 class TestShippedCompactionBehaviourIsUnchanged:
     def test_auto_compaction_is_still_enabled_by_default(self):
-        assert DEFAULT_COMPACTION_SETTINGS.enabled is True
-        assert _session()._compaction_settings.enabled is True
+        assert DEFAULT_COMPACTION_SETTINGS.auto is True
+        assert _session()._compaction_settings.auto is True
 
     def test_a_session_with_no_policy_carries_none(self):
         assert _session()._compaction_policy is None
@@ -547,7 +608,7 @@ class TestShippedCompactionBehaviourIsUnchanged:
 
     async def test_a_failed_compaction_still_raises_under_a_declared_policy(self):
         # A policy must not become a place where a compaction failure gets absorbed.
-        session = _session(CompactionPolicy.local_summarizer(model=_model(), api_key="k"))
+        session = _session(CompactionPolicy.local_summarizer(summarizer="board"))
 
         async def boom(*args, **kwargs):
             raise CompactionError("summarization_failed", "no")
@@ -588,7 +649,7 @@ class TestShippedCompactionBehaviourIsUnchanged:
 
     def test_a_policy_supplies_the_settings_it_declares(self):
         session = _session(CompactionPolicy.disabled(max_turns=3))
-        assert session._compaction_settings.enabled is False
+        assert session._compaction_settings.auto is False
         assert session._compaction_settings.reserve_tokens == (
             DEFAULT_COMPACTION_SETTINGS.reserve_tokens
         )
@@ -637,18 +698,14 @@ class TestManifestRecordsThePolicy:
         assert record["reserve_tokens"] == DEFAULT_COMPACTION_SETTINGS.reserve_tokens
 
     def test_the_record_identifies_a_local_summariser_without_its_key(self):
-        record = CompactionPolicy.local_summarizer(
-            model=_model("board", context_window=128_000), api_key="sk-do-not-leak"
-        ).to_manifest()
-        assert record["declared"]["summarizer_model"]["id"] == "board"
-        assert record["declared"]["summarizer_model"]["base_url"] == "https://example.invalid/v1"
-        assert "sk-do-not-leak" not in json.dumps(record)
+        record = CompactionPolicy.local_summarizer(summarizer="board").to_manifest()
+        assert record["declared"] == {"summarizer": "board"}
 
     def test_the_record_is_json_serialisable(self):
         for policy in (
             CompactionPolicy.disabled(max_turns=3),
             CompactionPolicy.turn_cap(max_turns=3, max_tokens_per_turn=100),
-            CompactionPolicy.local_summarizer(model=_model(), api_key="k"),
+            CompactionPolicy.local_summarizer(summarizer="board"),
         ):
             assert json.loads(json.dumps(policy.to_manifest()))["mode"] == policy.mode
 

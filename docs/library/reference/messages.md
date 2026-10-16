@@ -1202,6 +1202,34 @@ Whether ``level`` names a known thinking level.
 
 True for ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``, ``"high"`` and ``"xhigh"``.
 
+## price_usage
+<!-- agent: yes -->
+
+```python
+price_usage(cost: Mapping[str, Any] | None, usage: Mapping[str, Any]) -> float | None
+```
+
+`tau_agent_core.usage.price_usage`
+
+Dollar cost of ``usage`` under the price block ``cost``, or ``None`` when unpriced.
+
+``sum(cost[p] / 1e6 * usage[b])`` over the four :data:`PRICED_BUCKETS`. Every
+provider partitions the prompt into ``input_tokens``, ``cache_read_tokens``
+and ``cache_write_tokens``, so each is priced once and none overlaps.
+
+**Parameters**
+
+- `cost: Mapping[str, Any] | None` — A config model entry's ``{input, output, cache_read, cache_write}`` block, USD per 1M tokens. A missing price key prices that bucket at 0.
+- `usage: Mapping[str, Any]` — τ usage names (``input_tokens``, ``output_tokens``, ``cache_read_tokens``, ``cache_write_tokens``); a missing bucket is 0 and any other key is ignored.
+
+**Returns**
+
+``None`` when ``cost`` is ``None`` — unknown, never a fabricated ``$0``; otherwise a float, ``0.0`` for a present all-zero block.
+
+**Raises**
+
+- `ValueError` — ``usage`` uses the OpenAI wire spelling (``prompt_tokens`` / ``completion_tokens``) without τ's, which would price as zero.
+
 ## remove_attachment
 <!-- agent: yes -->
 

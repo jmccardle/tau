@@ -1532,7 +1532,7 @@ async def run_repl(
         backend_name,
         resolve_backend_name(config, args.store),
     )
-    agent_session.set_model_resolver(make_model_resolver(config.get("models", {})))
+    agent_session.set_model_resolver(make_model_resolver(config))
 
     if prior is not None:
         if args.name is not None:

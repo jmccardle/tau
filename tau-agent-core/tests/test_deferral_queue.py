@@ -158,7 +158,7 @@ def _make_session(*extensions, settings: CompactionSettings | None = None) -> Ag
         session_log=InMemorySessionLog(),
         model=_model(),
         extensions=list(extensions),
-        compaction_settings=settings or CompactionSettings(enabled=False),
+        compaction_settings=settings or CompactionSettings(auto=False),
     )
 
 
@@ -197,7 +197,7 @@ async def test_deferred_compact_applies_once_at_end_of_prompt(monkeypatch) -> No
             }
         )
 
-    session = _make_session(ext, settings=CompactionSettings(enabled=True, keep_recent_tokens=1))
+    session = _make_session(ext, settings=CompactionSettings(auto=True, keep_recent_tokens=1))
     # Seed prior turns so the compaction has an ample prefix to summarize.
     log = session.session_log
     for i in range(2):

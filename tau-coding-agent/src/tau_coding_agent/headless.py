@@ -45,7 +45,7 @@ from tau_agent_core.prompt_cache import PromptCacheObserver, completions_from_me
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import Submission
 from tau_agent_core.truncation import truncation_from_messages, truncation_notice
-from tau_coding_agent.config import ConfigError
+from tau_coding_agent.config import ConfigError, apply_compaction_config
 from tau_coding_agent.store_factory import build_session_catalog
 
 from tau_llm.models import is_valid_thinking_level
@@ -137,7 +137,8 @@ def resolve_model_config(
     Returns ``(model_name, model_config)`` where ``model_config`` is the dict
     handed to :func:`tau_coding_agent.backends.create_backend` (keys
     ``backend``/``model``/``base_url``/``api_key`` and optionally ``tools``; a
-    config entry also sets ``config_name``, the key it was found under).
+    config entry also sets ``config_name``, the key it was found under; the
+    compaction block rides in through :func:`apply_compaction_config`).
 
     Resolution order, mirroring the TUI and pi's ``resolveCliModel``:
       1. ``--model NAME`` matching a key in ``config["models"]`` → that entry.
@@ -238,7 +239,7 @@ def resolve_model_config(
     elif "max_turns" not in model_config and config.get("max_turns") is not None:
         model_config["max_turns"] = int(config["max_turns"])
 
-    return spec, model_config
+    return spec, apply_compaction_config(model_config, config)
 
 
 def _decode_ext_config_value(raw: str) -> Any:
@@ -836,7 +837,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
     agent_session = getattr(backend, "agent_session", None)
     if agent_session is not None and hasattr(agent_session, "set_model_resolver"):
-        agent_session.set_model_resolver(make_model_resolver(config.get("models", {})))
+        agent_session.set_model_resolver(make_model_resolver(config))
 
     set_ui_defaults = getattr(backend, "set_headless_ui_defaults", None)
     if set_ui_defaults is not None:
