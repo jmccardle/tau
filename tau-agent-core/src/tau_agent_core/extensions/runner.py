@@ -71,6 +71,13 @@ class ExtensionHandlers:
     commands: list[str] = field(default_factory=list)
     shortcuts: list[str] = field(default_factory=list)
 
+    @property
+    def name(self) -> str:
+        """The extension's identifier, derived from :attr:`path` (docs/EXTENSION-PACKAGES.md §2)."""
+        from tau_agent_core.extension_sources import extension_identifier
+
+        return extension_identifier(self.path)
+
     def on(self, event: str, handler: HookHandler) -> None:
         """Register ``handler`` for ``event`` (appended in registration order)."""
         self.handlers.setdefault(event, []).append(handler)

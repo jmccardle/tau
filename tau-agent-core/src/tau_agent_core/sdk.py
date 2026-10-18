@@ -31,6 +31,7 @@ from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.compaction_policy import CompactionPolicy
+from tau_agent_core.extension_sources import extension_identifier
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
@@ -368,7 +369,7 @@ class ExtensionInfo:
     Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34); shortcuts E10 §6 / S69.
 
     Attributes:
-        name: The display name: the file's stem.
+        name: The identifier (docs/EXTENSION-PACKAGES.md §2).
         path: The source file.
         tools: Names of the tools it registered.
         commands: Names of the commands it registered.
@@ -420,7 +421,7 @@ def summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]:
             )
         infos.append(
             ExtensionInfo(
-                name=Path(ext.path).stem,
+                name=extension_identifier(ext.path),
                 path=ext.path,
                 tools=list(bucket.tools),
                 commands=list(bucket.commands),

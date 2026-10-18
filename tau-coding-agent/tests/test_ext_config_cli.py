@@ -1,7 +1,7 @@
 """S40 (E6) — per-extension config: CLI parsing, value decoding, source merge.
 
 Covers the coding-agent half of ``api.config`` (E6 §2 / S40): the ``--ext-config
-NAME.KEY=VALUE`` flag, its value-decoding rule, and the merge of
+NAME:KEY=VALUE`` flag, its value-decoding rule, and the merge of
 ``~/.tau/config.json`` ``"extensions"`` slices with the per-run overrides
 (CLI > config.json). The tau-agent-core half (the sliced dict actually reaching
 each extension's ``api.config``) lives in
@@ -28,9 +28,9 @@ from tau_coding_agent.headless import (
 def test_ext_config_flag_is_repeatable():
     assert parse_cli_args(["-p", "x"]).ext_config == []
     args = parse_cli_args(
-        ["--ext-config", "budget.ceiling=5.0", "--ext-config", "gate.paths=[]", "-p", "x"]
+        ["--ext-config", "budget:ceiling=5.0", "--ext-config", "gate:paths=[]", "-p", "x"]
     )
-    assert args.ext_config == ["budget.ceiling=5.0", "gate.paths=[]"]
+    assert args.ext_config == ["budget:ceiling=5.0", "gate:paths=[]"]
 
 
 # ── value decoding: JSON when it parses, else a plain string ────────────────
@@ -55,46 +55,56 @@ def test_decode_value_bare_string_kept():
     assert _decode_ext_config_value("") == ""
 
 
-# ── override parsing: NAME.KEY=VALUE → {name: {key: value}} ─────────────────
+# ── override parsing: NAME:KEY=VALUE → {name: {key: value}} ─────────────────
+# docs/EXTENSION-PACKAGES.md §3: split on the first ':', so NAME keeps its dots.
 
 
 def test_parse_overrides_basic():
-    got = parse_ext_config_overrides(["budget.ceiling=5.0", "gate.mode=strict"])
+    got = parse_ext_config_overrides(["budget:ceiling=5.0", "gate:mode=strict"])
     assert got == {"budget": {"ceiling": 5.0}, "gate": {"mode": "strict"}}
 
 
 def test_parse_overrides_accumulates_keys_per_extension():
-    got = parse_ext_config_overrides(["budget.ceiling=5.0", "budget.warn=0.8"])
+    got = parse_ext_config_overrides(["budget:ceiling=5.0", "budget:warn=0.8"])
     assert got == {"budget": {"ceiling": 5.0, "warn": 0.8}}
 
 
 def test_parse_overrides_value_may_contain_equals():
-    # split on the FIRST '=' only.
-    got = parse_ext_config_overrides(["ext.token=a=b=c"])
+    got = parse_ext_config_overrides(["ext:token=a=b=c"])
     assert got == {"ext": {"token": "a=b=c"}}
 
 
-def test_parse_overrides_key_may_contain_dot():
-    # NAME is up to the FIRST '.'; the remainder is the (dotted) key.
-    got = parse_ext_config_overrides(["ext.a.b=1"])
-    assert got == {"ext": {"a.b": 1}}
+def test_parse_overrides_name_keeps_its_dots():
+    got = parse_ext_config_overrides(["tau_router.planner:profile=p"])
+    assert got == {"tau_router.planner": {"profile": "p"}}
+
+
+def test_parse_overrides_key_may_contain_dot_and_colon():
+    got = parse_ext_config_overrides(["ext:a.b=1", "ext:c:d=2"])
+    assert got == {"ext": {"a.b": 1, "c:d": 2}}
 
 
 def test_parse_overrides_missing_equals_raises():
     with pytest.raises(CLIError, match="missing '='"):
-        parse_ext_config_overrides(["budget.ceiling"])
+        parse_ext_config_overrides(["budget:ceiling"])
 
 
-def test_parse_overrides_missing_dot_raises():
-    with pytest.raises(CLIError, match="no '\\.'"):
+def test_parse_overrides_missing_colon_raises():
+    with pytest.raises(CLIError, match="no ':'"):
         parse_ext_config_overrides(["ceiling=5.0"])
+
+
+def test_the_old_dot_form_raises_naming_the_new_one():
+    """Never misparse 0.13.0's NAME.KEY: refuse it and say what to write."""
+    with pytest.raises(CLIError, match=r"NAME\.KEY form was replaced.*NAME:KEY=VALUE"):
+        parse_ext_config_overrides(["budget.ceiling=5.0"])
 
 
 def test_parse_overrides_empty_name_or_key_raises():
     with pytest.raises(CLIError, match="non-empty"):
-        parse_ext_config_overrides([".ceiling=5.0"])
+        parse_ext_config_overrides([":ceiling=5.0"])
     with pytest.raises(CLIError, match="non-empty"):
-        parse_ext_config_overrides(["budget.=5.0"])
+        parse_ext_config_overrides(["budget:=5.0"])
 
 
 # ── source merge: config.json slices + overrides, CLI > config.json ─────────

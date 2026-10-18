@@ -259,25 +259,34 @@ def _decode_ext_config_value(raw: str) -> Any:
 
 
 def parse_ext_config_overrides(items: list[str]) -> dict[str, dict[str, Any]]:
-    """Parse ``--ext-config <name>.<key>=<value>`` items into ``{name: {key: value}}`` (S40).
+    """Parse ``--ext-config NAME:KEY=VALUE`` items into ``{name: {key: value}}`` (S40).
 
-    Each item is split on the FIRST ``=`` (so a value may contain ``=``) into
-    ``NAME.KEY`` and the value; the left side is split on the FIRST ``.`` into the
-    extension ``NAME`` (its file stem) and the ``KEY``. The value is decoded by
-    :func:`_decode_ext_config_value`. Fail-Early: a malformed item (no ``=``, no
-    ``.`` in the key part, or an empty name/key) RAISES :class:`CLIError` rather
-    than being silently dropped.
+    Each item splits on the first ``=``, so a value may contain one, and the
+    left side on the first ``:``, so ``NAME`` keeps its dots
+    (docs/EXTENSION-PACKAGES.md §3). The value is decoded by
+    :func:`_decode_ext_config_value`.
+
+    Raises:
+        CLIError: An item has no ``=``, no ``:`` before it (the 0.13.0
+            ``NAME.KEY`` form is named in the message), or an empty name or key.
     """
     overrides: dict[str, dict[str, Any]] = {}
     for item in items:
         if "=" not in item:
-            raise CLIError(f"--ext-config must be NAME.KEY=VALUE, got {item!r} (missing '=')")
+            raise CLIError(f"--ext-config must be NAME:KEY=VALUE, got {item!r} (missing '=')")
         lhs, _, raw_value = item.partition("=")
-        if "." not in lhs:
-            raise CLIError(
-                f"--ext-config must be NAME.KEY=VALUE, got {item!r} (the NAME.KEY part has no '.')"
+        if ":" not in lhs:
+            hint = (
+                " The NAME.KEY form was replaced in 0.14.0, because an extension's name"
+                " may contain dots; write NAME:KEY=VALUE (e.g. tau_router.planner:profile=p)."
+                if "." in lhs
+                else ""
             )
-        name, _, key = lhs.partition(".")
+            raise CLIError(
+                f"--ext-config must be NAME:KEY=VALUE, got {item!r} (the NAME:KEY part has "
+                f"no ':').{hint}"
+            )
+        name, _, key = lhs.partition(":")
         name, key = name.strip(), key.strip()
         if not name or not key:
             raise CLIError(f"--ext-config NAME and KEY must both be non-empty, got {item!r}")
@@ -291,7 +300,7 @@ def resolve_extensions_config(
     """Merge the config.json per-extension config with ``--ext-config`` overrides (S40).
 
     Base slices come from ``~/.tau/config.json`` ``"extensions": {"<name>": {…}}``
-    (keyed by extension file stem); ``overrides`` (from
+    (keyed by extension identifier); ``overrides`` (from
     :func:`parse_ext_config_overrides`) apply on top per key, so CLI beats
     config.json. Returns ``{name: {…}}`` handed to
     ``AgentSession.load_extensions(extensions_config=…)``; an extension with no

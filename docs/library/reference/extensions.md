@@ -109,15 +109,15 @@ is surfaced through the bus's on_error path (S44), not here.
 
 `tau_agent_core.extension_types.ExtensionAPI.extension_name: str`
 
-This extension's identity (docs/EXTENSION-NAMESPACE.md).
+This extension's identifier (docs/EXTENSION-PACKAGES.md §2).
 
-The owner half of every qualified command name, normalized by
-:func:`~tau_agent_core.commands.extension_owner` — a file extension's stem,
-an inline factory's own name.
+The owner half of every qualified command name ``ext:<name>:<command>``:
+a package's module name, a file's stem verbatim, an inline factory's
+``module.qualname``.
 
 **Raises**
 
-- `RuntimeError` — This api is not bound to a runner bucket, so it has no identity to qualify a name with. Fail-Early, and the same refusal :meth:`on` makes for the same reason (S24).
+- `RuntimeError` — This api is not bound to a runner bucket, so it has no identity to qualify a name with, the same refusal :meth:`on` makes.
 
 ### get_all_tools
 
@@ -148,7 +148,7 @@ handler is behind one before calling it.
 
 **Parameters**
 
-- `name: str` — Either name a command answers to: the typed one or the qualified ``ext:<extension>.<name>``.
+- `name: str` — Either name a command answers to: the typed one or the qualified ``ext:<extension>:<name>``.
 
 **Returns**
 
@@ -223,7 +223,7 @@ Register a slash command, and try to claim ``name`` for it.
 
 Two registrations, because there are two names (docs/EXTENSION-NAMESPACE.md).
 The command is installed in the private registry at
-``ext:<extension>.<name>``, where nothing can displace it, and then ``name``
+``ext:<extension>:<name>``, where nothing can displace it, and then ``name``
 itself is claimed. Claiming is first-wins: if another extension already holds
 it, or a human pinned it elsewhere, this one keeps only its qualified name.
 
@@ -266,7 +266,7 @@ most one argument; a gesture needing several fields drives ``ui.form``.
 
 **Returns**
 
-meth:`register_command` returns — ``None`` when ``/name`` is this flow, else the qualified name that holds it. The flow itself is always reachable at ``ext:<extension>.<name>``.
+meth:`register_command` returns — ``None`` when ``/name`` is this flow, else the qualified name that holds it. The flow itself is always reachable at ``ext:<extension>:<name>``.
 
 **Raises**
 
@@ -1330,7 +1330,7 @@ Reference: EXTENSIONS-E5-WIRING.md §5 (E5.4 / S34); shortcuts E10 §6 / S69.
 
 **Constructor parameters**
 
-- `name: str` — The display name: the file's stem.
+- `name: str` — The identifier (docs/EXTENSION-PACKAGES.md §2).
 - `path: str` — The source file.
 - `tools: list[str]` — Names of the tools it registered.
 - `commands: list[str]` — Names of the commands it registered.
@@ -1790,12 +1790,46 @@ namespace. A subscriber passes the result to ``api.on(...)``.
 
 **Parameters**
 
-- `name: str` — The emitting extension's file stem, the one that keys ``api.config``.
+- `name: str` — The emitting extension's identifier, the one that keys ``api.config`` (docs/EXTENSION-PACKAGES.md §3: dots kept, ``:`` delimits).
 - `topic: str` — The extension's own topic name.
 
 **Returns**
 
 ``ext:<name>:<topic>``.
+
+## extension_identifier
+<!-- agent: yes -->
+
+```python
+extension_identifier(label: str) -> str
+```
+
+`tau_agent_core.extension_sources.extension_identifier`
+
+The identifier of the extension a runner bucket label names.
+
+This is the one derivation (EXTENSION-PACKAGES.md §2, #40). The config
+key, topic emitter, command owner and ``/extensions`` label all read it.
+
+A label is one of three things:
+
+- a file path: ``…/my-ext.py`` is ``my-ext`` and a package directory
+  ``…/my.ext`` is ``my.ext``, the stem verbatim;
+- an installed module name, ``tau_router.planner``, returned as is;
+- an inline SDK factory's ``module:qualname``, which becomes
+  ``module.qualname``, its fully qualified Python name.
+
+**Parameters**
+
+- `label: str` — The bucket label the loader bound the extension under.
+
+**Returns**
+
+The identifier.
+
+**Raises**
+
+- `ValueError` — The label yields an empty identifier.
 
 ## filter_choices
 <!-- agent: yes -->
@@ -1928,6 +1962,34 @@ Read ``session``'s name (:func:`~tau_agent_core.session_log.session_name`).
 
 The newest ``session_info`` name, or ``None`` if never named or the newest name is empty.
 
+## resolve_shorthand
+<!-- agent: yes -->
+
+```python
+resolve_shorthand(token: str, identifiers: list[str]) -> str | None
+```
+
+`tau_agent_core.extension_sources.resolve_shorthand`
+
+Resolve a typed extension name against the given identifiers, fresh (§4).
+
+An exact identifier wins. Otherwise ``token`` matches the identifiers whose
+last dotted segment equals it. Nothing is cached, so a new install cannot
+re-point a shorthand silently.
+
+**Parameters**
+
+- `token: str` — What the user typed.
+- `identifiers: list[str]` — The candidates, usually the enabled extensions.
+
+**Returns**
+
+The one matching identifier, or ``None`` when nothing matches.
+
+**Raises**
+
+- `ValueError` — Two or more identifiers share the segment; the message names all of them.
+
 ## seed_tool_call
 <!-- agent: yes -->
 
@@ -1949,6 +2011,25 @@ An injected tool call and its answer, ready for ``spawn_branch(seed=…)``.
 **Returns**
 
 ``[assistant, toolResult]`` sharing a :func:`new_tool_call_id`; the assistant names :data:`SEED_ORIGIN` as its api, provider and model.
+
+## shorthand_segment
+<!-- agent: yes -->
+
+```python
+shorthand_segment(identifier: str) -> str
+```
+
+`tau_agent_core.extension_sources.shorthand_segment`
+
+The last dotted segment of ``identifier``, the shorthand a user may type (§4).
+
+**Parameters**
+
+- `identifier: str` — A full identifier.
+
+**Returns**
+
+``planner`` for ``tau_router.planner``; the identifier itself when it has no dot.
 
 ## summarize_extensions
 <!-- agent: yes -->
@@ -1977,6 +2058,28 @@ class:`ExtensionInfo` per loaded extension, in load order.
 **Raises**
 
 - `RuntimeError` — An extension's api has no runner bucket, a construction bug (Fail-Early, not an empty listing).
+
+## unusable_reason
+<!-- agent: yes -->
+
+```python
+unusable_reason(identifier: str) -> str | None
+```
+
+`tau_agent_core.extension_sources.unusable_reason`
+
+Why ``identifier`` cannot name an extension, or ``None`` when it can.
+
+A ``:`` breaks ``--ext-config`` and topic parsing, and whitespace breaks
+commands (EXTENSION-PACKAGES.md §2.1). Such a file is listed, not loaded.
+
+**Parameters**
+
+- `identifier: str` — A candidate identifier, usually a file stem.
+
+**Returns**
+
+A sentence naming the character and saying to rename the file, or ``None``.
 
 ## validate_ask_spec
 <!-- agent: yes -->

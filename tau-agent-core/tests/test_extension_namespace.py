@@ -14,12 +14,12 @@ import pytest
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.capabilities import Argument
 from tau_agent_core.commands import (
-    extension_owner,
     is_qualified_command,
     qualified_command,
     resolve_command,
     split_qualified_command,
 )
+from tau_agent_core.extension_sources import extension_identifier
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import Model
 
@@ -40,7 +40,7 @@ def register(api):
 _WRAPPER = """
 def register(api):
     async def note(args, ctx):
-        prior = await api.run_command("ext:a_ext.note", args)
+        prior = await api.run_command("ext:a_ext:note", args)
         return f"wrapped[{prior}]"
     api.register_command("note", {"description": "wraps A", "handler": note})
 """
@@ -75,28 +75,68 @@ async def _load(session: AgentSession, tmp_path, **files: str) -> dict[str, str]
 
 class TestTheGrammar:
     def test_a_qualified_name_round_trips(self):
-        assert qualified_command("pirate", "speak") == "ext:pirate.speak"
-        assert split_qualified_command("ext:pirate.speak") == ("pirate", "speak")
-        assert is_qualified_command("ext:pirate.speak")
+        assert qualified_command("pirate", "speak") == "ext:pirate:speak"
+        assert split_qualified_command("ext:pirate:speak") == ("pirate", "speak")
+        assert is_qualified_command("ext:pirate:speak")
         assert not is_qualified_command("speak")
 
-    def test_a_dotted_owner_still_splits(self):
-        """The split takes the LAST dot, so a stem like ``my.ext`` survives."""
-        assert split_qualified_command("ext:my_ext.speak") == ("my_ext", "speak")
+    def test_a_dotted_owner_splits_on_the_last_colon(self):
+        """docs/EXTENSION-PACKAGES.md §3: dots belong to module names."""
+        assert qualified_command("tau_router.planner", "budget") == "ext:tau_router.planner:budget"
+        assert split_qualified_command("ext:tau_router.planner:budget") == (
+            "tau_router.planner",
+            "budget",
+        )
 
-    def test_a_dotted_command_name_is_refused(self):
+    def test_a_dotted_command_name_is_allowed(self):
+        assert split_qualified_command(qualified_command("pirate", "say.it")) == (
+            "pirate",
+            "say.it",
+        )
+
+    def test_a_colon_in_the_command_name_is_refused(self):
         """Fail-Early: τ controls this half, so it is the half that must stay clean."""
         with pytest.raises(ValueError, match="separator"):
-            qualified_command("pirate", "say.it")
+            qualified_command("pirate", "say:it")
 
-    def test_an_owner_is_normalized_from_its_label(self):
-        assert extension_owner("/home/j/.tau/extensions/pirate.py") == "pirate"
-        assert extension_owner("/home/j/.tau/extensions/my.ext.py") == "my_ext"
-        assert extension_owner("test_mod:TestThing.test_x.<locals>.my_ext") == "my_ext"
+    def test_whitespace_in_either_half_is_refused(self):
+        with pytest.raises(ValueError, match="whitespace"):
+            qualified_command("my ext", "speak")
+
+    def test_the_old_dot_grammar_no_longer_parses(self):
+        assert split_qualified_command("ext:pirate.speak") is None
+
+
+class TestOneIdentity:
+    """#40: one derivation, and no mangling."""
+
+    def test_a_file_is_its_stem_verbatim(self):
+        assert extension_identifier("/srv/ext/pirate.py") == "pirate"
+        assert extension_identifier("/srv/ext/my.ext.py") == "my.ext"
+        assert extension_identifier("/srv/ext/my-ext.py") == "my-ext"
+
+    def test_a_package_directory_is_its_name_not_a_dotted_tail(self):
+        """The 0.13.0 owner of this label was ``11_site-packages_tau_search_ext``."""
+        assert extension_identifier("/venv/lib/python3.11/site-packages/tau_search/ext") == "ext"
+
+    def test_an_installed_module_is_its_module_name(self):
+        assert extension_identifier("tau_router.planner") == "tau_router.planner"
+
+    def test_two_inline_factories_named_register_do_not_collide(self):
+        assert extension_identifier("a.router:register") == "a.router.register"
+        assert extension_identifier("a.planner:register") == "a.planner.register"
 
     def test_a_label_with_nothing_usable_raises(self):
-        with pytest.raises(ValueError, match="no usable name"):
-            extension_owner("...")
+        with pytest.raises(ValueError, match="empty identifier"):
+            extension_identifier(".py")
+
+    async def test_owner_config_key_and_listing_agree(self, tmp_path):
+        session = _session()
+        path = tmp_path / "my-ext.py"
+        path.write_text(_A)
+        await session.load_extensions([str(path)], discover=False)
+        assert "ext:my-ext:note" in session._registry.get_commands()
+        assert [info.name for info in session.list_extensions()] == ["my-ext"]
 
 
 class TestTheContestedNameGoesToWhoeverAsksFirst:
@@ -104,22 +144,22 @@ class TestTheContestedNameGoesToWhoeverAsksFirst:
         session = _session()
         await _load(session, tmp_path, a_ext=_A, b_ext=_B)
 
-        assert session._registry.get_bindings() == {"note": "ext:a_ext.note"}
-        assert sorted(session._registry.get_commands()) == ["ext:a_ext.note", "ext:b_ext.note"]
+        assert session._registry.get_bindings() == {"note": "ext:a_ext:note"}
+        assert sorted(session._registry.get_commands()) == ["ext:a_ext:note", "ext:b_ext:note"]
         assert (await session.run_extension_command("note", "x")).output == "A:x"
 
     async def test_the_loser_is_still_reachable_by_its_own_name(self, tmp_path):
         session = _session()
         await _load(session, tmp_path, a_ext=_A, b_ext=_B)
 
-        assert (await session.run_extension_command("ext:b_ext.note", "x")).output == "B:x"
-        assert resolve_command("/ext:b_ext.note x", session._registry.command_names()) is not None
+        assert (await session.run_extension_command("ext:b_ext:note", "x")).output == "B:x"
+        assert resolve_command("/ext:b_ext:note x", session._registry.command_names()) is not None
 
     async def test_load_order_decides_and_nothing_else_does(self, tmp_path):
         session = _session()
         await _load(session, tmp_path, b_ext=_B, a_ext=_A)
 
-        assert session._registry.get_bindings() == {"note": "ext:b_ext.note"}
+        assert session._registry.get_bindings() == {"note": "ext:b_ext:note"}
 
 
 class TestDisableAndReloadStopBeingDestructive:
@@ -132,7 +172,7 @@ class TestDisableAndReloadStopBeingDestructive:
         assert (await session.disable_extension(paths["b_ext"])).ok
 
         assert (await session.run_extension_command("note", "x")).output == "A:x"
-        assert "ext:b_ext.note" not in session._registry.get_commands()
+        assert "ext:b_ext:note" not in session._registry.get_commands()
 
     async def test_disabling_the_holder_unbinds_the_typed_name(self, tmp_path):
         """No stack: the typed name goes unbound rather than falling to whoever
@@ -143,14 +183,14 @@ class TestDisableAndReloadStopBeingDestructive:
 
         assert session._registry.get_bindings() == {}
         assert (await session.run_extension_command("note", "x")).handled is False
-        assert (await session.run_extension_command("ext:b_ext.note", "x")).output == "B:x"
+        assert (await session.run_extension_command("ext:b_ext:note", "x")).output == "B:x"
 
     async def test_reloading_the_shadowed_extension_does_not_steal_the_name(self, tmp_path):
         session = _session()
         paths = await _load(session, tmp_path, a_ext=_A, b_ext=_B)
         assert (await session.reload_extension(paths["b_ext"])).ok
 
-        assert session._registry.get_bindings() == {"note": "ext:a_ext.note"}
+        assert session._registry.get_bindings() == {"note": "ext:a_ext:note"}
         assert (await session.run_extension_command("note", "x")).output == "A:x"
 
 
@@ -159,7 +199,7 @@ class TestCompositionIsByNameAndLateBound:
         session = _session()
         await _load(session, tmp_path, a_ext=_A, w_ext=_WRAPPER)
 
-        assert (await session.run_extension_command("ext:w_ext.note", "x")).output == (
+        assert (await session.run_extension_command("ext:w_ext:note", "x")).output == (
             "wrapped[A:x]"
         )
 
@@ -171,27 +211,27 @@ class TestCompositionIsByNameAndLateBound:
         assert (await session.disable_extension(paths["a_ext"])).ok
 
         with pytest.raises(RuntimeError, match="no command named"):
-            await session.run_extension_command("ext:w_ext.note", "x")
+            await session.run_extension_command("ext:w_ext:note", "x")
 
 
 class TestPins:
     async def test_a_pin_beats_load_order(self, tmp_path):
         session = _session()
-        session._registry.pin_command("note", "ext:b_ext.note")
+        session._registry.pin_command("note", "ext:b_ext:note")
         await _load(session, tmp_path, a_ext=_A, b_ext=_B)
 
-        assert session._registry.get_bindings() == {"note": "ext:b_ext.note"}
+        assert session._registry.get_bindings() == {"note": "ext:b_ext:note"}
         assert (await session.run_extension_command("note", "x")).output == "B:x"
 
     async def test_a_pin_survives_a_disable(self, tmp_path):
         session = _session()
-        session._registry.pin_command("note", "ext:a_ext.note")
+        session._registry.pin_command("note", "ext:a_ext:note")
         paths = await _load(session, tmp_path, a_ext=_A, b_ext=_B)
         assert (await session.disable_extension(paths["a_ext"])).ok
 
         assert session._registry.get_bindings() == {}, "B does not inherit a pinned name"
         assert (await session.enable_extension(paths["a_ext"])).ok
-        assert session._registry.get_bindings() == {"note": "ext:a_ext.note"}
+        assert session._registry.get_bindings() == {"note": "ext:a_ext:note"}
 
 
 _FLOW_A = """
@@ -229,7 +269,7 @@ class TestAShadowedFlowIsNotInherited:
         await _load(session, tmp_path, a_ext=_FLOW_A, b_ext=_FLOW_SHADOW)
 
         # A registered first, so /pick is A's and carries A's declaration.
-        assert session.vocabulary.flow("pick").name == "ext:a_ext.pick"
+        assert session.vocabulary.flow("pick").name == "ext:a_ext:pick"
         assert session.vocabulary.is_extension_flow("pick")
 
     async def test_the_shadowing_command_does_not_borrow_the_declaration(self, tmp_path):
@@ -239,8 +279,8 @@ class TestAShadowedFlowIsNotInherited:
 
         # /pick is now unbound; B's command is a plain one and declares nothing.
         assert session.vocabulary.flow("pick") is None
-        assert session.vocabulary.flow("ext:b_ext.pick") is None
-        assert (await session.run_extension_command("ext:b_ext.pick", "red")).output == (
+        assert session.vocabulary.flow("ext:b_ext:pick") is None
+        assert (await session.run_extension_command("ext:b_ext:pick", "red")).output == (
             "B picked red"
         )
 
@@ -251,10 +291,8 @@ class TestAShadowedFlowIsNotInherited:
         await _load(session, tmp_path, a_ext=_FLOW_A, b_ext=_FLOW_SHADOW)
 
         slot = complete_command_argument("/pick ", session.vocabulary)
-        assert slot is not None and slot.argument == Argument(
-            "colour", "a_colour", "Which colour."
-        )
-        assert complete_command_argument("/ext:b_ext.pick ", session.vocabulary) is None
+        assert slot is not None and slot.argument == Argument("colour", "a_colour", "Which colour.")
+        assert complete_command_argument("/ext:b_ext:pick ", session.vocabulary) is None
 
 
 class TestTheOneCollisionThatCanStillHappen:

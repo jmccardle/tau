@@ -168,7 +168,7 @@ class ExtensionRegistry:
     def register_command(self, name: str, command: dict, *, owner: str | None = None) -> None:
         """Install a command in the PRIVATE registry, under its qualified name.
 
-        ``name`` is an ``ext:<extension>.<command>`` name (docs/EXTENSION-NAMESPACE.md);
+        ``name`` is an ``ext:<extension>:<command>`` name (docs/EXTENSION-NAMESPACE.md);
         :meth:`ExtensionAPI.register_command` is what mints it, so an extension never
         spells one itself. The typed name is the contested one, and that is
         :meth:`bind_command`.
@@ -305,7 +305,7 @@ class ExtensionRegistry:
         """Look up a command by either name it answers to (``None`` if unknown).
 
         A typed name resolves through :meth:`get_bindings` first, so ``speak`` and
-        ``ext:pirate.speak`` reach the same dict while ``speak`` is bound there.
+        ``ext:pirate:speak`` reach the same dict while ``speak`` is bound there.
         """
         return self._commands.get(self._bindings.get(name, name))
 
@@ -328,7 +328,7 @@ class ExtensionRegistry:
     def command_names(self) -> set[str]:
         """Every name that resolves — bound typed names and qualified names alike.
 
-        What ``resolve_command`` is handed, which is why ``/ext:pirate.speak`` works
+        What ``resolve_command`` is handed, which is why ``/ext:pirate:speak`` works
         whether or not ``/speak`` is bound to it.
         """
         return set(self._bindings) | set(self._commands)

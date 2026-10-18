@@ -269,9 +269,9 @@ def build_parser() -> argparse.ArgumentParser:
         dest="ext_config",
         action="append",
         default=None,
-        metavar="NAME.KEY=VALUE",
+        metavar="NAME:KEY=VALUE",
         help="override a per-extension config value (repeatable; CLI > config.json). "
-        "VALUE is JSON-decoded when it parses (e.g. budget.ceiling=5.0), else a string",
+        "VALUE is JSON-decoded when it parses (e.g. budget:ceiling=5.0), else a string",
     )
     parser.add_argument(
         "--ui-defaults",

@@ -419,7 +419,7 @@ class CommandInfo:
             registered, ``template`` or ``skill`` for one the session expands into
             a prompt (docs/PROMPT-TEMPLATES-AND-SKILLS.md).
         flow: Whether :class:`NextStep` steps it.
-        hidden: A qualified extension name (``ext:pirate.speak``): it resolves,
+        hidden: A qualified extension name (``ext:pirate:speak``): it resolves,
             and a completion list leaves it out.
     """
 

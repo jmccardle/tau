@@ -64,10 +64,8 @@ is not.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
@@ -80,6 +78,7 @@ from tau_agent_core.capabilities import (
     slash_vocabulary,
 )
 from tau_agent_core.compare import split_compare_args
+from tau_agent_core.extension_sources import resolve_shorthand
 from tau_agent_core.flows import (
     Dispatched,
     DomainValue,
@@ -110,88 +109,59 @@ is not dispatched, it is expanded into the prompt (:func:`expand_prompt_command`
 NAMESPACE_PREFIX = "ext:"
 """What every private-registry command name begins with (docs/EXTENSION-NAMESPACE.md).
 
-``ext:pirate.speak`` is the pirate extension's ``speak``, and no other extension can
-register it — which is the whole point: a typed name like ``/speak`` is contested and
-a qualified one is not. Completion hides these until the reader types the prefix.
+``ext:pirate:speak`` is the pirate extension's ``speak``, and no other extension can
+register it. A typed name like ``/speak`` is contested and a qualified one is not.
+Completion hides these until the reader types the prefix. The owner is the
+extension's identifier, dots included (docs/EXTENSION-PACKAGES.md §3).
 """
-
-
-_UNSAFE_IN_OWNER = re.compile(r"[^0-9A-Za-z_-]")
-
-
-def extension_owner(label: str) -> str:
-    """The owner token for an extension, from the path label its bucket carries.
-
-    A file extension's label is its path, so the token is the file stem — the same
-    one ``/extensions`` and ``resolve_extension_target`` match on. An inline factory
-    has no path and carries ``module:qualname`` instead
-    (``AgentSession._extension_factory_label``), whose last segment is the factory's
-    own name. Both are then reduced to word characters, because the result is typed
-    after a ``/`` and ``.`` in particular is the separator
-    :func:`split_qualified_command` splits on.
-
-    Raises:
-        ValueError: Nothing usable is left. Fail-Early: the alternative is an
-            extension whose commands are named after the empty string.
-    """
-    stem = (
-        Path(label).stem if label.endswith(".py") else label.rsplit(":", 1)[-1].rsplit(".", 1)[-1]
-    )
-    owner = _UNSAFE_IN_OWNER.sub("_", stem).strip("_")
-    if not owner:
-        raise ValueError(
-            f"extension label {label!r} yields no usable name to qualify commands with"
-        )
-    return owner
 
 
 def qualified_command(owner: str, name: str) -> str:
     """The private-registry name for command ``name`` of extension ``owner``.
 
     Args:
-        owner: The extension's identity — its file stem, the same token
-            ``/extensions`` and ``resolve_extension_target`` already use.
+        owner: The extension's identifier
+            (:func:`~tau_agent_core.extension_sources.extension_identifier`).
         name: The command as the extension registered it.
 
     Returns:
-        ``ext:<owner>.<name>``.
+        ``ext:<owner>:<name>``.
 
     Raises:
-        ValueError: ``name`` contains a ``.`` (which would make the split ambiguous
-            against an owner stem that also contains one), or either part is empty or
-            contains a space. Fail-Early: an unparseable qualified name is a command
+        ValueError: ``name`` contains a ``:``, either part contains whitespace,
+            or either part is empty. An unparseable qualified name is a command
             nobody can type and every head would list.
     """
     if not owner or not name:
         raise ValueError(
             f"qualified_command needs both an owner and a name, got {owner!r}/{name!r}"
         )
-    if "." in name:
+    if ":" in name:
         raise ValueError(
-            f"command name {name!r} contains a '.', which is the separator "
-            f"{NAMESPACE_PREFIX}<extension>.<command> splits on. Rename the command."
+            f"command name {name!r} contains a ':', which is the separator "
+            f"{NAMESPACE_PREFIX}<extension>:<command> splits on. Rename the command."
         )
-    if " " in owner or " " in name:
+    if any(c.isspace() for c in owner + name):
         raise ValueError(
-            f"{owner!r}/{name!r} contains a space; a command name is the first word of a "
-            "line, so a space in it makes the rest read as arguments."
+            f"{owner!r}/{name!r} contains whitespace; a command name is the first word of "
+            "a line, so whitespace in it makes the rest read as arguments."
         )
-    return f"{NAMESPACE_PREFIX}{owner}.{name}"
+    return f"{NAMESPACE_PREFIX}{owner}:{name}"
 
 
 def split_qualified_command(name: str) -> tuple[str, str] | None:
     """``(owner, command)`` for a private-registry name, else ``None``.
 
-    Splits on the LAST ``.`` so an owner stem containing one (``my.ext.py``) still
-    parses; :func:`qualified_command` is what keeps the command half free of dots.
+    Splits on the LAST ``:``; :func:`qualified_command` keeps the command half
+    free of one, and a module name cannot contain one.
     """
     if not name.startswith(NAMESPACE_PREFIX):
         return None
     body = name[len(NAMESPACE_PREFIX) :]
-    dot = body.rfind(".")
-    if dot <= 0 or dot == len(body) - 1:
+    colon = body.rfind(":")
+    if colon <= 0 or colon == len(body) - 1:
         return None
-    return body[:dot], body[dot + 1 :]
+    return body[:colon], body[colon + 1 :]
 
 
 def is_qualified_command(name: str) -> bool:
@@ -298,7 +268,32 @@ def resolve_command(
         return CommandInvocation(name=name, args=args, origin="builtin")
     if name in extension_commands:
         return CommandInvocation(name=name, args=args, origin="extension")
+    expanded = _expand_owner_shorthand(name, extension_commands)
+    if expanded is not None:
+        return CommandInvocation(name=expanded, args=args, origin="extension")
     return None
+
+
+def _expand_owner_shorthand(name: str, extension_commands: Collection[str]) -> str | None:
+    """``ext:planner:budget`` as the one registered ``ext:<owner>:budget`` whose owner ends ``planner``.
+
+    docs/EXTENSION-PACKAGES.md §4: resolved fresh against the loaded commands,
+    never stored.
+
+    Raises:
+        ValueError: Two loaded owners share the typed segment.
+    """
+    split = split_qualified_command(name)
+    if split is None:
+        return None
+    token, command = split
+    owners = [
+        parts[0]
+        for parts in (split_qualified_command(n) for n in extension_commands)
+        if parts is not None and parts[1] == command
+    ]
+    resolved = resolve_shorthand(token, owners)
+    return None if resolved is None else qualified_command(resolved, command)
 
 
 def expand_prompt_command(

@@ -26,10 +26,10 @@ Load the wrapper AFTER something that registers ``/todos``:
     tau -e examples/38_todo.py -e examples/61_command_wrapper.py
     > /todos
     No todos yet. Ask the agent to add some!
-    > /ext:61_command_wrapper.todos
+    > /ext:61_command_wrapper:todos
     [wrapped] No todos yet. Ask the agent to add some!
     > /wrap-status
-    wrapping ext:38_todo.todos ('Show all todos on the current branch')
+    wrapping ext:38_todo:todos ('Show all todos on the current branch')
 
 Load it alone and it takes ``/todos`` itself, with nothing underneath:
 

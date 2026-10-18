@@ -650,14 +650,18 @@ def _noop_tool(name: str, **extra: Any) -> dict[str, Any]:
 def ext_git(api):
     api.register_tool(_noop_tool("git_status", tags=["vcs"]))
     api.register_tool(_noop_tool("git_log", tags=["vcs"], exposure="callable"))
-    api.register_tool(_noop_tool("gh_pr", namespace="ext_git.github"))
+    api.register_tool(_noop_tool("gh_pr", namespace=f"{EXT_GIT}.github"))
+
+
+EXT_GIT = f"{__name__}.ext_git"
+"""An inline factory's identifier is its ``module.qualname`` (docs/EXTENSION-PACKAGES.md §2)."""
 
 
 async def test_tools_are_found_by_glob_namespace_tag_and_exposure(tmp_path):
     ctx = _session(tmp_path, ext_git)._extension_api.context
     assert [d.name for d in ctx.list_tools("git_*")] == ["git_status", "git_log"]
     assert [d.name for d in ctx.list_tools(namespace="core")] == ["read", "bash", "grep", "ls"]
-    assert [d.name for d in ctx.list_tools(namespace="ext_git.*")] == ["gh_pr"]
+    assert [d.name for d in ctx.list_tools(namespace=f"{EXT_GIT}.*")] == ["gh_pr"]
     assert [d.name for d in ctx.list_tools(tag="vcs", exposure="callable")] == ["git_log"]
     grep = ctx.describe_tool("grep")
     assert grep.namespace == "core" and grep.output_schema is not None and grep.callable
@@ -667,9 +671,9 @@ async def test_tools_are_found_by_glob_namespace_tag_and_exposure(tmp_path):
 
 async def test_extensions_are_found_by_name(tmp_path):
     ctx = _session(tmp_path, ext_git)._extension_api.context
-    info = ctx.find_extension("ext_git")
+    info = ctx.find_extension(EXT_GIT)
     assert info is not None and info.tools == ("git_status", "git_log", "gh_pr")
-    assert [e.name for e in ctx.list_extensions("ext_*")] == ["ext_git"]
+    assert [e.name for e in ctx.list_extensions("*.ext_*")] == [EXT_GIT]
     assert ctx.find_extension("absent") is None
 
 
@@ -847,10 +851,11 @@ def test_captured_output_refuses_an_unknown_stream():
 
 
 async def test_find_extension_refuses_an_ambiguous_name(tmp_path):
-    def ext_git(api):  # noqa: F811
+    def twin(api):
         api.register_tool(_noop_tool("git_other"))
 
-    ctx = _session(tmp_path, globals()["ext_git"], ext_git)._extension_api.context
-    assert [e.name for e in ctx.list_extensions()] == ["ext_git", "ext_git"]
+    twin.__qualname__ = ext_git.__qualname__
+    ctx = _session(tmp_path, ext_git, twin)._extension_api.context
+    assert [e.name for e in ctx.list_extensions()] == [EXT_GIT, EXT_GIT]
     with pytest.raises(ValueError, match="2 loaded extensions"):
-        ctx.find_extension("ext_git")
+        ctx.find_extension(EXT_GIT)

@@ -1109,18 +1109,22 @@ resolve_extension_target(token: str) -> str | None
 
 `tau_agent_core.agent_session.AgentSession.resolve_extension_target`
 
-Resolve a user token (full path or file stem) to a managed path.
+Resolve what a user typed to a managed extension's label.
 
-The listing shows stems, so ``disable 21_reminders`` must map to the
-loaded path.
+``token`` may be the label itself, the identifier, or the identifier's
+last dotted segment (docs/EXTENSION-PACKAGES.md §4), resolved fresh.
 
 **Parameters**
 
-- `token: str` — What the user typed: a managed path, or a file stem.
+- `token: str` — A label, an identifier, or a shorthand segment.
 
 **Returns**
 
-The exact path if managed, else the one path with that stem; ``None`` when nothing matches or the stem is ambiguous (no guessing).
+The managed label, or ``None`` when nothing matches.
+
+**Raises**
+
+- `ValueError` — The shorthand matches two extensions; the message names both.
 
 ### resolve_model
 

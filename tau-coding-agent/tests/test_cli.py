@@ -716,7 +716,7 @@ async def test_run_print_plumbs_ext_config(fake_backend, capsys):
     """--ext-config merges over config.json "extensions" and reaches the backend (S40)."""
     config = {**_config(), "extensions": {"budget": {"ceiling": 1.0, "warn": 0.5}}}
     await run_print(
-        CLIArgs(messages=["hi"], print_mode=True, ext_config=["budget.ceiling=9.0"]),
+        CLIArgs(messages=["hi"], print_mode=True, ext_config=["budget:ceiling=9.0"]),
         config,
     )
     # CLI override wins on ceiling; config.json warn survives.

@@ -612,7 +612,7 @@ _GET_COMMANDS_RETURNS: dict[str, Any] = {
                     "hidden": {
                         "type": "boolean",
                         "description": (
-                            "True for a private-registry name — `ext:<extension>.<command>`, "
+                            "True for a private-registry name — `ext:<extension>:<command>`, "
                             "which every extension command always has and which nothing can "
                             "take from it (docs/EXTENSION-NAMESPACE.md). It resolves exactly "
                             "like any other name; it is marked because offering both halves "
@@ -2150,7 +2150,7 @@ class Vocabulary:
         """The flow of that name, or ``None``.
 
         A typed name goes through :attr:`aliases` first, so ``/speak`` finds the flow
-        declared as ``ext:pirate.speak`` while it is bound there, and stops finding it
+        declared as ``ext:pirate:speak`` while it is bound there, and stops finding it
         the moment the binding moves — which is what keeps one extension's argument
         form from being rendered for another's handler.
         """

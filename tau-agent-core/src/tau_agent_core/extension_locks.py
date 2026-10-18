@@ -16,7 +16,6 @@ permission to extend the session now (docs/EXTENSION-LOCKS.md §2).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 REQUEST_ENTRY_TYPE = "extension_request"
@@ -58,8 +57,10 @@ class ExtensionRequest:
 
     @property
     def extension_name(self) -> str:
-        """The display stem of :attr:`extension` (``~/x/tectum.py`` → ``tectum``)."""
-        return Path(self.extension).stem
+        """The identifier of :attr:`extension` (``…/tectum.py`` → ``tectum``)."""
+        from tau_agent_core.extension_sources import extension_identifier
+
+        return extension_identifier(self.extension)
 
     @property
     def label(self) -> str:

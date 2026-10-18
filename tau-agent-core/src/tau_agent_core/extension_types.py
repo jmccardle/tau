@@ -15,14 +15,12 @@ from __future__ import annotations
 
 import concurrent.futures
 import fnmatch
-from pathlib import Path
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 from uuid import uuid4
 
 from tau_agent_core.capabilities import BUILTIN, Argument, Domain, Flow, FlowDeclaration
 from tau_agent_core.commands import (
-    extension_owner,
     is_qualified_command,
     qualified_command,
     split_qualified_command,
@@ -62,7 +60,8 @@ def ext_channel(name: str, topic: str) -> str:
     namespace. A subscriber passes the result to ``api.on(...)``.
 
     Args:
-        name: The emitting extension's file stem, the one that keys ``api.config``.
+        name: The emitting extension's identifier, the one that keys ``api.config``
+            (docs/EXTENSION-PACKAGES.md §3: dots kept, ``:`` delimits).
         topic: The extension's own topic name.
 
     Returns:
@@ -1908,7 +1907,7 @@ class ExtensionAPI:
             op: The calling method, for the error message only.
 
         Returns:
-            The runner bucket path's stem, the same stem that keys :attr:`config`.
+            The bucket's identifier, the same one that keys :attr:`config`.
 
         Raises:
             RuntimeError: No runner bucket is bound, so there is no identity.
@@ -1920,7 +1919,7 @@ class ExtensionAPI:
                 "the api from AgentSession's extension load path (each factory "
                 "is handed a bucket-bound api)."
             )
-        return Path(self._hook_handlers.path).stem
+        return self._hook_handlers.name
 
     async def submit(
         self,
@@ -2190,31 +2189,30 @@ class ExtensionAPI:
 
     @property
     def extension_name(self) -> str:
-        """This extension's identity (docs/EXTENSION-NAMESPACE.md).
+        """This extension's identifier (docs/EXTENSION-PACKAGES.md §2).
 
-        The owner half of every qualified command name, normalized by
-        :func:`~tau_agent_core.commands.extension_owner` — a file extension's stem,
-        an inline factory's own name.
+        The owner half of every qualified command name ``ext:<name>:<command>``:
+        a package's module name, a file's stem verbatim, an inline factory's
+        ``module.qualname``.
 
         Raises:
             RuntimeError: This api is not bound to a runner bucket, so it has no
-                identity to qualify a name with. Fail-Early, and the same refusal
-                :meth:`on` makes for the same reason (S24).
+                identity to qualify a name with, the same refusal :meth:`on` makes.
         """
         if self._hook_handlers is None:
             raise RuntimeError(
                 "this ExtensionAPI is not bound to a loaded extension, so it has no name. "
-                "Commands are registered under ext:<extension>.<command>, which needs one. "
+                "Commands are registered under ext:<extension>:<command>, which needs one. "
                 "Construct it with hook_handlers=ExtensionHandlers(path=…)."
             )
-        return extension_owner(self._hook_handlers.path)
+        return self._hook_handlers.name
 
     def register_command(self, name: str, command: dict) -> str | None:
         """Register a slash command, and try to claim ``name`` for it.
 
         Two registrations, because there are two names (docs/EXTENSION-NAMESPACE.md).
         The command is installed in the private registry at
-        ``ext:<extension>.<name>``, where nothing can displace it, and then ``name``
+        ``ext:<extension>:<name>``, where nothing can displace it, and then ``name``
         itself is claimed. Claiming is first-wins: if another extension already holds
         it, or a human pinned it elsewhere, this one keeps only its qualified name.
 
@@ -2244,7 +2242,7 @@ class ExtensionAPI:
 
         Args:
             name: Either name a command answers to: the typed one or the qualified
-                ``ext:<extension>.<name>``.
+                ``ext:<extension>:<name>``.
 
         Returns:
             The registered command dict, or ``None`` if ``name`` resolves to none.
@@ -2297,7 +2295,7 @@ class ExtensionAPI:
         result = await self._session.run_extension_command(name, args)
         if not result.handled:
             raise RuntimeError(
-                f"no command named {name!r}. Qualified names are ext:<extension>.<command>; "
+                f"no command named {name!r}. Qualified names are ext:<extension>:<command>; "
                 "a typed name only resolves while some extension holds it."
             )
         return result.output
@@ -2336,7 +2334,7 @@ class ExtensionAPI:
         Returns:
             What :meth:`register_command` returns — ``None`` when ``/name`` is this
             flow, else the qualified name that holds it. The flow itself is always
-            reachable at ``ext:<extension>.<name>``.
+            reachable at ``ext:<extension>:<name>``.
 
         Raises:
             ValueError: ``name`` or ``description`` is empty; ``handler`` is not
@@ -2637,8 +2635,8 @@ class ExtensionAPI:
         """This extension's per-run config slice (E6 §2 / S40).
 
         The dict sourced from ``~/.tau/config.json`` under
-        ``"extensions": {"<name>": {…}}`` (keyed by this extension's file stem),
-        with per-run ``--ext-config <name>.<key>=<value>`` overrides applied on
+        ``"extensions": {"<name>": {…}}`` (keyed by this extension's identifier),
+        with per-run ``--ext-config <name>:<key>=<value>`` overrides applied on
         top (CLI > config.json). An unconfigured extension reads ``{}`` — the
         extension supplies its own defaults (Fail-Early: the harness never
         fabricates a value it wasn't given). Values from config.json keep their
