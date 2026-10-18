@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentSession(*, model: Model, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS)
+class AgentSession(*, model: Model, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS, tool_allowlist: Sequence[str] | None = None, tool_denylist: Sequence[str] = ())
 ```
 
 `tau_agent_core.agent_session.AgentSession`
@@ -41,6 +41,8 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 - `cwd: str | None = None` — Where tools and ``@path`` references resolve; ``None`` means the process cwd. Stored absolute.
 - `prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES` — The templates ``submit`` expands for ``/name args``; none by default.
 - `skills: SkillCatalog = EMPTY_SKILLS` — The skills ``submit`` expands for ``/skill:name args``; none by default.
+- `tool_allowlist: Sequence[str] | None = None` — ``--tools``: when given, only these names are offered, built-in or extension-registered. Names are checked once extensions have loaded (:meth:`check_tool_filters`, #43).
+- `tool_denylist: Sequence[str] = ()` — ``--exclude-tools``: names never offered, checked the same way.
 
 **Raises**
 
@@ -139,6 +141,24 @@ The outcome, with ``action`` ``"authorize"``.
 **Raises**
 
 - `AuthorizationStoreError` — The store cannot be read.
+
+### check_tool_filters
+
+```python
+check_tool_filters() -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.check_tool_filters`
+
+Refuse a ``--tools`` or ``--exclude-tools`` name that no tool answers to (#43).
+
+Called once extensions have loaded, because an extension's tools exist
+only after its ``register`` ran. A built-in name counts even when it was
+not constructed.
+
+**Raises**
+
+- `ValueError` — ``Unknown tool: <name>`` for the first such name.
 
 ### close_cursor
 
@@ -806,6 +826,7 @@ The extensions loaded, the failures collected and the sources withheld. The fail
 
 **Raises**
 
+- `ValueError` — A ``--tools``/``--exclude-tools`` name matches no tool once loading is done (:meth:`check_tool_filters`).
 - `FileNotFoundError` — An explicit path names no file.
 - `ExtensionCapabilityError` — An explicit extension declares a capability this session lacks, or an invalid ``CONFIG_SCHEMA``.
 - `Exception` — Whatever an explicit extension's import or ``register`` raises, unchanged. None of these is raised when ``collect_explicit_errors`` is set.

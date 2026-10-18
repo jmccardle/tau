@@ -86,14 +86,31 @@ def resolve_tool_names(config: dict[str, Any]) -> list[str]:
     tool-suppression flags — ``--no-tools`` and ``--no-builtin-tools``, each of
     which sets ``tools=[]`` — are already folded in.
 
-    This answers only "which BUILT-INS?". Whether extension-registered tools are
-    also withheld is ``config["no_tools"] == "all"``, decided far downstream in
-    ``AgentSession._build_turn_tools``; it is not this function's question and is
-    deliberately not second-guessed here.
+    This answers only "which BUILT-INS?", so a name that is not a built-in is
+    left for :func:`resolve_tool_filters`; it may be an extension's tool, which
+    does not exist until extensions load (#43).
     """
     names = config.get("tools", list(DEFAULT_TOOL_NAMES))
     exclude = set(config.get("exclude_tools") or [])
-    return [t for t in names if t not in exclude]
+    return [t for t in names if t in DEFAULT_TOOL_NAMES and t not in exclude]
+
+
+def resolve_tool_filters(config: dict[str, Any]) -> tuple[list[str] | None, list[str]]:
+    """The ``--tools`` allowlist and ``--exclude-tools`` denylist over EVERY tool (#43).
+
+    :func:`resolve_tool_names` answers which built-ins to construct; this
+    answers what the session may offer, extension tools included, and the
+    session checks the names once extensions have loaded
+    (``AgentSession.check_tool_filters``). A suppression flag (``no_tools``)
+    empties ``tools`` itself, so it yields no allowlist.
+
+    Returns:
+        ``(allowlist or None, denylist)``.
+    """
+    allow = None
+    if "tools" in config and config.get("no_tools") is None:
+        allow = list(config["tools"])
+    return allow, list(config.get("exclude_tools") or [])
 
 
 def json_mode_payloads(projector: MessageDeltaProjector, event: AgentEvent) -> list[dict[str, Any]]:
@@ -1484,6 +1501,7 @@ class TauBackend(Backend):
         )
 
         no_tools = config.get("no_tools")
+        tool_allowlist, tool_denylist = resolve_tool_filters(config)
 
         max_turns = config.get("max_turns")
 
@@ -1503,6 +1521,8 @@ class TauBackend(Backend):
             cwd=cwd,
             prompt_templates=templates,
             skills=skills,
+            tool_allowlist=tool_allowlist,
+            tool_denylist=tool_denylist,
         )
         if compaction.summarizer is not None:
             self.agent_session.require_compaction_resolver(compaction.summarizer)

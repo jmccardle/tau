@@ -199,7 +199,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--tools",
         "-t",
         default=None,
-        help="comma-separated tool allowlist (e.g. read,bash)",
+        help="comma-separated allowlist over built-in AND extension tools (e.g. "
+        "read,web_fetch); names are checked once extensions have loaded",
     )
     parser.add_argument(
         "--no-tools",
@@ -242,7 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="exclude_tools",
         default=None,
         metavar="LIST",
-        help="comma-separated tool denylist (e.g. bash,write)",
+        help="comma-separated denylist over built-in and extension tools (e.g. bash,write)",
     )
     parser.add_argument(
         "--no-builtin-tools",

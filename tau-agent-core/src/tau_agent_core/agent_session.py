@@ -22,6 +22,7 @@ import inspect
 import logging
 import os
 import uuid
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
 from dataclasses import dataclass, replace
@@ -566,6 +567,10 @@ class AgentSession:
             none by default.
         skills: The skills ``submit`` expands for ``/skill:name args``; none by
             default.
+        tool_allowlist: ``--tools``: when given, only these names are offered,
+            built-in or extension-registered. Names are checked once
+            extensions have loaded (:meth:`check_tool_filters`, #43).
+        tool_denylist: ``--exclude-tools``: names never offered, checked the same way.
 
     Raises:
         ValueError: Both or neither of ``session_log`` and ``cursor``; both
@@ -594,6 +599,8 @@ class AgentSession:
         cwd: str | None = None,
         prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES,
         skills: SkillCatalog = EMPTY_SKILLS,
+        tool_allowlist: Sequence[str] | None = None,
+        tool_denylist: Sequence[str] = (),
     ) -> None:
         if cursor is not None and session_log is not None:
             raise ValueError("pass session_log or cursor, not both")
@@ -618,6 +625,8 @@ class AgentSession:
                 "would silently mean 'no suppression'."
             )
         self._no_tools = no_tools
+        self._tool_allowlist = None if tool_allowlist is None else frozenset(tool_allowlist)
+        self._tool_denylist = frozenset(tool_denylist)
         if max_turns is not None and max_turns < 1:
             raise ValueError(
                 f"max_turns must be at least 1, got {max_turns} — "
@@ -1784,6 +1793,8 @@ class AgentSession:
             :meth:`extension_records` reports.
 
         Raises:
+            ValueError: A ``--tools``/``--exclude-tools`` name matches no tool
+                once loading is done (:meth:`check_tool_filters`).
             FileNotFoundError: An explicit path names no file.
             ExtensionCapabilityError: An explicit extension declares a capability
                 this session lacks, or an invalid ``CONFIG_SCHEMA``.
@@ -1811,6 +1822,7 @@ class AgentSession:
             self._disabled_paths.discard(loaded.path)
         self._extension_load_errors = list(result.errors)
         self._extension_withheld = list(result.withheld)
+        self.check_tool_filters()
         for label, topics in self.orphan_subscriptions().items():
             _EXT_LOG.debug(
                 "%s subscribes to %s, but no loaded extension emits under that name (#44)",
@@ -4856,12 +4868,38 @@ class AgentSession:
             return []
 
         ext_tools = self._resolve_extension_tools()
-        if not ext_tools:
+        if not ext_tools and self._tool_allowlist is None and not self._tool_denylist:
             return self._tools
         by_name: dict[str, AgentTool] = {t.name: t for t in self._tools}
         for t in ext_tools:
             by_name[t.name] = t
-        return list(by_name.values())
+        return [
+            tool
+            for name, tool in by_name.items()
+            if (self._tool_allowlist is None or name in self._tool_allowlist)
+            and name not in self._tool_denylist
+        ]
+
+    def check_tool_filters(self) -> None:
+        """Refuse a ``--tools`` or ``--exclude-tools`` name that no tool answers to (#43).
+
+        Called once extensions have loaded, because an extension's tools exist
+        only after its ``register`` ran. A built-in name counts even when it was
+        not constructed.
+
+        Raises:
+            ValueError: ``Unknown tool: <name>`` for the first such name.
+        """
+        from tau_agent_core.sdk import _BUILTIN_TOOL_CLASSES
+
+        known = (
+            set(_BUILTIN_TOOL_CLASSES)
+            | {t.name for t in self._tools}
+            | {info.name for info in self._registry.get_all_tools()}
+        )
+        for name in sorted((self._tool_allowlist or frozenset()) | self._tool_denylist):
+            if name not in known:
+                raise ValueError(f"Unknown tool: {name}")
 
     def _make_extension_api(
         self,

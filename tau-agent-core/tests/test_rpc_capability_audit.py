@@ -93,6 +93,10 @@ NOT_EXPOSED: dict[str, str] = {
         "Authorizing runs an extension's code on the user's say-so (docs/EXTENSION-PACKAGES.md "
         "§5); a wire verb waits on deciding who may grant that from a remote head."
     ),
+    "check_tool_filters": (
+        "A startup check load_extensions already runs (#43); a host has nothing to "
+        "re-check, since the filters are fixed at construction."
+    ),
     "orphan_subscriptions": (
         "Its result rides list_extensions as each row's orphan_topics; a separate verb "
         "would be a second read of one fact."
