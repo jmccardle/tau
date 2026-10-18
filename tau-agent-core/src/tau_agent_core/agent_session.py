@@ -2234,7 +2234,7 @@ class AgentSession:
         an appended ``tool_exposure`` message on the path: now when no turn is
         running, before the next completion when one is. A masked tool stays
         declared and a model call to it is refused with the reason. Repeating the
-        override already on the path writes nothing.
+        exposure ``name`` already has, by override or by default, writes nothing.
 
         Args:
             name: The tool to override.
@@ -2246,10 +2246,11 @@ class AgentSession:
         """
         if exposure not in TOOL_EXPOSURES:
             raise ValueError(f"set_tool_exposure: {exposure!r} is not one of {TOOL_EXPOSURES}")
-        if name not in {t.name for t in self._build_turn_tools()}:
+        tool = next((t for t in self._build_turn_tools() if t.name == name), None)
+        if tool is None:
             raise ValueError(f"set_tool_exposure: no tool named {name!r}")
         overrides = dict(self._exposure_overrides())
-        if overrides.get(name) == exposure:
+        if overrides.get(name, tool.exposure) == exposure:
             return
         overrides[name] = exposure
         await self._record_config()
@@ -2276,8 +2277,7 @@ class AgentSession:
         """What :meth:`redeclare_tools` with ``changes`` would do to the ``tools`` block.
 
         A head calls this to warn the user before a change that re-bills the
-        prompt. Writes nothing, and unlike :meth:`redeclare_tools` it ignores a
-        name that is not a tool here instead of raising.
+        prompt. Writes nothing.
 
         Args:
             changes: Tool name to ``True`` (declare) or ``False`` (withdraw),
@@ -2286,17 +2286,27 @@ class AgentSession:
         Returns:
             :func:`~tau_agent_core.prompt_cache.tool_block_change` from the
             current block to the one ``changes`` would produce.
+
+        Raises:
+            ValueError: a name is not a tool here.
         """
-        before = self._turn_tools()
+        tools = self._build_turn_tools()
+        unknown = sorted(set(changes) - {t.name for t in tools})
+        if unknown:
+            raise ValueError(f"redeclare_tools: no tool named {unknown}")
         declaration = {**self._declaration_overrides(), **changes}
         after = self._narrowed(
-            [
-                t
-                for t in self._build_turn_tools()
-                if declaration.get(t.name, t.exposure in DECLARED_EXPOSURES)
-            ]
+            [t for t in tools if declaration.get(t.name, t.exposure in DECLARED_EXPOSURES)]
         )
-        return tool_block_change(before, after)
+        return tool_block_change(self._turn_tools(), after)
+
+    def _declared_names(self, declaration: dict[str, bool]) -> set[str]:
+        """The tools ``declaration`` declares, before any cursor frame narrows them."""
+        return {
+            t.name
+            for t in self._build_turn_tools()
+            if declaration.get(t.name, t.exposure in DECLARED_EXPOSURES)
+        }
 
     @agent_facing(topic="extensions")
     async def redeclare_tools(self, changes: dict[str, bool]) -> ToolBlockChange:
@@ -2304,7 +2314,8 @@ class AgentSession:
 
         A user action, never something a tool or extension does on its own: any
         change here costs a full prompt-cache miss on the next request. Recorded as
-        a ``tool_declaration`` config entry, so a resume declares the same set.
+        a ``tool_declaration`` config entry, so a resume declares the same set; a
+        change that leaves every tool's declaration as it was writes nothing.
 
         Args:
             changes: Tool name to ``True`` (declare) or ``False`` (withdraw).
@@ -2315,13 +2326,10 @@ class AgentSession:
         Raises:
             ValueError: a name is not a tool here.
         """
-        known = {t.name for t in self._build_turn_tools()}
-        unknown = sorted(set(changes) - known)
-        if unknown:
-            raise ValueError(f"redeclare_tools: no tool named {unknown}")
         change = self.preview_redeclare(changes)
-        declaration = {**self._declaration_overrides(), **changes}
-        if declaration != self._declaration_overrides():
+        current = self._declaration_overrides()
+        declaration = {**current, **changes}
+        if self._declared_names(declaration) != self._declared_names(current):
             await self._record_config()
             await self.acting_cursor.append_config(tool_declaration=declaration)
         return change

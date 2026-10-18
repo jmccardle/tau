@@ -54,10 +54,20 @@ class CapturedOutput:
         """Append ``text`` to one stream's buffer, counting what the cap drops.
 
         Args:
-            stream: ``"stdout"``; any other value writes stderr.
+            stream: ``"stdout"`` or ``"stderr"``.
             text: What was written.
+
+        Raises:
+            ValueError: ``stream`` is neither.
         """
-        buf = self.stdout if stream == "stdout" else self.stderr
+        if stream == "stdout":
+            buf = self.stdout
+        elif stream == "stderr":
+            buf = self.stderr
+        else:
+            raise ValueError(
+                f"CapturedOutput.write: stream must be 'stdout' or 'stderr', not {stream!r}"
+            )
         room = MAX_CAPTURED_CHARS - buf.tell()
         buf.write(text[: max(room, 0)])
         self.dropped += max(len(text) - max(room, 0), 0)

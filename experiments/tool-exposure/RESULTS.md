@@ -240,6 +240,14 @@ after)` reports added, removed, changed and reordered tools, and whether the
 change invalidates the cache. `session.preview_redeclare(changes)` applies it to
 a pending redeclaration, so every head can warn before the user confirms.
 
+*Corrected 2026-10-17 (#20, §8):* `preview_redeclare` ignored a name that is not
+a tool while `redeclare_tools` raised for it; the preview now raises the same
+`ValueError`. Both writers also wrote entries that changed nothing: they compared
+override maps rather than effective state, so declaring an already-declared tool,
+or setting a tool to its default exposure, appended a config entry (and, for an
+exposure, a notice to the model). Each now writes only when the effective
+declaration set or exposure changes.
+
 **What pi does (read, corrected).** The first version of this record said pi
 "keeps the declared set fixed and appends a message". That is wrong for tool
 search. It came from CODE-MODE §5.2, which says it of pi's code-mode tool
@@ -322,11 +330,25 @@ default. The seven built-ins come to 2341 characters as stubs, against 3820 as
 name, description and parameters JSON. The stubs carry return types; the JSON
 does not.
 
+*Corrected 2026-10-17 (#20, §8):* as first built, a parameter or property name
+that is not a Python identifier (`from`, `my-arg`) was written as-is, so the stub
+did not parse; and `render_stubs` dropped only exact-text repeats, so two shapes
+sharing a title both emitted `class X`. Both are fixed; §8 says how.
+
 **Two sharp edges (ran).** On Python 3.11, pydantic rejects `typing.TypedDict`
 and requires `typing_extensions.TypedDict`; the error is passed through. Under
 `from __future__ import annotations`, a type defined inside a function does not
 resolve: `get_type_hints` raises `NameError`. Both are probably the first thing
 an extension author hits.
+
+*Corrected 2026-10-17 (#20, §8):* the second edge was wider than stated.
+`get_type_hints(fn)` resolved *every* annotation, so `output_schema_of` raised
+`NameError` for an unresolvable parameter when only the return was wanted, and
+`tool_from_function` raised for a `ctx: ExtensionContext` imported under
+`TYPE_CHECKING`, though it never uses `ctx`'s type. Now only the annotations
+used are evaluated. On 3.14 a type local to the defining function resolves too,
+because annotations are read in `FORWARDREF` format; on 3.11–3.13 under the
+future import it still does not.
 
 **Who writes to stdio (read, ran).** No built-in tool prints. Of the examples,
 `34_desktop_notify` writes escape sequences to `sys.stdout` from a hook, and
@@ -426,3 +448,95 @@ or C code that writes to fd 1, bypasses it. For that the rule is per spawner.
 - Live runs: two `tau -p --mode json -m haiku-4.5 -e examples/62_tool_exposure.py`
   runs, 3083 and 3445 tokens. Session files and raw JSONL stayed in a scratch
   directory and are not committed.
+
+## 8. Corrections from issue #20 (2026-10-17)
+
+The docstring pass of 2026-10-14 wrote each defect below into the docstring as
+current behaviour. Each fixed one has a test under "issue #20" in
+`test_tool_exposure_experiment.py`; that test failed before the fix.
+
+**Fixed (ran).**
+
+- `preview_redeclare` raises `ValueError` for a name that is not a tool, as
+  `redeclare_tools` always did. A preview that accepts what the action refuses
+  tells a head the change is fine, and then the change fails.
+- `redeclare_tools` writes a `tool_declaration` entry only when the set of
+  declared tools changes. `set_tool_exposure` writes only when the tool's
+  effective exposure changes, counting its default. Both used to compare
+  override maps, so `redeclare_tools({"bash": True})` on a tool declared by
+  default, or `set_tool_exposure("bash", "direct")` on a `direct` tool, wrote a
+  tree entry. The exposure case also appended a notice telling the model that
+  nothing had changed. Setting a tool back to its default after an override
+  still writes, because there the effective exposure does change.
+- `render_stub` keeps a name that cannot be a Python identifier exactly as it
+  is, and does not rename it. A script calls a tool by keyword and the invoker
+  passes the keywords on unchanged, so `_from` in the stub would be a name the
+  tool rejects. A `TypedDict` with such a key uses the functional form,
+  `X = TypedDict("X", {"from": int})`. A tool with such a parameter is rendered
+  as `async def f(**kwargs: Unpack[f_arguments])`. A key that class syntax would
+  name-mangle (`__x`) counts as such a name. `render_stubs` imports `Unpack`.
+- `render_stubs` uses one writer for the whole module. When a different shape
+  arrives under a class name already in use, it becomes `Name_2`, and the stub
+  that uses it refers to `Name_2`. The renamed class's nested classes are
+  rendered again under the new name. A class is still written once. Raising an
+  error was the alternative. It loses because pydantic titles are class names,
+  so two extensions that each return a `Result` would make the listing fail, and
+  the class names exist only in the stub, never at run time.
+- `output_schema_of` evaluates only the return annotation, and
+  `tool_from_function` evaluates only the annotations it uses: the return and
+  every parameter except `ctx`. Both build a function that carries only those
+  annotations and the original's globals and type parameters, then call
+  `typing.get_type_hints` on it. On 3.14 the raw annotations are read in
+  `annotationlib.Format.FORWARDREF` format, because without it reading
+  `__annotations__` evaluates all of them. An unresolvable return still raises
+  `NameError`.
+- `CapturedOutput.write` raises `ValueError` for a stream other than `"stdout"`
+  or `"stderr"`, where it used to write it to stderr.
+- `ExtensionContext.find_extension` raises `ValueError` naming every path when
+  two loaded extensions share a name. Two files with the same stem in different
+  extension directories do this, and so do two inline factories with the same
+  function name. It used to return the first one silently.
+
+**Left for a decision.**
+
+- *Output-capture proxies stay installed after the first capture.* The proxy
+  does nothing outside a capture: a write goes straight to the wrapped stream.
+  But it is a process-wide change that an embedder did not ask for. The options:
+  (a) keep it as it is, documented. (b) Count the active captures, and put the
+  wrapped streams back when the count reaches zero, but only if `sys.stdout` is
+  still the proxy. The cost of (b): a task a tool spawned keeps the copied
+  context, so a print it makes after the call ends now reaches the real stdout.
+  Under `tau -p --mode json` that is a non-JSON line in the event stream, the
+  hazard §5 measured. (c) Have the library never install the proxies, and have
+  each head install them at startup. An SDK embedder would then get no capture
+  unless it asks for it.
+- *`search_deferred` matches substrings, so `"a"` matches almost every deferred
+  tool.* §3 rejected a ranker on purpose. Since then, code mode's
+  `codemode/invoker.py` has built `_Bm25` for its own `search_tools`, so τ has
+  two search semantics for one question. The options: (a) match whole tokens.
+  `"a"` still matches every description that uses the article. (b) Reuse `_Bm25`
+  for `search_deferred`. IDF ranks a word every tool shares last, but a query
+  still returns `limit` results whenever that many contain it. (c) Wait for
+  CODE-MODE §7's `ToolRanker` and route both callers through it. (b) reverses
+  §3's decision, which is why it is not built here.
+
+**Found while fixing, not fixed (read).**
+
+- `codemode/prompt.py`'s `python_signature` builds the stubs that code mode puts
+  in the model's prompt. It is not `render_stub`, and it **silently drops** a
+  parameter whose name is not an identifier. A required `from` disappears from
+  the signature the model reads. This is the same defect as the `render_stub`
+  one above, with a worse result, in the renderer code mode actually uses. The
+  fix is either a second copy of the treatment above or one renderer for both.
+  Which one is a code-mode design question.
+- `render_stub` still runs the *tool* name through `_identifier`. A tool named
+  `my-tool` is stubbed as `my_tool`, which `call_tool(name=...)` would not find.
+- A `$ref` that names no entry in `$defs` renders as a bare class name that is
+  never defined, so the stub raises `NameError` when it is executed.
+
+**Evidence (ran).** Nine new tests, all failing before the fixes; the experiment
+file collects 48. The packaging gate flagged `annotationlib` as an undeclared
+third-party module, because it reads the 3.11 `sys.stdlib_module_names`; it now
+carries a `LATER_STDLIB` table. The annotation path was checked by hand on
+3.14.8. Full suite on Python 3.11.2: 6978 passed, 159 skipped, 6 deselected,
+3 xfailed. The four static gates pass on all five `src` trees.
