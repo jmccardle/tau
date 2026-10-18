@@ -134,7 +134,7 @@ behaves as before. The OpenAI message text is byte-identical to 0.12.0, which
 keeps JMFTS's `^HTTP (\d{3}) from model ` regex working (`PROVIDER-HTTP-ERRORS.md`
 §4). `ErrorEvent.exception` carries the original, and `result()` re-raises it.
 
-## BREAKING: an abort says who asked, and a user abort drops queued followUps
+## BREAKING: an abort says who asked, and a user abort drops what was queued
 
 `AbortSignal.abort(reason="user" | "extension")` defaults to `"user"`.
 `ctx.abort()` is `"extension"` (`docs/TURN-SETTINGS.md` §4).
@@ -144,6 +144,11 @@ keeps JMFTS's `^HTTP (\d{3}) from model ` regex working (`PROVIDER-HTTP-ERRORS.m
 - After a **user** abort (Esc, Ctrl-C, RPC `abort`), queued followUps are dropped
   and announced by the new `follow_ups_dropped` event. The TUI shows a toast, the
   REPL a system line, `tau -p` a stderr line (§5).
+- **A user abort also refuses every `enqueue` submission waiting for the turn**
+  (§5.1). Each returns `accepted=False`, and its text joins the same
+  `follow_ups_dropped` event, after the followUps. Before, tau-code's Stop ended
+  one turn and the queued prompts then ran one after another. An extension
+  abort leaves them alone. An enqueue submitted after the abort runs.
 - **An abort now cancels the pending provider read** (§4.1, #36 #37). tau-code
   measured an abort answered at +1.0 s while `message_end` waited for the
   server's next byte at +4.0 s, and `agent_end` said `"done"`. Each provider now
@@ -386,7 +391,9 @@ fixture made the same mistake. `MarkdownExporter` had the same bug, also fixed.
   `tool_execution_*`, `Usage.reasoning_tokens`.
 - **Changed meaning:** `dropped_tool_calls` counts calls not run, kept calls
   included. A mid-stream abort ends `end_reason: "aborted"`, where it used to say
-  `"done"`.
+  `"done"`. A user `abort` refuses waiting `enqueue` submissions with
+  `accepted: false`, and `follow_ups_dropped.dropped` lists their texts after the
+  followUps.
 - **Widened enum:** `CommandInfo.origin` adds `template` and `skill`.
 - **Defaults a host now meets:** compaction on, and `stop_reason: "error"` for a
   `content_filter` finish on OpenAI-compatible wires.

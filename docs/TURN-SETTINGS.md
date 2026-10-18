@@ -160,6 +160,40 @@ unbounded is pushed" rule (G3): every excluded field there is pullable, and thes
 texts are not — they were never written to the tree. It rides the unreleased RPC
 2.2 / serve 0.9 bump (`TAU-SERVE.md` §5).
 
+### 5.1 A user abort also refuses waiting `enqueue` submissions (built 2026-10-18)
+
+Found by tau-code against 87f2845:
+- Two prompts were submitted with `multitask_strategy: "enqueue"` while a turn ran.
+- An `abort` stopped the turn.
+- Both prompts then ran, one after the other, and no `follow_ups_dropped` came.
+
+So Stop stopped one turn, and the queue the user saw kept going.
+
+The cause: an enqueue submission is not in any queue. Its `submit()` waits on
+`cursor.turn_lock`, so the abort could not reach it.
+
+What happens now:
+- Each waiting enqueue registers an `EnqueuedWait` on `cursor.enqueued`.
+- `AgentSession.abort()` marks every wait on the target cursor dropped, and on
+  each cursor it owns. It copies each wait's text to `cursor.dropped_enqueued`.
+- A dropped submission still takes the lock in FIFO order, releases it at once,
+  and returns `accepted=False`. Its `rejection_reason` is
+  `"dropped by a user abort while waiting for the turn"`.
+- The texts are announced in the same `follow_ups_dropped` event as the dropped
+  followUps: followUps first, then enqueues in submission order.
+- The aborted turn's drain announces them while it still holds the lock. If no
+  turn drain ran (the lock holder was not a turn, or the turn raised), the
+  first refused wait announces them.
+- An enqueue submitted after the abort runs normally.
+
+An `"extension"` abort leaves waiting enqueues alone, as it leaves followUps to
+run. A `rollback` submission's own abort does not drop them either. Rollback's
+FIFO rule ("a rollback does not jump an already-queued enqueue") is unchanged.
+
+**Alternative rejected:** an `abort` parameter that opts into the drop. It would
+make a Stop that does not stop the default, and every head would have to pass
+the flag to get the behaviour the user asked for.
+
 ## 6. The model's config name is recorded
 
 `AgentSession` remembers the name `set_model` resolved (`_model_name`; on a

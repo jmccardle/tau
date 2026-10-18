@@ -225,9 +225,9 @@ class AgentEvent(BaseModel):
         max_retries: The most retries that request will make.
         delay_seconds: How long τ waits before re-sending it; the status being
             retried is ``error_detail.status`` (docs/PROVIDER-RETRY.md §5).
-        dropped: The queued followUp texts a user abort discarded, in queue
-            order, on ``follow_ups_dropped`` only (docs/TURN-SETTINGS.md §5).
-            Written nowhere else.
+        dropped: The texts a user abort discarded, on ``follow_ups_dropped``
+            only: queued followUps, then waiting ``enqueue`` submissions
+            (docs/TURN-SETTINGS.md §5, §5.1). Written nowhere else.
     """
 
     type: Literal[

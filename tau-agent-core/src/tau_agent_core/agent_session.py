@@ -71,7 +71,7 @@ from tau_agent_core.session_log import (
     config_entry_at,
     session_log_is_addressable,
 )
-from tau_agent_core.cursor import TURN_CURSOR, Cursor, TurnFrame
+from tau_agent_core.cursor import TURN_CURSOR, Cursor, EnqueuedWait, TurnFrame
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.seed import check_seed, normalise_seed
 from tau_agent_core.agent_loop import AgentLoop
@@ -2923,7 +2923,8 @@ class AgentSession:
         1. **Admission** by ``sub.multitask_strategy``, against ``cursor``'s own
            lock, queues and abort signal, so turns on two cursors run concurrently
            (docs/CURSORS.md §2). ``"reject"`` refuses if a turn is in flight;
-           ``"enqueue"`` waits for it; ``"steer"`` puts the text on the running
+           ``"enqueue"`` waits for it, and a user :meth:`abort` refuses every
+           waiting enqueue; ``"steer"`` puts the text on the running
            turn's steer queue, delivered before its next LLM call, or runs a turn
            if none is in flight; ``"rollback"`` aborts the in-flight turn, waits,
            and moves the cursor back to that turn's pre-turn leaf, refusing if a
@@ -3019,7 +3020,24 @@ class AgentSession:
                     rejection_reason="a turn is already in flight",
                 )
         elif sub.multitask_strategy == "enqueue":
-            await cur.turn_lock.acquire()
+            wait = EnqueuedWait(sub.text)
+            cur.enqueued.append(wait)
+            try:
+                await cur.turn_lock.acquire()
+            finally:
+                if wait in cur.enqueued:
+                    cur.enqueued.remove(wait)
+            if wait.dropped:
+                try:
+                    if cur.dropped_enqueued:
+                        await self._drop_follow_ups(cur)
+                finally:
+                    cur.turn_lock.release()
+                return SubmissionResult(
+                    accepted=False,
+                    submission_id=sub.submission_id,
+                    rejection_reason="dropped by a user abort while waiting for the turn",
+                )
         elif sub.multitask_strategy == "steer":
             if not await self._reserve_turn_or_reject(cur):
                 steer_depth_token = DRIVING_SUBMISSION_DEPTH.set(sub.depth)
@@ -3797,14 +3815,23 @@ class AgentSession:
             turn_messages.extend(follow_up_messages)
             await self._maybe_auto_compact()
             await self._drain_deferred_ops()
+        if cursor.dropped_enqueued:
+            await self._drop_follow_ups(cursor)
 
     async def _drop_follow_ups(self, cursor: Cursor) -> None:
-        """Empty ``cursor``'s followUp queue, write nothing, and emit ``follow_ups_dropped``."""
-        dropped = list(cursor.follow_up_queue)
+        """Empty ``cursor``'s followUp queue and dropped enqueues, and announce them.
+
+        Writes nothing. One ``follow_ups_dropped`` carries the followUps, then the
+        enqueued texts in submission order (docs/TURN-SETTINGS.md §5, §5.1).
+        """
+        dropped = [*cursor.follow_up_queue, *cursor.dropped_enqueued]
         cursor.follow_up_queue.clear()
-        await self._emit_stamped(
-            AgentEvent(type="follow_ups_dropped", timestamp=self._timestamp(), dropped=dropped)
-        )
+        cursor.dropped_enqueued.clear()
+        event = AgentEvent(type="follow_ups_dropped", timestamp=self._timestamp(), dropped=dropped)
+        if cursor is self.acting_cursor:
+            await self._emit_stamped(event)
+        else:
+            await self._events.emit(event.model_copy(update={"cursor_id": cursor.id}))
 
     async def _run_user_turn_end(self, turn_messages: list[dict[str, Any]]) -> None:
         """Fire the ``user_turn_end`` hook once, at the user-turn boundary (§16.5).
@@ -4330,8 +4357,8 @@ class AgentSession:
         """Abort ``cursor``'s turn, every cursor it owns, and every still-running forked branch.
 
         A ``"user"`` abort: every head's stop key lands here, and the followUps
-        queued for the aborted turn are dropped and announced rather than run
-        (docs/TURN-SETTINGS.md §4-5). Owned cursors are aborted first, deepest
+        queued for the aborted turn, and every ``enqueue`` submission waiting for
+        it, are dropped and announced rather than run (docs/TURN-SETTINGS.md §4-5). Owned cursors are aborted first, deepest
         first, so a sub-agent stops before the turn that spawned it
         (docs/CURSORS.md §6). Each loses its queued steers: the turn they were
         aimed at is gone. A fork's background task is cancelled, since no caller
@@ -4350,9 +4377,11 @@ class AgentSession:
         for owned in reversed(self._owned_by(target)):
             owned.abort_signal.abort(reason="user")
             owned.steer_queue.clear()
+            _drop_enqueued(owned)
         target.is_streaming = False
         target.abort_signal.abort(reason="user")
         target.steer_queue.clear()
+        _drop_enqueued(target)
         for task in self._forked_tasks.values():
             task.cancel()
 
@@ -5044,3 +5073,11 @@ class AgentSession:
         import time
 
         return int(time.time() * 1000)
+
+
+def _drop_enqueued(cursor: Cursor) -> None:
+    """Mark every ``enqueue`` waiting on ``cursor`` dropped, keeping its text to announce."""
+    for wait in cursor.enqueued:
+        wait.dropped = True
+        cursor.dropped_enqueued.append(wait.text)
+    cursor.enqueued.clear()
