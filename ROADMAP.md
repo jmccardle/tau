@@ -35,6 +35,10 @@ does not repeat them.
   - #38 a public API to embed `tau serve` (asked by tau-search). Open.
   - #39 an extension cannot contribute a prompt template. Open.
   - #41 check PyPI for updates to τ and to installed extensions. Open.
+  - #43 `--tools` cannot allowlist an extension's tool: `_resolve_tools`
+    accepts built-ins only and runs before extensions load (`sdk.py:243`,
+    `:1453`). Found by tau-search on the 0.13.0 wheel; the workaround is
+    `--no-builtin-tools`. Open.
 - **#42, not milestoned:** on the TUI's startup screen, the command popup says
   an extension command such as `/budget` "goes to the model as text", and
   completion omits it. The command still runs: the submission carries
