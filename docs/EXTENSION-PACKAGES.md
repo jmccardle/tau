@@ -80,7 +80,7 @@ filename is never an error at startup:
 |---|---|
 | `-`, digits first, a keyword (`class.py`), non-ASCII | Nothing. The identifier is a string, and only the import name has to be an identifier. |
 | `.` (`my.ext.py`) | The identifier `my.ext` reads as dotted. It is unambiguous, because authorization names the source (§5). The shorthand segment is `ext`. |
-| `:` or whitespace (both legal on Linux) | `:` would break `--ext-config` and topic parsing, and whitespace would break commands, which `qualified_command` already refuses (`commands.py:148`). **Open decision:** the proposal is to list the file in `tau ext list` as found but unusable, naming the character and saying to rename it, and not to load it. τ keeps running (decision 1), and the problem is shown rather than hidden. |
+| `:` or whitespace (both legal on Linux) | `:` would break `--ext-config` and topic parsing, and whitespace would break commands, which `qualified_command` already refuses (`commands.py:148`). **Decided by John on 2026-10-18:** `tau ext list` shows the file as found but unusable, naming the character and saying to rename it. The file does not load. τ keeps running (decision 1), and the problem is shown rather than hidden. |
 
 An extension loaded by explicit path (`-e /abs/dir/handset_bus.py`) follows
 the same rule, so its identifier is `handset_bus`. τ does not derive a dotted
@@ -146,6 +146,11 @@ Decided 2026-10-18 (#35 decisions 1, 3 and 8).
     "Same distribution, new version" is an update and "distribution never seen"
     is new, and the prompt shows which.
   - For a drop-in, the record is keyed by path, with no version.
+- **An extension named on the command line is authorized by being named.**
+  This covers `-e PATH` and `-e <module.name>`. Decided by John on 2026-10-18,
+  for headless hosts with no TTY: Tectum spawns `tau --mode rpc
+  --no-extensions --extension PATH`, and #38's embedders do the same. The gate
+  covers what τ *discovers*, and `--no-extensions` turns discovery off.
 - **A collision neither blocks loading nor gets past authorization.** A
   same-named extension from an unauthorized source is offered to the user. It
   is never loaded silently, and it never stops τ.
