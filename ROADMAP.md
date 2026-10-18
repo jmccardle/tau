@@ -49,9 +49,11 @@ does not repeat them.
   - #35: which separator replaces `.` in `--ext-config NAME.KEY=VALUE`, since a
     module name contains dots (proposed: `NAME:KEY=VALUE`)?
   - #42: which fix, and whether it is in 0.14.0.
-  - Milestone 0.13.0 still holds 15 open issues after the release: move them
-    to 0.14.0, to a backlog, or close them. #1 ("Cut 0.13.0") is done and still
-    open.
+  - ~~Milestone 0.13.0 still holds open issues~~ — decided 2026-10-18: #1 is
+    closed, and the 14 others moved to a new `backlog` milestone, not to 0.14.0.
+    Milestone 0.13.0 is closed.
+- **Held by the owner, 2026-10-18:** this file's commits go to `origin` only.
+  The `github` push waits for the next release.
   - Carried, unchanged: #3 trust gate (`docs/TRUST-GATE.md` §6), #13
     `register_provider` and a package manager (`docs/EXTENSION-PROVIDERS.md`
     §5; #35 overlaps it), #11 template name collisions, #12 the HTML export
