@@ -41,6 +41,16 @@ does not repeat them.
       tau_router.planner:profile=p`, topics
       `ext:tau_router.planner:need_router`, commands
       `ext:tau_router.planner:budget`. Nothing maps `.` to `_`.
+    - An extension named on the command line (`-e PATH`, `-e <module.name>`)
+      is authorized by being named, so headless hosts such as Tectum need no
+      approval step.
+    - A file-loaded extension's identifier is its stem, verbatim
+      (`my-ext.py` → `my-ext`), imported under a private module name. A stem
+      containing `:` or whitespace is listed as unusable and not loaded.
+  - #45 tau-jmfts sent `max_tokens` to JMFTS's chunk endpoint, which 0.7.0
+    renamed `max_words` and made `extra="forbid"`. Decided: send `max_words`
+    and require JMFTS ≥ 0.7.0. **Built** on `fix/tau-jmfts-max-words`
+    (`fc87129`), not merged, and not yet run against a live 0.7.1 server.
   - #44 a subscription to an `ext:` topic that no loaded extension emits is
     visible in `tau ext list` and as a debug notice. Companion rule to #35's
     topic rename, which would otherwise break hard-coded subscribers silently.
