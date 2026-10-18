@@ -83,11 +83,20 @@ EXPOSED: dict[str, str] = {
     "reload_extension": "reload_extension",
     "list_managed_extensions": "list_managed_extensions",
     "get_extension_state": "get_extension_state",
+    "extension_records": "list_extensions",
     "get_extension_config": "get_extension_config",
     "set_extension_config": "set_extension_config",
 }
 
 NOT_EXPOSED: dict[str, str] = {
+    "authorize_extension": (
+        "Authorizing runs an extension's code on the user's say-so (docs/EXTENSION-PACKAGES.md "
+        "§5); a wire verb waits on deciding who may grant that from a remote head."
+    ),
+    "orphan_subscriptions": (
+        "Its result rides list_extensions as each row's orphan_topics; a separate verb "
+        "would be a second read of one fact."
+    ),
     "describe_tools": (
         "Experimental tool discovery for extensions (experiments/tool-exposure). A wire "
         "verb waits on the decision whether a host may see callable and deferred tools."
@@ -237,8 +246,7 @@ NOT_EXPOSED: dict[str, str] = {
         "yet, so a stdio host cannot mark the active get_models row (ROADMAP)."
     ),
     "resolve_model": (
-        "Returns an API key, which never goes on a wire; set_model is the verb "
-        "that uses it."
+        "Returns an API key, which never goes on a wire; set_model is the verb that uses it."
     ),
     "model_and_key": (
         "Returns an API key, which never goes on a wire; spawn and ctx.complete "

@@ -243,6 +243,7 @@ async def test_every_frame_a_session_produces_validates_against_the_schema(daemo
         "get_pending_request",
         "list_managed_extensions",
         "get_extension_state",
+        "list_extensions",
     ):
         await client.rpc(verb, sid, head)
     await client.rpc("complete_path", sid, head, text="@no", offset=3)

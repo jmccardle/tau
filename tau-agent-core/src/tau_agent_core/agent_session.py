@@ -19,6 +19,7 @@ import concurrent.futures
 import copy
 import hashlib
 import inspect
+import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -86,7 +87,11 @@ from tau_agent_core.commands import (
     prompt_command_completions,
     resolve_command,
 )
-from tau_agent_core.extension_sources import extension_identifier, resolve_shorthand
+from tau_agent_core.extension_sources import (
+    ExtensionRecord,
+    extension_identifier,
+    resolve_shorthand,
+)
 from tau_agent_core.prompt_templates import EMPTY_TEMPLATES, PromptTemplateCatalog
 from tau_agent_core.skills import EMPTY_SKILLS, SkillCatalog
 from tau_agent_core.flows import Dispatched, Performed, Ready
@@ -200,6 +205,10 @@ class SessionStats:
     usage: dict[str, Any] | None
 
 
+_EXT_LOG = logging.getLogger("tau.extensions")
+"""Where load-time debug notices go, such as a subscription no loaded extension can answer (#44)."""
+
+
 @agent_facing(topic="sessions")
 @dataclass(frozen=True)
 class ExtensionActionResult:
@@ -214,7 +223,7 @@ class ExtensionActionResult:
     writer. The move is visible in ``message``.
 
     Attributes:
-        action: ``"enable"``, ``"disable"``, ``"reload"`` or ``"configure"``.
+        action: ``"enable"``, ``"disable"``, ``"reload"``, ``"configure"`` or ``"authorize"``.
         path: The resolved extension path, or the caller's token when it named
             no loaded extension.
         ok: False for a reportable no-op or bad target (not loaded, already in
@@ -626,6 +635,8 @@ class AgentSession:
         self._loaded_extensions: dict[str, LoadedExtension] = {}
         self._disabled_paths: set[str] = set()
         self._extension_load_errors: list["ExtensionLoadError"] = []
+        self._extension_withheld: list[ExtensionRecord] = []
+        self._extension_dirs: tuple[str | None, str | None] = (None, None)
         self._loop: asyncio.AbstractEventLoop | None = None
         try:
             self._loop = asyncio.get_running_loop()
@@ -1740,32 +1751,37 @@ class AgentSession:
         user_dir: str | None = None,
         extensions_config: dict[str, dict[str, Any]] | None = None,
         collect_explicit_errors: bool = False,
+        store_path: str | None = None,
     ) -> LoadExtensionsResult:
-        """Load file-path extensions into THIS live session (E5 §2, S26/S27).
+        """Load the authorized and the explicitly named extensions into THIS session.
 
-        Each extension's ``register(api)`` runs against an api bound to its own
-        runner bucket (:meth:`_bind_extension_api`), labelled by file path and
-        appended in load order, so its hooks fire in this session's loop. Called
-        after construction, which resolves the load-vs-bind ordering (E5 D-E5-7).
-        Nothing is printed; the caller surfaces ``errors``.
+        :func:`~tau_agent_core.sdk.plan_extensions` decides what loads
+        (docs/EXTENSION-PACKAGES.md §5). Each extension's ``register(api)`` runs
+        against an api bound to its own runner bucket (:meth:`_bind_extension_api`),
+        in load order, so its hooks fire in this session's loop. Nothing is
+        printed; the caller surfaces ``errors``, ``withheld`` and
+        ``grandfathered``.
 
         Args:
-            explicit_paths: ``-e`` paths. A failure here raises unless
-                ``collect_explicit_errors``.
-            discover: Whether to scan the global extensions dir; ``-ne`` sets
+            explicit_paths: ``-e`` values, paths or module names. A failure
+                here raises unless ``collect_explicit_errors``.
+            discover: Whether to discover drop-ins and packages; ``-ne`` sets
                 False. ``explicit_paths`` load either way.
-            user_dir: The global extensions dir; ``None`` means
-                ``~/.tau/extensions``.
-            extensions_config: Per-extension config keyed by file stem (S40),
+            user_dir: The drop-in directory; ``None`` means
+                ``<tau home>/extensions``.
+            extensions_config: Per-extension config keyed by identifier (S40),
                 stored BEFORE binding so each ``api.config`` is sliced from it.
                 ``None`` keeps the current map.
             collect_explicit_errors: Collect an explicit failure into ``errors``
                 like a discovered one, and keep loading (the TUI cannot abort
                 mid-load).
+            store_path: The authorization store; ``None`` is the file beside
+                the drop-in directory. :meth:`authorize_extension` writes the same one.
 
         Returns:
-            The extensions loaded and the failures collected. The failures also
-            replace what :meth:`get_extension_state` reports.
+            The extensions loaded, the failures collected and the sources
+            withheld. The failures and withheld sources also replace what
+            :meth:`extension_records` reports.
 
         Raises:
             FileNotFoundError: An explicit path names no file.
@@ -1780,6 +1796,7 @@ class AgentSession:
 
         from tau_agent_core.sdk import _load_extensions
 
+        self._extension_dirs = (user_dir, store_path)
         result = await _load_extensions(
             explicit_paths,
             discover=discover,
@@ -1787,11 +1804,19 @@ class AgentSession:
             api_factory=self._bind_extension_api,
             collect_explicit_errors=collect_explicit_errors,
             bus_available=self._bus_available,
+            store_path=store_path,
         )
         for loaded in result.extensions:
             self._loaded_extensions[loaded.path] = loaded
             self._disabled_paths.discard(loaded.path)
         self._extension_load_errors = list(result.errors)
+        self._extension_withheld = list(result.withheld)
+        for label, topics in self.orphan_subscriptions().items():
+            _EXT_LOG.debug(
+                "%s subscribes to %s, but no loaded extension emits under that name (#44)",
+                extension_identifier(label),
+                ", ".join(topics),
+            )
         return result
 
     @agent_facing(topic="extensions")
@@ -1822,6 +1847,119 @@ class AgentSession:
         return LoadExtensionsResult(
             extensions=list(self._loaded_extensions.values()),
             errors=list(self._extension_load_errors),
+        )
+
+    @agent_facing(topic="extensions")
+    def extension_records(self) -> list[ExtensionRecord]:
+        """Every extension this session knows of and its state: the ``tau ext list`` rows, live.
+
+        Loaded and disabled extensions, those that failed, and those found and
+        withheld (docs/EXTENSION-PACKAGES.md §7). A loaded row carries the
+        topics it subscribed to that no loaded extension emits (#44).
+
+        Returns:
+            The records, from
+            :func:`~tau_agent_core.sdk.session_extension_records`.
+        """
+        from tau_agent_core.sdk import session_extension_records
+
+        return session_extension_records(
+            list(self._loaded_extensions.values()),
+            self._disabled_paths,
+            self._extension_load_errors,
+            self._extension_withheld,
+            self.orphan_subscriptions(),
+        )
+
+    def orphan_subscriptions(self) -> dict[str, tuple[str, ...]]:
+        """Per enabled extension, the ``ext:`` topics it subscribed to whose emitter is not loaded (#44).
+
+        A topic's emitter is its middle segment, which every emit derives from
+        the emitting extension's own identifier, so an emitter that is not
+        loaded can never deliver (docs/EXTENSION-PACKAGES.md §10).
+
+        Returns:
+            ``{label: topics}``, for extensions with at least one such topic.
+        """
+        from tau_agent_core.extension_types import EXT_CHANNEL_PREFIX
+
+        emitters = {bucket.name for bucket in self._extension_runner._extensions}
+        found: dict[str, tuple[str, ...]] = {}
+        for bucket in self._extension_runner._extensions:
+            orphans = []
+            for topic in bucket.subscriptions:
+                emitter = topic[len(EXT_CHANNEL_PREFIX) :].rpartition(":")[0]
+                if emitter not in emitters:
+                    orphans.append(topic)
+            if orphans:
+                found[bucket.path] = tuple(orphans)
+        return found
+
+    async def authorize_extension(self, token: str) -> ExtensionActionResult:
+        """Authorize a withheld, discovered extension and load it into this session.
+
+        Writes the authorization record (docs/EXTENSION-PACKAGES.md §5), loads
+        the source, and fires its ``session_start`` (reason ``"enable"``). A
+        discovered extension that fails to load is reported, not raised, as at
+        startup.
+
+        Args:
+            token: The withheld extension's identifier, or its last dotted segment.
+
+        Returns:
+            The outcome, with ``action`` ``"authorize"``.
+
+        Raises:
+            AuthorizationStoreError: The store cannot be read.
+        """
+        from tau_agent_core.extension_auth import AuthorizationStore, store_path_for
+        from tau_agent_core.extension_sources import default_extensions_dir
+        from tau_agent_core.sdk import ExtensionLoadError, _load_source, find_discovered_extension
+
+        pending = {r.identifier: r for r in self._extension_withheld if r.state == "unauthorized"}
+        try:
+            ident = resolve_shorthand(token, list(pending))
+        except ValueError as err:
+            return ExtensionActionResult("authorize", token, False, str(err))
+        if ident is None:
+            return ExtensionActionResult(
+                "authorize", token, False, f"no extension awaiting authorization is named {token!r}"
+            )
+        record = pending[ident]
+        user_dir, store_path = self._extension_dirs
+        directory = Path(user_dir) if user_dir is not None else default_extensions_dir()
+        kind: Literal["package", "dropin"] = "dropin" if record.kind == "dropin" else "package"
+        target = record.target if record.kind == "dropin" else ident
+        try:
+            source = find_discovered_extension(target, extensions_dir=directory, kind=kind)
+        except ValueError as err:
+            return ExtensionActionResult("authorize", ident, False, str(err))
+        store = AuthorizationStore.load(store_path or store_path_for(directory))
+        store.authorize(source)
+        store.save()
+        self._extension_withheld = [r for r in self._extension_withheld if r is not record]
+        try:
+            loaded = await _load_source(
+                source, self._bind_extension_api, bus_available=self._bus_available
+            )
+        except Exception as exc:
+            self._extension_load_errors.append(
+                ExtensionLoadError(path=source.label, error=str(exc), source=source)
+            )
+            return ExtensionActionResult(
+                "authorize",
+                source.label,
+                False,
+                f"authorized {ident}, but it failed to load: {exc}",
+            )
+        self._loaded_extensions[loaded.path] = loaded
+        bucket = self._extension_runner.get_extension(loaded.path)
+        if bucket is not None:
+            await self._extension_runner.emit_session_start_for(
+                bucket, {"type": "session_start", "reason": "enable"}
+            )
+        return ExtensionActionResult(
+            "authorize", loaded.path, True, f"authorized and loaded {ident}"
         )
 
     def list_managed_extensions(self) -> list[tuple[str, bool]]:
@@ -2056,6 +2194,8 @@ class AgentSession:
             content_hash=loaded.content_hash,
             subjects=loaded.subjects,
             touches_bus=loaded.touches_bus,
+            config_schema=loaded.config_schema,
+            source=loaded.source,
         )
         self._disabled_paths.discard(target)
         bucket = self._extension_runner.get_extension(target)
@@ -2100,10 +2240,15 @@ class AgentSession:
             )
             self._extension_runner.remove_extension(target)
             self._unregister_bucket(bucket)
-        from tau_agent_core.sdk import _load_one_extension
+        from tau_agent_core.extension_sources import ExtensionSource
+        from tau_agent_core.sdk import _load_source
 
-        new_loaded = await _load_one_extension(
-            Path(target), self._bind_extension_api, bus_available=self._bus_available
+        previous = self._loaded_extensions[target].source
+        source = previous or ExtensionSource(
+            identifier=extension_identifier(target), kind="path", target=target
+        )
+        new_loaded = await _load_source(
+            source, self._bind_extension_api, bus_available=self._bus_available, reload=True
         )
         self._loaded_extensions[target] = new_loaded
         self._disabled_paths.discard(target)

@@ -22,12 +22,12 @@ from pathlib import Path
 
 import pytest
 
+from tau_agent_core.extension_sources import discover_dropins
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.sdk import (
     ExtensionLoadError,
     LoadedExtension,
     LoadExtensionsResult,
-    _discover_extension_paths,
     _load_extensions,
 )
 
@@ -381,5 +381,5 @@ class TestResultShape:
         plain = tmp_path / "plaindir"
         plain.mkdir()  # no __init__.py -> skipped
 
-        found = {p.name for p in _discover_extension_paths(str(tmp_path))}
+        found = {Path(s.target).name for s in discover_dropins(tmp_path)}
         assert found == {"a.py", "pkg"}

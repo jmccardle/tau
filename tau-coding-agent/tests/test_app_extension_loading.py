@@ -476,3 +476,59 @@ def test_format_extensions_listing_empty_when_nothing_loaded():
     from tau_agent_core.sdk import LoadExtensionsResult
 
     assert TauApp._format_extensions_listing(LoadExtensionsResult()) == "No extensions loaded."
+
+
+# ── the authorization prompt (docs/EXTENSION-PACKAGES.md §9) ─────────────────
+
+
+async def test_an_unauthorized_drop_in_is_offered_and_loads_on_yes(app):
+    from tau_agent_core import extension_sources
+    from tau_coding_agent.modals import ExtensionAuthorizationDialog
+
+    directory = extension_sources.default_extensions_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory.parent / "extension-authorizations.json").write_text('{"format": 1}')
+    (directory / "late.py").write_text(_FULL_EXT)
+    app._discover_extensions = True
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.run_worker(app.action_new_chat())
+        for _ in range(50):
+            await pilot.pause()
+            if isinstance(app.screen, ExtensionAuthorizationDialog):
+                break
+        assert isinstance(app.screen, ExtensionAuthorizationDialog)
+        assert "late" in app.screen.dialog_title()
+        await pilot.click("#extension-authorize-yes")
+        for _ in range(50):
+            await pilot.pause()
+            states = {r.identifier: r.state for r in app.current_backend.extension_records()}
+            if states.get("late") == "loaded":
+                break
+        assert states == {"late": "loaded"}
+
+
+async def test_not_now_is_remembered_for_the_run(app):
+    from tau_agent_core import extension_sources
+    from tau_coding_agent.modals import ExtensionAuthorizationDialog
+
+    directory = extension_sources.default_extensions_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory.parent / "extension-authorizations.json").write_text('{"format": 1}')
+    (directory / "late.py").write_text(_FULL_EXT)
+    app._discover_extensions = True
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.run_worker(app.action_new_chat())
+        for _ in range(50):
+            await pilot.pause()
+            if isinstance(app.screen, ExtensionAuthorizationDialog):
+                break
+        await pilot.click("#extension-authorize-no")
+        await pilot.pause()
+        await app._load_backend_extensions()
+        await pilot.pause()
+        assert not isinstance(app.screen, ExtensionAuthorizationDialog)
+        assert ("late", str(directory / "late.py")) in app._declined_extensions

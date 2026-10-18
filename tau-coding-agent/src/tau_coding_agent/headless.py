@@ -324,6 +324,21 @@ def resolve_extensions_config(
     return merged
 
 
+def report_extension_load(result: Any) -> None:
+    """Write a load's failures, grandfathered drop-ins and withheld extensions to stderr.
+
+    Headless heads never prompt: an unauthorized extension is named with the
+    command that authorizes it, and the run goes on without it
+    (docs/EXTENSION-PACKAGES.md §9).
+    """
+    from tau_agent_core.sdk import withheld_notices
+
+    for ext_error in result.errors:
+        print(f"[τ] failed to load extension {ext_error.path}: {ext_error.error}", file=sys.stderr)
+    for line in withheld_notices(result):
+        print(f"[τ] {line}", file=sys.stderr)
+
+
 def parse_ui_defaults(raw: str | None) -> dict[str, str]:
     """Parse ``--ui-defaults METHOD=ANSWER,…`` into ``{method: token}`` (E7 §3 / S48).
 
@@ -895,11 +910,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
             discover=discover_extensions,
             extensions_config=extensions_config,
         )
-        for ext_error in ext_result.errors:
-            print(
-                f"[τ] failed to load extension {ext_error.path}: {ext_error.error}",
-                file=sys.stderr,
-            )
+        report_extension_load(ext_result)
 
         if emit_session_start is not None:
             await emit_session_start("startup")

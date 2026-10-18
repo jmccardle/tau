@@ -84,6 +84,9 @@ class FakeAgentSession:
     def get_extension_state(self) -> LoadExtensionsResult:
         return self.extension_state
 
+    def extension_records(self) -> list:
+        return list(self.extension_state.withheld)
+
     async def compact(self, custom_instructions: str | None = None) -> CompactionResult | None:
         self.events.append("compact")
         self.compactions.append(custom_instructions)

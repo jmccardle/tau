@@ -23,7 +23,7 @@ from tau_agent_core.extension_types import (
 )
 from textual import events
 
-from tau_coding_agent.dialogs import TauDialog, TextDialog, dialog_buttons
+from tau_coding_agent.dialogs import ChoiceDialog, TauDialog, TextDialog, dialog_buttons
 
 _T = TypeVar("_T")
 
@@ -417,3 +417,19 @@ class ExtensionFormScreen(_FieldForm[Optional[dict]]):
             self.action_submit()
         else:
             self.dismiss(None)
+
+
+class ExtensionAuthorizationDialog(ChoiceDialog[bool]):
+    """Ask whether to authorize and load a discovered extension (docs/EXTENSION-PACKAGES.md §9).
+
+    The title and body come from :func:`tau_agent_core.sdk.authorization_prompt`;
+    ``escape`` is "not now", never a hidden yes.
+    """
+
+    DIALOG_ID = "extension-authorization-dialog"
+    CHOICES = (
+        ("Authorize and load", "extension-authorize-yes", True),
+        ("Not now", "extension-authorize-no", False),
+    )
+    CANCEL_VALUE = False
+    VERTICAL = False

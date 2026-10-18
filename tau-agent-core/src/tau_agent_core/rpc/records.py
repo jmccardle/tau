@@ -520,6 +520,23 @@ class ManagedExtension:
 
 
 @dataclass
+class ExtensionRecordWire:
+    """One row of ``list_extensions``: an extension and its state (``extension_sources.ExtensionRecord``)."""
+
+    identifier: str
+    kind: str
+    target: str
+    state: str
+    reason: str | None
+    distribution: str | None
+    version: str | None
+    entry_point: str | None
+    authorization: str | None
+    previous_version: str | None
+    orphan_topics: list[str]
+
+
+@dataclass
 class LoadError:
     """An extension file that failed to load, and why."""
 
@@ -641,6 +658,7 @@ RESULT_TYPES: dict[str, dict[str, Any]] = {
     "get_pending_request": {"request": ExtensionRequest | None},
     "list_managed_extensions": {"extensions": list[ManagedExtension]},
     "get_extension_state": {"extensions": list[ExtensionInfo], "errors": list[LoadError]},
+    "list_extensions": {"extensions": list[ExtensionRecordWire]},
     "get_extension_config": {
         "schema": Annotated[dict[str, Any], Shape(FormSpec)] | None,
         "values": dict[str, Any],

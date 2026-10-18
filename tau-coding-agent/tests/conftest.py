@@ -173,3 +173,29 @@ def wait_for_workers_settled() -> Callable[[App], Any]:
                 raise result
 
     return _wait
+
+
+_REAL_HOME = __import__("pathlib").Path.home()
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_extensions_dir(tmp_path_factory, monkeypatch):
+    """Keep drop-in discovery, and the authorization store beside it, out of the real home.
+
+    Discovery read the developer's real ``~/.tau/extensions``; since 0.14.0 a first
+    discovery also writes the authorization store (docs/EXTENSION-PACKAGES.md §5). A
+    test that points ``HOME`` somewhere itself keeps that home.
+    """
+    from pathlib import Path
+
+    from tau_agent_core import extension_sources
+    from tau_agent_core.tau_home import resolve_tau_home
+
+    spare = tmp_path_factory.mktemp("tau-home")
+
+    def _directory() -> Path:
+        if Path.home() != _REAL_HOME:
+            return resolve_tau_home() / "extensions"
+        return spare / "extensions"
+
+    monkeypatch.setattr(extension_sources, "default_extensions_dir", _directory)

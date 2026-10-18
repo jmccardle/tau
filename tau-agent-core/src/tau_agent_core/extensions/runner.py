@@ -70,6 +70,7 @@ class ExtensionHandlers:
     tools: list[str] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)
     shortcuts: list[str] = field(default_factory=list)
+    subscriptions: list[str] = field(default_factory=list)
 
     @property
     def name(self) -> str:

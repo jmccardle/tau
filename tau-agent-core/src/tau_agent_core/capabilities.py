@@ -1343,6 +1343,25 @@ _GET_EXTENSION_STATE_RETURNS: dict[str, Any] = {
     "required": ["extensions", "errors"],
 }
 
+_LIST_EXTENSIONS_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "extensions": {
+            "type": "array",
+            "description": (
+                "Every extension this session knows of and its state, as the rows of "
+                "`tau ext list` (docs/EXTENSION-PACKAGES.md §7): loaded, disabled, "
+                "failed, and found-but-not-loaded (unauthorized, unusable, "
+                "collision). Each row names the identifier, source kind, target, "
+                "distribution and version for a package, why it is not loaded, and "
+                "the subscribed ext: topics whose emitter is not loaded (#44). "
+                "Read-only: authorizing is not on the wire."
+            ),
+        },
+    },
+    "required": ["extensions"],
+}
+
 _GET_EXTENSION_CONFIG_RETURNS: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1639,6 +1658,14 @@ CAPABILITIES: dict[str, Capability] = {
             "be a legal argument, and is exactly what the listing must show.",
             on_wire=True,
             returns=_GET_EXTENSION_STATE_RETURNS,
+        ),
+        Capability(
+            "list_extensions",
+            "read",
+            "Every extension the session knows of and its state, including those "
+            "found and not loaded, with the reason. The `tau ext list` rows.",
+            on_wire=True,
+            returns=_LIST_EXTENSIONS_RETURNS,
         ),
         Capability(
             "get_extension_config",

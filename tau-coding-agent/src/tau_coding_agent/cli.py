@@ -215,15 +215,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="extensions",
         action="append",
         default=None,
-        metavar="PATH",
-        help="load an extension from PATH (repeatable)",
+        metavar="PATH|MODULE",
+        help="load an extension from PATH (holds a '/' or ends in .py) or an installed "
+        "MODULE; naming it authorizes it (repeatable)",
     )
     parser.add_argument(
         "--no-extensions",
         "-ne",
         dest="no_extensions",
         action="store_true",
-        help="disable extension DISCOVERY (explicit --extension paths still load)",
+        help="disable extension DISCOVERY of drop-ins and installed packages "
+        "(explicit --extension values still load)",
     )
     parser.add_argument(
         "--bus",
@@ -747,11 +749,16 @@ def _run_export_html(args: CLIArgs, config: dict) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``tau`` console script.
 
-    ``tau serve ...`` is a subcommand with its own parser (docs/TAU-SERVE.md §6).
+    ``tau serve ...`` is a subcommand with its own parser (docs/TAU-SERVE.md §6),
+    and so is ``tau ext ...`` (docs/EXTENSION-PACKAGES.md §7).
     The word was never a valid bare ``tau`` argument: a message without ``-p``
     is refused below, so claiming it takes nothing from anyone.
     """
     raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == ["ext"]:
+        from tau_coding_agent.ext_cli import run_ext
+
+        return run_ext(raw[1:])
     if raw[:1] == ["serve"]:
         try:
             from tau_coding_agent.serve.cli import run_serve

@@ -1898,7 +1898,18 @@ class ExtensionAPI:
 
             return unsubscribe_hook
 
-        return self._event_bus.on(event, handler)
+        unsubscribe = self._event_bus.on(event, handler)
+        if not event.startswith(EXT_CHANNEL_PREFIX) or self._hook_handlers is None:
+            return unsubscribe
+        topic_bucket = self._hook_handlers
+        topic_bucket.subscriptions.append(event)
+
+        def unsubscribe_topic() -> None:
+            unsubscribe()
+            if event in topic_bucket.subscriptions:
+                topic_bucket.subscriptions.remove(event)
+
+        return unsubscribe_topic
 
     def _emitting_extension_name(self, op: str = "api.emit") -> str:
         """This api's own extension name, the identity :meth:`emit` and :meth:`submit` act under.

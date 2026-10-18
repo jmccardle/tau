@@ -8,7 +8,8 @@ This module provides:
 - create_agent_session(): Main SDK entry point for creating fully configured sessions.
 - _resolve_model(): Resolve model string to Model object.
 - _resolve_tools(): Discover and create tool objects from string names.
-- _load_extensions(): THE single extension loader — discover + import + register(api).
+- plan_extensions(): what loads, decided from metadata and the authorization store.
+- _load_extensions(): THE single extension loader — plan + import + register(api).
 - _build_system_prompt(): Build system prompt from context files.
 """
 
@@ -20,8 +21,8 @@ import inspect
 import os
 import re
 import sys
-from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Literal
 
@@ -31,7 +32,13 @@ from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.compaction_policy import CompactionPolicy
-from tau_agent_core.extension_sources import extension_identifier
+from tau_agent_core import extension_sources
+from tau_agent_core.extension_auth import AuthorizationStore, store_path_for
+from tau_agent_core.extension_sources import (
+    ExtensionRecord,
+    ExtensionSource,
+    extension_identifier,
+)
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
@@ -305,7 +312,7 @@ class LoadedExtension:
     The hash and bus fields are H7/H8's addition (SIM_SPEC_v2 §16.6/§16.10).
 
     Attributes:
-        path: The source file it was loaded from.
+        path: Its label: the source file, or the module name for a package.
         register: The module-level ``register`` function that was invoked.
         api: The ``ExtensionAPI`` it registered against.
         content_hash: Hex sha256 of the exact bytes compiled, so two loads of
@@ -318,6 +325,9 @@ class LoadedExtension:
             :func:`~tau_agent_core.extension_types.validate_form_spec` to
             ``{"title", "fields"}``, so a head can render a settings screen.
             ``None`` if the module declared none.
+        source: Where it came from (docs/EXTENSION-PACKAGES.md §2); ``None``
+            for a record built outside the loader, read as a file path.
+        explicit: Whether it was named with ``-e``, which authorizes it (§5).
     """
 
     path: str
@@ -327,20 +337,26 @@ class LoadedExtension:
     subjects: tuple[str, ...] = ()
     touches_bus: bool = False
     config_schema: dict[str, Any] | None = None
+    source: ExtensionSource | None = None
+    explicit: bool = False
 
 
 @agent_facing(topic="extensions")
 @dataclass
 class ExtensionLoadError:
-    """A discovered extension that failed to load (pi types.ts:1590 errors[]).
+    """An extension that failed to load (pi types.ts:1590 errors[]).
 
     Attributes:
-        path: The extension file that failed.
+        path: Its label: the file path, or the module name for a package.
         error: The exception's message.
+        explicit: Whether it was named with ``-e`` (docs/EXTENSION-PACKAGES.md §5).
+        source: Where it came from, when the loader knew.
     """
 
     path: str
     error: str
+    explicit: bool = False
+    source: ExtensionSource | None = None
 
 
 @agent_facing(topic="extensions")
@@ -355,10 +371,16 @@ class LoadExtensionsResult:
         extensions: The extensions that loaded, in load order.
         errors: The extensions that failed to load and were collected rather
             than raised.
+        withheld: Extensions found and not loaded: ``unauthorized``,
+            ``unusable`` or ``collision`` (docs/EXTENSION-PACKAGES.md §5).
+        grandfathered: Drop-ins authorized because this was the first start
+            with no authorization store; a head announces them once.
     """
 
     extensions: list[LoadedExtension] = field(default_factory=list)
     errors: list[ExtensionLoadError] = field(default_factory=list)
+    withheld: list[ExtensionRecord] = field(default_factory=list)
+    grandfathered: list[str] = field(default_factory=list)
 
 
 @agent_facing(topic="extensions")
@@ -434,31 +456,6 @@ def summarize_extensions(result: LoadExtensionsResult) -> list[ExtensionInfo]:
     return infos
 
 
-def _discover_extension_paths(user_dir: str) -> list[Path]:
-    """Discover extension entry points in a directory (one level, pi-faithful).
-
-    Grammar (pi ``discoverExtensionsInDir``, loader.ts): a bare ``*.py`` file,
-    or a package dir (immediate subdir containing ``__init__.py``). No recursion
-    beyond one level; no ``package.json`` manifest (deferred, plan §7).
-
-    Args:
-        user_dir: Directory to scan (``~`` is expanded).
-
-    Returns:
-        Sorted list of entry-point paths (files and package dirs).
-    """
-    root = Path(user_dir).expanduser()
-    if not root.is_dir():
-        return []
-    discovered: list[Path] = []
-    for entry in sorted(root.iterdir()):
-        if entry.is_file() and entry.suffix == ".py" and entry.name != "__init__.py":
-            discovered.append(entry)
-        elif entry.is_dir() and (entry / "__init__.py").is_file():
-            discovered.append(entry)
-    return discovered
-
-
 def _standalone_api_factory(path: str) -> ExtensionAPI:
     """Default per-extension api for the STANDALONE file-path loader (S24).
 
@@ -475,60 +472,103 @@ def _standalone_api_factory(path: str) -> ExtensionAPI:
     return ExtensionAPI(hook_handlers=ExtensionHandlers(path=path))
 
 
+def _register_module(
+    module: Any,
+    label: str,
+    api_factory: Callable[[str], ExtensionAPI],
+    *,
+    bus_available: bool,
+    forget: Callable[[], object],
+) -> tuple[Callable[..., Any], ExtensionAPI, tuple[str, ...], bool, dict[str, Any] | None]:
+    """Check an imported extension module's declarations, then bind and call ``register``.
+
+    H7/H8 (SIM_SPEC_v2 §16.6/§16.10) and ``CONFIG_SCHEMA`` are read before
+    ``register`` is looked up, because they are set at import time: a bus
+    declaration without ``SUBJECTS``, a bus declaration in a session with no
+    bus, and an invalid schema each raise :class:`ExtensionCapabilityError`,
+    and ``register`` never runs.
+
+    Args:
+        module: The imported module.
+        label: The bucket label it binds under.
+        api_factory: Produces the bucket-bound api for ``label``.
+        bus_available: Whether the session has a bus transport.
+        forget: Undoes the import on a refusal (a file's private module only).
+
+    Returns:
+        ``(register, api, subjects, touches_bus, config_schema)``.
+    """
+    touches_bus = bool(getattr(module, _TOUCHES_BUS_ATTR, False))
+    raw_subjects = getattr(module, _SUBJECTS_ATTR, ())
+    subjects: tuple[str, ...] = ()
+    if touches_bus:
+        subjects = tuple(raw_subjects) if isinstance(raw_subjects, (list, tuple)) else ()
+        if not subjects or not all(isinstance(s, str) and s for s in subjects):
+            forget()
+            raise ExtensionCapabilityError(
+                f"{label} sets {_TOUCHES_BUS_ATTR} = True but {_SUBJECTS_ATTR} is "
+                f"{raw_subjects!r}, not a non-empty sequence of non-empty subject "
+                "strings. An extension that touches the bus must declare which "
+                "subjects (H7) — 'leave it unset' is not admissible."
+            )
+        if not bus_available:
+            forget()
+            raise ExtensionCapabilityError(
+                f"{label} declares {_TOUCHES_BUS_ATTR} = True with subjects "
+                f"{subjects!r}, but this session has no bus transport "
+                "(bus_available=False). Refusing to load rather than admitting an "
+                "extension whose declared capability the session cannot back (H8). "
+                "Pass --bus, and install the [bus] extra for nats-py."
+            )
+
+    raw_schema = getattr(module, _CONFIG_SCHEMA_ATTR, None)
+    config_schema: dict[str, Any] | None = None
+    if raw_schema is not None:
+        from tau_agent_core.extension_types import validate_form_spec
+
+        try:
+            title, fields = validate_form_spec(raw_schema)
+        except ValueError as err:
+            forget()
+            raise ExtensionCapabilityError(
+                f"{label} declares {_CONFIG_SCHEMA_ATTR} but it is not a valid form "
+                f"spec: {err}. A schema a head cannot render is a load error, not a "
+                "settings screen that silently comes up empty."
+            ) from err
+        config_schema = {"title": title, "fields": fields}
+
+    register = getattr(module, "register", None)
+    if register is None:
+        forget()
+        raise AttributeError(f"{label} has no register(api) function")
+    if not callable(register):
+        forget()
+        raise TypeError(f"{label} register is not callable")
+    return register, api_factory(label), subjects, touches_bus, config_schema
+
+
 async def _load_one_extension(
     path: Path,
     api_factory: Callable[[str], ExtensionAPI],
     *,
     bus_available: bool = False,
+    source: ExtensionSource | None = None,
 ) -> LoadedExtension:
-    """Import one extension module and invoke its ``register(api)``.
+    """Import one file extension under a private name and invoke its ``register(api)``.
 
-    Imports by file path (``importlib.util.spec_from_file_location``), fetches
-    the module-level ``register`` callable, invokes ``register(api)``, and
-    awaits the result when ``register`` is a coroutine function.
+    The identifier is the stem verbatim and the import name is private
+    (docs/EXTENSION-PACKAGES.md §2.1). A package directory gets
+    ``submodule_search_locations``, so ``from .helper import x`` works.
 
-    The module's own directory is on ``sys.path`` for the duration of the
-    ``exec`` and popped afterwards, so a single-file extension can
-    ``import helper`` for a module sitting beside it. Before this it could not:
-    a console script puts its own ``bin/`` directory on ``sys.path[0]``, never
-    the working directory, so the sibling was unreachable from ``tau`` no matter
-    where the user stood. A directory extension was unaffected either way —
-    ``submodule_search_locations`` already made ``from .helper import x`` work —
-    and it now reaches its own submodules absolutely as well.
+    The module's own directory is on ``sys.path`` for the ``exec`` only, so a
+    single-file extension can ``import helper`` beside it. The window holds no
+    ``await``, so no other load can splice its directory in; an import deferred
+    into ``register`` or a hook still fails loudly.
 
-    The window is the ``exec`` and nothing else, which is narrower than it could
-    be and deliberately so. It holds no ``await``, so no other load can splice
-    its directory in while this one is open; extending it over ``register(api)``
-    would open exactly that hole, because that call is awaited and two sessions
-    load in one process. The cost is that an import deferred into ``register``
-    or into a hook still fails — loudly, with ``ModuleNotFoundError``, which is
-    the state every such import is in today. The entry is PREPENDED, matching
-    what Python does for a script: a name beside the extension beats an
-    installed one, which is the surprise the author can see rather than the one
-    they cannot.
-
-    H7/H8 (SIM_SPEC_v2 §16.6/§16.10) run BEFORE ``register`` is looked up: an
-    extension declares itself bus-touching via two module-level attributes,
-    ``TOUCHES_BUS = True`` and ``SUBJECTS = (...)`` — checkable at this point
-    because they are set at import time, unlike anything a running
-    ``register(api)`` might do. ``TOUCHES_BUS`` with no non-empty ``SUBJECTS``
-    is refused (H7: a silent omission must be a load error, not a hole in the
-    diff). ``TOUCHES_BUS`` with valid ``SUBJECTS`` but ``bus_available=False``
-    is refused too (H8: a declared capability the session cannot back is
-    refused at the factory, not discovered later inside a handler that reaches
-    for a bus that isn't there). Both raise :class:`ExtensionCapabilityError`
-    and neither calls ``register`` — "refuse rather than discover" means the
-    extension's side effects never begin.
-
-    ``CONFIG_SCHEMA`` is read at the same point and for the same reason: it is
-    set at import time, so it can be validated before ``register`` runs. It is a
-    ``ui.form`` spec naming the keys ``api.config`` will hold, and an invalid one
-    raises :class:`ExtensionCapabilityError` too.
-
-    Raises on any failure (missing file/spec, missing or non-callable
-    ``register``, an unmet H7/H8 declaration, an invalid ``CONFIG_SCHEMA``, or an
-    exception raised by ``register``); the caller applies the
-    explicit-vs-discovered error policy.
+    Raises on any failure (missing file, missing or non-callable ``register``,
+    an unmet H7/H8 declaration, an invalid ``CONFIG_SCHEMA``, or an exception
+    raised by ``register``); the caller applies the explicit-vs-discovered
+    error policy.
     """
     global _ext_load_counter
 
@@ -543,7 +583,8 @@ async def _load_one_extension(
         raise FileNotFoundError(f"extension not found: {module_file}")
 
     _ext_load_counter += 1
-    module_name = f"_tau_ext_{path.stem}_{_ext_load_counter}"
+    safe_stem = re.sub(r"\W", "_", extension_identifier(str(path)))
+    module_name = f"_tau_ext_{safe_stem}_{_ext_load_counter}"
     spec = importlib.util.spec_from_file_location(
         module_name, module_file, submodule_search_locations=submodule_search
     )
@@ -557,66 +598,23 @@ async def _load_one_extension(
     if borrowed:
         sys.path.insert(0, sibling_dir)
     try:
-        source = module_file.read_bytes()
-        code = compile(source, str(module_file), "exec")
+        source_bytes = module_file.read_bytes()
+        code = compile(source_bytes, str(module_file), "exec")
         exec(code, module.__dict__)
     except Exception:
-        # Don't leave a half-initialized module in the import cache.
         sys.modules.pop(module_name, None)
         raise
     finally:
         if borrowed and sibling_dir in sys.path:
             sys.path.remove(sibling_dir)
 
-    content_hash = hashlib.sha256(source).hexdigest()
-
-    touches_bus = bool(getattr(module, _TOUCHES_BUS_ATTR, False))
-    raw_subjects = getattr(module, _SUBJECTS_ATTR, ())
-    subjects: tuple[str, ...] = ()
-    if touches_bus:
-        subjects = tuple(raw_subjects) if isinstance(raw_subjects, (list, tuple)) else ()
-        if not subjects or not all(isinstance(s, str) and s for s in subjects):
-            sys.modules.pop(module_name, None)
-            raise ExtensionCapabilityError(
-                f"{path} sets {_TOUCHES_BUS_ATTR} = True but {_SUBJECTS_ATTR} is "
-                f"{raw_subjects!r}, not a non-empty sequence of non-empty subject "
-                "strings. An extension that touches the bus must declare which "
-                "subjects (H7) — 'leave it unset' is not admissible."
-            )
-        if not bus_available:
-            sys.modules.pop(module_name, None)
-            raise ExtensionCapabilityError(
-                f"{path} declares {_TOUCHES_BUS_ATTR} = True with subjects "
-                f"{subjects!r}, but this session has no bus transport "
-                "(bus_available=False). Refusing to load rather than admitting an "
-                "extension whose declared capability the session cannot back (H8)."
-            )
-
-    raw_schema = getattr(module, _CONFIG_SCHEMA_ATTR, None)
-    config_schema: dict[str, Any] | None = None
-    if raw_schema is not None:
-        from tau_agent_core.extension_types import validate_form_spec
-
-        try:
-            title, fields = validate_form_spec(raw_schema)
-        except ValueError as err:
-            sys.modules.pop(module_name, None)
-            raise ExtensionCapabilityError(
-                f"{path} declares {_CONFIG_SCHEMA_ATTR} but it is not a valid form "
-                f"spec: {err}. A schema a head cannot render is a load error, not a "
-                "settings screen that silently comes up empty."
-            ) from err
-        config_schema = {"title": title, "fields": fields}
-
-    register = getattr(module, "register", None)
-    if register is None:
-        sys.modules.pop(module_name, None)
-        raise AttributeError(f"{path} has no register(api) function")
-    if not callable(register):
-        sys.modules.pop(module_name, None)
-        raise TypeError(f"{path} register is not callable")
-
-    api = api_factory(str(path))
+    register, api, subjects, touches_bus, config_schema = _register_module(
+        module,
+        str(path),
+        api_factory,
+        bus_available=bus_available,
+        forget=lambda: sys.modules.pop(module_name, None),
+    )
     outcome = register(api)
     if inspect.isawaitable(outcome):
         await outcome
@@ -625,11 +623,233 @@ async def _load_one_extension(
         path=str(path),
         register=register,
         api=api,
-        content_hash=content_hash,
+        content_hash=hashlib.sha256(source_bytes).hexdigest(),
         subjects=subjects,
         touches_bus=touches_bus,
         config_schema=config_schema,
+        source=source,
     )
+
+
+async def _load_module_extension(
+    source: ExtensionSource,
+    api_factory: Callable[[str], ExtensionAPI],
+    *,
+    bus_available: bool = False,
+    reload: bool = False,
+) -> LoadedExtension:
+    """Import an installed extension under its real module name and invoke ``register(api)``.
+
+    ``importlib.import_module``, never a private name, so the package keeps
+    one copy of its module state and its relative imports
+    (docs/EXTENSION-PACKAGES.md §2).
+
+    Args:
+        source: A ``package`` or ``module`` source.
+        api_factory: Produces the bucket-bound api for the module name.
+        bus_available: Whether the session has a bus transport.
+        reload: Re-execute an already-imported module (``reload_extension``).
+
+    Raises:
+        ImportError: The module has no source file to hash.
+        Exception: Whatever the import, a declaration check or ``register`` raises.
+    """
+    module = importlib.import_module(source.target)
+    if reload:
+        module = importlib.reload(module)
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        raise ImportError(f"extension module {source.target} has no source file")
+    register, api, subjects, touches_bus, config_schema = _register_module(
+        module, source.label, api_factory, bus_available=bus_available, forget=lambda: None
+    )
+    outcome = register(api)
+    if inspect.isawaitable(outcome):
+        await outcome
+    return LoadedExtension(
+        path=source.label,
+        register=register,
+        api=api,
+        content_hash=hashlib.sha256(Path(module_file).read_bytes()).hexdigest(),
+        subjects=subjects,
+        touches_bus=touches_bus,
+        config_schema=config_schema,
+        source=source,
+    )
+
+
+async def _load_source(
+    source: ExtensionSource,
+    api_factory: Callable[[str], ExtensionAPI],
+    *,
+    bus_available: bool,
+    reload: bool = False,
+) -> LoadedExtension:
+    """Load ``source`` by the route its kind takes: real module name, or file path."""
+    if source.kind in ("package", "module"):
+        return await _load_module_extension(
+            source, api_factory, bus_available=bus_available, reload=reload
+        )
+    return await _load_one_extension(
+        Path(source.target), api_factory, bus_available=bus_available, source=source
+    )
+
+
+def _withheld(source: ExtensionSource, state: str, reason: str, **extra: Any) -> ExtensionRecord:
+    """An :class:`ExtensionRecord` for a source that was found and not loaded."""
+    return ExtensionRecord(
+        identifier=source.identifier,
+        kind=source.kind,
+        target=source.target,
+        state=state,  # type: ignore[arg-type]
+        reason=reason,
+        distribution=source.distribution,
+        version=source.version,
+        entry_point=source.entry_point,
+        **extra,
+    )
+
+
+def _unauthorized_reason(source: ExtensionSource, verdict: str, previous: str | None) -> str:
+    """The sentence a head shows for a discovered, unauthorized source."""
+    if source.kind == "package" and verdict == "update":
+        return (
+            f"{source.distribution} changed from {previous} to {source.version} "
+            "since it was authorized"
+        )
+    if source.kind == "package":
+        return f"{source.distribution} {source.version} has never been authorized"
+    return "this drop-in has never been authorized"
+
+
+@agent_facing(topic="extensions")
+@dataclass(frozen=True)
+class ExtensionPlan:
+    """What a load will do with every source, decided before anything is imported.
+
+    Attributes:
+        load: The sources to load, in load order, each with whether it was
+            named with ``-e``.
+        withheld: The sources found and not loaded, as records.
+        grandfathered: Drop-ins authorized because no store existed (§5).
+    """
+
+    load: list[tuple[ExtensionSource, bool]]
+    withheld: list[ExtensionRecord]
+    grandfathered: list[str]
+
+
+@agent_facing(topic="extensions")
+def plan_extensions(
+    explicit: Sequence[str] = (),
+    *,
+    discover: bool = True,
+    extensions_dir: str | Path | None = None,
+    store_path: str | Path | None = None,
+    write: bool = True,
+) -> ExtensionPlan:
+    """Decide which extensions load, from metadata and paths alone (docs/EXTENSION-PACKAGES.md §5).
+
+    Discovered drop-ins load first, then discovered packages, then the ``-e``
+    values in argument order. A discovered source loads only with an
+    authorization record. An ``-e`` value is authorized by being named, and
+    claims its identifier first: a discovered source with the same identifier
+    but another target is withheld as a ``collision``, as is a later
+    discovered source whose identifier an earlier one already claimed. Two
+    routes to one file load once.
+
+    Args:
+        explicit: The ``-e`` values (paths or module names).
+        discover: Whether to discover at all; ``--no-extensions`` sets False.
+        extensions_dir: The drop-in directory; ``None`` is
+            :func:`~tau_agent_core.extension_sources.default_extensions_dir`.
+        store_path: The authorization store; ``None`` is the file beside
+            ``extensions_dir``.
+        write: Whether a missing store may be created to grandfather the
+            drop-ins present. A listing passes False.
+
+    Returns:
+        The plan.
+
+    Raises:
+        ValueError: An ``-e`` value resolves to nothing, or is ambiguous.
+        AuthorizationStoreError: The store exists and cannot be read.
+    """
+    packages = extension_sources.discover_packages()
+    explicit_sources = [extension_sources.resolve_explicit(raw, packages) for raw in explicit]
+    claimed: dict[str, str] = {}
+    seen_targets: set[str] = set()
+    load: list[tuple[ExtensionSource, bool]] = []
+    withheld: list[ExtensionRecord] = []
+
+    def _target_key(source: ExtensionSource) -> str:
+        if source.kind in ("package", "module"):
+            return f"module:{source.target}"
+        return str(Path(source.target).expanduser().resolve())
+
+    for source in explicit_sources:
+        claimed.setdefault(source.identifier, _target_key(source))
+
+    grandfathered: list[str] = []
+    if discover:
+        directory = (
+            Path(extensions_dir)
+            if extensions_dir is not None
+            else extension_sources.default_extensions_dir()
+        )
+        dropins = extension_sources.discover_dropins(directory)
+        store = AuthorizationStore.load(
+            store_path if store_path is not None else store_path_for(directory)
+        )
+        if write:
+            grandfathered = store.grandfather(dropins)
+        pending_grandfather = not store.existed
+        explicit_keys = {_target_key(s) for s in explicit_sources}
+        for source in [*dropins, *packages]:
+            key = _target_key(source)
+            if source.unusable is not None:
+                withheld.append(_withheld(source, "unusable", source.unusable))
+                continue
+            if key in explicit_keys:
+                continue
+            owner = claimed.get(source.identifier)
+            if owner is not None and owner != key:
+                withheld.append(
+                    _withheld(
+                        source,
+                        "collision",
+                        f"another source already claims {source.identifier!r}",
+                        authorization=None,
+                    )
+                )
+                continue
+            if pending_grandfather and source.kind == "dropin":
+                verdict, previous = "authorized", None
+            else:
+                answer = store.verdict(source)
+                verdict, previous = answer.verdict, answer.previous_version
+            if verdict != "authorized":
+                withheld.append(
+                    _withheld(
+                        source,
+                        "unauthorized",
+                        _unauthorized_reason(source, verdict, previous),
+                        authorization=verdict,
+                        previous_version=previous,
+                    )
+                )
+                continue
+            claimed[source.identifier] = key
+            seen_targets.add(key)
+            load.append((source, False))
+
+    for source in explicit_sources:
+        key = _target_key(source)
+        if key in seen_targets:
+            continue
+        seen_targets.add(key)
+        load.append((source, True))
+    return ExtensionPlan(load=load, withheld=withheld, grandfathered=grandfathered)
 
 
 async def _load_extensions(
@@ -640,88 +860,381 @@ async def _load_extensions(
     api_factory: Callable[[str], ExtensionAPI] | None = None,
     collect_explicit_errors: bool = False,
     bus_available: bool = False,
+    store_path: str | Path | None = None,
 ) -> LoadExtensionsResult:
-    """Discover, import, and invoke ``register(api)`` for every extension.
+    """Plan, import, and invoke ``register(api)`` for every extension that may load.
 
-    This is THE single extension loader. Discovery is global + explicit only:
-    when ``discover`` is True the global dir (``~/.tau/extensions`` unless
-    overridden by ``user_dir``) is scanned; every explicit ``-e`` path is then
-    appended. Paths are deduped by resolved path, first-wins. Each module is
-    imported by file path and its module-level ``register(api)`` is invoked
-    (awaited when async).
+    THE single extension loader. :func:`plan_extensions` decides from metadata
+    alone what loads (docs/EXTENSION-PACKAGES.md §5); this imports each planned
+    source by its route (a package under its real name, a file under a private
+    one) and calls its ``register``.
 
     Args:
-        explicit_paths: Explicit ``-e`` extension paths. A failure here RAISES.
-        discover: Whether to scan the global extensions dir. ``--no-extensions``
-            (``-ne``) sets this False, which suppresses discovery while still
-            loading ``explicit_paths``.
-        user_dir: Override for the global extensions dir (tests inject a temp
-            dir here). ``None`` means ``~/.tau/extensions``.
-        api_factory: Produces a fresh ``ExtensionAPI`` per extension, keyed by the
-            extension's file path (``Callable[[str], ExtensionAPI]``). Defaults to
-            :func:`_standalone_api_factory` (see its note on the standalone status);
-            a session-bound factory can instead bind each api to a live runner
-            bucket keyed by that path (S24).
-        collect_explicit_errors: When ``False`` (default) an explicit ``-e`` failure
-            RAISES (Fail-Early — the user named it), which headless relies on to
-            abort the run. When ``True`` an explicit failure is instead collected
-            into ``result.errors`` — exactly like a discovered failure — and the
-            loop keeps loading the rest, so the extensions that DID load stay bound
-            and are returned. The TUI passes ``True`` (E5-loading split-brain fix,
-            docs/EXTENSIONS-DEMO-ROADMAP.md): a launched Textual session can't
-            cleanly abort mid-load, and dropping the partial result left
-            ``/extensions`` empty while the good extensions' tools kept working.
-        bus_available: Whether this load's session has a bus transport (H8,
-            SIM_SPEC_v2 §16.10). Threaded to every :func:`_load_one_extension`
-            call; an extension that declares ``TOUCHES_BUS = True`` is refused
-            with :class:`ExtensionCapabilityError` when this is ``False``
-            (default) — no bus wiring exists yet anywhere in this package, so
-            the safe default is "no extension gets to claim it".
+        explicit_paths: The ``-e`` values: paths or module names. A failure
+            here RAISES.
+        discover: Whether to discover drop-ins and packages. ``--no-extensions``
+            sets False; ``explicit_paths`` load either way.
+        user_dir: The drop-in directory; ``None`` is ``<tau home>/extensions``.
+        api_factory: Produces a fresh ``ExtensionAPI`` per extension, keyed by its
+            label. Defaults to :func:`_standalone_api_factory`.
+        collect_explicit_errors: Collect an explicit failure into
+            ``result.errors`` and keep loading, instead of raising. The TUI
+            passes True: a launched Textual session cannot abort mid-load.
+        bus_available: Whether this load's session has a bus transport (H8);
+            a ``TOUCHES_BUS`` extension is refused without one.
+        store_path: The authorization store; ``None`` is the file beside the
+            drop-in directory.
 
     Returns:
-        ``LoadExtensionsResult`` with the loaded extensions and any load errors
-        (discovered failures always; explicit failures too when
-        ``collect_explicit_errors``).
+        The loaded extensions, the failures collected, the sources withheld,
+        and any drop-ins grandfathered.
 
     Raises:
-        Exception: propagated from an explicit ``-e`` extension that fails to load
-            (Fail-Early — the user named it), UNLESS ``collect_explicit_errors``.
+        Exception: From an explicit extension that fails to load, unless
+            ``collect_explicit_errors``.
+        ValueError: An ``-e`` value names nothing installed, or is ambiguous.
+        AuthorizationStoreError: The authorization store cannot be read.
     """
     if api_factory is None:
         api_factory = _standalone_api_factory
 
-    result = LoadExtensionsResult()
-
-    # Build the ordered (path, is_explicit) work list, deduped by resolved path.
-    seen: set[str] = set()
-    work: list[tuple[Path, bool]] = []
-
-    def _add(path: Path, is_explicit: bool) -> None:
-        resolved = str(path.expanduser().resolve())
-        if resolved in seen:
-            return
-        seen.add(resolved)
-        work.append((path, is_explicit))
-
-    if discover:
-        discover_dir = user_dir if user_dir is not None else str(resolve_tau_home() / "extensions")
-        for p in _discover_extension_paths(discover_dir):
-            _add(p, False)
-
-    for raw in explicit_paths or []:
-        _add(Path(raw), True)
-
-    for path, is_explicit in work:
+    plan = plan_extensions(
+        explicit_paths or (),
+        discover=discover,
+        extensions_dir=user_dir,
+        store_path=store_path,
+    )
+    result = LoadExtensionsResult(withheld=plan.withheld, grandfathered=plan.grandfathered)
+    for source, is_explicit in plan.load:
         try:
-            loaded = await _load_one_extension(path, api_factory, bus_available=bus_available)
+            loaded = await _load_source(source, api_factory, bus_available=bus_available)
         except Exception as exc:
             if is_explicit and not collect_explicit_errors:
                 raise
-            result.errors.append(ExtensionLoadError(path=str(path), error=str(exc)))
+            result.errors.append(
+                ExtensionLoadError(
+                    path=source.label, error=str(exc), explicit=is_explicit, source=source
+                )
+            )
             continue
+        loaded.explicit = is_explicit
         result.extensions.append(loaded)
 
     return result
+
+
+def _record_for_source(
+    source: ExtensionSource, state: str, *, explicit: bool, reason: str | None = None
+) -> ExtensionRecord:
+    """An :class:`ExtensionRecord` for a planned or loaded source."""
+    return ExtensionRecord(
+        identifier=source.identifier,
+        kind=source.kind,
+        target=source.target,
+        state=state,  # type: ignore[arg-type]
+        reason=reason,
+        distribution=source.distribution,
+        version=source.version,
+        entry_point=source.entry_point,
+        authorization="explicit" if explicit else "authorized",
+    )
+
+
+def _source_of(label: str, source: ExtensionSource | None) -> ExtensionSource:
+    """``source``, or the file-path source a label built outside the loader stands for."""
+    if source is not None:
+        return source
+    return ExtensionSource(identifier=extension_identifier(label), kind="path", target=label)
+
+
+@agent_facing(topic="extensions")
+def session_extension_records(
+    loaded: Sequence[LoadedExtension],
+    disabled: Collection[str],
+    errors: Sequence[ExtensionLoadError],
+    withheld: Sequence[ExtensionRecord],
+    orphan_topics: Mapping[str, tuple[str, ...]] | None = None,
+) -> list[ExtensionRecord]:
+    """The ``tau ext list`` rows for a live session (docs/EXTENSION-PACKAGES.md §7).
+
+    Args:
+        loaded: The managed extensions, in load order.
+        disabled: The labels of those currently disabled.
+        errors: The extensions that failed to load.
+        withheld: The sources found and not loaded.
+        orphan_topics: Per label, subscribed topics whose emitter is no loaded
+            extension (#44).
+
+    Returns:
+        Loaded and disabled rows, then failed, then withheld.
+    """
+    orphans = orphan_topics or {}
+    records = [
+        replace(
+            _record_for_source(
+                _source_of(ext.path, ext.source),
+                "disabled" if ext.path in disabled else "loaded",
+                explicit=ext.explicit,
+            ),
+            orphan_topics=orphans.get(ext.path, ()),
+        )
+        for ext in loaded
+    ]
+    records += [
+        _record_for_source(
+            _source_of(err.path, err.source), "failed", explicit=err.explicit, reason=err.error
+        )
+        for err in errors
+    ]
+    return records + list(withheld)
+
+
+@agent_facing(topic="extensions")
+def extension_records(
+    explicit: Sequence[str] = (),
+    *,
+    discover: bool = True,
+    extensions_dir: str | Path | None = None,
+    store_path: str | Path | None = None,
+) -> list[ExtensionRecord]:
+    """The ``tau ext list`` rows with no session: what would load, and what would not.
+
+    Imports nothing and writes nothing; a missing authorization store lists the
+    drop-ins present as ``authorized``, because the first start grandfathers
+    them (docs/EXTENSION-PACKAGES.md §5).
+
+    Args:
+        explicit: ``-e`` values to include, as a start would.
+        discover: Whether to discover at all.
+        extensions_dir: The drop-in directory; ``None`` is the default.
+        store_path: The authorization store; ``None`` is the file beside it.
+
+    Returns:
+        The planned sources as ``authorized``, then the withheld ones.
+
+    Raises:
+        ValueError: An ``-e`` value names nothing installed.
+        AuthorizationStoreError: The store cannot be read.
+    """
+    plan = plan_extensions(
+        explicit,
+        discover=discover,
+        extensions_dir=extensions_dir,
+        store_path=store_path,
+        write=False,
+    )
+    rows = [_record_for_source(src, "authorized", explicit=exp) for src, exp in plan.load]
+    return rows + plan.withheld
+
+
+def _discovered_sources(extensions_dir: str | Path | None) -> tuple[Path, list[ExtensionSource]]:
+    """The drop-in directory in use and every usable source discovery finds there and installed."""
+    directory = (
+        Path(extensions_dir)
+        if extensions_dir is not None
+        else extension_sources.default_extensions_dir()
+    )
+    found = [
+        *extension_sources.discover_dropins(directory),
+        *extension_sources.discover_packages(),
+    ]
+    return directory, [source for source in found if source.unusable is None]
+
+
+@agent_facing(topic="extensions")
+def find_discovered_extension(
+    token: str,
+    *,
+    extensions_dir: str | Path | None = None,
+    kind: Literal["package", "dropin"] | None = None,
+) -> ExtensionSource:
+    """The one discovered source ``token`` names: a drop-in path, an identifier, or its last segment.
+
+    Args:
+        token: What the user typed.
+        extensions_dir: The drop-in directory; ``None`` is the default.
+        kind: Consider only packages, or only drop-ins.
+
+    Returns:
+        The source.
+
+    Raises:
+        ValueError: Nothing matches, or two sources do; the message names them
+            and how to choose.
+    """
+    _, sources = _discovered_sources(extensions_dir)
+    if kind is not None:
+        sources = [source for source in sources if source.kind == kind]
+    if extension_sources.is_path_spec(token):
+        wanted = str(Path(token).expanduser().resolve())
+        matches = [
+            s for s in sources if s.kind == "dropin" and str(Path(s.target).resolve()) == wanted
+        ]
+    else:
+        ident = extension_sources.resolve_shorthand(
+            token, sorted({source.identifier for source in sources})
+        )
+        matches = [source for source in sources if source.identifier == ident]
+    if not matches:
+        raise ValueError(f"no discovered extension is named {token!r}; see `tau ext list`")
+    if len(matches) > 1:
+        names = "; ".join(f"{m.kind} {m.target}" for m in matches)
+        raise ValueError(
+            f"{token!r} names more than one discovered extension ({names}). Pass the "
+            "drop-in's path, or --package for the installed one."
+        )
+    return matches[0]
+
+
+@agent_facing(topic="extensions")
+def authorize_discovered_extension(
+    token: str,
+    *,
+    extensions_dir: str | Path | None = None,
+    store_path: str | Path | None = None,
+    kind: Literal["package", "dropin"] | None = None,
+) -> ExtensionSource:
+    """Write an authorization record for the discovered source ``token`` names.
+
+    The non-interactive route to the gate (docs/EXTENSION-PACKAGES.md §9):
+    ``tau ext authorize``, for a host with no prompt to answer.
+
+    Args:
+        token: A drop-in path, an identifier, or its last segment.
+        extensions_dir: The drop-in directory; ``None`` is the default.
+        store_path: The authorization store; ``None`` is the file beside it.
+        kind: Consider only packages, or only drop-ins.
+
+    Returns:
+        The source now authorized.
+
+    Raises:
+        ValueError: ``token`` matches nothing, or more than one source.
+        AuthorizationStoreError: The store cannot be read.
+    """
+    directory, _ = _discovered_sources(extensions_dir)
+    source = find_discovered_extension(token, extensions_dir=directory, kind=kind)
+    store = AuthorizationStore.load(
+        store_path if store_path is not None else store_path_for(directory)
+    )
+    store.authorize(source)
+    store.save()
+    return source
+
+
+@agent_facing(topic="extensions")
+def revoke_extension_authorization(
+    identifier: str,
+    *,
+    extensions_dir: str | Path | None = None,
+    store_path: str | Path | None = None,
+) -> int:
+    """Remove every authorization record for ``identifier``.
+
+    Args:
+        identifier: The full identifier; a shorthand is not resolved, because
+            removing records is not a convenience to guess at.
+        extensions_dir: The drop-in directory; ``None`` is the default.
+        store_path: The authorization store; ``None`` is the file beside it.
+
+    Returns:
+        How many records were removed.
+
+    Raises:
+        AuthorizationStoreError: The store cannot be read.
+    """
+    directory = (
+        Path(extensions_dir)
+        if extensions_dir is not None
+        else extension_sources.default_extensions_dir()
+    )
+    store = AuthorizationStore.load(
+        store_path if store_path is not None else store_path_for(directory)
+    )
+    removed = store.revoke(identifier)
+    if removed:
+        store.save()
+    return removed
+
+
+@agent_facing(topic="extensions")
+def withheld_notices(result: LoadExtensionsResult) -> list[str]:
+    """The lines a head shows after a load for what was grandfathered or withheld.
+
+    The text is a proposal (docs/EXTENSION-PACKAGES.md §9). A head with a
+    prompt may ask about an ``unauthorized`` record instead of showing its line.
+
+    Args:
+        result: The load result.
+
+    Returns:
+        One line for any grandfathered drop-ins, then one per withheld record.
+    """
+    lines = []
+    if result.grandfathered:
+        lines.append(
+            f"authorized {len(result.grandfathered)} existing drop-in extension(s) at upgrade: "
+            f"{', '.join(result.grandfathered)}. From now on τ loads a new drop-in or package "
+            "only once it is authorized; `tau ext list` shows each one's state."
+        )
+    for record in result.withheld:
+        lines.append(withheld_notice(record))
+    return lines
+
+
+@agent_facing(topic="extensions")
+def withheld_notice(record: ExtensionRecord) -> str:
+    """The one line for a record that was found and not loaded (§9, proposal).
+
+    Args:
+        record: An ``unauthorized``, ``unusable`` or ``collision`` record.
+
+    Returns:
+        A sentence naming the extension, why it did not load, and what to do.
+    """
+    where = record.distribution if record.kind == "package" else record.target
+    if record.state == "unauthorized":
+        return (
+            f"extension {record.identifier} ({where}) was found but not loaded: "
+            f"{record.reason}. To load it: tau ext authorize {record.identifier}"
+        )
+    return f"extension {record.identifier} ({where}) was not loaded: {record.reason}"
+
+
+@agent_facing(topic="extensions")
+def authorization_prompt(record: ExtensionRecord) -> tuple[str, str]:
+    """The title and body a head's authorization prompt shows (§9, proposal).
+
+    Says whether this is an update or a new extension (#35 decision 3), and
+    what authorizing grants.
+
+    Args:
+        record: An ``unauthorized`` record.
+
+    Returns:
+        ``(title, body)``.
+    """
+    if record.kind == "package" and record.authorization == "update":
+        what = (
+            f"{record.distribution} was updated from {record.previous_version} to "
+            f"{record.version} since you authorized it."
+        )
+        title = f"Load the updated extension {record.identifier}?"
+    elif record.kind == "package":
+        what = (
+            f"The installed package {record.distribution} {record.version} provides the "
+            f"extension {record.identifier}. You have not authorized it."
+        )
+        title = f"Load the new extension {record.identifier}?"
+    else:
+        what = f"A new drop-in extension was found at {record.target}."
+        title = f"Load the new extension {record.identifier}?"
+    body = (
+        f"{what} An extension runs its own code in every τ session that loads it. "
+        f"Authorizing it is remembered until its package version changes; "
+        f"`tau ext revoke {record.identifier}` undoes it."
+    )
+    return title, body
 
 
 BASE_SYSTEM_PROMPT = """\

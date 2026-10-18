@@ -54,6 +54,7 @@ from tau_agent_core.prompt_cache import (
 from tau_agent_core.compare import Comparison, start_comparison
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.extension_sources import ExtensionRecord
 from tau_agent_core.sdk import (
     BASE_SYSTEM_PROMPT,
     DEFAULT_MAX_TOKENS,
@@ -1601,6 +1602,14 @@ class TauBackend(Backend):
             extensions_config=extensions_config,
             collect_explicit_errors=collect_explicit_errors,
         )
+
+    def extension_records(self) -> list[ExtensionRecord]:
+        """Every extension the session knows of and its state; :meth:`AgentSession.extension_records`."""
+        return self.agent_session.extension_records()
+
+    async def authorize_extension(self, token: str) -> ExtensionActionResult:
+        """Authorize and load a withheld extension; :meth:`AgentSession.authorize_extension`."""
+        return await self.agent_session.authorize_extension(token)
 
     def list_managed_extensions(self) -> list[tuple[str, bool]]:
         """Every managed file extension as ``(path, enabled)`` (E10 §6 / S70).

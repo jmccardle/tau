@@ -73,7 +73,7 @@ from tau_agent_core.flows import (
     flow_form_spec,
     next_step,
 )
-from tau_agent_core.sdk import summarize_extensions
+from tau_agent_core.sdk import summarize_extensions, withheld_notice, withheld_notices
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import MultitaskStrategy, Submission
 from tau_agent_core.tools.image_resize import DEFAULT_MAX_IMAGE_DIMENSION
@@ -1582,6 +1582,8 @@ async def run_repl(
         )
         for ext_error in ext_result.errors:
             renderer.line("error", f"failed to load extension {ext_error.path}: {ext_error.error}")
+        for line in withheld_notices(ext_result):
+            renderer.line("warning", line)
 
         router = backend.subscribe_render(renderer, on_orphan=renderer.on_orphan)
         await _require(backend, "emit_session_start")("startup")
@@ -2012,6 +2014,13 @@ class ReplLoop:
             self._renderer.line("system", f"    hooks: {', '.join(info.hooks) or '(none)'}")
         for error in state.errors:
             self._renderer.line("error", f"failed to load {error.path}: {error.error}")
+        for record in self._agent_session.extension_records():
+            if record.state in ("unauthorized", "unusable", "collision"):
+                self._renderer.line("warning", withheld_notice(record))
+            for topic in record.orphan_topics:
+                self._renderer.line(
+                    "warning", f"{record.identifier} subscribes to {topic}, which nothing emits"
+                )
         self._print_shortcuts()
 
     def _print_shortcuts(self) -> None:
