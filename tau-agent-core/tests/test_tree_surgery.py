@@ -261,6 +261,18 @@ def test_admission_reason_reads_a_bare_message_list() -> None:
     )
 
 
+def test_admission_reason_refuses_a_call_interrupted_before_its_result() -> None:
+    """A message between a call and its result is what Mistral rejects as "Not the same
+    number of function calls and responses"; a later assistant must not mask it."""
+    call = {"role": "assistant", "content": [{"type": "toolCall", "id": "c1", "name": "read"}]}
+    note = {"role": "custom", "customType": "n", "content": "note"}
+    answer = {"role": "toolResult", "tool_call_id": "c1", "content": []}
+    reason = admission_reason([call, note, {"role": "assistant", "content": []}])
+    assert reason is not None and "read(c1)" in reason
+    hidden = {**note, "visibleToModel": False}
+    assert admission_reason([call, hidden, answer]) is None, "the model never sees it"
+
+
 # --- copies -----------------------------------------------------------------
 
 

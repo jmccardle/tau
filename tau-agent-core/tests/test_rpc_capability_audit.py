@@ -244,6 +244,10 @@ NOT_EXPOSED: dict[str, str] = {
         "Returns an API key, which never goes on a wire; set_model is the verb "
         "that uses it."
     ),
+    "model_and_key": (
+        "Returns an API key, which never goes on a wire; spawn and ctx.complete "
+        "are the callers that use it."
+    ),
     "summarizer": (
         "Returns the summary model's API key, which never goes on a wire; "
         "compact and navigate are the verbs that use it."

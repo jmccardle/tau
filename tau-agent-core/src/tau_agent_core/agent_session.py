@@ -72,6 +72,8 @@ from tau_agent_core.session_log import (
     session_log_is_addressable,
 )
 from tau_agent_core.cursor import TURN_CURSOR, Cursor, TurnFrame
+from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.seed import check_seed, normalise_seed
 from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig, TurnSettings
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
@@ -320,6 +322,18 @@ def _system_prompt_digest(system_prompt: str) -> str:
     mistaken for the same one.
     """
     return hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+
+
+def _seed_label(seed: list[dict[str, Any]]) -> str:
+    """A seeded branch's default label: the tool names its calls use, else ``"seeded"``."""
+    names = [
+        str(block.get("name"))
+        for message in seed
+        if message.get("role") == "assistant"
+        for block in message.get("content", [])
+        if isinstance(block, dict) and block.get("type") == "toolCall"
+    ]
+    return "+".join(names) or "seeded"
 
 
 def _extension_factory_label(ext: Callable) -> str:
@@ -1314,10 +1328,14 @@ class AgentSession:
         Args:
             name: A config model name.
 
+        The one way a credential enters the session: no other path hands one
+        provider's key to another provider's model (docs/CURSORS.md §6).
+
         Returns:
             ``(model, key)``. The key is the resolver's ``api_key(name)`` when it
             has one, as ``ConfigModelResolver`` does; a plain ``name -> Model``
-            resolver knows no keys, and its models run with the session's key.
+            resolver knows no keys, so the key is ``None`` (the provider's
+            environment variable) unless ``model`` equals the session's model.
 
         Raises:
             RuntimeError: no resolver is bound.
@@ -1332,7 +1350,31 @@ class AgentSession:
                 "expected a tau_llm.types.Model"
             )
         key_for = getattr(self._model_resolver, "api_key", None)
-        return model, (key_for(name) if callable(key_for) else self._api_key)
+        if callable(key_for):
+            return model, key_for(name)
+        return model, self._api_key if model == self._model else None
+
+    def model_and_key(self, model: str | Model | None) -> tuple[Model, str | None]:
+        """The model ``model`` names and the key it is called with.
+
+        Args:
+            model: ``None`` for the session's model and key; a config name,
+                through :meth:`resolve_model`; or a ``Model``, which keeps the
+                session's key only if it equals the session's model and otherwise
+                gets ``None``, the provider's environment variable.
+
+        Returns:
+            ``(model, key)``.
+
+        Raises:
+            RuntimeError: a name was given and no resolver is bound.
+            TypeError: the resolver returned something other than a ``Model``.
+        """
+        if model is None:
+            return self._model, self._api_key
+        if isinstance(model, str):
+            return self.resolve_model(model)
+        return model, self._api_key if model == self._model else None
 
     def summarizer(self) -> tuple[Model, str | None]:
         """The model and key a compaction or a branch summary runs on (H5 / §16.8).
@@ -2923,20 +2965,7 @@ class AgentSession:
         self._bind_or_check_loop("submit()")
         cur = self._cursor if cursor is None else self._registered(cursor)
 
-        depth = next_submission_depth(sub.depth)
-        if depth != sub.depth:
-            sub = replace(sub, depth=depth)
-
-        if sub.depth > MAX_SUBMISSION_DEPTH:
-            raise RuntimeError(
-                f"submit(): submission depth {sub.depth} exceeds "
-                f"MAX_SUBMISSION_DEPTH ({MAX_SUBMISSION_DEPTH}). Decision 3 "
-                "(docs/SUBMISSION-LIFECYCLE.md): self-submission depth is a "
-                "hard cap that raises — Neovim's shape (non-reentrant by "
-                "default, opt-in nesting, hard cap), not AutoGen's advisory "
-                "'stop_hook_active' flag that 'does not prevent loops "
-                "automatically'."
-            )
+        sub = self._with_checked_depth(sub)
 
         if cur.turn_task is not None and asyncio.current_task() is cur.turn_task:
             raise RuntimeError(
@@ -3038,6 +3067,54 @@ class AgentSession:
                 "'reject', 'enqueue', 'steer', 'rollback' and 'fork'."
             )
 
+        return await self._drive_turn(sub, cur, context=context, on_admitted=on_admitted)
+
+    def _with_checked_depth(self, sub: Submission) -> Submission:
+        """``sub`` at its derived submission depth, refused past the cap.
+
+        Raises:
+            RuntimeError: the derived depth exceeds ``MAX_SUBMISSION_DEPTH``.
+        """
+        depth = next_submission_depth(sub.depth)
+        if depth != sub.depth:
+            sub = replace(sub, depth=depth)
+
+        if sub.depth > MAX_SUBMISSION_DEPTH:
+            raise RuntimeError(
+                f"submit(): submission depth {sub.depth} exceeds "
+                f"MAX_SUBMISSION_DEPTH ({MAX_SUBMISSION_DEPTH}). Decision 3 "
+                "(docs/SUBMISSION-LIFECYCLE.md): self-submission depth is a "
+                "hard cap that raises — Neovim's shape (non-reentrant by "
+                "default, opt-in nesting, hard cap), not AutoGen's advisory "
+                "'stop_hook_active' flag that 'does not prevent loops "
+                "automatically'."
+            )
+        return sub
+
+    async def _drive_turn(
+        self,
+        sub: Submission,
+        cur: Cursor,
+        *,
+        context: list[dict[str, Any]] | None = None,
+        on_admitted: Callable[[], None] | None = None,
+        seed: list[dict[str, Any]] | None = None,
+        user_turn: bool = True,
+    ) -> SubmissionResult:
+        """:meth:`submit` steps 2-5 on ``cur``, whose turn lock the caller holds.
+
+        Releases the lock before it returns or raises.
+
+        Args:
+            sub: The admitted submission.
+            cur: Its cursor.
+            context: As for :meth:`submit`.
+            on_admitted: As for :meth:`submit`.
+            seed: Validated messages written ahead of the user turn
+                (docs/SEEDED-BRANCHES.md §4).
+            user_turn: ``False`` runs no input pipeline and adds no user message:
+                the loop answers ``seed``.
+        """
         depth_token = DRIVING_SUBMISSION_DEPTH.set(sub.depth)
         user_input_token = SUBMISSION_ALLOWS_USER_INPUT.set(sub.allow_user_input)
         cursor_token = TURN_CURSOR.set(cur)
@@ -3055,9 +3132,12 @@ class AgentSession:
             cur.abort_signal = AbortSignal()
 
             original_text = sub.text
-            text, images, early = await self._apply_input_pipeline(sub)
-            if early is not None:
-                return early
+            if not user_turn:
+                text, images = "", None
+            else:
+                text, images, early = await self._apply_input_pipeline(sub)
+                if early is not None:
+                    return early
 
             # Commands resolve inside the pipeline above, so the lock cannot refuse its own release.
             locked = self.pending_request
@@ -3087,12 +3167,13 @@ class AgentSession:
             )
             try:
                 turn_messages = await self._run_one_turn(
-                    text,
+                    text if user_turn else None,
                     images,
                     context,
                     queued=queued,
                     strip_ref_text=original_text,
                     persist=sub.store_history,
+                    seed=seed,
                 )
 
                 if sub.store_history:
@@ -3125,19 +3206,23 @@ class AgentSession:
     async def spawn(
         self,
         at: str | None,
-        prompt: str,
+        prompt: str | None = None,
         *,
+        seed: list[dict[str, Any]] | None = None,
         tools: list[str],
-        model: Model | None = None,
+        model: str | Model | None = None,
         max_turns: int | None = None,
         label: str | None = None,
         system_prompt: str | None = None,
         hooks: bool = False,
         owner: Cursor | None = None,
     ) -> BranchResult:
-        """Run ``prompt`` as a sub-agent turn on a new cursor at ``at`` (docs/CURSORS.md §6).
+        """Run a sub-agent turn on a new cursor at ``at`` (docs/CURSORS.md §6).
 
-        The cursor is owned by ``owner`` (default: the running turn's), so aborting
+        The turn answers ``prompt``, or continues from ``seed``
+        (docs/SEEDED-BRANCHES.md): the seed's messages are written on the branch
+        first, then the prompt as a user message if one is given, and with no
+        prompt the loop answers the seed directly. The cursor is owned by ``owner`` (default: the running turn's), so aborting
         the owner aborts it, and it runs under a :class:`~tau_agent_core.cursor.TurnFrame`:
         only ``tools``, ``model``/``system_prompt`` when given, ``max_turns``, and
         no extension hooks unless ``hooks``. Its turn is an ordinary submission
@@ -3151,15 +3236,21 @@ class AgentSession:
         refused submission (without the entry).
 
         Args:
-            at: The entry to branch from; ``None`` is before the root.
-            prompt: The sub-agent's user message.
+            at: The entry to branch from; ``None`` is before the root. Inside a
+                tool call, the parent of the calling assistant message, never that
+                message itself.
+            prompt: The sub-agent's user message; ``None`` needs a ``seed``.
+            seed: Messages the branch starts from (:func:`~tau_agent_core.seed.normalise_seed`
+                lists the shapes; :func:`~tau_agent_core.seed.seed_tool_call` builds
+                an injected call and its result).
             tools: Names of the tools it may call, each one the spawning turn
                 offers.
-            model: Its model; ``None`` means the session's. It runs with the
-                session's API key either way.
+            model: Its model and key, by :meth:`model_and_key`: a config name
+                (recorded as the branch's ``model``), a ``Model``, or ``None`` for
+                the session's.
             max_turns: Its turn ceiling; ``None`` is no ceiling, not the session's.
             label: What it is for, for display; ``None`` means the prompt's first
-                60 characters.
+                60 characters, or the seed's tool names.
             system_prompt: Its system prompt; ``None`` means the session's.
             hooks: Whether extension hooks fire in its turn.
             owner: The cursor it answers to; ``None`` means :attr:`acting_cursor`.
@@ -3168,9 +3259,16 @@ class AgentSession:
             What the sub-agent came back with; check ``ok`` first.
 
         Raises:
-            ValueError: a name in ``tools`` is not one the spawning turn offers, or
-                ``at`` names no entry.
+            ValueError: a name in ``tools`` is not one the spawning turn offers;
+                ``at`` names no entry; neither ``prompt`` nor ``seed`` is given; or
+                the seed is malformed or would leave the context invalid
+                (:func:`~tau_agent_core.seed.check_seed`, naming the call id).
+                Raised before anything is written or any model is called.
+            RuntimeError: ``model`` is a name and no resolver is bound.
         """
+        if prompt is None and seed is None:
+            raise ValueError("spawn: give a prompt, a seed, or both")
+        resolved, key = (None, None) if model is None else self.model_and_key(model)
         available = {t.name for t in self._turn_tools()}
         missing = [t for t in tools if t not in available]
         if missing:
@@ -3179,26 +3277,33 @@ class AgentSession:
                 f"(available: {sorted(available)}). A sub-agent silently missing a tool it "
                 "was told to use would return a confident wrong answer."
             )
+        stored_seed = None if seed is None else self._checked_seed(at, seed, prompt is not None)
+        if label is None:
+            label = prompt[:60] if prompt is not None else _seed_label(stored_seed or [])
         cursor = await self.open_cursor(
-            at, owner=self.acting_cursor if owner is None else owner, label=label or prompt[:60]
+            at, owner=self.acting_cursor if owner is None else owner, label=label
         )
         cursor.frame = TurnFrame(
             tools=tuple(tools),
-            model=model,
-            api_key=self._api_key,
+            model=resolved,
+            api_key=key,
+            model_name=model if isinstance(model, str) else None,
             system_prompt=system_prompt,
             max_turns=max_turns,
             hooks=hooks,
         )
         sub = Submission(
-            text=prompt,
+            text=prompt or "",
             source="agent",
             submitter=f"fork:{cursor.label}",
             submission_id=uuid.uuid4().hex,
             multitask_strategy="enqueue",
         )
         try:
-            result = await self.submit(sub, cursor=cursor)
+            if stored_seed is None:
+                result = await self.submit(sub, cursor=cursor)
+            else:
+                result = await self._submit_seeded(sub, cursor, stored_seed, prompt is not None)
         except Exception as exc:  # noqa: BLE001 — containment is the point (§9.2/5)
             await cursor.append_custom_entry(
                 "branch_error", {"label": cursor.label, "error": str(exc)}
@@ -3231,6 +3336,35 @@ class AgentSession:
             messages=list(result.messages),
             error=None,
         )
+
+    def _checked_seed(
+        self, at: str | None, seed: list[dict[str, Any]], prompted: bool
+    ) -> list[dict[str, Any]]:
+        """``seed`` normalised and checked against the context at ``at``; writes nothing.
+
+        Raises:
+            ValueError: ``at`` names no entry, or :func:`~tau_agent_core.seed.normalise_seed`
+                or :func:`~tau_agent_core.seed.check_seed` refuses the seed.
+        """
+        stored = normalise_seed(seed)
+        tree = ConversationTree(self._cursor.log.entries(), at)
+        if at is not None and not tree.contains(at):
+            raise ValueError(f"spawn: branch point {at!r} not found")
+        check_seed(tree.context_for(at) if at is not None else [], stored, prompted=prompted)
+        return stored
+
+    async def _submit_seeded(
+        self, sub: Submission, cursor: Cursor, seed: list[dict[str, Any]], prompted: bool
+    ) -> SubmissionResult:
+        """Run ``sub`` on ``cursor``, a branch :meth:`spawn` just opened, from ``seed``.
+
+        The fresh cursor has no turn to wait out or roll back, so admission is
+        the depth cap and the lock; the turn is :meth:`submit`'s.
+        """
+        cur = self._registered(cursor)
+        sub = self._with_checked_depth(sub)
+        await cur.turn_lock.acquire()
+        return await self._drive_turn(sub, cur, seed=seed, user_turn=prompted)
 
     def _spawn_fork(self, sub: Submission, fork_point: str | None, owner: Cursor) -> None:
         """Run a ``multitask_strategy="fork"`` submission as a supervised :meth:`spawn`.
@@ -3481,12 +3615,13 @@ class AgentSession:
 
     async def _run_one_turn(
         self,
-        text: str,
+        text: str | None,
         images: list[dict] | None,
         context: list[dict] | None,
         queued: list[UserMessage] | None = None,
         strip_ref_text: str | None = None,
         persist: bool = True,
+        seed: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         """Run one agent-loop turn: build the user message, run the loop, persist.
 
@@ -3511,28 +3646,37 @@ class AgentSession:
         writes NONE of it to the log — the model sees and answers
         the turn; the durable tree never does.
 
-        Returns THIS turn's new messages only — the user message, any ``queued``
-        messages, then the assistant/tool messages the loop produced.
+        ``seed`` (validated by :func:`~tau_agent_core.seed.check_seed`) is written
+        and threaded ahead of everything else; ``text=None`` then adds no user
+        message and fires no ``before_agent_start``, so the loop answers the seed
+        (docs/SEEDED-BRANCHES.md §4).
+
+        Returns THIS turn's new messages only — the seed, the user message, any
+        ``queued`` messages, then the assistant/tool messages the loop produced.
         """
         queued = queued or []
+        seed = seed or []
 
-        # Create UserMessage for tau-llm
-        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-        if images:
-            content.extend(images)
-        user_msg = UserMessage.model_validate(
-            {
-                "role": "user",
-                "content": content,
-                "timestamp": self._timestamp(),
-            }
-        )
+        user_msg: UserMessage | None = None
+        if text is not None:
+            content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+            if images:
+                content.extend(images)
+            user_msg = UserMessage.model_validate(
+                {
+                    "role": "user",
+                    "content": content,
+                    "timestamp": self._timestamp(),
+                }
+            )
 
         # Get context: use provided context or fall back to session messages.
         if context is not None:
             context_messages = list(context)  # copy to avoid mutation
             strip_ref = strip_ref_text if strip_ref_text is not None else text
-            context_ends_with_user = _ends_with_user_text(context_messages, strip_ref)
+            context_ends_with_user = strip_ref is not None and _ends_with_user_text(
+                context_messages, strip_ref
+            )
         else:
             context_messages = self.messages
             context_ends_with_user = False
@@ -3544,7 +3688,7 @@ class AgentSession:
         pre_user_messages: list[dict[str, Any]] = []
         post_user_messages: list[dict[str, Any]] = []
         hooks = self._hooks()
-        if hooks.has_handlers("before_agent_start"):
+        if text is not None and hooks.has_handlers("before_agent_start"):
             stored_prompt = _leading_system_prompt(context_messages)
             before = await hooks.emit_before_agent_start(
                 prompt=text,
@@ -3588,17 +3732,16 @@ class AgentSession:
         # The inputs are written before the loop runs, so a crash mid-turn keeps the prompt.
         if persist:
             await self._record_config()
-        for message in [*pre_user_messages, user_msg, *queued, *post_user_messages]:
+        user = [] if user_msg is None else [user_msg]
+        prompts = [*seed, *pre_user_messages, *user, *queued, *post_user_messages]
+        for message in prompts:
             await writer.append(message)
         self.acting_cursor.turn_writer = writer
 
         # Cleared BEFORE loop.run, because loop.run is what emits agent_end.
         self.acting_cursor.persistence_settled.clear()
         try:
-            await loop.run(
-                prompts=[*pre_user_messages, user_msg, *queued, *post_user_messages],
-                context=context_messages,
-            )
+            await loop.run(prompts=prompts, context=context_messages)
         except Exception as exc:
             await writer.append(turn_error_message(exc))
             raise

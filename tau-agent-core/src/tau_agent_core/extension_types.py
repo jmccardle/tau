@@ -1308,28 +1308,24 @@ class ExtensionContext:
 
         Args:
             model: ``None`` for the session's current model; a name, looked up by
-                the resolver bound on the session (the config ``models`` registry
-                the TUI picks from); or a ``Model``, used as-is.
+                ``AgentSession.resolve_model`` (the config ``models`` registry the
+                TUI picks from); or a ``Model``, used as-is.
 
         Returns:
-            The resolved ``Model``.
+            The resolved ``Model``; ``AgentSession.model_and_key`` also gives its key.
 
         Raises:
             RuntimeError: no session is bound, or a name was given and the session
                 has no model resolver.
+            TypeError: the resolver returned something other than a ``Model``.
         """
         session = self._require_session()
-        if model is None:
-            return session._model
-        if isinstance(model, str):
-            resolver = session.model_resolver
-            if resolver is None:
-                raise RuntimeError(
-                    f"cannot resolve model {model!r} by name: no model resolver is bound to "
-                    "this session (the TUI/headless frontends bind one from config 'models')"
-                )
-            return resolver(model)
-        return model
+        if isinstance(model, str) and session.model_resolver is None:
+            raise RuntimeError(
+                f"cannot resolve model {model!r} by name: no model resolver is bound to "
+                "this session (the TUI/headless frontends bind one from config 'models')"
+            )
+        return session.model_and_key(model)[0]
 
     async def complete(
         self,
@@ -1362,7 +1358,7 @@ class ExtensionContext:
             model: model name (resolved via the config registry), a ``Model``, or None
                 for the session's current model.
             constraints: an optional ``tau_llm.DecodeConstraints``.
-            api_key: overrides the session's key.
+            api_key: overrides the key ``AgentSession.model_and_key`` gives ``model``.
 
         Returns:
             A ``tau_llm.AssistantMessage``.
@@ -1378,10 +1374,10 @@ class ExtensionContext:
         from tau_agent_core.usage import usage_of
 
         session = self._require_session()
-        resolved = self.resolve_model(model)
+        resolved, model_key = session.model_and_key(model)
 
         options: dict[str, Any] = {}
-        key = api_key if api_key is not None else session._api_key
+        key = api_key if api_key is not None else model_key
         if key is not None:
             options["api_key"] = key
         if constraints is not None:
@@ -1425,7 +1421,7 @@ class ExtensionContext:
             model: A name, a ``Model``, or ``None`` for the session's, as for
                 :meth:`complete`.
             constraints: An optional ``tau_llm.DecodeConstraints``.
-            api_key: Overrides the session's key.
+            api_key: Overrides the model's key, as for :meth:`complete`.
 
         Returns:
             The text blocks joined, VERBATIM: under a constraint whitespace is part
@@ -1450,8 +1446,9 @@ class ExtensionContext:
     async def spawn_branch(
         self,
         parent_id: str | None,
-        prompt: str,
+        prompt: str | None = None,
         *,
+        seed: list[dict[str, Any]] | None = None,
         tools: list[str],
         model: Any = None,
         max_turns: int | None = None,
@@ -1461,14 +1458,27 @@ class ExtensionContext:
     ) -> "BranchResult":
         """Run a tool-using sub-agent on its own cursor in THIS conversation (C2/W14).
 
-        Delegates to :meth:`AgentSession.spawn` (docs/CURSORS.md §6).
+        Delegates to :meth:`AgentSession.spawn` (docs/CURSORS.md §6). From inside a
+        tool, seed the branch instead of prompting it, and hang it from the parent
+        of the calling message, whose call is still unanswered
+        (docs/SEEDED-BRANCHES.md)::
+
+            parent = next(e["parentId"] for e in ctx.entries() if e["id"] == ctx.cursor.leaf)
+            note = {"customType": "planner", "content": "You are the sub-agent now."}
+            result = await ctx.spawn_branch(
+                parent, seed=[note, *seed_tool_call("start_subagent", {}, task)],
+                tools=["write"], model="mistral-small",
+            )
 
         Args:
             parent_id: The entry the sub-agent's cursor opens at, or ``None`` for
                 before the root.
-            prompt: The sub-agent's task, sent as its one submission.
+            prompt: The sub-agent's task as a user message; ``None`` needs ``seed``.
+            seed: Messages written on the branch before the prompt; with no prompt
+                the sub-agent answers them (``tau_agent_core.seed``).
             tools: A required hard allowlist of tool names; ``[]`` means none.
-            model: A name, a ``Model``, or ``None`` for the session's.
+            model: A config name, a ``Model``, or ``None`` for the session's; the
+                key goes with it (``AgentSession.model_and_key``).
             max_turns: Cap on the sub-agent's loop turns, or ``None`` for no cap.
             label: The cursor's label; defaults to the prompt's first 60 characters.
             system_prompt: Replaces the session's system prompt for this branch.
@@ -1481,15 +1491,17 @@ class ExtensionContext:
         Raises:
             RuntimeError: No session is bound, or ``model`` is a name and the
                 session has no resolver.
-            ValueError: a tool is not one the spawning turn offers, or ``parent_id``
-                names no entry.
+            ValueError: a tool is not one the spawning turn offers; ``parent_id``
+                names no entry; neither ``prompt`` nor ``seed`` is given; or the seed
+                is malformed or leaves a tool call unanswered (named by id).
         """
         session = self._require_session()
         result: BranchResult = await session.spawn(
             parent_id,
             prompt,
+            seed=seed,
             tools=tools,
-            model=None if model is None else self.resolve_model(model),
+            model=model,
             max_turns=max_turns,
             label=label,
             system_prompt=system_prompt,

@@ -261,6 +261,28 @@ its cursor. The frame has no thinking field, so a sub-agent runs at its session'
 thinking level, and `_record_config` records that level. `BranchResult.cursor_id`
 replaces `lane`.
 
+**The key goes with the model** (fixed 2026-10-15). A branch on another
+provider's model used to run with its spawner's API key: an Anthropic parent
+spawning `model="mistral-small"` got HTTP 401 "Invalid API Key" from Mistral.
+`spawn` now takes the model as a config name or a `Model` and resolves it with
+`AgentSession.model_and_key`. A name goes through `resolve_model`, the one way
+a credential enters a session, and the frame records the model, its config key
+and its name, as `set_model` does. A `Model` object keeps the session's key only
+when it equals the session's model, and otherwise gets `None`, which means the
+provider's environment variable. `ctx.complete` and `ctx.resolve_model` take the
+same path. A plain `name -> Model` resolver knows no keys, so it also gives
+`None` for any model other than the session's; it used to give the session's
+key. docs/SEEDED-BRANCHES.md §7 has the audit.
+
+**Seeded branches** (2026-10-15, docs/SEEDED-BRANCHES.md). `spawn(at, prompt=None,
+*, seed=[…])` writes the seed's messages on the branch after the frame's config
+entry. With no prompt, the turn adds no user message and the model answers the
+seed. From inside a tool, `at` must be the *parent* of the calling assistant
+message, never `ctx.cursor.leaf`, whose call is still unanswered. The branch is
+then a sibling of the planner's call, and the planner's walk never contains it.
+A seed or anchor that would leave a call unanswered is refused before anything
+is written.
+
 **A consequence of §4:** a sub-agent writes entries into the shared log. If it is
 the last writer, a reopened tree places its cursor on the sub-agent's newest entry.
 That entry is a real leaf of the conversation, and §4 is the agreed rule.

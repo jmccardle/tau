@@ -675,7 +675,7 @@ grammar raises rather than returning free prose as a verdict.
 - `messages: list[dict[str, Any]]` — τ message dicts (``{"role": ..., "content": ...}``).
 - `model: Any = None` — model name (resolved via the config registry), a ``Model``, or None for the session's current model.
 - `constraints: Any = None` — an optional ``tau_llm.DecodeConstraints``.
-- `api_key: str | None = None` — overrides the session's key.
+- `api_key: str | None = None` — overrides the key ``AgentSession.model_and_key`` gives ``model``.
 
 **Returns**
 
@@ -701,7 +701,7 @@ Run :meth:`complete` and return the response's text (the common case).
 - `messages: list[dict[str, Any]]` — τ message dicts, as for :meth:`complete`.
 - `model: Any = None` — A name, a ``Model``, or ``None`` for the session's, as for :meth:`complete`.
 - `constraints: Any = None` — An optional ``tau_llm.DecodeConstraints``.
-- `api_key: str | None = None` — Overrides the session's key.
+- `api_key: str | None = None` — Overrides the model's key, as for :meth:`complete`.
 
 **Returns**
 
@@ -1046,15 +1046,16 @@ extension-private client plumbing.
 
 **Parameters**
 
-- `model: Any = None` — ``None`` for the session's current model; a name, looked up by the resolver bound on the session (the config ``models`` registry the TUI picks from); or a ``Model``, used as-is.
+- `model: Any = None` — ``None`` for the session's current model; a name, looked up by ``AgentSession.resolve_model`` (the config ``models`` registry the TUI picks from); or a ``Model``, used as-is.
 
 **Returns**
 
-The resolved ``Model``.
+The resolved ``Model``; ``AgentSession.model_and_key`` also gives its key.
 
 **Raises**
 
 - `RuntimeError` — no session is bound, or a name was given and the session has no model resolver.
+- `TypeError` — the resolver returned something other than a ``Model``.
 
 ### session_id
 
@@ -1226,21 +1227,32 @@ True once `shutdown()` has been called on this context (P3).
 ### spawn_branch
 
 ```python
-async spawn_branch(parent_id: str | None, prompt: str, *, tools: list[str], model: Any = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = False) -> 'BranchResult'
+async spawn_branch(parent_id: str | None, prompt: str | None = None, *, seed: list[dict[str, Any]] | None = None, tools: list[str], model: Any = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = False) -> 'BranchResult'
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.spawn_branch`
 
 Run a tool-using sub-agent on its own cursor in THIS conversation (C2/W14).
 
-Delegates to :meth:`AgentSession.spawn` (docs/CURSORS.md §6).
+Delegates to :meth:`AgentSession.spawn` (docs/CURSORS.md §6). From inside a
+tool, seed the branch instead of prompting it, and hang it from the parent
+of the calling message, whose call is still unanswered
+(docs/SEEDED-BRANCHES.md)::
+
+    parent = next(e["parentId"] for e in ctx.entries() if e["id"] == ctx.cursor.leaf)
+    note = {"customType": "planner", "content": "You are the sub-agent now."}
+    result = await ctx.spawn_branch(
+        parent, seed=[note, *seed_tool_call("start_subagent", {}, task)],
+        tools=["write"], model="mistral-small",
+    )
 
 **Parameters**
 
 - `parent_id: str | None` — The entry the sub-agent's cursor opens at, or ``None`` for before the root.
-- `prompt: str` — The sub-agent's task, sent as its one submission.
+- `prompt: str | None = None` — The sub-agent's task as a user message; ``None`` needs ``seed``.
+- `seed: list[dict[str, Any]] | None = None` — Messages written on the branch before the prompt; with no prompt the sub-agent answers them (``tau_agent_core.seed``).
 - `tools: list[str]` — A required hard allowlist of tool names; ``[]`` means none.
-- `model: Any = None` — A name, a ``Model``, or ``None`` for the session's.
+- `model: Any = None` — A config name, a ``Model``, or ``None`` for the session's; the key goes with it (``AgentSession.model_and_key``).
 - `max_turns: int | None = None` — Cap on the sub-agent's loop turns, or ``None`` for no cap.
 - `label: str | None = None` — The cursor's label; defaults to the prompt's first 60 characters.
 - `system_prompt: str | None = None` — Replaces the session's system prompt for this branch.
@@ -1253,7 +1265,7 @@ class:`BranchResult`. **Check ``ok``** — a failed sub-agent returns a result, 
 **Raises**
 
 - `RuntimeError` — No session is bound, or ``model`` is a name and the session has no resolver.
-- `ValueError` — a tool is not one the spawning turn offers, or ``parent_id`` names no entry.
+- `ValueError` — a tool is not one the spawning turn offers; ``parent_id`` names no entry; neither ``prompt`` nor ``seed`` is given; or the seed is malformed or leaves a tool call unanswered (named by id).
 
 ### summarize_branch
 
@@ -1821,6 +1833,21 @@ Filter ``descriptions``; every filter given must match, in registry order.
 
 The matching descriptions; a new list, possibly empty.
 
+## new_tool_call_id
+<!-- agent: yes -->
+
+```python
+new_tool_call_id() -> str
+```
+
+`tau_agent_core.seed.new_tool_call_id`
+
+A fresh id for an injected tool call (docs/SEEDED-BRANCHES.md §5).
+
+**Returns**
+
+Nine characters drawn from ``[a-zA-Z0-9]`` by :mod:`secrets`.
+
 ## read_session_name
 <!-- agent: yes -->
 
@@ -1839,6 +1866,28 @@ Read ``session``'s name (:func:`~tau_agent_core.session_log.session_name`).
 **Returns**
 
 The newest ``session_info`` name, or ``None`` if never named or the newest name is empty.
+
+## seed_tool_call
+<!-- agent: yes -->
+
+```python
+seed_tool_call(name: str, arguments: dict[str, Any], result: str | list[dict[str, Any]], *, is_error: bool = False) -> list[dict[str, Any]]
+```
+
+`tau_agent_core.seed.seed_tool_call`
+
+An injected tool call and its answer, ready for ``spawn_branch(seed=…)``.
+
+**Parameters**
+
+- `name: str` — The tool's name. It need not be a tool the branch may call.
+- `arguments: dict[str, Any]` — The call's arguments.
+- `result: str | list[dict[str, Any]]` — The result's text, or its content blocks.
+- `is_error: bool = False` — Whether the result reports a failure.
+
+**Returns**
+
+``[assistant, toolResult]`` sharing a :func:`new_tool_call_id`; the assistant names :data:`SEED_ORIGIN` as its api, provider and model.
 
 ## summarize_extensions
 <!-- agent: yes -->

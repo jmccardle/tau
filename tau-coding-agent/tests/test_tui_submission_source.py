@@ -58,7 +58,7 @@ def _stub_turn(backend: TauBackend, events: list[AgentEvent]) -> list[dict[str, 
     produced = [{"role": "assistant", "content": [{"type": "text", "text": "ok"}]}]
 
     async def fake_run_one_turn(
-        text, images, context, queued=None, strip_ref_text=None, persist=True
+        text, images, context, queued=None, strip_ref_text=None, persist=True, seed=None
     ):
         for event in events:
             await session._emit_stamped(event)
