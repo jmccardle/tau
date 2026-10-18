@@ -54,9 +54,7 @@ async def test_start_on_load_and_shutdown_on_unmount(app, tmp_path):
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.action_new_chat()
-        await pilot.pause()
-        # session_start has fired now that the extension is loaded — before quit.
+        # Mount opened the session and loaded the extension, so start fired before quit.
         assert _lines(out) == ["start:startup"]
 
     # The Pilot context exit unmounts the app → on_unmount fires session_shutdown.
