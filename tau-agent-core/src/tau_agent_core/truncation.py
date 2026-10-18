@@ -36,10 +36,14 @@ class Truncation(NamedTuple):
     counts the tool calls in them that did not run. A drop with no truncated
     completion is possible (an aborted stream drops calls too), which is why the
     two are counted separately rather than one implying the other.
+    ``reasoning_tokens`` is how much of the cut completions' output was
+    reasoning, ``None`` when no provider reported a split
+    (docs/REASONING-WIRE.md §7).
     """
 
     completions: int
     dropped_tool_calls: int
+    reasoning_tokens: int | None = None
 
     @property
     def happened(self) -> bool:
@@ -140,7 +144,17 @@ def completion_truncation(message: dict[str, Any]) -> Truncation:
     if message.get("stop_reason") != TRUNCATED_STOP_REASON:
         return Truncation(0, 0)
     usage = message.get("usage")
-    return Truncation(1, dropped_tool_calls(usage) if isinstance(usage, dict) else 0)
+    if not isinstance(usage, dict):
+        return Truncation(1, 0)
+    return Truncation(1, dropped_tool_calls(usage), reasoning_tokens_of(usage))
+
+
+def reasoning_tokens_of(usage: dict[str, Any]) -> int | None:
+    """The reasoning share of one completion's output, off its ``usage`` dict, or ``None``."""
+    count = usage.get("reasoning_tokens")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return None
+    return count
 
 
 def truncation_from_messages(messages: list[dict[str, Any]]) -> Truncation:
@@ -156,9 +170,15 @@ def truncation_from_messages(messages: list[dict[str, Any]]) -> Truncation:
         if message.get("role") != "assistant":
             continue
         one = completion_truncation(message)
+        reasoning = (
+            total.reasoning_tokens
+            if one.reasoning_tokens is None
+            else (total.reasoning_tokens or 0) + one.reasoning_tokens
+        )
         total = Truncation(
             total.completions + one.completions,
             total.dropped_tool_calls + one.dropped_tool_calls,
+            reasoning,
         )
     return total
 
@@ -188,6 +208,8 @@ def truncation_notice(truncation: Truncation, *, max_tokens: int | None) -> str 
         f"{subject} stopped at the output cap (stop_reason: length, "
         f"max_tokens = {cap}), not at the end of an answer."
     )
+    if truncation.reasoning_tokens:
+        sentence += f" {truncation.reasoning_tokens:,} of those output tokens were reasoning."
     dropped = truncation.dropped_tool_calls
     if dropped:
         plural = "" if dropped == 1 else "s"

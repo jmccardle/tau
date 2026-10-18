@@ -22,11 +22,12 @@ def test_a_recorded_level_is_resumed_when_no_flag_names_one():
     assert model_config["thinking"] == "high"
 
 
-def test_a_recorded_none_resumes_with_thinking_off():
+def test_a_recorded_none_resumes_at_the_provider_default_not_off():
+    """docs/REASONING-WIRE.md §4: None sends no control; "off" sends the off form."""
     _, model_config = resolve_model_config(
         CONFIG, parse_cli_args(["-p", "x"]), fallback_model="fast", prior_config={"thinking": None}
     )
-    assert model_config["thinking"] == "off"
+    assert "thinking" not in model_config
 
 
 def test_the_flag_wins_over_the_recorded_level():

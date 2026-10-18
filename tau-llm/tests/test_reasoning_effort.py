@@ -149,10 +149,50 @@ def test_no_reasoning_effort_when_model_not_reasoning(monkeypatch):
     assert "reasoning_effort" not in payload
 
 
-def test_off_level_not_sent(monkeypatch):
+def test_unmapped_off_on_a_reasoning_model_sends_none(monkeypatch):
+    """OpenAI's own off value; measured: 0 reasoning tokens on gpt-5.6-luna, where
+    sending nothing reasoned 52 (docs/REASONING-WIRE.md §4)."""
     _patch_client(monkeypatch)
     payload = _run(_model(reasoning=True), {"reasoning": "off"})
+    assert payload["reasoning_effort"] == "none"
+
+
+def test_unmapped_off_on_an_undeclared_model_raises_naming_the_map(monkeypatch):
+    """τ cannot know this endpoint's off form; sending nothing leaves its default on."""
+    _patch_client(monkeypatch)
+    with pytest.raises(ValueError, match="thinking_level_map.off"):
+        _run(_model(reasoning=False), {"reasoning": "off"})
+
+
+def test_a_mapped_off_reaches_the_wire_without_reasoning_true(monkeypatch):
+    """#23's case on this wire: a llama.cpp template that thinks by default."""
+    _patch_client(monkeypatch)
+    payload = _run(
+        _model(
+            reasoning=False,
+            thinking_level_map={"off": {"chat_template_kwargs": {"enable_thinking": False}}},
+        ),
+        {"reasoning": "off"},
+    )
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_an_empty_off_fragment_states_nothing_needs_sending(monkeypatch):
+    _patch_client(monkeypatch)
+    payload = _run(_model(reasoning=False, thinking_level_map={"off": {}}), {"reasoning": "off"})
     assert "reasoning_effort" not in payload
+
+
+def test_an_off_mapped_to_null_raises(monkeypatch):
+    _patch_client(monkeypatch)
+    with pytest.raises(ValueError, match="unsupported"):
+        _run(_model(reasoning=True, thinking_level_map={"off": None}), {"reasoning": "off"})
+
+
+def test_an_unknown_level_raises(monkeypatch):
+    _patch_client(monkeypatch)
+    with pytest.raises(ValueError, match="not a thinking level"):
+        _run(_model(reasoning=True), {"reasoning": "extreme"})
 
 
 def test_xhigh_clamped_to_high_without_map(monkeypatch):
@@ -275,3 +315,27 @@ def test_a_fragment_is_still_gated_on_declared_reasoning_support(monkeypatch):
         {"reasoning": "high"},
     )
     assert "thinking_budget_tokens" not in payload
+
+
+def _final(model: Model, options: dict | None):
+    """Drive stream_chat to completion and return the final AssistantMessage."""
+    provider = OpenAICompletionsProvider(api_key="sk-test")
+
+    async def _go():
+        stream = await provider.stream_chat(
+            model=model,
+            messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
+            options=options,
+        )
+        return [e async for e in stream][-1].final
+
+    return asyncio.run(_go())
+
+
+def test_the_level_sent_is_reported_on_the_message(monkeypatch):
+    """docs/REASONING-WIRE.md §3: a clamp is visible rather than silent."""
+    _patch_client(monkeypatch)
+    assert _final(_model(reasoning=True), {"reasoning": "xhigh"}).reasoning_level == "high"
+    assert _final(_model(reasoning=True), {"reasoning": "off"}).reasoning_level == "off"
+    assert _final(_model(reasoning=False), {"reasoning": "high"}).reasoning_level is None
+    assert _final(_model(reasoning=True), None).reasoning_level is None

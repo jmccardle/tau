@@ -61,6 +61,14 @@ The model id the request named.
 
 The provider id the request went to.
 
+### reasoning_level
+
+`tau_llm.types.AssistantMessage.reasoning_level: Literal['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] | None`
+
+The thinking level whose wire form this completion was
+requested with, after clamping; ``None`` when no reasoning control
+was sent (docs/REASONING-WIRE.md §3).
+
 ### response_id
 
 `tau_llm.types.AssistantMessage.response_id: str | None`
@@ -476,16 +484,17 @@ registered, and supplies the endpoint and credential defaults.
 
 `tau_llm.types.Model.reasoning: bool`
 
-Whether the model accepts a reasoning level. False supports
-only ``"off"``.
+Whether the model accepts a reasoning level. ``"off"`` is
+sent either way; any other level is not sent when False.
 
 ### reasoning_replay
 
-`tau_llm.types.Model.reasoning_replay: Literal['all', 'turn', 'off']`
+`tau_llm.types.Model.reasoning_replay: Literal['all', 'turn', 'off'] | None`
 
 Which past thinking is sent back: ``"turn"`` (only
-after the last user message), ``"all"``, or ``"off"``
-(docs/ANTHROPIC-GOOGLE-CLIENTS.md §S1).
+after the last user message), ``"all"``, or ``"off"``. ``None`` is
+the provider's default: ``"all"`` on Anthropic and Google,
+``"turn"`` on OpenAI-compatible (docs/REASONING-WIRE.md §6).
 
 ### request_timeout
 
@@ -538,10 +547,10 @@ Sampling temperature, 0.0–2.0; ``None`` sends none.
 
 `tau_llm.types.Model.thinking_level_map: dict[str, str | dict[str, Any] | None] | None`
 
-Per-level override of what a reasoning level sends:
-a string becomes ``reasoning_effort``, a dict is merged into the
-body, ``None`` marks the level unsupported. ``"xhigh"`` exists only
-when mapped. See :func:`tau_llm.models.get_supported_thinking_levels`.
+Per-level override of the provider's default wire
+form: a string is the wire's native level name, a dict a request
+fragment, ``None`` marks the level unsupported. ``"xhigh"`` exists
+only when mapped (docs/REASONING-WIRE.md §2).
 
 ### to_openai_format
 
@@ -688,10 +697,12 @@ The reasoning text.
 
 `tau_llm.types.ThinkingContent.thinking_signature: str | dict[str, Any]`
 
-What a provider needs to replay this block. On the
-OpenAI wire, the name of the response field the reasoning arrived in
-(e.g. ``"reasoning_content"``); on Anthropic, a namespaced dict holding
-the signature or redacted payload. ``""`` when there is none.
+What a provider needs to replay this block, kept
+verbatim. On the OpenAI wire, the name of the response field the
+reasoning arrived in (e.g. ``"reasoning_content"``); on Anthropic and
+Google, a dict namespaced by provider holding the opaque artifact.
+``""`` when there is none. A block with an artifact and empty
+``thinking`` is still reasoning (docs/REASONING-WIRE.md §5).
 
 ### type
 
@@ -986,6 +997,13 @@ Pydantic configuration; makes instances frozen.
 
 Completion tokens, as the provider reported them.
 
+### reasoning_tokens
+
+`tau_llm.types.Usage.reasoning_tokens: int | None`
+
+How many of ``output_tokens`` were reasoning; ``None``
+when the server reported no split (docs/REASONING-WIRE.md §7).
+
 ### total_tokens
 
 `tau_llm.types.Usage.total_tokens: int`
@@ -1140,14 +1158,14 @@ get_supported_thinking_levels(model: Model) -> list[ModelThinkingLevel]
 
 Return the levels ``model`` supports, least → most effort.
 
-A non-reasoning model supports only ``["off"]``. Otherwise every level is
-supported except those the ``thinking_level_map`` explicitly nulls out, with
-one special case: ``"xhigh"`` is available only when the map provides an
-entry for it (it is a non-standard extension).
+A non-reasoning model supports only ``["off"]``. Otherwise a level is
+supported when its wire has a native name for it (``minimal`` has none on
+Anthropic, ``xhigh`` none anywhere) or ``thinking_level_map`` names it, and
+not when the map sets it to ``None``.
 
 **Parameters**
 
-- `model: Model` — Reads ``reasoning`` and ``thinking_level_map``.
+- `model: Model` — Reads ``api``, ``reasoning`` and ``thinking_level_map``.
 
 **Returns**
 
@@ -1290,6 +1308,36 @@ This is CPU-bound for a large image, because bounding one decodes it.
 **Returns**
 
 class:`RenderedAttachments`.
+
+## requested_wire_level
+<!-- agent: yes -->
+
+```python
+requested_wire_level(model: Model, requested: str | None) -> ModelThinkingLevel | None
+```
+
+`tau_llm.models.requested_wire_level`
+
+The level whose wire form a provider sends for ``requested``, or ``None``.
+
+The one rule all three providers apply (docs/REASONING-WIRE.md §4): ``None``
+sends nothing; ``"off"`` is sent whatever ``model.reasoning`` says; any other
+level is clamped on a reasoning model and not sent on one that does not
+declare reasoning. The result is what ``AssistantMessage.reasoning_level``
+reports.
+
+**Parameters**
+
+- `model: Model` — Reads ``api``, ``reasoning`` and ``thinking_level_map``.
+- `requested: str | None` — The ``reasoning`` option as the caller passed it.
+
+**Returns**
+
+A supported level, or ``None`` when no reasoning control is to be sent.
+
+**Raises**
+
+- `ValueError` — ``requested`` is not a thinking level, or it is ``"off"`` and the model's map marks ``"off"`` unsupported.
 
 ## scan_attachments
 <!-- agent: yes -->

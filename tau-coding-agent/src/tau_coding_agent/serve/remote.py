@@ -936,6 +936,9 @@ class RemoteBackend(Backend):
         answer = await self._rpc("set_auto_compaction", enabled=enabled)
         return self._performed("set_auto_compaction", answer)
 
+    async def set_reasoning(self, level: str) -> Performed:
+        return self._performed("set_reasoning", await self._rpc("set_reasoning", level=level))
+
     async def set_session_name(self, name: str) -> Performed:
         return self._performed("set_session_name", await self._rpc("set_session_name", name=name))
 

@@ -9,7 +9,8 @@
   "text": "Hello, world",
   "stop_reason": "stop",
   "prompt_tokens": 2048,
-  "cache_read_tokens": 1024
+  "cache_read_tokens": 1024,
+  "reasoning_tokens": 0
  },
  "response": {
   "status": 200,
@@ -87,7 +88,10 @@
       "stop_sequence": null
      },
      "usage": {
-      "output_tokens": 7
+      "output_tokens": 7,
+      "output_tokens_details": {
+       "thinking_tokens": 0
+      }
      }
     }
    },

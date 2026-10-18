@@ -29,7 +29,7 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 - `tools: list[AgentTool] | None = None` — The built-in tools offered to the model. Two with one name raise when the tool list is next assembled.
 - `extensions: list[Callable] | None = None` — Inline extension factories, each called at construction with an api bound to its own runner bucket.
 - `api_key: str | None = None` — The key ``model`` is called with; ``None`` passes no key.
-- `reasoning: str | None = None` — Requested thinking level for every turn and compaction, or ``None``.
+- `reasoning: str | None = None` — Requested thinking level for every turn and compaction; ``None`` sends no reasoning control, which is not ``"off"`` (docs/REASONING-WIRE.md §4).
 - `compaction_settings: CompactionSettings | None = None` — Settings when no ``compaction_policy`` is given; ``None`` means the defaults.
 - `compaction_policy: CompactionPolicy | None = None` — A declared policy that supplies its own settings and summarizer. Mutually exclusive with ``compaction_settings``. One naming a summarizer needs ``model_resolver``, or construction raises.
 - `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by file stem; each extension's ``api.config`` is its slice.
@@ -1379,7 +1379,8 @@ Set the acting cursor's requested thinking level, effective on its next request.
 Placed and recorded as :meth:`set_model` is: the head's level is the
 session's, another cursor's lives on its frame, and the next request
 records ``thinking`` ahead of itself. The provider clamps the level to
-what the model supports, as it does the constructor's ``reasoning``.
+what the model supports and reports the one it sent as
+``AssistantMessage.reasoning_level`` (docs/REASONING-WIRE.md §3).
 
 **Parameters**
 

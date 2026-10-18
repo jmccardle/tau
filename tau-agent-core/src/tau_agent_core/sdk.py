@@ -1289,7 +1289,7 @@ def create_agent_session(
     extensions: list[Callable] | None = None,
     system_prompt: str | None = None,
     no_context_files: bool = False,
-    thinking_level: str = "off",
+    thinking_level: str | None = None,
     cwd: str | None = None,
     tool_execution_mode: Literal["sequential", "parallel"] = "parallel",
     compaction_policy: CompactionPolicy | None = None,
@@ -1351,9 +1351,9 @@ def create_agent_session(
         no_context_files: Skip context-file discovery entirely
             (``--no-context-files``/``-nc``). The prompt is then the base (or
             custom) text plus the tool list, and nothing read from disk.
-        thinking_level: Thinking level ("off", "minimal", "low", "medium",
-            "high", "xhigh"). A non-"off" level marks the model reasoning-capable
-            and is forwarded to the provider as `reasoning_effort`.
+        thinking_level: ``None`` (the default) sends no reasoning control;
+            ``"off"`` sends the provider's off form; any other level marks the
+            model reasoning-capable (docs/REASONING-WIRE.md §4).
         cwd: The working directory: context-file discovery starts there, the
             built-in tools resolve paths and run commands there, and the session
             records it in its config. ``None`` is the process cwd.
@@ -1438,8 +1438,8 @@ def create_agent_session(
     if isinstance(model, str):
         model = resolve_model(model, provider=provider, base_url=base_url)
 
-    reasoning_arg = thinking_level if thinking_level != "off" else None
-    if reasoning_arg is not None:
+    reasoning_arg = thinking_level
+    if reasoning_arg not in (None, "off"):
         model.reasoning = True
 
     if no_tools is not None and tools:

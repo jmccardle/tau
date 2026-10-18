@@ -41,6 +41,7 @@ class TestTheProjection:
             "extensions",
             "fork",
             "model",
+            "thinking",
             "resume",
             "name",
             "autocompact",

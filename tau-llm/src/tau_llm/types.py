@@ -42,10 +42,12 @@ class ThinkingContent(BaseModel):
         type: Discriminator, always ``"thinking"``.
         thinking: The reasoning text.
         cached_tokens: Not set by any τ provider; stays 0 unless a caller fills it.
-        thinking_signature: What a provider needs to replay this block. On the
-            OpenAI wire, the name of the response field the reasoning arrived in
-            (e.g. ``"reasoning_content"``); on Anthropic, a namespaced dict holding
-            the signature or redacted payload. ``""`` when there is none.
+        thinking_signature: What a provider needs to replay this block, kept
+            verbatim. On the OpenAI wire, the name of the response field the
+            reasoning arrived in (e.g. ``"reasoning_content"``); on Anthropic and
+            Google, a dict namespaced by provider holding the opaque artifact.
+            ``""`` when there is none. A block with an artifact and empty
+            ``thinking`` is still reasoning (docs/REASONING-WIRE.md §5).
     """
 
     type: Literal["thinking"] = "thinking"
@@ -112,6 +114,8 @@ class Usage(BaseModel):
         cache_read_tokens: Prompt tokens served from the provider's cache.
         cache_write_tokens: Prompt tokens written to the provider's cache.
         total_tokens: The server's total, or input plus output when it sent none.
+        reasoning_tokens: How many of ``output_tokens`` were reasoning; ``None``
+            when the server reported no split (docs/REASONING-WIRE.md §7).
         cost: Not set by any τ provider; prices are applied at the head's emit
             boundary, not stored here.
         extra: Provider-specific additions, e.g. llama.cpp ``"timings"`` or the
@@ -129,6 +133,7 @@ class Usage(BaseModel):
 
     False makes ``cache_read_tokens`` of 0 silence rather than a miss."""
     total_tokens: int = 0
+    reasoning_tokens: int | None = None
     cost: dict[str, float] = Field(default_factory=dict)
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -172,6 +177,9 @@ class AssistantMessage(BaseModel):
         usage: Token counts for this completion.
         stop_reason: Why generation ended.
         error_message: The failure text when ``stop_reason`` is ``"error"``.
+        reasoning_level: The thinking level whose wire form this completion was
+            requested with, after clamping; ``None`` when no reasoning control
+            was sent (docs/REASONING-WIRE.md §3).
         timestamp: See above.
     """
 
@@ -184,6 +192,7 @@ class AssistantMessage(BaseModel):
     usage: Usage = Field(default_factory=Usage)
     stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"]
     error_message: str | None = None
+    reasoning_level: Literal["off", "minimal", "low", "medium", "high", "xhigh"] | None = None
     timestamp: int | None = Field(default=None, ge=0)
 
     def get_tool_calls(self) -> list[ToolCall]:
@@ -213,15 +222,16 @@ class Model(BaseModel):
             default; with neither, a request raises.
         context_window: The model's context size in tokens.
         max_tokens: Completion-token cap, sent unless the call sets its own.
-        reasoning: Whether the model accepts a reasoning level. False supports
-            only ``"off"``.
-        thinking_level_map: Per-level override of what a reasoning level sends:
-            a string becomes ``reasoning_effort``, a dict is merged into the
-            body, ``None`` marks the level unsupported. ``"xhigh"`` exists only
-            when mapped. See :func:`tau_llm.models.get_supported_thinking_levels`.
+        reasoning: Whether the model accepts a reasoning level. ``"off"`` is
+            sent either way; any other level is not sent when False.
+        thinking_level_map: Per-level override of the provider's default wire
+            form: a string is the wire's native level name, a dict a request
+            fragment, ``None`` marks the level unsupported. ``"xhigh"`` exists
+            only when mapped (docs/REASONING-WIRE.md §2).
         reasoning_replay: Which past thinking is sent back: ``"turn"`` (only
-            after the last user message), ``"all"``, or ``"off"``
-            (docs/ANTHROPIC-GOOGLE-CLIENTS.md §S1).
+            after the last user message), ``"all"``, or ``"off"``. ``None`` is
+            the provider's default: ``"all"`` on Anthropic and Google,
+            ``"turn"`` on OpenAI-compatible (docs/REASONING-WIRE.md §6).
         strict_reasoning_formats: Raise on a thinking signature from another
             provider instead of warning once and dropping it.
         requires_tool_call_id: Send tool-call ids on the Google wire.
@@ -251,7 +261,7 @@ class Model(BaseModel):
     max_tokens: int
     reasoning: bool = False
     thinking_level_map: dict[str, str | dict[str, Any] | None] | None = None
-    reasoning_replay: Literal["all", "turn", "off"] = "turn"
+    reasoning_replay: Literal["all", "turn", "off"] | None = None
     strict_reasoning_formats: bool = False
     requires_tool_call_id: bool = True
     supports_multimodal_function_response: bool = False

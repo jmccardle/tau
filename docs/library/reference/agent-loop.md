@@ -148,7 +148,8 @@ Model identifier (e.g., "gpt-4o")
 
 `tau_agent_core.agent_loop_types.AgentLoopConfig.reasoning: str | None`
 
-Requested thinking level ("off".."xhigh"), or None
+Requested thinking level ("off".."xhigh"), or None to send no
+reasoning control (docs/REASONING-WIRE.md §4)
 
 ### repeat_tool_call_limit
 

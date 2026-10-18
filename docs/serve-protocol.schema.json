@@ -272,7 +272,7 @@
       "type": "object"
     },
     "AssistantMessage": {
-      "description": "An assistant message from the LLM.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\n``timestamp`` is epoch milliseconds at the moment this message stopped being\nwritten \u2014 the completion's end, or the abort for a partial. ``None`` means no\nclock applies, which is the case for a synthetic message an extension built\n(docs/MESSAGE-TIMESTAMPS.md \u00a72). It is never 0: \u03c4 did not run in 1970, so a 0\nis legacy data and the session stores map it to ``None`` on load.\n\nAttributes:\n    role: Discriminator, always ``\"assistant\"``.\n    content: Thinking, text and tool-call blocks.\n    api: The wire protocol that produced it, e.g. ``\"openai-completions\"``.\n    provider: The provider id the request went to.\n    model: The model id the request named.\n    response_id: The server's id for the completion, when it sent one.\n    usage: Token counts for this completion.\n    stop_reason: Why generation ended.\n    error_message: The failure text when ``stop_reason`` is ``\"error\"``.\n    timestamp: See above.",
+      "description": "An assistant message from the LLM.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\n``timestamp`` is epoch milliseconds at the moment this message stopped being\nwritten \u2014 the completion's end, or the abort for a partial. ``None`` means no\nclock applies, which is the case for a synthetic message an extension built\n(docs/MESSAGE-TIMESTAMPS.md \u00a72). It is never 0: \u03c4 did not run in 1970, so a 0\nis legacy data and the session stores map it to ``None`` on load.\n\nAttributes:\n    role: Discriminator, always ``\"assistant\"``.\n    content: Thinking, text and tool-call blocks.\n    api: The wire protocol that produced it, e.g. ``\"openai-completions\"``.\n    provider: The provider id the request went to.\n    model: The model id the request named.\n    response_id: The server's id for the completion, when it sent one.\n    usage: Token counts for this completion.\n    stop_reason: Why generation ended.\n    error_message: The failure text when ``stop_reason`` is ``\"error\"``.\n    reasoning_level: The thinking level whose wire form this completion was\n        requested with, after clamping; ``None`` when no reasoning control\n        was sent (docs/REASONING-WIRE.md \u00a73).\n    timestamp: See above.",
       "properties": {
         "api": {
           "type": "string"
@@ -309,6 +309,25 @@
         },
         "provider": {
           "type": "string"
+        },
+        "reasoning_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "response_id": {
           "anyOf": [
@@ -5316,6 +5335,68 @@
       ],
       "type": "object"
     },
+    "SetReasoning": {
+      "additionalProperties": false,
+      "description": "RPC `set_reasoning` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "level": {
+          "description": "Which reasoning level.",
+          "enum": [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id",
+        "level"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/SetReasoningResult"
+      }
+    },
+    "SetReasoningResult": {
+      "properties": {
+        "leaf": {
+          "description": "cursor.leaf after this call: ALWAYS the unchanged tip. Nothing is appended here; the next request records `thinking` ahead of itself (docs/TURN-SETTINGS.md \u00a73).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "level": {
+          "description": "The level requested for the acting cursor's next request \u2014 what AgentSession.set_reasoning returns. The level actually sent is message_end's reasoning_level, after the provider clamps it (docs/REASONING-WIRE.md \u00a73).",
+          "enum": [
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "leaf"
+      ],
+      "type": "object"
+    },
     "SetSessionName": {
       "additionalProperties": false,
       "description": "RPC `set_session_name` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
@@ -5985,7 +6066,7 @@
       "type": "object"
     },
     "ThinkingContent": {
-      "description": "A thinking/reasoning content block.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\nAttributes:\n    type: Discriminator, always ``\"thinking\"``.\n    thinking: The reasoning text.\n    cached_tokens: Not set by any \u03c4 provider; stays 0 unless a caller fills it.\n    thinking_signature: What a provider needs to replay this block. On the\n        OpenAI wire, the name of the response field the reasoning arrived in\n        (e.g. ``\"reasoning_content\"``); on Anthropic, a namespaced dict holding\n        the signature or redacted payload. ``\"\"`` when there is none.",
+      "description": "A thinking/reasoning content block.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\nAttributes:\n    type: Discriminator, always ``\"thinking\"``.\n    thinking: The reasoning text.\n    cached_tokens: Not set by any \u03c4 provider; stays 0 unless a caller fills it.\n    thinking_signature: What a provider needs to replay this block, kept\n        verbatim. On the OpenAI wire, the name of the response field the\n        reasoning arrived in (e.g. ``\"reasoning_content\"``); on Anthropic and\n        Google, a dict namespaced by provider holding the opaque artifact.\n        ``\"\"`` when there is none. A block with an artifact and empty\n        ``thinking`` is still reasoning (docs/REASONING-WIRE.md \u00a75).",
       "properties": {
         "cached_tokens": {
           "default": 0,
@@ -6223,7 +6304,7 @@
       "type": "object"
     },
     "Usage": {
-      "description": "Token usage for one LLM response. Frozen: use ``model_copy(update=...)``.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\n``cache_reported`` exists because a 0 in the cache counters is ambiguous:\nllama.cpp reports no cache fields, while a gateway's 0 means \"cached\nnothing\" (docs/PROMPT-CACHING.md \u00a77).\n\nAttributes:\n    model_config: Pydantic configuration; makes instances frozen.\n    input_tokens: Prompt tokens, as the provider reported them.\n    output_tokens: Completion tokens, as the provider reported them.\n    cache_read_tokens: Prompt tokens served from the provider's cache.\n    cache_write_tokens: Prompt tokens written to the provider's cache.\n    total_tokens: The server's total, or input plus output when it sent none.\n    cost: Not set by any \u03c4 provider; prices are applied at the head's emit\n        boundary, not stored here.\n    extra: Provider-specific additions, e.g. llama.cpp ``\"timings\"`` or the\n        OpenAI provider's ``\"repairs\"`` count for tool-call arguments.",
+      "description": "Token usage for one LLM response. Frozen: use ``model_copy(update=...)``.\n\nReference: SUBPHASE-0.0.md, \"1. Messages\" section.\n\n``cache_reported`` exists because a 0 in the cache counters is ambiguous:\nllama.cpp reports no cache fields, while a gateway's 0 means \"cached\nnothing\" (docs/PROMPT-CACHING.md \u00a77).\n\nAttributes:\n    model_config: Pydantic configuration; makes instances frozen.\n    input_tokens: Prompt tokens, as the provider reported them.\n    output_tokens: Completion tokens, as the provider reported them.\n    cache_read_tokens: Prompt tokens served from the provider's cache.\n    cache_write_tokens: Prompt tokens written to the provider's cache.\n    total_tokens: The server's total, or input plus output when it sent none.\n    reasoning_tokens: How many of ``output_tokens`` were reasoning; ``None``\n        when the server reported no split (docs/REASONING-WIRE.md \u00a77).\n    cost: Not set by any \u03c4 provider; prices are applied at the head's emit\n        boundary, not stored here.\n    extra: Provider-specific additions, e.g. llama.cpp ``\"timings\"`` or the\n        OpenAI provider's ``\"repairs\"`` count for tool-call arguments.",
       "properties": {
         "cache_read_tokens": {
           "default": 0,
@@ -6254,6 +6335,17 @@
         "output_tokens": {
           "default": 0,
           "type": "integer"
+        },
+        "reasoning_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "total_tokens": {
           "default": 0,
@@ -6643,6 +6735,26 @@
           ],
           "default": null,
           "description": "What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. None for all other event types."
+        },
+        "reasoning_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "off",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The thinking level this completion was requested with, after the provider clamped it to what the model supports, on the message_end that carries usage. Null when no reasoning control was sent \u2014 no level was set, or the model does not declare reasoning \u2014 so a requested level that was clamped or not sent is visible rather than silent. None for all other event types. See docs/REASONING-WIRE.md \u00a73."
         },
         "replace": {
           "default": false,
@@ -7587,6 +7699,33 @@
       },
       {
         "additionalProperties": false,
+        "description": "A `set_reasoning` request.",
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "method": {
+            "const": "set_reasoning"
+          },
+          "params": {
+            "$ref": "#/$defs/SetReasoning"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
         "description": "A `set_session_name` request.",
         "properties": {
           "id": {
@@ -8292,6 +8431,9 @@
     },
     "set_model": {
       "$ref": "#/$defs/SetModelResult"
+    },
+    "set_reasoning": {
+      "$ref": "#/$defs/SetReasoningResult"
     },
     "set_session_name": {
       "$ref": "#/$defs/SetSessionNameResult"

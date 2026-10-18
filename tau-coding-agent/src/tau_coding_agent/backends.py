@@ -63,7 +63,7 @@ from tau_agent_core.sdk import (
     append_system_prompt,
 )
 from tau_agent_core.submission import Submission, SubmissionResult
-from tau_agent_core.truncation import dropped_tool_calls
+from tau_agent_core.truncation import dropped_tool_calls, reasoning_tokens_of
 from tau_agent_core.usage import price_usage
 
 DEFAULT_STREAM = "main"
@@ -239,7 +239,8 @@ class TurnStream:
         {"kind": "tool_result", "id": str, "name": str, "result": str,
          "is_error": bool, "blocked": bool, "blocked_by": str | None}
         {"kind": "completion_end", "output": int, "context": int,
-         "stop_reason": str | None, "dropped_tool_calls": int}
+         "stop_reason": str | None, "dropped_tool_calls": int,
+         "reasoning_tokens": int | None}
         {"kind": "provider_retry", "text": str, "delay_seconds": float}
         {"kind": "follow_ups_dropped", "text": str, "dropped": list[str]}
 
@@ -273,6 +274,7 @@ class TurnStream:
         self.last_extra: dict[str, Any] = {}
         self.last_stop_reason: str | None = None
         self.last_dropped_tool_calls: int = 0
+        self.last_reasoning_tokens: int | None = None
         #: One :class:`CompletionCache` per completion, in call order.
         self.completions: list[CompletionCache] = []
         #: Epoch ms of this stream's first and last agent event (the loop's clock).
@@ -438,6 +440,9 @@ class TurnStream:
         if isinstance(usage, dict) or wire.get("stop_reason") is not None:
             self.last_stop_reason = wire.get("stop_reason")
             self.last_dropped_tool_calls = int(wire.get("dropped_tool_calls") or 0)
+            self.last_reasoning_tokens = (
+                reasoning_tokens_of(usage) if isinstance(usage, dict) else None
+            )
         return [
             self._tag(
                 {
@@ -446,6 +451,7 @@ class TurnStream:
                     "context": self.context_tokens,
                     "stop_reason": self.last_stop_reason,
                     "dropped_tool_calls": self.last_dropped_tool_calls,
+                    "reasoning_tokens": self.last_reasoning_tokens,
                 }
             )
         ]
@@ -901,6 +907,7 @@ def _replay_completion(
         "context": state["context"],
         "stop_reason": message.get("stop_reason"),
         "dropped_tool_calls": dropped_tool_calls(usage) if isinstance(usage, dict) else 0,
+        "reasoning_tokens": reasoning_tokens_of(usage) if isinstance(usage, dict) else None,
     }
 
 
@@ -1043,12 +1050,18 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     if reasoning_arg is not None and not model_reasoning:
         _warn_undeclared_reasoning(model_id)
 
-    reasoning_replay = config.get("reasoning_replay") or "turn"
-    if reasoning_replay not in ("all", "turn", "off"):
+    reasoning_replay = config.get("reasoning_replay")
+    if reasoning_replay is not None and reasoning_replay not in ("all", "turn", "off"):
         raise ValueError(
             f"reasoning_replay must be one of 'all', 'turn', 'off'; got {reasoning_replay!r}"
         )
-    reasoning_replay = cast(Literal["all", "turn", "off"], reasoning_replay)
+    if reasoning_replay == "off" and api == "anthropic-messages":
+        raise ValueError(
+            f"models.{entry}.reasoning_replay is 'off', which the Anthropic Messages API "
+            "cannot honour. Use 'turn' to drop prior turns' thinking "
+            "(docs/REASONING-WIRE.md §6)."
+        )
+    reasoning_replay = cast("Literal['all', 'turn', 'off'] | None", reasoning_replay)
 
     strict_reasoning_formats = config.get("strict_reasoning_formats", False)
     if not isinstance(strict_reasoning_formats, bool):
@@ -1429,8 +1442,7 @@ class TauBackend(Backend):
         api_key = config.get("api_key")
 
         self.model_name = model.id
-        thinking_level = config.get("thinking")
-        reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
+        reasoning_arg = config.get("thinking") or None
 
         cwd = config.get("cwd")
         tool_names = resolve_tool_names(config)
@@ -1849,6 +1861,25 @@ class TauBackend(Backend):
         """
         effective = self.agent_session.set_auto_compaction(enabled)
         return self.agent_session.performed("set_auto_compaction", {"enabled": effective})
+
+    def set_reasoning(self, level: str) -> Performed:
+        """Set the requested reasoning level for the live session's next request.
+
+        Delegates to :meth:`AgentSession.set_reasoning`, the one path every head
+        shares (docs/REASONING-WIRE.md §10). Nothing is appended here.
+
+        Args:
+            level: A thinking level, ``"off"`` through ``"xhigh"``.
+
+        Returns:
+            A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
+            ``{level, leaf}``, as ``set_reasoning``'s ``returns`` declares.
+
+        Raises:
+            ValueError: ``level`` is not a thinking level.
+        """
+        requested = self.agent_session.set_reasoning(level)
+        return self.agent_session.performed("set_reasoning", {"level": requested})
 
     async def compact(self, custom_instructions: str | None = None) -> Any:
         """Compact the bound session, appending the boundary to its log.

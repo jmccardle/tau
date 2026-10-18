@@ -54,6 +54,34 @@ def test_set_auto_compaction_reports_the_effective_state(backend: TauBackend) ->
     assert performed.summary() == "set_auto_compaction: enabled=False"
 
 
+def test_set_reasoning_reports_the_requested_level_and_sets_it(backend: TauBackend) -> None:
+    """docs/REASONING-WIRE.md §10: /thinking and RPC both end in AgentSession.set_reasoning."""
+    performed = _check(backend.set_reasoning("low"), "set_reasoning")
+    assert performed.data["level"] == "low"
+    assert backend.agent_session._turn_reasoning() == "low"
+    assert backend.agent_session.cursor.entries() == []
+
+
+def test_set_reasoning_refuses_an_unknown_level(backend: TauBackend) -> None:
+    with pytest.raises(ValueError, match="not a thinking level"):
+        backend.set_reasoning("extreme")
+
+
+def test_an_explicit_off_is_not_collapsed_into_none() -> None:
+    """#23: `--thinking off` became None, so nothing reached the wire."""
+    backend = TauBackend(
+        {
+            "backend": "openai",
+            "model": "m",
+            "base_url": "http://127.0.0.1:1/v1",
+            "api_key": "not-needed",
+            "tools": [],
+            "thinking": "off",
+        }
+    )
+    assert backend.agent_session._turn_reasoning() == "off"
+
+
 async def test_set_model_reports_the_model_it_switched_to(backend: TauBackend, monkeypatch) -> None:
     """And RECORDS it at the session's cursor: a runtime-only switch resumes on the old model."""
     switched = {"id": "gpt-4o", "provider": "openai", "context_window": 128000}

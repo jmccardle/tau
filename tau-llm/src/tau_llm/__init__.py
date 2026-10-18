@@ -26,6 +26,7 @@ from tau_llm.models import (
     clamp_thinking_level,
     get_supported_thinking_levels,
     is_valid_thinking_level,
+    requested_wire_level,
 )
 from tau_llm.compat import Compat, ResolvedCompat, detect_compat, resolve_compat
 from tau_llm.tools import ToolDefinition, ToolSpec, define_tool, validate_tool_arguments
@@ -78,6 +79,7 @@ __all__ = [
     "clamp_thinking_level",
     "get_supported_thinking_levels",
     "is_valid_thinking_level",
+    "requested_wire_level",
     "Compat",
     "ResolvedCompat",
     "detect_compat",

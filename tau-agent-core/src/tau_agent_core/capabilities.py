@@ -66,6 +66,7 @@ from types import MappingProxyType
 from typing import Any, Literal, get_args
 
 from tau_llm.docs import agent_facing
+from tau_llm.models import EXTENDED_THINKING_LEVELS
 
 from tau_agent_core.conversation_tree import MessageIdScope
 
@@ -314,6 +315,12 @@ DOMAINS: dict[str, Domain] = {
     "number": Domain("number", "A number.", free=True, field_kind="number"),
     "integer": Domain("integer", "A whole number.", free=True, field_kind="number"),
     "boolean": Domain("boolean", "True or false.", values=("true", "false"), field_kind="confirm"),
+    "thinking_level": Domain(
+        "thinking_level",
+        "A requested reasoning level; the provider clamps it to what the model supports.",
+        values=tuple(EXTENDED_THINKING_LEVELS),
+        field_kind="select",
+    ),
     "model_name": Domain(
         "model_name",
         "A model configuration name from the running config.",
@@ -954,6 +961,31 @@ _SET_MODEL_RETURNS: dict[str, Any] = {
         },
     },
     "required": ["model", "leaf"],
+}
+
+_SET_REASONING_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "level": {
+            "type": "string",
+            "enum": list(EXTENDED_THINKING_LEVELS),
+            "description": (
+                "The level requested for the acting cursor's next request — what "
+                "AgentSession.set_reasoning returns. The level actually sent is "
+                "message_end's reasoning_level, after the provider clamps it "
+                "(docs/REASONING-WIRE.md §3)."
+            ),
+        },
+        "leaf": {
+            "type": ["string", "null"],
+            "description": (
+                "cursor.leaf after this call: ALWAYS the unchanged tip. Nothing is "
+                "appended here; the next request records `thinking` ahead of itself "
+                "(docs/TURN-SETTINGS.md §3)."
+            ),
+        },
+    },
+    "required": ["level", "leaf"],
 }
 
 _SET_SESSION_NAME_RETURNS: dict[str, Any] = {
@@ -1702,6 +1734,14 @@ CAPABILITIES: dict[str, Capability] = {
             returns=_SET_MODEL_RETURNS,
         ),
         Capability(
+            "set_reasoning",
+            "mutation",
+            "Set the requested reasoning level, effective on the next request.",
+            on_wire=True,
+            arguments=(Argument("level", "thinking_level", "Which reasoning level."),),
+            returns=_SET_REASONING_RETURNS,
+        ),
+        Capability(
             "set_session_name",
             "mutation",
             "Give this session a human-readable name.",
@@ -1839,6 +1879,12 @@ FLOWS: tuple[Flow, ...] = (
         description="switch the active model, effective on the next turn",
         mutation="set_model",
         arguments=(Argument("name", "model_name", "Which configured model."),),
+    ),
+    Flow(
+        name="thinking",
+        description="set the reasoning level, effective on the next request",
+        mutation="set_reasoning",
+        arguments=(Argument("level", "thinking_level", "Which reasoning level."),),
     ),
     Flow(
         name="resume",

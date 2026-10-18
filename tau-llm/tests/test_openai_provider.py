@@ -1765,6 +1765,58 @@ class TestTokenLimitHandling:
         assert done_events[0].final.stop_reason == "length"
         assert done_events[0].usage.total_tokens == 4010
 
+    def _final_for(self, monkeypatch, finish_reason: str, usage: dict | None = None):
+        monkeypatch.setattr(
+            "tau_llm.providers.openai.httpx.AsyncClient",
+            self._make_mock_client(_make_mock_text_response(["x"], finish_reason, usage)),
+        )
+        provider = OpenAICompletionsProvider(api_key="sk-test")
+        stream = asyncio.run(
+            provider.stream_chat(
+                model=_make_model(),
+                messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
+            )
+        )
+        return [e for e in _collect_events(stream) if isinstance(e, DoneEvent)][0].final
+
+    @pytest.mark.parametrize(
+        ("finish_reason", "stop_reason"),
+        [
+            ("stop", "stop"),
+            ("length", "length"),
+            ("model_length", "length"),
+            ("content_filter", "error"),
+            ("function_call", "error"),
+            ("error", "error"),
+            ("something_new", "error"),
+        ],
+    )
+    def test_every_finish_reason_maps_explicitly(self, monkeypatch, finish_reason, stop_reason):
+        """#10: an unknown or filtered stop is an error, never a silent 'stop'."""
+        final = self._final_for(monkeypatch, finish_reason)
+        assert final.stop_reason == stop_reason
+        if stop_reason == "error":
+            assert final.error_message
+
+    def test_an_unknown_finish_reason_names_itself(self, monkeypatch):
+        final = self._final_for(monkeypatch, "something_new")
+        assert "something_new" in (final.error_message or "")
+
+    def test_reasoning_tokens_come_from_completion_tokens_details(self, monkeypatch):
+        usage = {
+            "prompt_tokens": 21,
+            "completion_tokens": 79,
+            "total_tokens": 100,
+            "completion_tokens_details": {"reasoning_tokens": 52},
+        }
+        final = self._final_for(monkeypatch, "stop", usage)
+        assert final.usage.output_tokens == 79
+        assert final.usage.reasoning_tokens == 52
+
+    def test_no_details_means_no_reported_split(self, monkeypatch):
+        """llama.cpp sends no completion_tokens_details; 0 would claim a split."""
+        assert self._final_for(monkeypatch, "stop").usage.reasoning_tokens is None
+
 
 class TestApiKeyResolution:
     """The provider must require an API key at request time rather than send a

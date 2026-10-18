@@ -103,7 +103,7 @@ async def test_a_sessions_first_config_names_the_model_and_the_tool_set():
     )
     await session.start()
     (preview,) = _previews(session.cursor, "config")
-    assert preview.startswith("config: model gpt-4o; thinking off; 2 tools: read, grep")
+    assert preview.startswith("config: model gpt-4o; thinking default; 2 tools: read, grep")
 
 
 async def test_a_tool_less_config_says_so_rather_than_showing_an_empty_list():

@@ -78,7 +78,8 @@ class AgentLoopConfig(BaseModel):
             Default 3; ``None`` disables the check.
         temperature: Sampling temperature, or ``None`` (the default) to send none
         api_key: API key forwarded to the provider (None = use env/provider default)
-        reasoning: Requested thinking level ("off".."xhigh"), or None
+        reasoning: Requested thinking level ("off".."xhigh"), or None to send no
+            reasoning control (docs/REASONING-WIRE.md §4)
 
     ``temperature``, ``api_key`` and ``reasoning`` are ignored by a loop given a
     ``turn_settings`` source, which supplies them per request instead.

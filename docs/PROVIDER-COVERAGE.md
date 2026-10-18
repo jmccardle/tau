@@ -475,6 +475,12 @@ Ran 2026-10-12: **16 passed, 4 xfailed, 1 skipped.**
 | `test_an_unmapped_stop_reason_is_an_error_not_a_stop` | `content_filter` / `pause_turn` / unknown → `error` | **xfail** | pass | pass |
 | `test_a_429_raises_provider_http_error_with_its_status` | `ProviderHttpError(429)` after exactly **one** request | pass | **xfail** (3 requests) | pass |
 
+2026-10-17: the two OpenAI xfails and the Google reasoning-token xfail pass, and
+their markers are gone (#10, `docs/REASONING-WIRE.md` §7, §9). The Anthropic
+text cassette now reports `thinking_tokens`, so that row is a pass rather than a
+skip. P0 items 1 and 3 below are done; P1 item 7 is covered by
+`test_google_provider.py::test_each_level_sends_its_own_thinking_level`.
+
 ### 5.4 Proposed tests, in priority order
 
 Each entry gives its tier and the clause it asserts.

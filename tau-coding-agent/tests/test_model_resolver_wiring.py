@@ -55,10 +55,12 @@ def test_tau_backend_without_a_model_id_raises():
         TauBackend({"backend": "openai", "base_url": "http://localhost/v1"})
 
 
-def test_build_model_reasoning_replay_defaults_to_turn():
-    """No ``reasoning_replay`` in the entry → the τ default scope ``turn``."""
+def test_build_model_reasoning_replay_defaults_to_the_providers_own():
+    """No ``reasoning_replay`` in the entry → ``None``, which each provider reads as
+    its default: "all" on Anthropic and Google, "turn" on OpenAI-compatible
+    (docs/REASONING-WIRE.md §6)."""
     model = build_model_from_config(_models()["cloud"])
-    assert model.reasoning_replay == "turn"
+    assert model.reasoning_replay is None
 
 
 def test_build_model_reasoning_replay_per_model_value_respected():
@@ -72,6 +74,19 @@ def test_build_model_reasoning_replay_invalid_raises():
     """An unknown scope is a config error, not a silent fallback (Fail-Early)."""
     entry = {**_models()["cloud"], "reasoning_replay": "sometimes"}
     with pytest.raises(ValueError, match="reasoning_replay must be one of"):
+        build_model_from_config(entry)
+
+
+def test_build_model_reasoning_replay_off_on_anthropic_raises():
+    """Anthropic cannot honour 'off', so the config refuses it at load time
+    (docs/REASONING-WIRE.md §6)."""
+    entry = {
+        "backend": "anthropic",
+        "model": "claude-haiku-5-5",
+        "api_key": "k",
+        "reasoning_replay": "off",
+    }
+    with pytest.raises(ValueError, match="reasoning_replay is 'off'"):
         build_model_from_config(entry)
 
 

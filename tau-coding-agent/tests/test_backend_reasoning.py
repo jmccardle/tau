@@ -45,9 +45,10 @@ def test_thinking_level_threads_but_no_longer_enables_reasoning():
     assert b.agent_session._model.reasoning is False
 
 
-def test_off_does_not_enable_reasoning():
+def test_off_is_kept_and_does_not_enable_reasoning():
+    """#23: "off" collapsed to None reached no wire; it is sent as the off form."""
     b = TauBackend(_cfg(thinking="off"))
-    assert b.agent_session._reasoning is None
+    assert b.agent_session._reasoning == "off"
     assert b.agent_session._model.reasoning is False
 
 

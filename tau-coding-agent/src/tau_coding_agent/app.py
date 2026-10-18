@@ -2219,7 +2219,9 @@ class TauApp(App):
         )
         self.notify(f"No prompt-cache reads for {model}", severity="warning")
 
-    def _report_truncation(self, display: transcript.ChatDisplay, dropped: int) -> None:
+    def _report_truncation(
+        self, display: transcript.ChatDisplay, dropped: int, reasoning_tokens: int | None
+    ) -> None:
         """Say that the last completion stopped at the output cap, not at an answer.
 
         Reference: docs/TRUNCATED-TOOL-CALLS.md §3. The sentence is
@@ -2237,7 +2239,7 @@ class TauApp(App):
         """
         cap = self._configured_max_tokens()
         cap_text = "unknown" if cap is None else str(cap)
-        notice = truncation_notice(Truncation(1, dropped), max_tokens=cap)
+        notice = truncation_notice(Truncation(1, dropped, reasoning_tokens), max_tokens=cap)
         display.add_message(
             "system",
             "**The model stopped at its output cap, not at the end of an answer.**\n\n"
@@ -2313,7 +2315,11 @@ class TauApp(App):
             self._refresh_subtitle()
             return
         if kind == "completion_end" and event.get("stop_reason") == "length":
-            self._report_truncation(display, int(event.get("dropped_tool_calls", 0) or 0))
+            self._report_truncation(
+                display,
+                int(event.get("dropped_tool_calls", 0) or 0),
+                event.get("reasoning_tokens"),
+            )
         if kind == "provider_retry":
             delay = float(event["delay_seconds"])
             self.notify(event["text"], severity="warning", timeout=max(5.0, delay))
@@ -3938,7 +3944,7 @@ class TauApp(App):
             recorded = session.config
             resumed = {**model_config, "config_name": session.model}
             if "thinking" in recorded:
-                resumed["thinking"] = recorded["thinking"] or "off"
+                resumed["thinking"] = recorded["thinking"]
             self.current_backend = create_backend(self._apply_run_config(resumed))
             self._session_runtime = self._build_session_runtime(
                 self.current_backend, session.model, model_config["backend"]

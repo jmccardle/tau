@@ -36,7 +36,7 @@ class TestWhatItOffers:
         assert names("/") == [*FRONTEND_COMMANDS, "todo", "bookmark"]
 
     def test_a_prefix_narrows_it(self):
-        assert names("/t") == ["tree", "todo"]
+        assert names("/t") == ["tree", "thinking", "todo"]
 
     def test_an_exact_name_still_offers_itself(self):
         """So the description stays on screen while the arguments are typed,

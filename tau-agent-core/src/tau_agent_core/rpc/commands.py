@@ -2479,6 +2479,45 @@ async def _handle_set_auto_compaction(
 
 ### end tier-b:set_auto_compaction
 
+### begin 0.13.0:set_reasoning
+SET_REASONING_PARAMS_SCHEMA: dict[str, Any] = params_schema_for("set_reasoning")
+
+SET_REASONING_RESULT_SCHEMA: dict[str, Any] = result_schema_for("set_reasoning")
+
+
+@command(
+    "set_reasoning",
+    tier="C",
+    since="0.13.0",
+    notes=(
+        "AgentSession.set_reasoning — the same setter the TUI's /thinking and an "
+        "extension's ctx.set_reasoning call, so all heads share one path "
+        "(docs/REASONING-WIRE.md §10). Takes effect on the acting cursor's next "
+        "request. The level sent is reported on that completion's message_end as "
+        "reasoning_level, after the provider clamps it; 'off' is sent as the "
+        "wire's off form whatever the model's `reasoning` flag says (§4). "
+        "D-1: takes turn_safety_guard, so it never races a request reading the "
+        "level. E5: answers the unchanged tip — nothing is appended here; the next "
+        "request records `thinking` ahead of itself (docs/TURN-SETTINGS.md §3). "
+        "D-7: appends nothing, so it answers on an unpersisted session, as "
+        "set_auto_compaction does. Replaces the declined cycle_thinking_level: a "
+        "host names the level rather than stepping through them."
+    ),
+    params_schema=SET_REASONING_PARAMS_SCHEMA,
+    result_schema=SET_REASONING_RESULT_SCHEMA,
+)
+async def _handle_set_reasoning(
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    session = handler.session
+    async with turn_safety_guard(session):
+        level = session.set_reasoning(str(params["level"]))
+        leaf = session.acting_cursor.leaf
+    return {"level": level, "leaf": leaf}
+
+
+### end 0.13.0:set_reasoning
+
 ### begin tier-b:set_model
 
 SET_MODEL_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
@@ -2966,10 +3005,9 @@ decline(
     notes="docs/REMOTE-CONTROL.md §4[3] Tier D.",
     declined_because=(
         "Same Tier D judgment as cycle_model: a keybinding-shaped 'step to the "
-        "next level' affordance, not a protocol verb. τ has no thinkingLevel "
-        "concept on AgentSession today either (get_state's own notes list what "
-        "τ has no equivalent of yet) — there is nothing for a set_* verb to set, "
-        "let alone cycle."
+        "next level' affordance, not a protocol verb. A host that wants a level "
+        "names it via set_reasoning(level), a shipped verb on this same table "
+        "(docs/REASONING-WIRE.md §10)."
     ),
 )
 

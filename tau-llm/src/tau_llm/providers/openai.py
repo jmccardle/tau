@@ -48,7 +48,7 @@ from tau_llm.json_parse import (
     parse_json_with_repair_info,
     parse_streaming_json,
 )
-from tau_llm.models import clamp_thinking_level
+from tau_llm.models import ModelThinkingLevel, requested_wire_level
 from tau_llm.once import OnceSet
 from tau_llm.streaming import (
     DoneEvent,
@@ -75,6 +75,28 @@ _logger = logging.getLogger(__name__)
 _WARNED_FOREIGN_SIGNATURES = OnceSet()
 
 _WARNED_FOREIGN_TOOL_SIGNATURES = OnceSet()
+
+StopReason = Literal["stop", "length", "toolUse", "error", "aborted"]
+
+_FINISH_REASONS: dict[str, StopReason] = {
+    "stop": "stop",
+    "length": "length",
+    "model_length": "length",
+    "tool_calls": "toolUse",
+    "content_filter": "error",
+    "function_call": "error",
+    "error": "error",
+}
+"""Every ``finish_reason`` τ can vouch for; any other is an error (docs/REASONING-WIRE.md §9)."""
+
+_FINISH_ERRORS: dict[str, str] = {
+    "content_filter": "the server's content filter stopped this completion",
+    "function_call": (
+        "the server answered with a legacy `function_call`, a field τ does not read, "
+        "so the call it holds would be lost"
+    ),
+    "error": "the server reported finish_reason 'error'",
+}
 
 _TRUNCATION_HINT = (
     "The model hit the output cap τ sent for it (max_tokens={max_tokens}); "
@@ -191,6 +213,7 @@ class _TransportState:
     usage_data: dict[str, Any] = field(default_factory=dict)
     timings_data: dict[str, Any] = field(default_factory=dict)
     stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"] | None = None
+    error_message: str | None = None
     saw_done: bool = False
     # The transport already yielded an ErrorEvent and there is nothing to finalize.
     failed: bool = False
@@ -290,6 +313,46 @@ def _merge_thinking_fragment(
             payload[key] = merged
         else:
             payload[key] = value
+
+
+def _apply_reasoning(
+    payload: dict[str, Any], model: Model, requested: str | None
+) -> ModelThinkingLevel | None:
+    """Write the requested thinking level's wire form into ``payload``; return the level sent.
+
+    :func:`~tau_llm.models.requested_wire_level` picks the level. A map string
+    becomes ``reasoning_effort``, a map dict is merged
+    (:func:`_merge_thinking_fragment`), and an unmapped level is sent under its
+    own name. Unmapped ``"off"`` is ``reasoning_effort: "none"`` on a model that
+    declares reasoning (docs/REASONING-WIRE.md §4).
+
+    Raises:
+        ValueError: ``"off"`` on a model that neither declares reasoning nor maps
+            ``"off"``: τ cannot know this endpoint's off form, and sending nothing
+            would leave its default reasoning on.
+    """
+    level = requested_wire_level(model, requested)
+    if level is None:
+        return None
+    tlm = model.thinking_level_map or {}
+    mapped: Any = tlm.get(level, level)
+    if level == "off" and "off" not in tlm:
+        if not model.reasoning:
+            raise ValueError(
+                f"Model {model.id!r}: thinking 'off' was requested, but this "
+                "OpenAI-compatible model neither declares reasoning nor maps 'off', so τ "
+                "does not know what turns reasoning off on this endpoint. Set "
+                f"models.{model.name}.thinking_level_map.off in ~/.tau/config.json: "
+                '{"chat_template_kwargs": {"enable_thinking": false}} for a llama.cpp chat '
+                'template, "none" for OpenAI\'s reasoning_effort, or {} if this model never '
+                "reasons (docs/REASONING-WIRE.md §4)."
+            )
+        mapped = "none"
+    if isinstance(mapped, dict):
+        _merge_thinking_fragment(payload, mapped, model_id=model.id)
+    else:
+        payload["reasoning_effort"] = mapped
+    return level
 
 
 def _message_text(message: AssistantMessage) -> str:
@@ -614,6 +677,9 @@ def _usage_from_openai(data: dict, timings: dict[str, Any] | None = None) -> Usa
     non-empty it lands verbatim — keys unfiltered, unrenamed — on
     ``Usage.extra["timings"]``; stock builds omit ``n_ff_total`` and τ never
     fabricates it.
+
+    ``completion_tokens_details.reasoning_tokens`` becomes ``reasoning_tokens``,
+    ``None`` when the server sends no such count (docs/REASONING-WIRE.md §7).
     """
     prompt_tokens = int(data.get("prompt_tokens") or 0)
     output_tokens = int(data.get("completion_tokens") or 0)
@@ -626,6 +692,7 @@ def _usage_from_openai(data: dict, timings: dict[str, Any] | None = None) -> Usa
     extra: dict[str, Any] = {}
     if timings:
         extra["timings"] = dict(timings)
+    reasoning = (data.get("completion_tokens_details") or {}).get("reasoning_tokens")
     return Usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -633,6 +700,7 @@ def _usage_from_openai(data: dict, timings: dict[str, Any] | None = None) -> Usa
         cache_write_tokens=cache_write,
         cache_reported=reported,
         total_tokens=total,
+        reasoning_tokens=None if reasoning is None else int(reasoning),
         extra=extra,
     )
 
@@ -1285,18 +1353,23 @@ class OpenAICompletionsProvider(Provider):
 
         return openai_tools
 
-    def _map_finish_reason(
-        self, reason: str | None
-    ) -> Literal["stop", "length", "toolUse", "error", "aborted"]:
-        """Map OpenAI finish_reason to τ stop_reason."""
-        mapping: dict[str | None, Literal["stop", "length", "toolUse", "error", "aborted"]] = {
-            "stop": "stop",
-            "length": "length",
-            "tool_calls": "toolUse",
-            "content_filter": "stop",
-            None: "stop",
-        }
-        return mapping.get(reason, "stop")
+    def _map_finish_reason(self, reason: str, state: _TransportState) -> None:
+        """Set ``state``'s stop reason, and its error text, from a ``finish_reason``.
+
+        A value not in :data:`_FINISH_REASONS` is an ``"error"`` naming it:
+        reporting it as ``"stop"`` would return an answer τ cannot vouch for as
+        complete (#10).
+        """
+        stop = _FINISH_REASONS.get(reason)
+        if stop is None:
+            state.stop_reason = "error"
+            state.error_message = (
+                f"unhandled finish_reason {reason!r}; τ cannot tell whether this "
+                "completion is whole, so it is reported as an error rather than a stop."
+            )
+            return
+        state.stop_reason = stop
+        state.error_message = _FINISH_ERRORS.get(reason)
 
     def _make_text_event(
         self, text: str, accum: _Accumulator, partial: AssistantMessage
@@ -1353,6 +1426,8 @@ class OpenAICompletionsProvider(Provider):
         model: Model,
         usage: Usage,
         stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"] | None = None,
+        error_message: str | None = None,
+        reasoning_level: ModelThinkingLevel | None = None,
     ) -> AssistantMessage:
         """Build the final AssistantMessage with accumulated data.
 
@@ -1483,6 +1558,8 @@ class OpenAICompletionsProvider(Provider):
             response_id=accum.response_id,
             usage=usage,
             stop_reason=stop_reason,
+            error_message=error_message,
+            reasoning_level=reasoning_level,
             timestamp=int(time.time() * 1000),
         )
 
@@ -1537,7 +1614,7 @@ class OpenAICompletionsProvider(Provider):
         # Convert τ messages to OpenAI format
         openai_messages = self._convert_messages_to_openai(
             messages,
-            model.reasoning_replay,
+            model.reasoning_replay or "turn",
             model.strict_reasoning_formats,
             model.supports_multimodal_function_response,
         )
@@ -1586,18 +1663,7 @@ class OpenAICompletionsProvider(Provider):
 
         _apply_constraints(payload, model, options.get("constraints"), has_tools=bool(openai_tools))
 
-        requested = options.get("reasoning")
-        if requested is not None and getattr(model, "reasoning", False):
-            clamped = clamp_thinking_level(model, requested)
-            tlm = model.thinking_level_map or {}
-            if clamped != "off":
-                mapped = tlm.get(clamped, clamped)
-            else:
-                mapped = tlm.get("off")
-            if isinstance(mapped, dict):
-                _merge_thinking_fragment(payload, mapped, model_id=model.id)
-            elif isinstance(mapped, str):
-                payload["reasoning_effort"] = mapped
+        reasoning_level = _apply_reasoning(payload, model, options.get("reasoning"))
 
         client = self._get_client()
         accum = _Accumulator()
@@ -1646,7 +1712,14 @@ class OpenAICompletionsProvider(Provider):
                 final_stop_reason = state.stop_reason
 
                 usage_obj = _usage_from_openai(usage_data, timings_data)
-                final_msg = self._build_final_message(accum, model, usage_obj, final_stop_reason)
+                final_msg = self._build_final_message(
+                    accum,
+                    model,
+                    usage_obj,
+                    final_stop_reason,
+                    error_message=state.error_message,
+                    reasoning_level=reasoning_level,
+                )
 
                 constraints = options.get("constraints") if options else None
                 if constraints is not None and constraints.has_constraint():
@@ -1892,7 +1965,7 @@ class OpenAICompletionsProvider(Provider):
                     yield self._make_toolcall_event(tc_delta, accum, partial)
 
                 if finish_reason:
-                    state.stop_reason = self._map_finish_reason(finish_reason)
+                    self._map_finish_reason(finish_reason, state)
 
         if state.stop_reason is None and not state.saw_done:
             yield ErrorEvent(
@@ -1988,7 +2061,7 @@ class OpenAICompletionsProvider(Provider):
 
         finish_reason = choice.get("finish_reason")
         if finish_reason:
-            state.stop_reason = self._map_finish_reason(finish_reason)
+            self._map_finish_reason(finish_reason, state)
 
         reasoning, reasoning_field = _extract_reasoning(message)
         if reasoning:

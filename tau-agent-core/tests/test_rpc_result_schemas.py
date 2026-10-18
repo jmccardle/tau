@@ -68,7 +68,7 @@ def test_every_capability_backed_verb_publishes_its_capabilitys_returns() -> Non
         assert name in CAPABILITIES, f"{name} has a result schema but no capability"
         assert entry.result_schema == result_schema_for(name), name
         checked += 1
-    assert checked == 36
+    assert checked == 37
 
 
 def test_result_schema_for_hands_back_a_copy() -> None:

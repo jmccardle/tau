@@ -56,7 +56,7 @@ from tau_llm.errors import (
     stream_error_from_anthropic,
 )
 from tau_llm.json_parse import parse_cut_off_arguments
-from tau_llm.models import clamp_thinking_level
+from tau_llm.models import ModelThinkingLevel, requested_wire_level
 from tau_llm.once import OnceSet
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.streaming import (
@@ -98,7 +98,6 @@ _STOP_REASONS: dict[str, str] = {
 
 _CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
 
-_WARNED_REPLAY_OVERRIDE = OnceSet()
 _WARNED_UNSIGNED_THINKING = OnceSet()
 
 _INTERNAL_OPTION_KEYS = frozenset(
@@ -236,40 +235,29 @@ class AnthropicMessagesProvider(Provider):
 
     # ── message conversion ───────────────────────────────────────────────
 
-    def _replay_scope(self, model: Model) -> None:
-        """Warn when ``Model.reasoning_replay`` says something Anthropic cannot do.
+    def _replay_scope(self, model: Model) -> str:
+        """The replay scope this request uses: ``"all"`` unless the model says ``"turn"``.
 
-        S1. Anthropic requires the CURRENT tool-use sequence's thinking blocks to
-        travel back with their signatures, and discards thinking from prior
-        turns. That is exactly what τ's default ``"turn"`` already does, so the
-        default needs no change. The other two settings are not honoured:
+        The API filters prior-turn thinking per model and bills only what the
+        model reads, so every block goes back by default (docs/REASONING-WIRE.md
+        §6).
 
-        * ``"off"`` would strip signatures Anthropic requires inside the current
-          tool loop, which breaks the request rather than trimming it.
-        * ``"all"`` sends prior-turn thinking that the API discards — wasteful,
-          not wrong.
+        Returns:
+            ``"all"`` or ``"turn"``.
 
-        Neither is obeyed. Choosing Anthropic is an express act; setting
-        ``reasoning_replay="off"`` alongside it is a mistake rather than an
-        instruction. This is the one place in τ where a stated config value is
-        deliberately overridden, which is why it is logged with its reason and
-        recorded in the design doc — so it is not later mistaken for a bug.
+        Raises:
+            ValueError: the model sets ``"off"``, which would strip the current
+                tool loop's blocks, the reasoning behind the calls being answered.
         """
-        if model.reasoning_replay == "turn":
-            return
-        detail = (
-            f"model {model.id!r} sets reasoning_replay={model.reasoning_replay!r}, which the "
-            "Anthropic Messages API cannot honour: thinking blocks from the current tool-use "
-            "sequence must be replayed WITH their signatures, and blocks from prior turns are "
-            "discarded by the API regardless. Using 'turn' behaviour instead"
-        )
-        if model.strict_reasoning_formats:
+        scope = model.reasoning_replay or "all"
+        if scope == "off":
             raise ValueError(
-                f"{detail}. Refusing to continue because "
-                "models.<name>.strict_reasoning_formats is set."
+                f"model {model.id!r} sets reasoning_replay='off', which the Anthropic "
+                "Messages API cannot honour: the current tool loop's thinking blocks must "
+                "go back with their signatures. Use 'turn' to drop prior turns' thinking "
+                "(docs/REASONING-WIRE.md §6)."
             )
-        if _WARNED_REPLAY_OVERRIDE.first(model.id):
-            _logger.warning("%s (docs/ANTHROPIC-GOOGLE-CLIENTS.md S1).", detail)
+        return scope
 
     def _on_unsigned_thinking(self, model: Model) -> None:
         """Handle a thinking block with no Anthropic signature (S2).
@@ -308,9 +296,9 @@ class AnthropicMessagesProvider(Provider):
            making parallel calls.
         3. **Thinking is a first-class block with a signature**, not a sibling
            field keyed by name. See :meth:`_replay_scope` and
-           :meth:`_on_unsigned_thinking`.
+           :meth:`_thinking_block`.
         """
-        self._replay_scope(model)
+        scope = self._replay_scope(model)
 
         system_parts: list[str] = []
         out: list[dict[str, Any]] = []
@@ -324,7 +312,7 @@ class AnthropicMessagesProvider(Provider):
 
         for i, msg in enumerate(messages):
             role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
-            include_reasoning = i > last_user_idx
+            current_turn = i > last_user_idx
 
             if role == "system":
                 text = msg.get("content", "") if isinstance(msg, dict) else ""
@@ -343,7 +331,9 @@ class AnthropicMessagesProvider(Provider):
                 continue
 
             if role == "assistant":
-                blocks = self._assistant_blocks(msg, model, include_reasoning)
+                blocks = self._assistant_blocks(
+                    msg, model, current_turn, replay=current_turn or scope == "all"
+                )
                 if not blocks:
                     _logger.debug("dropping assistant message %d: no blocks survived conversion", i)
                     continue
@@ -376,12 +366,13 @@ class AnthropicMessagesProvider(Provider):
         return blocks or [{"type": "text", "text": ""}]
 
     def _assistant_blocks(
-        self, msg: Any, model: Model, include_reasoning: bool
+        self, msg: Any, model: Model, current_turn: bool, *, replay: bool
     ) -> list[dict[str, Any]]:
         """Convert one assistant message's content to Anthropic blocks.
 
         Thinking comes first, matching both the stream order and what the API
-        expects of a replayed tool-use turn.
+        expects of a replayed tool-use turn. ``current_turn``: the message sits
+        after the last user message; ``replay``: the scope includes its thinking.
         """
         content = msg.get("content", []) if isinstance(msg, dict) else getattr(msg, "content", [])
         if isinstance(content, str):
@@ -398,7 +389,8 @@ class AnthropicMessagesProvider(Provider):
                         block.get("thinking", ""),
                         block.get("thinking_signature", ""),
                         model,
-                        include_reasoning,
+                        current_turn,
+                        replay=replay,
                     )
                     _place(converted, thinking, rest)
                 elif btype == "text":
@@ -415,7 +407,7 @@ class AnthropicMessagesProvider(Provider):
                     )
             elif isinstance(block, ThinkingContent):
                 converted = self._thinking_block(
-                    block.thinking, block.thinking_signature, model, include_reasoning
+                    block.thinking, block.thinking_signature, model, current_turn, replay=replay
                 )
                 _place(converted, thinking, rest)
             elif isinstance(block, TextContent):
@@ -434,22 +426,22 @@ class AnthropicMessagesProvider(Provider):
         return thinking + rest
 
     def _thinking_block(
-        self, thinking: str, signature: Any, model: Model, include_reasoning: bool
+        self, thinking: str, signature: Any, model: Model, current_turn: bool, *, replay: bool
     ) -> dict[str, Any] | None:
         """One thinking block, as Anthropic wants it — or None to drop it.
 
-        Dropped when the replay scope excludes it: this is a PRIOR turn's
-        chain-of-thought, which the API discards anyway. Sending it as text
-        instead would inject the model's private reasoning into the visible
-        conversation, which is a different thing from replaying it.
+        A signed block goes back verbatim, empty text included, when ``replay``
+        holds. An unsigned one becomes text inside the current turn (S2) and is
+        dropped from a prior turn, where text would put a foreign model's or an
+        aborted partial's reasoning into the visible conversation
+        (docs/REASONING-WIRE.md §6).
         """
-        if not include_reasoning:
+        if not replay:
             return None
 
         payload = read_signature_payload(signature)
         if payload is None:
-            # S2 — no usable signature. Text keeps the turn intact.
-            if not thinking:
+            if not thinking or not current_turn:
                 return None
             self._on_unsigned_thinking(model)
             return {"type": "text", "text": thinking}
@@ -535,41 +527,33 @@ class AnthropicMessagesProvider(Provider):
 
     # ── request ──────────────────────────────────────────────────────────
 
-    def _thinking_params(self, model: Model, options: dict) -> dict[str, Any]:
-        """Map τ's reasoning level onto the Messages API's thinking controls.
+    def _thinking_params(
+        self, model: Model, options: dict
+    ) -> tuple[dict[str, Any], ModelThinkingLevel | None]:
+        """τ's reasoning level as the Messages API's thinking controls, and the level sent.
 
-        τ's level enum predates this API and is OpenAI-shaped, so the mapping is
-        stated rather than inferred:
+        :func:`~tau_llm.models.requested_wire_level` decides the level
+        (docs/REASONING-WIRE.md §4). ``"off"`` → ``thinking: {type: disabled}``,
+        sent whatever ``Model.reasoning`` says; a model that rejects it answers
+        400 rather than τ substituting adaptive. Any other level → adaptive with
+        ``display: "summarized"`` (free, §8) and ``output_config.effort``. A map
+        string replaces the effort name; a map dict replaces both fields (§2.2).
 
-        * a level other than ``"off"`` → ``thinking={"type": "adaptive"}`` plus
-          ``output_config={"effort": level}``. Adaptive is the only on-mode the
-          current models accept; the fixed ``budget_tokens`` budget is removed
-          and returns a 400, so τ never sends one.
-        * ``"off"`` → ``thinking={"type": "disabled"}``, which is what the
-          operator asked for. It is sent rather than silently upgraded to
-          adaptive; some models reject it at the highest effort settings, and a
-          400 naming that is better than τ quietly running a mode nobody asked
-          for (Fail-Early).
-        * no ``reasoning`` option, or a model that does not declare reasoning →
-          nothing sent, and the API's own default applies.
-
-        ``Model.thinking_level_map`` still overrides the effort string per model,
-        which is how an operator reaches an effort name τ's enum does not carry.
+        Returns:
+            ``(request fields, level)``; ``({}, None)`` sends nothing.
         """
-        requested = options.get("reasoning")
-        if requested is None or not getattr(model, "reasoning", False):
-            return {}
-
-        clamped = clamp_thinking_level(model, requested)
-        mapped = (model.thinking_level_map or {}).get(clamped, clamped)
-        if clamped == "off":
-            return {"thinking": {"type": "disabled"}}
-        if not isinstance(mapped, str):
-            raise ValueError(
-                f"Model {model.id!r}: thinking_level_map[{clamped!r}] must be a string "
-                f"effort level on the anthropic-messages wire; got {mapped!r}."
-            )
-        return {"thinking": {"type": "adaptive"}, "output_config": {"effort": mapped}}
+        level = requested_wire_level(model, options.get("reasoning"))
+        if level is None:
+            return {}, None
+        mapped = (model.thinking_level_map or {}).get(level, level)
+        if isinstance(mapped, dict):
+            return dict(mapped), level
+        if level == "off":
+            return {"thinking": {"type": "disabled"}}, level
+        return {
+            "thinking": {"type": "adaptive", "display": "summarized"},
+            "output_config": {"effort": mapped},
+        }, level
 
     async def stream_chat(
         self,
@@ -615,7 +599,8 @@ class AnthropicMessagesProvider(Provider):
             request["system"] = system
         if tools:
             request["tools"] = self._convert_tools(tools)
-        request.update(self._thinking_params(model, options))
+        thinking_fields, reasoning_level = self._thinking_params(model, options)
+        request.update(thinking_fields)
 
         client = self._get_client()
         accepted = _accepted_stream_params(client.messages.stream)
@@ -655,7 +640,7 @@ class AnthropicMessagesProvider(Provider):
         abort_signal = options.get("abort_signal")
 
         async def event_generator() -> AsyncIterator[Any]:
-            state = _StreamState(model=model, provider=self)
+            state = _StreamState(model=model, provider=self, reasoning_level=reasoning_level)
             started = False
             try:
                 async with client.messages.stream(**request) as stream:
@@ -731,9 +716,15 @@ class AnthropicMessagesProvider(Provider):
 class _StreamState:
     """Accumulates one completion so a partial message can be built per delta."""
 
-    def __init__(self, model: Model, provider: AnthropicMessagesProvider) -> None:
+    def __init__(
+        self,
+        model: Model,
+        provider: AnthropicMessagesProvider,
+        reasoning_level: ModelThinkingLevel | None,
+    ) -> None:
         self.model = model
         self.provider = provider
+        self.reasoning_level = reasoning_level
         self.text_parts: list[str] = []
         self.thinking_parts: list[str] = []
         self.signature: str = ""
@@ -773,6 +764,7 @@ class _StreamState:
             model=self.model.id,
             usage=self.usage,
             stop_reason=stop_reason,  # type: ignore[arg-type]
+            reasoning_level=self.reasoning_level,
             timestamp=int(time.time() * 1000),
         )
 
@@ -864,6 +856,7 @@ class _StreamState:
             usage=usage,
             stop_reason=stop_reason,  # type: ignore[arg-type]
             error_message=error_message,
+            reasoning_level=self.reasoning_level,
             timestamp=int(time.time() * 1000),
         )
 
@@ -875,6 +868,8 @@ def _usage_from_anthropic(usage: Any) -> Usage:
     excludes both from ``input_tokens``. τ's ``total_tokens`` is computed here
     rather than read, because the API reports no total. Either counter being
     present — rather than non-zero — is what sets ``cache_reported``.
+    ``output_tokens_details.thinking_tokens`` is the reasoning share of
+    ``output_tokens`` (docs/REASONING-WIRE.md §7).
     """
     if usage is None:
         return Usage()
@@ -886,6 +881,7 @@ def _usage_from_anthropic(usage: Any) -> Usage:
         getattr(usage, "cache_read_input_tokens", None) is not None
         or getattr(usage, "cache_creation_input_tokens", None) is not None
     )
+    thinking = getattr(getattr(usage, "output_tokens_details", None), "thinking_tokens", None)
     return Usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -893,6 +889,7 @@ def _usage_from_anthropic(usage: Any) -> Usage:
         cache_write_tokens=cache_write,
         cache_reported=reported,
         total_tokens=input_tokens + output_tokens + cache_read + cache_write,
+        reasoning_tokens=None if thinking is None else int(thinking),
     )
 
 

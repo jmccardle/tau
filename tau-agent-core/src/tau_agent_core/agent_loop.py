@@ -1014,6 +1014,7 @@ class AgentLoop:
                                 "usage": final_msg.usage.model_dump(),
                                 "model": final_msg.model,
                                 "stop_reason": final_msg.stop_reason,
+                                "reasoning_level": final_msg.reasoning_level,
                             },
                             response_headers=event.response_headers,
                         )

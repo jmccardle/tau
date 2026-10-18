@@ -136,7 +136,6 @@ class ProviderContract:
         assert u.cache_read_tokens == expect["cache_read_tokens"]
         assert u.cache_reported is True
 
-    @pytest.mark.xfail(strict=True, reason="Usage has no reasoning-token field on any wire")
     def test_reasoning_tokens_are_reported_where_the_server_reports_them(self) -> None:
         final, expect = self._final("text")
         if "reasoning_tokens" not in expect:
@@ -190,13 +189,6 @@ class TestOpenAICompletionsContract(ProviderContract):
             base_url="http://llm.test/v1", transport=replay.transport()
         )
         return provider
-
-    @pytest.mark.xfail(
-        strict=True,
-        reason="openai.py _map_finish_reason maps content_filter and any unknown value to 'stop'",
-    )
-    def test_an_unmapped_stop_reason_is_an_error_not_a_stop(self) -> None:
-        super().test_an_unmapped_stop_reason_is_an_error_not_a_stop()
 
 
 class TestAnthropicMessagesContract(ProviderContract):

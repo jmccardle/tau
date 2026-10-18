@@ -260,6 +260,7 @@ async def test_every_frame_a_session_produces_validates_against_the_schema(daemo
     await client.rpc("reload_extension", sid, head, path=gate)
     await client.rpc("set_session_name", sid, head, name="renamed")
     await client.rpc("set_auto_compaction", sid, head, enabled=True)
+    await client.rpc("set_reasoning", sid, head, level="low")
     await client.rpc("paste_subtree", sid, head, source_id=path[1], target_id=path[0])
     await client.rpc("commit_branch", sid, head, ids=[path[0]], drop_context=False)
     await client.rpc("navigate", sid, head, target_id=path[-1])

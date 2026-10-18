@@ -47,10 +47,8 @@ _TS = 1_700_000_000_000
 
 @pytest.fixture(autouse=True)
 def _clear_warn_dedupe():
-    anthropic_mod._WARNED_REPLAY_OVERRIDE.clear()
     anthropic_mod._WARNED_UNSIGNED_THINKING.clear()
     yield
-    anthropic_mod._WARNED_REPLAY_OVERRIDE.clear()
     anthropic_mod._WARNED_UNSIGNED_THINKING.clear()
 
 
@@ -572,8 +570,8 @@ class TestAssistantBlocks:
 
 
 class TestReasoningReplay:
-    """S1 — τ's 'turn' scope is already what Anthropic requires, and the other
-    two settings are overridden rather than obeyed."""
+    """docs/REASONING-WIRE.md §6 — every signed block goes back by default; the
+    API filters per model and bills only what the model reads."""
 
     def _two_turns(self):
         """Indices: 0 user, 1 assistant(prior), 2 user, 3 assistant(current)."""
@@ -600,13 +598,40 @@ class TestReasoningReplay:
         _, messages = _convert(_provider(), self._two_turns())
         assert messages[-1]["content"][0]["thinking"] == "new"
 
-    def test_a_prior_turns_thinking_is_dropped_not_downgraded_to_text(self):
-        """The API discards prior-turn thinking anyway. Sending it as text would
-        inject the model's private reasoning into the visible conversation."""
+    def test_a_prior_turns_signed_thinking_is_replayed_verbatim_by_default(self):
+        """Measured: the API reads a prior-turn block (turn-2 input 80 -> 159)."""
         _, messages = _convert(_provider(), self._two_turns())
         prior = messages[1]
-        assert [b["type"] for b in prior["content"]] == ["text"]
-        assert "old" not in str(prior)
+        assert prior["content"][0] == {
+            "type": "thinking",
+            "thinking": "old",
+            "signature": SIGNED["anthropic"]["signature"],
+        }
+
+    def test_an_omitted_block_with_empty_text_is_still_replayed(self):
+        """Under display 'omitted' the text is empty and the signature IS the
+        reasoning; dropping empty blocks is the serializer bug the docs name."""
+        turns = self._two_turns()
+        turns[1]["content"][0]["thinking"] = ""
+        _, messages = _convert(_provider(), turns)
+        assert messages[1]["content"][0]["type"] == "thinking"
+        assert messages[1]["content"][0]["thinking"] == ""
+
+    def test_turn_scope_drops_prior_turns_and_keeps_the_current_one(self):
+        """An explicit 'turn' is honoured: removing blocks from the start of the
+        history keeps the later ones valid under preserved thinking."""
+        _, messages = _convert(_provider(), self._two_turns(), _model(reasoning_replay="turn"))
+        assert [b["type"] for b in messages[1]["content"]] == ["text"]
+        assert messages[-1]["content"][0]["thinking"] == "new"
+
+    def test_an_unsigned_prior_turn_block_is_dropped_not_sent_as_text(self):
+        """A foreign model's or an aborted partial's reasoning would otherwise
+        reach the model as visible prose."""
+        turns = self._two_turns()
+        turns[1]["content"][0]["thinking_signature"] = ""
+        _, messages = _convert(_provider(), turns)
+        assert [b["type"] for b in messages[1]["content"]] == ["text"]
+        assert "old" not in str(messages[1])
 
     def test_thinking_inside_a_tool_loop_survives_across_tool_results(self):
         """The whole assistant/tool sequence sits after the last USER message, so
@@ -640,43 +665,24 @@ class TestReasoningReplay:
         ]
         assert replayed == ["step one", "step two"]
 
-    def test_reasoning_replay_off_is_overridden_with_a_warning(self, caplog):
-        """The one place in τ where a stated config value is deliberately not
-        obeyed. 'off' would strip signatures the API requires inside the current
-        tool loop, which breaks the request rather than trimming it."""
+    def test_reasoning_replay_off_raises(self):
+        """'off' would strip the current tool loop's blocks, the reasoning behind
+        the calls being answered."""
         model = _model(reasoning_replay="off")
-        with caplog.at_level(logging.WARNING, logger="tau_llm.providers.anthropic"):
-            _, messages = _convert(_provider(), self._two_turns(), model)
-        assert messages[-1]["content"][0]["thinking"] == "new"  # 'turn' behaviour ran
-        assert "reasoning_replay" in caplog.text
-        assert "S1" in caplog.text
+        with pytest.raises(ValueError, match="reasoning_replay='off'"):
+            _convert(_provider(), self._two_turns(), model)
 
-    def test_reasoning_replay_all_is_overridden_too(self, caplog):
-        """'all' is wasteful rather than wrong — the API discards prior-turn
-        thinking — but it is still not what τ sends."""
+    def test_reasoning_replay_all_is_honoured_silently(self, caplog):
         model = _model(reasoning_replay="all")
         with caplog.at_level(logging.WARNING, logger="tau_llm.providers.anthropic"):
             _, messages = _convert(_provider(), self._two_turns(), model)
-        assert [b["type"] for b in messages[1]["content"]] == ["text"]
-        assert caplog.records
-
-    def test_the_override_warns_once_per_model(self, caplog):
-        model = _model(reasoning_replay="off")
-        provider = _provider()
-        with caplog.at_level(logging.WARNING, logger="tau_llm.providers.anthropic"):
-            for _ in range(3):
-                _convert(provider, self._two_turns(), model)
-        assert len(caplog.records) == 1
+        assert messages[1]["content"][0]["type"] == "thinking"
+        assert not caplog.records
 
     def test_the_default_scope_warns_about_nothing(self, caplog):
         with caplog.at_level(logging.WARNING, logger="tau_llm.providers.anthropic"):
             _convert(_provider(), self._two_turns(), _model())
         assert not caplog.records
-
-    def test_strict_turns_the_override_into_a_raise(self):
-        model = _model(reasoning_replay="off", strict_reasoning_formats=True)
-        with pytest.raises(ValueError, match="strict_reasoning_formats"):
-            _convert(_provider(), self._two_turns(), model)
 
 
 class TestUnsignedThinking:
@@ -1092,6 +1098,20 @@ class TestUsage:
         assert usage.cache_read_tokens == 50
         assert usage.cache_write_tokens == 10
         assert usage.total_tokens == 180
+        assert usage.reasoning_tokens is None
+
+    def test_thinking_tokens_become_reasoning_tokens(self):
+        """docs/REASONING-WIRE.md §7: the split rides output_tokens_details."""
+        usage = _usage(output_tokens=97)
+        usage.output_tokens_details = SimpleNamespace(thinking_tokens=75)
+        events, _ = _run(
+            _provider(),
+            _model(),
+            [{"role": "user", "content": "hi"}],
+            final=_final(content=[SimpleNamespace(type="text", text="x")], usage=usage),
+        )
+        assert events[-1].usage.output_tokens == 97
+        assert events[-1].usage.reasoning_tokens == 75
 
 
 # ── the request τ builds ─────────────────────────────────────────────────
@@ -1107,35 +1127,82 @@ class TestRequest:
         assert "thinking" not in client.requests[0]
         assert "output_config" not in client.requests[0]
 
-    def test_a_reasoning_level_sends_adaptive_thinking_and_an_effort(self):
-        """budget_tokens is removed on the current models and returns a 400, so
-        adaptive is the only on-mode τ sends."""
-        _, client = _run(
+    def test_a_reasoning_level_sends_adaptive_summarized_thinking_and_an_effort(self):
+        """budget_tokens returns a 400 on the current models, so adaptive is the
+        only on-mode; summaries are free (docs/REASONING-WIRE.md §8)."""
+        events, client = _run(
             _provider(),
             _model(reasoning=True),
             [{"role": "user", "content": "hi"}],
             options={"reasoning": "high"},
         )
-        assert client.requests[0]["thinking"] == {"type": "adaptive"}
+        assert client.requests[0]["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert client.requests[0]["output_config"] == {"effort": "high"}
+        assert events[-1].final.reasoning_level == "high"
+
+    def test_minimal_is_not_an_anthropic_effort_so_it_clamps_up_to_low(self):
+        """Measured: effort 'minimal' is a 400; the clamp is reported, not hidden."""
+        events, client = _run(
+            _provider(),
+            _model(reasoning=True),
+            [{"role": "user", "content": "hi"}],
+            options={"reasoning": "minimal"},
+        )
+        assert client.requests[0]["output_config"] == {"effort": "low"}
+        assert events[-1].final.reasoning_level == "low"
 
     def test_reasoning_off_disables_thinking_rather_than_silently_upgrading(self):
-        _, client = _run(
+        events, client = _run(
             _provider(),
             _model(reasoning=True),
             [{"role": "user", "content": "hi"}],
             options={"reasoning": "off"},
         )
         assert client.requests[0]["thinking"] == {"type": "disabled"}
+        assert "output_config" not in client.requests[0]
+        assert events[-1].final.reasoning_level == "off"
 
-    def test_a_non_reasoning_model_sends_nothing(self):
+    def test_off_reaches_the_wire_without_reasoning_true(self):
+        """#23: the API's default is to think, so a dropped 'off' left it on."""
         _, client = _run(
+            _provider(),
+            _model(reasoning=False),
+            [{"role": "user", "content": "hi"}],
+            options={"reasoning": "off"},
+        )
+        assert client.requests[0]["thinking"] == {"type": "disabled"}
+
+    def test_a_level_on_a_non_reasoning_model_is_not_sent_and_reads_none(self):
+        events, client = _run(
             _provider(),
             _model(reasoning=False),
             [{"role": "user", "content": "hi"}],
             options={"reasoning": "high"},
         )
         assert "thinking" not in client.requests[0]
+        assert events[-1].final.reasoning_level is None
+
+    def test_a_map_dict_replaces_the_thinking_fields(self):
+        """How Sonnet 5.5, which rejects 'disabled', reaches between_tools."""
+        _, client = _run(
+            _provider(),
+            _model(
+                reasoning=True,
+                thinking_level_map={"off": {"thinking": {"type": "between_tools"}}},
+            ),
+            [{"role": "user", "content": "hi"}],
+            options={"reasoning": "off"},
+        )
+        assert client.requests[0]["thinking"] == {"type": "between_tools"}
+
+    def test_a_map_string_is_the_native_effort_name(self):
+        _, client = _run(
+            _provider(),
+            _model(reasoning=True, thinking_level_map={"xhigh": "max"}),
+            [{"role": "user", "content": "hi"}],
+            options={"reasoning": "xhigh"},
+        )
+        assert client.requests[0]["output_config"] == {"effort": "max"}
 
     def test_transport_and_internal_options_never_reach_the_wire(self):
         _, client = _run(

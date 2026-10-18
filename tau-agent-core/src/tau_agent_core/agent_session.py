@@ -531,8 +531,9 @@ class AgentSession:
         extensions: Inline extension factories, each called at construction
             with an api bound to its own runner bucket.
         api_key: The key ``model`` is called with; ``None`` passes no key.
-        reasoning: Requested thinking level for every turn and compaction, or
-            ``None``.
+        reasoning: Requested thinking level for every turn and compaction;
+            ``None`` sends no reasoning control, which is not ``"off"``
+            (docs/REASONING-WIRE.md §4).
         compaction_settings: Settings when no ``compaction_policy`` is given;
             ``None`` means the defaults.
         compaction_policy: A declared policy that supplies its own settings and
@@ -1294,7 +1295,8 @@ class AgentSession:
         Placed and recorded as :meth:`set_model` is: the head's level is the
         session's, another cursor's lives on its frame, and the next request
         records ``thinking`` ahead of itself. The provider clamps the level to
-        what the model supports, as it does the constructor's ``reasoning``.
+        what the model supports and reports the one it sent as
+        ``AssistantMessage.reasoning_level`` (docs/REASONING-WIRE.md §3).
 
         Args:
             level: One of ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``,

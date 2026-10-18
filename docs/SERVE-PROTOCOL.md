@@ -8,7 +8,7 @@
 
 - **Protocol version:** `0.10`
 - **Default port:** `8256`
-- **Counts:** 50 requests (35 of them RPC verbs), 10 event kinds, 199 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 51 requests (36 of them RPC verbs), 10 event kinds, 201 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
@@ -308,6 +308,12 @@ RPC `set_model` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own 
 RPC `set_auto_compaction` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.
 
 **Answered with:** [SetAutoCompactionResult](#setautocompactionresult).
+
+### `set_reasoning`
+
+RPC `set_reasoning` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.
+
+**Answered with:** [SetReasoningResult](#setreasoningresult).
 
 ### `set_session_name`
 
@@ -617,6 +623,7 @@ An assistant message from the LLM.
 | `usage` | [Usage](#usage) | no |  |
 | `stop_reason` | `"stop"` \| `"length"` \| `"toolUse"` \| `"error"` \| `"aborted"` | yes |  |
 | `error_message` | string \| null | no |  |
+| `reasoning_level` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` \| null | no |  |
 | `timestamp` | integer \| null | no |  |
 
 ### Attached
@@ -1787,6 +1794,13 @@ A session a connection drives (F2).
 | `model` | [ModelSpec](#modelspec) | yes | AgentSession.get_model() after the switch: {id, provider, context_window}. |
 | `leaf` | string \| `null` | yes | cursor.leaf immediately after the model_change entry this call appended (E5) — that entry's own id, since the append is the last write this handler makes. |
 
+### SetReasoningResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `level` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` | yes | The level requested for the acting cursor's next request — what AgentSession.set_reasoning returns. The level actually sent is message_end's reasoning_level, after the provider clamps it (docs/REASONING-WIRE.md §3). |
+| `leaf` | string \| `null` | yes | cursor.leaf after this call: ALWAYS the unchanged tip. Nothing is appended here; the next request records `thinking` ahead of itself (docs/TURN-SETTINGS.md §3). |
+
 ### SetSessionNameResult
 
 | Field | Type | Required | Description |
@@ -2035,6 +2049,7 @@ Token usage for one LLM response. Frozen: use ``model_copy(update=...)``.
 | `cache_write_tokens` | integer | no |  |
 | `cache_reported` | boolean | no |  |
 | `total_tokens` | integer | no |  |
+| `reasoning_tokens` | integer \| null | no |  |
 | `cost` | object of number | no |  |
 | `extra` | object | no |  |
 
@@ -2099,6 +2114,7 @@ The wire projection of ``AgentEvent`` (D3) — REMOTE-CONTROL.md's designed shap
 | `message_count` | integer \| null | no | Count of messages produced this turn, on agent_end (E2). The messages themselves are pulled via get_messages, never pushed. None for all other event types. |
 | `stop_reason` | `"stop"` \| `"length"` \| `"toolUse"` \| `"error"` \| `"aborted"` \| null | no | Why the model stopped this completion, on the message_end that carries usage. 'length' means the output cap ended it, so the content is a PREFIX and not an answer — the one value an operator has to act on. None on the content-only duplicate message_end (which carries no usage either) and on every other event type. This rides a field of its own because the message it belongs to is excluded from the wire; it is a closed enum, not unbounded content. See docs/TRUNCATED-TOOL-CALLS.md. |
 | `dropped_tool_calls` | integer \| null | no | How many tool calls in this completion were not run, on message_end. A completion cut off at the output cap runs none of its calls: each stays in the message with its partial arguments and gets an error result, or is dropped when nothing of it decodes; an aborted stream drops a call whose arguments were mid-flight. Null rather than 0 when every call ran, so 'none lost' and 'not reported' stay distinguishable. None for all other event types. See docs/TRUNCATED-TOOL-CALLS.md §3.2. |
+| `reasoning_level` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` \| null | no | The thinking level this completion was requested with, after the provider clamped it to what the model supports, on the message_end that carries usage. Null when no reasoning control was sent — no level was set, or the model does not declare reasoning — so a requested level that was clamped or not sent is visible rather than silent. None for all other event types. See docs/REASONING-WIRE.md §3. |
 | `cache_notice` | string \| null | no | One sentence saying this turn's prompt cache should have been read and was not, on agent_end. Null is the normal case and says nothing was observed: the cache was read, the server accounts for no cache, the prompt is under the minimum cacheable prefix, or a read earlier in this session already proved caching is on. A host renders it as a warning; see docs/PROMPT-CACHING.md §7 for the three gates. None for all other event types. |
 | `purpose` | `"compaction"` \| `"branch_summary"` \| null | no | Which side completion a side_completion_* event reports: 'compaction' or 'branch_summary'. Side work spends tokens and produces text outside any turn, so it stamps no submission_id and a host keys on this instead. The summary TEXT and what it cost are deliberately not on the wire — both land in the session log as a compaction or branch_summary entry, which get_entry serves with tokens_before, covered_tokens and summary_usage attached. Pushing unbounded content through an event is what WireEvent exists to avoid. None for all other event types. See docs/STREAMING-SIDE-WORK.md. |
 | `reason` | `"manual"` \| `"threshold"` \| `"navigate"` \| null | no | What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. None for all other event types. |
