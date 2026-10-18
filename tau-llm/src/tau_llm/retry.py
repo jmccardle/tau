@@ -21,7 +21,6 @@ from tau_llm.types import AssistantMessage, Usage
 
 _logger = logging.getLogger(__name__)
 
-_ABORT_POLL_SECONDS = 0.1
 
 RETRYABLE_STATUSES = frozenset({408, 429, 502, 503, 504, 529})
 """Statuses a retry can cure: overload, rate limit, a gateway, a model loading.
@@ -131,14 +130,14 @@ def resolve_retry_policy(value: Any) -> RetryPolicy:
 
 async def _wait_unless_aborted(seconds: float, abort_signal: Any) -> bool:
     """Sleep ``seconds``; True if ``abort_signal`` fired first."""
-    deadline = time.monotonic() + seconds
-    while True:
-        if abort_signal is not None and abort_signal.is_aborted():
-            return True
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        await asyncio.sleep(min(remaining, _ABORT_POLL_SECONDS))
+    if abort_signal is None:
+        await asyncio.sleep(seconds)
+        return False
+    try:
+        await asyncio.wait_for(abort_signal.wait(), timeout=seconds)
+    except TimeoutError:
+        return False
+    return True
 
 
 def _aborted_message(model: Any) -> AssistantMessage:

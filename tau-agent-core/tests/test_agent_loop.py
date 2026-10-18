@@ -925,6 +925,32 @@ class TestAbortDuringToolExecution:
 
         assert signal.is_aborted()
 
+    @pytest.mark.asyncio
+    async def test_a_completion_cut_short_by_an_abort_ends_aborted(self):
+        """#37: the abort lands mid-stream, so the turn-top check never sees it."""
+        signal = AbortSignal()
+        events: list[AgentEvent] = []
+        loop = AgentLoop(
+            config=AgentLoopConfig(model="gpt-4o"),
+            emit=lambda e: async_emit(events, e),
+            abort_signal=signal,
+        )
+
+        async def mock_stream_func(model, context, options):
+            signal.abort()
+            partial = _make_text_assistant("half", stop_reason="aborted")
+            return _make_mock_stream([DoneEvent(final=partial, usage=Usage())])
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=mock_stream_func):
+            await loop.run(
+                prompts=[UserMessage(content=[TextContent(text="hello")], timestamp=0)],
+                context=[],
+            )
+
+        ends = [e for e in events if e.type == "agent_end"]
+        assert len(ends) == 1
+        assert ends[0].end_reason == "aborted"
+
 
 class TestMultipleTurns:
     """Test 7: Multiple turns — the LLM calls itself until done."""

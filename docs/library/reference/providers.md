@@ -9,8 +9,8 @@
 
 Signal that can be checked during async operations.
 
-Once :meth:`abort` is called, every :meth:`is_aborted` returns True. Async
-operations check it periodically and stop. Thread-safe.
+Once :meth:`abort` is called, every :meth:`is_aborted` returns True and every
+pending :meth:`wait` returns. Thread-safe.
 
 Reference: SUBPHASE-0.0.md, "3. AbortSignal" section.
 
@@ -54,6 +54,18 @@ True if abort() has been called, False otherwise.
 `tau_llm.abort.AbortSignal.reason: AbortReason | None`
 
 Who aborted: ``"user"`` or ``"extension"``; ``None`` until aborted.
+
+### wait
+
+```python
+async wait() -> None
+```
+
+`tau_llm.abort.AbortSignal.wait`
+
+Return once :meth:`abort` has been called; at once if it already has.
+
+Safe to call from any event loop; :meth:`abort` may run on another thread.
 
 ## ApiFactory
 <!-- agent: yes -->
@@ -801,6 +813,27 @@ Look up a vendor's defaults.
 
 The registered spec, or None if that vendor was never registered. None is not an error: an unregistered vendor id is a free-form label on a ``Model`` that carries its own endpoint; only an unknown ``api`` cannot be served.
 
+## iterate_until_aborted
+<!-- agent: yes -->
+
+```python
+async iterate_until_aborted(source: AsyncIterable[_T], signal: AbortSignal | None) -> AsyncIterator[_T]
+```
+
+`tau_llm.abort.iterate_until_aborted`
+
+Yield ``source``'s items, stopping as soon as ``signal`` trips.
+
+An abort cancels the pending read rather than waiting for the next item, so
+a silent or stalled stream stops at once. The iterator ends normally on an
+abort; the caller tells the two endings apart with ``signal.is_aborted()``.
+``source`` is left cancelled mid-read and must not be iterated again.
+
+**Parameters**
+
+- `source: AsyncIterable[_T]` — The stream to read, e.g. ``response.aiter_lines()``.
+- `signal: AbortSignal | None` — The request's abort signal; ``None`` reads ``source`` unchanged.
+
 ## register_api
 <!-- agent: yes -->
 
@@ -962,6 +995,26 @@ AssistantMessageEventStream yielding TextDeltaEvent, ThinkingDeltaEvent, ToolCal
 
 - `ValueError` — If the model names a wire protocol τ has no implementation for, contradicts its own vendor's protocol, resolves to no endpoint, or to no credential for a vendor that declares where its credential lives. See ``_resolve_request``.
 - `TypeError` — If ``options["retry"]`` is neither a RetryPolicy nor False.
+
+## unless_aborted
+<!-- agent: yes -->
+
+```python
+async unless_aborted(awaitable: Awaitable[_T], signal: AbortSignal | None) -> _T | None
+```
+
+`tau_llm.abort.unless_aborted`
+
+Await ``awaitable`` unless ``signal`` trips first, cancelling it then.
+
+**Parameters**
+
+- `awaitable: Awaitable[_T]` — A single blocking call, e.g. a buffered HTTP request. It must not itself resolve to ``None``, because ``None`` here means aborted.
+- `signal: AbortSignal | None` — The request's abort signal; ``None`` awaits ``awaitable`` plainly.
+
+**Returns**
+
+The awaitable's result, or ``None`` if ``signal`` tripped first.
 
 ## unregister_api
 <!-- agent: yes -->

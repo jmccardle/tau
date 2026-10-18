@@ -43,6 +43,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, cast
 
+from tau_llm.abort import iterate_until_aborted, unless_aborted
 from tau_llm.errors import connection_error_from, http_error_from_google, response_headers_of
 from tau_llm.models import ModelThinkingLevel, requested_wire_level
 from tau_llm.once import OnceSet
@@ -544,25 +545,29 @@ class GoogleGenerativeAIProvider(Provider):
             started = False
             headers: dict[str, str] | None = None
             try:
-                stream = await client.aio.models.generate_content_stream(
-                    model=model.id,
-                    contents=cast(Any, _encode_signatures(contents)),
-                    config=cast(Any, config),
+                stream = await unless_aborted(
+                    client.aio.models.generate_content_stream(
+                        model=model.id,
+                        contents=cast(Any, _encode_signatures(contents)),
+                        config=cast(Any, config),
+                    ),
+                    abort_signal,
                 )
-                async for chunk in stream:
-                    started = True
-                    if headers is None:
-                        headers = response_headers_of(getattr(chunk, "sdk_http_response", None))
-                    if abort_signal is not None and abort_signal.is_aborted():
-                        yield DoneEvent(
-                            final=state.build_message(stop_reason="aborted"),
-                            usage=state.usage,
-                            response_headers=headers,
-                        )
-                        return
+                if stream is not None:
+                    async for chunk in iterate_until_aborted(stream, abort_signal):
+                        started = True
+                        if headers is None:
+                            headers = response_headers_of(getattr(chunk, "sdk_http_response", None))
+                        for event in state.consume(chunk):
+                            yield event
 
-                    for event in state.consume(chunk):
-                        yield event
+                if abort_signal is not None and abort_signal.is_aborted():
+                    yield DoneEvent(
+                        final=state.build_message(stop_reason="aborted"),
+                        usage=state.usage,
+                        response_headers=headers,
+                    )
+                    return
 
                 final_msg = state.finalize()
 

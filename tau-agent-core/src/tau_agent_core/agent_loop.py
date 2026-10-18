@@ -322,6 +322,8 @@ class AgentLoop:
                     turn_index += 1
                     if self._steer_queue:
                         continue
+                    if self._abort_signal and self._abort_signal.is_aborted():
+                        end_reason = "aborted"
                     break
 
                 # Emit message_end for the assistant's text/tool call response
@@ -385,6 +387,8 @@ class AgentLoop:
                     turn_index += 1
                     if self._steer_queue:
                         continue
+                    if self._abort_signal and self._abort_signal.is_aborted():
+                        end_reason = "aborted"
                     break
 
                 if batch.terminate:
@@ -505,6 +509,8 @@ class AgentLoop:
                     turn_index += 1
                     if self._steer_queue:
                         continue
+                    if self._abort_signal and self._abort_signal.is_aborted():
+                        end_reason = "aborted"
                     break
 
                 await self._emit(
@@ -566,6 +572,8 @@ class AgentLoop:
                     turn_index += 1
                     if self._steer_queue:
                         continue
+                    if self._abort_signal and self._abort_signal.is_aborted():
+                        end_reason = "aborted"
                     break
 
                 if batch.terminate:

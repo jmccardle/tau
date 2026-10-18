@@ -49,6 +49,7 @@ import time
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
+from tau_llm.abort import iterate_until_aborted
 from tau_llm.errors import (
     connection_error_from,
     http_error_from_anthropic,
@@ -645,16 +646,8 @@ class AnthropicMessagesProvider(Provider):
             try:
                 async with client.messages.stream(**request) as stream:
                     headers = response_headers_of(stream.response)
-                    async for event in stream:
+                    async for event in iterate_until_aborted(stream, abort_signal):
                         started = True
-                        if abort_signal is not None and abort_signal.is_aborted():
-                            yield DoneEvent(
-                                final=state.build_message(stop_reason="aborted"),
-                                usage=state.usage,
-                                response_headers=headers,
-                            )
-                            return
-
                         if event.type == "text":
                             state.text_parts.append(event.text)
                             yield TextDeltaEvent(delta=event.text, partial=state.build_message())
@@ -668,6 +661,13 @@ class AnthropicMessagesProvider(Provider):
                         elif event.type == "content_block_delta":
                             state.add_input_json(event)
 
+                    if abort_signal is not None and abort_signal.is_aborted():
+                        yield DoneEvent(
+                            final=state.build_message(stop_reason="aborted"),
+                            usage=state.usage,
+                            response_headers=headers,
+                        )
+                        return
                     final = await stream.get_final_message()
 
                 final_msg = state.finalize(final)

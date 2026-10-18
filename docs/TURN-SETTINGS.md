@@ -99,6 +99,39 @@ Who sets which:
 - Tool-internal signals (`extensions_builtin/background.py`) are not turn signals
   and keep the default.
 
+### 4.1 An abort cancels the pending read (built 2026-10-18, #36 #37)
+
+Measured by tau-code against 87f2845:
+- The mock server sent one chunk, then went silent for 4 s.
+- `abort` answered `"aborted"` at +1.0 s.
+- `message_end` arrived only at +4.0 s, and `agent_end` said `end_reason: "done"`.
+
+Every provider polled `is_aborted()` once per chunk, so an abort waited for the
+server's next byte. That wait is unbounded when the model thinks silently or the
+connection stalls.
+
+`AbortSignal.wait()` is awaitable, and `abort()` resolves it from any thread.
+
+Each provider now runs its blocking read through one of two helpers in
+`tau_llm.abort`:
+- `iterate_until_aborted` for a stream: the OpenAI SSE lines, the Anthropic
+  event stream, the Google chunk stream.
+- `unless_aborted` for a single call: the OpenAI buffered POST, and opening the
+  Google stream.
+
+Both helpers cancel the read when the signal trips. The provider then
+finalizes `stop_reason="aborted"` with whatever had streamed. The retry
+backoff waits on `wait()` instead of polling every 0.1 s.
+
+`end_reason` was the second half of the defect. The loop set `"aborted"` only
+in its turn-top check. A completion cut short mid-stream returned with no tool
+calls and left through the text-only exit, which still said `"done"`. Every
+exit that ends a turn now reads the signal. A cut-off read from the wire
+looked like a finished answer to all three heads.
+
+Not covered: entering the Anthropic SDK's `messages.stream()` context, which
+waits for response headers, is still not raced against the signal.
+
 ## 5. After a user abort, queued followUps are dropped and announced
 
 `_end_of_prompt_drain` checks the cursor's signal before each followUp:
