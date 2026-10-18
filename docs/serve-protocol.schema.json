@@ -3372,11 +3372,26 @@
     "GetToolsResult": {
       "properties": {
         "tools": {
-          "description": "This session's bound AgentTool set, in binding order.",
+          "description": "Every tool on the acting cursor: constructor tools, then extension tools, narrowed by the cursor's frame; hidden ones included.",
           "items": {
             "properties": {
+              "declared": {
+                "description": "Whether the request's `tools` block declares it.",
+                "type": "boolean"
+              },
               "description": {
                 "description": "What the model is told the tool does.",
+                "type": "string"
+              },
+              "exposure": {
+                "description": "The effective exposure, overrides applied.",
+                "enum": [
+                  "direct",
+                  "model-only",
+                  "callable",
+                  "deferred",
+                  "hidden"
+                ],
                 "type": "string"
               },
               "name": {
@@ -3392,7 +3407,9 @@
             "required": [
               "name",
               "description",
-              "parameters"
+              "parameters",
+              "exposure",
+              "declared"
             ],
             "type": "object"
           },

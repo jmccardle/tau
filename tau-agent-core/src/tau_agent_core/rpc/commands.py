@@ -1234,22 +1234,23 @@ async def _handle_get_commands(
     "get_tools",
     tier="A",
     since="2A",
-    notes="Already implemented pre-2A; ported onto the table verbatim, no behaviour change.",
+    notes="AgentSession.describe_tools(include_hidden=True); lists extension tools since #46.",
     params_schema=params_schema_for("get_tools"),
     result_schema=GET_TOOLS_RESULT_SCHEMA,
 )
 async def _handle_get_tools(
     handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    tools = handler.session.tools
     return {
         "tools": [
             {
                 "name": t.name,
-                "description": t.definition.description,
-                "parameters": t.definition.parameters,
+                "description": t.description,
+                "parameters": t.parameters,
+                "exposure": t.exposure,
+                "declared": t.declared,
             }
-            for t in tools
+            for t in handler.session.describe_tools(include_hidden=True)
         ]
     }
 

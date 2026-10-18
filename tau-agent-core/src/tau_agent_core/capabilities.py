@@ -67,6 +67,7 @@ from typing import Any, Literal, get_args
 
 from tau_llm.docs import agent_facing
 from tau_llm.models import EXTENDED_THINKING_LEVELS
+from tau_llm.tools import TOOL_EXPOSURES
 
 from tau_agent_core.conversation_tree import MessageIdScope
 
@@ -634,7 +635,10 @@ _GET_TOOLS_RETURNS: dict[str, Any] = {
     "properties": {
         "tools": {
             "type": "array",
-            "description": "This session's bound AgentTool set, in binding order.",
+            "description": (
+                "Every tool on the acting cursor: constructor tools, then extension "
+                "tools, narrowed by the cursor's frame; hidden ones included."
+            ),
             "items": {
                 "type": "object",
                 "properties": {
@@ -654,8 +658,17 @@ _GET_TOOLS_RETURNS: dict[str, Any] = {
                             "govern it."
                         ),
                     },
+                    "exposure": {
+                        "type": "string",
+                        "enum": list(TOOL_EXPOSURES),
+                        "description": "The effective exposure, overrides applied.",
+                    },
+                    "declared": {
+                        "type": "boolean",
+                        "description": "Whether the request's `tools` block declares it.",
+                    },
                 },
-                "required": ["name", "description", "parameters"],
+                "required": ["name", "description", "parameters", "exposure", "declared"],
             },
         },
     },
@@ -1524,7 +1537,8 @@ CAPABILITIES: dict[str, Capability] = {
         Capability(
             "get_tools",
             "read",
-            "The tools bound to this session, each with its parameter schema.",
+            "Every tool the next request draws on, extension tools included, each with "
+            "its parameter schema, exposure and declaration.",
             on_wire=True,
             returns=_GET_TOOLS_RETURNS,
         ),
