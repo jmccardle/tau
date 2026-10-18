@@ -26,12 +26,32 @@ does not repeat them.
   extensions that ship that way. Every sibling project (tau-code, mcrf-term,
   tau-search, tau-router) was asked on 2026-10-18 to move toward it.
   - #35 entry-point loading, where finding an extension does not load it.
-    Decided by the owner on 2026-10-18: an extension's identifier is its Python
-    module name. The user authorizes a package version or hash, so an update
-    asks again. A name collision neither blocks loading nor gets past
-    authorization. **Three questions are open** (listed below).
+    **Every design question is decided (owner, 2026-10-18)**; the record is
+    `docs/EXTENSION-PACKAGES.md` on branch `docs/extension-packages`, not
+    merged. In short:
+    - The identifier is the Python module name.
+    - Packages and drop-ins pass one authorization gate: a package is
+      authorized by version or hash, a drop-in by path. Existing drop-ins
+      are grandfathered at upgrade.
+    - A name collision neither blocks loading nor gets past authorization.
+    - Drop-ins are `.py` files and package directories only.
+    - The last dotted segment resolves at the interactive edge only, fresh
+      each time, and refuses on ambiguity.
+    - Colons delimit and dots stay in names: `--ext-config
+      tau_router.planner:profile=p`, topics
+      `ext:tau_router.planner:need_router`, commands
+      `ext:tau_router.planner:budget`. Nothing maps `.` to `_`.
+  - #44 a subscription to an `ext:` topic that no loaded extension emits is
+    visible in `tau ext list` and as a debug notice. Companion rule to #35's
+    topic rename, which would otherwise break hard-coded subscribers silently.
   - #40 `extension_owner()` mangles a directory extension's label and
-    disagrees with the config key. Open; #35's naming decision settles it.
+    disagrees with the config key. Settled by #35: the mangling is removed.
+  - #42 on the TUI's startup screen, the command popup says an extension
+    command such as `/budget` "goes to the model as text", and completion
+    omits it. The command still runs (`expand_commands=True`, and the session
+    is created before `_start_turn`, `app.py:1013`, `:1017`). Narrowed by
+    tau-router's live repro. **Decided: create the session at mount**, which
+    must leave nothing on disk if the user quits without acting.
   - #38 a public API to embed `tau serve` (asked by tau-search). Open.
   - #39 an extension cannot contribute a prompt template. Open.
   - #41 check PyPI for updates to τ and to installed extensions. Open.
@@ -39,32 +59,16 @@ does not repeat them.
     accepts built-ins only and runs before extensions load (`sdk.py:243`,
     `:1453`). Found by tau-search on the 0.13.0 wheel; the workaround is
     `--no-builtin-tools`. Open.
-- **#42, not milestoned:** on the TUI's startup screen, the command popup says
-  an extension command such as `/budget` "goes to the model as text", and
-  completion omits it. The command still runs: the submission carries
-  `expand_commands=True` and the session is created before `_start_turn`
-  (`app.py:1013`, `:1017`). No session exists until the first chat, so the
-  extension command list the popup reads is empty. Reported by tau-router,
-  narrowed by its live repro. Fix options: create the session at mount, or
-  have the popup and completion read extension commands before a session
-  exists.
-- **Open decisions for the owner:**
-  - #35: may a drop-in in `~/.tau/extensions` be a wheel or zip, or only a `.py`
-    file and a package directory (proposed)?
-  - #35: may typed input use the last dotted segment when exactly one approved
-    extension has it (proposed), or only the full name?
-  - #35: which separator replaces `.` in `--ext-config NAME.KEY=VALUE`, since a
-    module name contains dots (proposed: `NAME:KEY=VALUE`)?
-  - #42: which fix, and whether it is in 0.14.0.
-  - ~~Milestone 0.13.0 still holds open issues~~ — decided 2026-10-18: #1 is
-    closed, and the 14 others moved to a new `backlog` milestone, not to 0.14.0.
-    Milestone 0.13.0 is closed.
+- **Decided 2026-10-18:** #1 is closed, the 14 other issues left in the
+  shipped 0.13.0 milestone moved to a new `backlog` milestone, and milestone
+  0.13.0 is closed.
 - **Held by the owner, 2026-10-18:** this file's commits go to `origin` only.
   The `github` push waits for the next release.
-  - Carried, unchanged: #3 trust gate (`docs/TRUST-GATE.md` §6), #13
-    `register_provider` and a package manager (`docs/EXTENSION-PROVIDERS.md`
-    §5; #35 overlaps it), #11 template name collisions, #12 the HTML export
-    image cap, and #28 a pre-request admission hook.
+- **Open decisions for the owner**, carried and unchanged: #3 trust gate
+  (`docs/TRUST-GATE.md` §6), #13 `register_provider` and a package manager
+  (`docs/EXTENSION-PROVIDERS.md` §5; #35 now leaves the package manager to
+  it), #11 template name collisions, #12 the HTML export image cap, and #28 a
+  pre-request admission hook.
 - **Carried open work with no decision needed:** #7, #8, #14, #15, #17–#19
   (R2/R5/R6), #21, #24–#27, #29–#34 (#32–#34 are code-mode stub defects), and
   #2's remaining code-mode gaps (the "Code mode" entry under "Open work").
