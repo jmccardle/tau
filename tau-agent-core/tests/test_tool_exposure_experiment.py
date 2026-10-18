@@ -30,7 +30,7 @@ from tau_agent_core.sdk import _resolve_tools
 from tau_agent_core.session_log import InMemorySessionLog, config_at
 from tau_agent_core.prompt_cache import tool_block_change
 from tau_agent_core.tool_dispatch import call_tool_definition, tool_search_definition
-from tau_agent_core.tool_output import MAX_CAPTURED_CHARS, capture_tool_output
+from tau_agent_core.tool_output import MAX_CAPTURED_CHARS, CapturedOutput, capture_tool_output
 from tau_agent_core.tool_pipeline import (
     MAX_NESTING_DEPTH,
     NestedCallError,
@@ -725,3 +725,132 @@ def test_capture_is_capped():
     with capture_tool_output() as sink:
         print("x" * (MAX_CAPTURED_CHARS + 10), end="")
     assert sink.as_details() == {"stdout": "x" * MAX_CAPTURED_CHARS, "dropped": 10}
+
+
+# ── issue #20: defects found while documenting the surface ───────────────────
+
+
+async def test_preview_redeclare_refuses_an_unknown_name_as_redeclare_does(tmp_path):
+    session = _session(tmp_path)
+    with pytest.raises(ValueError, match="no tool named"):
+        session.preview_redeclare({"nope": True})
+
+
+async def test_redeclaring_what_is_already_declared_writes_nothing(tmp_path):
+    log = InMemorySessionLog()
+    session = _session(tmp_path, log=log)
+    before = len(log.entries())
+    change = await session.redeclare_tools({"bash": True})
+    assert not change.invalidates_cache
+    assert len(log.entries()) == before
+    await session.redeclare_tools({"bash": False})
+    withdrawn = len(log.entries())
+    assert withdrawn > before
+    await session.redeclare_tools({"bash": False})
+    assert len(log.entries()) == withdrawn
+    await session.redeclare_tools({"bash": True})
+    assert len(log.entries()) > withdrawn
+
+
+async def test_setting_a_tool_to_its_default_exposure_writes_nothing(tmp_path):
+    log = InMemorySessionLog()
+    session = _session(tmp_path, log=log)
+    before = len(log.entries())
+    await session.set_tool_exposure("bash", "direct")
+    assert len(log.entries()) == before
+    await session.set_tool_exposure("bash", "hidden")
+    masked = len(log.entries())
+    assert masked > before
+    await session.set_tool_exposure("bash", "direct")
+    assert len(log.entries()) > masked
+    assert config_at(log.entries(), session.cursor.leaf)["tool_exposure"] == {"bash": "direct"}
+
+
+def test_a_stub_with_non_identifier_names_is_valid_python_that_keeps_them():
+    stub = render_stub(
+        "copy",
+        "Copy a range.",
+        {
+            "type": "object",
+            "properties": {"from": {"type": "integer"}, "my-arg": {"type": "string"}},
+            "required": ["from"],
+        },
+        {
+            "type": "object",
+            "title": "CopyResult",
+            "properties": {"class": {"type": "string"}, "ok": {"type": "boolean"}},
+            "required": ["class", "ok"],
+        },
+    )
+    namespace: dict[str, Any] = {}
+    exec("from typing_extensions import NotRequired, TypedDict, Unpack\n" + stub, namespace)
+    args = namespace["copy_arguments"]
+    assert args.__required_keys__ == {"from"} and args.__optional_keys__ == {"my-arg"}
+    assert namespace["CopyResult"].__required_keys__ == {"class", "ok"}
+    assert "async def copy(**kwargs: Unpack[copy_arguments]) -> CopyResult:" in stub
+
+
+@dataclasses.dataclass
+class _Described:
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    output_schema: dict[str, Any] | None
+
+
+def test_render_stubs_gives_two_shapes_with_one_title_two_names():
+    def tool(name: str, field: str) -> _Described:
+        result = {
+            "type": "object",
+            "title": "Result",
+            "properties": {field: {"type": "string"}},
+            "required": [field],
+        }
+        return _Described(name, f"the {name} tool", {"type": "object", "properties": {}}, result)
+
+    text = render_stubs([tool("a", "x"), tool("b", "y"), tool("c", "x")])
+    namespace: dict[str, Any] = {}
+    exec(text, namespace)
+    assert namespace["Result"].__required_keys__ == {"x"}
+    assert namespace["Result_2"].__required_keys__ == {"y"}
+    assert "async def a() -> Result:" in text
+    assert "async def b() -> Result_2:" in text
+    assert "async def c() -> Result:" in text
+    assert text.count("class Result(") == 1
+
+
+def test_an_unresolvable_parameter_annotation_does_not_break_the_return_schema():
+    def fn(x: "Missing") -> int:  # type: ignore[name-defined]  # noqa: F821
+        return 1
+
+    assert output_schema_of(fn) == {"type": "integer"}
+
+    def unresolved_return() -> "Missing":  # type: ignore[name-defined]  # noqa: F821
+        ...
+
+    with pytest.raises(NameError):
+        output_schema_of(unresolved_return)
+
+
+def test_tool_from_function_does_not_resolve_the_ctx_annotation():
+    def needs_ctx(text: str, ctx: "Unimported") -> int:  # type: ignore[name-defined]  # noqa: F821
+        """Count characters."""
+        return len(text)
+
+    spec = tool_from_function(needs_ctx)
+    assert set(spec["parameters"]["properties"]) == {"text"}
+
+
+def test_captured_output_refuses_an_unknown_stream():
+    with pytest.raises(ValueError, match="stdout"):
+        CapturedOutput().write("stdrr", "x")
+
+
+async def test_find_extension_refuses_an_ambiguous_name(tmp_path):
+    def ext_git(api):  # noqa: F811
+        api.register_tool(_noop_tool("git_other"))
+
+    ctx = _session(tmp_path, globals()["ext_git"], ext_git)._extension_api.context
+    assert [e.name for e in ctx.list_extensions()] == ["ext_git", "ext_git"]
+    with pytest.raises(ValueError, match="2 loaded extensions"):
+        ctx.find_extension("ext_git")

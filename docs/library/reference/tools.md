@@ -221,8 +221,12 @@ Append ``text`` to one stream's buffer, counting what the cap drops.
 
 **Parameters**
 
-- `stream: str` — ``"stdout"``; any other value writes stderr.
+- `stream: str` — ``"stdout"`` or ``"stderr"``.
 - `text: str` — What was written.
+
+**Raises**
+
+- `ValueError` — ``stream`` is neither.
 
 ## ExtensionToolDefinition
 <!-- agent: yes -->
@@ -677,7 +681,7 @@ func:`output_schema_for` the return annotation, or ``None``.
 **Raises**
 
 - `TypeError` — the annotation names a type pydantic cannot describe.
-- `NameError` — any of ``fn``'s annotations does not resolve.
+- `NameError` — the return annotation does not resolve; parameter annotations are never evaluated.
 
 ## render_stub
 <!-- agent: yes -->
@@ -691,7 +695,10 @@ render_stub(name: str, description: str, parameters: dict[str, Any], output_sche
 A Python stub for one tool, preceded by the ``TypedDict`` classes it uses.
 
 Required parameters come first, optional ones default to ``None`` because
-the schema states no default.
+the schema states no default. If a parameter name cannot be a Python
+parameter (``from``, ``my-arg``), the signature is
+``**kwargs: Unpack[<name>_arguments]`` over a functional ``TypedDict`` that
+keeps every name exactly.
 
 **Parameters**
 
@@ -721,7 +728,7 @@ Stubs for several tools under one ``typing`` import header.
 
 **Returns**
 
-One module's text, ending in a newline; a class whose text repeats an earlier one exactly is written once.
+One module's text, ending in a newline. A class is written once; a different shape under a name already taken is renamed ``Name_2``, and the stubs that use it say so.
 
 ## run_nested_call
 <!-- agent: yes -->
@@ -850,6 +857,7 @@ or the value as compact JSON when ``render`` is ``None``::
 
 - `TypeError` — a parameter or the return is unannotated, a parameter is ``*args``/``**kwargs``, or a type has no JSON Schema.
 - `ValueError` — there is no description to give the model.
+- `NameError` — an annotation other than ``ctx``'s does not resolve.
 
 ## tool_search_definition
 <!-- agent: yes -->

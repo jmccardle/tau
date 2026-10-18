@@ -1257,13 +1257,18 @@ class ExtensionContext:
             Its info, or ``None`` if no loaded, enabled extension has that name.
 
         Raises:
+            ValueError: More than one loaded extension has that name; use
+                :meth:`list_extensions` and tell them apart by ``path``.
             RuntimeError: No session is bound.
         """
         loaded: list[ExtensionInfo] = self._require_session().list_extensions()
-        for info in loaded:
-            if info.name == name:
-                return info
-        return None
+        found = [info for info in loaded if info.name == name]
+        if len(found) > 1:
+            paths = ", ".join(info.path for info in found)
+            raise ValueError(
+                f"find_extension: {len(found)} loaded extensions are named {name!r} ({paths})"
+            )
+        return found[0] if found else None
 
     @property
     def cursor(self) -> Any:

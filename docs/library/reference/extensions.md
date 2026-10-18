@@ -843,6 +843,7 @@ Its info, or ``None`` if no loaded, enabled extension has that name.
 
 **Raises**
 
+- `ValueError` — More than one loaded extension has that name; use :meth:`list_extensions` and tell them apart by ``path``.
 - `RuntimeError` — No session is bound.
 
 ### fork

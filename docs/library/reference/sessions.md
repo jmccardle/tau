@@ -905,8 +905,7 @@ preview_redeclare(changes: dict[str, bool]) -> ToolBlockChange
 What :meth:`redeclare_tools` with ``changes`` would do to the ``tools`` block.
 
 A head calls this to warn the user before a change that re-bills the
-prompt. Writes nothing, and unlike :meth:`redeclare_tools` it ignores a
-name that is not a tool here instead of raising.
+prompt. Writes nothing.
 
 **Parameters**
 
@@ -915,6 +914,10 @@ name that is not a tool here instead of raising.
 **Returns**
 
 func:`~tau_agent_core.prompt_cache.tool_block_change` from the current block to the one ``changes`` would produce.
+
+**Raises**
+
+- `ValueError` — a name is not a tool here.
 
 ### prompt
 
@@ -1007,7 +1010,8 @@ Declare (``True``) or withdraw (``False``) tools from the model's ``tools`` bloc
 
 A user action, never something a tool or extension does on its own: any
 change here costs a full prompt-cache miss on the next request. Recorded as
-a ``tool_declaration`` config entry, so a resume declares the same set.
+a ``tool_declaration`` config entry, so a resume declares the same set; a
+change that leaves every tool's declaration as it was writes nothing.
 
 **Parameters**
 
@@ -1422,7 +1426,7 @@ The override is a ``tool_exposure`` config entry, and the model is told by
 an appended ``tool_exposure`` message on the path: now when no turn is
 running, before the next completion when one is. A masked tool stays
 declared and a model call to it is refused with the reason. Repeating the
-override already on the path writes nothing.
+exposure ``name`` already has, by override or by default, writes nothing.
 
 **Parameters**
 

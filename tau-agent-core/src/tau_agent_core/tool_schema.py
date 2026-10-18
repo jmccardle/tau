@@ -23,7 +23,10 @@ import inspect
 import json
 import keyword
 import re
+import sys
+import types
 import typing
+from collections.abc import Iterable
 from typing import Any, Callable
 
 from pydantic import TypeAdapter, create_model
@@ -60,10 +63,44 @@ def output_schema_for(tp: Any) -> dict[str, Any]:
     return schema
 
 
+def _raw_annotations(fn: Callable[..., Any]) -> dict[str, Any]:
+    """``fn``'s annotations, evaluating none that would fail to resolve."""
+    if sys.version_info >= (3, 14):
+        import annotationlib
+
+        return dict(annotationlib.get_annotations(fn, format=annotationlib.Format.FORWARDREF))
+    return dict(inspect.get_annotations(fn))
+
+
+def _resolved_hints(fn: Callable[..., Any], names: Iterable[str]) -> dict[str, Any]:
+    """``typing.get_type_hints(fn)`` restricted to ``names``; the rest are never evaluated.
+
+    Raises:
+        NameError: one of ``names`` does not resolve.
+    """
+    raw = _raw_annotations(fn)
+    shim = types.FunctionType(_SHIM_CODE, getattr(inspect.unwrap(fn), "__globals__", {}))
+    shim.__annotations__ = {n: raw[n] for n in names if n in raw}
+    if hasattr(fn, "__type_params__"):
+        setattr(shim, "__type_params__", fn.__type_params__)  # noqa: B010
+    return typing.get_type_hints(shim)
+
+
+_SHIM_CODE = (lambda: None).__code__
+
+
+def _signature(fn: Callable[..., Any]) -> inspect.Signature:
+    """``fn``'s signature, with no annotation evaluated."""
+    if sys.version_info >= (3, 14):
+        import annotationlib
+
+        return inspect.signature(fn, annotation_format=annotationlib.Format.FORWARDREF)
+    return inspect.signature(fn)
+
+
 def _return_type(fn: Callable[..., Any]) -> Any:
     """``fn``'s resolved return annotation, or ``inspect.Signature.empty``."""
-    hints = typing.get_type_hints(fn)
-    return hints.get("return", inspect.Signature.empty)
+    return _resolved_hints(fn, ["return"]).get("return", inspect.Signature.empty)
 
 
 @agent_facing(topic="tools")
@@ -81,7 +118,8 @@ def output_schema_of(fn: Callable[..., Any]) -> dict[str, Any] | None:
 
     Raises:
         TypeError: the annotation names a type pydantic cannot describe.
-        NameError: any of ``fn``'s annotations does not resolve.
+        NameError: the return annotation does not resolve; parameter
+            annotations are never evaluated.
     """
     returns = _return_type(fn)
     if returns is inspect.Signature.empty:
@@ -145,6 +183,7 @@ def tool_from_function(
         TypeError: a parameter or the return is unannotated, a parameter is
             ``*args``/``**kwargs``, or a type has no JSON Schema.
         ValueError: there is no description to give the model.
+        NameError: an annotation other than ``ctx``'s does not resolve.
     """
     tool_name = name or fn.__name__
     text = description or _first_paragraph(fn.__doc__)
@@ -153,14 +192,14 @@ def tool_from_function(
             f"tool_from_function({tool_name!r}): no description — pass description= "
             "or give the function a docstring; the model is never sent an empty one"
         )
-    hints = typing.get_type_hints(fn)
+    signature = _signature(fn)
+    wants_ctx = _CTX_PARAM in signature.parameters
+    hints = _resolved_hints(fn, [*(p for p in signature.parameters if p != _CTX_PARAM), "return"])
     if "return" not in hints:
         raise TypeError(
             f"tool_from_function({tool_name!r}): the return annotation is required, "
             "because it is the tool's output schema"
         )
-    signature = inspect.signature(fn)
-    wants_ctx = _CTX_PARAM in signature.parameters
     fields: dict[str, Any] = {}
     for param in signature.parameters.values():
         if param.name == _CTX_PARAM:
@@ -226,22 +265,56 @@ def _identifier(name: str) -> str:
     return ident
 
 
+def _plain_key(key: str) -> bool:
+    """Whether ``key`` can be written as a class-body field or a parameter name."""
+    mangled = key.startswith("__") and not key.endswith("__")
+    return key.isidentifier() and not keyword.iskeyword(key) and not mangled
+
+
 class _StubWriter:
-    """Renders JSON Schema as Python annotations, collecting ``TypedDict`` classes."""
+    """Renders JSON Schema as Python annotations, collecting ``TypedDict`` classes.
 
-    def __init__(self, defs: dict[str, Any]) -> None:
-        self.defs = defs
+    One writer serves every tool in a module, so a class name is never bound to
+    two different bodies: a second shape under a taken name gets ``Name_2``.
+    """
+
+    def __init__(self) -> None:
         self.classes: dict[str, str] = {}
-        self._pending: set[str] = set()
+        self.new: list[str] = []
+        self.defs: dict[str, Any] = {}
+        self._refs: dict[str, str] = {}
 
-    def _define(self, title: str, schema: dict[str, Any]) -> None:
-        """Render ``title`` once; classes it uses are inserted before it."""
-        if title in self.classes or title in self._pending:
-            return
-        self._pending.add(title)
-        body = self.typeddict(schema, title)
-        self._pending.discard(title)
-        self.classes[title] = body
+    def begin(self, defs: dict[str, Any]) -> None:
+        """Start one tool: its ``$defs``, and an empty list of classes it adds."""
+        self.defs = defs
+        self._refs = {}
+        self.new = []
+
+    def define(self, title: str, schema: dict[str, Any], ref: str | None = None) -> str:
+        """The identifier of ``schema``'s class, rendering it under a free name if new.
+
+        Classes it uses are inserted before it. ``ref`` keys a ``$defs`` entry,
+        so a self-reference resolves to the name being rendered.
+        """
+        if ref is not None and ref in self._refs:
+            return self._refs[ref]
+        base = _identifier(title)
+        n = 1
+        while True:
+            ident = base if n == 1 else f"{base}_{n}"
+            if ref is not None:
+                self._refs[ref] = ident
+            classes, new, refs = dict(self.classes), list(self.new), dict(self._refs)
+            body = self.typeddict(schema, ident)
+            existing = self.classes.get(ident)
+            if existing is None:
+                self.classes[ident] = body
+                self.new.append(ident)
+                return ident
+            if existing == body:
+                return ident
+            self.classes, self.new, self._refs = classes, new, refs
+            n += 1
 
     def annotation(self, schema: Any, hint: str = "Object") -> str:
         """The annotation for ``schema``; an object with properties becomes a class."""
@@ -250,7 +323,7 @@ class _StubWriter:
         if "$ref" in schema:
             ref = str(schema["$ref"]).rsplit("/", 1)[-1]
             if ref in self.defs:
-                self._define(ref, self.defs[ref])
+                return self.define(ref, self.defs[ref], ref)
             return _identifier(ref)
         for key in ("anyOf", "oneOf"):
             if key in schema:
@@ -269,31 +342,35 @@ class _StubWriter:
             return f"list[{self.annotation(schema.get('items'), hint)}]"
         if kind == "object" or "properties" in schema:
             if schema.get("properties"):
-                title = _identifier(str(schema.get("title") or hint))
-                self._define(title, schema)
-                return title
+                return self.define(str(schema.get("title") or hint), schema)
             extra = schema.get("additionalProperties")
             return (
                 f"dict[str, {self.annotation(extra, hint) if isinstance(extra, dict) else 'Any'}]"
             )
         return "Any"
 
-    def typeddict(self, schema: dict[str, Any], title: str) -> str:
-        """A ``class Title(TypedDict)`` for an object schema."""
+    def typeddict(self, schema: dict[str, Any], ident: str) -> str:
+        """A ``TypedDict`` named ``ident`` for an object schema.
+
+        Class syntax when every key can be a field name; otherwise the functional
+        form, which keeps a key such as ``from`` or ``my-arg`` exactly.
+        """
         required = set(schema.get("required", []))
-        lines = [f"class {_identifier(title)}(TypedDict):"]
         summary = _first_paragraph(schema.get("description"))
-        if summary:
-            lines.append(f'    """{summary}"""')
         properties = schema.get("properties") or {}
+        fields = []
         for key, sub in properties.items():
-            ann = self.annotation(sub, f"{title}_{key}")
-            if key not in required:
-                ann = f"NotRequired[{ann}]"
-            lines.append(f"    {key}: {ann}")
-        if not properties:
-            lines.append("    pass")
-        return "\n".join(lines)
+            ann = self.annotation(sub, f"{ident}_{_identifier(key)}")
+            fields.append((key, ann if key in required else f"NotRequired[{ann}]"))
+        if all(_plain_key(key) for key, _ in fields):
+            lines = [f"class {ident}(TypedDict):"]
+            if summary:
+                lines.append(f'    """{summary}"""')
+            lines += [f"    {key}: {ann}" for key, ann in fields] or ["    pass"]
+            return "\n".join(lines)
+        items = ", ".join(f"{json.dumps(key)}: {ann}" for key, ann in fields)
+        head = [f"# {summary}"] if summary else []
+        return "\n".join([*head, f"{ident} = TypedDict({ident!r}, {{{items}}})"])
 
 
 @agent_facing(topic="tools")
@@ -306,7 +383,10 @@ def render_stub(
     """A Python stub for one tool, preceded by the ``TypedDict`` classes it uses.
 
     Required parameters come first, optional ones default to ``None`` because
-    the schema states no default.
+    the schema states no default. If a parameter name cannot be a Python
+    parameter (``from``, ``my-arg``), the signature is
+    ``**kwargs: Unpack[<name>_arguments]`` over a functional ``TypedDict`` that
+    keeps every name exactly.
 
     Args:
         name: The tool name; made into a Python identifier.
@@ -318,18 +398,33 @@ def render_stub(
     Returns:
         The classes, then the ``async def``, separated by blank lines.
     """
-    defs = {**(parameters.get("$defs") or {}), **((output_schema or {}).get("$defs") or {})}
-    writer = _StubWriter(defs)
+    writer = _StubWriter()
+    return "\n\n".join(_render_one(writer, name, description, parameters, output_schema))
+
+
+def _render_one(
+    writer: _StubWriter,
+    name: str,
+    description: str,
+    parameters: dict[str, Any],
+    output_schema: dict[str, Any] | None,
+) -> list[str]:
+    """The blocks one tool adds to ``writer``'s module: new classes, then the ``async def``."""
+    writer.begin({**(parameters.get("$defs") or {}), **((output_schema or {}).get("$defs") or {})})
+    func_name = _identifier(name)
     props = parameters.get("properties") or {}
-    required = [p for p in props if p in set(parameters.get("required", []))]
-    optional = [p for p in props if p not in required]
-    args = [f"{p}: {writer.annotation(props[p], p)}" for p in required]
-    args += [f"{p}: {writer.annotation(props[p], p)} | None = None" for p in optional]
+    if all(_plain_key(p) for p in props):
+        required = [p for p in props if p in set(parameters.get("required", []))]
+        optional = [p for p in props if p not in required]
+        args = [f"{p}: {writer.annotation(props[p], p)}" for p in required]
+        args += [f"{p}: {writer.annotation(props[p], p)} | None = None" for p in optional]
+    else:
+        arguments = {"properties": props, "required": parameters.get("required", [])}
+        args = [f"**kwargs: Unpack[{writer.define(f'{func_name}_arguments', arguments)}]"]
     returns = "str" if output_schema is None else writer.annotation(output_schema, f"{name}_result")
     doc = " ".join(description.split())
-    func = f'async def {_identifier(name)}({", ".join(args)}) -> {returns}:\n    """{doc}"""'
-    classes = list(writer.classes.values())
-    return "\n\n".join([*classes, func])
+    func = f'async def {func_name}({", ".join(args)}) -> {returns}:\n    """{doc}"""'
+    return [*(writer.classes[ident] for ident in writer.new), func]
 
 
 @agent_facing(topic="tools")
@@ -342,19 +437,13 @@ def render_stubs(descriptions: list[Any]) -> str:
             :class:`~tau_agent_core.tool_catalog.ToolDescription`.
 
     Returns:
-        One module's text, ending in a newline; a class whose text repeats an
-        earlier one exactly is written once.
+        One module's text, ending in a newline. A class is written once; a
+        different shape under a name already taken is renamed ``Name_2``, and
+        the stubs that use it say so.
     """
-    header = "from typing import Any, Literal, NotRequired, TypedDict"
+    header = "from typing import Any, Literal, NotRequired, TypedDict, Unpack"
+    writer = _StubWriter()
     bodies: list[str] = []
-    seen: set[str] = set()
     for d in descriptions:
-        for block in render_stub(d.name, d.description, d.parameters, d.output_schema).split(
-            "\n\n"
-        ):
-            if block.startswith("class "):
-                if block in seen:
-                    continue
-                seen.add(block)
-            bodies.append(block)
+        bodies += _render_one(writer, d.name, d.description, d.parameters, d.output_schema)
     return "\n\n\n".join([header, *bodies]) + "\n"

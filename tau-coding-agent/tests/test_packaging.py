@@ -83,11 +83,17 @@ PROVIDES = {
 }
 
 
+LATER_STDLIB = {
+    "annotationlib": "3.14",  # tool_schema.py, imported under a version check
+}
+"""Standard-library modules newer than the oldest supported Python, by first version."""
+
+
 def _third_party_imports(pkg: str) -> set[str]:
     import ast
     import sys
 
-    stdlib = set(sys.stdlib_module_names)
+    stdlib = set(sys.stdlib_module_names) | set(LATER_STDLIB)
     local = {"tau_llm", "tau_agent_core", "tau_coding_agent", "tau_jmfts", "tau_meta"}
     found: set[str] = set()
     for path in (REPO / pkg / "src").rglob("*.py"):
