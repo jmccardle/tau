@@ -35,12 +35,15 @@ does not repeat them.
   - #38 a public API to embed `tau serve` (asked by tau-search). Open.
   - #39 an extension cannot contribute a prompt template. Open.
   - #41 check PyPI for updates to τ and to installed extensions. Open.
-- **#42, not milestoned:** on the TUI's startup screen, an extension command
-  such as `/budget` goes to the model as a prompt. No session exists until
-  the first chat (`app.py`, the check near line 987 runs while the backend is
-  `None`), so the extension command table is empty. Reported by tau-router.
-  Fix options: create the session at mount (fixes running, completion and the
-  popup) or before the command check (fixes running only).
+- **#42, not milestoned:** on the TUI's startup screen, the command popup says
+  an extension command such as `/budget` "goes to the model as text", and
+  completion omits it. The command still runs: the submission carries
+  `expand_commands=True` and the session is created before `_start_turn`
+  (`app.py:1013`, `:1017`). No session exists until the first chat, so the
+  extension command list the popup reads is empty. Reported by tau-router,
+  narrowed by its live repro. Fix options: create the session at mount, or
+  have the popup and completion read extension commands before a session
+  exists.
 - **Open decisions for the owner:**
   - #35: may a drop-in in `~/.tau/extensions` be a wheel or zip, or only a `.py`
     file and a package directory (proposed)?
