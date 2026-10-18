@@ -50,14 +50,19 @@ does not repeat them.
   - #45 tau-jmfts sent `max_tokens` to JMFTS's chunk endpoint, which 0.7.0
     renamed `max_words` and made `extra="forbid"`. Decided: send `max_words`
     and require JMFTS ≥ 0.7.0. **Built** on `fix/tau-jmfts-max-words`
-    (`fc87129`), not merged, and not yet run against a live 0.7.1 server.
+    (`e996593`), not merged. The live run against JMFTS 0.7.1 also found
+    that the default `sentence` strategy ignored `max_words`, so it now
+    pins `sentence_packed`. The live suite reads 162 passed (master: 7
+    failed).
+  - #47 decided: an explicitly named extension whose setup raises fails
+    startup.
   - #46 RPC `get_tools` omits extension tools: it lists `AgentSession.tools`,
     which holds only the constructor's tools; extension tools join only in
     `_build_turn_tools`. Found by Tectum. Open.
   - #47 an extension named with `-e` whose `register()` or `session_start`
     raises (e.g. `--bus` without `nats-py`) only warns, and its tools stay
     offered. Proposed: fail startup for an explicitly named extension.
-    **Needs John**, because #29 kept `session_start` as surface-and-continue.
+    Decided 2026-10-18 (see below).
   - #44 a subscription to an `ext:` topic that no loaded extension emits is
     visible in `tau ext list` and as a debug notice. Companion rule to #35's
     topic rename, which would otherwise break hard-coded subscribers silently.
