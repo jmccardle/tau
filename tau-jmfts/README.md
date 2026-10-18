@@ -31,8 +31,9 @@ Python 3.11 or newer. Pulls in `ffwf-tau-agent-core`. If you are installing it
 for use with the `tau` command, `pip install 'ffwf-tau-coding-agent[jmfts]'` is
 the same thing spelled as an extra.
 
-You also need a running JMFTS server — see
-<https://github.com/jmccardle/jmfts>.
+You also need a running JMFTS server, version 0.7.0 or newer — see
+<https://github.com/jmccardle/jmfts>. Chunking checks this and raises
+`JmftsVersionError` on an older server.
 
 ## Use it as a session store
 

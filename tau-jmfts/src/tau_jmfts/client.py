@@ -25,6 +25,9 @@ CHUNK_USETYPE = "jmfts:chunk"
 
 CHUNK_MAX_WORDS = 220
 
+MIN_CHUNK_SERVER_VERSION = (0, 7, 0)
+"""The first JMFTS whose ``ChunkRequest`` takes ``max_words``; older ones ignore it."""
+
 _SEARCH_METHODS = frozenset({"hybrid", "vector", "bm25", "fulltext", "maxsim"})
 
 
@@ -89,6 +92,24 @@ class JmftsTextTooLongError(JmftsError):
         )
 
 
+class JmftsVersionError(Exception):
+    """The server's ``GET /`` version is older than a request needs, or unreadable."""
+
+
+def _parse_server_version(version: Any) -> tuple[int, int, int]:
+    """``(major, minor, patch)`` from a ``HealthResponse.version`` such as ``"0.7.1"``.
+
+    Raises:
+        JmftsVersionError: ``version`` does not start with three dot-separated integers.
+    """
+    parts = str(version).split(".")
+    try:
+        major, minor, patch = (int(p) for p in parts[:3])
+    except ValueError:
+        raise JmftsVersionError(f"JMFTS reported an unreadable version {version!r}") from None
+    return major, minor, patch
+
+
 DocumentDict = dict[str, Any]
 """A JMFTS ``DocumentResponse`` JSON object, as returned verbatim by the server.
 
@@ -130,6 +151,7 @@ class JmftsClient:
             headers=headers,
             timeout=timeout,
         )
+        self._chunk_contract_checked = False
 
     def close(self) -> None:
         self._client.close()
@@ -180,6 +202,23 @@ class JmftsClient:
         """
         result: dict[str, Any] = self._request("GET", "/")
         return result
+
+    def _require_chunk_contract(self) -> None:
+        """Raise unless the server takes ``max_words`` on ``/chunk``; asks once per client.
+
+        Raises:
+            JmftsVersionError: The server is older than :data:`MIN_CHUNK_SERVER_VERSION`,
+                or its version is unreadable.
+        """
+        if self._chunk_contract_checked:
+            return
+        version = self.health().get("version")
+        if _parse_server_version(version) < MIN_CHUNK_SERVER_VERSION:
+            needed = ".".join(map(str, MIN_CHUNK_SERVER_VERSION))
+            raise JmftsVersionError(
+                f"chunk_document needs JMFTS >= {needed} (max_words); the server is {version}"
+            )
+        self._chunk_contract_checked = True
 
     # -- documents --------------------------------------------------------
 
@@ -418,7 +457,7 @@ class JmftsClient:
         self,
         doc_id: int,
         *,
-        max_tokens: int = CHUNK_MAX_WORDS,
+        max_words: int = CHUNK_MAX_WORDS,
         overlap: int = 40,
         child_usetype: str = CHUNK_USETYPE,
         auto_embed: bool = True,
@@ -441,9 +480,14 @@ class JmftsClient:
         used to ask for exactly that and then fail embedding every chunk it got back.
         Passing ``auto_embed=True`` is how a client buys the measurement.
 
-        ``max_tokens`` counts WORDS, not subword tokens (the server uses whitespace
-        splitting as a proxy), so it is a target only -- see :data:`CHUNK_MAX_WORDS`.
-        The token-window guarantee comes from ``auto_embed``, not from this number.
+        ``max_words`` is a whitespace word count, so it is a target only -- see
+        :data:`CHUNK_MAX_WORDS`. The token-window guarantee comes from ``auto_embed``,
+        not from this number.
+
+        Requires JMFTS >= 0.7.0 (:data:`MIN_CHUNK_SERVER_VERSION`), checked once per
+        client with ``GET /``: an older server ignores ``max_words`` and chunks at its
+        own default, which would be a 200 for a request it did not carry out. Raises
+        :class:`JmftsVersionError` instead.
 
         The server also caps EVERY strategy to ``max_chars`` and bounds the merge step,
         so no strategy pin is needed (the D2 server fix). Earlier this method pinned
@@ -469,11 +513,12 @@ class JmftsClient:
                 "chunks are foreign documents inside the conversation subtree, and a tau: "
                 "usetype without a structured_content.tau payload would corrupt the load path"
             )
+        self._require_chunk_contract()
         self._request(
             "POST",
             f"/documents/{doc_id}/chunk",
             json={
-                "max_tokens": max_tokens,
+                "max_words": max_words,
                 "overlap": overlap,
                 "child_usetype": child_usetype,
                 "auto_embed": auto_embed,
