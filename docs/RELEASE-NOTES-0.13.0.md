@@ -1,6 +1,6 @@
 # v0.13.0 — a script can call the tools, and `off` finally means off
 
-*"<tagline>"*
+*"There was no choice but to be pioneers."*
 
 About thirty merges since 0.12.0 (`bebdedf..a255205`). Code mode and the
 reasoning work are the two big ones. Most of the rest is one theme: a fact that

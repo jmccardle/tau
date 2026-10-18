@@ -696,6 +696,7 @@ takes.
 |---|---|
 | — | 0.11.0 and earlier carried none |
 | 0.12.0 | I think, therefore I raise |
+| 0.13.0 | There was no choice but to be pioneers. |
 
 Create it as a **draft** while the publisher registration is still outstanding:
 
