@@ -1001,11 +1001,18 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     ``set_model`` takes; an ad-hoc ``--model`` id is named by its id.
 
     Raises:
-        ValueError: An unimplemented ``api``; no ``base_url`` from either source —
-            never OpenAI's endpoint, which would send this vendor's key there
-            (docs/EXTENSION-PROVIDERS.md §2); or an invalid typed field.
+        ValueError: No ``model`` id (docs/SILENT-DEFAULTS.md §1); an unimplemented
+            ``api``; no ``base_url`` from either source — never OpenAI's endpoint,
+            which would send this vendor's key there (docs/EXTENSION-PROVIDERS.md
+            §2); or an invalid typed field.
     """
-    model_id = config.get("model", "gpt-4")
+    model_id = config.get("model")
+    if not isinstance(model_id, str) or not model_id:
+        where = f"models.{config['config_name']}" if "config_name" in config else "model config"
+        raise ValueError(
+            f"{where} has no 'model' (the id sent to the server); got {model_id!r}. "
+            "Set it to the id the endpoint serves."
+        )
     backend_type = config.get("backend", "openai").lower()
     entry = config.get("config_name", model_id)
 
@@ -1418,14 +1425,12 @@ class TauBackend(Backend):
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
 
-        model_id = config.get("model", "gpt-4")
+        model = build_model_from_config(config)
         api_key = config.get("api_key")
 
-        self.model_name = model_id
+        self.model_name = model.id
         thinking_level = config.get("thinking")
         reasoning_arg = thinking_level if thinking_level and thinking_level != "off" else None
-
-        model = build_model_from_config(config)
 
         cwd = config.get("cwd")
         tool_names = resolve_tool_names(config)

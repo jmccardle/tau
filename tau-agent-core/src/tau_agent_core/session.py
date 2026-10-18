@@ -63,8 +63,6 @@ class SessionInfo(BaseModel):
         updated_at: Last update timestamp (ms since epoch)
         message_count: Total number of messages
         turn_count: Total number of turns
-        tool_count: Number of tool calls. No catalog in this repo populates
-            it, so it reads 0 unless the constructor was given a value.
         status: Current session status
     """
 
@@ -80,7 +78,6 @@ class SessionInfo(BaseModel):
     updated_at: int = 0
     message_count: int = 0
     turn_count: int = 0
-    tool_count: int = 0
     status: Literal["idle", "running", "aborting", "error"] = "idle"
 
 

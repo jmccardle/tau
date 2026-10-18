@@ -190,3 +190,34 @@ async def test_a_handler_sees_the_signal_of_the_turn_it_runs_in():
 
     assert signals[session.cursor.id] is session.cursor.abort_signal
     assert signals[second.id] is second.abort_signal
+
+
+async def test_is_idle_reads_whether_any_cursor_is_running_a_turn():
+    """docs/SILENT-DEFAULTS.md §2: is_idle is measured, never a constructor constant."""
+    session = _session()
+    ctx = session._extension_api.context
+    seen: list[bool] = []
+    session._extension_runner.register_extension("mem:probe").on(
+        "turn_end", lambda event, c: seen.append(c.is_idle)
+    )
+    assert ctx.is_idle is True
+
+    with patch("tau_agent_core.agent_loop.stream_simple", return_value=_Stream("ok")):
+        await session.submit(_sub("head"))
+
+    assert seen == [False], "a hook inside a turn sees a running session"
+    assert ctx.is_idle is True
+
+
+async def test_is_idle_is_false_while_another_cursor_streams():
+    session = _session()
+    second = await session.open_cursor(None, label="second")
+    provider = _Gated()
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
+        turn = asyncio.create_task(session.submit(_sub("other"), cursor=second))
+        while provider.calls < 1:
+            await asyncio.sleep(0)
+        assert session._extension_api.context.is_idle is False
+        provider.gate.set()
+        await turn
+    assert session._extension_api.context.is_idle is True

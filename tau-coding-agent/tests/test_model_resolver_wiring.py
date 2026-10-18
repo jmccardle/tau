@@ -42,6 +42,19 @@ def test_build_model_from_config_maps_fields():
     assert model.base_url == "https://api.openai.com/v1"
 
 
+@pytest.mark.parametrize("missing", [{}, {"model": ""}, {"model": None}])
+def test_build_model_without_a_model_id_raises_naming_the_entry(missing):
+    """docs/SILENT-DEFAULTS.md §1: an entry with no ``model`` was sent as ``gpt-4``."""
+    entry = {"backend": "openai", "base_url": "http://localhost/v1", "config_name": "box"}
+    with pytest.raises(ValueError, match=r"models\.box has no 'model'"):
+        build_model_from_config({**entry, **missing})
+
+
+def test_tau_backend_without_a_model_id_raises():
+    with pytest.raises(ValueError, match="no 'model'"):
+        TauBackend({"backend": "openai", "base_url": "http://localhost/v1"})
+
+
 def test_build_model_reasoning_replay_defaults_to_turn():
     """No ``reasoning_replay`` in the entry → the τ default scope ``turn``."""
     model = build_model_from_config(_models()["cloud"])

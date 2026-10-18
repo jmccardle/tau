@@ -1005,15 +1005,11 @@ class TestExtensionContext:
         ctx = ExtensionContext()
         assert ctx.cwd == "."
 
-    def test_context_session_manager(self):
-        """ExtensionContext.session_manager returns the argument."""
-        ctx = ExtensionContext(session_manager="manager")
-        assert ctx.session_manager == "manager"
-
-    def test_context_session_manager_default(self):
-        """ExtensionContext.session_manager defaults to None."""
-        ctx = ExtensionContext()
-        assert ctx.session_manager is None
+    def test_context_has_no_session_manager(self):
+        """A session never had one to give, so the context offers none (docs/SILENT-DEFAULTS.md §3)."""
+        assert not hasattr(ExtensionContext(), "session_manager")
+        with pytest.raises(TypeError):
+            ExtensionContext(session_manager=object())  # type: ignore[call-arg]
 
     def test_context_signal(self):
         """ExtensionContext.signal returns the argument."""
@@ -1026,15 +1022,12 @@ class TestExtensionContext:
         ctx = ExtensionContext()
         assert ctx.signal is None
 
-    def test_context_is_idle(self):
-        """ExtensionContext.is_idle returns the argument."""
-        ctx = ExtensionContext(is_idle=False)
-        assert ctx.is_idle is False
-
-    def test_context_is_idle_default(self):
-        """ExtensionContext.is_idle defaults to True."""
-        ctx = ExtensionContext()
-        assert ctx.is_idle is True
+    def test_context_is_idle_raises_without_session(self):
+        """is_idle is measured from a bound session, never a default (Fail-Early)."""
+        with pytest.raises(RuntimeError):
+            _ = ExtensionContext().is_idle
+        with pytest.raises(TypeError):
+            ExtensionContext(is_idle=True)  # type: ignore[call-arg]
 
     def test_context_has_ui(self):
         """ExtensionContext has an internal ExtensionUI."""
@@ -1054,17 +1047,12 @@ class TestExtensionContext:
         ctx.abort()
         mock_signal.abort.assert_called_once_with(reason="extension")
 
-    def test_context_shutdown_no_manager(self):
-        """ExtensionContext.shutdown() is a no-op when session_manager is None."""
+    def test_context_shutdown_sets_the_flag(self):
+        """ExtensionContext.shutdown() sets shutdown_requested, idempotently."""
         ctx = ExtensionContext()
-        ctx.shutdown()  # should not raise
-
-    def test_context_shutdown_with_manager(self):
-        """ExtensionContext.shutdown() calls session_manager.shutdown()."""
-        mock_manager = MagicMock()
-        ctx = ExtensionContext(session_manager=mock_manager)
         ctx.shutdown()
-        mock_manager.shutdown.assert_called_once()
+        ctx.shutdown()
+        assert ctx.shutdown_requested is True
 
     def test_context_get_context_usage_raises_without_session(self):
         """get_context_usage() raises when no session is bound (Fail-Early)."""

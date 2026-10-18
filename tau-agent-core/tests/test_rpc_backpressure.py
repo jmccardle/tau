@@ -531,19 +531,3 @@ def test_agent_session_shutdown_requested_reflects_the_shared_extension_context(
     assert session.shutdown_requested is False
     session._extension_api.context.shutdown()
     assert session.shutdown_requested is True
-
-
-def test_extension_context_shutdown_is_additive_over_the_legacy_session_manager_path():
-    """`shutdown()`'s pre-existing `session_manager.shutdown()` pass-through
-    (extension_types.py, predates P3) must still fire — P3 adds a flag, it
-    does not replace that call."""
-    from unittest.mock import MagicMock
-
-    from tau_agent_core.extension_types import ExtensionContext
-
-    manager = MagicMock()
-    ctx = ExtensionContext(session_manager=manager)
-    assert ctx.shutdown_requested is False
-    ctx.shutdown()
-    assert ctx.shutdown_requested is True
-    manager.shutdown.assert_called_once()
