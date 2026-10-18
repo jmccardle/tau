@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 176,544 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 176,645 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -2639,7 +2639,7 @@ Every `type: "event"` notification carries a `WireEvent` payload (generated from
 | `attempt` | integer \| `null` | Which retry a provider_retry announces, counting from 1. A provider_retry says a request failed before producing any output and will be sent again, byte-identical, after delay_seconds; `error` is the failure. A host renders it as a passing warning: if the retries run out, the turn's agent_end carries the final error as usual. None for all other event types. See docs/PROVIDER-RETRY.md. |
 | `max_retries` | integer \| `null` | The most retries that request will make, on provider_retry. None for all other event types. |
 | `delay_seconds` | number \| `null` | Seconds τ waits before re-sending, on provider_retry: the server's Retry-After when it sent one, else an exponential backoff. None for all other event types. |
-| `dropped` | array \| `null` | The queued followUp texts a user abort discarded, in queue order, on follow_ups_dropped. They were never written to the session, so this is the one field here that carries content no verb can pull afterwards. None for all other event types. See docs/TURN-SETTINGS.md §5. |
+| `dropped` | array \| `null` | The texts a user abort discarded, on follow_ups_dropped: the queued followUps in queue order, then the enqueue submissions that were waiting for the turn, in submission order. They were never written to the session, so this is the one field here that carries content no verb can pull afterwards. None for all other event types. See docs/TURN-SETTINGS.md §5 and §5.1. |
 | `leaf` | string \| `null` | The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |
 
 ## Error codes

@@ -6592,7 +6592,7 @@
             }
           ],
           "default": null,
-          "description": "The queued followUp texts a user abort discarded, in queue order, on follow_ups_dropped. They were never written to the session, so this is the one field here that carries content no verb can pull afterwards. None for all other event types. See docs/TURN-SETTINGS.md \u00a75."
+          "description": "The texts a user abort discarded, on follow_ups_dropped: the queued followUps in queue order, then the enqueue submissions that were waiting for the turn, in submission order. They were never written to the session, so this is the one field here that carries content no verb can pull afterwards. None for all other event types. See docs/TURN-SETTINGS.md \u00a75 and \u00a75.1."
         },
         "dropped_tool_calls": {
           "anyOf": [

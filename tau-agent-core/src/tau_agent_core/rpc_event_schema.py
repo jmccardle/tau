@@ -313,10 +313,12 @@ class WireEvent(BaseModel):
     )
     dropped: list[str] | None = Field(
         default=None,
-        description="The queued followUp texts a user abort discarded, in queue "
-        "order, on follow_ups_dropped. They were never written to the session, "
+        description="The texts a user abort discarded, on follow_ups_dropped: the "
+        "queued followUps in queue order, then the enqueue submissions that were "
+        "waiting for the turn, in submission order. They were never written to the session, "
         "so this is the one field here that carries content no verb can pull "
-        "afterwards. None for all other event types. See docs/TURN-SETTINGS.md §5.",
+        "afterwards. None for all other event types. See docs/TURN-SETTINGS.md "
+        "§5 and §5.1.",
     )
     leaf: str | None = Field(
         default=None,

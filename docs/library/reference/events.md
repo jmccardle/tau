@@ -85,9 +85,9 @@ none, and on every other event type.
 
 `tau_agent_core.events.AgentEvent.dropped: list[str] | None`
 
-The queued followUp texts a user abort discarded, in queue
-order, on ``follow_ups_dropped`` only (docs/TURN-SETTINGS.md §5).
-Written nowhere else.
+The texts a user abort discarded, on ``follow_ups_dropped``
+only: queued followUps, then waiting ``enqueue`` submissions
+(docs/TURN-SETTINGS.md §5, §5.1). Written nowhere else.
 
 ### end_reason
 

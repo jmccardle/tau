@@ -80,6 +80,21 @@ def _require_entry(log: SessionLog, entry_id: str | None, what: str) -> bool:
 
 
 @agent_facing(topic="sessions")
+@dataclass(eq=False)
+class EnqueuedWait:
+    """An ``enqueue`` submission waiting for a cursor's turn lock.
+
+    Compared by identity, so two waits with the same text stay distinct.
+
+    Attributes:
+        text: The submitted text, as typed; no input hook has run on it yet.
+        dropped: Set by a user abort; the submission refuses once it gets the lock.
+    """
+
+    text: str
+    dropped: bool = False
+
+
 class Cursor:
     """A position in one tree, and the only thing that appends at a position.
 
@@ -96,6 +111,9 @@ class Cursor:
         abort_signal: The running turn's signal; a fresh one per admitted turn.
         steer_queue: ``UserMessage``s the running loop delivers before its next call.
         follow_up_queue: Texts that re-enter the loop when the current prompt ends.
+        enqueued: ``enqueue`` submissions waiting for :attr:`turn_lock`, in order.
+        dropped_enqueued: Texts of waits a user abort dropped, not yet announced
+            by ``follow_ups_dropped`` (docs/TURN-SETTINGS.md §5.1).
         next_turn_queue: Texts injected alongside the next prompt's user turn.
         deferred_ops: Compact/fork intents recorded mid-turn, applied at its tail.
         pre_turn_leaf: The leaf just before the running turn's user node (rollback's
@@ -143,6 +161,8 @@ class Cursor:
         self.abort_signal = AbortSignal()
         self.steer_queue: list[Any] = []
         self.follow_up_queue: list[str] = []
+        self.enqueued: list[EnqueuedWait] = []
+        self.dropped_enqueued: list[str] = []
         self.next_turn_queue: list[str] = []
         self.deferred_ops: list[dict[str, Any]] = []
         self.pre_turn_leaf: str | None = None
