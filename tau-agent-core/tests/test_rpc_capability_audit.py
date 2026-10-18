@@ -64,6 +64,7 @@ EXPOSED: dict[str, str] = {
     "model_resolver": "get_models",
     "compaction_settings": "get_session_stats",
     "set_auto_compaction": "set_auto_compaction",
+    "set_reasoning": "set_reasoning",
     "get_session_name": "get_session_name",
     "set_session_name": "set_session_name",
     "catalog": "list_sessions",
@@ -87,11 +88,6 @@ EXPOSED: dict[str, str] = {
 }
 
 NOT_EXPOSED: dict[str, str] = {
-    "set_reasoning": (
-        "Built for an extension's `ctx.set_reasoning` between two requests "
-        "(docs/TURN-SETTINGS.md). A host verb is a separate decision: the RPC set "
-        "names `cycle_thinking_level` as declined, and a level verb would replace it."
-    ),
     "describe_tools": (
         "Experimental tool discovery for extensions (experiments/tool-exposure). A wire "
         "verb waits on the decision whether a host may see callable and deferred tools."

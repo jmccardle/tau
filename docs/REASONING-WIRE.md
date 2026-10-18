@@ -1,8 +1,9 @@
 # Reasoning on the wire: levels, artifacts, replay, counts
 
-Decision record (2026-10-17), nothing built yet. Resolves forgejo #10, #22 and #23
-together, because all three are one question: what τ sends, keeps and counts for
-a model's reasoning on each wire.
+Built 2026-10-17. Resolves forgejo #10, #22 and #23 together, because all three
+are one question: what τ sends, keeps and counts for a model's reasoning on each
+wire. The decisions were committed before the code; the one place the build
+corrected them is marked in §3.
 
 ## 1. What was wrong, measured
 
@@ -118,6 +119,13 @@ The τ level is reported, not the native value. The tables in §2 are static, so
 the native value follows from the τ level and the model's map. A requested
 `xhigh` reported as `high` is the clamp made visible. A requested `high`
 reported as `None` is a model that does not declare reasoning (§4).
+
+**Built note.** The first build set the field in all three providers and it
+still never reached a head. The agent loop builds `message_end`'s message dict by
+hand, so the field was written and read by nobody, the fault `feature-doc` names
+first. The RPC test that drives a turn found it. `agent_loop._stream_response`
+now copies `reasoning_level` into that dict. The persisted message never lost it,
+because the writer stores the `AssistantMessage` itself.
 
 ## 4. `None` and `"off"` stay two values, with two meanings
 

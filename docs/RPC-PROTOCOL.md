@@ -18,7 +18,7 @@
 
 - **Protocol version:** `2.2`
 - **Dialect:** `jsonrpc-2.0`
-- **Counts:** 40 live verbs, 7 declined verbs, 15 event types, 62 type definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 41 live verbs, 7 declined verbs, 15 event types, 62 type definitions. Cite this line; never copy the numbers into hand-written prose.
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
 
@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 173,560 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 176,544 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -2310,6 +2310,70 @@ what rides on top of this on every response):
 }
 ```
 
+#### `set_reasoning`
+
+*Since 0.13.0.* AgentSession.set_reasoning — the same setter the TUI's /thinking and an extension's ctx.set_reasoning call, so all heads share one path (docs/REASONING-WIRE.md §10). Takes effect on the acting cursor's next request. The level sent is reported on that completion's message_end as reasoning_level, after the provider clamps it; 'off' is sent as the wire's off form whatever the model's `reasoning` flag says (§4). D-1: takes turn_safety_guard, so it never races a request reading the level. E5: answers the unchanged tip — nothing is appended here; the next request records `thinking` ahead of itself (docs/TURN-SETTINGS.md §3). D-7: appends nothing, so it answers on an unpersisted session, as set_auto_compaction does. Replaces the declined cycle_thinking_level: a host names the level rather than stepping through them.
+
+**Params schema:**
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "level": {
+      "description": "Which reasoning level.",
+      "enum": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "level"
+  ],
+  "type": "object"
+}
+```
+
+**Result schema** (see [Response envelope](#response-envelope) for
+what rides on top of this on every response):
+
+```json
+{
+  "properties": {
+    "leaf": {
+      "description": "cursor.leaf after this call: ALWAYS the unchanged tip. Nothing is appended here; the next request records `thinking` ahead of itself (docs/TURN-SETTINGS.md \u00a73).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "level": {
+      "description": "The level requested for the acting cursor's next request \u2014 what AgentSession.set_reasoning returns. The level actually sent is message_end's reasoning_level, after the provider clamps it (docs/REASONING-WIRE.md \u00a73).",
+      "enum": [
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "level",
+    "leaf"
+  ],
+  "type": "object"
+}
+```
+
 #### `submit`
 
 *Since 2A.* The provenance differentiator (REMOTE-CONTROL.md §3 Tier C): the full quad (source/submitter/submission_id/correlation) is required on the wire, and every AgentEvent the resulting turn emits is stamped with it. Dual completion (C3): this response only acknowledges admission.
@@ -2523,7 +2587,7 @@ C1: every verb τ deliberately does not implement is declined here, with a reaso
 |---|---|
 | `bash` | τ's bash is a tool the agent loop executes under a Submission's provenance and admission rules, same as any other tool. An out-of-band 'run this in the shell' RPC verb would be a second, unauthenticated path into the same executor a host never drove a turn for — identical reasoning to the send_tool_result decline above: 'a second privileged path into the same executor is a second thing to secure.' |
 | `cycle_model` | A TUI keybinding affordance (step to the next configured model) leaking into a machine protocol — Tier D (REMOTE-CONTROL.md §3): 'a remote host enumerates and sets; it does not cycle.' A host that wants a specific model names it via set_model(name) — a shipped Tier B verb on this same table — rather than stepping through an ordered list it cannot see. |
-| `cycle_thinking_level` | Same Tier D judgment as cycle_model: a keybinding-shaped 'step to the next level' affordance, not a protocol verb. τ has no thinkingLevel concept on AgentSession today either (get_state's own notes list what τ has no equivalent of yet) — there is nothing for a set_* verb to set, let alone cycle. |
+| `cycle_thinking_level` | Same Tier D judgment as cycle_model: a keybinding-shaped 'step to the next level' affordance, not a protocol verb. A host that wants a level names it via set_reasoning(level), a shipped verb on this same table (docs/REASONING-WIRE.md §10). |
 | `export_html` | Tier D (REMOTE-CONTROL.md §3): 'a host can render.' τ's job over this wire is to hand back messages (get_messages) and events; rendering them as HTML is presentation logic that belongs in the host, not a service τ provides over stdio. |
 | `send_tool_result` | τ's AgentLoop executes tool calls itself. Accepting a tool result over RPC would open a second, unauthenticated path into the same executor that a host never drove the call for — Tier D's reasoning (REMOTE-CONTROL.md §3): 'a second privileged path into the same executor is a second thing to secure.' |
 | `set_follow_up_mode` | Same judgment as set_steering_mode: a TUI mode toggle with a per-submission equivalent (multitask_strategy='enqueue') already on the wire via submit/prompt, not a session-wide switch worth its own verb. |
@@ -2568,6 +2632,7 @@ Every `type: "event"` notification carries a `WireEvent` payload (generated from
 | `message_count` | integer \| `null` | Count of messages produced this turn, on agent_end (E2). The messages themselves are pulled via get_messages, never pushed. None for all other event types. |
 | `stop_reason` | `stop` \| `length` \| `toolUse` \| `error` \| `aborted` \| `null` | Why the model stopped this completion, on the message_end that carries usage. 'length' means the output cap ended it, so the content is a PREFIX and not an answer — the one value an operator has to act on. None on the content-only duplicate message_end (which carries no usage either) and on every other event type. This rides a field of its own because the message it belongs to is excluded from the wire; it is a closed enum, not unbounded content. See docs/TRUNCATED-TOOL-CALLS.md. |
 | `dropped_tool_calls` | integer \| `null` | How many tool calls in this completion were not run, on message_end. A completion cut off at the output cap runs none of its calls: each stays in the message with its partial arguments and gets an error result, or is dropped when nothing of it decodes; an aborted stream drops a call whose arguments were mid-flight. Null rather than 0 when every call ran, so 'none lost' and 'not reported' stay distinguishable. None for all other event types. See docs/TRUNCATED-TOOL-CALLS.md §3.2. |
+| `reasoning_level` | `off` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `null` | The thinking level this completion was requested with, after the provider clamped it to what the model supports, on the message_end that carries usage. Null when no reasoning control was sent — no level was set, or the model does not declare reasoning — so a requested level that was clamped or not sent is visible rather than silent. None for all other event types. See docs/REASONING-WIRE.md §3. |
 | `cache_notice` | string \| `null` | One sentence saying this turn's prompt cache should have been read and was not, on agent_end. Null is the normal case and says nothing was observed: the cache was read, the server accounts for no cache, the prompt is under the minimum cacheable prefix, or a read earlier in this session already proved caching is on. A host renders it as a warning; see docs/PROMPT-CACHING.md §7 for the three gates. None for all other event types. |
 | `purpose` | `compaction` \| `branch_summary` \| `null` | Which side completion a side_completion_* event reports: 'compaction' or 'branch_summary'. Side work spends tokens and produces text outside any turn, so it stamps no submission_id and a host keys on this instead. The summary TEXT and what it cost are deliberately not on the wire — both land in the session log as a compaction or branch_summary entry, which get_entry serves with tokens_before, covered_tokens and summary_usage attached. Pushing unbounded content through an event is what WireEvent exists to avoid. None for all other event types. See docs/STREAMING-SIDE-WORK.md. |
 | `reason` | `manual` \| `threshold` \| `navigate` \| `null` | What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. None for all other event types. |
@@ -2647,6 +2712,7 @@ An assistant message from the LLM.
 | `usage` | [Usage](#usage) | no |  |
 | `stop_reason` | `"stop"` \| `"length"` \| `"toolUse"` \| `"error"` \| `"aborted"` | yes |  |
 | `error_message` | string \| null | no |  |
+| `reasoning_level` | `"off"` \| `"minimal"` \| `"low"` \| `"medium"` \| `"high"` \| `"xhigh"` \| null | no |  |
 | `timestamp` | integer \| null | no |  |
 
 ### AttachmentCompletion
@@ -3283,6 +3349,7 @@ Token usage for one LLM response. Frozen: use ``model_copy(update=...)``.
 | `cache_write_tokens` | integer | no |  |
 | `cache_reported` | boolean | no |  |
 | `total_tokens` | integer | no |  |
+| `reasoning_tokens` | integer \| null | no |  |
 | `cost` | object of number | no |  |
 | `extra` | object | no |  |
 

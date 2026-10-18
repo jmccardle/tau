@@ -14,7 +14,10 @@ from tau_llm.models import (
     clamp_thinking_level,
     get_supported_thinking_levels,
     is_valid_thinking_level,
+    requested_wire_level,
 )
+import pytest
+
 from tau_llm.types import Model
 
 
@@ -85,3 +88,49 @@ def test_explicit_null_marks_level_unsupported():
     supported = get_supported_thinking_levels(m)
     assert "minimal" not in supported
     assert clamp_thinking_level(m, "minimal") == "low"
+
+
+# ── per-wire native levels and the one send rule (docs/REASONING-WIRE.md) ──
+
+
+def test_anthropic_has_no_minimal_so_it_clamps_up_to_low():
+    """Measured: effort 'minimal' is a 400 on claude-haiku-5-5."""
+    model = _model(api="anthropic-messages", reasoning=True)
+    assert get_supported_thinking_levels(model) == ["off", "low", "medium", "high"]
+    assert clamp_thinking_level(model, "minimal") == "low"
+
+
+def test_a_map_entry_restores_a_level_the_wire_lacks():
+    model = _model(api="anthropic-messages", reasoning=True, thinking_level_map={"minimal": "low"})
+    assert "minimal" in get_supported_thinking_levels(model)
+
+
+def test_google_has_minimal_and_no_xhigh():
+    model = _model(api="google-generative-ai", reasoning=True)
+    assert get_supported_thinking_levels(model) == ["off", "minimal", "low", "medium", "high"]
+
+
+def test_none_sends_nothing():
+    assert requested_wire_level(_model(reasoning=True), None) is None
+
+
+def test_off_is_sent_whatever_the_reasoning_flag():
+    assert requested_wire_level(_model(reasoning=False), "off") == "off"
+
+
+def test_a_level_on_an_undeclared_model_sends_nothing():
+    assert requested_wire_level(_model(reasoning=False), "high") is None
+
+
+def test_a_level_on_a_reasoning_model_is_clamped():
+    assert requested_wire_level(_model(reasoning=True), "xhigh") == "high"
+
+
+def test_an_unknown_level_raises_rather_than_clamping():
+    with pytest.raises(ValueError, match="not a thinking level"):
+        requested_wire_level(_model(reasoning=True), "maximum")
+
+
+def test_off_mapped_to_null_raises():
+    with pytest.raises(ValueError, match="unsupported"):
+        requested_wire_level(_model(reasoning=True, thinking_level_map={"off": None}), "off")

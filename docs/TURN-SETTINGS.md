@@ -152,8 +152,9 @@ is redundant.
 - **`ctx.restart_turn()`.** Re-issuing the request just made under new settings
   is `ctx.abort()` plus a followUp, which §5 now makes work. A restart primitive
   would also have to decide what happens to the partial assistant message.
-- **An RPC verb for reasoning.** `cycle_thinking_level` stays declined; a
-  `set_reasoning` verb is a separate decision (it is `NOT_EXPOSED` in the audit).
+- **An RPC verb for reasoning.** `cycle_thinking_level` stays declined. The
+  `set_reasoning` verb, and `/thinking` in the TUI and the REPL, came later
+  (`docs/REASONING-WIRE.md` §10).
 - **A `model` name for a comparison column or a `spawn(model=Model)`.** Both are
   handed `Model` objects; their paths inherit the head's `model` name as before.
 - **Dropping queued `nextTurn` messages on a user abort.** They belong to the next

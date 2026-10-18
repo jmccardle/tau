@@ -68,6 +68,7 @@ _DOMAIN_TYPES: dict[str, str] = {
     "path": "string",
     "message_id": "string",
     "message_id_scope": "string",
+    "thinking_level": "string",
     "extension_name": "string",
 }
 

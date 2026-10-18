@@ -113,6 +113,7 @@ def test_performed_records_the_flow_that_named_the_mutation(session: AgentSessio
         ("set_model", {"model": {"id": "m", "provider": "openai", "context_window": 8192}}),
         ("set_session_name", {"name": "the refactor"}),
         ("set_auto_compaction", {"enabled": False}),
+        ("set_reasoning", {"level": "high"}),
         (
             "enable_extension",
             {"action": "enable", "path": "/x/a.py", "ok": True, "message": "enabled /x/a.py"},

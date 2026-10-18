@@ -153,8 +153,8 @@ def resolve_model_config(
 
     ``prior_config`` is a resumed session's config (``Session.config``). When it
     records a thinking level and neither ``--thinking`` nor a ``:level`` suffix
-    names one, the session resumes at it; a recorded ``None`` resumes at
-    ``"off"`` (docs/CURSORS.md §5).
+    names one, the session resumes at it, a recorded ``None`` included: that is
+    the provider default, not ``"off"`` (docs/REASONING-WIRE.md §4).
     """
     models = config.get("models", {})
     spec = args.model or fallback_model or config.get("default_model")
@@ -185,7 +185,7 @@ def resolve_model_config(
 
     thinking = args.thinking or suffix_thinking
     if thinking is None and prior_config is not None and "thinking" in prior_config:
-        thinking = prior_config["thinking"] or "off"
+        thinking = prior_config["thinking"]
     if thinking is not None:
         model_config["thinking"] = thinking
 

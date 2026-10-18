@@ -44,7 +44,7 @@ import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, cast
 
 from tau_llm.errors import connection_error_from, http_error_from_google, response_headers_of
-from tau_llm.models import clamp_thinking_level
+from tau_llm.models import ModelThinkingLevel, requested_wire_level
 from tau_llm.once import OnceSet
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.streaming import (
@@ -319,6 +319,7 @@ class GoogleGenerativeAIProvider(Provider):
         include_reasoning = model.reasoning_replay != "off"
         parts: list[dict[str, Any]] = []
         seen_function_call = False
+        answer_signature = ""
 
         for block in content or []:
             btype = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
@@ -334,12 +335,20 @@ class GoogleGenerativeAIProvider(Provider):
                 thinking = block.get("thinking", "") if isinstance(block, dict) else block.thinking
                 if thinking:
                     parts.append({"text": thinking, "thought": True})
+                signature = (
+                    block.get("thinking_signature")
+                    if isinstance(block, dict)
+                    else block.thinking_signature
+                )
+                answer_signature = read_signature_payload(signature) or answer_signature
 
             elif btype == "toolCall":
                 part = self._function_call_part(block, model, first=not seen_function_call)
                 seen_function_call = True
                 parts.append(part)
 
+        if answer_signature:
+            _place_answer_signature(parts, answer_signature)
         return parts
 
     def _function_call_part(self, block: Any, model: Model, *, first: bool) -> dict[str, Any]:
@@ -439,19 +448,32 @@ class GoogleGenerativeAIProvider(Provider):
         ]
         return [{"function_declarations": declarations}]
 
-    def _thinking_config(self, model: Model, options: dict) -> dict[str, Any]:
-        """``thinking_config``, or nothing when no reasoning was asked for.
+    def _thinking_config(
+        self, model: Model, options: dict
+    ) -> tuple[dict[str, Any], ModelThinkingLevel | None]:
+        """``thinking_config`` for the requested level, and the level sent.
 
-        ``include_thoughts`` is what makes Google return thought summaries at
-        all; without it a reasoning model still reasons but τ sees none of it,
-        and ``ThinkingDeltaEvent`` would never fire.
+        :func:`~tau_llm.models.requested_wire_level` picks the level
+        (docs/REASONING-WIRE.md §4). ``"off"`` is ``thinking_budget: 0``; any
+        other level is ``thinking_level`` under its own name or the map's string,
+        with ``include_thoughts`` — without it Gemini still thinks and returns no
+        thought text. A map dict replaces the level key, since Google refuses a
+        budget and a level together (§2.2).
+
+        Returns:
+            ``(config fields, level)``; ``({}, None)`` sends nothing.
         """
-        level = options.get("reasoning")
-        if not level or not model.reasoning:
-            return {}
-        if clamp_thinking_level(model, level) == "off":
-            return {"thinking_config": {"include_thoughts": False, "thinking_budget": 0}}
-        return {"thinking_config": {"include_thoughts": True}}
+        level = requested_wire_level(model, options.get("reasoning"))
+        if level is None:
+            return {}, None
+        mapped = (model.thinking_level_map or {}).get(level, level)
+        if isinstance(mapped, dict):
+            fields = {"include_thoughts": level != "off", **mapped}
+        elif level == "off":
+            fields = {"include_thoughts": False, "thinking_budget": 0}
+        else:
+            fields = {"include_thoughts": True, "thinking_level": mapped}
+        return {"thinking_config": fields}, level
 
     # ── streaming ────────────────────────────────────────────────────────
 
@@ -495,7 +517,8 @@ class GoogleGenerativeAIProvider(Provider):
         if tools:
             config["tools"] = self._convert_tools(tools)
             config["automatic_function_calling"] = {"disable": True}
-        config.update(self._thinking_config(model, options))
+        thinking_fields, reasoning_level = self._thinking_config(model, options)
+        config.update(thinking_fields)
         config.update(model.extra_body)
         config.update(
             {
@@ -517,7 +540,7 @@ class GoogleGenerativeAIProvider(Provider):
         abort_signal = options.get("abort_signal")
 
         async def event_generator() -> AsyncIterator[Any]:
-            state = _StreamState(model=model, provider=self)
+            state = _StreamState(model=model, provider=self, reasoning_level=reasoning_level)
             started = False
             headers: dict[str, str] | None = None
             try:
@@ -579,9 +602,16 @@ class GoogleGenerativeAIProvider(Provider):
 class _StreamState:
     """Accumulates one completion so a partial message can be built per delta."""
 
-    def __init__(self, model: Model, provider: GoogleGenerativeAIProvider) -> None:
+    def __init__(
+        self,
+        model: Model,
+        provider: GoogleGenerativeAIProvider,
+        reasoning_level: ModelThinkingLevel | None,
+    ) -> None:
         self.model = model
         self.provider = provider
+        self.reasoning_level = reasoning_level
+        self.answer_signature = ""
         self.text_parts: list[str] = []
         self.thinking_parts: list[str] = []
         self.tool_calls: list[ToolCall] = []
@@ -648,8 +678,15 @@ class _StreamState:
     def _blocks(self) -> list[Any]:
         blocks: list[Any] = []
         thinking = "".join(self.thinking_parts)
-        if thinking:
-            blocks.append(ThinkingContent(thinking=thinking))
+        if thinking or self.answer_signature:
+            blocks.append(
+                ThinkingContent(
+                    thinking=thinking,
+                    thinking_signature=(
+                        signature_payload(self.answer_signature) if self.answer_signature else ""
+                    ),
+                )
+            )
         text = "".join(self.text_parts)
         if text:
             blocks.append(TextContent(text=text))
@@ -665,6 +702,7 @@ class _StreamState:
             model=self.model.id,
             usage=self.usage,
             stop_reason=stop_reason,
+            reasoning_level=self.reasoning_level,
             timestamp=int(time.time() * 1000),
         )
 
@@ -673,8 +711,11 @@ class _StreamState:
 
         An UNMAPPED finish reason becomes ``error``, not ``stop``. Google adds
         them over time, and guessing ``stop`` for one τ has never seen returns a
-        truncated or blocked answer as a complete one.
+        truncated or blocked answer as a complete one. A signature no function
+        call took is the answer's, kept on the thinking block
+        (docs/REASONING-WIRE.md §5).
         """
+        self.answer_signature, self._pending_signature = self._pending_signature, ""
         stop_reason: StopReason | None
         if self.tool_calls and self.finish_reason == "STOP":
             stop_reason = "toolUse"
@@ -727,6 +768,19 @@ def _encode_signatures(contents: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return encoded
 
 
+def _place_answer_signature(parts: list[dict[str, Any]], signature: str) -> None:
+    """Put an answer's thought signature on its last text part, or on a trailing empty one.
+
+    Both placements were accepted and read back (docs/REASONING-WIRE.md §5);
+    the last text part is where a non-streamed response delivers it.
+    """
+    for part in reversed(parts):
+        if "text" in part and not part.get("thought"):
+            part["thought_signature"] = signature
+            return
+    parts.append({"text": "", "thought_signature": signature})
+
+
 def _sanitise_id(call_id: str) -> str:
     """Google accepts ``[a-zA-Z0-9_-]`` ids up to 64 characters.
 
@@ -759,6 +813,10 @@ def _usage_from_google(usage: Any) -> Usage:
     overlapping, every consumer that reads both double-counts the cached span.
     ``total_tokens`` is unaffected: Google's ``total_token_count`` is the server's
     own figure, and the computed fallback still uses the full ``prompt``.
+
+    ``reasoning_tokens`` is ``thoughts_token_count``, and 0 when it is absent:
+    Google omits zero-valued fields, so absence beside a usage block is a zero
+    (docs/REASONING-WIRE.md §7).
     """
     prompt = getattr(usage, "prompt_token_count", 0) or 0
     candidates = getattr(usage, "candidates_token_count", 0) or 0
@@ -771,4 +829,5 @@ def _usage_from_google(usage: Any) -> Usage:
         cache_read_tokens=cached,
         cache_reported=getattr(usage, "cached_content_token_count", None) is not None,
         total_tokens=total or (prompt + candidates + thoughts),
+        reasoning_tokens=int(thoughts),
     )

@@ -84,8 +84,9 @@ def project_event(
     :class:`~tau_agent_core.prompt_cache.PromptCacheObserver` computes it from
     the whole turn, which no single event carries. Ignored on every other type.
 
-    ``message_end`` gains ``stop_reason`` and ``dropped_tool_calls``, which ARE
-    projections — of the excluded ``message``, see :func:`_truncation_fields`.
+    ``message_end`` gains ``stop_reason``, ``dropped_tool_calls`` and
+    ``reasoning_level``, which ARE projections of the excluded ``message``
+    (:func:`_truncation_fields`).
     Response and error headers cross without their cookies (:func:`strip_cookies`).
 
     Returns a LIST because ``message_update`` is not 1:1: a single incoming
@@ -171,11 +172,12 @@ def strip_cookies(event: AgentEvent) -> AgentEvent:
 
 
 def _truncation_fields(message: dict[str, Any]) -> dict[str, Any]:
-    """``stop_reason``/``dropped_tool_calls`` lifted out of an excluded ``message``.
+    """The bounded facts lifted out of an excluded ``message``.
 
-    Reference: docs/TRUNCATED-TOOL-CALLS.md §3. Both are None on the content-only
-    duplicate ``message_end``, which carries neither — the same absence the TUI's
-    ``TurnStream`` reads to skip it.
+    ``stop_reason``/``dropped_tool_calls`` (docs/TRUNCATED-TOOL-CALLS.md §3) and
+    ``reasoning_level`` (docs/REASONING-WIRE.md §3). All are None on the
+    content-only duplicate ``message_end``, which carries none of them — the same
+    absence the TUI's ``TurnStream`` reads to skip it.
 
     ``dropped_tool_calls`` is None rather than 0 when nothing was dropped, because
     the wire field distinguishes "none lost" from "not reported" and every
@@ -185,6 +187,7 @@ def _truncation_fields(message: dict[str, Any]) -> dict[str, Any]:
     return {
         "stop_reason": message.get("stop_reason"),
         "dropped_tool_calls": dropped or None,
+        "reasoning_level": message.get("reasoning_level"),
     }
 
 

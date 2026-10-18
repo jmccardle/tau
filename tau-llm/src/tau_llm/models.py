@@ -1,18 +1,16 @@
 """τ-llm models: thinking/reasoning level helpers.
 
-Port of the thinking-level portion of pi's ``packages/ai/src/models.ts``
-(``EXTENDED_THINKING_LEVELS``, ``getSupportedThinkingLevels``,
-``clampThinkingLevel``). These decide which reasoning effort a given
-:class:`~tau_llm.types.Model` actually accepts and clamp a requested level to the
-nearest supported one, so a caller can ask for "xhigh" against a model that tops
-out at "high" and get "high" rather than an upstream 400.
+Which levels a :class:`~tau_llm.types.Model` accepts, the clamp from a requested
+level to a supported one, and the one rule every provider applies to decide what
+it sends (:func:`requested_wire_level`). The vocabulary is common to every wire;
+each provider translates it (docs/REASONING-WIRE.md §2).
 
-Reference: pi ``packages/ai/src/models.ts:51-84``.
+Reference: pi ``packages/ai/src/models.ts:51-84`` for the clamp.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from tau_llm.types import Model
 from tau_llm.docs import agent_facing
@@ -32,6 +30,18 @@ EXTENDED_THINKING_LEVELS: tuple[ModelThinkingLevel, ...] = (
 )
 
 DEFAULT_THINKING_LEVEL: ModelThinkingLevel = "medium"
+
+_NATIVE_LEVELS: dict[str, frozenset[str]] = {
+    "anthropic-messages": frozenset({"off", "low", "medium", "high"}),
+    "google-generative-ai": frozenset({"off", "minimal", "low", "medium", "high"}),
+}
+"""Levels a wire has a name for without a map entry, by ``Model.api``.
+
+Measured 400s: ``effort: "minimal"`` on Anthropic, ``thinkingLevel: "xhigh"`` on
+Gemini (docs/REASONING-WIRE.md §1.1). An api not listed has every level but
+``"xhigh"``."""
+
+_DEFAULT_NATIVE_LEVELS = frozenset({"off", "minimal", "low", "medium", "high"})
 
 
 class _Unset:
@@ -59,13 +69,13 @@ def is_valid_thinking_level(level: str) -> bool:
 def get_supported_thinking_levels(model: Model) -> list[ModelThinkingLevel]:
     """Return the levels ``model`` supports, least → most effort.
 
-    A non-reasoning model supports only ``["off"]``. Otherwise every level is
-    supported except those the ``thinking_level_map`` explicitly nulls out, with
-    one special case: ``"xhigh"`` is available only when the map provides an
-    entry for it (it is a non-standard extension).
+    A non-reasoning model supports only ``["off"]``. Otherwise a level is
+    supported when its wire has a native name for it (``minimal`` has none on
+    Anthropic, ``xhigh`` none anywhere) or ``thinking_level_map`` names it, and
+    not when the map sets it to ``None``.
 
     Args:
-        model: Reads ``reasoning`` and ``thinking_level_map``.
+        model: Reads ``api``, ``reasoning`` and ``thinking_level_map``.
 
     Returns:
         The supported levels in :data:`EXTENDED_THINKING_LEVELS` order.
@@ -74,14 +84,13 @@ def get_supported_thinking_levels(model: Model) -> list[ModelThinkingLevel]:
         return ["off"]
 
     tlm = model.thinking_level_map or {}
+    native = _NATIVE_LEVELS.get(model.api, _DEFAULT_NATIVE_LEVELS)
     supported: list[ModelThinkingLevel] = []
     for level in EXTENDED_THINKING_LEVELS:
         mapped = tlm.get(level, _UNSET)
         if mapped is None:
-            # Explicitly marked unsupported.
             continue
-        if level == "xhigh" and mapped is _UNSET:
-            # xhigh only exists when the map names a concrete value for it.
+        if mapped is _UNSET and level not in native:
             continue
         supported.append(level)
     return supported
@@ -121,3 +130,45 @@ def clamp_thinking_level(model: Model, level: ModelThinkingLevel) -> ModelThinki
         if candidate in available:
             return candidate
     return available[0] if available else "off"
+
+
+@agent_facing(topic="messages")
+def requested_wire_level(model: Model, requested: str | None) -> ModelThinkingLevel | None:
+    """The level whose wire form a provider sends for ``requested``, or ``None``.
+
+    The one rule all three providers apply (docs/REASONING-WIRE.md §4): ``None``
+    sends nothing; ``"off"`` is sent whatever ``model.reasoning`` says; any other
+    level is clamped on a reasoning model and not sent on one that does not
+    declare reasoning. The result is what ``AssistantMessage.reasoning_level``
+    reports.
+
+    Args:
+        model: Reads ``api``, ``reasoning`` and ``thinking_level_map``.
+        requested: The ``reasoning`` option as the caller passed it.
+
+    Returns:
+        A supported level, or ``None`` when no reasoning control is to be sent.
+
+    Raises:
+        ValueError: ``requested`` is not a thinking level, or it is ``"off"`` and
+            the model's map marks ``"off"`` unsupported.
+    """
+    if requested is None:
+        return None
+    if not is_valid_thinking_level(requested):
+        raise ValueError(
+            f"Model {model.id!r}: {requested!r} is not a thinking level; expected one of "
+            f"{', '.join(EXTENDED_THINKING_LEVELS)}."
+        )
+    level = cast(ModelThinkingLevel, requested)
+    if level == "off":
+        if (model.thinking_level_map or {}).get("off", _UNSET) is None:
+            raise ValueError(
+                f"Model {model.id!r}: thinking 'off' was requested, but "
+                "thinking_level_map marks 'off' unsupported (null). Map it to the "
+                "request that turns reasoning off on this endpoint, or request a level."
+            )
+        return "off"
+    if not model.reasoning:
+        return None
+    return clamp_thinking_level(model, level)

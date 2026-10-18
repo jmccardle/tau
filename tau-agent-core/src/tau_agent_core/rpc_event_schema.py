@@ -49,8 +49,8 @@ not unbounded: a side completion's spend is already ON the entry it produced
 (``summary_usage``), so putting it on the event too would give a host two
 sources for one number and no rule for which wins.
 
-Two BOUNDED facts are lifted out of the excluded ``message`` and given fields
-of their own: ``stop_reason`` and ``dropped_tool_calls``. Excluding a whole
+Three BOUNDED facts are lifted out of the excluded ``message`` and given fields
+of their own: ``stop_reason``, ``dropped_tool_calls`` and ``reasoning_level``. Excluding a whole
 message is about size, and a closed enum and a small integer are neither
 unbounded nor pullable in time to matter — a host that learns from
 ``get_messages`` that the answer it already rendered was a truncated prefix
@@ -250,6 +250,15 @@ class WireEvent(BaseModel):
         "0 when every call ran, so 'none lost' and 'not reported' stay "
         "distinguishable. None for all other event types. See "
         "docs/TRUNCATED-TOOL-CALLS.md §3.2.",
+    )
+    reasoning_level: Literal["off", "minimal", "low", "medium", "high", "xhigh"] | None = Field(
+        default=None,
+        description="The thinking level this completion was requested with, after "
+        "the provider clamped it to what the model supports, on the message_end "
+        "that carries usage. Null when no reasoning control was sent — no level "
+        "was set, or the model does not declare reasoning — so a requested level "
+        "that was clamped or not sent is visible rather than silent. None for all "
+        "other event types. See docs/REASONING-WIRE.md §3.",
     )
     cache_notice: str | None = Field(
         default=None,

@@ -1693,6 +1693,7 @@ def test_a_completion_boundary_publishes_the_measured_total():
         "context": 100,
         "stop_reason": None,
         "dropped_tool_calls": 0,
+        "reasoning_tokens": None,
     }
     second = stream.feed(_message_end({"output_tokens": 12, "input_tokens": 140}))
     assert second[0]["output"] == 42, "summed across completions, like stream_end"

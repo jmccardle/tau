@@ -328,7 +328,8 @@ defeats G1, and leaving the enumeration unbuilt AND undeclined violates C1.
 **Tier D — declined, with the reason stated in the capability document.**
 `cycle_model` · `cycle_thinking_level` · `set_steering_mode` ·
 `set_follow_up_mode` — TUI keybinding affordances leaking into a machine
-protocol. A remote host enumerates and sets; it does not cycle.
+protocol. A remote host enumerates and sets; it does not cycle. The setter for
+reasoning is `set_reasoning` (`docs/REASONING-WIRE.md` §10).
 `export_html` — a host can render. `bash` as an out-of-band command — τ's bash is
 a tool, and a second privileged path into the same executor is a second thing to
 secure.

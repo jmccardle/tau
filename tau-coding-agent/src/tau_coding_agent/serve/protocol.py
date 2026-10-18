@@ -319,6 +319,7 @@ RPC_RUN: tuple[str, ...] = (
     "get_last_assistant_text",
     "set_model",
     "set_auto_compaction",
+    "set_reasoning",
     "set_session_name",
     "complete_path",
     "next_step",

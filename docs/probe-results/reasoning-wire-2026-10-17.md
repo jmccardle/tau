@@ -93,6 +93,25 @@ chars) and `completion_tokens_details.reasoning_tokens` 219. It sent no
 `reasoning_details`. Two other free models answered 503 (rate limited), and
 those rows are kept as they came back.
 
+## Through τ's built providers, 2026-10-18
+
+These rows (`reasoning-wire-tau-2026-10-18.jsonl`) come from the providers on
+`feat/reasoning-wire`, not from raw HTTP. Each `Model` was built by hand.
+
+| Arm | reasoning_level | reasoning_tokens | What it shows |
+|---|---|---|---|
+| Anthropic `minimal`, `reasoning: true` | `low` | 75 | The clamp is reported, and the request is a 200 where raw `minimal` was a 400. The summary text arrived (83 chars). |
+| Anthropic `off`, no `reasoning` flag | `off` | 0 | `disabled` reached the wire. Before, this sent nothing and the model thought. |
+| Anthropic, no level | `null` | 71 | The provider default thinks, and the message says no control was sent. |
+| Anthropic replay turn 2, default scope | `high` | 337 | `input_tokens` 145 |
+| Anthropic replay turn 2, `reasoning_replay: "turn"` | `high` | 235 | `input_tokens` 78. The 67-token difference is turn 1's 65 thinking tokens, replayed. The model declined to state the number in both arms, as in #23's run. |
+| Google `minimal` / `low` / `high` | same | 0 / 243 / 448 | One level, one request; each answer's signature was kept on the thinking block (`["google"]`). |
+| Google `xhigh`, `off`, replay | not run | | HTTP 429: the free-tier key's 20 requests/day/model were spent. |
+| OpenAI `off` | `off` | 0 | `reasoning_effort: "none"`. |
+| OpenAI `minimal` (mapped to `null`) | `low` | 64 | A map null makes the clamp go up rather than sending the 400. |
+| OpenAI `xhigh` | `high` | 95 | |
+| OpenAI, no level | `null` | 56 | |
+
 ## What was not measured
 
 * No local llama.cpp server was reachable, so `reasoning_effort: "none"` on
@@ -101,3 +120,6 @@ those rows are kept as they came back.
   `thinkingBudget: 0` is unknown, and a 400 there would say so.
 * Repeat runs: there are none. Every token count above comes from a single
   run.
+* τ's Google replay end to end. The raw `google-replay` arms above measured the
+  wire; τ's converter producing the same request is covered by unit tests only,
+  because the quota ran out first.

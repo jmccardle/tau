@@ -567,7 +567,7 @@ class _Chunk:
 
 
 def _state() -> Any:
-    return google_provider._StreamState(model=_model(), provider=_provider())
+    return google_provider._StreamState(model=_model(), provider=_provider(), reasoning_level=None)
 
 
 def test_text_parts_become_text_deltas() -> None:
@@ -740,3 +740,135 @@ async def test_a_signal_tripped_mid_stream_stops_at_the_next_chunk(
     assert [e.delta for e in out if isinstance(e, TextDeltaEvent)] == ["one "]
     assert isinstance(out[-1], DoneEvent)
     assert out[-1].final.stop_reason == "aborted"
+
+
+# ── levels, the answer signature, reasoning tokens (docs/REASONING-WIRE.md) ──
+
+
+def _config(model: Model, level: str | None) -> tuple[dict[str, Any], Any]:
+    return _provider()._thinking_config(model, {"reasoning": level})
+
+
+def test_each_level_sends_its_own_thinking_level() -> None:
+    """§1.2: every level used to send the same request. Measured on
+    gemini-3.5-flash, minimal/low/medium/high gave 0/248/552/519 thought tokens."""
+    sent = {
+        level: _config(_model(reasoning=True), level)[0]["thinking_config"]
+        for level in ("minimal", "low", "medium", "high")
+    }
+    for level, fields in sent.items():
+        assert fields == {"include_thoughts": True, "thinking_level": level}
+
+
+def test_xhigh_clamps_down_to_high_and_says_so() -> None:
+    """Measured: thinkingLevel 'xhigh' is a 400."""
+    fields, level = _config(_model(reasoning=True), "xhigh")
+    assert fields["thinking_config"]["thinking_level"] == "high"
+    assert level == "high"
+
+
+def test_off_is_a_zero_budget_whatever_the_reasoning_flag() -> None:
+    fields, level = _config(_model(reasoning=False), "off")
+    assert fields == {"thinking_config": {"include_thoughts": False, "thinking_budget": 0}}
+    assert level == "off"
+
+
+def test_no_level_sends_no_thinking_config() -> None:
+    assert _config(_model(reasoning=True), None) == ({}, None)
+
+
+def test_a_level_on_an_undeclared_model_is_not_sent() -> None:
+    assert _config(_model(reasoning=False), "high") == ({}, None)
+
+
+def test_a_map_dict_replaces_the_level_key_for_a_budget_model() -> None:
+    """Google refuses a budget and a level together (measured), so a Gemini 2.5
+    map entry must not get the default thinking_level added beside it."""
+    fields, _ = _config(
+        _model(reasoning=True, thinking_level_map={"high": {"thinking_budget": 8192}}), "high"
+    )
+    assert fields["thinking_config"] == {"include_thoughts": True, "thinking_budget": 8192}
+
+
+def test_a_signature_no_call_took_is_kept_on_the_thinking_block() -> None:
+    """§1.5: streamed, the answer's signature is a trailing empty-text part."""
+    state = _state()
+    state.consume(_Chunk([_Part(text="Not prime: 17 x 23.")]))
+    state.consume(_Chunk([_Part(text="", thought_signature=b"answer-sig")], finish_reason="STOP"))
+    final = state.finalize()
+
+    thinking = [b for b in final.content if b.type == "thinking"]
+    assert len(thinking) == 1 and thinking[0].thinking == ""
+    assert read_signature_payload(thinking[0].thinking_signature) == base64.b64encode(
+        b"answer-sig"
+    ).decode("ascii")
+
+
+def test_a_call_s_signature_is_not_also_kept_as_the_answer_s() -> None:
+    state = _state()
+    state.consume(_Chunk([_Part(thought_signature=b"sig")]))
+    state.consume(_Chunk([_Part(function_call=_Call("read", {}, "c1"))], finish_reason="STOP"))
+    final = state.finalize()
+
+    assert not [b for b in final.content if b.type == "thinking"]
+
+
+def test_the_answer_signature_is_replayed_on_the_last_text_part() -> None:
+    """Measured: replayed, the model recalled its turn-1 reasoning (+227 prompt
+    tokens); dropped, it answered differently."""
+    message = {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "", "thinking_signature": signature_payload("c2ln")},
+            {"type": "text", "text": "Chosen."},
+        ],
+    }
+    _, contents = _provider()._convert_messages([message], _model())
+    assert contents[0]["parts"] == [{"text": "Chosen.", "thought_signature": "c2ln"}]
+
+
+def test_an_answer_signature_with_no_text_rides_a_trailing_empty_part() -> None:
+    message = {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "", "thinking_signature": signature_payload("c2ln")},
+        ],
+    }
+    _, contents = _provider()._convert_messages([message], _model())
+    assert contents[0]["parts"] == [{"text": "", "thought_signature": "c2ln"}]
+
+
+def test_replay_off_drops_the_answer_signature() -> None:
+    """O4: signatures on text and thinking parts follow reasoning_replay."""
+    message = {
+        "role": "assistant",
+        "content": [
+            {"type": "thinking", "thinking": "", "thinking_signature": signature_payload("c2ln")},
+            {"type": "text", "text": "Chosen."},
+        ],
+    }
+    _, contents = _provider()._convert_messages([message], _model(reasoning_replay="off"))
+    assert contents[0]["parts"] == [{"text": "Chosen."}]
+
+
+def test_thoughts_become_reasoning_tokens_and_absence_is_zero() -> None:
+    """Google omits zero-valued fields, so no thoughts_token_count is a zero."""
+    fields = {
+        "prompt_token_count": 18,
+        "candidates_token_count": 35,
+        "cached_content_token_count": None,
+        "total_token_count": 558,
+    }
+    thought = type("U", (), {**fields, "thoughts_token_count": 505})()
+    silent = type("U", (), {**fields, "thoughts_token_count": None})()
+
+    assert google_provider._usage_from_google(thought).reasoning_tokens == 505
+    assert google_provider._usage_from_google(silent).reasoning_tokens == 0
+
+
+def test_the_level_sent_is_reported_on_the_final_message() -> None:
+    state = google_provider._StreamState(
+        model=_model(), provider=_provider(), reasoning_level="medium"
+    )
+    state.consume(_Chunk([_Part(text="x")], finish_reason="STOP"))
+    assert state.finalize().reasoning_level == "medium"

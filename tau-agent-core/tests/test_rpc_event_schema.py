@@ -44,6 +44,7 @@ DOCUMENTED_DERIVED_FIELDS = {
     "cache_notice",
     "stop_reason",
     "dropped_tool_calls",
+    "reasoning_level",
 }
 
 DOCUMENTED_EXCLUDED_FIELDS = {
@@ -131,6 +132,17 @@ class TestStopReasonMatchesTheProvider:
         """Only the completion's own message_end carries one; every other event
         and the content-only duplicate carry nothing."""
         assert type(None) in typing.get_args(WireEvent.model_fields["stop_reason"].annotation)
+
+    def test_reasoning_level_is_the_assistant_messages_literal(self):
+        """docs/REASONING-WIRE.md §3: the same anti-drift check for the level."""
+        from tau_llm.models import EXTENDED_THINKING_LEVELS
+        from tau_llm.types import AssistantMessage
+
+        wire = _literal_strings(WireEvent.model_fields["reasoning_level"].annotation)
+        assert wire == _literal_strings(
+            AssistantMessage.model_fields["reasoning_level"].annotation
+        )
+        assert wire == set(EXTENDED_THINKING_LEVELS)
 
 
 class TestAntiDrift:

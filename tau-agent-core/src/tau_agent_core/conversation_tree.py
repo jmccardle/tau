@@ -314,7 +314,7 @@ def _config_preview(data: Any) -> str:
     elif isinstance(data.get("model_spec"), dict):
         parts.append(f"model {_spec_model_id({'model': data['model_spec']})}")
     if "thinking" in data:
-        parts.append(f"thinking {data['thinking'] or 'off'}")
+        parts.append(f"thinking {data['thinking'] or 'default'}")
     if "tools" in data:
         parts.append(_tools_phrase(_spec_tools(data)))
     if "extensions" in data:

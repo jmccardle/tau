@@ -36,6 +36,13 @@ every provider, the session store, and the persisted JSONL.
 
 ### S1 — `reasoning_replay` on Anthropic: warn, then do the right thing
 
+> **Superseded 2026-10-17 by `docs/REASONING-WIRE.md` §6.** The premise below,
+> that the API discards prior-turn thinking, holds for the 4.5-era models only.
+> Measured on `claude-haiku-5-5`, a replayed prior-turn block is read and billed
+> as input. Anthropic now replays `"all"` by default and honours an explicit
+> `"turn"`. Only `"off"` is still overridden. The text below is kept as the
+> record of the original decision.
+
 τ's `Model.reasoning_replay` (`types.py:226`) takes `"all"`, `"turn"`, `"off"`,
 default `"turn"`.
 

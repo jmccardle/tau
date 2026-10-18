@@ -338,3 +338,31 @@ def _dump(message) -> dict:
 
 def _role(message) -> str | None:
     return _dump(message).get("role")
+
+
+class TestReasoningShare:
+    """docs/REASONING-WIRE.md §7: how much of the cap went to reasoning (#23)."""
+
+    def _thought(self, stop_reason: str, reasoning: int | None) -> dict:
+        message = _assistant(stop_reason)
+        if reasoning is not None:
+            message["usage"]["reasoning_tokens"] = reasoning
+        return message
+
+    def test_a_reported_split_rides_the_reading(self):
+        assert completion_truncation(self._thought("length", 70)) == Truncation(1, 0, 70)
+
+    def test_no_reported_split_reads_none_not_zero(self):
+        assert completion_truncation(self._thought("length", None)).reasoning_tokens is None
+
+    def test_a_turn_sums_only_what_was_reported(self):
+        turn = [self._thought("length", 70), self._thought("length", None)]
+        assert truncation_from_messages(turn) == Truncation(2, 0, 70)
+
+    def test_the_notice_quotes_it(self):
+        notice = truncation_notice(Truncation(1, 0, 1500), max_tokens=2000) or ""
+        assert "1,500 of those output tokens were reasoning" in notice
+
+    def test_the_notice_says_nothing_of_a_split_it_was_not_given(self):
+        notice = truncation_notice(Truncation(1, 0), max_tokens=2000) or ""
+        assert "reasoning" not in notice

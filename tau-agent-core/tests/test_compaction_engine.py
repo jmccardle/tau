@@ -695,17 +695,16 @@ def test_generate_summary_raises_on_terminal_stop_reasons(monkeypatch, make_fake
     "reasoning,thinking_level,expect_reasoning_key",
     [
         pytest.param(True, "high", True, id="reasoning-model-with-a-level"),
-        pytest.param(True, "off", False, id="reasoning-model-but-level-off"),
-        pytest.param(True, None, False, id="reasoning-model-but-no-level-requested"),
-        pytest.param(False, "high", False, id="non-reasoning-model-ignores-the-level"),
+        pytest.param(True, "off", True, id="off-is-forwarded-as-off"),
+        pytest.param(True, None, False, id="no-level-sends-no-control"),
+        pytest.param(False, "high", True, id="the-provider-not-the-summarizer-gates-the-flag"),
     ],
 )
-def test_summary_options_adds_reasoning_only_when_supported_and_requested(
+def test_summary_options_forward_the_sessions_level_unchanged(
     reasoning, thinking_level, expect_reasoning_key
 ):
-    """Untested before this file: the ``reasoning`` option must be opt-in on BOTH
-    axes — a non-reasoning model never gets it even if a level is requested, and
-    ``"off"``/``None`` don't get forwarded even on a reasoning model."""
+    """docs/REASONING-WIRE.md §4.1: ``None`` stays the provider default and
+    ``"off"`` is sent as off; the provider applies the ``reasoning`` flag."""
     options = _summary_options(_model(reasoning=reasoning), "sk", 100, thinking_level)
     assert ("reasoning" in options) is expect_reasoning_key
     if expect_reasoning_key:

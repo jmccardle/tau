@@ -415,7 +415,7 @@ and stitched together (pi uses ``Promise.all``).
 - `model: Model` — The summarizing model.
 - `api_key: str | None` — Passed to the provider when truthy.
 - `custom_instructions: str | None = None` — Appended to the history prompt as "Additional focus"; not used for the turn-prefix summary.
-- `thinking_level: str | None = None` — Sent as ``reasoning`` when the model reasons and it is not ``"off"``.
+- `thinking_level: str | None = None` — Sent as ``reasoning`` unless ``None``; the provider clamps it.
 - `on_text_delta: TextDeltaSink | None = None` — Streams the HISTORY summary only, even on a split turn: two concurrent completions in one sink would interleave. The prefix summary arrives only in the result.
 
 **Returns**

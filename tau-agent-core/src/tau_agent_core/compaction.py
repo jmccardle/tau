@@ -857,10 +857,15 @@ def _summary_text(message: Any) -> str:
 def _summary_options(
     model: Model, api_key: str | None, max_tokens: int, thinking_level: str | None
 ) -> dict[str, Any]:
+    """A summary call's options: the session's level unchanged, clamped by the provider.
+
+    ``None`` stays the provider default and ``"off"`` is sent as off
+    (docs/REASONING-WIRE.md §4.1).
+    """
     options: dict[str, Any] = {"max_tokens": max_tokens}
     if api_key:
         options["api_key"] = api_key
-    if model.reasoning and thinking_level and thinking_level != "off":
+    if thinking_level is not None:
         options["reasoning"] = thinking_level
     return options
 
@@ -1243,8 +1248,8 @@ async def compact(
         api_key: Passed to the provider when truthy.
         custom_instructions: Appended to the history prompt as "Additional
             focus"; not used for the turn-prefix summary.
-        thinking_level: Sent as ``reasoning`` when the model reasons and it is
-            not ``"off"``.
+        thinking_level: Sent as ``reasoning`` unless ``None``; the provider
+            clamps it.
         on_text_delta: Streams the HISTORY summary only, even on a split turn:
             two concurrent completions in one sink would interleave. The prefix
             summary arrives only in the result.
