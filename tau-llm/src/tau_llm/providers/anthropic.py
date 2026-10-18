@@ -55,6 +55,7 @@ from tau_llm.errors import (
     response_headers_of,
     stream_error_from_anthropic,
 )
+from tau_llm.json_parse import parse_cut_off_arguments
 from tau_llm.models import clamp_thinking_level
 from tau_llm.once import OnceSet
 from tau_llm.providers.base import Provider, split_tool_result_content
@@ -517,14 +518,17 @@ class AnthropicMessagesProvider(Provider):
     def _convert_tools(self, tools: list[ToolSpec]) -> list[dict[str, Any]]:
         """τ tool specs → Anthropic tool definitions.
 
-        The only rename is ``parameters`` → ``input_schema``; the JSON Schema
-        itself travels unchanged.
+        ``parameters`` becomes ``input_schema``, unchanged. ``eager_input_streaming``
+        is set on every tool: without it the API withholds an argument value until
+        it closes, so a completion cut off at the cap bills every token and
+        delivers only the finished values (docs/TRUNCATED-TOOL-CALLS.md §3.2).
         """
         return [
             {
                 "name": tool.name,
                 "description": tool.description,
                 "input_schema": tool.parameters,
+                "eager_input_streaming": True,
             }
             for tool in tools
         ]
@@ -676,6 +680,8 @@ class AnthropicMessagesProvider(Provider):
                             )
                         elif event.type == "signature":
                             state.signature = event.signature
+                        elif event.type == "content_block_delta":
+                            state.add_input_json(event)
 
                     final = await stream.get_final_message()
 
@@ -732,6 +738,13 @@ class _StreamState:
         self.thinking_parts: list[str] = []
         self.signature: str = ""
         self.usage = Usage()
+        self.input_json: dict[int, list[str]] = {}
+
+    def add_input_json(self, event: Any) -> None:
+        """Keep a tool_use block's raw argument text, which a cut-off call is read from."""
+        delta: Any = getattr(event, "delta", None)
+        if getattr(delta, "type", "") == "input_json_delta":
+            self.input_json.setdefault(event.index, []).append(delta.partial_json)
 
     def _blocks(self) -> list[Any]:
         """``[thinking?, text?]`` — one consolidated block each.
@@ -768,10 +781,17 @@ class _StreamState:
 
         The SDK's accumulation is authoritative here, not this object's: it has
         the parsed tool inputs and the per-block signatures, which the delta
-        events do not carry block-by-block.
+        events do not carry block-by-block. The exception is ``max_tokens``: the
+        SDK's partial parse discards an unterminated string, so a cut-off
+        tool_use is read from the raw argument text instead, keeping it
+        (docs/TRUNCATED-TOOL-CALLS.md §3.2). One with no object to keep is
+        dropped and counted in ``dropped_partial_tool_calls``.
         """
+        raw_stop = getattr(final, "stop_reason", None)
+        cut_off = raw_stop == "max_tokens"
+        dropped = 0
         blocks: list[Any] = []
-        for block in final.content:
+        for index, block in enumerate(final.content):
             btype = getattr(block, "type", "")
             if btype == "thinking":
                 blocks.append(
@@ -791,11 +811,21 @@ class _StreamState:
                 blocks.append(TextContent(text=block.text))
             elif btype == "tool_use":
                 if not str(block.name).strip():
+                    if cut_off:
+                        dropped += 1
+                        continue
                     raise ValueError(
                         f"Tool call {block.id!r} arrived with no tool name "
                         f"(model {self.model.id!r} at {self.provider.base_url!r}). "
                         "Refusing to execute a nameless call."
                     )
+                if cut_off:
+                    partial = parse_cut_off_arguments("".join(self.input_json.get(index, [])))
+                    if partial is None:
+                        dropped += 1
+                        continue
+                    blocks.append(ToolCall(id=block.id, name=block.name, arguments=partial))
+                    continue
                 blocks.append(
                     ToolCall(
                         id=block.id,
@@ -805,7 +835,10 @@ class _StreamState:
                 )
 
         usage = _usage_from_anthropic(final.usage)
-        raw_stop = getattr(final, "stop_reason", None)
+        if dropped:
+            usage = usage.model_copy(
+                update={"extra": {**usage.extra, "dropped_partial_tool_calls": dropped}}
+            )
         stop_reason = _STOP_REASONS.get(raw_stop or "", "stop")
         error_message = None
         if raw_stop == "refusal":

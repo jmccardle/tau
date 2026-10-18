@@ -16,6 +16,9 @@ Tool-call arguments arrive from OpenAI-compatible streams as a sequence of
   display can show arguments as they stream. Returns ``{}`` when nothing usable
   can be recovered yet. This leniency is intentional and scoped to display only.
 
+* ``parse_cut_off_arguments`` — the partial object of a call the output cap cut
+  off, recorded in the transcript and never run.
+
 Reference: pi ``json-parse.ts`` (``repairJson`` / ``parseJsonWithRepair`` /
 ``parseStreamingJson``).
 """
@@ -24,6 +27,8 @@ from __future__ import annotations
 
 import json
 from typing import Any
+
+from pydantic_core import from_json
 
 _VALID_JSON_ESCAPES = set('"\\/bfnrtu')
 
@@ -137,6 +142,28 @@ def parse_json_with_repair(json_str: str) -> Any:
     """
     value, _repaired = parse_json_with_repair_info(json_str)
     return value
+
+
+def parse_cut_off_arguments(json_str: str) -> dict[str, Any] | None:
+    """The arguments a tool call had written when the output cap cut it off.
+
+    jiter's ``trailing-strings`` partial mode, through ``pydantic_core``: an
+    unterminated last string is KEPT with the text written so far, where the
+    SDK's default partial mode discards it. For a call that is recorded and
+    never run (docs/TRUNCATED-TOOL-CALLS.md §3.2); never execute the result.
+
+    Args:
+        json_str: The raw argument text the stream delivered.
+
+    Returns:
+        The partial object, or None when the text yields no JSON object, e.g. it
+        is empty or not an object at all.
+    """
+    try:
+        value = from_json(repair_json(json_str), allow_partial="trailing-strings")
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _complete_structures(buf: str) -> str:

@@ -73,6 +73,7 @@ def test_the_two_load_bearing_data_files_are_where_the_code_looks(name):
 PROVIDES = {
     "httpx": "httpx",
     "pydantic": "pydantic",
+    "pydantic_core": "pydantic",  # pydantic pins its own pydantic-core exactly
     "nats": "nats-py",
     "textual": "textual",
     "typer": "typer",

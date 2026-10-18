@@ -1055,8 +1055,8 @@ def format_telemetry(extra: dict[str, Any]) -> str | None:
     * effective decode speed — ``timings.predicted_per_second`` as ``N.N t/s``;
     * the tool-arg JSON-repair count, when the completion reported one
       (``repairs``);
-    * the number of tool calls dropped because the stream ended mid-``arguments``
-      (``dropped_partial_tool_calls``), when the completion dropped any;
+    * the number of tool calls not run because the completion was cut off or
+      aborted (``dropped_partial_tool_calls``), when there were any;
     * the forced-token share ``n_ff_total / predicted_n`` as ``forced=NN%`` — but
       ONLY when ``n_ff_total`` is present. Stock llama.cpp builds never send it (a
       jump-forward-fork-only field); omitting it is the honest move, never a

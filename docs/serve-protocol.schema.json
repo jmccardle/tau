@@ -6504,7 +6504,7 @@
             }
           ],
           "default": null,
-          "description": "How many tool calls this completion lost because the stream ended mid-argument, on message_end. A truncated or aborted arguments buffer is a prefix, so the provider drops the call rather than running it on a repaired or empty payload, and this is the only record that it existed. Null rather than 0 when none were dropped, so 'none lost' and 'not reported' stay distinguishable. None for all other event types."
+          "description": "How many tool calls in this completion were not run, on message_end. A completion cut off at the output cap runs none of its calls: each stays in the message with its partial arguments and gets an error result, or is dropped when nothing of it decodes; an aborted stream drops a call whose arguments were mid-flight. Null rather than 0 when every call ran, so 'none lost' and 'not reported' stay distinguishable. None for all other event types. See docs/TRUNCATED-TOOL-CALLS.md \u00a73.2."
         },
         "end_reason": {
           "anyOf": [

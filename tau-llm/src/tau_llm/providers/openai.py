@@ -44,6 +44,7 @@ from tau_llm.errors import (
 from tau_llm.errors import truncate_error_text as _truncate_error_text
 from tau_llm.providers.base import Provider, split_tool_result_content
 from tau_llm.json_parse import (
+    parse_cut_off_arguments,
     parse_json_with_repair_info,
     parse_streaming_json,
 )
@@ -1353,7 +1354,15 @@ class OpenAICompletionsProvider(Provider):
         usage: Usage,
         stop_reason: Literal["stop", "length", "toolUse", "error", "aborted"] | None = None,
     ) -> AssistantMessage:
-        """Build the final AssistantMessage with accumulated data."""
+        """Build the final AssistantMessage with accumulated data.
+
+        A complete stream's arguments are parsed strictly and raise when they
+        will not decode. On ``"length"`` each call keeps its partial arguments
+        (:func:`~tau_llm.json_parse.parse_cut_off_arguments`) for the agent loop
+        to record and refuse; on ``"aborted"`` an undecodable call is dropped. A
+        call either cannot keep is counted in ``dropped_partial_tool_calls``
+        (docs/TRUNCATED-TOOL-CALLS.md §3, §3.2).
+        """
         content_blocks: list[Any] = _consolidate_text_and_thinking(accum)
 
         aborted = stop_reason == "aborted"
@@ -1392,24 +1401,36 @@ class OpenAICompletionsProvider(Provider):
                     f"{''.join(tc.arguments_parts)!r}"
                 )
             args_str = "".join(tc.arguments_parts)
+            if truncated:
+                partial = parse_cut_off_arguments(args_str)
+                if partial is None:
+                    _logger.warning(
+                        "dropping tool call %r (%s) from model %r: the output cap cut its "
+                        "arguments off after %d chars, before any JSON object. %s",
+                        tc.id,
+                        tc.name,
+                        model.id,
+                        len(args_str),
+                        _TRUNCATION_HINT.format(max_tokens=model.max_tokens),
+                    )
+                    dropped_partial += 1
+                    continue
+                content_blocks.append(ToolCall(id=tc.id, name=tc.name, arguments=partial))
+                continue
             if args_str.strip():
                 had_tool_call_with_args = True
                 try:
                     args_dict, repaired = parse_json_with_repair_info(args_str)
                 except Exception as exc:
-                    if incomplete:
+                    if aborted:
                         _logger.warning(
-                            "dropping tool call %r (%s) from model %r: arguments were "
-                            "cut off (stop_reason=%r) after %d chars and will not "
-                            "decode. %s",
+                            "dropping tool call %r (%s) from model %r: the stream was "
+                            "aborted after %d chars of its arguments, which will not "
+                            "decode. The call was never issued.",
                             tc.id,
                             tc.name or "<unnamed>",
                             model.id,
-                            stop_reason,
                             len(args_str),
-                            _TRUNCATION_HINT.format(max_tokens=model.max_tokens)
-                            if truncated
-                            else "The call was never issued.",
                         )
                         dropped_partial += 1
                         continue
@@ -1425,14 +1446,14 @@ class OpenAICompletionsProvider(Provider):
                 if repaired:
                     repairs += 1
                 if not isinstance(args_dict, dict):
-                    if incomplete:
+                    if aborted:
                         dropped_partial += 1
                         continue
                     raise ValueError(
                         f"Tool call {tc.id!r} ({tc.name!r}) arguments did not decode "
                         f"to a JSON object: {args_str!r}"
                     )
-            elif incomplete:
+            elif aborted:
                 dropped_partial += 1
                 continue
             else:

@@ -4,7 +4,10 @@
 at: line 1 column 12` was killing the turn against a local llama.cpp server. This
 document records what that column number proves, why the finalizer used to raise
 on it, what it does now, and why grammar-constrained decoding would not have
-prevented it.
+prevented it. **§3.2 (built 2026-10-16)** replaced the per-provider drop with
+one rule in the agent loop: a cut-off completion keeps its tool calls with their
+partial arguments, runs none of them, answers each with an error result, and
+ends the turn.
 
 ---
 
@@ -81,7 +84,7 @@ already had it and did not read it. It reads it now:
 | `stop_reason` | An argument buffer that will not decode |
 |---|---|
 | `"aborted"` | dropped, counted |
-| `"length"` | dropped, counted |
+| `"length"` | dropped, counted (as built; §3.2 now keeps the partial arguments) |
 | `"stop"`, `"toolUse"` | **raises**, and now names the call |
 
 Dropped, never repaired and never given `{}`. A half-streamed
@@ -183,6 +186,121 @@ dropped calls. The count is real and the telemetry row still shows it, but this
 notice tells an operator to raise a cap, and an Esc the user pressed is not a cap
 to raise.
 
+### 3.2 A cut-off completion runs no tool call, and the turn ends
+
+Built 2026-10-16. The drop above lived in one provider and keyed on whether the
+buffer decoded. Both halves leaked.
+
+**Measured.** A sandbox session on `claude-haiku-5-5` with `max_tokens = 4096`,
+asked to write a markdown template, stopped at the cap three times in a row
+(`output_tokens: 4096`, `stop_reason: "length"` each). Each time the persisted
+message held `write` with `arguments: {"path": "docs/SECURITY_TEST_TEMPLATE.md"}`
+and no `content`. The Anthropic provider builds `ToolCall.arguments` from the
+SDK's `block.input`, which is the partially parsed JSON of the cut-off stream, so
+the call reached the tool, which answered `Missing required field: 'content'`.
+The model tried again, identically, and `repeat_tool_call_limit` (3) ended the
+turn as `repeat_tool_calls`. 12288 output tokens produced nothing, and the
+operator saw a failure where a partial answer existed.
+
+The SDK's partial parse is jiter's default partial mode, which discards an
+unterminated trailing string: `{"path": "docs/x.md", "content": "# T\n- item`
+parses to `{"path": "docs/x.md"}`. The OpenAI path leaks differently. It dropped
+a call only when `parse_json_with_repair_info` raised, and repair can close an
+open string, so a `write` cut inside `content` decoded and ran with the content
+truncated.
+
+**The rule.** On `stop_reason == "length"`:
+
+1. **The provider keeps every call, with its partial arguments.**
+   `parse_cut_off_arguments` (`tau_llm.json_parse`) parses the raw argument text
+   in jiter's `trailing-strings` mode, through `pydantic_core.from_json`, so the
+   unterminated string keeps the text written so far. The Anthropic provider
+   reads that raw text from the `input_json_delta` events it now accumulates per
+   block, in place of `block.input`; every other stop reason still takes
+   `block.input`. The OpenAI provider uses it in place of the strict parse. A
+   call whose text yields no JSON object (an empty buffer, a cut before the
+   name) is still dropped and counted, because there is nothing to keep.
+2. **The loop runs none of them.** `AgentLoop._refuse_cut_off_calls` answers
+   each through `_aborted_batch`, the machinery an abort and a failed stream
+   (`TURN-FAILURES.md` §2) already use, with the text
+   `unrun_tool_result_text` (`tau_agent_core.truncation`) writes. The call that
+   is the completion's last block is the one the cap cut:
+   `Not run: your output reached max_tokens = 4096 while writing this call's
+   arguments, so they are cut off (content holds 14,203 characters so far) and
+   nothing was executed. Write it in smaller pieces.` The named argument is the
+   last leaf of the partial arguments, when that is a string; otherwise no
+   argument is named. It says "so far" rather than "stops after" because the
+   parsed object cannot show whether the cut fell inside that string or just
+   after it closed; the live run below had the cut land right after `path`.
+   Any earlier call finished its arguments before the cut and is told so.
+3. **The turn ends.** No second request is made, as for a text-only answer; a
+   queued steer still gets its request, the same exception the text-only path
+   makes.
+4. **The count says how many did not run.**
+   `with_unrun_tool_calls_counted` adds the kept calls to
+   `usage.extra["dropped_partial_tool_calls"]` before the writer persists the
+   message and before `message_end`, on top of any the provider dropped. §3.1's
+   box, stderr lines and `dropped_tool_calls` wire field report it; the sentence
+   now says "N tool calls were not run".
+
+The session tree is valid for the next request, because every kept `tool_use`
+has its result. The model reads its own draft and the reason it did not run, so
+"continue" can resume from the draft rather than regenerate the same cut.
+
+- **Every call is refused, including complete ones before the cut.** They are
+  kept and told their arguments were complete, so the model can send them again.
+  Running them and refusing only the last would act on half of a plan whose
+  other half was lost.
+- **The turn ends; nothing retries.** A retry at the same cap reproduces the
+  same cut, which is what the measured session did three times.
+- **In the loop, not in each provider.** One site covers Anthropic, Gemini and
+  OpenAI-compatible endpoints, and every head, because all three heads run the
+  same loop. The providers only recover what was written.
+- **The key and field keep their names.** `dropped_partial_tool_calls` and
+  `dropped_tool_calls` now count calls that were not run, which includes calls
+  kept in the message. The old meaning (dropped from the message) is a subset of
+  the new one, so persisted transcripts and RPC hosts read the same numbers
+  correctly; renaming would be a wire change that buys a more literal word. The
+  schema's field description says what it counts.
+- **Gemini sends no cut-off arguments.** The Gemini API delivers each
+  `function_call` as a whole parsed `args` object (`google.py`
+  `_StreamState._consume_part`). Streamed `partial_args` exist only on
+  Vertex AI and only with `stream_function_call_arguments`, which τ does not
+  set. So a Gemini `MAX_TOKENS` completion gets the same refusal, and if its
+  last block is a function call the text calls it cut off on that position
+  alone. Nothing measured shows whether Gemini can end on a call at the cap.
+
+**Measured after the build: Anthropic withholds the cut string.** A live run on
+`claude-haiku-5-5` (`max_tokens` 1500 to 4000, the prompt in the measured
+session above) stopped at the cap inside `write` and persisted
+`{"path": "notes.md"}` with no `content`, and the refusal reached the model. The
+raw stream explains it: 4 `input_json_delta` events, 19 characters in all,
+`{"path": "notes.md"`, for a completion that spent 1500 output tokens. By
+default the API buffers a tool input and sends only finished values, so the
+draft never reaches τ and no parse mode can recover it. The same request with
+`eager_input_streaming: true` on the tool definition delivered 374 deltas, and
+the kept call held `content` with 3,919 characters. A raw SSE capture with no
+SDK and no τ (thinking off, so all 1500 output tokens were the call) confirmed
+it is the API, not the client: 19 characters without the flag, 4,042 with it,
+and in neither case a `content_block_stop` before `message_delta`.
+
+**So τ sets `eager_input_streaming: true` on every Anthropic tool** (same day,
+`AnthropicMessagesProvider._convert_tools`). τ is the user's agent; requesting a
+billable completion and then declining to receive most of it is poor
+stewardship, whatever the edge case costs to clean up. The flag changes the
+tools block once, so each cached Anthropic prefix misses once after the
+upgrade; it is a code change, not a runtime cache break. With it the API
+streams arguments unvalidated, which the OpenAI-compatible path has always
+done and which this section's parse already handles. The next request after the refusal was accepted. Asked only to
+"continue in smaller pieces", the model started one `write` and was cut again;
+asked for 40-line pieces, it wrote them.
+
+**The build corrected the first design.** The first version of this section
+(`1b8280b`, same day) removed every `ToolCall` from the message. That left the
+tree valid but erased the draft the completion paid for, so "please continue"
+regenerated from scratch and hit the cap again. Keeping the calls, refusing them
+with a result, and recovering the partial argument text replaced it.
+
 ## 4. A grammar would not have prevented this
 
 The operator's expectation was grammar-constrained decoding for tool calls from
@@ -248,12 +366,16 @@ shape this clips worst.
   transcript for the result to answer, and its `arguments` is a `dict` — there is
   nothing to put there that is not fabricated. The turn ends, the operator raises
   the cap, and the conversation continues from a transcript that says what
-  happened.
+  happened. **Superseded by §3.2 (2026-10-16):** the call is kept with the
+  partial arguments the stream really delivered, which is not fabrication, and
+  answered with an error result. Still nothing is re-requested.
 
 - **No repair of the truncated buffer.** `parse_streaming_json` can close an open
   string, and that leniency stays scoped to the live display where it belongs. A
   completed `{"command":"rm -rf /ho"}` is not what the model meant, and running it
-  is worse than every other outcome on this page.
+  is worse than every other outcome on this page. §3.2's
+  `parse_cut_off_arguments` does close the string, for the transcript only: the
+  call it builds is answered with an error and never runs.
 
 - **No change to `DEFAULT_MAX_TOKENS`** — as built 2026-08-29. The separate
   decision was made 2026-10-16: the default is now **32768** (`32 * 1024`), held
@@ -281,7 +403,10 @@ shape this clips worst.
 
 | Piece | Where |
 |---|---|
-| the drop | `tau_llm/providers/openai.py` → `_build_final_message`, the `incomplete` branch |
+| the drop on abort; partial arguments on length | `tau_llm/providers/openai.py` → `_build_final_message` |
+| partial arguments, Anthropic | `tau_llm/providers/anthropic.py` → `_StreamState.add_input_json`, `finalize` |
+| the trailing-strings parse | `tau_llm/json_parse.py` → `parse_cut_off_arguments` |
+| refusing the calls, ending the turn | `tau_agent_core/agent_loop.py` → `_refuse_cut_off_calls`; `truncation.py` → `unrun_tool_result_text`, `with_unrun_tool_calls_counted` |
 | the raise that names the call | same function, the `parse_json_with_repair_info` guard |
 | the operator hint, one wording | `tau_llm/providers/openai.py` → `_TRUNCATION_HINT` |
 | the reading, head-agnostic | `tau_agent_core/truncation.py` |
@@ -291,4 +416,4 @@ shape this clips worst.
 | the wire fields | `tau_agent_core/rpc_event_schema.py` → `WireEvent`; `rpc/wire_events.py` → `_truncation_fields` |
 | `dropped=N` | `tau_coding_agent/chat_widgets.py` → `format_telemetry` |
 | the scrollable fence | `tau.tcss` → `.chat-message MarkdownFence` |
-| tests | `tau-agent-core/tests/test_truncation.py`, `tau-coding-agent/tests/test_truncated_completion_notice.py`, `tau-coding-agent/tests/test_headless_truncation_notice.py`, `tau-llm/tests/test_abort_finalize.py` |
+| tests | `tau-agent-core/tests/test_truncation.py`, `tau-coding-agent/tests/test_truncated_completion_notice.py`, `tau-coding-agent/tests/test_headless_truncation_notice.py`, `tau-llm/tests/test_abort_finalize.py`, `tau-llm/tests/test_anthropic_provider.py` → `TestACutOffToolCall` |

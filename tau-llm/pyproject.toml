@@ -26,7 +26,7 @@ authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 # tree); nothing imports the package, and declaring it pulled a large unused
 # dependency chain into every install.
 dependencies = [
-    "pydantic>=2.0",
+    "pydantic>=2.10",
     "httpx>=0.27",
 ]
 

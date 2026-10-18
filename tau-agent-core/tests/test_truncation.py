@@ -13,6 +13,8 @@ from tau_agent_core.truncation import (
     dropped_tool_calls,
     truncation_from_messages,
     truncation_notice,
+    unrun_tool_result_text,
+    with_unrun_tool_calls_counted,
 )
 
 
@@ -98,15 +100,241 @@ class TestTheNotice:
     def test_a_dropped_call_is_named_and_counted(self):
         notice = truncation_notice(Truncation(1, 1), max_tokens=4096)
         assert notice is not None
-        assert "1 tool call was dropped" in notice
+        assert "1 tool call was not run" in notice
 
     def test_several_dropped_calls_read_as_plural(self):
         notice = truncation_notice(Truncation(2, 3), max_tokens=4096)
         assert notice is not None
         assert "2 of this turn's completions" in notice
-        assert "3 tool calls were dropped" in notice
+        assert "3 tool calls were not run" in notice
 
     def test_no_dropped_call_adds_no_second_sentence(self):
         notice = truncation_notice(Truncation(1, 0), max_tokens=4096)
         assert notice is not None
-        assert "dropped" not in notice
+        assert "not run" not in notice
+
+
+def _message(stop_reason: str, *blocks, extra: dict | None = None):
+    from tau_llm.types import AssistantMessage, Usage
+
+    return AssistantMessage(
+        content=list(blocks),
+        api="anthropic-messages",
+        provider="anthropic",
+        model="m",
+        stop_reason=stop_reason,
+        usage=Usage(extra=extra or {}),
+    )
+
+
+class TestWithUnrunToolCallsCounted:
+    """docs/TRUNCATED-TOOL-CALLS.md §3.2: a cut-off completion keeps its calls, counted."""
+
+    def test_the_calls_stay_and_are_counted(self):
+        from tau_llm.types import TextContent, ToolCall
+
+        text = TextContent(text="Writing the file now.")
+        read = ToolCall(id="a", name="read", arguments={"path": "x"})
+        write = ToolCall(id="b", name="write", arguments={"path": "y", "content": "# T"})
+        msg = _message("length", text, read, write)
+        out = with_unrun_tool_calls_counted(msg)
+        assert out.content == [text, read, write]
+        assert out.usage.extra["dropped_partial_tool_calls"] == 2
+        assert "dropped_partial_tool_calls" not in msg.usage.extra, "input not mutated"
+
+    def test_a_provider_count_is_added_to(self):
+        from tau_llm.types import ToolCall
+
+        msg = _message(
+            "length",
+            ToolCall(id="a", name="write", arguments={"path": "y"}),
+            extra={"dropped_partial_tool_calls": 1},
+        )
+        assert with_unrun_tool_calls_counted(msg).usage.extra["dropped_partial_tool_calls"] == 2
+
+    def test_other_stop_reasons_and_call_free_messages_are_unchanged(self):
+        from tau_llm.types import TextContent, ToolCall
+
+        complete = _message("toolUse", ToolCall(id="a", name="ls", arguments={}))
+        assert with_unrun_tool_calls_counted(complete) is complete
+        prose = _message("length", TextContent(text="cut"))
+        assert with_unrun_tool_calls_counted(prose) is prose
+
+
+class TestUnrunToolResultText:
+    """What the model reads in place of a result, so it can resume in smaller pieces."""
+
+    def test_the_cut_call_names_the_cap_and_its_last_string_argument(self):
+        from tau_llm.types import ToolCall
+
+        write = ToolCall(id="w", name="write", arguments={"path": "a.md", "content": "x" * 14203})
+        text = unrun_tool_result_text(_message("length", write), write, max_tokens=4096)
+        assert text == (
+            "Not run: your output reached max_tokens = 4096 while writing this call's "
+            "arguments, so they are cut off (content holds 14,203 characters so far) and "
+            "nothing was executed. Write it in smaller pieces."
+        )
+
+    def test_a_nested_last_string_is_named_by_its_path(self):
+        from tau_llm.types import ToolCall
+
+        edit = ToolCall(
+            id="e", name="edit", arguments={"path": "a", "edits": [{"old": "x", "new": "yy"}]}
+        )
+        text = unrun_tool_result_text(_message("length", edit), edit, max_tokens=10)
+        assert "(edits[0].new holds 2 characters so far)" in text
+
+    def test_a_last_argument_that_is_not_a_string_is_not_named(self):
+        from tau_llm.types import ToolCall
+
+        read = ToolCall(id="r", name="read", arguments={"path": "a", "limit": 12})
+        text = unrun_tool_result_text(_message("length", read), read, max_tokens=10)
+        assert "so far" not in text
+        assert "cut off and nothing was executed" in text
+
+    def test_an_earlier_call_is_told_it_was_complete(self):
+        from tau_llm.types import ToolCall
+
+        read = ToolCall(id="r", name="read", arguments={"path": "a"})
+        write = ToolCall(id="w", name="write", arguments={"path": "b", "content": "c"})
+        text = unrun_tool_result_text(_message("length", read, write), read, max_tokens=None)
+        assert text.startswith("Not run: your output reached max_tokens = unknown later")
+        assert "arguments are complete" in text
+
+
+class TestTheLoopEndsTheTurn:
+    """A cut-off call never executes: it is recorded, answered, and the turn ends."""
+
+    async def test_the_call_is_kept_answered_and_no_second_request_is_made(self):
+        from unittest.mock import patch
+
+        from tau_llm.streaming import DoneEvent
+        from tau_llm.types import Model, TextContent, ToolCall
+        from tau_agent_core.agent_session import AgentSession
+        from tau_agent_core.session_log import InMemorySessionLog
+        from tau_agent_core.tools.base import AgentTool, ToolDefinition
+
+        ran: list[dict] = []
+        requests: list[int] = []
+        tool = AgentTool(
+            definition=ToolDefinition(
+                name="write",
+                label="Write",
+                description="Write a file",
+                parameters={"type": "object", "properties": {}, "required": []},
+                execute=lambda ctx: ran.append(ctx) or "ok",
+            )
+        )
+        draft = "# Fruit\n1. Apples"
+
+        class _Stream:
+            def __aiter__(self):
+                async def _gen():
+                    final = _message(
+                        "length",
+                        TextContent(text="Here is the file."),
+                        ToolCall(
+                            id="w", name="write", arguments={"path": "docs/x.md", "content": draft}
+                        ),
+                    )
+                    yield DoneEvent(final=final, usage=final.usage)
+
+                return _gen()
+
+            async def result(self):
+                return None
+
+        async def _stream_simple(model, context, options=None):
+            requests.append(1)
+            return _Stream()
+
+        session = AgentSession(
+            session_log=InMemorySessionLog(),
+            model=Model(
+                id="m",
+                name="m",
+                api="anthropic-messages",
+                provider="anthropic",
+                base_url="https://example.invalid",
+                context_window=128000,
+                max_tokens=64,
+            ),
+            tools=[tool],
+        )
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_simple):
+            new = await session.prompt("write docs/x.md")
+
+        assert ran == []
+        assert len(requests) == 1
+        assert [_role(m) for m in new] == ["user", "assistant", "toolResult"]
+        assistant = _dump(new[1])
+        assert [b["type"] for b in assistant["content"]] == ["text", "toolCall"]
+        assert assistant["content"][1]["arguments"] == {"path": "docs/x.md", "content": draft}
+        assert assistant["usage"]["extra"]["dropped_partial_tool_calls"] == 1
+        result = _dump(new[2])
+        assert result["tool_call_id"] == "w"
+        assert result["is_error"] is True
+        assert result["content"][0]["text"] == (
+            "Not run: your output reached max_tokens = 64 while writing this call's "
+            "arguments, so they are cut off (content holds 17 characters so far) and "
+            "nothing was executed. Write it in smaller pieces."
+        )
+        persisted = [_role(m) for m in session.messages]
+        assert persisted[-2:] == ["assistant", "toolResult"]
+
+    async def test_run_continue_refuses_every_call_and_ends_too(self):
+        from unittest.mock import patch
+
+        from tau_llm.streaming import DoneEvent
+        from tau_llm.types import ToolCall, UserMessage
+        from tau_agent_core.agent_loop import AgentLoop
+        from tau_agent_core.agent_loop_types import AgentLoopConfig
+        from tau_agent_core.tools.base import AgentTool, ToolDefinition
+
+        ran: list[dict] = []
+        requests: list[int] = []
+        tools = [
+            AgentTool(
+                definition=ToolDefinition(
+                    name=name,
+                    label=name,
+                    description=name,
+                    parameters={"type": "object", "properties": {}, "required": []},
+                    execute=lambda ctx: ran.append(ctx) or "ok",
+                )
+            )
+            for name in ("read", "write")
+        ]
+        final = _message(
+            "length",
+            ToolCall(id="r", name="read", arguments={"path": "a"}),
+            ToolCall(id="w", name="write", arguments={"path": "b", "content": "abc"}),
+        )
+
+        async def _stream_simple(model, context, options=None):
+            requests.append(1)
+
+            async def _gen():
+                yield DoneEvent(final=final, usage=final.usage)
+
+            return _gen()
+
+        loop = AgentLoop(config=AgentLoopConfig(model="gpt-4o"), tools=tools)
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_stream_simple):
+            out = await loop.run_continue(context=[UserMessage(content="go", timestamp=0)])
+
+        assert ran == []
+        assert len(requests) == 1
+        results = [_dump(m) for m in out if _role(m) == "toolResult"]
+        assert [r["tool_call_id"] for r in results] == ["r", "w"]
+        assert all(r["is_error"] for r in results)
+        assert "arguments are complete" in results[0]["content"][0]["text"]
+        assert "content holds 3 characters so far" in results[1]["content"][0]["text"]
+
+
+def _dump(message) -> dict:
+    return message if isinstance(message, dict) else message.model_dump()
+
+
+def _role(message) -> str | None:
+    return _dump(message).get("role")
