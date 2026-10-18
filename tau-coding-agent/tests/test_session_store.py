@@ -346,6 +346,47 @@ async def test_create_in_memory_no_disk_flush(tmp_path):
     assert not base.exists()
 
 
+async def test_deferred_session_is_written_whole_on_its_first_append(tmp_path):
+    """No file, no dir and no listing until the first append; then the full chain."""
+    catalog = FileSessionCatalog(tmp_path / "sessions")
+    session = catalog.create_deferred(CWD, "local-llm", "openai", system_prompt="sys", name="N")
+    held = session.entries()
+    assert [e["type"] for e in held] == ["customEntry", "session_info", "message"]
+    assert session.name == "N" and session.model == "local-llm"
+    assert not (tmp_path / "sessions").exists()
+    assert catalog.list(CWD) == []
+
+    await Cursor.newest(session).append_message({"role": "user", "content": "first"})
+
+    assert session.path is not None and session.path.exists()
+    reloaded = catalog.load(str(session.path))
+    assert reloaded.header == session.header
+    assert reloaded.entries() == session.entries()
+    assert reloaded.entries()[:3] == held
+    assert [info.id for info in catalog.list(CWD)] == [session.id]
+
+    await Cursor.newest(session).append_message({"role": "assistant", "content": "second"})
+    assert catalog.load(str(session.path)).entries() == session.entries()
+
+
+async def test_deferred_session_first_written_by_an_open_reloads_finalized(tmp_path):
+    """An incomplete entry is a first write too, and its finalize reloads complete."""
+    session = Session.create(CWD, "local-llm", "openai", base_dir=tmp_path, deferred=True)
+    cursor = Cursor.newest(session)
+    opened = await cursor.open("message", message={"role": "assistant", "content": ""})
+    assert session.path is not None and session.path.exists()
+    await cursor.finalize(opened, message={"role": "assistant", "content": "done"})
+    assert Session.load(session.path).entries() == session.entries()
+
+
+async def test_forking_a_deferred_session_does_not_write_the_source(tmp_path):
+    source = Session.create(CWD, "local-llm", "openai", base_dir=tmp_path, deferred=True)
+    fork = Session.fork(source, CWD, base_dir=tmp_path)
+    assert fork.path is not None and fork.path.exists()
+    assert source.path is not None and not source.path.exists()
+    assert fork.entries() == source.entries()
+
+
 # ── seam 3: lifecycle events ────────────────────────────────────────────────
 
 

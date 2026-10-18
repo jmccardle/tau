@@ -283,6 +283,27 @@ class JmftsSessionCatalog(SessionCatalog):
             host_parent_id=self._host_parent_id,
         )
 
+    def create_deferred(
+        self,
+        cwd: str,
+        model: str,
+        backend: str,
+        *,
+        system_prompt: str | None = None,
+        name: str | None = None,
+    ) -> JmftsSessionLog:
+        """A conversation whose root and opening chain are POSTed on its first append."""
+        return JmftsSessionLog.create(
+            self._client,
+            cwd,
+            model,
+            backend,
+            system_prompt=system_prompt,
+            name=name,
+            host_parent_id=self._host_parent_id,
+            deferred=True,
+        )
+
     def create_ephemeral(
         self,
         cwd: str,

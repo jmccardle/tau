@@ -234,17 +234,24 @@ class JmftsSessionLog:
 
     Construct via :meth:`create`, :meth:`load`, or :meth:`fork` -- never call
     ``__init__`` directly (it takes an already-hydrated entry list).
+
+    A deferred conversation (``create(deferred=True)``) has no root document yet.
+    Its opening chain is held under ``unwritten-N`` ids, and the first write POSTs
+    the root and the held entries before the new one. The held ids stay the
+    mirror's ids for this object's lifetime, so a cursor holding one never goes
+    stale, and ``_alias`` maps each to its document id at the HTTP boundary.
     """
 
     def __init__(
         self,
         client: JmftsClient,
-        root_doc_id: int,
+        root_doc_id: int | None,
         header: dict[str, Any],
         entries: list[dict[str, Any]],
         *,
         next_seq: int,
         seqs: dict[str, int] | None = None,
+        host_parent_id: int | None = None,
     ) -> None:
         self._client = client
         self._root_doc_id = root_doc_id
@@ -253,6 +260,9 @@ class JmftsSessionLog:
         self._ids: set[str] = {e["id"] for e in entries}
         self._next_seq = next_seq
         self._seqs: dict[str, int] = dict(seqs or {})
+        self._host_parent_id = host_parent_id
+        self._held: list[str] = []
+        self._alias: dict[str, str] = {}
         self._append_lock = threading.Lock()
         # Guards the mirror only, never held across I/O, so loop-thread readers never wait on a POST.
         self._mirror_lock = threading.Lock()
@@ -265,9 +275,11 @@ class JmftsSessionLog:
         return str(self._header["id"])
 
     @property
-    def root_doc_id(self) -> int:
-        """The JMFTS document id of the conversation root -- the storage-agnostic
-        ``ref`` a future catalog resolves ``load()`` against (Sec3.1)."""
+    def root_doc_id(self) -> int | None:
+        """The conversation root's JMFTS document id, the ``ref`` ``load()`` takes (Sec3.1).
+
+        ``None`` while a deferred conversation has written nothing.
+        """
         return self._root_doc_id
 
     @property
@@ -360,24 +372,37 @@ class JmftsSessionLog:
         name: str | None = None,
         id: str | None = None,
         host_parent_id: int | None = None,
+        deferred: bool = False,
     ) -> "JmftsSessionLog":
-        """Create a new conversation: POST the root document, then seed the same
-        initial entries the file ``Session.create`` writes (config, optional
-        name, optional system message)."""
+        """Create a new conversation: the root document, then the opening chain
+        the file ``Session.create`` writes (config, optional name, optional system
+        message).
+
+        With ``deferred``, nothing is POSTed until the first append
+        (``SessionCatalog.create_deferred``).
+        """
         timestamp = _now_iso()
         session_id = id if id is not None else uuid.uuid4().hex
         header = _build_header(session_id, timestamp, os.path.abspath(cwd), parent=None)
-        root = client.create_document(
-            title=f"tau:conversation {session_id[:8]}",
+        session = cls(client, None, header, [], next_seq=1, host_parent_id=host_parent_id)
+        if deferred:
+            session._init_state(model, backend, system_prompt, name, hold=True)
+            return session
+        session._root_doc_id = session._post_root()
+        session._init_state(model, backend, system_prompt, name)
+        return session
+
+    def _post_root(self) -> int:
+        """POST this conversation's ``tau:conversation`` root document; returns its id."""
+        root = self._client.create_document(
+            title=f"tau:conversation {self.id[:8]}",
             usetype="tau:conversation",
-            parent_id=host_parent_id,
-            structured_content={"tau": header},
+            parent_id=self._host_parent_id,
+            structured_content={"tau": self._header},
             auto_embed=False,
             sequential=False,
         )
-        session = cls(client, root["id"], header, [], next_seq=1)
-        session._init_state(model, backend, system_prompt, name)
-        return session
+        return int(root["id"])
 
     @classmethod
     def load(cls, client: JmftsClient, ref: str | int) -> "JmftsSessionLog":
@@ -493,7 +518,14 @@ class JmftsSessionLog:
         order guarantees a referent is already in ``old_to_new`` by the time anything
         refers to it. A reference that is nevertheless missing means the SOURCE tree
         was already corrupt, and we raise rather than propagate it into the fork.
+
+        A deferred ``source`` that has written nothing is written first: a fork is
+        the first real activity on it, and the copy is read from the server.
         """
+        with source._append_lock:
+            if source._root_doc_id is None:
+                source._write_held_locked()
+        assert source._root_doc_id is not None
         timestamp = _now_iso()
         session_id = uuid.uuid4().hex
         header = _build_header(session_id, timestamp, os.path.abspath(cwd), parent=source.id)
@@ -515,7 +547,7 @@ class JmftsSessionLog:
             source_entries = source._snapshot()
             if at not in {e["id"] for e in source_entries}:
                 raise ValueError(f"fork point {at!r} not found")
-            on_path = {int(e["id"]) for e in ConversationTree(source_entries, at).path()}
+            on_path = {source._doc_id(e["id"]) for e in ConversationTree(source_entries, at).path()}
             descendants = [d for d in descendants if d["id"] in on_path]
         old_to_new: dict[int, int] = {}
         for doc in descendants:
@@ -539,22 +571,70 @@ class JmftsSessionLog:
         return cls.load(client, new_root_id)
 
     def _init_state(
-        self, model: str, backend: str, system_prompt: str | None, name: str | None
+        self,
+        model: str,
+        backend: str,
+        system_prompt: str | None,
+        name: str | None,
+        *,
+        hold: bool = False,
     ) -> None:
         """Write the opening chain ``Session._init_state`` writes, synchronously.
 
         ``create`` is synchronous and may run before a head has an event loop.
+        ``hold`` keeps the chain in the mirror for the first append to write.
         """
+        append = self._hold if hold else self._append_now
         config = {"model": model, "backend": backend, "cwd": self._header.get("cwd")}
-        parent = self._append_now(
-            None, "customEntry", {"customType": CONFIG_ENTRY_TYPE, "data": config}
-        )
+        parent = append(None, "customEntry", {"customType": CONFIG_ENTRY_TYPE, "data": config})
         if name is not None:
-            parent = self._append_now(parent, "session_info", {"name": name})
+            parent = append(parent, "session_info", {"name": name})
         if system_prompt:
-            self._append_now(
-                parent, "message", {"message": {"role": "system", "content": system_prompt}}
-            )
+            append(parent, "message", {"message": {"role": "system", "content": system_prompt}})
+
+    def _hold(self, parent_id: str | None, kind: str, payload: dict[str, Any]) -> str:
+        """Add an opening-chain entry to the mirror only, under an ``unwritten-N`` id."""
+        entry_id = f"unwritten-{len(self._held) + 1}"
+        entry = {
+            "type": kind,
+            "timestamp": event_iso(payload, _now_iso),
+            **payload,
+            "id": entry_id,
+            "parentId": parent_id,
+        }
+        with self._mirror_lock:
+            self._entries.append(entry)
+            self._ids.add(entry_id)
+        self._held.append(entry_id)
+        return entry_id
+
+    def _write_held_locked(self) -> None:
+        """POST the root, then every held entry in order. The caller holds ``_append_lock``."""
+        self._root_doc_id = self._post_root()
+        for held_id in self._held:
+            entry = next(e for e in self._snapshot() if e["id"] == held_id)
+            tau_payload = {k: v for k, v in entry.items() if k not in ("id", "parentId")}
+            doc_id = self._post_locked(entry["parentId"], entry["type"], tau_payload)
+            self._alias[held_id] = doc_id
+            self._seqs[held_id] = self._seqs.pop(doc_id)
+            if entry["type"] == "session_info":
+                self._client.update_document(self._root_doc_id, title=entry["name"], re_embed=False)
+        self._held = []
+
+    def _doc_id(self, entry_id: str) -> int:
+        """The JMFTS document id behind a mirror id (a held id maps through ``_alias``)."""
+        return int(self._alias.get(entry_id, entry_id))
+
+    def _stored(self, tau_payload: dict[str, Any]) -> dict[str, Any]:
+        """``tau_payload`` with any entry-id reference to a held entry turned into its doc id."""
+        if not self._alias:
+            return tau_payload
+        stored = dict(tau_payload)
+        for field in _CROSS_REF_FIELDS + _PROVENANCE_REF_FIELDS:
+            ref = stored.get(field)
+            if isinstance(ref, str) and ref in self._alias:
+                stored[field] = self._alias[ref]
+        return stored
 
     async def append_at(
         self,
@@ -598,10 +678,10 @@ class JmftsSessionLog:
             tau_payload = {k: v for k, v in final.items() if k not in ("id", "parentId")}
             seq = self._seqs[entry_id]
             self._client.update_document(
-                int(entry_id),
+                self._doc_id(entry_id),
                 title=_title_for(final["type"], payload, seq),
                 content=_content_for(final["type"], payload),
-                structured_content={"tau": tau_payload, "seq": seq},
+                structured_content={"tau": self._stored(tau_payload), "seq": seq},
                 re_embed=False,
             )
             with self._mirror_lock:
@@ -617,30 +697,46 @@ class JmftsSessionLog:
         cursors cannot draw seqs in one order and get doc ids in another: ``load``
         raises on that disagreement (docs/CURSORS.md §3). A ``session_info`` also
         retitles the root document; ``structured_content.tau`` stays authoritative.
+        A deferred conversation writes its root and held entries first.
         """
-        parent_doc_id = self._root_doc_id if parent_id is None else int(parent_id)
         tau_payload: dict[str, Any] = {
             "type": kind,
             "timestamp": event_iso(payload, _now_iso),
             **payload,
         }
         with self._append_lock:
-            seq = self._next_seq
-            self._next_seq += 1
-            doc = self._client.create_document(
-                title=_title_for(kind, payload, seq),
-                content=_content_for(kind, payload),
-                parent_id=parent_doc_id,
-                usetype=f"tau:{kind}",
-                structured_content={"tau": tau_payload, "seq": seq},
-                auto_embed=False,
-                sequential=True,
-            )
-            entry_id = str(doc["id"])
+            if self._root_doc_id is None:
+                self._write_held_locked()
+            entry_id = self._post_locked(parent_id, kind, tau_payload)
             with self._mirror_lock:
                 self._entries.append({**tau_payload, "id": entry_id, "parentId": parent_id})
                 self._ids.add(entry_id)
-            self._seqs[entry_id] = seq
+            root_doc_id = self._root_doc_id
+        assert root_doc_id is not None
         if kind == "session_info":
-            self._client.update_document(self._root_doc_id, title=payload["name"], re_embed=False)
+            self._client.update_document(root_doc_id, title=payload["name"], re_embed=False)
+        return entry_id
+
+    def _post_locked(self, parent_id: str | None, kind: str, tau_payload: dict[str, Any]) -> str:
+        """Draw a seq and POST one entry document; the caller holds ``_append_lock``.
+
+        Returns:
+            The new document's id, which is the entry id.
+        """
+        assert self._root_doc_id is not None
+        parent_doc_id = self._root_doc_id if parent_id is None else self._doc_id(parent_id)
+        stored = self._stored(tau_payload)
+        seq = self._next_seq
+        self._next_seq += 1
+        doc = self._client.create_document(
+            title=_title_for(kind, stored, seq),
+            content=_content_for(kind, stored),
+            parent_id=parent_doc_id,
+            usetype=f"tau:{kind}",
+            structured_content={"tau": stored, "seq": seq},
+            auto_embed=False,
+            sequential=True,
+        )
+        entry_id = str(doc["id"])
+        self._seqs[entry_id] = seq
         return entry_id
