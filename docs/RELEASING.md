@@ -892,5 +892,35 @@ container matrix had passed 3.12 on the same sha. The cause is the race the
 `settle_transcript` fixture exists for (0.10.2, 0.11.0). Sixty `add_message`
 calls schedule a deferred `scroll_end`. When it lands after the test's
 `scroll_to(y=0)`, follow-tail re-attaches. All four `TestFollowingTheTail` tests
-that add messages and then scroll now settle first. The tag had already been
-published, so the release was recut (see below).
+that add messages and then scroll now settle first (`7d83ec3`). The tag had
+already been published, so the release was recut, as below.
+
+**A recut before any upload keeps the version, and moves the tag.** Fail-fast
+stopped the run before the publish job, so 0.13.0 was still free on PyPI. John
+chose to re-point the tag rather than release 0.13.1:
+1. The five-version matrix ran on the fix (`7d83ec3`, `0 failed`).
+2. Master was fast-forwarded and pushed to both remotes, and all three refs were
+   read back.
+3. `gh release delete v0.13.0 --cleanup-tag --yes` removed the release and the
+   remote tag.
+4. The tarball was rebuilt from the new sha.
+5. A new draft targeted the full sha, and publishing it re-created
+   `v0.13.0` → `7d83ec3`.
+
+Run 39144613264 passed all five and uploaded all ten artifacts. The one cost
+is anyone who fetched `v0.13.0` in the ~40 minutes it pointed at `53ede1e`. This
+is only possible when the failure stops the run before `Publish to PyPI`.
+After an upload, the version is gone and the fix is a new version.
+
+**PyPI's simple index lags the upload by minutes.** Right after the run,
+`/pypi/<dist>/0.13.0/json` returned 200, but `pip install ==0.13.0` failed with
+`No matching distribution`, and the project-level JSON still read 0.12.0. A
+`Cache-Control: no-cache` curl of `/simple/<dist>/` listed 0.13.0 for all five,
+while pip, a minute later, still got a stale page for `ffwf-tau-agent-core`.
+The CDN edge pip reaches is the one that counts. Poll with
+`pip download --no-deps <dist>==<version>` for every distribution before the
+smoke install, and before telling a downstream that pins the version.
+
+`publish.yml`'s build job is still named "Build all four distributions", but it
+builds and uploads five, `ffwf_tau` included. The name went stale when the
+metapackage was added.
