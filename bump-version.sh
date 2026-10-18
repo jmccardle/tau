@@ -102,7 +102,7 @@ ROOT_PYPROJECT="pyproject.toml"
 # tau-meta's single pin was picked up by this glob on the day it was added, with
 # no edit here — which is the property being described.
 PIN_FILES=(tau-*/pyproject.toml)
-PIN_PATTERN='"ffwf-tau[a-z-]*(\[[a-z,]+\])?==[^"]+"'
+PIN_PATTERN='"ffwf-tau[a-z-]*(\[[a-z0-9,-]+\])?==[^"]+"'
 
 # -- record the "before" ---------------------------------------------------
 #
@@ -148,7 +148,7 @@ sed -i "s/^version = \"[^\"]*\"\$/version = \"$NEW\"/" "$ROOT_PYPROJECT"
 
 # The extras bracket, where present, is part of the requirement name and must
 # survive: "ffwf-tau-coding-agent[tui,jmfts]==0.9.3", not "ffwf-…==0.9.3".
-sed -i -E "s/(\"ffwf-tau[a-z-]*(\[[a-z,]+\])?)==[^\"]+\"/\1==$NEW\"/g" "${PIN_FILES[@]}"
+sed -i -E "s/(\"ffwf-tau[a-z-]*(\[[a-z0-9,-]+\])?)==[^\"]+\"/\1==$NEW\"/g" "${PIN_FILES[@]}"
 
 # -- verify ----------------------------------------------------------------
 #
