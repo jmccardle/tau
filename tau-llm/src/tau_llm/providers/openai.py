@@ -32,6 +32,7 @@ from typing import Any, AsyncIterator, Iterable, Literal
 import httpx
 
 from tau_llm import grammar as grammar_mod
+from tau_llm.abort import iterate_until_aborted, unless_aborted
 from tau_llm.compat import ResolvedCompat, resolve_compat
 from tau_llm.constraints import ConstraintViolation
 from tau_llm.errors import (
@@ -1846,11 +1847,7 @@ class OpenAICompletionsProvider(Provider):
                 raise self._http_error_from_response(response, model)
             state.response_headers = response_headers_of(response)
 
-            # Read SSE lines as they arrive (no full-body buffering).
-            async for line in response.aiter_lines():
-                if abort_signal is not None and abort_signal.is_aborted():
-                    state.stop_reason = "aborted"
-                    break
+            async for line in iterate_until_aborted(response.aiter_lines(), abort_signal):
                 line = line.strip()
                 if not line or not line.startswith("data:"):
                     continue
@@ -1967,6 +1964,9 @@ class OpenAICompletionsProvider(Provider):
                 if finish_reason:
                     self._map_finish_reason(finish_reason, state)
 
+            if abort_signal is not None and abort_signal.is_aborted() and not state.saw_done:
+                state.stop_reason = "aborted"
+
         if state.stop_reason is None and not state.saw_done:
             yield ErrorEvent(
                 type="error",
@@ -2014,7 +2014,12 @@ class OpenAICompletionsProvider(Provider):
             state.stop_reason = "aborted"
             return
 
-        response = await client.post("/chat/completions", json=payload, timeout=request_timeout)
+        response = await unless_aborted(
+            client.post("/chat/completions", json=payload, timeout=request_timeout), abort_signal
+        )
+        if response is None:
+            state.stop_reason = "aborted"
+            return
         if response.status_code != 200:
             raise self._http_error_from_response(response, model)
         state.response_headers = response_headers_of(response)

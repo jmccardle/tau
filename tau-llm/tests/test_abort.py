@@ -15,7 +15,7 @@ import time
 
 import pytest
 
-from tau_llm.abort import AbortSignal
+from tau_llm.abort import AbortSignal, iterate_until_aborted, unless_aborted
 from tau_llm.providers.openai import OpenAICompletionsProvider
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import Model, TextContent, UserMessage
@@ -330,3 +330,159 @@ class TestAbortSignalStopsStream:
         done = [e for e in events if isinstance(e, DoneEvent)]
         assert len(done) == 1
         assert done[0].final.stop_reason == "stop"
+
+
+class _StallingResponse:
+    """A 200 SSE response that sends ``lines`` and then never sends another.
+
+    The tau-code report behind #36: a model thinking silently, or a stalled
+    connection, left Stop waiting on a read that never completes.
+    """
+
+    def __init__(self, lines):
+        self.status_code = 200
+        self.headers: dict[str, str] = {}
+        self._lines = lines
+        self.cancelled = False
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+
+async def _abort_soon(signal: AbortSignal) -> None:
+    await asyncio.sleep(0.05)
+    signal.abort()
+
+
+class TestAbortSignalWait:
+    def test_wait_returns_at_once_when_already_aborted(self):
+        signal = AbortSignal()
+        signal.abort()
+        asyncio.run(asyncio.wait_for(signal.wait(), timeout=1))
+
+    def test_wait_returns_when_another_thread_aborts(self):
+        signal = AbortSignal()
+        threading.Timer(0.05, signal.abort).start()
+        asyncio.run(asyncio.wait_for(signal.wait(), timeout=2))
+        assert signal.is_aborted()
+
+    def test_a_cancelled_wait_leaves_no_waiter_behind(self):
+        signal = AbortSignal()
+
+        async def go():
+            task = asyncio.ensure_future(signal.wait())
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        asyncio.run(go())
+        assert signal._waiters == []
+
+
+class TestIterateUntilAborted:
+    def test_an_abort_cancels_a_read_that_would_never_complete(self):
+        signal = AbortSignal()
+        response = _StallingResponse(["one"])
+
+        async def go():
+            asyncio.ensure_future(_abort_soon(signal))
+            return [line async for line in iterate_until_aborted(response.aiter_lines(), signal)]
+
+        started = time.monotonic()
+        assert asyncio.run(asyncio.wait_for(go(), timeout=2)) == ["one"]
+        assert time.monotonic() - started < 1
+        assert response.cancelled
+
+    def test_without_a_signal_the_source_is_read_unchanged(self):
+        async def source():
+            for i in range(3):
+                yield i
+
+        async def go():
+            return [i async for i in iterate_until_aborted(source(), None)]
+
+        assert asyncio.run(go()) == [0, 1, 2]
+
+
+class TestUnlessAborted:
+    def test_an_abort_cancels_the_call_and_returns_none(self):
+        signal = AbortSignal()
+        cancelled = []
+
+        async def hang():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        async def go():
+            asyncio.ensure_future(_abort_soon(signal))
+            return await unless_aborted(hang(), signal)
+
+        assert asyncio.run(asyncio.wait_for(go(), timeout=2)) is None
+        assert cancelled == [True]
+
+    def test_a_call_that_finishes_first_returns_its_result(self):
+        async def answer():
+            return 42
+
+        assert asyncio.run(unless_aborted(answer(), AbortSignal())) == 42
+
+
+class TestAbortStopsAStalledProvider:
+    """#36: an abort finalizes at once, not when the server next sends a byte."""
+
+    def test_a_stalled_sse_stream_finalizes_aborted_promptly(self):
+        signal = AbortSignal()
+        line = "data: " + json.dumps({"id": "x", "choices": [{"delta": {"content": "one"}}]})
+        response = _StallingResponse([line])
+        provider = OpenAICompletionsProvider(api_key="sk-test")
+        provider._get_client = lambda: _AbortingClient(response)  # type: ignore[method-assign]
+
+        async def go():
+            stream = await provider.stream_chat(
+                model=_abort_model(),
+                messages=[UserMessage(content=[TextContent(text="go")], timestamp=0)],
+                options={"abort_signal": signal},
+            )
+            asyncio.ensure_future(_abort_soon(signal))
+            return [e async for e in stream]
+
+        events = asyncio.run(asyncio.wait_for(go(), timeout=2))
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1
+        assert done[0].final.stop_reason == "aborted"
+        assert [c.text for c in done[0].final.content if isinstance(c, TextContent)] == ["one"]
+        assert response.cancelled
+
+    def test_a_stalled_buffered_request_finalizes_aborted_promptly(self):
+        signal = AbortSignal()
+
+        class _HangingClient:
+            async def post(self, *args, **kwargs):
+                await asyncio.Event().wait()
+
+        provider = OpenAICompletionsProvider(api_key="sk-test")
+        provider._get_client = lambda: _HangingClient()  # type: ignore[method-assign]
+        model = _abort_model().model_copy(update={"stream": False})
+
+        async def go():
+            stream = await provider.stream_chat(
+                model=model,
+                messages=[UserMessage(content=[TextContent(text="go")], timestamp=0)],
+                options={"abort_signal": signal},
+            )
+            asyncio.ensure_future(_abort_soon(signal))
+            return [e async for e in stream]
+
+        events = asyncio.run(asyncio.wait_for(go(), timeout=2))
+        done = [e for e in events if isinstance(e, DoneEvent)]
+        assert len(done) == 1
+        assert done[0].final.stop_reason == "aborted"
