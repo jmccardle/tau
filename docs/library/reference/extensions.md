@@ -588,7 +588,7 @@ and one at the checking end:
 <!-- agent: yes -->
 
 ```python
-class ExtensionContext(cwd: str = '.', session_manager: Any | None = None, signal: Any | None = None, is_idle: bool = True)
+class ExtensionContext(cwd: str = '.', signal: Any | None = None)
 ```
 
 `tau_agent_core.extension_types.ExtensionContext`
@@ -600,9 +600,7 @@ Reference: SUBPHASE-0.0.md, "8. Extension API Surface" section.
 **Constructor parameters**
 
 - `cwd: str = '.'` — Returned by :attr:`cwd` as given; nothing resolves it. The default ``"."`` is the process cwd, for a context made outside a session.
-- `session_manager: Any | None = None` — Returned by :attr:`session_manager`; ``shutdown`` forwards to it when it has a ``shutdown()``.
 - `signal: Any | None = None` — The abort signal :attr:`signal` returns while no session is bound.
-- `is_idle: bool = True` — Returned by :attr:`is_idle` as given; nothing updates it.
 
 ### abort
 
@@ -927,6 +925,19 @@ A copy of the last completion's ``usage`` dict, or ``None`` when no completion h
 
 - `RuntimeError` — no session is bound.
 
+### is_idle
+
+`tau_agent_core.extension_types.ExtensionContext.is_idle: bool`
+
+Whether no cursor of the bound session is running a turn right now.
+
+A hook fired inside a turn reads ``False``; so does any handler while a
+sub-agent's cursor streams (docs/SILENT-DEFAULTS.md §2).
+
+**Raises**
+
+- `RuntimeError` — if no session is bound.
+
 ### list_extensions
 
 ```python
@@ -1214,9 +1225,6 @@ shutdown() -> None
 `tau_agent_core.extension_types.ExtensionContext.shutdown`
 
 Request a shutdown by setting :attr:`shutdown_requested`; idempotent.
-
-Also calls ``session_manager.shutdown()`` when one with that method was
-given at construction.
 
 ### shutdown_requested
 

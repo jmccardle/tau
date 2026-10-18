@@ -849,18 +849,14 @@ class ExtensionContext:
 
     Attributes:
         _cwd: Current working directory.
-        _session_manager: SessionManager instance (or None).
         _signal: AbortSignal for this context (or None).
-        _is_idle: Whether the agent is idle.
         _ui: ExtensionUI instance.
     """
 
     def __init__(
         self,
         cwd: str = ".",
-        session_manager: Any | None = None,
         signal: Any | None = None,
-        is_idle: bool = True,
     ) -> None:
         """Initialize ExtensionContext.
 
@@ -871,16 +867,11 @@ class ExtensionContext:
             cwd: Returned by :attr:`cwd` as given; nothing resolves it. The
                 default ``"."`` is the process cwd, for a context made outside
                 a session.
-            session_manager: Returned by :attr:`session_manager`; ``shutdown``
-                forwards to it when it has a ``shutdown()``.
             signal: The abort signal :attr:`signal` returns while no session is
                 bound.
-            is_idle: Returned by :attr:`is_idle` as given; nothing updates it.
         """
         self._cwd = cwd
-        self._session_manager = session_manager
         self._signal = signal
-        self._is_idle = is_idle
         self._ui = ExtensionUI()
         self._shutdown_requested = False
         self._session: Any | None = None
@@ -893,11 +884,6 @@ class ExtensionContext:
         it here too, not against the process cwd.
         """
         return self._cwd
-
-    @property
-    def session_manager(self) -> Any:
-        """The ``session_manager`` given at construction; ``None`` in a session."""
-        return self._session_manager
 
     @property
     def signal(self) -> Any | None:
@@ -913,11 +899,16 @@ class ExtensionContext:
 
     @property
     def is_idle(self) -> bool:
-        """The ``is_idle`` given at construction (default ``True``).
+        """Whether no cursor of the bound session is running a turn right now.
 
-        Never updated, so it does not track whether a turn is running.
+        A hook fired inside a turn reads ``False``; so does any handler while a
+        sub-agent's cursor streams (docs/SILENT-DEFAULTS.md §2).
+
+        Raises:
+            RuntimeError: if no session is bound.
         """
-        return self._is_idle
+        session = self._require_session()
+        return not any(cursor.is_streaming for cursor in session.cursors)
 
     @property
     def session_id(self) -> str:
@@ -955,14 +946,8 @@ class ExtensionContext:
             signal.abort(reason="extension")
 
     def shutdown(self) -> None:
-        """Request a shutdown by setting :attr:`shutdown_requested`; idempotent.
-
-        Also calls ``session_manager.shutdown()`` when one with that method was
-        given at construction.
-        """
+        """Request a shutdown by setting :attr:`shutdown_requested`; idempotent."""
         self._shutdown_requested = True
-        if self._session_manager is not None and hasattr(self._session_manager, "shutdown"):
-            self._session_manager.shutdown()
 
     @property
     def shutdown_requested(self) -> bool:

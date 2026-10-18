@@ -147,7 +147,6 @@ class TestSessionInfo:
         assert info.turn_count == 0
         assert info.status == "idle"
         assert info.model is None
-        assert info.tool_count == 0
 
     def test_session_info_defaults(self):
         """SessionInfo has sensible defaults."""
@@ -159,7 +158,6 @@ class TestSessionInfo:
         assert info.turn_count == 0
         assert info.status == "idle"
         assert info.model is None
-        assert info.tool_count == 0
 
     def test_session_info_full(self):
         """SessionInfo accepts all fields."""
@@ -172,7 +170,6 @@ class TestSessionInfo:
             turn_count=5,
             status="idle",
             model="gpt-4o",
-            tool_count=8,
         )
         assert info.id == "session_001"
         assert info.name == "My Session"
@@ -180,7 +177,6 @@ class TestSessionInfo:
         assert info.turn_count == 5
         assert info.status == "idle"
         assert info.model == "gpt-4o"
-        assert info.tool_count == 8
 
     def test_session_info_serialization(self):
         """SessionInfo serializes to dict correctly."""
@@ -278,13 +274,10 @@ class TestSessionStateVsSessionInfo:
         state = SessionState(session_id="s")
         assert not hasattr(state, "name")
 
-    def test_session_info_has_tool_count(self):
-        """SessionInfo tracks tool count, SessionState does not."""
-        info = SessionInfo(id="s", tool_count=5)
-        assert info.tool_count == 5
-
-        state = SessionState(session_id="s")
-        assert not hasattr(state, "tool_count")
+    def test_session_info_declares_no_tool_count(self):
+        """No catalog counts tool calls, so SessionInfo declares no field that would read 0."""
+        assert "tool_count" not in SessionInfo.model_fields
+        assert not hasattr(SessionInfo(id="s"), "tool_count")
 
     def test_both_track_message_count(self):
         """Both SessionState and SessionInfo track message_count."""

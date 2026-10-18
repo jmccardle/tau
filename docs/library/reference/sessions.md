@@ -3917,13 +3917,6 @@ Path to the JSONL session file
 
 Current session status
 
-### tool_count
-
-`tau_agent_core.session.SessionInfo.tool_count: int`
-
-Number of tool calls. No catalog in this repo populates
-it, so it reads 0 unless the constructor was given a value.
-
 ### turn_count
 
 `tau_agent_core.session.SessionInfo.turn_count: int`
