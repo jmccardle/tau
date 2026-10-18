@@ -47,6 +47,12 @@ what `-e` accepts, and what an authorization record names.
 - A drop-in's module name is its file stem, or its package directory's name.
   So no drop-in's identifier changes (proposal; inferred from the rule, not
   stated by John).
+- An extension loaded by explicit path (`-e /abs/dir/handset_bus.py`) is
+  identified the same way: `handset_bus`. τ does not derive a dotted name from
+  the path's directories. Which directory is the package root depends on
+  `sys.path`, and the path doesn't record it, so any derivation would be a
+  guess (proposal). A host that wants the dotted name ships the module as an
+  entry point and names it with `-e <module.name>`.
 - **Alternative rejected:** the entry-point name as the identifier. Two
   distributions can declare the same entry-point name, while a module name is
   unique at import time. That is the property an authorization record needs.
