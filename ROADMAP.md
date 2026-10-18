@@ -6,6 +6,60 @@ this file. Older entries cite pi as "the source of truth"; that stopped being th
 arrangement on 2026-09-03 (`CLAUDE.md`, "Parity with pi is not an objective") and
 those citations are provenance now.
 
+**State (2026-10-18): 0.13.0 shipped; 0.14.0 is next and has no code yet.**
+Tag `v0.13.0` → `7d83ec3`, cut again before upload after CI failed a TUI test
+on the first tag, `53ede1e` (`docs/RELEASING.md` "What 0.13.0 learned"). All five
+distributions are on PyPI and a clean-venv install reports `tau 0.13.0`, serve
+0.10, RPC 2.2. So tau-search's ask for 0.13.0 on PyPI (for its Docker build)
+is met. tau-code 0.7.0, which speaks serve 0.10, shipped the same day. Release
+matrix: 0 failed on 3.11–3.14 and 3.14t. `master` = `origin` = `github` =
+`d84e29b` before this commit. Every feature branch is merged into `master`
+(`git branch --no-merged master` lists only `architecture-overhaul`,
+`clean-history` and `github-oldmaster-0.9.0`). Nine worktrees remain under
+`.claude/worktrees/` (#16).
+
+Issues on the `john/tau` forgejo repo are the tracker; this file names them and
+does not repeat them.
+
+- **0.14.0 headline (milestone 0.14.0):** extensions as installable Python
+  packages. tau-search and tau-router are the two officially supported
+  extensions that ship that way. Every sibling project (tau-code, mcrf-term,
+  tau-search, tau-router) was asked on 2026-10-18 to move toward it.
+  - #35 entry-point loading, where finding an extension does not load it.
+    Decided by the owner on 2026-10-18: an extension's identifier is its Python
+    module name. The user authorizes a package version or hash, so an update
+    asks again. A name collision neither blocks loading nor gets past
+    authorization. **Three questions are open** (listed below).
+  - #40 `extension_owner()` mangles a directory extension's label and
+    disagrees with the config key. Open; #35's naming decision settles it.
+  - #38 a public API to embed `tau serve` (asked by tau-search). Open.
+  - #39 an extension cannot contribute a prompt template. Open.
+  - #41 check PyPI for updates to τ and to installed extensions. Open.
+- **#42, not milestoned:** on the TUI's startup screen, an extension command
+  such as `/budget` goes to the model as a prompt. No session exists until
+  the first chat (`app.py`, the check near line 987 runs while the backend is
+  `None`), so the extension command table is empty. Reported by tau-router.
+  Fix options: create the session at mount (fixes running, completion and the
+  popup) or before the command check (fixes running only).
+- **Open decisions for the owner:**
+  - #35: may a drop-in in `~/.tau/extensions` be a wheel or zip, or only a `.py`
+    file and a package directory (proposed)?
+  - #35: may typed input use the last dotted segment when exactly one approved
+    extension has it (proposed), or only the full name?
+  - #35: which separator replaces `.` in `--ext-config NAME.KEY=VALUE`, since a
+    module name contains dots (proposed: `NAME:KEY=VALUE`)?
+  - #42: which fix, and whether it is in 0.14.0.
+  - Milestone 0.13.0 still holds 15 open issues after the release: move them
+    to 0.14.0, to a backlog, or close them. #1 ("Cut 0.13.0") is done and still
+    open.
+  - Carried, unchanged: #3 trust gate (`docs/TRUST-GATE.md` §6), #13
+    `register_provider` and a package manager (`docs/EXTENSION-PROVIDERS.md`
+    §5; #35 overlaps it), #11 template name collisions, #12 the HTML export
+    image cap, and #28 a pre-request admission hook.
+- **Carried open work with no decision needed:** #7, #8, #14, #15, #17–#19
+  (R2/R5/R6), #21, #24–#27, #29–#34 (#32–#34 are code-mode stub defects), and
+  #2's remaining code-mode gaps (the "Code mode" entry under "Open work").
+
 **State (2026-10-14): 0.13.0 in progress, not cut.** `master` = `origin/master`
 = `df6143d`; `github` was not pushed and is behind by the 50 commits of
 `354f1f0..df6143d`. Version literals still read `0.12.0`. Since 0.12.0:
@@ -653,8 +707,8 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
       `deferred` and `hidden`. §5.2's `codemode` value was renamed `callable`.
     - Typed returns are read from return type hints.
   - **Open:**
-    - tau-code still speaks serve 0.8, so a release cut from master now refuses
-      every tau-code client until tau-code moves to 0.9.
+    - ~~tau-code still speaks serve 0.8~~ — closed 2026-10-18: tau 0.13.0
+      (serve 0.10) and tau-code 0.7.0 shipped together.
     - The sandbox providers still call tools through `DirectToolInvoker`, which
       skips the hooks: no `tool_call` veto and no events. Moving them to
       `ctx.execute_tool` is the next integration step.
