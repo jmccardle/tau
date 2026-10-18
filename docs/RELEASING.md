@@ -93,7 +93,7 @@ pytest tau-coding-agent/tests/test_packaging.py
 git commit -am "release: version 0.9.3"
 ```
 
-The version lives in sixteen places at 0.12.0 — five `__version__` literals, one
+The version lives in sixteen places at 0.12.0 and 0.13.0 — five `__version__` literals, one
 in the root `pyproject.toml`, and ten in-repo `ffwf-tau…==<version>` pins. This
 document said *thirteen* through 0.9.7 and *fifteen* through 0.11.0, each time
 after the count had already moved, so the number goes stale rather than wrong. The script
@@ -837,3 +837,60 @@ wrote none.
 `ffwf-tau[serve]` wheel, from an unrelated directory with a sandbox `HOME`,
 answered `hello` with `version: 0.12.0`, created a session, answered an unknown
 method with `-32601`, and stopped on `tau serve --stop`.
+
+## What 0.13.0 learned
+
+**A gate piped through `tail` inside an `&&` chain cannot stop the chain.** The
+bump was committed once with `test_packaging.py` reading `1 failed`, because
+`pytest … | tail -3 && git commit …` takes `tail`'s exit status, and `tail`
+succeeds. The commit was local and was reset away. Run a gate on its own line
+and read it, or set `-o pipefail`. Rule 3's `tail -40` is for reading a
+failure, never for deciding one.
+
+**`bump-version.sh` missed a pin, and `test_packaging.py` caught it.** Code mode
+added the extra `codemode-monty`, and the script's pin pattern allowed only
+`[a-z,]` inside the brackets. So `ffwf-tau-agent-core[…,codemode-monty]==0.12.0`
+stayed behind, and the script reported 15 locations instead of 16. Fixed in
+`f784e9e` (`[a-z0-9,-]`). The script re-reads every pin it wrote, but it cannot
+re-read a pin its pattern never matched. Only the test, which parses the
+requirements, could see it.
+
+**The matrix gates the sha the tag names, so a late code change re-runs it in
+full.** The first matrix ran on `a255205` and was stopped after two clean
+versions, because John chose to add one more change (`53ede1e`, the enqueue
+drop). The second ran all five on `53ede1e`, and the tag names that sha. The
+taglines commit between them only appended to a list, so it was gated by
+`test_chat_placeholder.py` and the snapshots alone, the way 0.12.0 gated its
+bump.
+
+**Pass `-rs` in the matrix and save each version's whole output.** Each version
+ran `-rfs --tb=line` into its own log file, two containers at a time (about 10
+minutes per version, 35 for all five). That made the skip comparison one grep
+instead of 0.12.0's second container run. The 14 NATS skips were the only
+difference from the local run (7251 tests on both). 3.14t ran one more test and
+skipped one fewer, as §2 allows.
+
+**A downstream release can be gated before the tag.** tau-code 0.7.0 pins
+`ffwf-tau*==0.13.0`. Wheels built from `git archive` of the release branch
+reached it before PyPI did, so its payload, Docker and protocol checks ran
+against the exact artifacts. Twice the sha moved (the taglines, then the
+enqueue drop), and both times the wheels were rebuilt and re-sent. tau-code
+compared the unpacked wheels and found only the expected files changed. Build
+candidates from the release branch, never from a working tree, and re-send
+them every time the sha moves.
+
+**The tagline procedure ran end to end for the first time.** Nothing had been
+appended since 0.12.0, so step 1 did not fire. John's line, in honour of Margaret
+Hamilton, shipped. The fork's line was appended from stock.
+
+**CI failed a test that the matrix passed, and it was the known race again.**
+`publish.yml` run 39141297260, on the tag, failed
+`test_steering.py::TestFollowingTheTail::test_scrolling_back_to_the_bottom_re_attaches`
+on 3.12 (`assert display._follow_tail is False` → `True`). Fail-fast cancelled
+the other four, so nothing was uploaded and PyPI still read 0.12.0. The local
+container matrix had passed 3.12 on the same sha. The cause is the race the
+`settle_transcript` fixture exists for (0.10.2, 0.11.0). Sixty `add_message`
+calls schedule a deferred `scroll_end`. When it lands after the test's
+`scroll_to(y=0)`, follow-tail re-attaches. All four `TestFollowingTheTail` tests
+that add messages and then scroll now settle first. The tag had already been
+published, so the release was recut (see below).

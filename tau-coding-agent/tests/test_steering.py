@@ -125,18 +125,18 @@ async def _settle(app, backend, pilot, tries: int = 200) -> None:
 
 
 class TestFollowingTheTail:
-    async def test_new_content_scrolls_down_while_the_reader_is_at_the_bottom(self, app):
+    async def test_new_content_scrolls_down_while_the_reader_is_at_the_bottom(self, app, settle_transcript):
         async with app.run_test() as pilot:
             await pilot.pause()
             display = app.query_one(transcript.ChatDisplay)
             for i in range(40):
                 display.add_message("user", f"line {i}", source="verbatim")
-            await pilot.pause()
+            await settle_transcript(pilot, display)
 
             assert display._follow_tail is True
             await _until(pilot, lambda: display.is_vertical_scroll_end)
 
-    async def test_scrolling_up_stops_the_view_being_dragged_back_down(self, app):
+    async def test_scrolling_up_stops_the_view_being_dragged_back_down(self, app, settle_transcript):
         """The behaviour the whole change is for: a turn that streams for a minute
         must not yank the view back to the bottom on every delta."""
         async with app.run_test() as pilot:
@@ -144,7 +144,7 @@ class TestFollowingTheTail:
             display = app.query_one(transcript.ChatDisplay)
             for i in range(60):
                 display.add_message("user", f"line {i}", source="verbatim")
-            await pilot.pause()
+            await settle_transcript(pilot, display)
 
             display.scroll_to(y=0, animate=False, immediate=True)
             await pilot.pause()
@@ -156,14 +156,14 @@ class TestFollowingTheTail:
 
             assert display.scroll_offset.y == here, "the view was dragged to the bottom"
 
-    async def test_scrolling_back_to_the_bottom_re_attaches(self, app):
+    async def test_scrolling_back_to_the_bottom_re_attaches(self, app, settle_transcript):
         """No separate gesture to learn: being at the bottom IS following."""
         async with app.run_test() as pilot:
             await pilot.pause()
             display = app.query_one(transcript.ChatDisplay)
             for i in range(60):
                 display.add_message("user", f"line {i}", source="verbatim")
-            await pilot.pause()
+            await settle_transcript(pilot, display)
 
             display.scroll_to(y=0, animate=False, immediate=True)
             await pilot.pause()
@@ -173,7 +173,7 @@ class TestFollowingTheTail:
             await pilot.pause()
             assert display._follow_tail is True
 
-    async def test_a_reload_re_attaches_the_tail(self, app):
+    async def test_a_reload_re_attaches_the_tail(self, app, settle_transcript):
         """A reload replaces the transcript, so a scroll position taken in the old
         document does not describe a place in the new one."""
         async with app.run_test() as pilot:
@@ -181,7 +181,7 @@ class TestFollowingTheTail:
             display = app.query_one(transcript.ChatDisplay)
             for i in range(60):
                 display.add_message("user", f"line {i}", source="verbatim")
-            await pilot.pause()
+            await settle_transcript(pilot, display)
             display.scroll_to(y=0, animate=False, immediate=True)
             await pilot.pause()
             assert display._follow_tail is False
