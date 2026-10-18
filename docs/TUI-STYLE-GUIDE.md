@@ -75,6 +75,10 @@ Style by role, not by dialog. The six are:
 `help` and `hint` stay separate deliberately. The screens this replaced had four
 different treatments between them for what turned out to be these two roles.
 
+A dialog whose body can outgrow the terminal sets `BODY_ID`, and the shell pins
+its title and its `compose_footer()` (the buttons) around a scrolling body
+(docs/MODEL-PICKER.md §3).
+
 A per-dialog id rule may state `width`, `height`, `padding` and `overflow` — the
 things that genuinely differ — and nothing else. Colour, border and text style come
 from the class or they are a bug.
@@ -340,6 +344,16 @@ A paragraph naming a consequence before it happens. Left-aligned: it runs to sev
 #### `Vertical.tau-dialog-buttons Button`
 
 Stacked buttons are full-sentence choices, so they take the width and drop the side margin; each already carries a border, so a blank row between them would buy separation that is already there and cost one row per choice.
+
+
+#### `.tau-dialog-scrolling > .tau-dialog-header / .tau-dialog-footer / .tau-dialog-body`
+
+A dialog that sets `BODY_ID` (docs/MODEL-PICKER.md §3). The header and footer DOCK, and that is what makes the body's `max-height: 100%` mean "what they leave": a percentage height is taken from the frame's content box minus its docked children, so a title left in the flow would push the body two rows under the footer. Two widgets docked to the same edge overlap rather than stack, which is why the title and `compose_header()` share one docked `Vertical`.
+
+
+#### `.tau-choice-list`
+
+A single-choice list scrolls itself past 12 rows, so a long option list never pushes the rest of a form below the body's fold; the filter box above it is what makes a 22-model list usable at that height.
 
 
 ### Sidebar
