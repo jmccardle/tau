@@ -50,7 +50,7 @@ from tau_agent_core.rpc.records import (
 from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.submission import MultitaskStrategy, SubmissionSource
 
-PROTOCOL_VERSION = "0.9"
+PROTOCOL_VERSION = "0.10"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256
@@ -490,6 +490,8 @@ class HelloResult:
         version: τ's package version, as ``tau --version`` prints it.
         cwd: The daemon's working directory at start, absolute; a default for
             :class:`NewSession`.
+        models: Every model the daemon's config defines, the list :class:`Attached`
+            repeats, so a client can offer one before it attaches (protocol 0.10).
     """
 
     protocol: str
@@ -497,6 +499,7 @@ class HelloResult:
     pid: int
     version: str
     cwd: str
+    models: list[ModelRecord]
 
 
 @dataclass

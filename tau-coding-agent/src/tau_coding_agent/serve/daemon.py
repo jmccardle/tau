@@ -108,6 +108,14 @@ def watch_writes(log: SessionLog, listener: Callable[[str, dict[str, Any]], None
     log.finalize = watched_finalize  # type: ignore[method-assign]
 
 
+def model_records(resolver: Any) -> list[p.ModelRecord]:
+    """``resolver``'s models as the wire lists them, in ``Hello`` and ``Attach`` alike."""
+    return [
+        p.ModelRecord(name=m["name"], model=records.ModelSpec(**m["model"]))
+        for m in model_catalog(resolver)
+    ]
+
+
 @dataclasses.dataclass(frozen=True)
 class SessionScope:
     """The ``runtime`` :func:`~tau_agent_core.flows.enumerate_domain` reads: a catalog and a cwd."""
@@ -464,10 +472,7 @@ class SessionHost:
 
     def models(self) -> list[p.ModelRecord]:
         """Every model the session's resolver accepts, as ``get_models`` lists them."""
-        return [
-            p.ModelRecord(name=m["name"], model=records.ModelSpec(**m["model"]))
-            for m in model_catalog(self.agent_session.model_resolver)
-        ]
+        return model_records(self.agent_session.model_resolver)
 
     @property
     def cwd(self) -> str:
@@ -585,6 +590,10 @@ class Daemon:
     Attributes:
         config: The daemon's own ``~/.tau/config.json``; a client's config never applies.
         token: The ``serve.token`` every hello must carry, or ``None`` for none.
+        model_resolver: ``make_model_resolver(config)``, built once: every loaded
+            session is bound to it and every hello lists it, so the list a client
+            sees before attach is the one a session resolves through
+            (docs/MODEL-PICKER.md §7).
     """
 
     def __init__(
@@ -594,8 +603,11 @@ class Daemon:
         *,
         out: TextIO | None = None,
     ) -> None:
+        from tau_coding_agent.backends import make_model_resolver
+
         self.config = config
         self.catalog = catalog
+        self.model_resolver = make_model_resolver(config)
         serve_config = config.get("serve") or {}
         token = serve_config.get("token")
         self.token: str | None = str(token) if token else None
@@ -704,6 +716,7 @@ class Daemon:
             pid=os.getpid(),
             version=__version__,
             cwd=self.cwd,
+            models=model_records(self.model_resolver),
         )
         client.push(self._ok(request_id, p.to_wire(hello_result)))
         return True
@@ -787,7 +800,7 @@ class Daemon:
 
     async def _host_for(self, log: ConversationSession, model: str | None) -> SessionHost:
         """Build a backend for ``log`` from the daemon's config, the way ``tau -p --session`` does."""
-        from tau_coding_agent.backends import create_backend, make_model_resolver
+        from tau_coding_agent.backends import create_backend
         from tau_coding_agent.cli import CLIArgs
         from tau_coding_agent.headless import resolve_model_config
 
@@ -807,7 +820,7 @@ class Daemon:
             model_config["system_prompt"] = self.config["system_prompt"]
         model_config["cwd"] = cwd
         backend: Any = create_backend(model_config)
-        backend.agent_session.set_model_resolver(make_model_resolver(self.config))
+        backend.agent_session.set_model_resolver(self.model_resolver)
         host = SessionHost(self, log, backend)
         await host.start(cwd)
         return host

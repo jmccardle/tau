@@ -176,6 +176,31 @@ async def test_fork_under_connect_opens_the_daemons_copy(daemon, tau_home, tmp_p
     await remote.close()
 
 
+async def test_model_completion_before_attach_offers_the_daemons_models(
+    daemon, tau_home, tmp_path
+):
+    """Protocol 0.10's hello lists models, so an unattached head completes ``/model``
+    from the daemon's config, never its own (docs/MODEL-PICKER.md §7)."""
+    from tau_coding_agent import chat_widgets, editor_widgets
+
+    _served, address = daemon
+    remote = RemoteConnection(address, cwd=str(tmp_path))
+    app = build_tau_app(tau_home, remote=remote)
+    async with app.run_test() as pilot:
+        await _until(pilot, lambda: remote._ready.is_set())
+        assert app.current_backend is None
+        editor = app.query_one(chat_widgets.ChatInput)
+        popup = app.query_one(editor_widgets.CommandPopup)
+        editor.focus()
+        editor.text = "/model "
+        editor.move_cursor(editor.document.end)
+        await pilot.pause()
+        assert "fake" in popup.text and "other" in popup.text
+        assert "needs" not in popup.text
+        assert " m " not in f" {popup.text} ", "the client's own config never applies"
+    await remote.close()
+
+
 async def test_a_flow_step_under_connect_is_asked_and_stepped_on_the_daemon(
     daemon, tau_home, tmp_path
 ):

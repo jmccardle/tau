@@ -85,6 +85,21 @@ class RemoteConnection:
         self._start_error: BaseException | None = None
 
     @property
+    def connected(self) -> bool:
+        """Whether a hello has been answered, so :meth:`model_names` can be asked."""
+        return self._client is not None
+
+    def model_names(self) -> list[str]:
+        """The daemon's model names from its hello; a ``ModelCatalog`` before any attach.
+
+        Raises:
+            RuntimeError: no hello has been answered yet.
+        """
+        if self._client is None:
+            raise RuntimeError("not connected to the daemon yet, so its models are unknown")
+        return [m["name"] for m in self._client.hello["models"]]
+
+    @property
     def is_local(self) -> bool:
         """Whether the daemon is on this machine (a unix socket or a loopback host)."""
         if self.address.path is not None:
@@ -656,10 +671,6 @@ class RemoteBackend(Backend):
     def session_id(self) -> str:
         """The daemon session this backend drives."""
         return self._session_id
-
-    def model_names(self) -> list[str]:
-        """The daemon's model names, as the attach listed them; a ``ModelCatalog``."""
-        return [m["name"] for m in self.replica.models]
 
     @property
     def pending_request(self) -> ExtensionRequest | None:

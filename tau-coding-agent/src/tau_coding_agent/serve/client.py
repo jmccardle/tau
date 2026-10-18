@@ -151,9 +151,13 @@ class ServeClient:
     Construct with :meth:`connect`. Events for attached sessions are applied to
     :attr:`replicas` before the handler sees them, so a handler reads a replica
     that already includes the event.
+
+    Attributes:
+        hello: The daemon's ``HelloResult``, as JSON; ``models`` is its model list.
     """
 
     def __init__(self, ws: Any, on_event: EventHandler | None) -> None:
+        self.hello: dict[str, Any] = {}
         self._ws = ws
         self._on_event = on_event
         self._ids = itertools.count(1)
@@ -188,7 +192,7 @@ class ServeClient:
             ws = await connect(address.url, max_size=None)
         self = cls(ws, on_event)
         self._reader = asyncio.create_task(self._read())
-        await self.request(
+        self.hello = await self.request(
             p.Hello(
                 protocol=p.PROTOCOL_VERSION,
                 client=client,

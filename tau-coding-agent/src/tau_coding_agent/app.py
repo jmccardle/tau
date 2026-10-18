@@ -1309,15 +1309,13 @@ class TauApp(App):
         """Where this head's model names come from, session or not (docs/MODEL-PICKER.md §2).
 
         Locally, the resolver over ``self.config`` that every session here is bound
-        to; under ``--connect``, the attached daemon session's catalogue, and
-        ``None`` before one is attached, since the client's config never applies.
+        to. Under ``--connect``, the daemon's list from its hello (protocol 0.10),
+        attached or not, since the client's config never applies; ``None`` only
+        before the hello is answered.
         """
         if self._remote is None:
             return make_model_resolver(self.config)
-        from tau_coding_agent.serve.remote import RemoteBackend
-
-        backend = self.current_backend
-        return backend if isinstance(backend, RemoteBackend) else None
+        return self._remote if self._remote.connected else None
 
     def _argument_completions(self, text: str) -> ArgumentCompletions | None:
         """Legal values for the command argument being typed, for the Tab cycle and popup.

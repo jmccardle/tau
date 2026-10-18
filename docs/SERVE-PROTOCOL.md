@@ -6,7 +6,7 @@
 >
 > Design of record: `docs/TAU-SERVE.md` §5–§7.
 
-- **Protocol version:** `0.9`
+- **Protocol version:** `0.10`
 - **Default port:** `8256`
 - **Counts:** 50 requests (35 of them RPC verbs), 10 event kinds, 199 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
@@ -1344,6 +1344,7 @@ The answer to `Hello`.
 | `pid` | integer | yes | The daemon's process id. |
 | `version` | string | yes | τ's package version, as `tau --version` prints it. |
 | `cwd` | string | yes | The daemon's working directory at start, absolute; a default for `NewSession`. |
+| `models` | list of [ModelRecord](#modelrecord) | yes | Every model the daemon's config defines, the list `Attached` repeats, so a client can offer one before it attaches (protocol 0.10). |
 
 ### ImageContent
 

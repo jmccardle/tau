@@ -450,7 +450,21 @@ async def test_the_hello_names_the_daemon(daemon):
         "pid": os.getpid(),
         "version": __version__,
         "cwd": os.getcwd(),
+        "models": hello["result"]["models"],
     }
+    await client.close()
+    client.check()
+
+
+async def test_the_hello_lists_the_models_an_attach_lists(daemon, tmp_path):
+    """Protocol 0.10: a client can offer a model before it attaches (docs/MODEL-PICKER.md §7)."""
+    client = await Recorder.open(daemon.address)
+    [(_, hello)] = client.answers
+    before = hello["result"]["models"]
+    assert [m["name"] for m in before] == ["fake", "other"]
+    sid = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
+    attached = await client.request(p.Attach(session_id=sid))
+    assert attached["models"] == before
     await client.close()
     client.check()
 

@@ -1,7 +1,9 @@
 # Models without a session, and a choice field Enter can answer
 
-Built 2026-10-17. `model_name` lists without a session in every head, and a flow
-form's single-choice field is a filterable list with its buttons pinned on screen.
+Built 2026-10-17, and extended 2026-10-18 so the serve hello lists models
+(protocol 0.10, §7). `model_name` lists without a session in every head, and a
+flow form's single-choice field is a filterable list with its buttons pinned on
+screen.
 
 Both faults came from test-driving `/model` on the new-session screen. Neither
 was a TUI quirk. The first was a core seam that bound a fact of config to a
@@ -80,18 +82,19 @@ Alternatives, and why each loses:
 Per head:
 
 - **TUI.** `TauApp._model_catalog()` gives the config resolver locally. Under
-  `--connect` it gives the attached `RemoteBackend`, which now answers
-  `model_names()` from `replica.models`. Before attaching it gives `None`, since
-  the client's config never applies to a daemon. The completion popup, the flow
-  form's options and bare `/model` all pass it. Bare `/model` no longer needs a
-  backend, and its `replica` special case is gone.
+  `--connect` it gives the `RemoteConnection`, which answers `model_names()` from
+  the daemon's hello, attached or not (§7, protocol 0.10). The client's own
+  config never applies to a daemon. The completion popup, the flow form's
+  options and bare `/model` all pass it. Bare `/model` no longer needs a backend,
+  and its `replica` special case is gone.
 - **REPL.** It builds its session before the prompt opens, so it always had one.
   Nothing changed.
 - **RPC and serve.** `RPCHandler` always holds a session with a bound resolver,
   so `enumerate_domain {"domain": "model_name"}` with no session cannot be
   reached on the wire, and no test claims otherwise.
 - **Web (tau-code).** It speaks the serve protocol, so it gets what serve gives:
-  models at attach, and through `enumerate_domain` after that.
+  models in the hello from protocol 0.10, at attach, and through
+  `enumerate_domain` after that. It must follow the bump (§7).
 
 ## 3. A dialog whose body scrolls between pinned header and footer
 
@@ -182,14 +185,22 @@ ask's action picker uses the same rule. A multiselect still takes numbers only.
 
 ## 7. Absent
 
-- **Serve does not list models before attach.** The data is one call away
-  (`make_model_resolver(daemon.config)`). The hard part is putting it on the
-  wire, which means a `models` field on `HelloResult` or `SessionList` and a
-  protocol bump from 0.9 to 0.10. The hello refuses any version mismatch, so the
-  bump breaks every tau-code client until that repo follows. That is a release
-  decision, not part of this fix. Until then, a `--connect` TUI that has not
-  attached gets `None` from `_model_catalog()`, and its `/model ` popup shows the
-  one-clause refusal. In that state the head genuinely cannot answer.
+- **Serve listing models before attach: built 2026-10-18, protocol 0.10.** This
+  was absent in the first build. It needed a wire change, and John approved the
+  bump. `HelloResult` now carries a required `models`, a list of `ModelRecord`
+  (`{name, model: {id, provider, context_window}}`), the same shape and the same
+  list as `Attached.models`. It is on the hello rather than `SessionList` because
+  the hello is the one answer every client reads before anything else. The
+  daemon builds `make_model_resolver(config)` once, as `Daemon.model_resolver`.
+  It binds that object onto every session it loads and lists it in every hello,
+  so the two lists cannot disagree. `ServeClient.hello` keeps the answer.
+  `RemoteConnection.model_names()` reads it, and `_model_catalog()` returns the
+  connection whether the head is attached or not. So the refusal under
+  `--connect` is now reachable only in the moment before the hello is answered.
+  The hello refuses a version mismatch, so a 0.9 client (tau-code until it
+  follows) cannot talk to a 0.10 daemon. RPC stays 2.2: its version is
+  independent of serve's, and nothing on the RPC wire changed
+  (docs/TAU-SERVE.md §5, the 0.10 built note).
 - **Other session-bound domains under `--connect` keystroke completion.**
   `message_id` and `extension_name` still refuse in the popup, because
   `RemoteBackend` has no in-process session. The flow form under `--connect`
