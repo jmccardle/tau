@@ -545,8 +545,8 @@ carries a `LATER_STDLIB` table. The annotation path was checked by hand on
 ## 9. Stub names and references, issues #32–#34 (2026-10-18)
 
 Each fix has a test, under "issues #32/#33" in `test_codemode_providers.py` or
-"issues #33, #34" in `test_tool_exposure_experiment.py`. All nine tests failed
-against the code before the fix (ran).
+"issues #33, #34" in `test_tool_exposure_experiment.py`. The first nine
+failed against the code before the fix (ran).
 
 - **One renderer (#32).** Code mode's prompt, its `ty` stub file and its
   `describe_tool` all render through `tool_schema.StubNamespace`, which
@@ -570,10 +570,14 @@ against the code before the fix (ran).
   so a stub never names the wrong tool. `call_tool` tries the real name first,
   which cannot collide because real names are unique, then the stub name. The
   code-mode invoker raises at construction on a collision, and it no longer
-  leaves out a tool whose name is not an identifier. A keyword gains a
-  trailing `_`, not a leading one, because Monty refuses an attribute that
-  starts with `_` (ran). The CPython child now refuses only dunders, so a stub
-  name starting with `_` (a name starting with a digit) still works there.
+  leaves out a tool whose name is not an identifier. Monty refuses an
+  attribute that starts with `_` (ran), so a stub name never gains one: a
+  keyword gains a trailing `_`, and a name that cannot start an identifier
+  (`1tool`) gains `t_`. A real `t_1tool` beside it is a collision and raises.
+  Only a tool whose real name starts with `_` still stubs that way. The Monty
+  provider raises `ValueError` naming such a tool when it builds the prompt or
+  runs a script, rather than listing a tool it cannot call. The CPython child
+  now refuses only dunders, so it calls such a tool.
 - **Unresolved `$ref` (#34).** `render_stub` raises `ValueError` naming the
   tool and the `$ref`. It used to write a class name it never defined. Code
   mode raises the same error, because it renders through the same writer.

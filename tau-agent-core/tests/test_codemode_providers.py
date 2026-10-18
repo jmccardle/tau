@@ -356,3 +356,48 @@ async def test_monty_type_checks_a_non_identifier_parameter() -> None:
         assert ok.output == "2->None\n"
     finally:
         await p.close()
+
+
+def test_a_digit_leading_tool_stubs_with_a_letter_prefix_that_clashes_loudly() -> None:
+    from tau_agent_core.tool_schema import stub_name, stub_names
+
+    assert stub_name("1tool") == "t_1tool"
+    assert stub_name("x²") == "x_"
+    with pytest.raises(ValueError, match="'1tool', 't_1tool' all stub as 't_1tool'"):
+        stub_names(["1tool", "t_1tool"])
+
+
+async def test_both_runtimes_call_a_digit_leading_tool(provider: SandboxProvider) -> None:
+    digit = _tool("1add", _add, {"a": {"type": "integer"}, "b": {"type": "integer"}}, ["a", "b"])
+    r = await _run(
+        provider, "print(await tools.t_1add(a=1, b=2))", tools=DirectToolInvoker([digit])
+    )
+    assert r.ok, r.error
+    assert r.output == "3\n" and [c.name for c in r.calls] == ["1add"]
+
+
+async def test_monty_refuses_a_tool_it_cannot_reach_and_cpython_calls_it() -> None:
+    from tau_agent_core.codemode.extension import CodeMode, CodeModeConfig
+
+    hidden = [_tool("_add", _add, {"a": {"type": "integer"}, "b": {"type": "integer"}}, ["a", "b"])]
+    code = "print(await tools._add(a=1, b=2))"
+    runner = _make("cpython")
+    await runner.start()
+    try:
+        cpython = await _run(runner, code, tools=DirectToolInvoker(hidden))
+    finally:
+        await runner.close()
+    assert cpython.ok and cpython.output == "3\n", cpython.error
+    mode = CodeMode(CodeModeConfig.from_mapping({"provider": "monty"}))
+    with pytest.raises(
+        ValueError, match=r"cannot call '_add' \(as tools._add\).*starting with '_'"
+    ):
+        mode.section(hidden)
+    if HAVE_MONTY:
+        monty = _make("monty")
+        await monty.start()
+        try:
+            with pytest.raises(ValueError, match="cannot call '_add'"):
+                await _run(monty, code, tools=DirectToolInvoker(hidden))
+        finally:
+            await monty.close()

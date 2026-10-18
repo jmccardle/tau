@@ -389,17 +389,19 @@ class _StubWriter:
 
 @agent_facing(topic="tools")
 def stub_name(name: str) -> str:
-    """The identifier a stub gives tool ``name``: non-word characters become ``_``.
+    """The identifier a stub gives tool ``name``.
 
-    ``my-tool`` stubs as ``my_tool``; a keyword gains a trailing ``_``
-    (``from_``), and a name starting with a digit a leading one. ``call_tool``
-    and code mode resolve it back through :func:`stub_names`.
+    A character an identifier cannot contain becomes ``_`` (``my-tool`` →
+    ``my_tool``), a keyword gains a trailing ``_`` (``from_``), and a name that
+    cannot start an identifier gains ``t_`` (``1tool`` → ``t_1tool``), since
+    Monty refuses an attribute starting with ``_``. ``call_tool`` and code mode
+    resolve it back through :func:`stub_names`, which raises on a clash.
     """
-    ident = re.sub(r"\W", "_", name)
+    ident = "".join(c if f"a{c}".isidentifier() else "_" for c in name)
     if keyword.iskeyword(ident):
         return f"{ident}_"
-    if not ident or ident[0].isdigit():
-        return f"_{ident}"
+    if not ident.isidentifier():
+        return f"t_{ident}"
     return ident
 
 

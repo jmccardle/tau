@@ -848,11 +848,13 @@ stub_name(name: str) -> str
 
 `tau_agent_core.tool_schema.stub_name`
 
-The identifier a stub gives tool ``name``: non-word characters become ``_``.
+The identifier a stub gives tool ``name``.
 
-``my-tool`` stubs as ``my_tool``; a keyword gains a trailing ``_``
-(``from_``), and a name starting with a digit a leading one. ``call_tool``
-and code mode resolve it back through :func:`stub_names`.
+A character an identifier cannot contain becomes ``_`` (``my-tool`` →
+``my_tool``), a keyword gains a trailing ``_`` (``from_``), and a name that
+cannot start an identifier gains ``t_`` (``1tool`` → ``t_1tool``), since
+Monty refuses an attribute starting with ``_``. ``call_tool`` and code mode
+resolve it back through :func:`stub_names`, which raises on a clash.
 
 **Parameters**
 

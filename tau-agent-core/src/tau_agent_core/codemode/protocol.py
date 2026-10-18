@@ -9,7 +9,7 @@ provider contributes (:class:`PromptTemplates`).
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -235,6 +235,10 @@ class SandboxProvider(Protocol):
 
     def prompt(self) -> PromptTemplates:
         """The default prompt templates for this provider."""
+        ...
+
+    def check_stubs(self, stubs: Sequence[ToolStub]) -> None:
+        """Raise ``ValueError`` naming each stub this runtime cannot call."""
         ...
 
 
