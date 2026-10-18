@@ -35,7 +35,7 @@ from typing import Any, ClassVar, Iterable, Optional, TypeVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static, TextArea
 
@@ -80,11 +80,17 @@ class TauDialog(ModalScreen[_T]):
         CANCEL_VALUE: What ``escape`` dismisses with. ``None`` for a dialog returning
             an optional value, ``False`` for a confirmation — a cancelled question is
             never a hidden yes.
+        BODY_ID: Set it to give the dialog a scrolling body with that id between a
+            header (the title plus :meth:`compose_header`) and a footer
+            (:meth:`compose_footer`), both pinned, so the buttons stay on screen
+            however long the body is (docs/MODEL-PICKER.md §3). ``None`` keeps the
+            plain stack.
     """
 
     DIALOG_ID: ClassVar[str] = "tau-dialog"
     TITLE_TEXT: ClassVar[str] = ""
     CANCEL_VALUE: ClassVar[Any] = None
+    BODY_ID: ClassVar[Optional[str]] = None
 
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
@@ -100,10 +106,28 @@ class TauDialog(ModalScreen[_T]):
         """Everything between the title and the bottom of the frame."""
         raise NotImplementedError(f"{type(self).__name__} must supply compose_body()")
 
+    def compose_header(self) -> ComposeResult:
+        """What stays pinned under the title when :attr:`BODY_ID` is set."""
+        yield from ()
+
+    def compose_footer(self) -> ComposeResult:
+        """What stays pinned at the bottom when :attr:`BODY_ID` is set: hints, buttons."""
+        yield from ()
+
     def compose(self) -> ComposeResult:
-        with Container(id=self.DIALOG_ID, classes="tau-dialog"):
-            yield Static(self.dialog_title(), classes="tau-dialog-title")
-            yield from self.compose_body()
+        if self.BODY_ID is None:
+            with Container(id=self.DIALOG_ID, classes="tau-dialog"):
+                yield Static(self.dialog_title(), classes="tau-dialog-title")
+                yield from self.compose_body()
+            return
+        with Container(id=self.DIALOG_ID, classes="tau-dialog tau-dialog-scrolling"):
+            with Vertical(classes="tau-dialog-header"):
+                yield Static(self.dialog_title(), classes="tau-dialog-title")
+                yield from self.compose_header()
+            with Vertical(classes="tau-dialog-footer"):
+                yield from self.compose_footer()
+            with VerticalScroll(id=self.BODY_ID, classes="tau-dialog-body"):
+                yield from self.compose_body()
 
     def action_cancel(self) -> None:
         self.dismiss(self.CANCEL_VALUE)

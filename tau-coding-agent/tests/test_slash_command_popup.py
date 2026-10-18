@@ -59,8 +59,8 @@ class _NoExtensionsBackend:
         raise AssertionError("no test in this module runs a turn")
 
 
-def _app(make_app, backend: Any = None) -> TauApp:
-    return make_app(create_backend=lambda cfg: backend or _Backend())
+def _app(make_app, backend: Any = None, config: dict[str, Any] | None = None) -> TauApp:
+    return make_app(create_backend=lambda cfg: backend or _Backend(), config=config)
 
 
 async def _type(pilot, editor: chat_widgets.ChatInput, text: str) -> None:
@@ -383,9 +383,26 @@ class TestTheArgumentVocabulary:
             editor = app.query_one(chat_widgets.ChatInput)
             popup = app.query_one(editor_widgets.CommandPopup)
             editor.focus()
-            await _type(pilot, editor, "/model ")
+            await _type(pilot, editor, "/reload_extension ")
             assert popup.display is True
             assert "needs a session" in popup.text
+
+    async def test_models_are_offered_before_any_session_exists(self, make_app):
+        """The new-session screen has no backend; the models come from config.
+
+        docs/MODEL-PICKER.md §2: which models exist is a fact of config, so the
+        popup offers them, and the refusal wording never reaches the screen.
+        """
+        app = _app(make_app, config={"models": {"alpha": {}, "beta": {}}})
+        async with app.run_test() as pilot:
+            assert app.current_backend is None
+            editor = app.query_one(chat_widgets.ChatInput)
+            popup = app.query_one(editor_widgets.CommandPopup)
+            editor.focus()
+            await _type(pilot, editor, "/model ")
+            assert popup.display is True
+            assert "alpha" in popup.text and "beta" in popup.text
+            assert "needs" not in popup.text
 
     async def test_a_free_argument_keeps_the_command_description(self, make_app):
         """``/name`` takes any text, so there is nothing to offer and the popup

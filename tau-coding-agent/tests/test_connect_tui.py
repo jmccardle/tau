@@ -179,8 +179,6 @@ async def test_fork_under_connect_opens_the_daemons_copy(daemon, tau_home, tmp_p
 async def test_a_flow_step_under_connect_is_asked_and_stepped_on_the_daemon(
     daemon, tau_home, tmp_path
 ):
-    from textual.widgets import RadioButton, RadioSet
-
     from tau_coding_agent import modals
 
     served, address = daemon
@@ -196,8 +194,8 @@ async def test_a_flow_step_under_connect_is_asked_and_stepped_on_the_daemon(
         screen = app.screen
         names = [m["name"] for m in app.current_backend.replica.models]
         assert names == ["fake", "other"]
-        await _until(pilot, lambda: len(screen.query(RadioButton)) == 2)
-        labels = [str(b.label) for b in screen.query_one(RadioSet).query(RadioButton)]
+        await _until(pilot, lambda: len(screen.query(modals.ChoiceField)) == 1)
+        labels = screen.query_one(modals.ChoiceField).shown
         assert labels == ["fake", "other"], "the options are the daemon's enumeration"
         screen.dismiss({"name": "other"})
 

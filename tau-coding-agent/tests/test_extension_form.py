@@ -20,7 +20,7 @@ Reference: docs/EXTENSIONS-DEMO-ROADMAP.md §6 S66.
 from __future__ import annotations
 
 from textual.app import App
-from textual.widgets import Checkbox, Input, RadioSet, SelectionList
+from textual.widgets import Checkbox, Input, SelectionList
 
 from tau_coding_agent import modals, extension_ui
 
@@ -57,9 +57,8 @@ async def test_form_defaults_prefill_every_field() -> None:
         await pilot.pause()
         screen = harness.screen
         assert screen.query_one("#ext-form-field-0", Input).value == "draft"
-        # select: the default option is the pressed radio.
-        radio = screen.query_one("#ext-form-field-1", RadioSet)
-        assert radio._nodes[radio.pressed_index].label.plain == "high"
+        # select: the default option is the highlighted choice.
+        assert screen.query_one("#ext-form-field-1", modals.ChoiceField).value == "high"
         # multiselect: only the default is selected.
         assert list(screen.query_one("#ext-form-field-2", SelectionList).selected) == ["b"]
         assert screen.query_one("#ext-form-field-3", Checkbox).value is True

@@ -44,6 +44,14 @@ Vertical.tau-dialog-buttons Button { width: 100%; margin: 0; }
 
 .tau-dialog-input:focus { border: solid $tau-accent; }
 
+/* A BODY_ID dialog: the header and footer dock, so 100% is what they leave. */
+.tau-dialog-scrolling > .tau-dialog-header { dock: top; height: auto; }
+.tau-dialog-scrolling > .tau-dialog-footer { dock: bottom; height: auto; }
+.tau-dialog-scrolling > .tau-dialog-body { height: auto; max-height: 100%; }
+
+.tau-choice { height: auto; }
+.tau-choice-list { height: auto; max-height: 12; }
+
 /* === Sidebar === */
 
 /* Slightly darker than main */
@@ -360,14 +368,12 @@ ZoneTree > .tree--kind-structural { color: $tau-text-quiet; text-style: italic; 
 
 #ext-chord-dialog, #ext-form-dialog { max-height: 90%; }
 .ext-chord-entry { color: $tau-text; }
-#ext-form-fields { height: auto; max-height: 24; }
 .ext-form-label { color: $tau-text-dim; margin-top: 1; }
 #ext-form-buttons { margin-top: 1; }
 
 /* === Extension ask + its transcript row (docs/EXTENSION-LOCKS.md §8, §9) === */
 
 #ext-ask-dialog { width: 76; max-height: 90%; }
-#ext-ask-body { height: auto; max-height: 24; }
 .ext-ask-panel { color: $tau-text; margin-bottom: 1; }
 #ext-ask-buttons { margin-top: 1; }
 

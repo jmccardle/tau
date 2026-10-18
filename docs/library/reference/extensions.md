@@ -1797,6 +1797,29 @@ namespace. A subscriber passes the result to ``api.on(...)``.
 
 ``ext:<name>:<topic>``.
 
+## filter_choices
+<!-- agent: yes -->
+
+```python
+filter_choices(options: list[str], query: str) -> list[str]
+```
+
+`tau_agent_core.extension_types.filter_choices`
+
+The options a filter box's ``query`` leaves, in their original order.
+
+A case-insensitive substring match, so typing any part of a name narrows to
+it. A blank query leaves every option.
+
+**Parameters**
+
+- `options: list[str]` — A ``select`` field's options.
+- `query: str` — What was typed into the filter.
+
+**Returns**
+
+The matching options; empty when none match.
+
 ## form_headless_value
 <!-- agent: yes -->
 
@@ -1818,6 +1841,35 @@ no policy the form raises instead of fabricating an answer.
 **Returns**
 
 The field's declared ``default`` when present; otherwise the kind's empty value (``""``, ``0``, ``False``, ``[]``), or a ``select``'s first option.
+
+## match_choice
+<!-- agent: yes -->
+
+```python
+match_choice(options: list[str], text: str) -> str
+```
+
+`tau_agent_core.extension_types.match_choice`
+
+The one option a typed answer names, for a head that reads a line.
+
+Tried in order: a number from 1 to ``len(options)``, the position a numbered
+list printed; then a name equal to ``text`` ignoring case; then the one name
+it begins; then the one name it appears in. The first rule with any hit
+decides. Text that is all digits is only ever a position.
+
+**Parameters**
+
+- `options: list[str]` — A ``select`` field's options.
+- `text: str` — What was typed.
+
+**Returns**
+
+The named option.
+
+**Raises**
+
+- `ValueError` — ``text`` names no option, or more than one, naming them.
 
 ## match_tools
 <!-- agent: yes -->

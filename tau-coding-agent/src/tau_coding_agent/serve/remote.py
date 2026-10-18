@@ -657,6 +657,10 @@ class RemoteBackend(Backend):
         """The daemon session this backend drives."""
         return self._session_id
 
+    def model_names(self) -> list[str]:
+        """The daemon's model names, as the attach listed them; a ``ModelCatalog``."""
+        return [m["name"] for m in self.replica.models]
+
     @property
     def pending_request(self) -> ExtensionRequest | None:
         """The extension request at the head cursor, read from the replica (EXTENSION-LOCKS §2)."""

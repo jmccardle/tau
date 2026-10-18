@@ -10,7 +10,7 @@ Reference: docs/TUI-STYLE-GUIDE.md §2.
 from __future__ import annotations
 
 import pytest
-from textual.widgets import Input, RadioButton, RadioSet
+from textual.widgets import Input
 
 from tau_coding_agent import chat_widgets, modals
 from tau_coding_agent.backends import create_backend, make_model_resolver
@@ -67,8 +67,7 @@ async def test_bare_slash_model_opens_a_form_offering_the_legal_names(
 
         screen = app.screen
         assert isinstance(screen, modals.ExtensionFormScreen)
-        buttons = screen.query_one("#ext-form-field-0", RadioSet).query(RadioButton)
-        assert [str(button.label) for button in buttons] == expected
+        assert screen.query_one("#ext-form-field-0", modals.ChoiceField).shown == expected
 
 
 async def test_the_forms_title_and_label_come_from_the_registry(app, wait_for_workers_settled):
@@ -100,8 +99,9 @@ async def test_answering_the_form_performs_the_mutation(app, wait_for_workers_se
         screen = app.screen
         assert isinstance(screen, modals.ExtensionFormScreen)
         index = list(resolver.model_names()).index(target)
-        screen.query_one("#ext-form-field-0", RadioSet).query(RadioButton)[index].value = True
-        screen.dismiss(screen._collect())
+        screen.query_one("#ext-form-field-0").query_one(modals.ChoiceList).highlighted = index
+        await pilot.pause()
+        await pilot.click("#ext-form-submit")
         await pilot.pause()
         await wait_for_workers_settled(app)
 

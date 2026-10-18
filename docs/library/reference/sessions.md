@@ -3504,6 +3504,27 @@ One candidate entry id, with the text that lets a person recognise it.
 - `entry_id: str` — The entry's id — the value a caller sends back.
 - `preview: str` — The entry's first line, the same row the tree browser draws.
 
+## ModelCatalog
+<!-- agent: yes -->
+
+`tau_agent_core.flows.ModelCatalog`
+
+Anything that can say which config model names exist.
+
+``ConfigModelResolver`` (what ``make_model_resolver(config)`` builds) is one;
+it is what a head binds onto each session it creates, so a head holding it can
+list models before any session exists (docs/MODEL-PICKER.md §2).
+
+### model_names
+
+```python
+model_names() -> list[str]
+```
+
+`tau_agent_core.flows.ModelCatalog.model_names`
+
+Every model name this catalog accepts, in display order.
+
 ## PasteMint
 <!-- agent: yes -->
 
@@ -5022,33 +5043,35 @@ The messages those entries contribute, in order. Entry kinds that carry no messa
 <!-- agent: yes -->
 
 ```python
-enumerate_domain(domain: str, *, session: Any = None, runtime: Any = None, scope: MessageIdScope | None = None, leaf: str | None = None, query: str = '', limit: int = _ENUMERATION_LIMIT, vocabulary: Vocabulary = BUILTIN) -> DomainValues
+enumerate_domain(domain: str, *, session: Any = None, runtime: Any = None, models: ModelCatalog | None = None, scope: MessageIdScope | None = None, leaf: str | None = None, query: str = '', limit: int = _ENUMERATION_LIMIT, vocabulary: Vocabulary = BUILTIN) -> DomainValues
 ```
 
 `tau_agent_core.flows.enumerate_domain`
 
 The values legal for ``domain`` right now, each with a readable label.
 
-The other half of the flow loop. A head calls this with the ``domain`` a
-:class:`FlowStep` handed it and renders what comes back — a completion list, a
-select field, a picker — without knowing what the domain means.
+A head calls this with the ``domain`` a :class:`FlowStep` handed it and renders
+what comes back — a completion list, a select field, a picker. It dispatches to
+the readers the RPC verbs use, so the two cannot disagree about what exists. A
+``free`` domain returns none with ``total`` 0; a fixed-value domain needs no
+object at all.
 
-Dispatches to the readers that already exist rather than reimplementing any of
-them, so a listing here and the corresponding RPC verb cannot disagree about what
-exists. A ``free`` domain has no value set and returns none, with ``total`` 0; a
-domain whose values are fixed returns them without touching either object.
+Each reader needs one object, and each object is passed on its own: the session
+for ``message_id`` and ``extension_name``, the runtime for ``session_id`` and
+``path``, and for ``model_name`` the session's resolver or, with no session,
+``models``. Which models exist is a fact of config, known before any session
+is (docs/MODEL-PICKER.md §2).
 
 A domain an extension declared is answered by the callable it registered, looked
-up BEFORE τ's own dispatch so an extension cannot be shadowed by a name τ later
-adds. The callable is passed ``query`` and ``limit`` and returns
-``(value, label)`` pairs; it never sees the session or the runtime, because an
-extension already holds its own context.
+up before τ's own dispatch so a later τ name cannot shadow it. The callable gets
+``query`` and ``limit`` and returns ``(value, label)`` pairs.
 
 **Parameters**
 
 - `domain: str` — The domain's name, a key of ``vocabulary.domains``.
-- `session: Any = None` — The :class:`~tau_agent_core.agent_session.AgentSession` to read models, extensions and the session tree from.
-- `runtime: Any = None` — The :class:`~tau_agent_core.agent_session_runtime.AgentSessionRuntime` to read the session catalog and the working directory from. Separate from ``session`` because both live there, not on the session. ``path`` needs it as much as ``session_id`` does: completing against the process's own directory instead of the runtime's answers a different question than the one that was asked, so its absence raises rather than falling back.
+- `session: Any = None` — The :class:`~tau_agent_core.agent_session.AgentSession` to read extensions, the session tree, and models from. Its ``model_resolver`` is what ``set_model`` resolves through, so with a session it is the ``model_name`` source.
+- `runtime: Any = None` — The :class:`~tau_agent_core.agent_session_runtime.AgentSessionRuntime` to read the session catalog and the working directory from. ``path`` raises without it rather than completing against the process's own directory, which would answer a different question.
+- `models: ModelCatalog | None = None` — Where ``model_name`` values come from when there is no session: the catalog a head binds onto the sessions it creates (``make_model_resolver(config)``), so the two lists cannot differ.
 - `scope: MessageIdScope | None = None` — For ``message_id``, which entries are candidates.
 - `leaf: str | None = None` — For a scoped ``message_id``, the entry the scope is relative to.
 - `query: str = ''` — Filter text. Honoured by the domains whose readers take one; a domain with a small fixed set ignores it.
@@ -5062,7 +5085,7 @@ class:`DomainValues` carrying the values and the true total.
 **Raises**
 
 - `KeyError` — No domain has that name.
-- `ValueError` — The domain needs an object this call did not supply — a session or a runtime. Fail-Early: returning an empty list would say "there are none" when the truth is "nothing was asked".
+- `ValueError` — The domain needs an object this call did not supply. An empty list would say "there are none" when nothing was asked.
 
 ## event_iso
 <!-- agent: yes -->

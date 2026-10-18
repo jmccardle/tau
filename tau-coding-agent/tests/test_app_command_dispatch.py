@@ -384,8 +384,6 @@ async def test_a_bare_flow_offers_the_domain_instead_of_failing(app):
     The labels are the enumerator's, not the head's: ``extension_name`` says whether
     each one is currently enabled, and that string is what the reader picks.
     """
-    from textual.widgets import RadioButton, RadioSet
-
     from tau_coding_agent import modals
 
     async with app.run_test() as pilot:
@@ -404,8 +402,7 @@ async def test_a_bare_flow_offers_the_domain_instead_of_failing(app):
 
         screen = app.screen
         assert isinstance(screen, modals.ExtensionFormScreen)
-        buttons = screen.query_one("#ext-form-field-0", RadioSet).query(RadioButton)
-        assert [str(button.label) for button in buttons] == [
+        assert screen.query_one("#ext-form-field-0", modals.ChoiceField).shown == [
             "/x/a.py (enabled)",
             "/x/b.py (disabled)",
         ]

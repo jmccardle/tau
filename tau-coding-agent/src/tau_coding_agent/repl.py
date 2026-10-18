@@ -61,6 +61,7 @@ from tau_agent_core.commands import (
 )
 from tau_agent_core.compaction import estimate_tokens
 from tau_agent_core.extension_locks import ExtensionRequest, refusal_reason
+from tau_agent_core.extension_types import match_choice
 from tau_agent_core.messages import is_displayed
 from tau_agent_core.flows import (
     Dispatched,
@@ -847,7 +848,7 @@ async def _ask_field(
 
     if kind in ("select", "multiselect"):
         renderer.numbered(options)
-    prompt = f"{label} [1-{len(options)}]" if options else label
+    prompt = f"{label} [1-{len(options)}, or a name]" if options else label
     if kind == "multiselect":
         prompt = f"{label} [1-{len(options)}, comma-separated]"
     if kind == "confirm":
@@ -908,9 +909,8 @@ def _field_value(field: dict[str, Any], answer: str) -> Any:
     if kind == "confirm":
         return answer.lower() in ("y", "yes") if answer else bool(default)
     if kind == "select":
-        index = _as_index(answer, options)
-        if index is not None:
-            return options[index]
+        if answer:
+            return match_choice(options, answer)
         return default if default in options else options[0]
     if kind == "multiselect":
         picked = (_as_index(part.strip(), options) for part in answer.split(",") if part.strip())
@@ -941,12 +941,16 @@ def _validate_confirm(_options: list[str]) -> Callable[[str], str | None]:
 
 
 def _validate_select(options: list[str]) -> Callable[[str], str | None]:
-    """A select field takes ONE of the numbers printed beside the options."""
+    """A select field takes what :func:`match_choice` accepts: a number or a name."""
 
     def validate(answer: str) -> str | None:
-        if not answer.strip() or _as_index(answer.strip(), options) is not None:
+        if not answer.strip():
             return None
-        return f"pick a number from 1 to {len(options)}"
+        try:
+            match_choice(options, answer)
+        except ValueError as exc:
+            return str(exc)
+        return None
 
     return validate
 
@@ -2111,16 +2115,14 @@ class ReplLoop:
         labels = [action["label"] for action in ask["actions"]]
         self._renderer.numbered(labels)
         answer = await self._reader.ask(
-            f"which action? [1-{len(labels)}]", validate=_validate_select(labels)
+            f"which action? [1-{len(labels)}, or a name]", validate=_validate_select(labels)
         )
         if answer is None or not answer.strip():
             self._renderer.line("system", f"{request.label}: dismissed, and shown again later")
             return
-        index = _as_index(answer.strip(), labels)
-        if index is None:
-            raise ValueError(f"{answer!r} passed the action validator and then named no action")
+        action = match_choice(labels, answer)
         try:
-            result = await self._backend.answer_request(request.entry_id, labels[index], values)
+            result = await self._backend.answer_request(request.entry_id, action, values)
         except ValueError as exc:
             self._renderer.line("error", f"the answer was refused: {exc}")
             return
