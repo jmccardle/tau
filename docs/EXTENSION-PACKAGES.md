@@ -44,15 +44,50 @@ what `-e` accepts, and what an authorization record names.
   `TOUCHES_BUS`, `SUBJECTS`), and a callable target would need a second
   convention for them. This position came from tau-search and tau-router, and
   the record adopts it.
-- A drop-in's module name is its file stem, or its package directory's name.
-  So no drop-in's identifier changes (proposal; inferred from the rule, not
-  stated by John).
-- An extension loaded by explicit path (`-e /abs/dir/handset_bus.py`) is
-  identified the same way: `handset_bus`. τ does not derive a dotted name from
-  the path's directories. Which directory is the package root depends on
-  `sys.path`, and the path doesn't record it, so any derivation would be a
-  guess (proposal). A host that wants the dotted name ships the module as an
-  entry point and names it with `-e <module.name>`.
+### 2.1 A file-loaded extension: its identifier and its import name differ
+
+A drop-in, or a file named with `-e PATH`, has no module name of its own.
+`my-ext.py` is a legal filename, but `my-ext` is not a Python identifier, so it
+cannot be imported as `my-ext`. Python already handles this case by keeping
+two names apart (proposal; the precedents are below):
+
+- **The identifier is the stem, verbatim.** For `my-ext.py` it is `my-ext`, and
+  for a package directory it is the directory's name. τ uses it as config key,
+  topic emitter, command owner, `/extensions` label and authorization name. It
+  is not mapped to `my_ext`, because John rejected lossy mapping in §3: `my-ext`
+  and `my_ext` are two files and stay two identities.
+- **The import name is private.** τ loads the file with
+  `importlib.util.spec_from_file_location(<private name>, path)` and never
+  shows that name. This is what 0.13.0 does already (`_tau_ext_<stem>_<n>`,
+  `sdk.py:545`). For a package directory it passes
+  `submodule_search_locations` (`sdk.py:546-547`), so `from .helper import x`
+  inside the directory still works. It is also the recipe in the importlib docs, "Importing a
+  source file directly", where the caller chooses the module name.
+- **Precedents.** A distribution named `my-ext` that imports as `my_ext` keeps
+  its public name and its import name apart in the same way. pytest's
+  `--import-mode=importlib` and `runpy.run_path` also run files under names
+  they choose themselves.
+- **Only installed packages are imported under their real name**, with
+  `importlib.import_module` (§2). A private name there would split module state
+  and break relative imports, which is tau-search's finding. A file-loaded
+  extension has no real name for code to import, so a private name costs it
+  nothing.
+
+The stem's characters matter only where τ parses a delimiter. So a legal
+filename is never an error at startup:
+
+| Stem contains | Effect |
+|---|---|
+| `-`, digits first, a keyword (`class.py`), non-ASCII | Nothing. The identifier is a string, and only the import name has to be an identifier. |
+| `.` (`my.ext.py`) | The identifier `my.ext` reads as dotted. It is unambiguous, because authorization names the source (§5). The shorthand segment is `ext`. |
+| `:` or whitespace (both legal on Linux) | `:` would break `--ext-config` and topic parsing, and whitespace would break commands, which `qualified_command` already refuses (`commands.py:148`). **Open decision:** the proposal is to list the file in `tau ext list` as found but unusable, naming the character and saying to rename it, and not to load it. τ keeps running (decision 1), and the problem is shown rather than hidden. |
+
+An extension loaded by explicit path (`-e /abs/dir/handset_bus.py`) follows
+the same rule, so its identifier is `handset_bus`. τ does not derive a dotted
+name from the path's directories. Which directory is the package root depends
+on `sys.path`, and the path doesn't record it, so any derivation would be a
+guess (proposal). A host that wants the dotted name ships the module as an
+entry point and names it with `-e <module.name>`.
 - **Alternative rejected:** the entry-point name as the identifier. Two
   distributions can declare the same entry-point name, while a module name is
   unique at import time. That is the property an authorization record needs.
