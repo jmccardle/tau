@@ -232,6 +232,68 @@ def validate_form_values(fields: list[dict[str, Any]], values: dict[str, Any]) -
                 raise ValueError(f"field {name!r} has value(s) {stray} outside its options")
 
 
+CHOICE_FILTER_THRESHOLD = 8
+"""A single-choice field with more options than this gets a filter box (docs/MODEL-PICKER.md §4)."""
+
+
+@agent_facing(topic="extensions")
+def filter_choices(options: list[str], query: str) -> list[str]:
+    """The options a filter box's ``query`` leaves, in their original order.
+
+    A case-insensitive substring match, so typing any part of a name narrows to
+    it. A blank query leaves every option.
+
+    Args:
+        options: A ``select`` field's options.
+        query: What was typed into the filter.
+
+    Returns:
+        The matching options; empty when none match.
+    """
+    needle = query.strip().lower()
+    return [option for option in options if needle in option.lower()]
+
+
+@agent_facing(topic="extensions")
+def match_choice(options: list[str], text: str) -> str:
+    """The one option a typed answer names, for a head that reads a line.
+
+    Tried in order: a number from 1 to ``len(options)``, the position a numbered
+    list printed; then a name equal to ``text`` ignoring case; then the one name
+    it begins; then the one name it appears in. The first rule with any hit
+    decides. Text that is all digits is only ever a position.
+
+    Args:
+        options: A ``select`` field's options.
+        text: What was typed.
+
+    Returns:
+        The named option.
+
+    Raises:
+        ValueError: ``text`` names no option, or more than one, naming them.
+    """
+    typed = text.strip()
+    if typed.isdigit():
+        if 1 <= int(typed) <= len(options):
+            return options[int(typed) - 1]
+        raise ValueError(f"pick a number from 1 to {len(options)}")
+    lowered = typed.lower()
+    rules: list[Callable[[str], bool]] = [
+        lambda option: option.lower() == lowered,
+        lambda option: option.lower().startswith(lowered),
+        lambda option: lowered in option.lower(),
+    ]
+    for rule in rules:
+        hits = [option for option in options if rule(option)]
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            shown = ", ".join(hits[:6]) + (", …" if len(hits) > 6 else "")
+            raise ValueError(f"{typed!r} matches {len(hits)} options ({shown}); type more")
+    raise ValueError(f"{typed!r} matches no option; type a number or part of a name")
+
+
 PANEL_BODY_KINDS: tuple[str, ...] = ("table", "list", "text")
 
 

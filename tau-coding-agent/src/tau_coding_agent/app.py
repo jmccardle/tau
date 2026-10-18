@@ -74,6 +74,7 @@ from tau_agent_core.capabilities import BUILTIN, FLOWS, Vocabulary
 from tau_agent_core.flows import (
     Dispatched,
     FlowStep,
+    ModelCatalog,
     Performed,
     Ready,
     bind_command_args,
@@ -1304,19 +1305,29 @@ class TauApp(App):
         session = getattr(self.current_backend, "agent_session", None)
         return getattr(session, "vocabulary", BUILTIN)
 
+    def _model_catalog(self) -> Optional[ModelCatalog]:
+        """Where this head's model names come from, session or not (docs/MODEL-PICKER.md §2).
+
+        Locally, the resolver over ``self.config`` that every session here is bound
+        to. Under ``--connect``, the daemon's list from its hello (protocol 0.10),
+        attached or not, since the client's config never applies; ``None`` only
+        before the hello is answered.
+        """
+        if self._remote is None:
+            return make_model_resolver(self.config)
+        return self._remote if self._remote.connected else None
+
     def _argument_completions(self, text: str) -> ArgumentCompletions | None:
         """Legal values for the command argument being typed, for the Tab cycle and popup.
 
-        The head half of argument completion: the core says WHICH argument and over
-        what span (:func:`~tau_agent_core.commands.complete_command_argument`,
-        pure), and this enumerates it against the live session — the same two calls
-        and the same two objects :meth:`_select_options` uses to fill a flow form,
-        so a value offered here and a value offered in the modal cannot differ.
+        The core says which argument and over what span
+        (:func:`~tau_agent_core.commands.complete_command_argument`); this
+        enumerates it with the same objects :meth:`_select_options` passes, so the
+        popup and the modal cannot offer different values. ``model_name`` needs no
+        session (:meth:`_model_catalog`).
 
-        A domain that cannot be enumerated is carried back as ``error`` rather than
-        raised: this runs on every keystroke, and the popup showing why there are no
-        models is the Fail-Early answer where a traceback and an empty list are both
-        wrong.
+        A domain that cannot be enumerated comes back as ``error`` rather than
+        raised, because this runs on every keystroke.
 
         Args:
             text: The editor's contents as typed.
@@ -1334,6 +1345,7 @@ class TauApp(App):
                 slot.domain.name,
                 session=getattr(self.current_backend, "agent_session", None),
                 runtime=self._session_runtime,
+                models=self._model_catalog(),
                 scope=slot.argument.scope,
                 query=slot.query,
                 vocabulary=vocabulary,
@@ -1565,6 +1577,7 @@ class TauApp(App):
                 domain.name,
                 session=getattr(self.current_backend, "agent_session", None),
                 runtime=self._session_runtime,
+                models=self._model_catalog(),
                 scope=argument.scope,
                 leaf=step.leaf,
                 vocabulary=vocabulary,
@@ -3368,23 +3381,22 @@ class TauApp(App):
         Args:
             name: A config model name. Empty offers the legal ones.
         """
-        set_model = getattr(self.current_backend, "set_model", None)
-        if set_model is None:
-            self.notify("This backend cannot switch models", severity="warning")
-            return
-
-        session = getattr(self.current_backend, "agent_session", None)
-        replica = getattr(self.current_backend, "replica", None)
-        if not name and replica is not None:
-            self.notify("Models: " + ", ".join(m["name"] for m in replica.models))
-            return
         if not name:
             try:
-                found = enumerate_domain("model_name", session=session)
+                found = enumerate_domain(
+                    "model_name",
+                    session=getattr(self.current_backend, "agent_session", None),
+                    models=self._model_catalog(),
+                )
             except ValueError as exc:
                 self.notify(str(exc), severity="error")
                 return
             self.notify("Models: " + ", ".join(v.value for v in found.values))
+            return
+
+        set_model = getattr(self.current_backend, "set_model", None)
+        if set_model is None:
+            self.notify("This backend cannot switch models", severity="warning")
             return
 
         try:

@@ -38,7 +38,7 @@ Reference: docs/ARCHITECTURE.md, the capability/flow/view model settled 2026-09-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from tau_llm.docs import agent_facing
 
@@ -52,6 +52,7 @@ __all__ = [
     "DomainValue",
     "DomainValues",
     "FlowStep",
+    "ModelCatalog",
     "Performed",
     "Ready",
     "UnknownFlowError",
@@ -579,18 +580,31 @@ def bind_command_args(flow: str, raw: str, vocabulary: Vocabulary = BUILTIN) -> 
     return {argument.name: bind_text(argument, raw, vocabulary)}
 
 
-def _model_values(session: Any) -> list[DomainValue]:
-    resolver = session.model_resolver
-    if resolver is None:
+@agent_facing(topic="sessions")
+class ModelCatalog(Protocol):
+    """Anything that can say which config model names exist.
+
+    ``ConfigModelResolver`` (what ``make_model_resolver(config)`` builds) is one;
+    it is what a head binds onto each session it creates, so a head holding it can
+    list models before any session exists (docs/MODEL-PICKER.md §2).
+    """
+
+    def model_names(self) -> list[str]:
+        """Every model name this catalog accepts, in display order."""
+        ...
+
+
+def _model_values(catalog: Any) -> list[DomainValue]:
+    if catalog is None:
         raise ValueError(
             "enumerating domain 'model_name' needs a model resolver bound to the session "
             "(set_model_resolver, a closure over config 'models'), and none is. set_model "
             "would raise here too — this refuses rather than reporting no models exist."
         )
-    names = getattr(resolver, "model_names", None)
+    names = getattr(catalog, "model_names", None)
     if names is None:
         raise ValueError(
-            f"the bound model resolver ({type(resolver).__name__}) does not declare "
+            f"the model catalog ({type(catalog).__name__}) does not declare "
             "model_names(), so the names it accepts cannot be listed"
         )
     return [DomainValue(value=name, label=name) for name in names()]
@@ -642,6 +656,7 @@ def enumerate_domain(
     *,
     session: Any = None,
     runtime: Any = None,
+    models: ModelCatalog | None = None,
     scope: MessageIdScope | None = None,
     leaf: str | None = None,
     query: str = "",
@@ -650,31 +665,35 @@ def enumerate_domain(
 ) -> DomainValues:
     """The values legal for ``domain`` right now, each with a readable label.
 
-    The other half of the flow loop. A head calls this with the ``domain`` a
-    :class:`FlowStep` handed it and renders what comes back — a completion list, a
-    select field, a picker — without knowing what the domain means.
+    A head calls this with the ``domain`` a :class:`FlowStep` handed it and renders
+    what comes back — a completion list, a select field, a picker. It dispatches to
+    the readers the RPC verbs use, so the two cannot disagree about what exists. A
+    ``free`` domain returns none with ``total`` 0; a fixed-value domain needs no
+    object at all.
 
-    Dispatches to the readers that already exist rather than reimplementing any of
-    them, so a listing here and the corresponding RPC verb cannot disagree about what
-    exists. A ``free`` domain has no value set and returns none, with ``total`` 0; a
-    domain whose values are fixed returns them without touching either object.
+    Each reader needs one object, and each object is passed on its own: the session
+    for ``message_id`` and ``extension_name``, the runtime for ``session_id`` and
+    ``path``, and for ``model_name`` the session's resolver or, with no session,
+    ``models``. Which models exist is a fact of config, known before any session
+    is (docs/MODEL-PICKER.md §2).
 
     A domain an extension declared is answered by the callable it registered, looked
-    up BEFORE τ's own dispatch so an extension cannot be shadowed by a name τ later
-    adds. The callable is passed ``query`` and ``limit`` and returns
-    ``(value, label)`` pairs; it never sees the session or the runtime, because an
-    extension already holds its own context.
+    up before τ's own dispatch so a later τ name cannot shadow it. The callable gets
+    ``query`` and ``limit`` and returns ``(value, label)`` pairs.
 
     Args:
         domain: The domain's name, a key of ``vocabulary.domains``.
         session: The :class:`~tau_agent_core.agent_session.AgentSession` to read
-            models, extensions and the session tree from.
+            extensions, the session tree, and models from. Its ``model_resolver``
+            is what ``set_model`` resolves through, so with a session it is the
+            ``model_name`` source.
         runtime: The :class:`~tau_agent_core.agent_session_runtime.AgentSessionRuntime`
-            to read the session catalog and the working directory from. Separate from
-            ``session`` because both live there, not on the session. ``path`` needs it
-            as much as ``session_id`` does: completing against the process's own
-            directory instead of the runtime's answers a different question than the
-            one that was asked, so its absence raises rather than falling back.
+            to read the session catalog and the working directory from. ``path``
+            raises without it rather than completing against the process's own
+            directory, which would answer a different question.
+        models: Where ``model_name`` values come from when there is no session:
+            the catalog a head binds onto the sessions it creates
+            (``make_model_resolver(config)``), so the two lists cannot differ.
         scope: For ``message_id``, which entries are candidates.
         leaf: For a scoped ``message_id``, the entry the scope is relative to.
         query: Filter text. Honoured by the domains whose readers take one; a domain
@@ -688,9 +707,8 @@ def enumerate_domain(
 
     Raises:
         KeyError: No domain has that name.
-        ValueError: The domain needs an object this call did not supply — a session
-            or a runtime. Fail-Early: returning an empty list would say "there are
-            none" when the truth is "nothing was asked".
+        ValueError: The domain needs an object this call did not supply. An empty
+            list would say "there are none" when nothing was asked.
     """
     declared = vocabulary.domains[domain]
 
@@ -710,27 +728,26 @@ def enumerate_domain(
 
     def _require(obj: Any, what: str) -> Any:
         if obj is None:
-            raise ValueError(
-                f"enumerating domain {domain!r} needs a {what}, and none was passed. "
-                "An empty list here would report 'there are none' for a question that "
-                "was never asked."
-            )
+            raise ValueError(f"listing {domain!r} needs {what}, and none was given")
         return obj
 
     if domain == "message_id":
-        values, total = _message_values(_require(session, "session"), scope, leaf, query, limit)
+        values, total = _message_values(_require(session, "a session"), scope, leaf, query, limit)
         return DomainValues(domain=domain, values=tuple(values), total=total)
 
     if domain == "path":
-        values, total = _path_values(_require(runtime, "runtime"), query, limit)
+        values, total = _path_values(_require(runtime, "a runtime"), query, limit)
         return DomainValues(domain=domain, values=tuple(values), total=total)
 
     if domain == "model_name":
-        found = _model_values(_require(session, "session"))
+        if session is not None:
+            found = _model_values(session.model_resolver)
+        else:
+            found = _model_values(_require(models, "a session or a model catalog"))
     elif domain == "session_id":
-        found = _session_values(_require(runtime, "runtime"))
+        found = _session_values(_require(runtime, "a runtime"))
     elif domain == "extension_name":
-        found = _extension_values(_require(session, "session"))
+        found = _extension_values(_require(session, "a session"))
     else:
         raise ValueError(
             f"domain {domain!r} declares enumerator {declared.enumerator!r}, which "

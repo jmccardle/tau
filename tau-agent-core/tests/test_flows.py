@@ -157,6 +157,21 @@ class TestEnumerateDomain:
         found = enumerate_domain("model_name", session=session)
         assert [v.value for v in found.values] == ["local-llm", "gpt-4o"]
 
+    def test_model_names_need_no_session_when_a_catalog_is_given(self):
+        """docs/MODEL-PICKER.md §2: a head lists models before it has a session."""
+        found = enumerate_domain("model_name", models=_Resolver(["a", "b"]), query="b")
+        assert [v.value for v in found.values] == ["b"]
+
+    def test_a_session_is_the_source_when_there_is_one(self):
+        """Its resolver is what set_model resolves through, so it is what is legal."""
+        session = _Session(resolver=_Resolver(["bound"]))
+        found = enumerate_domain("model_name", session=session, models=_Resolver(["config"]))
+        assert [v.value for v in found.values] == ["bound"]
+
+    def test_neither_a_session_nor_a_catalog_raises(self):
+        with pytest.raises(ValueError, match="needs a session or a model catalog"):
+            enumerate_domain("model_name")
+
     def test_a_session_with_no_resolver_raises(self):
         """set_model would raise here too — this refuses rather than saying 'none'."""
         with pytest.raises(ValueError, match="needs a model resolver"):

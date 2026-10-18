@@ -242,9 +242,23 @@ async def test_a_select_default_pre_fills_the_number_its_own_validator_accepts()
     assert reader.defaults == ["2"]
 
 
+async def test_a_select_takes_a_name_or_a_unique_part_of_one() -> None:
+    """docs/MODEL-PICKER.md §6: the line-mode filter is ``match_choice``. An exact
+    name, then a unique prefix; an ambiguous part is re-asked, naming the matches."""
+    options = ["claude-sonnet", "claude-opus", "local-llm"]
+    spec = {"fields": [{"name": "m", "kind": "select", "options": options}]}
+
+    reader = MemoryReader(answers=["LOCAL-LLM"])
+    assert await ask_form(reader, _form(reader), spec) == {"m": "local-llm"}
+
+    reader = MemoryReader(answers=["claude", "claude-o"])
+    assert await ask_form(reader, _form(reader), spec) == {"m": "claude-opus"}
+    assert reader.complaints == ["'claude' matches 2 options (claude-sonnet, claude-opus); type more"]
+
+
 async def test_an_emptied_choice_falls_back_the_way_the_tuis_widget_does() -> None:
-    """A radio cannot be cleared, so a select answers its default; a selection list
-    can be, so a multiselect answers ``[]`` (``_FieldForm._collect``)."""
+    """An untouched choice list answers its default, so an empty select does; a
+    selection list can be emptied, so a multiselect answers ``[]``."""
     reader = MemoryReader(answers=["", ""])
     spec = {
         "fields": [

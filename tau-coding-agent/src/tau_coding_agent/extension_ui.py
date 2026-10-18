@@ -236,9 +236,13 @@ class ExtensionAskScreen(modals._FieldForm[Optional[tuple[str, dict]]]):
     lock is held by the tree rather than by this screen, and the transcript row
     brings it back. A dialog that could not be closed would be a second, worse
     copy of the lock (§9).
+
+    Enter submits only when the ask declares one action; with several it moves
+    focus to the first action button rather than pick one (docs/MODEL-PICKER.md §5).
     """
 
     DIALOG_ID: ClassVar[str] = "ext-ask-dialog"
+    BODY_ID: ClassVar[Optional[str]] = "ext-ask-body"
 
     def __init__(self, request: ExtensionRequest) -> None:
         if request.ask is None:
@@ -248,15 +252,18 @@ class ExtensionAskScreen(modals._FieldForm[Optional[tuple[str, dict]]]):
         self._fields = list(self._ask["fields"])
         super().__init__(request.label)
 
-    def compose_body(self) -> ComposeResult:
+    def compose_header(self) -> ComposeResult:
         yield Static(self._request.sentence, classes="tau-dialog-help", markup=False)
-        with VerticalScroll(id="ext-ask-body"):
-            if self._ask["body"] is not None:
-                yield Static(
-                    render_panel_body(self._ask["body"]), classes="ext-ask-panel", markup=False
-                )
-            for index, field in enumerate(self._fields):
-                yield from self._compose_field(index, field)
+
+    def compose_body(self) -> ComposeResult:
+        if self._ask["body"] is not None:
+            yield Static(
+                render_panel_body(self._ask["body"]), classes="ext-ask-panel", markup=False
+            )
+        for index, field in enumerate(self._fields):
+            yield from self._compose_field(index, field)
+
+    def compose_footer(self) -> ComposeResult:
         hint = "Esc: dismiss, the row brings it back"
         if self._request.release:
             hint = f"/{self._request.release} also clears it    {hint}"
@@ -265,11 +272,24 @@ class ExtensionAskScreen(modals._FieldForm[Optional[tuple[str, dict]]]):
             for index, action in enumerate(self._ask["actions"]):
                 yield _AskActionButton(action["label"], index)
 
+    def action_submit(self) -> None:
+        """Press the one declared action; with several, focus the first instead."""
+        buttons = list(self.query(_AskActionButton))
+        if len(buttons) != 1:
+            buttons[0].focus()
+            return
+        self._answer(buttons[0].action_label)
+
+    def _answer(self, action_label: str) -> None:
+        values = self._collect()
+        if values is not None:
+            self.dismiss((action_label, values))
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button = event.button
         if isinstance(button, _AskActionButton):
             event.stop()
-            self.dismiss((button.action_label, self._collect()))
+            self._answer(button.action_label)
 
 
 class ExtensionRequestBox(Static):

@@ -164,6 +164,7 @@ class MemoryReader:
         self.prefixes: list[str] = []
         self.asked: list[str] = []
         self.defaults: list[str] = []
+        self.complaints: list[str] = []
         self.drafts: list[str] = []
         self.completer: Complete | None = None
         self.completers: list[Complete | None] = []
@@ -212,6 +213,7 @@ class MemoryReader:
             complaint = validate(answer)
             if complaint is None:
                 return answer
+            self.complaints.append(complaint)
 
     def set_spinner(self, label: str | None) -> None:
         """Record the label."""

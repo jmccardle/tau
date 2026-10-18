@@ -158,7 +158,7 @@ async def test_a_form_is_asked_field_by_field_and_typed_by_its_kind() -> None:
     }
     assert reader.asked == [
         "Description",
-        "prio [1-2]",
+        "prio [1-2, or a name]",
         "tags [1-3, comma-separated]",
         "Urgent? [y/n]",
         "points",

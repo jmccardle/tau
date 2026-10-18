@@ -479,6 +479,15 @@ One change in the same bump breaks a 2.1 client: `get_session_stats`'
 `CompactionSettings.auto` (docs/PRICING-AND-COMPACTION-CONFIG.md §6). It means
 automatic compaction only; the `compact` verb ignores it.
 
+**Built note (2026-10-18, protocol 0.10; RPC stays 2.2):** `HelloResult` gains a
+required `models`, a list of `ModelRecord`, the same shape and the same list
+`Attached.models` carries. A client can then offer a model before it attaches
+(docs/MODEL-PICKER.md §7). The daemon builds `make_model_resolver(config)` once,
+binds that object onto every session it loads, and lists it in every hello, so
+the two lists cannot disagree. A 0.9 client is refused by a 0.10 daemon. RPC's
+version is independent of serve's and does not move, because nothing on the RPC
+wire changed.
+
 ## 6. `tau serve`
 
 ```
