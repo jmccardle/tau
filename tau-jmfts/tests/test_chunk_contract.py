@@ -45,6 +45,16 @@ def test_the_word_budget_is_sent_as_max_words() -> None:
     assert "max_tokens" not in body
 
 
+def test_the_strategy_is_one_that_reads_max_words() -> None:
+    """The server's default ``sentence`` strategy ignores ``max_words`` (#45)."""
+    seen: list[httpx.Request] = []
+    with _client("0.7.1", seen) as client:
+        client.chunk_document(7)
+    (body,) = _chunk_bodies(seen)
+    assert body["strategy"] == "sentence_packed"
+    assert "overlap" not in body
+
+
 def test_the_server_version_is_asked_once_per_client() -> None:
     seen: list[httpx.Request] = []
     with _client("0.8.0", seen) as client:

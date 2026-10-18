@@ -458,7 +458,6 @@ class JmftsClient:
         doc_id: int,
         *,
         max_words: int = CHUNK_MAX_WORDS,
-        overlap: int = 40,
         child_usetype: str = CHUNK_USETYPE,
         auto_embed: bool = True,
     ) -> list[DocumentDict]:
@@ -482,17 +481,18 @@ class JmftsClient:
 
         ``max_words`` is a whitespace word count, so it is a target only -- see
         :data:`CHUNK_MAX_WORDS`. The token-window guarantee comes from ``auto_embed``,
-        not from this number.
+        not from this number. The strategy is pinned to ``sentence_packed`` (whole
+        sentences, packed up to ``max_words``), because the server's default
+        ``sentence`` strategy ignores ``max_words`` and returns one chunk per sentence:
+        measured on JMFTS 0.7.1, 360 words became 24 chunks of 15 words (#45).
 
         Requires JMFTS >= 0.7.0 (:data:`MIN_CHUNK_SERVER_VERSION`), checked once per
         client with ``GET /``: an older server ignores ``max_words`` and chunks at its
         own default, which would be a 200 for a request it did not carry out. Raises
         :class:`JmftsVersionError` instead.
 
-        The server also caps EVERY strategy to ``max_chars`` and bounds the merge step,
-        so no strategy pin is needed (the D2 server fix). Earlier this method pinned
-        ``strategy="token_count"`` and passed ``min_chunk_length=1`` to disable the
-        unbounded merge -- both were load-bearing workarounds and are no longer required.
+        The server caps every strategy to ``max_chars`` and bounds the merge step (the
+        D2 server fix), so ``min_chunk_length`` needs no override.
 
         ``auto_embed=False`` is kept for callers that deliberately want unembedded
         children (tests simulating a pass that died between chunking and embedding).
@@ -518,8 +518,8 @@ class JmftsClient:
             "POST",
             f"/documents/{doc_id}/chunk",
             json={
+                "strategy": "sentence_packed",
                 "max_words": max_words,
-                "overlap": overlap,
                 "child_usetype": child_usetype,
                 "auto_embed": auto_embed,
             },
