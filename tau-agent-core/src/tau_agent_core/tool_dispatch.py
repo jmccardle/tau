@@ -24,6 +24,7 @@ from typing import Any
 from tau_llm.docs import agent_facing
 
 from tau_agent_core.tool_catalog import DISPATCHABLE_EXPOSURES, ToolDescription
+from tau_agent_core.tool_schema import stub_names
 from tau_agent_core.tools.base import ToolError
 
 __all__ = ["call_tool_definition", "search_deferred", "tool_search_definition"]
@@ -76,7 +77,12 @@ async def _tool_search(
     query = str(params.get("query", "")).strip()
     if not query:
         raise ToolError("tool_search: query must not be empty")
-    hits = search_deferred(ctx.list_tools(), query)
+    descriptions = ctx.list_tools()
+    try:
+        stub_names(d.name for d in descriptions)
+    except ValueError as exc:
+        raise ToolError(f"tool_search: {exc}") from None
+    hits = search_deferred(descriptions, query)
     if not hits:
         return {"content": [{"type": "text", "text": f"No tool matches {query!r}."}]}
     stubs = "\n\n".join(d.stub() for d in hits)
@@ -87,23 +93,42 @@ async def _tool_search(
     }
 
 
+def _resolve(ctx: Any, name: str) -> ToolDescription:
+    """The tool ``name`` names: a real name, else a stub name ``tool_search`` showed.
+
+    Raises:
+        ToolError: no tool has the name, or two tools share the stub name.
+    """
+    described: ToolDescription
+    try:
+        described = ctx.describe_tool(name)
+        return described
+    except KeyError:
+        pass
+    try:
+        real = stub_names(d.name for d in ctx.list_tools()).get(name)
+    except ValueError as exc:
+        raise ToolError(f"call_tool: {exc}") from None
+    if real is None:
+        raise ToolError(f"call_tool: no tool named {name!r}; use tool_search")
+    described = ctx.describe_tool(real)
+    return described
+
+
 async def _call_tool(
     tool_call_id: str, params: dict[str, Any], signal: Any, on_update: Any, ctx: Any
 ) -> dict[str, Any]:
-    """Run the named tool through ``ctx.execute_tool`` and return its result."""
+    """Run the named tool, by real or stub name, through ``ctx.execute_tool``."""
     name = str(params.get("name", ""))
     arguments = params.get("arguments") or {}
     if not isinstance(arguments, dict):
         raise ToolError("call_tool: arguments must be an object")
-    try:
-        described = ctx.describe_tool(name)
-    except KeyError:
-        raise ToolError(f"call_tool: no tool named {name!r}; use tool_search") from None
+    described = _resolve(ctx, name)
     if described.exposure not in DISPATCHABLE_EXPOSURES:
         raise ToolError(
             f"call_tool: {name!r} is not available to you (it is {described.exposure!r})"
         )
-    result = await ctx.execute_tool(name, arguments)
+    result = await ctx.execute_tool(described.name, arguments)
     return {"content": result.content, "value": result.value}
 
 
@@ -113,7 +138,8 @@ def tool_search_definition() -> dict[str, Any]:
 
     Returns:
         A ``model-only`` tool taking ``query`` whose result lists each deferred
-        match as a Python stub; an empty query is a tool error.
+        match as a Python stub; an empty query, or two tools sharing a stub name
+        (:func:`~tau_agent_core.tool_schema.stub_names`), is a tool error.
     """
     return {
         "name": "tool_search",
@@ -134,9 +160,10 @@ def call_tool_definition() -> dict[str, Any]:
     """The ``register_tool`` dict for ``call_tool``, the fixed dispatcher to deferred tools.
 
     Returns:
-        A ``model-only`` tool taking ``name`` and ``arguments`` that runs a
-        ``direct`` or ``deferred`` tool through ``ctx.execute_tool`` and returns
-        its content and value; any other target is a tool error.
+        A ``model-only`` tool taking ``name`` (real, or the stub name
+        ``tool_search`` showed) and ``arguments`` that runs a ``direct`` or
+        ``deferred`` tool through ``ctx.execute_tool`` and returns its content
+        and value; any other target is a tool error.
     """
     return {
         "name": "call_tool",

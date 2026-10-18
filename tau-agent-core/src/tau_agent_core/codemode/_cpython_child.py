@@ -65,7 +65,8 @@ class _Tools:
         self._channel = channel
 
     def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
+        # A stub name may start with one "_" (``from`` stubs as ``_from``); dunders are probes.
+        if name == "_channel" or (name.startswith("__") and name.endswith("__")):
             raise AttributeError(name)
         channel = self._channel
 

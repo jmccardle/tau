@@ -520,7 +520,8 @@ current behaviour. Each fixed one has a test under "issue #20" in
   CODE-MODE §7's `ToolRanker` and route both callers through it. (b) reverses
   §3's decision, which is why it is not built here.
 
-**Found while fixing, not fixed (read).**
+**Found while fixing, not fixed (read).** All three were fixed on 2026-10-18 as
+issues #32, #33 and #34; §9 records how.
 
 - `codemode/prompt.py`'s `python_signature` builds the stubs that code mode puts
   in the model's prompt. It is not `render_stub`, and it **silently drops** a
@@ -540,3 +541,46 @@ third-party module, because it reads the 3.11 `sys.stdlib_module_names`; it now
 carries a `LATER_STDLIB` table. The annotation path was checked by hand on
 3.14.8. Full suite on Python 3.11.2: 6978 passed, 159 skipped, 6 deselected,
 3 xfailed. The four static gates pass on all five `src` trees.
+
+## 9. Stub names and references, issues #32–#34 (2026-10-18)
+
+Each fix has a test, under "issues #32/#33" in `test_codemode_providers.py` or
+"issues #33, #34" in `test_tool_exposure_experiment.py`. All nine tests failed
+against the code before the fix (ran).
+
+- **One renderer (#32).** Code mode's prompt, its `ty` stub file and its
+  `describe_tool` all render through `tool_schema.StubNamespace`, which
+  `render_stub` and `render_stubs` also use. The old `python_signature`,
+  which dropped a parameter such as `from`, is gone. Code mode passes
+  `keyword_only=True` and renders `-> str`, because a script receives a tool's
+  text. For the seven core tools the prompt's stub block is byte-identical to
+  before (ran, diffed). Two things change on purpose. A tool whose parameters
+  include an object with properties now gets a `TypedDict` class above
+  `class tools:` where it used to read `dict[str, Any]`. An `enum` renders as
+  `Literal['a']`, where `json.dumps` used to give `Literal["a"]`, and
+  `Literal[true]`, which is not valid Python. The block stays a pure function of
+  the tool set, so the cache holds for an unchanged set.
+- **Stub names (#33).** `stub_name` makes a tool name an identifier
+  (`my-tool` → `my_tool`, `from` → `from_`), and `stub_names` maps a set of
+  them back, raising `ValueError` when two tools share one. The dispatchers
+  accept the stub name through that mapping, rather than the stub carrying the
+  real name. A code-mode script has no syntax for `tools.my-tool`, so code mode
+  needed the mapping whichever option was chosen; using it for `call_tool` too
+  keeps one rule. `tool_search` refuses to list stubs while two tools collide,
+  so a stub never names the wrong tool. `call_tool` tries the real name first,
+  which cannot collide because real names are unique, then the stub name. The
+  code-mode invoker raises at construction on a collision, and it no longer
+  leaves out a tool whose name is not an identifier. A keyword gains a
+  trailing `_`, not a leading one, because Monty refuses an attribute that
+  starts with `_` (ran). The CPython child now refuses only dunders, so a stub
+  name starting with `_` (a name starting with a digit) still works there.
+- **Unresolved `$ref` (#34).** `render_stub` raises `ValueError` naming the
+  tool and the `$ref`. It used to write a class name it never defined. Code
+  mode raises the same error, because it renders through the same writer.
+
+**Left open (read).** In Monty's `type_check` mode, `ty` cannot check
+`tools.my_tool(**{"from": 2})`, because it types the dict literal as
+`dict[str, int]`, not as the `TypedDict`. Annotating the dict works:
+`args: "my_tool_arguments" = {...}` type-checks and runs (ran). The prompt does
+not say so. TypeScript stubs now quote a key that is not an identifier, but
+the TypeScript provider has no runtime, so this is unrun.

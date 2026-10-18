@@ -22,9 +22,9 @@ from tau_llm.tools import validate_tool_arguments
 
 from tau_agent_core.codemode.prompt import describe_stub
 from tau_agent_core.codemode.protocol import NestedCall, ToolOutcome, ToolStub, elapsed_ms
+from tau_agent_core.tool_schema import stub_names
 from tau_agent_core.tools.base import AgentTool, AgentToolResult
 
-_IDENT = re.compile(r"^[A-Za-z_]\w*$")
 _TOKEN = re.compile(r"[a-z0-9]+")
 _ARGS_CAP = 2048
 
@@ -98,8 +98,9 @@ class DirectToolInvoker:
     """A :class:`~tau_agent_core.codemode.protocol.ToolInvoker` over ``AgentTool`` objects.
 
     Validates arguments against the tool's schema, then awaits its ``execute``.
-    Hooks are not run (see the module docstring). A tool whose name is not a
-    Python identifier is left out, since ``tools.<name>`` could not reach it.
+    Hooks are not run (see the module docstring). A script reaches each tool as
+    ``tools.<stub name>`` (``my-tool`` as ``tools.my_tool``); :meth:`invoke`
+    and :meth:`describe` take that name or the real one.
 
     Args:
         tools: The tools a script may call, e.g. the turn's tool list.
@@ -108,6 +109,10 @@ class DirectToolInvoker:
         max_calls: Calls answered before every further call fails.
         signal: The turn's abort signal, handed to each tool.
         parent_call_id: The ``codemode`` call's id; nested ids extend it.
+
+    Raises:
+        ValueError: two tools share a stub name
+            (:func:`~tau_agent_core.tool_schema.stub_names`).
     """
 
     def __init__(
@@ -121,7 +126,8 @@ class DirectToolInvoker:
         parent_call_id: str = "codemode",
     ) -> None:
         excluded = set(exclude)
-        self._tools = {t.name: t for t in tools if t.name not in excluded and _IDENT.match(t.name)}
+        self._tools = {t.name: t for t in tools if t.name not in excluded}
+        self._real = stub_names(self._tools)
         self._stubs = [
             ToolStub(t.name, t.description, dict(t.parameters)) for t in self._tools.values()
         ]
@@ -157,9 +163,10 @@ class DirectToolInvoker:
                     f"call budget exhausted: a script may make {self._max_calls} tool calls", True
                 ),
             )
-        tool = self._tools.get(name)
+        tool = self._tools.get(self._real.get(name, name))
         if tool is None:
             return self._record(name, args, start, ToolOutcome(f"Unknown tool: {name}", True))
+        name = tool.name
         try:
             validated = validate_tool_arguments(tool, args)
         except ValueError as exc:
@@ -197,12 +204,12 @@ class DirectToolInvoker:
         return outcome
 
     def search(self, query: str, limit: int = 8) -> list[dict[str, str]]:
-        """BM25 over the callable tools; ``[{name, description}]``, best first."""
+        """BM25 over the callable tools; ``[{name, description}]``, best first, by stub name."""
         if self._index is None:
             self._index = _Bm25(self._stubs)
         return [
             {
-                "name": s.name,
+                "name": s.attribute,
                 "description": s.description.strip().splitlines()[0]
                 if s.description.strip()
                 else "",
@@ -211,12 +218,13 @@ class DirectToolInvoker:
         ]
 
     def describe(self, name: str) -> str:
-        """Signature, description and schema of one tool.
+        """Signature, description and schema of one tool, by stub name or real name.
 
         Raises:
             KeyError: ``name`` is not callable from a script.
         """
+        real = self._real.get(name, name)
         for stub in self._stubs:
-            if stub.name == name:
+            if stub.name == real:
                 return describe_stub(stub, self._language)
         raise KeyError(f"no tool named {name!r} is callable from scripts")

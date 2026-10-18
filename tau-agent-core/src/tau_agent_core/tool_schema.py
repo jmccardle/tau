@@ -14,11 +14,13 @@ everything else is derived from it:
 - :func:`render_stub` goes the other way, from a registry's JSON Schemas to a
   Python stub such as ``async def grep(pattern: str, ...) -> GrepResult``, so a
   sandbox prompt can be written from any tool, including one whose author wrote
-  JSON Schema by hand.
+  JSON Schema by hand. Code mode's ``tools`` class renders through the same
+  :class:`StubNamespace`, and :func:`stub_names` maps a stubbed tool name back.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import json
 import keyword
@@ -26,17 +28,20 @@ import re
 import sys
 import types
 import typing
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any, Callable
 
 from pydantic import TypeAdapter, create_model
 from tau_llm.docs import agent_facing
 
 __all__ = [
+    "StubNamespace",
     "output_schema_for",
     "output_schema_of",
     "render_stub",
     "render_stubs",
+    "stub_name",
+    "stub_names",
     "tool_from_function",
 ]
 
@@ -282,10 +287,12 @@ class _StubWriter:
         self.classes: dict[str, str] = {}
         self.new: list[str] = []
         self.defs: dict[str, Any] = {}
+        self.tool = ""
         self._refs: dict[str, str] = {}
 
-    def begin(self, defs: dict[str, Any]) -> None:
-        """Start one tool: its ``$defs``, and an empty list of classes it adds."""
+    def begin(self, tool: str, defs: dict[str, Any]) -> None:
+        """Start one tool: its name for errors, its ``$defs``, and an empty list of classes it adds."""
+        self.tool = tool
         self.defs = defs
         self._refs = {}
         self.new = []
@@ -317,14 +324,21 @@ class _StubWriter:
             n += 1
 
     def annotation(self, schema: Any, hint: str = "Object") -> str:
-        """The annotation for ``schema``; an object with properties becomes a class."""
+        """The annotation for ``schema``; an object with properties becomes a class.
+
+        Raises:
+            ValueError: a ``$ref`` names no ``$defs`` entry.
+        """
         if not isinstance(schema, dict) or not schema:
             return "Any"
         if "$ref" in schema:
             ref = str(schema["$ref"]).rsplit("/", 1)[-1]
-            if ref in self.defs:
-                return self.define(ref, self.defs[ref], ref)
-            return _identifier(ref)
+            if ref not in self.defs:
+                raise ValueError(
+                    f"tool {self.tool!r}: $ref {schema['$ref']!r} names no $defs entry, "
+                    "so it has no type to stub"
+                )
+            return self.define(ref, self.defs[ref], ref)
         for key in ("anyOf", "oneOf"):
             if key in schema:
                 parts = [self.annotation(s, hint) for s in schema[key]]
@@ -374,6 +388,135 @@ class _StubWriter:
 
 
 @agent_facing(topic="tools")
+def stub_name(name: str) -> str:
+    """The identifier a stub gives tool ``name``: non-word characters become ``_``.
+
+    ``my-tool`` stubs as ``my_tool``; a keyword gains a trailing ``_``
+    (``from_``), and a name starting with a digit a leading one. ``call_tool``
+    and code mode resolve it back through :func:`stub_names`.
+    """
+    ident = re.sub(r"\W", "_", name)
+    if keyword.iskeyword(ident):
+        return f"{ident}_"
+    if not ident or ident[0].isdigit():
+        return f"_{ident}"
+    return ident
+
+
+@agent_facing(topic="tools")
+def stub_names(names: Iterable[str]) -> dict[str, str]:
+    """Map each tool's stub name back to its real name, for one set of tools.
+
+    Args:
+        names: Real tool names.
+
+    Returns:
+        ``{stub_name(n): n}``; a name that is already an identifier maps to itself.
+
+    Raises:
+        ValueError: two names share a stub name (``my-tool`` and ``my_tool``),
+            so neither stub could say which tool it calls.
+    """
+    groups: dict[str, list[str]] = {}
+    for name in dict.fromkeys(names):
+        groups.setdefault(stub_name(name), []).append(name)
+    clashes = {stub: real for stub, real in groups.items() if len(real) > 1}
+    if clashes:
+        listed = "; ".join(
+            f"{', '.join(repr(r) for r in real)} all stub as {stub!r}"
+            for stub, real in clashes.items()
+        )
+        raise ValueError(f"tool names collide once made identifiers: {listed}; rename one")
+    return {stub: real[0] for stub, real in groups.items()}
+
+
+@agent_facing(topic="tools")
+class StubNamespace:
+    """Signatures for tools that share one module, so no class name means two shapes.
+
+    :func:`render_stub`, :func:`render_stubs` and code mode's ``tools`` class
+    all render through this.
+    """
+
+    def __init__(self) -> None:
+        self._writer = _StubWriter()
+
+    def signature(
+        self,
+        name: str,
+        parameters: Mapping[str, Any],
+        output_schema: Mapping[str, Any] | None,
+        *,
+        keyword_only: bool = False,
+        self_arg: bool = False,
+    ) -> tuple[list[str], str]:
+        """One tool's ``async def`` line and the ``TypedDict`` classes it adds.
+
+        Required parameters come first; optional ones default to ``None``,
+        because the schema states no default. If a parameter name cannot be a
+        Python parameter (``from``, ``my-arg``), the signature is
+        ``**kwargs: Unpack[<stub name>_arguments]`` over a functional
+        ``TypedDict`` that keeps every name exactly.
+
+        Args:
+            name: The tool name; the function is :func:`stub_name` of it.
+            parameters: The argument JSON Schema.
+            output_schema: The value's JSON Schema; ``None`` renders ``-> str``,
+                which is what a caller gets from it: the text.
+            keyword_only: Put a bare ``*`` before the parameters.
+            self_arg: Lead with ``self``, for a method.
+
+        Returns:
+            The classes not yet written in this namespace, each before the
+            classes that use it, and ``async def f(...) -> T`` with no colon.
+
+        Raises:
+            ValueError: a ``$ref`` names no ``$defs`` entry.
+        """
+        writer = self._writer
+        out_defs = (output_schema or {}).get("$defs") or {}
+        writer.begin(name, {**(parameters.get("$defs") or {}), **out_defs})
+        func_name = stub_name(name)
+        props = parameters.get("properties") or {}
+        if all(_plain_key(p) for p in props):
+            required = [p for p in props if p in set(parameters.get("required", []))]
+            optional = [p for p in props if p not in required]
+            args = [f"{p}: {writer.annotation(props[p], p)}" for p in required]
+            args += [f"{p}: {writer.annotation(props[p], p)} | None = None" for p in optional]
+            if keyword_only and args:
+                args.insert(0, "*")
+        else:
+            arguments = {"properties": props, "required": parameters.get("required", [])}
+            args = [f"**kwargs: Unpack[{writer.define(f'{func_name}_arguments', arguments)}]"]
+        if self_arg:
+            args.insert(0, "self")
+        returns = (
+            "str"
+            if output_schema is None
+            else writer.annotation(dict(output_schema), f"{name}_result")
+        )
+        signature = f"async def {func_name}({', '.join(args)}) -> {returns}"
+        return [writer.classes[ident] for ident in writer.new], signature
+
+
+def _stub_blocks(namespace: StubNamespace, d: Any) -> list[str]:
+    """The blocks one tool adds to a module: new classes, then the ``async def``."""
+    classes, signature = namespace.signature(d.name, d.parameters, d.output_schema)
+    doc = " ".join(d.description.split())
+    return [*classes, f'{signature}:\n    """{doc}"""']
+
+
+@dataclasses.dataclass(frozen=True)
+class _Described:
+    """The four fields a stub reads."""
+
+    name: str
+    description: str
+    parameters: Mapping[str, Any]
+    output_schema: Mapping[str, Any] | None
+
+
+@agent_facing(topic="tools")
 def render_stub(
     name: str,
     description: str,
@@ -382,49 +525,22 @@ def render_stub(
 ) -> str:
     """A Python stub for one tool, preceded by the ``TypedDict`` classes it uses.
 
-    Required parameters come first, optional ones default to ``None`` because
-    the schema states no default. If a parameter name cannot be a Python
-    parameter (``from``, ``my-arg``), the signature is
-    ``**kwargs: Unpack[<name>_arguments]`` over a functional ``TypedDict`` that
-    keeps every name exactly.
+    See :meth:`StubNamespace.signature` for the signature's shape.
 
     Args:
-        name: The tool name; made into a Python identifier.
+        name: The tool name; the stub defines :func:`stub_name` of it.
         description: The stub's docstring, whitespace-collapsed.
         parameters: The argument JSON Schema.
-        output_schema: The value's JSON Schema; ``None`` renders ``-> str``,
-            which is what a nested caller gets from it: the text.
+        output_schema: The value's JSON Schema, or ``None`` for ``-> str``.
 
     Returns:
         The classes, then the ``async def``, separated by blank lines.
+
+    Raises:
+        ValueError: a ``$ref`` names no ``$defs`` entry.
     """
-    writer = _StubWriter()
-    return "\n\n".join(_render_one(writer, name, description, parameters, output_schema))
-
-
-def _render_one(
-    writer: _StubWriter,
-    name: str,
-    description: str,
-    parameters: dict[str, Any],
-    output_schema: dict[str, Any] | None,
-) -> list[str]:
-    """The blocks one tool adds to ``writer``'s module: new classes, then the ``async def``."""
-    writer.begin({**(parameters.get("$defs") or {}), **((output_schema or {}).get("$defs") or {})})
-    func_name = _identifier(name)
-    props = parameters.get("properties") or {}
-    if all(_plain_key(p) for p in props):
-        required = [p for p in props if p in set(parameters.get("required", []))]
-        optional = [p for p in props if p not in required]
-        args = [f"{p}: {writer.annotation(props[p], p)}" for p in required]
-        args += [f"{p}: {writer.annotation(props[p], p)} | None = None" for p in optional]
-    else:
-        arguments = {"properties": props, "required": parameters.get("required", [])}
-        args = [f"**kwargs: Unpack[{writer.define(f'{func_name}_arguments', arguments)}]"]
-    returns = "str" if output_schema is None else writer.annotation(output_schema, f"{name}_result")
-    doc = " ".join(description.split())
-    func = f'async def {func_name}({", ".join(args)}) -> {returns}:\n    """{doc}"""'
-    return [*(writer.classes[ident] for ident in writer.new), func]
+    described = _Described(name, description, parameters, output_schema)
+    return "\n\n".join(_stub_blocks(StubNamespace(), described))
 
 
 @agent_facing(topic="tools")
@@ -440,10 +556,15 @@ def render_stubs(descriptions: list[Any]) -> str:
         One module's text, ending in a newline. A class is written once; a
         different shape under a name already taken is renamed ``Name_2``, and
         the stubs that use it say so.
+
+    Raises:
+        ValueError: two tools share a stub name (:func:`stub_names`), or a
+            ``$ref`` names no ``$defs`` entry.
     """
+    stub_names(d.name for d in descriptions)
     header = "from typing import Any, Literal, NotRequired, TypedDict, Unpack"
-    writer = _StubWriter()
+    namespace = StubNamespace()
     bodies: list[str] = []
     for d in descriptions:
-        bodies += _render_one(writer, d.name, d.description, d.parameters, d.output_schema)
+        bodies += _stub_blocks(namespace, d)
     return "\n\n\n".join([header, *bodies]) + "\n"

@@ -854,3 +854,66 @@ async def test_find_extension_refuses_an_ambiguous_name(tmp_path):
     assert [e.name for e in ctx.list_extensions()] == ["ext_git", "ext_git"]
     with pytest.raises(ValueError, match="2 loaded extensions"):
         ctx.find_extension("ext_git")
+
+
+# ── issues #33, #34: stub names and unresolved references ────────────────────
+
+
+async def test_call_tool_runs_a_non_identifier_tool_by_the_name_its_stub_shows(tmp_path):
+    async def copy(tool_call_id, params, signal, on_update, ctx):
+        return {"content": [{"type": "text", "text": f"copied from {params['from']}"}]}
+
+    def ext(api):
+        api.register_tool(tool_search_definition())
+        api.register_tool(call_tool_definition())
+        api.register_tool(
+            {
+                **_tool("my-tool", copy, exposure="deferred", tags=["copier"]),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"from": {"type": "integer"}},
+                    "required": ["from"],
+                },
+            }
+        )
+
+    session = _session(tmp_path, ext)
+    model = ScriptedModel(
+        [("s", "tool_search", {"query": "copier"})],
+        [("u", "call_tool", {"name": "my_tool", "arguments": {"from": 3}})],
+        [("r", "call_tool", {"name": "my-tool", "arguments": {"from": 4}})],
+    )
+    results = _results(await _prompt(session, model))
+    assert "async def my_tool(**kwargs: Unpack[my_tool_arguments]) -> str:" in _text(results["s"])
+    assert _text(results["u"]) == "copied from 3"
+    assert results["u"]["details"]["nested_calls"][0]["tool_name"] == "my-tool"
+    assert _text(results["r"]) == "copied from 4"
+
+
+async def test_tool_search_refuses_two_tools_that_share_a_stub_name(tmp_path):
+    async def run(tool_call_id, params, signal, on_update, ctx):
+        return {"content": [{"type": "text", "text": "ran"}]}
+
+    def ext(api):
+        api.register_tool(tool_search_definition())
+        api.register_tool(call_tool_definition())
+        api.register_tool(_tool("my-tool", run, exposure="deferred"))
+        api.register_tool(_tool("my_tool", run, exposure="deferred"))
+
+    session = _session(tmp_path, ext)
+    model = ScriptedModel([("s", "tool_search", {"query": "tool"})])
+    result = _results(await _prompt(session, model))["s"]
+    assert result["is_error"]
+    assert "'my-tool', 'my_tool' all stub as 'my_tool'" in _text(result)
+    described = _Described("my-tool", "a", {"type": "object", "properties": {}}, None)
+    with pytest.raises(ValueError, match="all stub as 'my_tool'"):
+        render_stubs([described, dataclasses.replace(described, name="my_tool")])
+
+
+def test_a_ref_with_no_defs_entry_raises_at_render_naming_tool_and_ref():
+    params = {"type": "object", "properties": {"opts": {"$ref": "#/$defs/Options"}}}
+    with pytest.raises(ValueError, match=r"tool 'configure': \$ref '#/\$defs/Options'"):
+        render_stub("configure", "Configure.", params, None)
+    returns = {"$ref": "#/$defs/Missing"}
+    with pytest.raises(ValueError, match=r"tool 'probe': \$ref '#/\$defs/Missing'"):
+        render_stub("probe", "Probe.", {"type": "object", "properties": {}}, returns)

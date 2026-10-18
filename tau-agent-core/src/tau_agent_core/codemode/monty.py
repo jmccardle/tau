@@ -87,7 +87,7 @@ def _tools_namespace(monty: Any, tools: ToolInvoker) -> Any:
                 return call
 
         _NAMESPACE_CLASS = ToolNamespace
-    names = frozenset(s.name for s in tools.stubs())
+    names = frozenset(s.attribute for s in tools.stubs())
     return _NAMESPACE_CLASS(_Tools(tools), allowed_methods=names)
 
 

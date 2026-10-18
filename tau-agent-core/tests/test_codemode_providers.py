@@ -282,3 +282,77 @@ def test_cpython_env_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "ANTHROPIC_API_KEY" not in env
     assert not any(k.startswith("TAU_") for k in env)
     assert env.get("PATH") == os.environ.get("PATH")
+
+
+# ── issues #32/#33: names that are not Python identifiers ────────────────────
+
+
+async def _copy(**kwargs: Any) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": f"{kwargs['from']}->{kwargs.get('my-arg')}"}]}
+
+
+ODD = [
+    _tool(
+        "my-tool",
+        _copy,
+        {"from": {"type": "integer"}, "my-arg": {"type": "string"}},
+        ["from"],
+    ),
+    _tool("from", _add, {"a": {"type": "integer"}, "b": {"type": "integer"}}, ["a", "b"]),
+]
+
+
+def test_the_prompt_keeps_a_non_identifier_parameter_and_names_the_stubbed_tool() -> None:
+    from tau_agent_core.codemode.prompt import render_python_stubs, render_type_check_stubs
+
+    stubs = DirectToolInvoker(ODD).stubs()
+    text = render_python_stubs(stubs)
+    assert "async def my_tool(**kwargs: Unpack[my_tool_arguments]) -> str:" in text
+    assert '\'my_tool_arguments\', {"from": int, "my-arg": NotRequired[str]}' in text
+    assert "async def from_(*, a: int, b: int) -> str:" in text
+    namespace: dict[str, Any] = {}
+    header = "from typing import Any, Literal\nfrom typing_extensions import NotRequired, TypedDict, Unpack\n"
+    exec(header + text, namespace)
+    assert namespace["my_tool_arguments"].__required_keys__ == {"from"}
+    compile(render_type_check_stubs(stubs), "stubs.pyi", "exec")
+
+
+async def test_a_script_calls_a_non_identifier_tool_by_the_name_its_stub_shows(
+    provider: SandboxProvider,
+) -> None:
+    code = (
+        'print(await tools.my_tool(**{"from": 2, "my-arg": "x"}))\n'
+        "print(await tools.from_(a=1, b=2))"
+    )
+    r = await _run(provider, code, tools=DirectToolInvoker(ODD))
+    assert r.ok, r.error
+    assert r.output == "2->x\n3\n"
+    assert [c.name for c in r.calls] == ["my-tool", "from"]
+
+
+def test_discovery_answers_with_the_stub_name_and_takes_either() -> None:
+    invoker = DirectToolInvoker(ODD)
+    assert [h["name"] for h in invoker.search("my tool")][:1] == ["my_tool"]
+    assert invoker.describe("my_tool") == invoker.describe("my-tool")
+    assert "Unpack[my_tool_arguments]" in invoker.describe("my_tool")
+
+
+def test_two_tools_sharing_a_stub_name_raise_rather_than_shadow() -> None:
+    twin = _tool("my_tool", _add, {}, [])
+    with pytest.raises(ValueError, match="'my-tool', 'my_tool' all stub as 'my_tool'"):
+        DirectToolInvoker([*ODD, twin])
+
+
+@pytest.mark.skipif(not HAVE_MONTY, reason="no pydantic-monty")
+async def test_monty_type_checks_a_non_identifier_parameter() -> None:
+    from tau_agent_core.codemode.monty import MontyProvider
+
+    p = MontyProvider(type_check=True)
+    await p.start()
+    try:
+        code = 'args: "my_tool_arguments" = {"from": 2}\nprint(await tools.my_tool(**args))'
+        ok = await _run(p, code, tools=DirectToolInvoker(ODD))
+        assert ok.ok, ok.error
+        assert ok.output == "2->None\n"
+    finally:
+        await p.close()

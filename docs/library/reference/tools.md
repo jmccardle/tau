@@ -329,6 +329,48 @@ What pydantic's ``TypeAdapter(tp).validate_python`` builds.
 
 The text blocks of :attr:`content`, joined by newlines.
 
+## StubNamespace
+<!-- agent: yes -->
+
+`tau_agent_core.tool_schema.StubNamespace`
+
+Signatures for tools that share one module, so no class name means two shapes.
+
+:func:`render_stub`, :func:`render_stubs` and code mode's ``tools`` class
+all render through this.
+
+### signature
+
+```python
+signature(name: str, parameters: Mapping[str, Any], output_schema: Mapping[str, Any] | None, *, keyword_only: bool = False, self_arg: bool = False) -> tuple[list[str], str]
+```
+
+`tau_agent_core.tool_schema.StubNamespace.signature`
+
+One tool's ``async def`` line and the ``TypedDict`` classes it adds.
+
+Required parameters come first; optional ones default to ``None``,
+because the schema states no default. If a parameter name cannot be a
+Python parameter (``from``, ``my-arg``), the signature is
+``**kwargs: Unpack[<stub name>_arguments]`` over a functional
+``TypedDict`` that keeps every name exactly.
+
+**Parameters**
+
+- `name: str` — The tool name; the function is :func:`stub_name` of it.
+- `parameters: Mapping[str, Any]` — The argument JSON Schema.
+- `output_schema: Mapping[str, Any] | None` — The value's JSON Schema; ``None`` renders ``-> str``, which is what a caller gets from it: the text.
+- `keyword_only: bool = False` — Put a bare ``*`` before the parameters.
+- `self_arg: bool = False` — Lead with ``self``, for a method.
+
+**Returns**
+
+The classes not yet written in this namespace, each before the classes that use it, and ``async def f(...) -> T`` with no colon.
+
+**Raises**
+
+- `ValueError` — a ``$ref`` names no ``$defs`` entry.
+
 ## ToolBatchResult
 <!-- agent: yes -->
 
@@ -564,7 +606,7 @@ The ``register_tool`` dict for ``call_tool``, the fixed dispatcher to deferred t
 
 **Returns**
 
-A ``model-only`` tool taking ``name`` and ``arguments`` that runs a ``direct`` or ``deferred`` tool through ``ctx.execute_tool`` and returns its content and value; any other target is a tool error.
+A ``model-only`` tool taking ``name`` (real, or the stub name ``tool_search`` showed) and ``arguments`` that runs a ``direct`` or ``deferred`` tool through ``ctx.execute_tool`` and returns its content and value; any other target is a tool error.
 
 ## capture_tool_output
 <!-- agent: yes -->
@@ -694,22 +736,22 @@ render_stub(name: str, description: str, parameters: dict[str, Any], output_sche
 
 A Python stub for one tool, preceded by the ``TypedDict`` classes it uses.
 
-Required parameters come first, optional ones default to ``None`` because
-the schema states no default. If a parameter name cannot be a Python
-parameter (``from``, ``my-arg``), the signature is
-``**kwargs: Unpack[<name>_arguments]`` over a functional ``TypedDict`` that
-keeps every name exactly.
+See :meth:`StubNamespace.signature` for the signature's shape.
 
 **Parameters**
 
-- `name: str` — The tool name; made into a Python identifier.
+- `name: str` — The tool name; the stub defines :func:`stub_name` of it.
 - `description: str` — The stub's docstring, whitespace-collapsed.
 - `parameters: dict[str, Any]` — The argument JSON Schema.
-- `output_schema: dict[str, Any] | None` — The value's JSON Schema; ``None`` renders ``-> str``, which is what a nested caller gets from it: the text.
+- `output_schema: dict[str, Any] | None` — The value's JSON Schema, or ``None`` for ``-> str``.
 
 **Returns**
 
 The classes, then the ``async def``, separated by blank lines.
+
+**Raises**
+
+- `ValueError` — a ``$ref`` names no ``$defs`` entry.
 
 ## render_stubs
 <!-- agent: yes -->
@@ -729,6 +771,10 @@ Stubs for several tools under one ``typing`` import header.
 **Returns**
 
 One module's text, ending in a newline. A class is written once; a different shape under a name already taken is renamed ``Name_2``, and the stubs that use it say so.
+
+**Raises**
+
+- `ValueError` — two tools share a stub name (:func:`stub_names`), or a ``$ref`` names no ``$defs`` entry.
 
 ## run_nested_call
 <!-- agent: yes -->
@@ -792,6 +838,48 @@ how many words match, then registry order. Only an effective exposure of
 **Returns**
 
 At most ``limit`` matches, best first.
+
+## stub_name
+<!-- agent: yes -->
+
+```python
+stub_name(name: str) -> str
+```
+
+`tau_agent_core.tool_schema.stub_name`
+
+The identifier a stub gives tool ``name``: non-word characters become ``_``.
+
+``my-tool`` stubs as ``my_tool``; a keyword gains a trailing ``_``
+(``from_``), and a name starting with a digit a leading one. ``call_tool``
+and code mode resolve it back through :func:`stub_names`.
+
+**Parameters**
+
+- `name: str` — *(no description)*
+
+## stub_names
+<!-- agent: yes -->
+
+```python
+stub_names(names: Iterable[str]) -> dict[str, str]
+```
+
+`tau_agent_core.tool_schema.stub_names`
+
+Map each tool's stub name back to its real name, for one set of tools.
+
+**Parameters**
+
+- `names: Iterable[str]` — Real tool names.
+
+**Returns**
+
+``{stub_name(n): n}``; a name that is already an identifier maps to itself.
+
+**Raises**
+
+- `ValueError` — two names share a stub name (``my-tool`` and ``my_tool``), so neither stub could say which tool it calls.
 
 ## suspend_capture
 <!-- agent: yes -->
@@ -872,7 +960,7 @@ The ``register_tool`` dict for ``tool_search``; its description never changes.
 
 **Returns**
 
-A ``model-only`` tool taking ``query`` whose result lists each deferred match as a Python stub; an empty query is a tool error.
+A ``model-only`` tool taking ``query`` whose result lists each deferred match as a Python stub; an empty query, or two tools sharing a stub name (:func:`~tau_agent_core.tool_schema.stub_names`), is a tool error.
 
 ## validate_tool_arguments
 <!-- agent: yes -->
