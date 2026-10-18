@@ -98,7 +98,6 @@ _STOP_REASONS: dict[str, str] = {
 
 _CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
 
-_WARNED_REPLAY_OVERRIDE = OnceSet()
 _WARNED_UNSIGNED_THINKING = OnceSet()
 
 _INTERNAL_OPTION_KEYS = frozenset(
@@ -241,30 +240,24 @@ class AnthropicMessagesProvider(Provider):
 
         The API filters prior-turn thinking per model and bills only what the
         model reads, so every block goes back by default (docs/REASONING-WIRE.md
-        §6). ``"off"`` is not honoured: it would strip the current tool loop's
-        blocks, the reasoning behind the calls being answered. It is warned once
-        and treated as ``"turn"``, or raised under ``strict_reasoning_formats``.
+        §6).
 
         Returns:
             ``"all"`` or ``"turn"``.
+
+        Raises:
+            ValueError: the model sets ``"off"``, which would strip the current
+                tool loop's blocks, the reasoning behind the calls being answered.
         """
         scope = model.reasoning_replay or "all"
-        if scope != "off":
-            return scope
-        detail = (
-            f"model {model.id!r} sets reasoning_replay='off', which the Anthropic Messages "
-            "API cannot honour: the current tool loop's thinking blocks are the reasoning "
-            "behind the calls being answered and must go back with their signatures. "
-            "Using 'turn' instead"
-        )
-        if model.strict_reasoning_formats:
+        if scope == "off":
             raise ValueError(
-                f"{detail}. Refusing to continue because "
-                "models.<name>.strict_reasoning_formats is set."
+                f"model {model.id!r} sets reasoning_replay='off', which the Anthropic "
+                "Messages API cannot honour: the current tool loop's thinking blocks must "
+                "go back with their signatures. Use 'turn' to drop prior turns' thinking "
+                "(docs/REASONING-WIRE.md §6)."
             )
-        if _WARNED_REPLAY_OVERRIDE.first(model.id):
-            _logger.warning("%s (docs/REASONING-WIRE.md §6).", detail)
-        return "turn"
+        return scope
 
     def _on_unsigned_thinking(self, model: Model) -> None:
         """Handle a thinking block with no Anthropic signature (S2).

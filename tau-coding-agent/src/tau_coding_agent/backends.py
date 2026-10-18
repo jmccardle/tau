@@ -1055,6 +1055,12 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         raise ValueError(
             f"reasoning_replay must be one of 'all', 'turn', 'off'; got {reasoning_replay!r}"
         )
+    if reasoning_replay == "off" and api == "anthropic-messages":
+        raise ValueError(
+            f"models.{entry}.reasoning_replay is 'off', which the Anthropic Messages API "
+            "cannot honour. Use 'turn' to drop prior turns' thinking "
+            "(docs/REASONING-WIRE.md §6)."
+        )
     reasoning_replay = cast("Literal['all', 'turn', 'off'] | None", reasoning_replay)
 
     strict_reasoning_formats = config.get("strict_reasoning_formats", False)

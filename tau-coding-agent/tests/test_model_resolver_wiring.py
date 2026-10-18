@@ -77,6 +77,19 @@ def test_build_model_reasoning_replay_invalid_raises():
         build_model_from_config(entry)
 
 
+def test_build_model_reasoning_replay_off_on_anthropic_raises():
+    """Anthropic cannot honour 'off', so the config refuses it at load time
+    (docs/REASONING-WIRE.md §6)."""
+    entry = {
+        "backend": "anthropic",
+        "model": "claude-haiku-5-5",
+        "api_key": "k",
+        "reasoning_replay": "off",
+    }
+    with pytest.raises(ValueError, match="reasoning_replay is 'off'"):
+        build_model_from_config(entry)
+
+
 def test_make_model_resolver_resolves_known_name():
     resolve = make_model_resolver({"models": _models()})
     model = resolve("local-llm")

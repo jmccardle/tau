@@ -223,10 +223,10 @@ keeps `"turn"`.**
 * **An explicit `"turn"` is honoured on Anthropic.** The preserved-thinking docs
   allow removing blocks from the start of the history. τ removes the prior
   turns' blocks and keeps the current run, so the request stays valid. It is a
-  legitimate way to save input tokens. An explicit `"off"` is still refused:
-  warned and treated as `"turn"`, or raised under `strict_reasoning_formats`.
-  Stripping the current tool loop's blocks discards the reasoning behind the
-  calls being answered.
+  legitimate way to save input tokens. An explicit `"off"` raises, when the config
+  is built and again in the provider (decided 2026-10-18; the draft warned and
+  ran `"turn"`). Stripping the current tool loop's blocks discards the reasoning
+  behind the calls being answered.
 * **An unsigned block from a prior turn is dropped, not sent as text.** It is a
   foreign provider's thinking, or an aborted partial. Under `"all"` it would
   otherwise reach the model as visible prose. Inside the current turn, S2's

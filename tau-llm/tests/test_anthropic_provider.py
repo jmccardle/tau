@@ -47,10 +47,8 @@ _TS = 1_700_000_000_000
 
 @pytest.fixture(autouse=True)
 def _clear_warn_dedupe():
-    anthropic_mod._WARNED_REPLAY_OVERRIDE.clear()
     anthropic_mod._WARNED_UNSIGNED_THINKING.clear()
     yield
-    anthropic_mod._WARNED_REPLAY_OVERRIDE.clear()
     anthropic_mod._WARNED_UNSIGNED_THINKING.clear()
 
 
@@ -667,16 +665,12 @@ class TestReasoningReplay:
         ]
         assert replayed == ["step one", "step two"]
 
-    def test_reasoning_replay_off_is_overridden_with_a_warning(self, caplog):
+    def test_reasoning_replay_off_raises(self):
         """'off' would strip the current tool loop's blocks, the reasoning behind
-        the calls being answered; it runs as 'turn' instead."""
+        the calls being answered."""
         model = _model(reasoning_replay="off")
-        with caplog.at_level(logging.WARNING, logger="tau_llm.providers.anthropic"):
-            _, messages = _convert(_provider(), self._two_turns(), model)
-        assert messages[-1]["content"][0]["thinking"] == "new"
-        assert [b["type"] for b in messages[1]["content"]] == ["text"]
-        assert "reasoning_replay" in caplog.text
-        assert "REASONING-WIRE" in caplog.text
+        with pytest.raises(ValueError, match="reasoning_replay='off'"):
+            _convert(_provider(), self._two_turns(), model)
 
     def test_reasoning_replay_all_is_honoured_silently(self, caplog):
         model = _model(reasoning_replay="all")
@@ -685,23 +679,10 @@ class TestReasoningReplay:
         assert messages[1]["content"][0]["type"] == "thinking"
         assert not caplog.records
 
-    def test_the_override_warns_once_per_model(self, caplog):
-        model = _model(reasoning_replay="off")
-        provider = _provider()
-        with caplog.at_level(logging.WARNING, logger="tau_llm.providers.anthropic"):
-            for _ in range(3):
-                _convert(provider, self._two_turns(), model)
-        assert len(caplog.records) == 1
-
     def test_the_default_scope_warns_about_nothing(self, caplog):
         with caplog.at_level(logging.WARNING, logger="tau_llm.providers.anthropic"):
             _convert(_provider(), self._two_turns(), _model())
         assert not caplog.records
-
-    def test_strict_turns_the_override_into_a_raise(self):
-        model = _model(reasoning_replay="off", strict_reasoning_formats=True)
-        with pytest.raises(ValueError, match="strict_reasoning_formats"):
-            _convert(_provider(), self._two_turns(), model)
 
 
 class TestUnsignedThinking:
