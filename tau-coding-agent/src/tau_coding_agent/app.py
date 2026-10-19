@@ -248,6 +248,7 @@ class TauApp(App):
         self._discover_extensions: bool = not run_config.get("no_extensions", False)
         self._exclude_tools: list[str] = list(run_config.get("exclude_tools", []))
         self._declined_extensions: set[tuple[str, str]] = set()
+        self._offered_extensions: set[tuple[str, str]] = set()
         self._no_tools: str | None = run_config.get("no_tools")
         self._tool_allowlist: list[str] | None = run_config.get("tools")
         self._append_system_prompt: list[str] = list(run_config.get("append_system_prompt", []))
@@ -2739,7 +2740,8 @@ class TauApp(App):
         """Announce grandfathered drop-ins, offer each unauthorized extension, warn about the rest.
 
         An unauthorized extension is offered once per app run: "not now" is
-        remembered until the app quits, so a new chat does not ask again
+        remembered until the app quits, so a new chat does not ask again, and
+        a load while its prompt is still open does not stack a second one
         (docs/EXTENSION-PACKAGES.md §9).
         """
         if result.grandfathered:
@@ -2747,16 +2749,20 @@ class TauApp(App):
                 withheld_notices(LoadExtensionsResult(grandfathered=result.grandfathered))[0]
             )
         for record in result.withheld:
+            key = (record.identifier, record.target)
             if record.state != "unauthorized":
                 self.notify(withheld_notice(record), severity="warning")
-            elif (record.identifier, record.target) not in self._declined_extensions:
+            elif key not in self._declined_extensions and key not in self._offered_extensions:
                 self._offer_extension_authorization(record)
 
     def _offer_extension_authorization(self, record: ExtensionRecord) -> None:
         """Push the authorization dialog for ``record`` and act on the answer."""
         title, body = authorization_prompt(record)
+        key = (record.identifier, record.target)
+        self._offered_extensions.add(key)
 
         async def _answered(authorize: bool | None) -> None:
+            self._offered_extensions.discard(key)
             if not authorize:
                 self._declined_extensions.add((record.identifier, record.target))
                 self.notify(withheld_notice(record), severity="warning")

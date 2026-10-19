@@ -526,6 +526,9 @@ async def test_not_now_is_remembered_for_the_run(app):
             await pilot.pause()
             if isinstance(app.screen, ExtensionAuthorizationDialog):
                 break
+        await pilot.pause()
+        dialogs = [s for s in app.screen_stack if isinstance(s, ExtensionAuthorizationDialog)]
+        assert len(dialogs) == 1, "a load while the prompt is open must not stack a second one"
         await pilot.click("#extension-authorize-no")
         await pilot.pause()
         await app._load_backend_extensions()
