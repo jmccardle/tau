@@ -37,7 +37,7 @@ class ExtensionWarning:
     source: str
     key: str
     message: str
-    severity: WarningSeverity = "warning"
+    severity: WarningSeverity
 
     def summary(self) -> str:
         """The line every head shows for this warning.

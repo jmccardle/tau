@@ -54,10 +54,10 @@ class TestTheStore:
         seen: list[list[ExtensionWarning]] = []
         store.subscribe(seen.append)
 
-        assert store.set(ExtensionWarning("a", "k", "one"))
+        assert store.set(ExtensionWarning("a", "k", "one", "warning"))
         assert store.set(ExtensionWarning("b", "k", "two", "error"))
-        assert store.set(ExtensionWarning("a", "k", "one, again"))
-        assert not store.set(ExtensionWarning("a", "k", "one, again"))
+        assert store.set(ExtensionWarning("a", "k", "one, again", "warning"))
+        assert not store.set(ExtensionWarning("a", "k", "one, again", "warning"))
 
         assert [(w.source, w.message) for w in store.current()] == [
             ("a", "one, again"),
@@ -69,9 +69,9 @@ class TestTheStore:
 
     def test_clear_source_and_clear_all(self):
         store = ExtensionWarnings()
-        store.set(ExtensionWarning("a", "1", "x"))
-        store.set(ExtensionWarning("a", "2", "y"))
-        store.set(ExtensionWarning("tau", "1", "z"))
+        store.set(ExtensionWarning("a", "1", "x", "warning"))
+        store.set(ExtensionWarning("a", "2", "y", "warning"))
+        store.set(ExtensionWarning("tau", "1", "z", "warning"))
 
         assert store.clear_source("a")
         assert [w.source for w in store.current()] == ["tau"]
@@ -80,10 +80,10 @@ class TestTheStore:
     @pytest.mark.parametrize(
         "warning",
         [
-            ExtensionWarning("", "k", "m"),
-            ExtensionWarning("a", "", "m"),
-            ExtensionWarning("a", "k", ""),
-            ExtensionWarning("a", "k", "two\nlines"),
+            ExtensionWarning("", "k", "m", "warning"),
+            ExtensionWarning("a", "", "m", "warning"),
+            ExtensionWarning("a", "k", "", "warning"),
+            ExtensionWarning("a", "k", "two\nlines", "warning"),
             ExtensionWarning("a", "k", "m", "fatal"),  # type: ignore[arg-type]
         ],
     )
@@ -95,14 +95,14 @@ class TestTheStore:
 class TestTheMarker:
     def test_none_when_empty_and_errors_counted_first(self):
         assert warnings_marker([]) is None
-        assert warnings_marker([ExtensionWarning("a", "k", "m")]) == (
+        assert warnings_marker([ExtensionWarning("a", "k", "m", "warning")]) == (
             "1 extension warning — /extensions"
         )
         assert warnings_marker(
             [
-                ExtensionWarning("a", "1", "m"),
+                ExtensionWarning("a", "1", "m", "warning"),
                 ExtensionWarning("a", "2", "m", "error"),
-                ExtensionWarning("b", "1", "m"),
+                ExtensionWarning("b", "1", "m", "warning"),
             ]
         ) == ("1 extension error, 2 warnings — /extensions")
 
@@ -190,4 +190,5 @@ class TestTheRpcField:
         assert warnings["items"] == {"$ref": "#/$defs/ExtensionWarning"}
         record = doc["$defs"]["ExtensionWarning"]
         assert set(record["properties"]) == {"source", "key", "message", "severity"}
+        assert sorted(record["required"]) == ["key", "message", "severity", "source"]
         assert record["properties"]["severity"]["enum"] == ["warning", "error"]

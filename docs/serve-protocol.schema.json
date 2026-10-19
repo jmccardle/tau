@@ -2689,7 +2689,8 @@
       "required": [
         "source",
         "key",
-        "message"
+        "message",
+        "severity"
       ],
       "type": "object"
     },

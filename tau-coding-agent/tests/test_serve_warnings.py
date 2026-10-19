@@ -47,3 +47,16 @@ async def test_describe_reports_the_current_warnings(served, tmp_path):
         {"source": "tau", "key": "k", "message": "m", "severity": "warning"}
     ]
     await client.close()
+
+
+def test_every_warning_field_is_required_in_the_serve_schema():
+    """A client must never have to invent a severity (tau-code's generated types)."""
+    schema = p.json_schema()
+    record = schema["$defs"]["ExtensionWarning"]
+    assert sorted(record["required"]) == ["key", "message", "severity", "source"]
+    assert schema["$defs"]["Surface"]["properties"]["warnings"]["items"] == {
+        "$ref": "#/$defs/ExtensionWarning"
+    }
+    assert schema["$defs"]["UiWarnings"]["properties"]["warnings"]["items"] == {
+        "$ref": "#/$defs/ExtensionWarning"
+    }

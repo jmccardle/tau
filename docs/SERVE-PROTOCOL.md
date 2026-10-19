@@ -1209,7 +1209,7 @@ One current warning on a session.
 | `source` | string | yes | The extension identifier that set it, or `"tau"`. |
 | `key` | string | yes | Its name within `source`; setting the same key replaces it. |
 | `message` | string | yes | One line for the user. |
-| `severity` | `"warning"` \| `"error"` | no | One of `WARNING_SEVERITIES`. |
+| `severity` | `"warning"` \| `"error"` | yes | One of `WARNING_SEVERITIES`. |
 
 ### Failure
 

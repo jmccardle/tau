@@ -1930,7 +1930,7 @@ like :meth:`notify`: the delegate's status strip in the TUI; one
 <!-- agent: yes -->
 
 ```python
-class ExtensionWarning(source: str, key: str, message: str, severity: WarningSeverity = 'warning')
+class ExtensionWarning(source: str, key: str, message: str, severity: WarningSeverity)
 ```
 
 `tau_agent_core.extension_warnings.ExtensionWarning`
@@ -1942,7 +1942,7 @@ One current warning on a session.
 - `source: str` — The extension identifier that set it, or ``"tau"``.
 - `key: str` — Its name within ``source``; setting the same key replaces it.
 - `message: str` — One line for the user.
-- `severity: WarningSeverity = 'warning'` — One of :data:`WARNING_SEVERITIES`.
+- `severity: WarningSeverity` — One of :data:`WARNING_SEVERITIES`.
 
 ### summary
 
