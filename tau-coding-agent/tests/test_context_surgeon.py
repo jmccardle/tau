@@ -270,7 +270,8 @@ async def test_summarize_history_requires_from_entry() -> None:
 @pytest.fixture
 def isolate_tau_dir(tmp_path, monkeypatch):
     """Point the default sessions base at tmp so an export fork writes there."""
-    monkeypatch.setattr("tau_coding_agent.session_store.TAU_DIR", tmp_path / "tau")
+    (tmp_path / "tau").mkdir(exist_ok=True)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path / "tau"))
     return tmp_path
 
 
@@ -385,7 +386,7 @@ def fake_home(tmp_path, fake_provider, monkeypatch):
     }
     (tau_dir / "config.json").write_text(json.dumps(config))
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr("tau_coding_agent.session_store.TAU_DIR", tau_dir)
+    monkeypatch.setenv("TAU_HOME", str(tau_dir))
     return tmp_path
 
 

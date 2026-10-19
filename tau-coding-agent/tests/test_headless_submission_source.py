@@ -33,7 +33,6 @@ from unittest.mock import patch
 
 import pytest
 
-import tau_coding_agent.session_store as store
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.submission import Submission
@@ -128,7 +127,7 @@ def _config() -> dict:
 @pytest.fixture(autouse=True)
 def _sandbox(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
 
 
 @pytest.fixture

@@ -26,7 +26,7 @@ from websockets.asyncio.server import serve as ws_serve, unix_serve
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import connect as sync_connect, unix_connect as sync_unix_connect
 
-from tau_coding_agent.config import TAU_DIR
+from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.serve import protocol as p
 from tau_coding_agent.serve.client import Address, ServeClient, ServeError, parse_address
 from tau_coding_agent.serve.http import build_process_request
@@ -226,7 +226,7 @@ def start_background(
         json_output: Print a :class:`~protocol.ServeStarted` object rather than the line.
         token: The hello token, for a daemon that requires one.
     """
-    log_path = TAU_DIR / LOG_FILE
+    log_path = resolve_tau_home() / LOG_FILE
     try:
         running = hello_probe(address, token)
     except RuntimeError as exc:

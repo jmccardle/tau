@@ -21,7 +21,6 @@ import json
 import os
 from pathlib import Path
 
-import tau_coding_agent.session_store as store
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import run_print
 from tau_coding_agent.session_store import Session, list_sessions
@@ -67,7 +66,7 @@ def _args(tmp_path, mode: str) -> CLIArgs:
 
 async def test_json_mode_emits_extension_notify_records(monkeypatch, tmp_path, capsys):
     """``--mode json``: session_start and command notifies land as ``extension`` records."""
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
 
     rc = await run_print(_args(tmp_path, "json"), _config())
     assert rc == 0
@@ -101,7 +100,7 @@ async def test_json_mode_emits_extension_notify_records(monkeypatch, tmp_path, c
 
 async def test_text_mode_keeps_notify_on_stderr(monkeypatch, tmp_path, capsys):
     """``--mode text``: no record sink is installed → notify stays on stderr, off stdout."""
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
 
     rc = await run_print(_args(tmp_path, "text"), _config())
     assert rc == 0
@@ -126,7 +125,7 @@ async def test_extension_records_are_display_only_not_persisted(monkeypatch, tmp
     the project instructions — so the original ``"started"`` failed the day a
     docs paragraph used the word.
     """
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
 
     rc = await run_print(_args(tmp_path, "json"), _config())
     assert rc == 0

@@ -1461,7 +1461,7 @@ async def run_repl(
         0 — the loop ends on EOF, an idle interrupt, or a shutdown request.
     """
     from tau_coding_agent.backends import DEFAULT_MAX_TOKENS, create_backend, make_model_resolver
-    from tau_coding_agent.config import TAU_DIR
+    from tau_agent_core.tau_home import resolve_tau_home
 
     configured_steering_strategy(config)
     attachment_inline_limit(config)
@@ -1470,7 +1470,7 @@ async def run_repl(
     reader = (
         reader
         if reader is not None
-        else PromptToolkitReader(console, history_path=TAU_DIR / "repl_history")
+        else PromptToolkitReader(console, history_path=resolve_tau_home() / "repl_history")
     )
     catalog = (
         catalog

@@ -24,7 +24,6 @@ from unittest.mock import patch
 
 import pytest
 
-import tau_coding_agent.session_store as store
 from tau_agent_core.events import AgentEvent, ErrorDetail
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, TextContent, Usage
@@ -271,7 +270,7 @@ def _config() -> dict:
 @pytest.fixture(autouse=True)
 def _sandbox(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
 
 
 async def test_run_print_json_is_pi_faithful(fake_llm, capsys):

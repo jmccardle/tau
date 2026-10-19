@@ -77,6 +77,7 @@ from typing import Any, Mapping
 
 from textual.theme import BUILTIN_THEMES, Theme
 
+from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import ConfigError
 
 __all__ = [
@@ -517,15 +518,8 @@ def textual_themes() -> dict[str, Theme]:
 
 
 def user_theme_dir() -> Path:
-    """``~/.tau/themes`` — resolved against the *live* ``config.CONFIG_PATH``.
-
-    Imported inside the function on purpose: ``sandbox_tau_home`` rebinds
-    ``config.CONFIG_PATH`` as a module attribute, and a ``from … import`` at
-    module scope would capture the real path once and ignore every sandbox.
-    """
-    from tau_coding_agent import config as config_module
-
-    return Path(config_module.CONFIG_PATH).parent / USER_THEME_DIRNAME
+    """``<τ home>/themes``, resolved now."""
+    return resolve_tau_home() / USER_THEME_DIRNAME
 
 
 def load_user_themes(

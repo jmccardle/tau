@@ -220,7 +220,9 @@ class TestFailEarly:
         from tau_coding_agent import config as config_module
         from tau_coding_agent.session_store import FileSessionCatalog
 
-        config_module.CONFIG_PATH.write_text(json.dumps({"models": {}, "enter_key": "nope"}))
+        config_module.default_config_path().write_text(
+            json.dumps({"models": {}, "enter_key": "nope"})
+        )
         with pytest.raises(ConfigError, match="enter_key"):
             TauApp(session_catalog=FileSessionCatalog(tau_home / "sessions"))
 

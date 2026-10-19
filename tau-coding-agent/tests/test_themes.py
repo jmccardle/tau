@@ -522,15 +522,10 @@ def test_no_themes_directory_is_not_an_error(tmp_path: Path) -> None:
 
 
 def test_the_user_theme_dir_follows_the_sandboxed_config_path(tau_home: Path) -> None:
-    """A "hermetic" test must not read the developer's real ``~/.tau/themes``.
-
-    ``sandbox_tau_home`` redirects ``config.CONFIG_PATH`` and nothing else, so
-    resolving the theme directory from ``config.TAU_DIR`` — which is frozen at
-    import — is exactly the leak ``tests/conftest.py``'s docstring is about.
-    """
+    """A "hermetic" test must not read the developer's real ``~/.tau/themes``."""
     from tau_coding_agent.themes import user_theme_dir
 
-    assert config_module.CONFIG_PATH.parent == tau_home
+    assert config_module.default_config_path().parent == tau_home
     assert user_theme_dir() == tau_home / "themes"
 
 

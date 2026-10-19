@@ -102,9 +102,8 @@ launcher sets it on every run, with or without a `.tau` beside it.
   not replaced. τ never creates it.
 - `TAU_PORTABLE_BASE` keeps exactly the meaning §2 gives it.
 
-**Every head says it in one line.** `tau_coding_agent.config.TAU_DIR`
-resolves at import, so `tau_coding_agent.cli` catches `TauHomeError` around
-that import, prints `tau: error: <message>` and exits 2. That covers the TUI,
+**Every head says it in one line.** `tau_coding_agent.cli` prints
+`tau: error: <message>` and exits 2 (§8 has how, since 2026-10-19). That covers the TUI,
 `-p`, rpc, repl, `serve` and `ext`, for both `tau` and
 `python -m tau_coding_agent.cli`. A bad `TAU_PORTABLE_BASE` takes the same
 path; it used to print a traceback and exit 1.
@@ -146,3 +145,25 @@ resolves when the module is first imported.
 
 `HOME_ENV_VARS` lives beside `resolve_tau_home`. A third home variable is
 added there, in one place, and both guards pick it up.
+
+## 8. The home resolves at use, never at import (2026-10-19)
+
+**What was wrong.** `tau_coding_agent.config.TAU_DIR` and `CONFIG_PATH` were
+computed when the module was imported, and §6 made `cli.py` turn a
+`TauHomeError` there into `SystemExit(2)`. So with a bad `TAU_HOME`,
+`tau --help` (the text that documents `TAU_HOME`) and `tau --version` exited 2,
+and any program importing `tau_coding_agent.cli` to reach `build_parser` was
+killed by the import.
+
+**Now.** Neither constant exists. Every reader calls `resolve_tau_home()`
+when it needs the home: `config.default_config_path()`, the file session
+store's default base, the serve log, the REPL history, themes and exports.
+`cli.main` resolves once right after argument parsing, inside the handler
+that prints `tau: error:`. `tau ext` and `tau serve` run through the same
+handler, and they parse before they touch the home. So `--help` and
+`--version` work whatever the home is, and a real command still refuses a
+bad one in one line with exit 2.
+
+**For tests and embedders.** There is nothing left to monkeypatch. Set
+`TAU_HOME` to an existing directory; `testing.sandbox.sandbox_tau_home` does
+exactly that.

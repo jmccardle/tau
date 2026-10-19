@@ -19,30 +19,24 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
-from tau_agent_core.tau_home import TauHomeError
-
-try:
-    from tau_coding_agent.config import TAU_DIR, ConfigError, load_config
-    from tau_coding_agent.headless import (
-        CLIError,
-        parse_ext_config_overrides,
-        resolve_model_config,
-        resolve_no_tools,
-        run_print,
-    )
-except TauHomeError as _home_error:
-    # config.TAU_DIR resolves at import, so every head's bad-home refusal happens here.
-    print(f"tau: error: {_home_error}", file=sys.stderr)
-    raise SystemExit(2) from None
+from tau_agent_core.tau_home import TauHomeError, resolve_tau_home
+from tau_coding_agent.config import ConfigError, load_config
+from tau_coding_agent.headless import (
+    CLIError,
+    parse_ext_config_overrides,
+    resolve_model_config,
+    resolve_no_tools,
+    run_print,
+)
 from tau_coding_agent.tagline import FUN_DEFAULT
 
-__all__ = ["TAU_DIR", "load_config", "main"]
+__all__ = ["load_config", "main"]
 
 
 def _version() -> str:
@@ -772,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
     if raw[:1] == ["ext"]:
         from tau_coding_agent.ext_cli import run_ext
 
-        return run_ext(raw[1:])
+        return _refusing_a_bad_home(run_ext, raw[1:])
     if raw[:1] == ["serve"]:
         try:
             from tau_coding_agent.serve.cli import run_serve
@@ -785,13 +779,14 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        return run_serve(raw[1:])
+        return _refusing_a_bad_home(run_serve, raw[1:])
     args = parse_cli_args(argv)
 
     if args.verbose:
         print(f"τ-coding-agent args: {args}", file=sys.stderr)
 
     try:
+        resolve_tau_home()
         if args.export_html is not None:
             if (
                 args.print_mode
@@ -959,7 +954,25 @@ def main(argv: list[str] | None = None) -> int:
         if args.cwd is not None:
             raise CLIError("--cwd names a directory on a daemon's machine; it needs --connect")
         return _launch_tui(args, config)
-    except (ConfigError, ResourceError, UnsupportedCommandError, ExplicitExtensionError) as exc:
+    except (
+        ConfigError,
+        ResourceError,
+        UnsupportedCommandError,
+        ExplicitExtensionError,
+        TauHomeError,
+    ) as exc:
+        print(f"tau: error: {exc}", file=sys.stderr)
+        return 2
+
+
+def _refusing_a_bad_home(run: Callable[[list[str]], int], argv: list[str]) -> int:
+    """Run a subcommand, turning a bad τ home into one ``tau: error:`` line and exit 2.
+
+    The subcommand parses first, so its ``--help`` works whatever the home is.
+    """
+    try:
+        return run(argv)
+    except TauHomeError as exc:
         print(f"tau: error: {exc}", file=sys.stderr)
         return 2
 

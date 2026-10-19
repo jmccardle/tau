@@ -69,19 +69,18 @@ devshot.py           CLI: scenes x sizes -> files on disk
 
 `build_tau_app(tau_home, *, config=None, discover_extensions=False, extension_paths=(), **kwargs)`
 constructs a `TauApp` that cannot touch the developer's real `~/.tau`, and
-`sandbox_tau_home(root)` is the context manager that redirects it. There are
-exactly three moves that isolate a `TauApp`, and the long explanation of *why
-these three and no others* is the docstring of `tau-coding-agent/tests/conftest.py`:
+`sandbox_tau_home(root)` is the context manager that redirects it. The moves that
+isolate a `TauApp`:
 
-1. `config.CONFIG_PATH` — the only name `bootstrap_config` actually reads.
-   (`config.TAU_DIR` is **not**: `CONFIG_PATH` is computed from it at import time,
-   so rebinding `TAU_DIR` afterwards cannot move it.)
-2. `session_store.TAU_DIR` — where the file store roots its `sessions/` dir.
-3. An **injected** `session_catalog`. `TauApp.__init__` documents that an injected
+1. `$TAU_HOME` names `root` for the duration. Since 2026-10-19 every home read
+   resolves at use (docs/PORTABLE-HOME.md §8), so config, sessions, settings,
+   extensions and themes all land there. Before that, `config.CONFIG_PATH` and
+   `session_store.TAU_DIR` were import-time constants patched one by one.
+2. An **injected** `session_catalog`. `TauApp.__init__` documents that an injected
    catalog always wins over resolving one, so the config-driven
    `build_session_catalog` branch — and its live network health check — never runs.
 
-Move 3 is the one that matters most: without it, a machine whose config selects
+Move 2 is the one that matters most: without it, a machine whose config selects
 the JMFTS session store had its *tests* writing into the running JMFTS server.
 `sandbox_tau_home` also swaps in a fresh `store._session_listeners` list, because
 a real backend registers a module-global session-event listener the app never
@@ -668,9 +667,8 @@ the debugger's stdout.
 - ❌ **Compose a modal inside a throwaway `App` for a screenshot.** It loses
   `CSS_PATH` and renders full-screen — an authoritative-looking lie (§2.2).
 - ❌ **Hand-roll a second `TauApp` sandbox.** Use `testing.sandbox`; a private copy
-  is how the tool and the tests drift apart (§2.1). Patching
-  `tau_coding_agent.app.TAU_DIR` or `tau_coding_agent.config.TAU_DIR` is a
-  **no-op** — see `tests/conftest.py`.
+  is how the tool and the tests drift apart (§2.1). To move the home in a
+  test, set `TAU_HOME` (`monkeypatch.setenv`) to an existing directory.
 - ❌ **Construct a scene's app inside your own test.** Use `open_scene`, so the
   thing you assert on is the thing that gets screenshotted (§2.2).
 - ❌ **Interact before the first `pause()`** (§7.2 trap 2), or **re-click an

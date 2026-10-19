@@ -124,7 +124,7 @@ def env(monkeypatch, tmp_path):
         return be
 
     monkeypatch.setattr("tau_coding_agent.backends.create_backend", factory)
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
 
     clock = {"t": 0}
 

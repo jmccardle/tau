@@ -23,7 +23,6 @@ import signal
 import pytest
 from print_fakes import BoundPrintFake
 
-import tau_coding_agent.session_store as store
 from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import run_print
@@ -107,7 +106,7 @@ def env(monkeypatch, tmp_path):
     holder["install"] = lambda block=False: monkeypatch.setattr(
         "tau_coding_agent.backends.create_backend", make_factory(block=block)
     )
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     return holder
 
 

@@ -88,9 +88,8 @@ def _clear_recorder():
 def _headless_model_config(monkeypatch, tmp_path, args: CLIArgs) -> dict:
     """Run print mode against the recorder and return the config it received."""
     monkeypatch.setattr("tau_coding_agent.backends.create_backend", _Recorder)
-    import tau_coding_agent.session_store as store
 
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     asyncio.run(run_print(args, dict(CONFIG)))
     return _Recorder.instances[-1].config
 
@@ -150,9 +149,8 @@ def test_headless_session_stores_what_the_backend_built(monkeypatch, tmp_path):
     is what goes on the wire.
     """
     monkeypatch.setattr("tau_coding_agent.backends.create_backend", _Recorder)
-    import tau_coding_agent.session_store as store
 
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     asyncio.run(run_print(CLIArgs(messages=["hi"], print_mode=True), dict(CONFIG)))
 
     backend = _Recorder.instances[-1]
@@ -171,9 +169,8 @@ def test_a_config_without_a_prompt_leaves_the_base_text_to_the_builder(monkeypat
     """
     config = {k: v for k, v in CONFIG.items() if k != "system_prompt"}
     monkeypatch.setattr("tau_coding_agent.backends.create_backend", _Recorder)
-    import tau_coding_agent.session_store as store
 
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     asyncio.run(run_print(CLIArgs(messages=["hi"], print_mode=True), config))
 
     assert "system_prompt" not in _Recorder.instances[-1].config

@@ -36,8 +36,8 @@ from tau_agent_core.compare import COMPARE_KEY
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import config_at
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
+from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import (
-    TAU_DIR,
     ConfigError,
     apply_compaction_config,
     bootstrap_config,
@@ -3596,7 +3596,7 @@ class TauApp(App):
             lines.append(f"## {role}\n\n{content}\n")
 
         # Save to file
-        export_path = TAU_DIR / "exports"
+        export_path = resolve_tau_home() / "exports"
         export_path.mkdir(parents=True, exist_ok=True)
 
         filename = f"chat_{self.current_session.id}.md"

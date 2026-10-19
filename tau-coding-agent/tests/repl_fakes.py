@@ -16,7 +16,6 @@ from typing import Any, Callable
 import pytest
 from rich.console import Console
 
-import tau_coding_agent.session_store as store
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.capabilities import BUILTIN, Vocabulary
 from tau_agent_core.compaction import CompactionResult
@@ -280,7 +279,7 @@ class ReplEnv:
             tmp_path: The session store's root, so no run touches ``~/.tau``.
         """
         self._monkeypatch = monkeypatch
-        monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+        monkeypatch.setenv("TAU_HOME", str(tmp_path))
         self.config: dict[str, Any] = dict(CONFIG)
         self.console = Console(record=True, width=100, force_terminal=False)
         self.reader = MemoryReader()

@@ -13,7 +13,6 @@ from __future__ import annotations
 import pytest
 from print_fakes import BoundPrintFake
 
-import tau_coding_agent.session_store as store
 from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import report_cache_miss, run_print
@@ -77,7 +76,7 @@ class _CacheBackend(BoundPrintFake):
 
 @pytest.fixture
 def run(monkeypatch, tmp_path):
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
 
     async def _run(messages: list[dict], mode: str = "text") -> None:
         monkeypatch.setattr(

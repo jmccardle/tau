@@ -1,14 +1,9 @@
-"""τ configuration: the single reader/writer for ``~/.tau/config.json``.
+"""τ configuration: the single reader and writer of ``<τ home>/config.json``.
 
-Before this module there were **two** divergent readers — ``cli.load_config``
-(validating) and ``TauApp.load_config`` (non-validating, and it wrote a *third*,
-hardcoded default that disagreed with the packaged ``tau_default_config.json``
-template) — plus two definitions of ``TAU_DIR``. Any new config key had to be
-taught to both, and ``action_edit_system_prompt`` persisted the *runtime* config
-(CLI overrides merged in) back to disk, silently promoting a one-run ``--model``
-flag into the on-disk default.
-
-One reader, one writer, one ``TAU_DIR``, one default template.
+One reader, one writer, one default template; it replaced two divergent readers
+that disagreed on the first-run default. The home is resolved at each use, never
+at import, so a bad ``TAU_HOME`` cannot break ``import`` or ``--help``
+(docs/PORTABLE-HOME.md §8).
 
 Reference: docs/CONSTRAINED-GEN-AND-BRANCHING-PLAN.md §2 (``models.<name>.grammar``
 / ``extra_body``), docs/JMFTS-INTEGRATION-PLAN.md §3.1 (``session_store``) — both
@@ -27,11 +22,18 @@ from typing import Any
 from tau_agent_core.compaction import CompactionConfig, CompactionSettings
 from tau_agent_core.tau_home import resolve_tau_home
 
-TAU_DIR = resolve_tau_home()
-
-CONFIG_PATH = TAU_DIR / "config.json"
+CONFIG_FILENAME = "config.json"
 
 DEFAULT_CONFIG_TEMPLATE = Path(__file__).parent / "tau_default_config.json"
+
+
+def default_config_path() -> Path:
+    """τ's ``config.json``: ``<τ home>/config.json``, resolved now.
+
+    Raises:
+        TauHomeError: The τ home variables name something unusable.
+    """
+    return resolve_tau_home() / CONFIG_FILENAME
 
 
 class ConfigError(Exception):
@@ -48,7 +50,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     than being silently coerced to an empty config (which would look like "no
     models configured" and send the user hunting in the wrong place).
     """
-    config_path = path or CONFIG_PATH
+    config_path = path or default_config_path()
     if not config_path.exists():
         return {}
     try:
@@ -68,7 +70,7 @@ def save_config(config: dict[str, Any], path: Path | None = None) -> None:
     writing that back would persist a one-run ``--model``/``--system-prompt`` flag
     as the permanent default. Use :func:`update_config` for read-modify-write.
     """
-    config_path = path or CONFIG_PATH
+    config_path = path or default_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     tmp = config_path.with_name(f".{config_path.name}.tmp{os.getpid()}")
@@ -100,7 +102,7 @@ def bootstrap_config(path: Path | None = None) -> dict[str, Any]:
     Returns the loaded config either way. The template is the single source of
     the first-run default — the TUI no longer carries its own copy.
     """
-    config_path = path or CONFIG_PATH
+    config_path = path or default_config_path()
     if config_path.exists():
         return load_config(config_path)
     template: Any = json.loads(DEFAULT_CONFIG_TEMPLATE.read_text())

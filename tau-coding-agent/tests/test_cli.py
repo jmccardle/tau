@@ -659,9 +659,8 @@ def fake_backend(monkeypatch, tmp_path):
         return be
 
     monkeypatch.setattr("tau_coding_agent.backends.create_backend", factory)
-    import tau_coding_agent.session_store as store
 
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     holder["tau_dir"] = tmp_path
     return holder
 
