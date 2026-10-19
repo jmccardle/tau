@@ -414,6 +414,40 @@ class TestExplicitModuleNames:
         with pytest.raises(ValueError, match=f"can't tell whether.*Name the module.*-e {module}"):
             resolve_explicit(str(package_dir / "ext.py"), discover_packages())
 
+    @pytest.mark.parametrize(
+        "rel",
+        ["plugins/whatever", "plugins/whatever/__init__.py", "lib/impl", "lib/impl/__init__.py"],
+    )
+    def test_an_unreadable_finder_refuses_any_package_dir_under_its_checkout(
+        self, site, tmp_path, rel
+    ):
+        """A finder can map ``top.ext`` (nested) or ``top`` to a directory of any name."""
+        root, top = site
+        checkout = tmp_path / "checkout"
+        module = _install_editable(
+            root, top=top, checkout=checkout, package_dir=checkout / "lib" / "a", shape="finder"
+        )
+        (root / "__editable___tau_fake_ed_1_0_finder.py").write_text("MAPPING = f()\n")
+        for pkg in ("plugins/whatever", "lib/impl"):
+            (checkout / pkg).mkdir(parents=True)
+            (checkout / pkg / "__init__.py").write_text(_DROPIN)
+        with pytest.raises(ValueError, match=f"can't tell whether this is the module {module}"):
+            resolve_explicit(str(checkout / rel), discover_packages())
+
+    def test_an_unreadable_finder_still_accepts_a_plain_file_not_named_like_the_module(
+        self, site, tmp_path
+    ):
+        root, top = site
+        checkout = tmp_path / "checkout"
+        _install_editable(
+            root, top=top, checkout=checkout, package_dir=checkout / "lib" / "a", shape="finder"
+        )
+        (root / "__editable___tau_fake_ed_1_0_finder.py").write_text("MAPPING = f()\n")
+        scratch = checkout / "examples" / "scratch_ext.py"
+        scratch.parent.mkdir(parents=True)
+        scratch.write_text(_DROPIN)
+        assert resolve_explicit(str(scratch), discover_packages()).kind == "path"
+
     def test_an_unreadable_finder_does_not_block_a_path_elsewhere(self, site, tmp_path):
         root, top = site
         checkout = tmp_path / "checkout"

@@ -406,12 +406,14 @@ Follow-ups found by Tectum's and tau-router's live tests of the merged branch.
   The root/src probe remains only for an editable install whose RECORD lists
   neither. A finder or `.pth` that is listed but unreadable (no literal
   `MAPPING`, unparseable, or only an import hook, as Hatchling's `editables`
-  writes) is not guessed past: an `-e` path under that package's source
-  directory whose name could be its module (`ext.py` or `ext/__init__.py` for
-  `pkg.ext`) is refused ("can't tell whether this is the module pkg.ext …; name
-  the module instead"). Any other path, under that directory or elsewhere, is
-  accepted, since submodules import by name and finders remap only top-level
-  names (tectum's review, 2026-10-19).
+  writes) is not guessed past. Under an unreadable setuptools finder, which can
+  map any package (nested ones included) to a directory of any name, an `-e`
+  path under that package's source directory is refused when it is a package
+  directory or named `<last segment>.py` ("can't tell whether this is the
+  module pkg.ext …; name the module instead"). Under an import-hook-only `.pth`
+  (Hatchling's `editables`, which keeps names and refuses a prefix-changing
+  source in dev mode), only `ext.py` or `ext/__init__.py` for `pkg.ext` is
+  refused. Any other path is accepted (tectum's reviews, 2026-10-19).
   Verified on 2026-10-19 with real `pip install -e` into a throwaway venv on
   setuptools 82.0.1: a lenient install with `package-dir = {"edmap" =
   "lib/weirddir"}` (annotated `MAPPING` finder), a strict install of the same

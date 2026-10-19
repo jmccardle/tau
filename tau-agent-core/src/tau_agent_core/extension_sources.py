@@ -320,7 +320,18 @@ def discover_packages() -> list[ExtensionSource]:
 
 
 class _UnreadableLayout(Exception):
-    """An editable install records a finder or ``.pth`` whose layout cannot be read."""
+    """An editable install records a finder or ``.pth`` whose layout cannot be read.
+
+    Attributes:
+        hook_only: True when the only thing recorded is an import-hook ``.pth``
+            (Hatchling's ``editables``), whose redirector keeps module names;
+            False for a finder or ``.pth`` that could not be read at all.
+    """
+
+    def __init__(self, message: str, *, hook_only: bool = False) -> None:
+        """Carry the reason and whether only an import hook was found."""
+        super().__init__(message)
+        self.hook_only = hook_only
 
 
 def _finder_mapping(tree: ast.Module) -> dict[str, Path] | None:
@@ -380,7 +391,7 @@ def _editable_layout(dist: metadata.Distribution) -> tuple[dict[str, Path], list
         elif name.endswith(".pth"):
             seen.append(name)
             try:
-                lines = located.read_text().splitlines()
+                lines = located.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError) as exc:
                 raise _UnreadableLayout(f"its {located} cannot be read ({exc})") from exc
             for line in (raw.strip() for raw in lines):
@@ -392,7 +403,8 @@ def _editable_layout(dist: metadata.Distribution) -> tuple[dict[str, Path], list
         names = ", ".join(seen)
         verb = "names" if len(seen) == 1 else "name"
         raise _UnreadableLayout(
-            f"its {names} {verb} no source directory τ can read (an import hook)"
+            f"its {names} {verb} no source directory τ can read (an import hook)",
+            hook_only=True,
         )
     return mapping, entries
 
@@ -448,15 +460,18 @@ def _module_files(source: ExtensionSource) -> set[Path]:
     return found
 
 
-def _could_be_module(target: Path, module: str) -> bool:
-    """Whether file ``target`` could be ``module`` by its name alone, with no layout.
+def _could_be_module(target: Path, module: str, *, hook_only: bool) -> bool:
+    """Whether file ``target`` could be ``module`` when the layout cannot be read.
 
-    ``a.b.c`` can only be a ``c.py`` or a ``c/__init__.py``: submodules import by
-    name, and editable finders remap only top-level names.
+    Under an import hook that keeps names (Hatchling's ``editables``, which
+    refuses a prefix-changing source in dev mode), ``a.b.c`` can only be a
+    ``c.py`` or a ``c/__init__.py``. A setuptools finder can map any package,
+    nested ones included, to a directory of any name, so under an unreadable
+    finder every package directory could be the module, and so could ``c.py``.
     """
     last = module.rsplit(".", 1)[-1]
     if target.name == "__init__.py":
-        return target.parent.name == last
+        return not hook_only or target.parent.name == last
     return target.name == f"{last}.py"
 
 
@@ -483,7 +498,7 @@ def _package_owning(path: Path, packages: list[ExtensionSource]) -> ExtensionSou
             if (
                 source.editable_path
                 and target.is_relative_to(root)
-                and _could_be_module(target, source.target)
+                and _could_be_module(target, source.target, hook_only=exc.hook_only)
             ):
                 raise ExplicitExtensionError(
                     f"-e {path}: can't tell whether this is the module {source.target} of the "
