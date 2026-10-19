@@ -83,9 +83,9 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import MultitaskStrategy, Submission
 from tau_agent_core.tools.image_resize import DEFAULT_MAX_IMAGE_DIMENSION
 from tau_agent_core.truncation import truncation_from_messages, truncation_notice
+from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import ConfigError
 from tau_coding_agent.headless import (
-    TRUNCATION_ADVICE,
     CLIError,
     cache_dialect_advice,
     extension_command_names,
@@ -93,6 +93,7 @@ from tau_coding_agent.headless import (
     resolve_extensions_config,
     resolve_model_config,
     select_session,
+    truncation_advice,
 )
 from tau_coding_agent.repl_input import Candidate, LineReader, PromptToolkitReader
 from tau_coding_agent.repl_theme import (
@@ -1261,8 +1262,8 @@ async def _pick_session(
     if not rows:
         raise CLIError(
             "no saved sessions to resume in this directory (the session store this "
-            "run resolved — ~/.tau/sessions unless --session-dir/--store says "
-            "otherwise). Drop --resume to start a fresh one."
+            f"run resolved — {resolve_tau_home() / 'sessions'} unless "
+            "--session-dir/--store says otherwise). Drop --resume to start a fresh one."
         )
     for number, row in enumerate(rows, start=1):
         console.print(
@@ -1461,7 +1462,6 @@ async def run_repl(
         0 — the loop ends on EOF, an idle interrupt, or a shutdown request.
     """
     from tau_coding_agent.backends import DEFAULT_MAX_TOKENS, create_backend, make_model_resolver
-    from tau_agent_core.tau_home import resolve_tau_home
 
     configured_steering_strategy(config)
     attachment_inline_limit(config)
@@ -2539,7 +2539,7 @@ class ReplLoop:
         if notice is None:
             return
         self._renderer.line("error", notice)
-        self._renderer.line("system", TRUNCATION_ADVICE)
+        self._renderer.line("system", truncation_advice())
 
     def _report_fault(self, exc: Exception, subject: str = "turn") -> None:
         """Print an unexpected fault with its traceback; the loop continues.

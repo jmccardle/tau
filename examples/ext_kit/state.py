@@ -53,6 +53,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Generic, Protocol, TypeVar, cast
 
+from tau_agent_core.tau_home import resolve_tau_home
+
 T = TypeVar("T")
 
 CUSTOM_ENTRY_KIND = "customEntry"
@@ -231,8 +233,8 @@ class TreeStore(Generic[T]):
 
 
 def _default_state_dir() -> Path:
-    """``~/.tau/ext-state`` — resolved at call time so ``$HOME`` is honored."""
-    return Path.home() / ".tau" / STATE_DIR_NAME
+    """``<τ home>/ext-state``, resolved at call time so ``TAU_HOME`` and ``$HOME`` apply."""
+    return resolve_tau_home() / STATE_DIR_NAME
 
 
 _UNSET: Any = object()
@@ -241,7 +243,7 @@ _UNSET: Any = object()
 class FileStore:
     """An atomic JSON blob for cross-session extension state.
 
-    Backed by ``<base_dir>/<name>.json`` (default ``~/.tau/ext-state/<name>.json``),
+    Backed by ``<base_dir>/<name>.json`` (default ``<τ home>/ext-state/<name>.json``),
     for state that must outlive one conversation's tree — a cost ledger, a
     cross-session red-team corpus, presets. Unlike :class:`TreeStore` this is NOT
     on the session path and NOT reconstructed from entries; it is a plain

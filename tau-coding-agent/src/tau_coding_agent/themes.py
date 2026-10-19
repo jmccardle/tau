@@ -78,7 +78,7 @@ from typing import Any, Mapping
 from textual.theme import BUILTIN_THEMES, Theme
 
 from tau_agent_core.tau_home import resolve_tau_home
-from tau_coding_agent.config import ConfigError
+from tau_coding_agent.config import ConfigError, default_config_path
 
 __all__ = [
     "DEFAULT_THEME_NAME",
@@ -697,7 +697,7 @@ def resolve_theme(name: str | None, registry: Mapping[str, Theme]) -> Theme:
     if name not in registry:
         raise ThemeError(
             f"unknown theme {name!r}. Available: {', '.join(sorted(registry))}. "
-            f"Set {THEME_CONFIG_KEY!r} in ~/.tau/config.json, or drop a "
-            f"<name>.json in ~/.tau/{USER_THEME_DIRNAME}/."
+            f"Set {THEME_CONFIG_KEY!r} in {default_config_path()}, or drop a "
+            f"<name>.json in {user_theme_dir()}/."
         )
     return registry[name]

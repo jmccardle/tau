@@ -2,7 +2,7 @@
 
 Parses arguments (argparse, pi-aligned flags), then either runs a headless
 ``--print`` turn (see :mod:`tau_coding_agent.headless`) or launches the TauApp
-TUI. Model/provider/tool flags override ``~/.tau/config.json`` per-invocation in
+TUI. Model/provider/tool flags override τ's ``config.json`` per-invocation in
 both paths.
 
 Flag set and pi citations live in docs/CLI-PLAN.md. Short-alias divergences from
@@ -152,8 +152,9 @@ def build_parser() -> argparse.ArgumentParser:
             "neither combines with --print.\n"
             "\n"
             "environment:\n"
-            "  TAU_HOME    τ's home (config, sessions, extensions, themes) in place\n"
-            "              of ~/.tau; it must exist. The project's ./.tau still applies.\n"
+            "  TAU_HOME    names <τ home>, which holds config.json, sessions,\n"
+            "              extensions and themes; default ~/.tau. It must exist.\n"
+            "              The project's ./.tau still applies on top.\n"
         ),
     )
     parser.add_argument("--version", "-v", action="version", version=f"tau {_version()}")
@@ -185,15 +186,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         "-m",
         default=None,
-        help="model name from ~/.tau/config.json, or provider/id shorthand",
+        help="model name from <τ home>/config.json, or provider/id shorthand",
     )
     parser.add_argument(
         "--theme",
         default=None,
         help=(
             "TUI colour theme for this run only, overriding the 'theme' key in "
-            "~/.tau/config.json (built in: mocha, latte, gruvbox, ansi; plus any "
-            "~/.tau/themes/<name>.json). Picking a theme from the command palette "
+            "<τ home>/config.json (built in: mocha, latte, gruvbox, ansi; plus any "
+            "<τ home>/themes/<name>.json). Picking a theme from the command palette "
             "still saves; this flag never does"
         ),
     )
@@ -272,7 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="stop the agent after N LLM calls in one run (default: no limit; "
-        'over ~/.tau/config.json "max_turns")',
+        'over <τ home>/config.json "max_turns")',
     )
     parser.add_argument(
         "--ext-config",
@@ -327,7 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-prompt-templates",
         dest="no_prompt_templates",
         action="store_true",
-        help="skip prompt template discovery (~/.tau/prompts, .tau/prompts); "
+        help="skip prompt template discovery (<τ home>/prompts, .tau/prompts); "
         "--prompt-template paths still load",
     )
     parser.add_argument(
@@ -342,7 +343,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-skills",
         dest="no_skills",
         action="store_true",
-        help="skip skill discovery (~/.tau/skills); --skill paths still load",
+        help="skip skill discovery (<τ home>/skills); --skill paths still load",
     )
     sess = parser.add_mutually_exclusive_group()
     sess.add_argument(
@@ -388,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--store",
         default=None,
         choices=["file", "jmfts"],
-        help="session store backend for this run, overriding ~/.tau/config.json "
+        help="session store backend for this run, overriding <τ home>/config.json "
         '"session_store.backend" (default: file)',
     )
     parser.add_argument(
@@ -411,7 +412,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="DIR",
         help="store sessions under DIR instead of the default location "
-        "(~/.tau/sessions for the TUI and --print; a private <tmp>/.tau-<uid>/sessions "
+        "(<τ home>/sessions for the TUI and --print; a private <tmp>/.tau-<uid>/sessions "
         "for --mode rpc, so an RPC host does not fill your session list). "
         "File store only — it has no meaning for --store jmfts",
     )

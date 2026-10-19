@@ -101,7 +101,7 @@ _FINISH_ERRORS: dict[str, str] = {
 
 _TRUNCATION_HINT = (
     "The model hit the output cap τ sent for it (max_tokens={max_tokens}); "
-    "raise `max_tokens` on this model in ~/.tau/config.json, or lower the "
+    "raise `max_tokens` on this model in τ's config.json, or lower the "
     "reasoning budget so the answer fits under it."
 )
 
@@ -236,7 +236,7 @@ def _guard_body_keys(source: str, keys: Iterable[str], *, model_id: str) -> None
         if "stream" in reserved:
             hint = (
                 " Streaming mode is chosen by `Model.stream` "
-                "(models.<name>.stream in ~/.tau/config.json) or the per-call "
+                "(models.<name>.stream in τ's config.json) or the per-call "
                 "`stream` option, not by a request-body key: τ has to KNOW which "
                 "transport it is reading, and a body key would change the wire "
                 "format underneath the SSE parser."
@@ -343,7 +343,7 @@ def _apply_reasoning(
                 f"Model {model.id!r}: thinking 'off' was requested, but this "
                 "OpenAI-compatible model neither declares reasoning nor maps 'off', so τ "
                 "does not know what turns reasoning off on this endpoint. Set "
-                f"models.{model.name}.thinking_level_map.off in ~/.tau/config.json: "
+                f"models.{model.name}.thinking_level_map.off in τ's config.json: "
                 '{"chat_template_kwargs": {"enable_thinking": false}} for a llama.cpp chat '
                 'template, "none" for OpenAI\'s reasoning_effort, or {} if this model never '
                 "reasons (docs/REASONING-WIRE.md §4)."
@@ -1461,7 +1461,7 @@ class OpenAICompletionsProvider(Provider):
                         "gateway leaking its upstream schema; the fix belongs there. To "
                         "read it anyway, state the endpoint's shape: set "
                         '`compat.tool_call_schema: "anthropic"` on this model in '
-                        "~/.tau/config.json (with `stream: false` if its streamed "
+                        "τ's config.json (with `stream: false` if its streamed "
                         "responses drop the name too)."
                     )
                 else:
@@ -1608,7 +1608,7 @@ class OpenAICompletionsProvider(Provider):
             raise ValueError(
                 f"No API key for provider: {getattr(model, 'provider', 'openai')}. "
                 "Set OPENAI_API_KEY, pass api_key=..., or configure it in "
-                '~/.tau/config.json (use "not-needed" for a local server).'
+                'τ\'s config.json (use "not-needed" for a local server).'
             )
         self.api_key = api_key
 

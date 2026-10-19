@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-d",
         "--daemon",
         action="store_true",
-        help=f"run in the background, logging to ~/.tau/{LOG_FILE}",
+        help=f"run in the background, logging to <τ home>/{LOG_FILE}",
     )
     parser.add_argument(
         "--stop",

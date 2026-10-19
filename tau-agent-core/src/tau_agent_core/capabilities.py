@@ -894,7 +894,7 @@ _LIST_SESSIONS_RETURNS: dict[str, Any] = {
                 "store's absolute .jsonl path, a JMFTS catalog's document "
                 "id): it is what names WHICH universe this listing is, since "
                 "--mode rpc's default session base is <tmp>/.tau-<uid>/sessions "
-                "and the TUI's is ~/.tau/sessions (D-6/H1b). `name` is what "
+                "and the TUI's is <τ home>/sessions (D-6/H1b). `name` is what "
                 "set_session_name set, null if never named; `title` is the "
                 "picker's bounded display label (SessionInfo.display_title) "
                 "and is the only place message TEXT appears here — "
@@ -1696,7 +1696,7 @@ CAPABILITIES: dict[str, Capability] = {
             "Replace an extension's config slice and reload it so the values take "
             "effect. Values are checked against the declared schema; an undeclared "
             "key raises. Applies for this session only — the core does not own "
-            "~/.tau/config.json, so persisting is head-local.",
+            "<τ home>/config.json, so persisting is head-local.",
             on_wire=True,
             arguments=None,
             returns=_EXTENSION_ACTION_RETURNS,

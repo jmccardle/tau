@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from tau_agent_core.session_catalog import SessionCatalog
-from tau_coding_agent.config import ConfigError
+from tau_coding_agent.config import ConfigError, default_config_path
 from tau_coding_agent.session_store import FileSessionCatalog
 
 if TYPE_CHECKING:  # pragma: no cover - type-checking only, no runtime import
@@ -58,7 +58,7 @@ def _session_store_config(config: dict[str, Any]) -> dict[str, Any]:
     """
     raw = config.get("session_store", {})
     if not isinstance(raw, dict):
-        raise StoreError('~/.tau/config.json "session_store" must be a JSON object')
+        raise StoreError(f'{default_config_path()} "session_store" must be a JSON object')
     return raw
 
 
@@ -71,7 +71,7 @@ def resolve_backend_name(config: dict[str, Any], store_flag: str | None) -> str:
         return store_flag
     backend = _session_store_config(config).get("backend", "file")
     if not isinstance(backend, str):
-        raise StoreError('~/.tau/config.json "session_store.backend" must be a string')
+        raise StoreError(f'{default_config_path()} "session_store.backend" must be a string')
     return backend
 
 
@@ -151,15 +151,15 @@ def build_jmfts_client(config: dict[str, Any], *, health_check: bool = True) -> 
     if not url:
         raise StoreError(
             "session_store backend is 'jmfts' but no URL is configured; set "
-            '~/.tau/config.json "session_store.url" or the $JMFTS_API_URL '
+            f'{default_config_path()} "session_store.url" or the $JMFTS_API_URL '
             "environment variable"
         )
     if not isinstance(url, str):
-        raise StoreError('~/.tau/config.json "session_store.url" must be a string')
+        raise StoreError(f'{default_config_path()} "session_store.url" must be a string')
 
     token = store_config.get("token") or os.environ.get("JMFTS_API_TOKEN")
     if token is not None and not isinstance(token, str):
-        raise StoreError('~/.tau/config.json "session_store.token" must be a string')
+        raise StoreError(f'{default_config_path()} "session_store.token" must be a string')
 
     client = JmftsClient(url, token=token)
     if not health_check:
@@ -171,7 +171,7 @@ def build_jmfts_client(config: dict[str, Any], *, health_check: bool = True) -> 
         if exc.status_code == 401:
             raise StoreError(
                 f"JMFTS store at {url!r} rejected the request (401): it requires a "
-                "token. Set session_store.token in ~/.tau/config.json or the "
+                f"token. Set session_store.token in {default_config_path()} or the "
                 "$JMFTS_API_TOKEN environment variable."
             ) from exc
         raise StoreError(f"JMFTS store at {url!r} is unreachable: {exc}") from exc
@@ -192,7 +192,8 @@ def resolve_host_parent_id(config: dict[str, Any]) -> int | None:
     parent_id = store_config.get("parent_id")
     if parent_id is not None and not isinstance(parent_id, int):
         raise StoreError(
-            '~/.tau/config.json "session_store.parent_id" must be an integer document id or null'
+            f'{default_config_path()} "session_store.parent_id" must be an integer '
+            "document id or null"
         )
     return parent_id
 

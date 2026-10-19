@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tau_agent_core.tau_home import resolve_tau_home
 from tau_agent_core.usage import price_usage
 
 #: Every token bucket, summed for a completion's raw token count.
@@ -266,7 +267,7 @@ class CostLedger:
     Cross-session state — one file, one JSON object per line, accreting a record
     each time an event lands (a spawned child finishes, a turn ends, a run stops).
     Backed by ``<base_dir>/<name>.jsonl`` (default
-    ``~/.tau/ext-state/<name>.jsonl``), the same root as :class:`ext_kit.state.FileStore`
+    ``<τ home>/ext-state/<name>.jsonl``), the same root as :class:`ext_kit.state.FileStore`
     but append-only rather than a single rewritten blob — the right shape for a log
     that only ever grows.
 
@@ -287,7 +288,7 @@ class CostLedger:
                 "separators or '..' (it would escape the state directory)"
             )
         self.name = name
-        self._dir = Path(base_dir) if base_dir is not None else Path.home() / ".tau" / "ext-state"
+        self._dir = Path(base_dir) if base_dir is not None else resolve_tau_home() / "ext-state"
         self.path = self._dir / f"{name}.jsonl"
 
     def exists(self) -> bool:

@@ -1847,12 +1847,12 @@ def _compaction_outcome(result: "CompactionResult | None", leaf: str | None) -> 
         "review's integration — the other two appending verbs said it and "
         "this one did not): a --mode rpc process defaults to storing its "
         "sessions under a private <tmp>/.tau-<uid>/sessions, NOT the user's "
-        "~/.tau/sessions. Most systems clear the temp dir on reboot, so the "
+        "<τ home>/sessions. Most systems clear the temp dir on reboot, so the "
         "durability D-7 refuses to promise without is itself bounded by "
         "MACHINE UPTIME rather than forever — including the compaction entry "
         "and the rewritten tree behind it. A host that needs more must be "
         "started with --session-dir DIR (accepted under --mode rpc precisely "
-        "so a host can choose, including --session-dir ~/.tau/sessions). "
+        "so a host can choose, including --session-dir <τ home>/sessions). "
         "ABORT (finding 5, Tier B review): a host's `abort` now cancels an "
         "in-flight compaction, where it used to answer 'aborted' while the "
         "tree was rewritten anyway. The compaction_end that follows carries "
@@ -2162,7 +2162,7 @@ _MODEL_CATALOG_ATTR = MODEL_CATALOG_ATTR
     since="tier-b",
     notes=(
         "Finding 7 of the Tier B review: set_model takes a config model NAME "
-        "(a key in ~/.tau/config.json's 'models' map) and nothing on this "
+        "(a key in <τ home>/config.json's 'models' map) and nothing on this "
         "table enumerated them, so a host could only learn a valid name by "
         "reading the child's config file out of band — which defeats G1 ('a "
         "second implementation should be possible from this document plus "
@@ -2349,7 +2349,7 @@ def listed_session(info: "SessionInfo") -> dict[str, Any]:
         "session tuple: addressable means listed here. "
         "Scope, stated because unit S (D-6/H1b) made it a real question: "
         "--mode rpc's DEFAULT session base is <tmp>/.tau-<uid>/sessions while the "
-        "TUI's and --print's is ~/.tau/sessions, so a host and the human at "
+        "TUI's and --print's is <τ home>/sessions, so a host and the human at "
         "the terminal are normally looking at DIFFERENT lists (--session-dir "
         "DIR, accepted under --mode rpc, is how a host joins the user's). "
         "Each row's `ref` — the store's own handle, the file store's "
@@ -2531,7 +2531,7 @@ SET_MODEL_PARAMS_SCHEMA: dict[str, Any] = params_schema_for(
     overrides={
         "name": {
             "description": (
-                "A config model NAME (a key in ~/.tau/config.json's 'models' "
+                "A config model NAME (a key in <τ home>/config.json's 'models' "
                 "map), resolved through AgentSession's bound model resolver "
                 "(set_model_resolver) — the same name --model NAME accepts "
                 "headlessly. NOT a model id; a config key may alias one."
@@ -2590,14 +2590,14 @@ _resolver_error_message = resolver_error_message
         "WHERE the entry "
         "lands, and for how long (unit S): a --mode rpc process defaults to "
         "storing its sessions under a private <tmp>/.tau-<uid>/sessions, NOT the "
-        "user's ~/.tau/sessions — one 0-message session per spawn would "
+        "user's <τ home>/sessions — one 0-message session per spawn would "
         "otherwise take over `tau -c` for whoever is working in the same "
         "directory. Most systems clear the temp dir on reboot, so this "
         "leaf's durability is bounded by MACHINE UPTIME, not forever: a "
         "replay can find the entry for the life of the session, and a host "
         "that needs more must be started with --session-dir DIR (accepted "
         "under --mode rpc precisely so a host can choose, including "
-        "--session-dir ~/.tau/sessions)."
+        "--session-dir <τ home>/sessions)."
     ),
     params_schema=SET_MODEL_PARAMS_SCHEMA,
     result_schema=SET_MODEL_RESULT_SCHEMA,
@@ -2667,10 +2667,10 @@ GET_SESSION_NAME_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_session_
         "rename lands, and for how long "
         "(unit S): a --mode rpc process defaults to storing its sessions "
         "under a private <tmp>/.tau-<uid>/sessions, NOT the user's "
-        "~/.tau/sessions — so a name set here does not show up in that "
+        "<τ home>/sessions — so a name set here does not show up in that "
         "user's TUI picker unless the host was started with --session-dir "
         "(accepted under --mode rpc precisely so a host can choose, "
-        "including --session-dir ~/.tau/sessions). Most systems clear the "
+        "including --session-dir <τ home>/sessions). Most systems clear the "
         "temp dir on reboot, so this leaf's durability is bounded by "
         "MACHINE UPTIME, not forever."
     ),
@@ -4008,7 +4008,7 @@ async def _handle_get_extension_config(
         "row's params are hand-written: its keys are whatever THIS extension "
         "declared, which is not sayable in the Argument vocabulary — the same "
         "reason `submit` carries arguments=None. Applies for this session only: "
-        "the core does not own ~/.tau/config.json, so persisting is head-local. "
+        "the core does not own <τ home>/config.json, so persisting is head-local. "
         + _EXTENSION_MUTATION_NOTES
     ),
     params_schema={

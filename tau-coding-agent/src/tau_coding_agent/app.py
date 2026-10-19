@@ -41,6 +41,7 @@ from tau_coding_agent.config import (
     ConfigError,
     apply_compaction_config,
     bootstrap_config,
+    default_config_path,
     update_config,
 )
 from tau_coding_agent.session_picker import SCOPE_ALL, SCOPE_CWD, SessionPickerModal
@@ -2231,7 +2232,7 @@ class TauApp(App):
             "tenth of what it costs here.\n\n"
             f"If `{model}` reaches an Anthropic model through an OpenAI-compatible "
             "gateway (LiteLLM or similar), set `models.<name>.prompt_cache_dialect` "
-            'to `"anthropic"` in `~/.tau/config.json` — τ cannot tell from a base '
+            f'to `"anthropic"` in `{default_config_path()}` — τ cannot tell from a base '
             "URL which dialect an endpoint speaks, so it has to be declared.\n\n"
             "Said once per model per session. See `docs/PROMPT-CACHING.md`.",
             source="markdown",
@@ -2264,7 +2265,7 @@ class TauApp(App):
             "**The model stopped at its output cap, not at the end of an answer.**\n\n"
             f"{notice}\n\n"
             "Anything it was still writing is missing from the turn above. Raise "
-            "`max_tokens` for this model in `~/.tau/config.json`, or lower the "
+            f"`max_tokens` for this model in `{default_config_path()}`, or lower the "
             "reasoning budget so the answer fits under the cap.",
             source="markdown",
         )

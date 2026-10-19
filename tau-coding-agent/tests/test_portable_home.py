@@ -130,3 +130,26 @@ def test_a_relative_tau_home_reaches_a_child_started_elsewhere(tmp_path: Path) -
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.splitlines()[-1] == f"CHILD {(tmp_path / 'work' / 'scratch').resolve()}"
+
+
+def test_a_config_error_names_the_tau_home_config_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tau_coding_agent.headless import CLIError, resolve_extensions_config
+
+    home = tmp_path / "throwaway"
+    home.mkdir()
+    monkeypatch.setenv(HOME_ENV, str(home))
+    with pytest.raises(CLIError) as excinfo:
+        resolve_extensions_config({"extensions": 5}, {})
+    assert str(excinfo.value).startswith(f'{home.resolve() / "config.json"} "extensions"')
+    assert "~/.tau" not in str(excinfo.value)
+
+
+def test_the_cli_names_the_tau_home_config_file_in_a_store_error(tmp_path: Path) -> None:
+    home = tmp_path / "throwaway"
+    home.mkdir()
+    (home / "config.json").write_text('{"session_store": 5}')
+    out = _cli(tmp_path, "-p", "hi", **{HOME_ENV: str(home)})
+    assert out.returncode != 0
+    assert f'{home.resolve() / "config.json"} "session_store" must be a JSON object' in out.stderr

@@ -90,7 +90,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from pathlib import Path
 from typing import Any, Callable
 
 _EXAMPLES_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,6 +97,7 @@ if _EXAMPLES_DIR not in sys.path:
     sys.path.insert(0, _EXAMPLES_DIR)
 
 from ext_kit import spawn  # noqa: E402  (path insertion must precede the import)
+from tau_agent_core.tau_home import resolve_tau_home  # noqa: E402
 
 # ── pi parity constants (index.ts:26-29) ────────────────────────────────────
 MAX_PARALLEL_TASKS = 8
@@ -112,12 +112,12 @@ PARALLEL_READONLY_TOOLS: tuple[str, ...] = ("read", "ls", "grep", "find")
 
 
 def _load_config() -> dict[str, Any]:
-    """Read ``~/.tau/config.json`` (the same file the child resolves its model
-    from). Returns ``{}`` when absent. Not a fallback: the delegate genuinely has
+    """Read ``<τ home>/config.json`` (the same file the child resolves its model
+    from, since it inherits ``TAU_HOME``). Returns ``{}`` when absent. Not a fallback: the delegate genuinely has
     no config to price against, and :func:`_resolve_cost` fails loudly only when
     a *budget* actually needs one.
     """
-    path = Path.home() / ".tau" / "config.json"
+    path = resolve_tau_home() / "config.json"
     if not path.exists():
         return {}
     loaded = json.loads(path.read_text())
@@ -283,7 +283,7 @@ async def _delegate_execute(
         if limits.max_usd is not None and cost is None:
             raise ValueError(
                 "delegate: max_usd set but the child model has no 'cost' block in "
-                "~/.tau/config.json to price against"
+                f"{resolve_tau_home() / 'config.json'} to price against"
             )
         return cost
 

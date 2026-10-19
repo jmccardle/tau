@@ -30,6 +30,7 @@ from tau_agent_core.commands import CommandCompletion
 from tau_agent_core.compaction import CompactionConfig
 from tau_coding_agent.config import (
     compaction_for,
+    default_config_path,
     parse_compaction_config,
     validate_compaction_config,
 )
@@ -970,7 +971,7 @@ def _warn_undeclared_reasoning(model_id: str) -> None:
     print(
         f"[τ] warning: a thinking level was requested for model {model_id!r}, which "
         "does not declare reasoning support, so no thinking level is being sent. Add "
-        f'"reasoning": true to the {model_id!r} entry in ~/.tau/config.json if the '
+        f'"reasoning": true to the {model_id!r} entry in {default_config_path()} if the '
         "endpoint supports it.",
         file=sys.stderr,
     )

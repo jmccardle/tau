@@ -190,3 +190,24 @@ behind it.
 `cli.main` gets no pinning: `resolve_tau_home` resolves a relative value
 against the cwd of each call. Such a program should call
 `pin_home_variables()` itself before it starts children or changes directory.
+
+## 10. Messages name the home in force (2026-10-19, #62)
+
+Errors and notices used to say `~/.tau/config.json` (or `~/.tau/sessions`)
+whatever the home was, so under `TAU_HOME` or a portable home they sent the
+user to the wrong file. Now:
+- **A runtime message in a head or in core** names the resolved file:
+  `config.default_config_path()` in `tau_coding_agent`,
+  `resolve_tau_home() / "config.json"` in `tau_agent_core`. Example:
+  `/srv/scratch/config.json "session_store" must be a JSON object`.
+- **Static text** (`--help`, RPC and serve capability descriptions, which are
+  built once) says `<τ home>/config.json`, and `--help`'s environment block
+  says what `<τ home>` is.
+- **`tau_llm` messages** say `τ's config.json`. `tau_llm` sits below
+  `tau_agent_core` and must not import it, so it cannot know the path.
+
+The ext_kit state and ledger directories, `examples/20_delegate.py`'s pricing
+config, and `scripts/reasoning_wire_probe.py` resolve the home the same way.
+`scripts/gemini_capability_probe.py` keeps `~/.tau/gemini-key`, because it
+promises to run without τ installed. The two `experiments/` runs that read
+`~/.tau/config.json` are records of runs already made, so they are left alone.

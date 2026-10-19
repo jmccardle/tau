@@ -498,7 +498,7 @@ class GoogleGenerativeAIProvider(Provider):
             raise ValueError(
                 f"No API key for provider: {getattr(model, 'provider', 'google')}. "
                 "Set GEMINI_API_KEY, pass api_key=..., or configure it in "
-                "~/.tau/config.json."
+                "τ's config.json."
             )
         self.api_key = api_key
 

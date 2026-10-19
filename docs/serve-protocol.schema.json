@@ -5448,7 +5448,7 @@
           "type": "string"
         },
         "name": {
-          "description": "A config model NAME (a key in ~/.tau/config.json's 'models' map), resolved through AgentSession's bound model resolver (set_model_resolver) \u2014 the same name --model NAME accepts headlessly. NOT a model id; a config key may alias one.",
+          "description": "A config model NAME (a key in <\u03c4 home>/config.json's 'models' map), resolved through AgentSession's bound model resolver (set_model_resolver) \u2014 the same name --model NAME accepts headlessly. NOT a model id; a config key may alias one.",
           "type": "string"
         },
         "session_id": {

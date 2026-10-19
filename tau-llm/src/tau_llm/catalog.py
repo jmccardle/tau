@@ -400,7 +400,9 @@ def main(argv: list[str] | None = None) -> int:
     p_show = sub.add_parser("show", help="print the raw catalog record")
     p_show.add_argument("ref", metavar="PROVIDER/MODEL")
 
-    p_config = sub.add_parser("config", help="print a ~/.tau/config.json models entry")
+    p_config = sub.add_parser(
+        "config", help="print a models entry for τ's config.json (<τ home>/config.json)"
+    )
     p_config.add_argument("ref", metavar="PROVIDER/MODEL")
     p_config.add_argument(
         "--base-url",

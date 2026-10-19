@@ -577,7 +577,7 @@ class AnthropicMessagesProvider(Provider):
             raise ValueError(
                 f"No API key for provider: {getattr(model, 'provider', 'anthropic')}. "
                 "Set ANTHROPIC_API_KEY, pass api_key=..., or configure it in "
-                "~/.tau/config.json."
+                "τ's config.json."
             )
         self.api_key = api_key
 
@@ -632,7 +632,7 @@ class AnthropicMessagesProvider(Provider):
                     "top_k on the current models (they return 400) and the SDK "
                     "dropped them from its signature. If this endpoint does accept "
                     "them, send them explicitly via models.<name>.extra_body in "
-                    f"~/.tau/config.json. Accepted here: {sorted(accepted)}."
+                    f"τ's config.json. Accepted here: {sorted(accepted)}."
                 )
         request.update(per_call)
         if extra_body:

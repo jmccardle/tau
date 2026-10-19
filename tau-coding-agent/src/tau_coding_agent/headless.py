@@ -45,7 +45,8 @@ from tau_agent_core.prompt_cache import PromptCacheObserver, completions_from_me
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import Submission
 from tau_agent_core.truncation import truncation_from_messages, truncation_notice
-from tau_coding_agent.config import ConfigError, apply_compaction_config
+from tau_agent_core.tau_home import resolve_tau_home
+from tau_coding_agent.config import ConfigError, apply_compaction_config, default_config_path
 from tau_coding_agent.store_factory import build_session_catalog
 
 from tau_llm.models import is_valid_thinking_level
@@ -161,7 +162,7 @@ def resolve_model_config(
     if not spec:
         raise CLIError(
             "no model specified and no 'default_model' in config; "
-            "pass --model NAME or set default_model in ~/.tau/config.json"
+            f"pass --model NAME or set default_model in {default_config_path()}"
         )
 
     suffix_thinking: str | None = None
@@ -312,13 +313,13 @@ def resolve_extensions_config(
     base = config.get("extensions", {})
     if not isinstance(base, dict):
         raise CLIError(
-            '~/.tau/config.json "extensions" must be a JSON object mapping '
+            f'{default_config_path()} "extensions" must be a JSON object mapping '
             "extension name -> config object"
         )
     merged: dict[str, dict[str, Any]] = {}
     for name, ext_conf in base.items():
         if not isinstance(ext_conf, dict):
-            raise CLIError(f'~/.tau/config.json "extensions.{name}" must be a JSON object')
+            raise CLIError(f'{default_config_path()} "extensions.{name}" must be a JSON object')
         merged[name] = dict(ext_conf)
     for name, kv in overrides.items():
         merged.setdefault(name, {}).update(kv)
@@ -425,7 +426,8 @@ def resolve_ui_defaults(config: dict, overrides: dict[str, str]) -> dict[str, st
     base = config.get("ui_defaults", {})
     if not isinstance(base, dict):
         raise CLIError(
-            '~/.tau/config.json "ui_defaults" must be a JSON object mapping dialog method -> answer'
+            f'{default_config_path()} "ui_defaults" must be a JSON object mapping '
+            "dialog method -> answer"
         )
     merged: dict[str, str] = {str(k): str(v) for k, v in base.items()}
     merged.update(overrides)
@@ -474,8 +476,8 @@ def select_session(args: "CLIArgs", catalog: SessionCatalog) -> ConversationSess
         if session is None:
             raise CLIError(
                 "no saved sessions to continue (this directory has no history in "
-                "the session store this run resolved — ~/.tau/sessions unless "
-                "--session-dir/--store says otherwise)"
+                f"the session store this run resolved — {resolve_tau_home() / 'sessions'} "
+                "unless --session-dir/--store says otherwise)"
             )
         return session
 
@@ -523,11 +525,18 @@ def _emit_command_output(mode: str, command: str, text: str | None) -> None:
         sys.stdout.flush()
 
 
-TRUNCATION_ADVICE = (
-    "Raise max_tokens for this model in ~/.tau/config.json, or lower the "
-    "reasoning budget so the answer fits under the cap. "
-    "See docs/TRUNCATED-TOOL-CALLS.md."
-)
+def truncation_advice() -> str:
+    """What to DO about a completion cut at the output cap, in one sentence.
+
+    Shared by print mode and the REPL. It names the config file resolved now.
+    """
+    return (
+        f"Raise max_tokens for this model in {default_config_path()}, or lower the "
+        "reasoning budget so the answer fits under the cap. "
+        "See docs/TRUNCATED-TOOL-CALLS.md."
+    )
+
+
 """What to DO about a truncated answer, said in one sentence.
 
 Beside :func:`report_truncation` rather than inside it because a head that
@@ -541,7 +550,7 @@ def cache_dialect_advice(model_name: str) -> str:
     """What to DO about a prompt cache that read nothing, in one sentence.
 
     Extracted from :func:`report_cache_miss` for the reason
-    :data:`TRUNCATION_ADVICE` is: two heads, one sentence.
+    :func:`truncation_advice` is: two heads, one sentence.
 
     Args:
         model_name: The config model name, since the fix is a key under it.
@@ -552,7 +561,7 @@ def cache_dialect_advice(model_name: str) -> str:
     return (
         f"If '{model_name}' reaches an Anthropic model through an OpenAI-compatible "
         'gateway, set models.<name>.prompt_cache_dialect to "anthropic" in '
-        "~/.tau/config.json. See docs/PROMPT-CACHING.md."
+        f"{default_config_path()}. See docs/PROMPT-CACHING.md."
     )
 
 
@@ -611,7 +620,7 @@ def report_truncation(messages: list[dict[str, Any]], max_tokens: int | None) ->
     if notice is None:
         return None
     print(f"[τ] {notice}", file=sys.stderr)
-    print(f"[τ] {TRUNCATION_ADVICE}", file=sys.stderr)
+    print(f"[τ] {truncation_advice()}", file=sys.stderr)
     return notice
 
 
