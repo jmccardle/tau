@@ -1294,10 +1294,11 @@ class ConfigModelResolver:
     def __call__(self, name: str) -> Model:
         """Resolve ``name`` through :func:`build_model_from_config`.
 
-        Fail-Early: an unknown name raises ``KeyError`` (naming the known models)
-        rather than fabricating a model — the raise propagates out of
-        ``AgentSession.set_model`` unchanged, and the RPC ``set_model`` verb renders
-        it as ``INVALID_PARAMS``.
+        Raises:
+            KeyError: ``name`` is not configured; the message lists the configured names.
+            ModelConfigError: the entry does not build. It is a
+                :class:`~tau_agent_core.model_availability.ModelUnavailableError`,
+                the name ``set_model``'s contract gives it.
         """
         entry = self._models.get(name)
         if entry is None:

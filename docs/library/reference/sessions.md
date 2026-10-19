@@ -1429,8 +1429,9 @@ The new :meth:`get_model` projection.
 **Raises**
 
 - `RuntimeError` — No resolver is bound.
+- `KeyError` — ``name`` is not a configured model.
+- `ModelUnavailableError` — ``name`` is configured and does not build; the message says why.
 - `TypeError` — The resolver returned something other than a ``Model``.
-- `Exception` — Whatever the resolver raises for an unknown ``name``, unchanged.
 - `CompactionPolicyError` — the new model's compaction refuses it; the model does not change.
 
 ### set_model_resolver
@@ -1453,7 +1454,7 @@ session was constructed with.
 
 **Parameters**
 
-- `resolver: Callable[[str], Model]` — Maps a config model name to a ``Model``. An ``api_key(name)`` method supplies that model's key (:meth:`resolve_model`); a ``compaction(name)`` method returning a :class:`~tau_agent_core.compaction.CompactionConfig` supplies its compaction.
+- `resolver: Callable[[str], Model]` — Maps a config model name to a ``Model``, raising ``KeyError`` for an unknown name and ``ModelUnavailableError`` for an entry that does not build. An ``api_key(name)`` method supplies that model's key (:meth:`resolve_model`); a ``compaction(name)`` method returning a :class:`~tau_agent_core.compaction.CompactionConfig` supplies its compaction.
 
 **Raises**
 
@@ -3182,6 +3183,17 @@ model_names() -> list[str]
 `tau_agent_core.flows.ModelCatalog.model_names`
 
 Every model name this catalog accepts, in display order.
+
+## ModelUnavailableError
+<!-- agent: yes -->
+
+`tau_agent_core.model_availability.ModelUnavailableError`
+
+A model name that cannot be used as configured; the message says why.
+
+``set_model`` raises it for a config entry that does not build, so an
+extension catches it without importing a head. An unknown name raises
+``KeyError`` instead.
 
 ## PasteMint
 <!-- agent: yes -->

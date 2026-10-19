@@ -70,6 +70,7 @@ from tau_agent_core.compaction_policy import (
     CompactionPolicyViolation,
     policy_for_scenario,
 )
+from tau_agent_core.model_availability import ModelUnavailableError
 from tau_agent_core.latency import (
     PromptLatencyCollector,
     PromptLatencySample,
@@ -152,6 +153,7 @@ __all__ = [
     # Declared compaction policy for a measured run (H5 / SIM_SPEC_v2 §16.8)
     "CompactionPolicy",
     "CompactionPolicyError",
+    "ModelUnavailableError",
     "CompactionPolicyViolation",
     "SCENARIO_POLICY_MODES",
     "policy_for_scenario",

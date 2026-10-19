@@ -1288,8 +1288,9 @@ The new :meth:`get_model` projection.
 **Raises**
 
 - `RuntimeError` — No session is bound, or the session has no model resolver.
+- `KeyError` — ``name`` is not a configured model.
+- `ModelUnavailableError` — ``name`` is configured and does not build; the message says why.
 - `TypeError` — The resolver returned something other than a ``Model``.
-- `Exception` — Whatever the resolver raises for an unknown ``name``, unchanged.
 
 ### set_reasoning
 

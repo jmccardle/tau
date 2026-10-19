@@ -1034,7 +1034,9 @@ class AgentSession:
         session was constructed with.
 
         Args:
-            resolver: Maps a config model name to a ``Model``. An ``api_key(name)``
+            resolver: Maps a config model name to a ``Model``, raising ``KeyError``
+                for an unknown name and ``ModelUnavailableError`` for an entry
+                that does not build. An ``api_key(name)``
                 method supplies that model's key (:meth:`resolve_model`); a
                 ``compaction(name)`` method returning a
                 :class:`~tau_agent_core.compaction.CompactionConfig` supplies its
@@ -1286,9 +1288,10 @@ class AgentSession:
 
         Raises:
             RuntimeError: No resolver is bound.
+            KeyError: ``name`` is not a configured model.
+            ModelUnavailableError: ``name`` is configured and does not build; the
+                message says why.
             TypeError: The resolver returned something other than a ``Model``.
-            Exception: Whatever the resolver raises for an unknown ``name``,
-                unchanged.
             CompactionPolicyError: the new model's compaction refuses it; the
                 model does not change.
         """

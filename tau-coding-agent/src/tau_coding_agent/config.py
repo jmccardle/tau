@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from tau_agent_core.compaction import CompactionConfig, CompactionSettings
+from tau_agent_core.model_availability import ModelUnavailableError
 from tau_agent_core.tau_home import resolve_tau_home
 
 CONFIG_FILENAME = "config.json"
@@ -43,10 +44,11 @@ class ConfigError(Exception):
     """
 
 
-class ModelConfigError(ConfigError, ValueError):
+class ModelConfigError(ConfigError, ModelUnavailableError):
     """A ``models.<name>`` entry τ cannot use as written; the message names the key and the fix.
 
-    Also a ``ValueError``, so callers that already catch that keep working.
+    A :class:`~tau_agent_core.model_availability.ModelUnavailableError`, so an
+    extension catches it by the core's name, and so also a ``ValueError``.
     """
 
 

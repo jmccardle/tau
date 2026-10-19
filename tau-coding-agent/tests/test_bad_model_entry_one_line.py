@@ -115,3 +115,20 @@ def test_commands_that_use_no_model_are_not_blocked(tmp_path: Path, argv: list[s
     out = _run(tmp_path, *argv)
     assert "models.old" not in out.stderr, out.stderr
     assert "Traceback" not in out.stderr
+
+
+def test_an_extension_catches_an_entry_that_does_not_build_by_the_core_name() -> None:
+    """ctx.set_model's contract error is tau_agent_core's, so no extension imports a head."""
+    from tau_agent_core import ModelUnavailableError
+    from tau_coding_agent.backends import create_backend, make_model_resolver
+
+    config = {"models": {"good": _GOOD, "ext": {"backend": "acme", "model": "m"}}}
+    backend = create_backend({**_GOOD, "config_name": "good"})
+    session = backend.agent_session
+    session.set_model_resolver(make_model_resolver(config))
+    ctx = session._extension_api.context
+    with pytest.raises(ModelUnavailableError, match="backend 'acme' is not a registered"):
+        ctx.set_model("ext")
+    with pytest.raises(KeyError, match="unknown model 'nope'"):
+        ctx.set_model("nope")
+    assert session.model_name == "good"

@@ -195,3 +195,17 @@ config entry is named (`models.ext: backend 'acme' is not a registered
 provider …`); an ad-hoc `foo/bar` or `--provider foo` has no entry to name, so
 it reads `provider 'foo' is not registered (registered: …); an extension that
 provides it must load first, or give a base_url`.
+
+## 9. A model that cannot be used has a core name (2026-10-19)
+
+**What was wrong.** `AgentSession.set_model` and `ExtensionContext.set_model`
+documented "whatever the resolver raises". For an entry that does not build,
+the τ resolver raises `tau_coding_agent.config.ModelConfigError`, so an
+extension that wanted to catch it had to import a head.
+
+**Now.** `tau_agent_core.ModelUnavailableError` (a `ValueError`) is the
+contract. `ModelConfigError` subclasses it, and so does
+`ProviderNotRegisteredError`; both stay `ConfigError`s for the heads'
+one-line handler. Both `set_model`s name it, and `KeyError` for an unknown
+name, in their `Raises`. A resolver bound with `set_model_resolver` is expected
+to raise those two.
