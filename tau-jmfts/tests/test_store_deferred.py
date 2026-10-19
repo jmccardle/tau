@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from tau_agent_core.cursor import Cursor
+from tau_agent_core.session_log import session_log_is_addressable
 from tau_jmfts.catalog import JmftsSessionCatalog
 from tau_jmfts.store import JmftsSessionLog
 
@@ -21,8 +24,13 @@ class _Client:
     def __init__(self) -> None:
         self.docs: dict[int, dict[str, Any]] = {}
         self._next_id = 100
+        self.fail_on_post: int | None = None
+        self.posts = 0
 
     def create_document(self, **kwargs: Any) -> dict[str, Any]:
+        self.posts += 1
+        if self.posts == self.fail_on_post:
+            raise ConnectionError("server went away")
         doc = {"id": self._next_id, "created_at": None, **kwargs}
         self.docs[self._next_id] = doc
         self._next_id += 1
@@ -96,3 +104,41 @@ async def test_forking_an_unwritten_conversation_writes_it_first():
     assert log.root_doc_id is not None
     assert [e["type"] for e in fork.entries()] == ["customEntry", "session_info", "message"]
     assert fork.header["parent"] == log.id
+
+
+async def test_a_post_failing_partway_resumes_on_the_next_append():
+    """The server cannot roll back, so the written prefix stays and a retry continues."""
+    client = _Client()
+    log = _deferred(client)
+    held = log.entries()
+    cursor = Cursor.newest(log)
+    client.fail_on_post = 3
+    with pytest.raises(ConnectionError):
+        await cursor.append_message({"role": "user", "content": "first try"})
+    assert log.root_doc_id is not None
+    assert len(client.docs) == 2, "root and the config entry landed; the rest is held"
+    assert log._held == [held[1]["id"], held[2]["id"]]
+
+    client.fail_on_post = None
+    leaf = await cursor.append_message({"role": "user", "content": "second try"})
+    root = log.root_doc_id
+    assert root is not None
+    reloaded = JmftsSessionLog.load(client, root)  # type: ignore[arg-type]
+    assert [e["type"] for e in reloaded.entries()] == [
+        "customEntry",
+        "session_info",
+        "message",
+        "message",
+    ]
+    assert reloaded.entries()[-1]["id"] == leaf
+    assert reloaded.context == log.context
+
+
+def test_an_unwritten_conversation_is_not_addressable():
+    client = _Client()
+    log = _deferred(client)
+    assert session_log_is_addressable(log) is False
+    log._append_now(
+        log.entries()[-1]["id"], "message", {"message": {"role": "user", "content": "x"}}
+    )
+    assert session_log_is_addressable(log) is True

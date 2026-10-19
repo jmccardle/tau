@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -115,12 +116,22 @@ async def test_tool_call_and_print(provider: SandboxProvider) -> None:
 
 
 async def test_gather_runs_calls_concurrently(provider: SandboxProvider) -> None:
+    spans: list[tuple[float, float]] = []
+
+    async def timed(seconds: float) -> dict[str, Any]:
+        start = time.monotonic()
+        await asyncio.sleep(seconds)
+        spans.append((start, time.monotonic()))
+        return {"content": [{"type": "text", "text": f"slept {seconds}"}]}
+
+    slow = _tool("slow", timed, {"seconds": {"type": "number"}}, ["seconds"])
     code = "import asyncio\nr = await asyncio.gather(tools.slow(seconds=0.3), tools.slow(seconds=0.3))\nprint(r)"
-    r = await _run(provider, code)
+    r = await _run(provider, code, tools=DirectToolInvoker([slow]))
     assert r.ok, r.error
     assert "slept 0.3" in r.output
-    assert len(r.calls) == 2
-    assert r.duration_ms < 550
+    assert len(r.calls) == 2 and len(spans) == 2
+    (first_start, first_end), (second_start, _) = sorted(spans)
+    assert second_start < first_end, "the second call started only after the first ended"
 
 
 async def test_tool_error_text_reaches_script(provider: SandboxProvider) -> None:
@@ -282,3 +293,134 @@ def test_cpython_env_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "ANTHROPIC_API_KEY" not in env
     assert not any(k.startswith("TAU_") for k in env)
     assert env.get("PATH") == os.environ.get("PATH")
+
+
+# ── issues #32/#33: names that are not Python identifiers ────────────────────
+
+
+async def _copy(**kwargs: Any) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": f"{kwargs['from']}->{kwargs.get('my-arg')}"}]}
+
+
+ODD = [
+    _tool(
+        "my-tool",
+        _copy,
+        {"from": {"type": "integer"}, "my-arg": {"type": "string"}},
+        ["from"],
+    ),
+    _tool("from", _add, {"a": {"type": "integer"}, "b": {"type": "integer"}}, ["a", "b"]),
+]
+
+
+def test_the_prompt_keeps_a_non_identifier_parameter_and_names_the_stubbed_tool() -> None:
+    from tau_agent_core.codemode.prompt import render_python_stubs, render_type_check_stubs
+
+    stubs = DirectToolInvoker(ODD).stubs()
+    text = render_python_stubs(stubs)
+    assert "async def my_tool(**kwargs: Unpack[my_tool_arguments]) -> str:" in text
+    assert '\'my_tool_arguments\', {"from": int, "my-arg": NotRequired[str]}' in text
+    assert "async def from_(*, a: int, b: int) -> str:" in text
+    namespace: dict[str, Any] = {}
+    header = "from typing import Any, Literal\nfrom typing_extensions import NotRequired, TypedDict, Unpack\n"
+    exec(header + text, namespace)
+    assert namespace["my_tool_arguments"].__required_keys__ == {"from"}
+    compile(render_type_check_stubs(stubs), "stubs.pyi", "exec")
+
+
+async def test_a_script_calls_a_non_identifier_tool_by_the_name_its_stub_shows(
+    provider: SandboxProvider,
+) -> None:
+    code = (
+        'print(await tools.my_tool(**{"from": 2, "my-arg": "x"}))\n'
+        "print(await tools.from_(a=1, b=2))"
+    )
+    r = await _run(provider, code, tools=DirectToolInvoker(ODD))
+    assert r.ok, r.error
+    assert r.output == "2->x\n3\n"
+    assert [c.name for c in r.calls] == ["my-tool", "from"]
+
+
+def test_discovery_answers_with_the_stub_name_and_takes_either() -> None:
+    invoker = DirectToolInvoker(ODD)
+    assert [h["name"] for h in invoker.search("my tool")][:1] == ["my_tool"]
+    assert invoker.describe("my_tool") == invoker.describe("my-tool")
+    assert "Unpack[my_tool_arguments]" in invoker.describe("my_tool")
+
+
+def test_two_tools_sharing_a_stub_name_raise_rather_than_shadow() -> None:
+    twin = _tool("my_tool", _add, {}, [])
+    with pytest.raises(ValueError, match="'my-tool', 'my_tool' all stub as 'my_tool'"):
+        DirectToolInvoker([*ODD, twin])
+
+
+@pytest.mark.skipif(not HAVE_MONTY, reason="no pydantic-monty")
+async def test_monty_type_checks_a_non_identifier_parameter() -> None:
+    from tau_agent_core.codemode.monty import MontyProvider
+
+    p = MontyProvider(type_check=True)
+    await p.start()
+    try:
+        code = 'args: "my_tool_arguments" = {"from": 2}\nprint(await tools.my_tool(**args))'
+        ok = await _run(p, code, tools=DirectToolInvoker(ODD))
+        assert ok.ok, ok.error
+        assert ok.output == "2->None\n"
+    finally:
+        await p.close()
+
+
+def test_a_digit_leading_tool_stubs_with_a_letter_prefix_that_clashes_loudly() -> None:
+    from tau_agent_core.tool_schema import stub_name, stub_names
+
+    assert stub_name("1tool") == "t_1tool"
+    assert stub_name("x²") == "x_"
+    with pytest.raises(ValueError, match="'1tool', 't_1tool' all stub as 't_1tool'"):
+        stub_names(["1tool", "t_1tool"])
+
+
+async def test_both_runtimes_call_a_digit_leading_tool(provider: SandboxProvider) -> None:
+    digit = _tool("1add", _add, {"a": {"type": "integer"}, "b": {"type": "integer"}}, ["a", "b"])
+    r = await _run(
+        provider, "print(await tools.t_1add(a=1, b=2))", tools=DirectToolInvoker([digit])
+    )
+    assert r.ok, r.error
+    assert r.output == "3\n" and [c.name for c in r.calls] == ["1add"]
+
+
+async def test_monty_refuses_a_tool_it_cannot_reach_and_cpython_calls_it() -> None:
+    from tau_agent_core.codemode.extension import CodeMode, CodeModeConfig
+
+    hidden = [_tool("_add", _add, {"a": {"type": "integer"}, "b": {"type": "integer"}}, ["a", "b"])]
+    code = "print(await tools._add(a=1, b=2))"
+    runner = _make("cpython")
+    await runner.start()
+    try:
+        cpython = await _run(runner, code, tools=DirectToolInvoker(hidden))
+    finally:
+        await runner.close()
+    assert cpython.ok and cpython.output == "3\n", cpython.error
+    mode = CodeMode(CodeModeConfig.from_mapping({"provider": "monty"}))
+    with pytest.raises(
+        ValueError, match=r"cannot call '_add' \(as tools._add\).*starting with '_'"
+    ):
+        mode.section(hidden)
+    blind = CodeMode(CodeModeConfig.from_mapping({"provider": "monty", "stubs": "none"}))
+    with pytest.raises(ValueError, match="cannot call '_add'"):
+        blind.section(hidden)
+    if HAVE_MONTY:
+        monty = _make("monty")
+        await monty.start()
+        try:
+            with pytest.raises(ValueError, match="cannot call '_add'"):
+                await _run(monty, code, tools=DirectToolInvoker(hidden))
+        finally:
+            await monty.close()
+
+
+def test_a_sanitised_leading_underscore_gains_the_letter_prefix() -> None:
+    from tau_agent_core.tool_schema import stub_name, stub_names
+
+    assert stub_name("-lead") == "t__lead"
+    assert stub_name("_private") == "_private"
+    with pytest.raises(ValueError, match="'-lead', 't__lead' all stub as 't__lead'"):
+        stub_names(["-lead", "t__lead"])

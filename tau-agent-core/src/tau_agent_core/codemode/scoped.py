@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Generic, TypeVar
 
 from tau_agent_core.codemode.protocol import (
@@ -21,6 +21,7 @@ from tau_agent_core.codemode.protocol import (
     RunLimits,
     RunResult,
     ToolInvoker,
+    ToolStub,
     elapsed_ms,
 )
 
@@ -67,6 +68,12 @@ class ScopedProvider(Generic[InstanceT]):
     def prompt(self) -> PromptTemplates:
         """The provider's default prompt templates."""
         raise NotImplementedError
+
+    def check_stubs(self, stubs: Sequence[ToolStub]) -> None:
+        """Raise ``ValueError`` for a stub this runtime cannot call. Default: every one works.
+
+        Optional for a provider outside this class; ``CodeMode`` calls it when present.
+        """
 
     async def _open(self, limits: RunLimits, tools: ToolInvoker) -> InstanceT:
         """Create one interpreter instance."""

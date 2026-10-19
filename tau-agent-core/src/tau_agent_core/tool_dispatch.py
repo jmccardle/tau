@@ -24,6 +24,7 @@ from typing import Any
 from tau_llm.docs import agent_facing
 
 from tau_agent_core.tool_catalog import DISPATCHABLE_EXPOSURES, ToolDescription
+from tau_agent_core.tool_schema import clash_message, stub_clashes, stub_name, stub_names
 from tau_agent_core.tools.base import ToolError
 
 __all__ = ["call_tool_definition", "search_deferred", "tool_search_definition"]
@@ -79,6 +80,7 @@ async def _tool_search(
     hits = search_deferred(ctx.list_tools(), query)
     if not hits:
         return {"content": [{"type": "text", "text": f"No tool matches {query!r}."}]}
+    _refuse_clashes("tool_search", ctx, [stub_name(d.name) for d in hits])
     stubs = "\n\n".join(d.stub() for d in hits)
     text = f"Found {len(hits)} tool(s). Call them with call_tool(name, arguments).\n\n{stubs}"
     return {
@@ -87,23 +89,56 @@ async def _tool_search(
     }
 
 
+def _refuse_clashes(op: str, ctx: Any, stubs: list[str]) -> None:
+    """Raise if another tool, hidden ones included, shares any of ``stubs``.
+
+    A clash among tools the call does not touch is not this call's fault, so
+    it is not checked; one it touches is a configuration fault, refused by
+    ``tool_search`` and ``call_tool`` alike, by real name or stub name.
+
+    Raises:
+        ToolError: naming every tool in each clash.
+    """
+    clashes = stub_clashes(d.name for d in ctx.list_tools(include_hidden=True))
+    involved = {stub: real for stub, real in clashes.items() if stub in stubs}
+    if involved:
+        raise ToolError(f"{op}: configuration fault: {clash_message(involved)}")
+
+
+def _resolve(ctx: Any, name: str) -> ToolDescription:
+    """The tool ``name`` names: a real name, else a stub name ``tool_search`` showed.
+
+    Raises:
+        ToolError: no tool has the name, or another tool shares its stub name.
+    """
+    _refuse_clashes("call_tool", ctx, [stub_name(name)])
+    described: ToolDescription
+    try:
+        described = ctx.describe_tool(name)
+        return described
+    except KeyError:
+        pass
+    real = stub_names(d.name for d in ctx.list_tools(include_hidden=True)).get(name)
+    if real is None:
+        raise ToolError(f"call_tool: no tool named {name!r}; use tool_search")
+    described = ctx.describe_tool(real)
+    return described
+
+
 async def _call_tool(
     tool_call_id: str, params: dict[str, Any], signal: Any, on_update: Any, ctx: Any
 ) -> dict[str, Any]:
-    """Run the named tool through ``ctx.execute_tool`` and return its result."""
+    """Run the named tool, by real or stub name, through ``ctx.execute_tool``."""
     name = str(params.get("name", ""))
     arguments = params.get("arguments") or {}
     if not isinstance(arguments, dict):
         raise ToolError("call_tool: arguments must be an object")
-    try:
-        described = ctx.describe_tool(name)
-    except KeyError:
-        raise ToolError(f"call_tool: no tool named {name!r}; use tool_search") from None
+    described = _resolve(ctx, name)
     if described.exposure not in DISPATCHABLE_EXPOSURES:
         raise ToolError(
             f"call_tool: {name!r} is not available to you (it is {described.exposure!r})"
         )
-    result = await ctx.execute_tool(name, arguments)
+    result = await ctx.execute_tool(described.name, arguments)
     return {"content": result.content, "value": result.value}
 
 
@@ -113,7 +148,9 @@ def tool_search_definition() -> dict[str, Any]:
 
     Returns:
         A ``model-only`` tool taking ``query`` whose result lists each deferred
-        match as a Python stub; an empty query is a tool error.
+        match as a Python stub; an empty query, or a match sharing its stub name
+        with another tool (:func:`~tau_agent_core.tool_schema.stub_clashes`), is a
+        tool error.
     """
     return {
         "name": "tool_search",
@@ -134,9 +171,11 @@ def call_tool_definition() -> dict[str, Any]:
     """The ``register_tool`` dict for ``call_tool``, the fixed dispatcher to deferred tools.
 
     Returns:
-        A ``model-only`` tool taking ``name`` and ``arguments`` that runs a
-        ``direct`` or ``deferred`` tool through ``ctx.execute_tool`` and returns
-        its content and value; any other target is a tool error.
+        A ``model-only`` tool taking ``name`` (real, or the stub name
+        ``tool_search`` showed) and ``arguments`` that runs a ``direct`` or
+        ``deferred`` tool through ``ctx.execute_tool`` and returns its content
+        and value; any other target, or one sharing its stub name with another
+        tool, is a tool error.
     """
     return {
         "name": "call_tool",

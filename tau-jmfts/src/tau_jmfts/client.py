@@ -12,6 +12,7 @@ module -- a dead or erroring server must propagate to the caller.
 
 from __future__ import annotations
 
+import re
 from types import TracebackType
 from typing import Any
 
@@ -93,21 +94,39 @@ class JmftsTextTooLongError(JmftsError):
 
 
 class JmftsVersionError(Exception):
-    """The server's ``GET /`` version is older than a request needs, or unreadable."""
+    """The server's ``GET /`` version is older than a request needs, or unreadable.
+
+    Not a :class:`JmftsError`: the server answered 200, so there is no status or
+    detail to carry, and a caller catching transport/HTTP failures should not catch it.
+    """
 
 
-def _parse_server_version(version: Any) -> tuple[int, int, int]:
-    """``(major, minor, patch)`` from a ``HealthResponse.version`` such as ``"0.7.1"``.
+_PEP440 = re.compile(
+    r"^v?(\d+)\.(\d+)(?:\.(\d+))?"
+    r"(?P<pre>[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?\d*)?"
+    r"(?:[-_.]?post[-_.]?\d*)?"
+    r"(?P<dev>[-_.]?dev[-_.]?\d*)?"
+    r"(?:\+[a-z0-9.]+)?$",
+    re.IGNORECASE,
+)
+
+
+def _server_version_at_least(version: Any, minimum: tuple[int, int, int]) -> bool:
+    """Whether a ``HealthResponse.version`` is at least ``minimum`` under PEP 440.
+
+    A pre-release or dev release of ``minimum`` itself (``0.7.0rc1``, ``0.7.0.dev0``)
+    sorts before it, so it does not qualify; one of a later release (``0.8.0rc1``) does.
 
     Raises:
-        JmftsVersionError: ``version`` does not start with three dot-separated integers.
+        JmftsVersionError: ``version`` is not a PEP 440 version.
     """
-    parts = str(version).split(".")
-    try:
-        major, minor, patch = (int(p) for p in parts[:3])
-    except ValueError:
-        raise JmftsVersionError(f"JMFTS reported an unreadable version {version!r}") from None
-    return major, minor, patch
+    match = _PEP440.match(str(version))
+    if match is None:
+        raise JmftsVersionError(f"JMFTS reported an unreadable version {version!r}")
+    release = (int(match[1]), int(match[2]), int(match[3] or 0))
+    if release != minimum:
+        return release > minimum
+    return match["pre"] is None and match["dev"] is None
 
 
 DocumentDict = dict[str, Any]
@@ -203,7 +222,7 @@ class JmftsClient:
         result: dict[str, Any] = self._request("GET", "/")
         return result
 
-    def _require_chunk_contract(self) -> None:
+    def require_chunk_contract(self) -> None:
         """Raise unless the server takes ``max_words`` on ``/chunk``; asks once per client.
 
         Raises:
@@ -213,7 +232,7 @@ class JmftsClient:
         if self._chunk_contract_checked:
             return
         version = self.health().get("version")
-        if _parse_server_version(version) < MIN_CHUNK_SERVER_VERSION:
+        if not _server_version_at_least(version, MIN_CHUNK_SERVER_VERSION):
             needed = ".".join(map(str, MIN_CHUNK_SERVER_VERSION))
             raise JmftsVersionError(
                 f"chunk_document needs JMFTS >= {needed} (max_words); the server is {version}"
@@ -481,10 +500,8 @@ class JmftsClient:
 
         ``max_words`` is a whitespace word count, so it is a target only -- see
         :data:`CHUNK_MAX_WORDS`. The token-window guarantee comes from ``auto_embed``,
-        not from this number. The strategy is pinned to ``sentence_packed`` (whole
-        sentences, packed up to ``max_words``), because the server's default
-        ``sentence`` strategy ignores ``max_words`` and returns one chunk per sentence:
-        measured on JMFTS 0.7.1, 360 words became 24 chunks of 15 words (#45).
+        not from this number. The strategy is pinned to ``sentence_packed``, because the
+        server's default ``sentence`` strategy ignores ``max_words`` (#45).
 
         Requires JMFTS >= 0.7.0 (:data:`MIN_CHUNK_SERVER_VERSION`), checked once per
         client with ``GET /``: an older server ignores ``max_words`` and chunks at its
@@ -513,7 +530,7 @@ class JmftsClient:
                 "chunks are foreign documents inside the conversation subtree, and a tau: "
                 "usetype without a structured_content.tau payload would corrupt the load path"
             )
-        self._require_chunk_contract()
+        self.require_chunk_contract()
         self._request(
             "POST",
             f"/documents/{doc_id}/chunk",

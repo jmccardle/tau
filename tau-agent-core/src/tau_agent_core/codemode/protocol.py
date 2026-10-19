@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from tau_agent_core.tool_schema import stub_name
+
 Lifetime = Literal["script", "turn", "session"]
 """How long one interpreter lives.
 
@@ -100,7 +102,7 @@ class ToolStub:
     """What a script needs to know to call one tool.
 
     Attributes:
-        name: The tool's name, also its attribute on ``tools``.
+        name: The tool's real name.
         description: The tool's description.
         parameters: Its JSON-schema ``parameters`` object.
     """
@@ -108,6 +110,11 @@ class ToolStub:
     name: str
     description: str
     parameters: Mapping[str, Any]
+
+    @property
+    def attribute(self) -> str:
+        """Its attribute on ``tools``: :func:`~tau_agent_core.tool_schema.stub_name` of ``name``."""
+        return stub_name(self.name)
 
 
 @dataclass

@@ -14,12 +14,15 @@ Phase A (docs/SESSION-UX-REDESIGN.md §9):
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 import pytest
 
+import tau_coding_agent.session_store as session_store
+
 from tau_agent_core.cursor import Cursor
-from tau_agent_core.session_log import default_leaf
+from tau_agent_core.session_log import default_leaf, session_log_is_addressable
 from tau_coding_agent.session_store import (
     SESSION_BEFORE_COMPACT,
     SESSION_BEFORE_FORK,
@@ -379,12 +382,52 @@ async def test_deferred_session_first_written_by_an_open_reloads_finalized(tmp_p
     assert Session.load(session.path).entries() == session.entries()
 
 
-async def test_forking_a_deferred_session_does_not_write_the_source(tmp_path):
-    source = Session.create(CWD, "local-llm", "openai", base_dir=tmp_path, deferred=True)
-    fork = Session.fork(source, CWD, base_dir=tmp_path)
+async def test_forking_a_deferred_session_writes_the_source_first(tmp_path):
+    """The fork's header names its parent, so the parent must be on disk to resolve."""
+    catalog = FileSessionCatalog(tmp_path)
+    source = catalog.create_deferred(CWD, "local-llm", "openai", system_prompt="sys")
+    fork = catalog.fork(source, CWD)
     assert fork.path is not None and fork.path.exists()
-    assert source.path is not None and not source.path.exists()
-    assert fork.entries() == source.entries()
+    assert fork.header["parent"] == source.id
+    parent = catalog.resolve_ref(fork.header["parent"], cwd=CWD)
+    assert parent.entries() == source.entries() == fork.entries()
+
+
+def test_a_deferred_session_is_not_addressable_until_written(tmp_path):
+    session = Session.create(CWD, "local-llm", "openai", base_dir=tmp_path, deferred=True)
+    assert session.path is None
+    assert session_log_is_addressable(session) is False
+    session._append_at_now(None, "session_info", {"name": "now written"})
+    assert session.path is not None and session.path.exists()
+    assert session_log_is_addressable(session) is True
+
+
+async def test_a_failed_first_write_leaves_nothing_and_the_next_append_retries(
+    tmp_path, monkeypatch
+):
+    """The file appears whole or not at all; a failure is raised, not hidden."""
+    session = Session.create(CWD, "local-llm", "openai", base_dir=tmp_path, deferred=True)
+    cursor = Cursor.newest(session)
+    real_dumps = json.dumps
+    calls = {"n": 0}
+
+    def dumps_failing_on_the_third_line(obj, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise OSError("disk full")
+        return real_dumps(obj, *args, **kwargs)
+
+    monkeypatch.setattr(session_store.json, "dumps", dumps_failing_on_the_third_line)
+    with pytest.raises(OSError, match="disk full"):
+        await cursor.append_message({"role": "user", "content": "lost"})
+    monkeypatch.setattr(session_store.json, "dumps", real_dumps)
+
+    assert session.path is None
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+
+    await cursor.append_message({"role": "user", "content": "kept"})
+    assert session.path is not None
+    assert Session.load(session.path).entries() == session.entries()
 
 
 # ── seam 3: lifecycle events ────────────────────────────────────────────────
