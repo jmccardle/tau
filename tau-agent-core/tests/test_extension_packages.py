@@ -20,6 +20,7 @@ import json
 import subprocess
 import sys
 import zipfile
+from importlib import metadata
 from pathlib import Path
 
 import pytest
@@ -135,6 +136,30 @@ def _install_editable(
         (site / rel).write_text(f"{package_dir.parent}\n")
     (info / "RECORD").write_text(f"{_record_line(site, rel)}\n{info.name}/RECORD,,\n")
     return module
+
+
+SETUPTOOLS_FLOOR = 82
+"""The setuptools the real-build tests need; tau-agent-core's ``[dev]`` extra declares it."""
+
+
+def _require_setuptools() -> None:
+    """Fail, naming the requirement, when this venv's setuptools is missing or too old.
+
+    A failure rather than a skip: the release matrix installs ``[dev]`` fresh, and a
+    skip would hide that it did not run there.
+    """
+    try:
+        version = metadata.version("setuptools")
+    except metadata.PackageNotFoundError:
+        pytest.fail(
+            f"this test builds editable wheels and needs setuptools>={SETUPTOOLS_FLOOR} "
+            "in the test venv, which has none; install ffwf-tau-agent-core[dev]"
+        )
+    if int(version.split(".")[0]) < SETUPTOOLS_FLOOR:
+        pytest.fail(
+            f"this test needs setuptools>={SETUPTOOLS_FLOOR} in the test venv, found "
+            f"{version}; install ffwf-tau-agent-core[dev]"
+        )
 
 
 @pytest.fixture
@@ -413,7 +438,7 @@ class TestExplicitModuleNames:
     @pytest.mark.parametrize("mode", ["lenient", "strict"])
     def test_a_real_setuptools_editable_build_is_read(self, site, tmp_path, mode):
         """A real PEP 660 editable wheel from the installed setuptools, unpacked as pip would."""
-        pytest.importorskip("setuptools")
+        _require_setuptools()
         root, top = site
         checkout = tmp_path / "checkout"
         package_dir = checkout / "lib" / "weirddir"
