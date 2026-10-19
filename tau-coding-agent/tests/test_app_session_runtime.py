@@ -119,6 +119,7 @@ async def test_fork_moves_onto_a_new_session_and_leaves_the_source_alone(
 
         source = app.current_session
         source_id = source.id
+        await app._cursor.append_message({"role": "user", "content": "written"})
 
         await app.action_fork_session()
         await pilot.pause()

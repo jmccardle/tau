@@ -255,6 +255,8 @@ class Session:
 
     ``path`` is ``None`` for an in-memory (ephemeral) session — every ``append_*``
     becomes a pure in-memory mutation with no disk flush (seam 1, ``--no-session``).
+    A deferred session (``create(deferred=True)``) has a ``path`` that does not
+    exist yet: its first write creates the file with everything held so far.
     """
 
     def __init__(self, path: Path | None, header: dict[str, Any], entries: list[dict[str, Any]]):
@@ -262,6 +264,7 @@ class Session:
         self._header = header
         self._entries = entries
         self._ids: set[str] = {e["id"] for e in entries if "id" in e}
+        self._unwritten = False
 
     # --- identity / header -------------------------------------------------
 
@@ -357,17 +360,40 @@ class Session:
         name: str | None = None,
         id: str | None = None,  # seam 1 → --session-id
         base_dir: Path | None = None,  # seam 1 → --session-dir
+        deferred: bool = False,
     ) -> "Session":
-        """Create a new persisted session; write header + initial entries."""
+        """Create a new persisted session.
+
+        Args:
+            cwd: Working directory the session belongs to.
+            model: Config model name the session starts with.
+            backend: Backend name the session starts with.
+            system_prompt: System prompt text; ``None`` writes none.
+            name: Session name; ``None`` leaves it unnamed.
+            id: Session id; ``None`` mints one.
+            base_dir: Sessions root; ``None`` is ``~/.tau/sessions``.
+            deferred: Hold the header and opening chain in memory and write
+                them with the first append, so an unused session leaves no file
+                and no directory (``SessionCatalog.create_deferred``).
+
+        Returns:
+            The new session.
+        """
         timestamp = _now_iso()
         session_id = id if id is not None else uuid.uuid4().hex
         directory = session_dir_for_cwd(cwd, base_dir)
-        directory.mkdir(parents=True, exist_ok=True)
         path = directory / _session_filename(timestamp, session_id)
         header = cls._build_header(session_id, timestamp, os.path.abspath(cwd), parent=None)
-        session = cls(path, header, [])
-        session._persist_header()
-        session._init_state(model, backend, system_prompt, name)
+        if deferred:
+            session = cls(None, header, [])
+            session._init_state(model, backend, system_prompt, name)
+            session.path = path
+            session._unwritten = True
+        else:
+            directory.mkdir(parents=True, exist_ok=True)
+            session = cls(path, header, [])
+            session._persist_header()
+            session._init_state(model, backend, system_prompt, name)
         _emit_session_event(SESSION_START, session)
         return session
 
@@ -561,8 +587,21 @@ class Session:
     def _persist_entry(self, entry: dict[str, Any]) -> None:
         if self.path is None:
             return
+        if self._unwritten:
+            self._write_held()
+            return
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
+
+    def _write_held(self) -> None:
+        """Create a deferred session's file: the header, then every entry held, the new one last."""
+        assert self.path is not None
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("x", encoding="utf-8") as handle:
+            handle.write(json.dumps(self._header) + "\n")
+            for held in self._entries:
+                handle.write(json.dumps(held) + "\n")
+        self._unwritten = False
 
 
 def read_session_info(path: Path) -> SessionInfo | None:
@@ -708,6 +747,26 @@ class FileSessionCatalog(SessionCatalog):
             system_prompt=system_prompt,
             name=name,
             base_dir=self._base_dir,
+        )
+
+    def create_deferred(
+        self,
+        cwd: str,
+        model: str,
+        backend: str,
+        *,
+        system_prompt: str | None = None,
+        name: str | None = None,
+    ) -> Session:
+        """A session whose file and directory appear on its first append."""
+        return Session.create(
+            cwd,
+            model,
+            backend,
+            system_prompt=system_prompt,
+            name=name,
+            base_dir=self._base_dir,
+            deferred=True,
         )
 
     def create_ephemeral(

@@ -271,18 +271,20 @@ class AgentSessionRuntime:
         self._rebind = callback
 
     async def new_session(
-        self, *, persist: bool, system_prompt: str | None = None
+        self, *, persist: bool, deferred: bool = False, system_prompt: str | None = None
     ) -> dict[str, Any]:
         """Start a fresh conversation on the SAME ``AgentSession`` (H1-H4).
 
         Args:
             persist: Required, not defaulted (Fail-Early: the caller states
                 what it wants rather than inheriting a guess). ``True`` calls
-                ``session_catalog.create`` (a real, on-disk-addressable
-                session — the TUI's ``action_new_chat``/``action_clear_chat``
-                convention); ``False`` calls ``create_ephemeral`` (RPC mode's
-                "every run starts a fresh, unpersisted session" convention,
-                unchanged by this phase).
+                ``session_catalog.create``; ``False`` calls ``create_ephemeral``
+                (RPC mode's unpersisted run).
+            deferred: With ``persist``, call ``create_deferred`` instead, so the
+                session is stored on its first append and one nobody writes to
+                leaves nothing behind (the TUI's convention). Raises
+                ``ValueError`` without ``persist``: an ephemeral session is never
+                stored, so there is no write to defer.
             system_prompt: Seeded into the new log as a ``system`` entry
                 (the catalog's own convention) — ``None`` writes nothing,
                 which is correct for a caller whose ``AgentSession`` already
@@ -300,8 +302,14 @@ class AgentSessionRuntime:
             ``{"cancelled": False, "session": <the new ConversationSession>,
             "session_id": str, "cursor_id": str, "leaf": str | None, "store": str}``.
         """
+        if deferred and not persist:
+            raise ValueError("new_session(deferred=True) needs persist=True")
 
         def _build() -> ConversationSession:
+            if deferred:
+                return self._catalog.create_deferred(
+                    self._cwd, self._model, self._backend, system_prompt=system_prompt
+                )
             if persist:
                 return self._catalog.create(
                     self._cwd, self._model, self._backend, system_prompt=system_prompt

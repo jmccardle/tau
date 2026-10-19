@@ -3218,6 +3218,8 @@ The five abstract methods are the storage-specific primitives a concrete
 catalog must supply:
 
 - ``create`` / ``create_ephemeral`` — new persisted / in-memory session.
+  ``create_deferred`` is the optional third: persisted, but written on its
+  first append.
 - ``load(ref)`` — reconstruct a session from a :class:`SessionInfo`'s ``ref``.
 - ``fork(source, cwd, at=)`` — a new session carrying ``source``'s history.
 - ``list(cwd)`` — newest-first listing metadata, ``cwd=None`` for every dir.
@@ -3243,6 +3245,40 @@ Create a new persisted session.
 **Returns**
 
 The new session.
+
+### create_deferred
+
+```python
+create_deferred(cwd: str, model: str, backend: str, *, system_prompt: str | None = None, name: str | None = None) -> ConversationSession
+```
+
+`tau_agent_core.session_catalog.SessionCatalog.create_deferred`
+
+Create a persisted session that writes nothing until its first append.
+
+The opening chain ``create`` would write is held in memory; the first
+``append_at`` writes it and then the entry. Until then the catalog neither
+stores nor lists the session, so one nobody writes to leaves nothing
+behind — a head can open a session before the user does anything
+(docs/SESSION-AT-MOUNT.md).
+
+Concrete so a catalog opts in: one that cannot defer raises.
+
+**Parameters**
+
+- `cwd: str` — Working directory the session belongs to.
+- `model: str` — Config model name the session starts with.
+- `backend: str` — Backend name the session starts with.
+- `system_prompt: str | None = None` — System prompt text; ``None`` writes none.
+- `name: str | None = None` — Session name; ``None`` leaves it unnamed.
+
+**Returns**
+
+The new session, readable at once and stored on its first append.
+
+**Raises**
+
+- `NotImplementedError` — this catalog cannot defer the first write.
 
 ### create_ephemeral
 

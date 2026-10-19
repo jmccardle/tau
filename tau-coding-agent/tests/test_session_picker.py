@@ -351,15 +351,16 @@ async def test_enter_lands_in_the_chosen_session(app) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         seeded = await seed(app, os.getcwd(), "the one to resume")
-        assert app.current_session is None
+        mounted = app.current_session
+        assert mounted is not None and mounted.id != seeded.id
 
         modal = await open_picker(app, pilot)
-        assert refs(modal) == [str(seeded.path)]
+        assert refs(modal) == [str(seeded.path)], "the unwritten mount session is not listed"
 
         await pilot.press("enter")
         for _ in range(20):
             await pilot.pause()
-            if app.current_session is not None:
+            if app.current_session is not mounted:
                 break
 
         assert app.current_session is not None
@@ -376,6 +377,7 @@ async def test_escape_cancels_without_loading_anything(app) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         await seed(app, os.getcwd(), "not this one")
+        mounted = app.current_session
 
         await open_picker(app, pilot)
         await pilot.press("escape")
@@ -385,7 +387,7 @@ async def test_escape_cancels_without_loading_anything(app) -> None:
                 break
 
         assert not isinstance(app.screen, SessionPickerModal)
-        assert app.current_session is None
+        assert app.current_session is mounted
 
 
 async def test_an_empty_directory_says_so_rather_than_showing_nothing(app) -> None:
@@ -596,7 +598,7 @@ async def test_the_three_surfaces_are_one_handler(dispatch_app) -> None:
         await pilot.pause()
 
         dispatch_app._resume_on_start = True
-        dispatch_app.on_mount()
+        await dispatch_app.on_mount()
         for _ in range(20):
             await pilot.pause()
             if len(calls) == 3:
