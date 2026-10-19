@@ -1953,8 +1953,9 @@ class AgentSession:
         listeners (serve's publish, the TUI's marker) see only that loop. With
         no live bound loop the change runs here under the store's lock, which is
         safe only while no listener depends on a loop that never bound (an SDK
-        host under ``asyncio.run`` before any turn or ``session_start``; no τ
-        mode does this). Only those two bind a loop; a warning write never does (#60).
+        host under ``asyncio.run`` before any turn, ``load_extensions`` or
+        ``session_start``; no τ mode does this). Only those three bind a loop; a
+        warning write never does (#60).
         """
         try:
             running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
@@ -2780,18 +2781,15 @@ class AgentSession:
     def _bind_loop(self) -> None:
         """Claim the running loop as this session's owner if no live one holds it.
 
-        The observation-grade half of "Task marshalling": called from the points
-        where the session demonstrably starts running on a loop
-        (:meth:`emit_session_start`, and :meth:`_bind_or_check_loop` below) so that
-        :meth:`submit_threadsafe` has somewhere to marshal TO before the first
-        submission has been made. That matters for the real driver: ``nats_bus``
-        opens its subscription in ``session_start``, and a driver that then calls
-        ``submit_threadsafe`` from its own thread must not be told "this session is
-        not bound to a loop yet" when the session is plainly running on one.
+        The observation-grade half of "Task marshalling", called where the session
+        demonstrably starts running on a loop (:meth:`load_extensions`,
+        :meth:`emit_session_start`, :meth:`_bind_or_check_loop`), so
+        :meth:`submit_threadsafe` has a loop to marshal to before the first
+        submission: ``nats_bus`` subscribes in ``session_start`` and its thread may
+        submit at once.
 
-        Silent when there is no running loop and when a live owner already holds the
-        binding — this is not the guard, it is the binding. :meth:`submit` is where a
-        conflict is a hard error.
+        Silent with no running loop or a live owner already bound; :meth:`submit`
+        is where a conflict is a hard error.
         """
         try:
             running = asyncio.get_running_loop()

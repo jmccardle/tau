@@ -381,7 +381,7 @@ def _editable_layout(dist: metadata.Distribution) -> tuple[dict[str, Path], list
         if name.startswith("__editable__") and name.endswith("_finder.py"):
             seen.append(name)
             try:
-                tree = ast.parse(located.read_text())
+                tree = ast.parse(located.read_text(encoding="utf-8"))
             except (OSError, SyntaxError, ValueError) as exc:
                 raise _UnreadableLayout(f"its finder {located} cannot be parsed ({exc})") from exc
             found = _finder_mapping(tree)
@@ -463,11 +463,11 @@ def _module_files(source: ExtensionSource) -> set[Path]:
 def _could_be_module(target: Path, module: str, *, hook_only: bool) -> bool:
     """Whether file ``target`` could be ``module`` when the layout cannot be read.
 
-    Under an import hook that keeps names (Hatchling's ``editables``, which
-    refuses a prefix-changing source in dev mode), ``a.b.c`` can only be a
-    ``c.py`` or a ``c/__init__.py``. A setuptools finder can map any package,
-    nested ones included, to a directory of any name, so under an unreadable
-    finder every package directory could be the module, and so could ``c.py``.
+    ``hook_only`` (an import-hook-only ``.pth``, as Hatchling's ``editables``
+    writes): ``a.b.c`` can only be ``c.py`` or ``c/__init__.py``. Any other
+    unreadable layout (a finder that cannot be read, parsed, or holds no literal
+    ``MAPPING``; an unreadable ``.pth``): any package directory or ``c.py`` under
+    the editable root could be it.
     """
     last = module.rsplit(".", 1)[-1]
     if target.name == "__init__.py":

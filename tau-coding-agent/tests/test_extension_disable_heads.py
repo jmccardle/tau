@@ -12,8 +12,13 @@ import pytest
 
 from tau_agent_core import extension_sources
 from tau_agent_core.extension_auth import STORE_FILENAME
-from tau_agent_core.extension_sources import ExtensionSource
-from tau_agent_core.sdk import ExtensionLoadError, LoadExtensionsResult, load_failure_notice
+from tau_agent_core.extension_sources import ExtensionRecord, ExtensionSource
+from tau_agent_core.sdk import (
+    ExtensionLoadError,
+    LoadExtensionsResult,
+    load_failure_notice,
+    withheld_notices,
+)
 from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.backends import TauBackend, create_backend
 from tau_coding_agent.cli import CLIArgs, main
@@ -218,5 +223,21 @@ def test_the_serve_daemon_logs_the_cores_notice():
     host = SessionHost.__new__(SessionHost)
     host.tag = "session abcd1234"
     host.daemon = type("D", (), {"log": staticmethod(lines.append)})()
-    host.report_extension_load(LoadExtensionsResult(errors=[error]))
-    assert lines == [f"session abcd1234 {load_failure_notice(error)}"]
+    withheld = ExtensionRecord(
+        identifier="tau_router.planner",
+        kind="package",
+        target="tau_router.planner",
+        state="unauthorized",
+        reason="tau-router 0.2 has never been authorized",
+        distribution="tau-router",
+        version="0.2",
+        authorization="new",
+    )
+    result = LoadExtensionsResult(errors=[error], withheld=[withheld])
+    host.report_extension_load(result)
+    (notice,) = withheld_notices(result)
+    assert notice.endswith("To load it: tau ext authorize tau_router.planner")
+    assert lines == [
+        f"session abcd1234 {load_failure_notice(error)}",
+        f"session abcd1234 {notice}",
+    ]
