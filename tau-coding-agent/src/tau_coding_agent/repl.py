@@ -2034,6 +2034,8 @@ class ReplLoop:
                 self._renderer.line(
                     "warning", f"{record.identifier} subscribes to {topic}, which nothing emits"
                 )
+        for warning in self._agent_session.extension_warnings():
+            self._renderer.line(warning.severity, warning.summary())
         self._print_shortcuts()
 
     def _print_shortcuts(self) -> None:

@@ -1352,8 +1352,17 @@ _GET_EXTENSION_STATE_RETURNS: dict[str, Any] = {
                 "extension_name, and is exactly what a listing must show."
             ),
         },
+        "warnings": {
+            "type": "array",
+            "description": (
+                "The session's current extension warnings, as "
+                "AgentSession.extension_warnings() reads them now (#60): the cheap "
+                "read for a host that polls, where get_capabilities is the whole "
+                "protocol document."
+            ),
+        },
     },
-    "required": ["extensions", "errors"],
+    "required": ["extensions", "errors", "warnings"],
 }
 
 _LIST_EXTENSIONS_RETURNS: dict[str, Any] = {

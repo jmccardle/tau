@@ -38,6 +38,7 @@ from tau_coding_agent.headless import (
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.compare import COMPARE_KEY
 from tau_agent_core.cursor import Cursor
+from tau_agent_core.extension_warnings import ExtensionWarning, warnings_marker
 from tau_agent_core.session_log import config_at
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_coding_agent.config import (
@@ -277,6 +278,7 @@ class TauApp(App):
         self._configured_enter_key_mode()
 
         self._theme_errors: list[str] = []
+        self._unsubscribe_warnings: Callable[[], None] | None = None
         self._theme_registry = build_theme_registry(errors=self._theme_errors)
         self._apply_theme(self._configured_theme_name())
 
@@ -638,6 +640,7 @@ class TauApp(App):
             yield extension_ui.ExtensionPanelHost()
 
         yield editor_widgets.StreamStrip()
+        yield extension_ui.WarningsMarker()
         yield extension_ui.ExtensionStatusBar()
         yield Footer()
 
@@ -791,6 +794,23 @@ class TauApp(App):
         only bound after mount, so no pre-mount call can reach here.
         """
         self.query_one(extension_ui.ExtensionStatusBar).set_slot(key, text)
+
+    def _watch_warnings(self) -> None:
+        """Drive the warnings marker from the current backend's store, dropping the last one's."""
+        if self._unsubscribe_warnings is not None:
+            self._unsubscribe_warnings()
+            self._unsubscribe_warnings = None
+        backend: Any = self.current_backend
+        subscribe = getattr(backend, "subscribe_extension_warnings", None)
+        if subscribe is None:
+            self._show_warnings_marker([])
+            return
+        self._unsubscribe_warnings = subscribe(self._show_warnings_marker)
+        self._show_warnings_marker(backend.extension_warnings())
+
+    def _show_warnings_marker(self, warnings: list[ExtensionWarning]) -> None:
+        """Render :func:`warnings_marker` for ``warnings``."""
+        self.query_one(extension_ui.WarningsMarker).show(warnings_marker(warnings))
 
     def set_extension_panel(self, key: str, spec: dict[str, Any] | None) -> None:
         """Mount, update, or clear one keyed extension panel (E10 §6 / S68).
@@ -2717,6 +2737,7 @@ class TauApp(App):
         set_delegate = getattr(self.current_backend, "set_ui_delegate", None)
         if set_delegate is not None:
             set_delegate(extension_ui._ExtensionUIDelegate(self))
+        self._watch_warnings()
 
         loader = getattr(self.current_backend, "load_extensions", None)
         if loader is None:
@@ -2959,7 +2980,19 @@ class TauApp(App):
         records = getattr(self.current_backend, "extension_records", None)
         if records is not None:
             listing += self._format_found_not_loaded(records())
+        warnings = getattr(self.current_backend, "extension_warnings", None)
+        if warnings is not None:
+            listing += self._format_warnings(warnings())
         self.query_one(transcript.ChatDisplay).add_message("system", listing, source="markdown")
+
+    @staticmethod
+    def _format_warnings(warnings: list[ExtensionWarning]) -> str:
+        """The listing's warnings section (#60); empty when there are none."""
+        if not warnings:
+            return ""
+        lines = ["", "## Warnings"]
+        lines += [f"- **{w.severity}** {w.summary()}" for w in warnings]
+        return "\n".join(lines)
 
     @staticmethod
     def _format_found_not_loaded(records: list[ExtensionRecord]) -> str:

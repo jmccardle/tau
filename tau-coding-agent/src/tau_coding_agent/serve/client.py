@@ -110,7 +110,7 @@ class Replica:
         return replica
 
     def apply(self, event: dict[str, Any]) -> None:
-        """Fold one event in: an entry write, or the cursor set.
+        """Fold one event in: an entry write, the cursor set, or the warnings.
 
         Raises:
             ValueError: the event skips a number; the client must reattach.
@@ -129,6 +129,8 @@ class Replica:
                 self.entries[position] = entry
         elif kind == "cursors":
             self.cursors = {c["cursor_id"]: c for c in event["data"]["cursors"]}
+        elif kind == "ui" and event["data"]["op"] == "warnings":
+            self.surface["warnings"] = event["data"]["warnings"]
 
 
 class ServeError(Exception):

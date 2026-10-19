@@ -23,6 +23,7 @@ from websockets.exceptions import ConnectionClosedError
 
 from tau_agent_core.cursor import TURN_CURSOR, Cursor
 from tau_agent_core.extension_locks import request_at
+from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_agent_core.extension_types import form_headless_value, validate_form_spec
 from tau_agent_core.flows import Performed, Ready, View
 from tau_agent_core.projections import (
@@ -333,6 +334,7 @@ class SessionHost:
         session.subscribe_channel("cursor_open", self._on_cursor_open)
         session.subscribe_channel("cursor_close", self._on_cursor_close)
         session.set_ui_delegate(self.ui)
+        session.subscribe_extension_warnings(self._on_warnings)
         result = await self.backend.load_extensions(
             None, discover=True, extensions_config=self.daemon.config.get("extensions_config")
         )
@@ -475,7 +477,12 @@ class SessionHost:
             extensions=[list(e) for e in session.list_managed_extensions()],
             loaded=[p.ExtensionInfo(**info) for info in state["extensions"]],
             load_errors=[[err["path"], err["error"]] for err in state["errors"]],
+            warnings=session.extension_warnings(),
         )
+
+    def _on_warnings(self, warnings: list[ExtensionWarning]) -> None:
+        """Push the session's whole warning set after it changes."""
+        self.publish("ui", p.to_wire(p.UiWarnings(warnings=warnings)))
 
     def models(self) -> list[p.ModelRecord]:
         """Every model the session's resolver accepts, as ``get_models`` lists them."""

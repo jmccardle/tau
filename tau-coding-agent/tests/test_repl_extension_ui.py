@@ -411,3 +411,20 @@ async def test_the_shortcuts_are_listed_as_the_commands_to_type(env: ReplEnv) ->
     env.install(prepare)
     await env.run(["/extensions"])
     assert "ctrl+e t → /todo-list --open — list the open todos" in env.text
+
+
+async def test_the_listing_shows_the_current_extension_warnings(env: ReplEnv) -> None:
+    """#60: a warning set before the user looked is found again under ``/extensions``."""
+    from tau_agent_core.extension_warnings import ExtensionWarning
+
+    def prepare(backend: FakeBackend) -> None:
+        backend.command_result = performed_result(
+            View(name="extensions", unavailable_because="no state yet")
+        )
+        backend.agent_session.warnings = [
+            ExtensionWarning("probe", "excluded", "bash was left out", "error")
+        ]
+
+    env.install(prepare)
+    await env.run(["/extensions"])
+    assert "probe: bash was left out" in env.text

@@ -8,7 +8,7 @@
 
 - **Protocol version:** `0.11`
 - **Default port:** `8256`
-- **Counts:** 52 requests (37 of them RPC verbs), 10 event kinds, 204 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 52 requests (37 of them RPC verbs), 10 event kinds, 206 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
@@ -1200,6 +1200,17 @@ An extension request at a cursor, as `get_pending_request` answers it (docs/EXTE
 | `ask` | [Ask](#ask) \| null | yes | What it asks, or `None` for a bare lock. |
 | `release` | string \| null | yes | A command that clears the lock, or `None`. |
 
+### ExtensionWarning
+
+One current warning on a session.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `source` | string | yes | The extension identifier that set it, or `"tau"`. |
+| `key` | string | yes | Its name within `source`; setting the same key replaces it. |
+| `message` | string | yes | One line for the user. |
+| `severity` | `"warning"` \| `"error"` | yes | One of `WARNING_SEVERITIES`. |
+
 ### Failure
 
 The answer to a request that failed, matched by `id`.
@@ -1295,6 +1306,7 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 |---|---|---|---|
 | `extensions` | list of [ExtensionInfo](#extensioninfo) | yes | Every loaded extension and what it registered, as [{name, path, tools, commands, shortcuts, hooks, content_hash, subjects}] — sdk.summarize_extensions of the live registry, which is the same projection the TUI's /extensions listing draws. Read LIVE, not from the load-time snapshot, so a reload_extension is reflected here. |
 | `errors` | list of [LoadError](#loaderror) | yes | Every discovered file that FAILED to load, as [{path, error}]. Kept from the last load_extensions call, because a failed import leaves nothing to recompute from. This is the half that makes this a read of its own rather than list_managed_extensions with more fields: a file that cannot import can never be a legal extension_name, and is exactly what a listing must show. |
+| `warnings` | list of [ExtensionWarning](#extensionwarning) | yes | The session's current extension warnings, as AgentSession.extension_warnings() reads them now (#60): the cheap read for a host that polls, where get_capabilities is the whole protocol document. |
 
 ### GetLastAssistantTextResult
 
@@ -1949,6 +1961,7 @@ What a session answers beyond its tree, which a head reads without a round trip.
 | `extensions` | list of list of any | yes | `[path, enabled]` per managed extension. |
 | `loaded` | list of [ExtensionInfo](#extensioninfo) | yes | Every loaded extension and what it registered. |
 | `load_errors` | list of list of string | yes | `[path, error]` per extension file that failed to load. |
+| `warnings` | list of [ExtensionWarning](#extensionwarning) | yes | The session's current extension warnings (#60); a `ui` event with op `warnings` carries each change. |
 
 ### SystemMessage
 
@@ -2035,7 +2048,7 @@ A `ui` event.
 
 An extension display call, told apart by `op`.
 
-One of: [UiNotify](#uinotify), [UiStatus](#uistatus), [UiPanel](#uipanel).
+One of: [UiNotify](#uinotify), [UiStatus](#uistatus), [UiPanel](#uipanel), [UiWarnings](#uiwarnings).
 
 ### UiNotify
 
@@ -2066,6 +2079,15 @@ An extension's status-line text under `key`; `None` clears it.
 | `key` | string | yes |  |
 | `text` | string \| null | yes |  |
 | `op` | `"status"` | yes |  |
+
+### UiWarnings
+
+The session's extension warnings after a change, every one: replaces `Surface.warnings`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `warnings` | list of [ExtensionWarning](#extensionwarning) | yes |  |
+| `op` | `"warnings"` | yes |  |
 
 ### Usage
 

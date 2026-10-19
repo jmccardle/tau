@@ -200,7 +200,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Literal
 from uuid import uuid4
@@ -711,6 +711,14 @@ GET_CAPABILITIES_RESULT_SCHEMA: dict[str, Any] = {
                 "honoring E3 gets for free."
             ),
         },
+        "warnings": {
+            "type": "array",
+            "description": (
+                "The session's current extension warnings, as "
+                "AgentSession.extension_warnings() reads them now (#60). Not pushed "
+                "on change: a host that wants them later calls this verb again."
+            ),
+        },
         "$defs": {
             "type": "object",
             "description": (
@@ -728,6 +736,7 @@ GET_CAPABILITIES_RESULT_SCHEMA: dict[str, Any] = {
         "ui_methods",
         "declined",
         "limits",
+        "warnings",
         "$defs",
     ],
 }
@@ -1279,7 +1288,7 @@ async def _handle_get_tools(
 async def _handle_get_capabilities(
     handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    return capabilities.build_capabilities()
+    return capabilities.build_capabilities(warnings=handler.session.extension_warnings())
 
 
 def _require_runtime(handler: "RPCHandler") -> Any:
@@ -3443,7 +3452,8 @@ GET_EXTENSION_STATE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_exten
         "own docstring states. Read-only: no turn_safety_guard, no `leaf` (E5 "
         "rule 2), no require_durable_session (D-7 rule 2 — extension state is "
         "runtime state and is never appended to the session log, so this answers "
-        "the same on a persisted and an unpersisted session)."
+        "the same on a persisted and an unpersisted session). `warnings` is the "
+        "session's current extension warnings (#60), the read to poll for them."
     ),
     params_schema=params_schema_for("get_extension_state"),
     result_schema=GET_EXTENSION_STATE_RESULT_SCHEMA,
@@ -3453,7 +3463,8 @@ async def _handle_get_extension_state(
 ) -> dict[str, Any]:
     from tau_agent_core.projections import extension_state
 
-    return extension_state(handler.session.get_extension_state())
+    warnings = [asdict(w) for w in handler.session.extension_warnings()]
+    return {**extension_state(handler.session.get_extension_state()), "warnings": warnings}
 
 
 ### end tier-c:get_extension_state

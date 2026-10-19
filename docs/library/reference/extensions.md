@@ -316,6 +316,27 @@ or ``send_user_message``.
 - `RuntimeError` — no session with ``_append_custom_entry`` is bound (e.g. a bare ``ExtensionAPI()``); the entry is not dropped silently.
 - `ValueError` — propagated from ``_append_custom_entry`` when ``custom_type`` is empty or ``data`` is not a dict.
 
+### clear_warning
+
+```python
+clear_warning(key: str) -> None
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.clear_warning`
+
+Clear this extension's warning ``key``; clearing an absent one does nothing.
+
+Safe from a worker thread, as :meth:`set_warning` is.
+
+**Parameters**
+
+- `key: str` — The warning's name within this extension.
+
+**Raises**
+
+- `RuntimeError` — this api is not bound to a session or to a loaded extension.
+- `ValueError` — the extension is named ``tau``.
+
 ### emit
 
 ```python
@@ -700,6 +721,38 @@ Name the session (:func:`apply_session_name`, shared with the RPC verb).
 
 - `RuntimeError` — this api is not bound to a session.
 - `ValueError` — ``name`` is empty.
+
+### set_warning
+
+```python
+set_warning(key: str, message: str, severity: str = 'warning') -> None
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.set_warning`
+
+Set this extension's warning ``key`` on the session until cleared (#60).
+
+It stays readable by every head and by a client attaching later, and is
+shown once through ``ui.notify`` when new or changed, and again after a
+session swap. Setting the same key replaces it. It persists across
+new, fork and switch until cleared; a disable or a reload clears it.
+
+Safe from a worker thread: the warning is checked on the calling thread.
+While the session's loop runs, the write goes onto that loop, returns
+before it lands, and a listener's exception reaches the loop's handler,
+not the caller; otherwise it applies at once on the calling thread. It
+never moves the session onto the caller's loop.
+
+**Parameters**
+
+- `key: str` — The warning's name within this extension.
+- `message: str` — One line.
+- `severity: str = 'warning'` — ``"warning"`` or ``"error"``.
+
+**Raises**
+
+- `RuntimeError` — this api is not bound to a session or to a loaded extension.
+- `ValueError` — the extension is named ``tau``, which τ reserves; a non-string or blank key or message; a message of more than one line; or an unknown severity.
 
 ### submit
 
@@ -1962,6 +2015,43 @@ like :meth:`notify`: the delegate's status strip in the TUI; one
 
 - `ValueError` — ``key`` is not a non-empty string.
 
+## ExtensionWarning
+<!-- agent: yes -->
+
+```python
+class ExtensionWarning(source: str, key: str, message: str, severity: WarningSeverity)
+```
+
+`tau_agent_core.extension_warnings.ExtensionWarning`
+
+One current warning on a session.
+
+A load failure is mirrored as ``source="tau"``, ``key="load:<label>"``,
+severity ``"error"``, with only the error's first line. The full record is
+in ``load_errors``, so a client that shows those may filter these out by
+that prefix.
+
+**Constructor parameters**
+
+- `source: str` — The extension identifier that set it, or ``"tau"``.
+- `key: str` — Its name within ``source``; setting the same key replaces it.
+- `message: str` — One line for the user.
+- `severity: WarningSeverity` — One of :data:`WARNING_SEVERITIES`.
+
+### summary
+
+```python
+summary() -> str
+```
+
+`tau_agent_core.extension_warnings.ExtensionWarning.summary`
+
+The line every head shows for this warning.
+
+**Returns**
+
+``"<source>: <message>"``.
+
 ## HeadlessDialogError
 <!-- agent: yes -->
 
@@ -2976,6 +3066,25 @@ Shared by :meth:`ExtensionUI.panel` and the TUI's ``ExtensionPanel`` widget.
 **Raises**
 
 - `ValueError` — a non-dict spec, a non-string title, zero or several body keys, or any malformed body or action.
+
+## warnings_marker
+<!-- agent: yes -->
+
+```python
+warnings_marker(warnings: list[ExtensionWarning]) -> str | None
+```
+
+`tau_agent_core.extension_warnings.warnings_marker`
+
+The persistent one-line marker a head shows while any warning is current.
+
+**Parameters**
+
+- `warnings: list[ExtensionWarning]` — The current warnings, as :meth:`AgentSession.extension_warnings` reads them.
+
+**Returns**
+
+``"1 extension warning — /extensions"``, or with errors counted first, ``"1 extension error, 2 warnings — /extensions"``; ``None`` when empty.
 
 ## withheld_notice
 <!-- agent: yes -->

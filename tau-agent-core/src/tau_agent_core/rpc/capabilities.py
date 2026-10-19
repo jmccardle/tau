@@ -24,9 +24,12 @@ imported by the time any handler actually runs.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import asdict
 from typing import Any
 
 from tau_agent_core import rpc_event_schema
+from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_agent_core.json_schema import SchemaBuilder, typed
 from tau_agent_core.rpc import records
 
@@ -102,10 +105,13 @@ def typed_result(s: SchemaBuilder, verb: str) -> dict[str, Any]:
     return typed(s, declared, records.RESULT_TYPES.get(verb, {}), verb)
 
 
-def build_capabilities() -> dict[str, Any]:
+def build_capabilities(warnings: Sequence[ExtensionWarning] = ()) -> dict[str, Any]:
     """The `get_capabilities` payload (K1): `{protocol_version, dialect,
     commands[], events[], event_schema, ui_methods[], declined[{name,
-    reason}], limits{}, $defs}`.
+    reason}], limits{}, warnings[], $defs}`.
+
+    `warnings` is the asking session's current extension warnings (#60); the
+    generated protocol document, which describes no session, passes none.
 
     Each row's schemas are typed to their leaves (`typed_params`,
     `typed_result`), so they reference records by `#/$defs/Name`, which
@@ -154,5 +160,6 @@ def build_capabilities() -> dict[str, Any]:
         "ui_methods": [],
         "declined": declined_out,
         "limits": build_limits(),
+        "warnings": [asdict(w) for w in warnings],
         "$defs": dict(sorted(s.defs.items())),
     }

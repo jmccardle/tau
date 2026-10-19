@@ -160,6 +160,21 @@ not constructed.
 
 - `ValueError` — ``Unknown tool: <name>`` for the first such name.
 
+### clear_extension_warning
+
+```python
+clear_extension_warning(source: str, key: str) -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.clear_extension_warning`
+
+Remove a warning; clearing an absent one does nothing. Safe from any thread.
+
+**Parameters**
+
+- `source: str` — The extension identifier, or ``"tau"``.
+- `key: str` — The warning's name within ``source``.
+
 ### close_cursor
 
 ```python
@@ -491,6 +506,25 @@ the extensions a session already has bound, without a second dispatch
 mechanism. Not a general extension-authoring seam — extensions register
 via ``api.on(...)``, never through this property.
 
+### extension_warnings
+
+```python
+extension_warnings() -> list[ExtensionWarning]
+```
+
+`tau_agent_core.agent_session.AgentSession.extension_warnings`
+
+Every current extension warning (#60).
+
+Extension state, not session state: kept across new, fork and switch
+until its writer clears or replaces it, or its extension is disabled
+or reloaded. τ mirrors each extension that failed to load as a
+``"tau"`` error keyed ``load:<label>``.
+
+**Returns**
+
+The warnings, oldest key first.
+
 ### get_extension_command_args
 
 ```python
@@ -812,9 +846,10 @@ Load the authorized and the explicitly named extensions into THIS session.
 :func:`~tau_agent_core.sdk.plan_extensions` decides what loads
 (docs/EXTENSION-PACKAGES.md §5). Each extension's ``register(api)`` runs
 against an api bound to its own runner bucket (:meth:`_bind_extension_api`),
-in load order, so its hooks fire in this session's loop. Nothing is
-printed; the caller surfaces ``errors``, ``withheld`` and
-``grandfathered``.
+in load order, so its hooks fire in this session's loop. It claims the
+running loop as the session's, as a turn does, so a thread an extension
+starts here reaches that loop. Nothing is printed; the caller surfaces
+``errors``, ``withheld`` and ``grandfathered``.
 
 **Parameters**
 
@@ -1377,6 +1412,34 @@ one; the TUI sets a live delegate instead and ``--mode text`` leaves it unset
 
 - `sink: Any` — Called with each extension record; ``None`` clears it.
 
+### set_extension_warning
+
+```python
+set_extension_warning(source: str, key: str, message: str, severity: str = 'warning') -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.set_extension_warning`
+
+Set the warning ``key`` from ``source``, replacing one already there.
+
+An extension calls :meth:`ExtensionAPI.set_warning`, which names itself;
+τ writes with ``source="tau"``. A new or changed warning is also shown
+once through ``ui.notify`` at ``severity``. Safe from any thread: the
+warning is checked here, then set by :meth:`_on_own_loop`. Marshalled
+from another thread, it returns before the warning lands, and a
+listener's exception goes to the loop's exception handler, not here.
+
+**Parameters**
+
+- `source: str` — An extension identifier, or ``"tau"``.
+- `key: str` — The warning's name within ``source``.
+- `message: str` — One line.
+- `severity: str = 'warning'` — ``"warning"`` or ``"error"``.
+
+**Raises**
+
+- `ValueError` — a non-string or blank source, key or message, a message of more than one line, or an unknown severity.
+
 ### set_headless_ui_defaults
 
 ```python
@@ -1804,6 +1867,24 @@ about (handlers take these as keywords):
 **Returns**
 
 A callable that removes ``handler``.
+
+### subscribe_extension_warnings
+
+```python
+subscribe_extension_warnings(listener: Callable[[list[ExtensionWarning]], None]) -> Callable[[], None]
+```
+
+`tau_agent_core.agent_session.AgentSession.subscribe_extension_warnings`
+
+Call ``listener`` with every current warning after each change.
+
+**Parameters**
+
+- `listener: Callable[[list[ExtensionWarning]], None]` — Called once per change, on the session's loop once one is bound, under the store's lock: it must not block or wait on another thread.
+
+**Returns**
+
+The unsubscribe.
 
 ### summarize_and_navigate
 
