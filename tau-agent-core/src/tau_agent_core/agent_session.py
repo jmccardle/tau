@@ -1951,9 +1951,10 @@ class AgentSession:
         While the session's bound loop runs, the change runs on it: inline when
         called there, otherwise marshalled with ``call_soon_threadsafe``, so
         listeners (serve's publish, the TUI's marker) see only that loop. With
-        no live bound loop, nothing loop-bound is listening, so the change runs
-        here under the store's lock. Only a turn and ``session_start`` bind a
-        loop; a warning write never does (#60 review).
+        no live bound loop the change runs here under the store's lock, which is
+        safe only while no listener depends on a loop that never bound (an SDK
+        host under ``asyncio.run`` before any turn or ``session_start``; no τ
+        mode does this). Only those two bind a loop; a warning write never does (#60).
         """
         try:
             running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()

@@ -2579,11 +2579,11 @@ class ExtensionAPI:
         session swap. Setting the same key replaces it. It persists across
         new, fork and switch until cleared; a disable or a reload clears it.
 
-        Safe from a worker thread (``asyncio.to_thread``): the warning is checked
-        on the calling thread, then set on the session's loop, where listeners
-        run. From a thread the call returns before the warning lands, and a
-        listener's exception goes to the loop's exception handler, not to the
-        caller. It never moves the session onto the caller's loop.
+        Safe from a worker thread: the warning is checked on the calling thread.
+        While the session's loop runs, the write goes onto that loop, returns
+        before it lands, and a listener's exception reaches the loop's handler,
+        not the caller; otherwise it applies at once on the calling thread. It
+        never moves the session onto the caller's loop.
 
         Args:
             key: The warning's name within this extension.

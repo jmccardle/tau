@@ -417,9 +417,13 @@ class TestTheReservedSource:
     async def test_an_extension_named_tau_cannot_write_warnings(self, tmp_path):
         session = _session()
         path = tmp_path / "tau.py"
-        path.write_text('def register(api):\n    api.set_warning("load:x", "spoofed")\n')
+        path.write_text(
+            "import pytest\n"
+            "def register(api):\n"
+            "    with pytest.raises(ValueError, match=\"'tau' is reserved\"):\n"
+            '        api.set_warning("load:x", "spoofed")\n'
+        )
         await session.load_extensions([str(path)], discover=False, collect_explicit_errors=True)
 
-        [error] = session.get_extension_state().errors
-        assert "reserved" in error.error
-        assert [w.key for w in session.extension_warnings()] == [f"load:{path}"]
+        assert session.get_extension_state().errors == []
+        assert [w.key for w in session.extension_warnings()] == []
