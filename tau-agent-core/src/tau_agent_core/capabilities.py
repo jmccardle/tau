@@ -460,8 +460,18 @@ _GET_STATE_RETURNS: dict[str, Any] = {
         },
         "is_streaming": {"type": "boolean", "description": "AgentSession.is_streaming."},
         "model": {
-            "type": "object",
-            "description": "AgentSession.get_model(): {id, provider, context_window}.",
+            "type": ["object", "null"],
+            "description": (
+                "AgentSession.get_model(): {id, provider, context_window}; null while "
+                "the session's recorded model is unavailable (model_error says why)."
+            ),
+        },
+        "model_error": {
+            "type": ["string", "null"],
+            "description": (
+                "AgentSession.model_unavailable: why a turn would be refused for its "
+                "model, naming the model and the fix; null when the model resolves."
+            ),
         },
         "usage": {
             "type": ["object", "null"],
@@ -492,6 +502,7 @@ _GET_STATE_RETURNS: dict[str, Any] = {
         "status",
         "is_streaming",
         "model",
+        "model_error",
         "usage",
         "message_count",
         "leaf",
@@ -828,14 +839,18 @@ _GET_SESSION_STATS_RETURNS: dict[str, Any] = {
             ),
         },
         "context_window": {
-            "type": "integer",
-            "description": "The active model's context_window (get_model()).",
+            "type": ["integer", "null"],
+            "description": (
+                "The active model's context_window (get_model()); null while that "
+                "model is unavailable (get_state's model_error says why)."
+            ),
         },
         "context_headroom": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "description": (
                 "context_window - context.tokens. Can be negative: an "
-                "honest over-budget number, never clamped to zero."
+                "honest over-budget number, never clamped to zero. Null with "
+                "context_window."
             ),
         },
         "compaction_settings": {

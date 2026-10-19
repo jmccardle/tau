@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 179,608 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 180,010 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -369,7 +369,14 @@ what rides on top of this on every response):
     },
     "model": {
       "$ref": "#/$defs/ModelSpec",
-      "description": "AgentSession.get_model(): {id, provider, context_window}."
+      "description": "AgentSession.get_model(): {id, provider, context_window}; null while the session's recorded model is unavailable (model_error says why)."
+    },
+    "model_error": {
+      "description": "AgentSession.model_unavailable: why a turn would be refused for its model, naming the model and the fix; null when the model resolves.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "session_id": {
       "description": "AgentSession.state.session_id.",
@@ -400,6 +407,7 @@ what rides on top of this on every response):
     "status",
     "is_streaming",
     "model",
+    "model_error",
     "usage",
     "message_count",
     "leaf",
@@ -949,12 +957,18 @@ what rides on top of this on every response):
       "description": "estimate_context_tokens(session.messages) (compaction.py) projected as {tokens, usage_tokens, trailing_tokens, last_usage_index}: tokens is the total estimate the compaction threshold is checked against; usage_tokens is the anchored provider-reported count up to the last assistant Usage, trailing_tokens the heuristic estimate for messages after it, last_usage_index that message's index (null if no assistant Usage exists yet, in which case tokens==trailing_tokens and the whole list was heuristically estimated)."
     },
     "context_headroom": {
-      "description": "context_window - context.tokens. Can be negative: an honest over-budget number, never clamped to zero.",
-      "type": "integer"
+      "description": "context_window - context.tokens. Can be negative: an honest over-budget number, never clamped to zero. Null with context_window.",
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "context_window": {
-      "description": "The active model's context_window (get_model()).",
-      "type": "integer"
+      "description": "The active model's context_window (get_model()); null while that model is unavailable (get_state's model_error says why).",
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "last_compaction": {
       "anyOf": [

@@ -111,7 +111,7 @@ lookup and became an ad-hoc OpenAI model called `local-llm`.
   session exists. The message names the model, lists the configured keys and
   gives both ad-hoc forms. Each head prints it as one `tau: error:` line, exit
   2; the serve daemon answers `INVALID_PARAMS`. The same check covers an
-  unconfigured `default_model` and a resumed session's stored model.
+  unconfigured `default_model`. A resumed session's stored model is §10.
 - `build_model_from_config` refuses an entry with no `backend`, naming the
   entry and the registered providers. The packaged template sets one in every
   entry; a hand-written entry without one now fails at startup and says so.
@@ -209,3 +209,45 @@ contract. `ModelConfigError` subclasses it, and so does
 one-line handler. Both `set_model`s name it, and `KeyError` for an unknown
 name, in their `Raises`. A resolver bound with `set_model_resolver` is expected
 to raise those two.
+
+## 10. A session whose recorded model is gone still opens (2026-10-19)
+
+**What was wrong.** §7 made `resolve_model_config` refuse an unconfigured bare
+name, and the serve daemon resolves a session's recorded model through it on
+`attach`. So a session whose cursor last ran `local-llm-tun`, opened under a
+config without that key, could no longer be attached, read, forked or repaired
+(tau-code's report). Before §7 the attach worked only because τ built an
+ad-hoc `openai/local-llm-tun`, which is the silent default §7 removed.
+
+**Now.** A recorded model that no longer resolves or builds opens the session
+on a `tau_agent_core.model_availability.UnavailableModel(name, reason)`, never a
+substitute and never `default_model`:
+- Reads work: attach, `get_messages`, the tree, `get_models`, fork, export.
+  The recorded name still shows (`model_name`, the serve `CursorState.model`).
+- `AgentSession.model_unavailable` holds one message naming the model, the
+  reason and the fix (`/model`, `set_model`, `ctx.set_model`, or restore the
+  config entry). It is the serve `CursorState.model_error`, RPC `get_state`'s
+  `model_error` (with `model: null`), and `get_session_stats` reports
+  `context_window`/`context_headroom` as null. `get_model()` raises
+  `ModelUnavailableError` (§9) rather than invent a spec.
+- A turn is refused at admission, before any request, with that message as
+  the `rejection_reason`. A slash command such as `/model` still runs.
+  `set_model` to a configured name repairs it. At admission the recorded name
+  is re-resolved once, so a provider an extension registered after the session
+  opened is picked up.
+- Nothing is recorded for the unavailable model: the config entry keeps the
+  recorded `model`, and no `model_spec` is written.
+
+**Per head.**
+- `tau serve` (attach, fork) and the REPL's `--continue/--session/--resume`
+  pass `open_unavailable=True` to `resolve_model_config`. The REPL prints the
+  message once as an error line after the replay.
+- The TUI's resume (`/resume`, the picker, the sidebar) opens it and notifies
+  the message as an error. It used to refuse with "Model X not found in config".
+- `tau -p -c` / `--session` is about to run a turn, so it refuses in one line:
+  `the resumed session's model 'X' is unavailable: <reason>. Pass --model NAME
+  to continue it on a configured model`.
+- `tau --mode rpc` resumes nothing at startup, and `switch_session` keeps the
+  live model, so it is unaffected.
+- An explicit `--model nope` (or `--provider`) is user input and keeps §7's
+  one-line refusal everywhere.

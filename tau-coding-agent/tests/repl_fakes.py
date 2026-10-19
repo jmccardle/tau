@@ -58,6 +58,7 @@ class FakeAgentSession:
         extension_state: What the ``/extensions`` listing is built from.
         compactions: Every ``custom_instructions`` ``/compact`` was run with.
         cursor: The cursor the head bound, or ``None`` before the bind.
+        model_unavailable: Why a turn would be refused for its model; ``None`` here.
     """
 
     def __init__(self, events: list[str]) -> None:
@@ -70,6 +71,7 @@ class FakeAgentSession:
         self.extension_state = LoadExtensionsResult()
         self.compactions: list[str | None] = []
         self.compaction_result: CompactionResult | None = None
+        self.model_unavailable: str | None = None
 
     @property
     def messages(self) -> list[dict[str, Any]]:

@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentSession(*, model: Model, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS, tool_allowlist: Sequence[str] | None = None, tool_denylist: Sequence[str] = ())
+class AgentSession(*, model: Model | UnavailableModel, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS, tool_allowlist: Sequence[str] | None = None, tool_denylist: Sequence[str] = ())
 ```
 
 `tau_agent_core.agent_session.AgentSession`
@@ -22,7 +22,7 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 
 **Constructor parameters**
 
-- `model: Model` — The model the head cursor's turns call.
+- `model: Model | UnavailableModel` — The model the head cursor's turns call, or the :class:`~tau_agent_core.model_availability.UnavailableModel` a resumed session recorded: the session opens and reads, and a turn is refused until :meth:`set_model` names one that resolves.
 - `session_log: SessionLog | None = None` — The tree to extend, from a new cursor at its :func:`~tau_agent_core.session_log.default_leaf`. Exactly one of ``session_log`` and ``cursor`` is required.
 - `cursor: Cursor | None = None` — A position someone already holds, to extend instead.
 - `system_prompt: str = ''` — The system prompt for the head cursor's turns.
@@ -660,6 +660,10 @@ window, keeping the extension API decoupled from the full model schema.
 
 ``{"id", "provider", "context_window"}`` of the acting cursor's frame model, else the session's, read at call time.
 
+**Raises**
+
+- `ModelUnavailableError` — that model is unavailable (:attr:`model_unavailable`).
+
 ### get_prompt_commands
 
 ```python
@@ -862,6 +866,7 @@ The model ``model`` names and the key it is called with.
 
 - `RuntimeError` — a name was given and no resolver is bound.
 - `TypeError` — the resolver returned something other than a ``Model``.
+- `ModelUnavailableError` — ``None`` was given and the session's model is unavailable.
 
 ### model_name
 
@@ -871,7 +876,17 @@ The acting cursor's model's ``Model.name``.
 
 A head that builds models from config names them by their config key,
 the name :meth:`set_model` takes; :meth:`get_model`'s id is not one,
-because two names may resolve to one id.
+because two names may resolve to one id. An unavailable recorded model
+keeps its recorded name here.
+
+### model_unavailable
+
+`tau_agent_core.agent_session.AgentSession.model_unavailable: str | None`
+
+Why the acting cursor's next turn would be refused for its model, else ``None``.
+
+Set when a resumed session's recorded model no longer resolves; the text
+names the model, the reason and the fix (docs/SILENT-DEFAULTS.md §10).
 
 ### open_cursor
 
@@ -1855,6 +1870,7 @@ Read live, so it tracks :meth:`set_model` and :meth:`set_model_resolver`.
 **Raises**
 
 - `CompactionPolicyError` — :meth:`require_compaction_resolver` is outstanding.
+- `ModelUnavailableError` — the session's own model would summarise and is unavailable.
 
 ### turn_lock
 
@@ -4168,7 +4184,7 @@ State of a loaded session (return type of load()).
 <!-- agent: yes -->
 
 ```python
-class SessionStats(context: ContextUsageEstimate, context_window: int, context_headroom: int, compaction_settings: CompactionSettings, last_compaction: CompactionRecord | None, usage: dict[str, Any] | None)
+class SessionStats(context: ContextUsageEstimate, context_window: int | None, context_headroom: int | None, compaction_settings: CompactionSettings, last_compaction: CompactionRecord | None, usage: dict[str, Any] | None)
 ```
 
 `tau_agent_core.agent_session.SessionStats`
@@ -4189,8 +4205,8 @@ which covers messages appended since that completion.
 **Constructor parameters**
 
 - `context: ContextUsageEstimate` — ``compaction.estimate_context_tokens`` over the active path.
-- `context_window: int` — The active model's window, from :meth:`AgentSession.get_model`.
-- `context_headroom: int` — ``context_window - context.tokens``. Negative when the path is already over budget — an honest number, never clamped.
+- `context_window: int | None` — The active model's window, from :meth:`AgentSession.get_model`; ``None`` while that model is unavailable (:attr:`AgentSession.model_unavailable`).
+- `context_headroom: int | None` — ``context_window - context.tokens``. Negative when the path is already over budget — an honest number, never clamped; ``None`` with ``context_window``.
 - `compaction_settings: CompactionSettings` — The settings in force, as a copy.
 - `last_compaction: CompactionRecord | None` — The newest compaction entry, or ``None`` if this session has never compacted.
 - `usage: dict[str, Any] | None` — :meth:`AgentSession.get_usage` — ``None`` before the first completion.
@@ -4326,6 +4342,35 @@ config the first time the cursor's turn appends.
 - `system_prompt: str | None = None` — The prompt to run under, or ``None`` for the session's.
 - `max_turns: int | None = None` — The loop's turn ceiling for this cursor; ``None`` is no ceiling.
 - `hooks: bool = False` — Whether extension hooks run on this cursor's turns. Off by default: a sub-agent stays as constrained as its spawner asked.
+
+## UnavailableModel
+<!-- agent: yes -->
+
+```python
+class UnavailableModel(name: str, reason: str)
+```
+
+`tau_agent_core.model_availability.UnavailableModel`
+
+A resumed session's recorded model that no longer resolves or builds (§10).
+
+Stands where a ``Model`` would, so the session opens and its tree reads; a
+turn on it is refused with :meth:`message`. It is never a substitute model.
+
+**Constructor parameters**
+
+- `name: str` — The recorded config name.
+- `reason: str` — Why it does not resolve, as the head's resolution said.
+
+### message
+
+```python
+message() -> str
+```
+
+`tau_agent_core.model_availability.UnavailableModel.message`
+
+What a turn on this model is refused with: the model, why, and the fix.
 
 ## View
 <!-- agent: yes -->

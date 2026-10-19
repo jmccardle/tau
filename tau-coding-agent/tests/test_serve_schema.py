@@ -548,6 +548,7 @@ def test_strict_validation_refuses_a_key_the_schema_does_not_declare():
         "owner_id": None,
         "busy": False,
         "model": "m",
+        "model_error": None,
         "request": None,
     }
     cursor_state = {"$ref": "#/$defs/CursorState"}

@@ -684,3 +684,62 @@ async def test_the_hello_lists_an_unbuildable_entry_with_its_error(
     server.close()
     await server.wait_closed()
     await served.daemon.shutdown()
+
+
+async def test_a_session_whose_recorded_model_is_gone_opens_and_refuses_only_a_turn(
+    tmp_path, provider, extensions_off
+):
+    """tau-code's repro: the session ran 'local-llm-tun'; this config has only 'unused'.
+
+    Attach, reads and fork work and name the recorded model with why it is
+    unavailable; a prompt refuses before any request; set_model repairs it.
+    """
+    unused = {**_CONFIG["models"]["fake"], "model": "unused-model"}
+    config = {"models": {"unused": unused}}
+    catalog = FileSessionCatalog(tmp_path / "sessions")
+    log = catalog.create(str(tmp_path), "local-llm-tun", "openai")
+    server, served = await _serve(tmp_path, config)
+    client = await served.client()
+    try:
+        replica = await client.attach(log.id)
+        head = replica.head_cursor_id
+        state = replica.cursors[head]
+        assert state["model"] == "local-llm-tun"
+        assert "'local-llm-tun' is unavailable: it is not configured" in state["model_error"]
+        assert "configured: unused" in state["model_error"]
+
+        got = await _rpc(client, "get_state", log.id, head)
+        assert got["model"] is None and got["model_error"] == state["model_error"]
+        assert (await _rpc(client, "get_messages", log.id, head))["messages"] == []
+        stats = await _rpc(client, "get_session_stats", log.id, head)
+        assert stats["context_window"] is None and stats["context_headroom"] is None
+
+        forked = await client.request(p.Fork(session_id=log.id, cursor_id=head))
+        fork_replica = await client.attach(forked["session"]["session_id"])
+        assert fork_replica.cursors[fork_replica.head_cursor_id]["model"] == "local-llm-tun"
+
+        with patch("tau_agent_core.agent_loop.stream_simple") as never:
+            with pytest.raises(
+                ServeError,
+                match=f"{dialect.SUBMISSION_REJECTED}.*'local-llm-tun' is unavailable.*/model",
+            ):
+                await client.submit_and_wait(log.id, head, "hi", source="rpc", submitter="t")
+            never.assert_not_called()
+
+        await _rpc(client, "set_model", log.id, head, name="unused")
+        await _until(lambda: replica.cursors[head]["model"] == "unused")
+        assert replica.cursors[head]["model_error"] is None
+        result = await client.submit_and_wait(log.id, head, "hi", source="rpc", submitter="t")
+        assert result["accepted"] is True
+        await _until(lambda: replica.seq == served.daemon.hosts[log.id].seq)
+        texts = [
+            e["message"]["content"][0]["text"]
+            for e in replica.entries
+            if e.get("message", {}).get("role") == "assistant"
+        ]
+        assert texts == ["re: hi"]
+    finally:
+        await client.close()
+        server.close()
+        await server.wait_closed()
+        await served.daemon.shutdown()

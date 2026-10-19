@@ -151,6 +151,8 @@ def resolve_model_config(
     args: "CLIArgs",
     fallback_model: str | None = None,
     prior_config: dict[str, Any] | None = None,
+    *,
+    open_unavailable: bool = False,
 ) -> tuple[str, dict]:
     """Resolve ``--model``/``--provider``/``--tools`` into a backend config dict.
 
@@ -176,8 +178,29 @@ def resolve_model_config(
     records a thinking level and neither ``--thinking`` nor a ``:level`` suffix
     names one, the session resumes at it, a recorded ``None`` included: that is
     the provider default, not ``"off"`` (docs/REASONING-WIRE.md §4).
+
+    ``open_unavailable`` is for a head that opens a resumed session to read it as
+    well as to run it: a ``fallback_model`` that no longer resolves or builds,
+    with no ``--model``, comes back as ``{"config_name", "unavailable": why}``
+    instead of raising, and the backend opens the session on an
+    :class:`~tau_agent_core.model_availability.UnavailableModel`
+    (docs/SILENT-DEFAULTS.md §10). A ``--model`` is user input and always raises.
+
+    Raises:
+        CLIError: no model named, an unconfigured bare name, or a malformed flag.
+        ModelConfigError: a recorded model's entry does not build, unless
+            ``open_unavailable``.
     """
     models = config.get("models", {})
+    if open_unavailable and not args.model and not args.provider and fallback_model:
+        reason = recorded_model_problem(config, fallback_model)
+        if reason is not None:
+            unavailable: dict[str, Any] = {"config_name": fallback_model, "unavailable": reason}
+            if args.thinking is not None:
+                unavailable["thinking"] = args.thinking
+            elif prior_config is not None and "thinking" in prior_config:
+                unavailable["thinking"] = prior_config["thinking"]
+            return fallback_model, _apply_run_flags(unavailable, config, args)
     spec = args.model or fallback_model or config.get("default_model")
     if not spec:
         raise CLIError(
@@ -213,7 +236,13 @@ def resolve_model_config(
         thinking = prior_config["thinking"]
     if thinking is not None:
         model_config["thinking"] = thinking
+    return spec, _apply_run_flags(model_config, config, args)
 
+
+def _apply_run_flags(
+    model_config: dict[str, Any], config: dict[str, Any], args: "CLIArgs"
+) -> dict[str, Any]:
+    """``model_config`` with every per-run flag and config-wide key applied, compaction last."""
     # Per-invocation overrides (CLI > config).
     if args.provider:
         model_config["backend"] = args.provider
@@ -265,7 +294,39 @@ def resolve_model_config(
     elif "max_turns" not in model_config and config.get("max_turns") is not None:
         model_config["max_turns"] = int(config["max_turns"])
 
-    return spec, apply_compaction_config(model_config, config)
+    return apply_compaction_config(model_config, config)
+
+
+def recorded_model_problem(config: dict[str, Any], name: str) -> str | None:
+    """Why a resumed session's recorded model ``name`` cannot be used now, else ``None``.
+
+    Args:
+        config: The loaded config.
+        name: The recorded config name; a ``:level`` suffix or ``provider/id``
+            resolves as ``resolve_model_config`` resolves it.
+
+    Returns:
+        The reason, phrased to follow "is unavailable: ", or ``None`` when it builds.
+    """
+    from tau_coding_agent.backends import build_model_from_config
+    from tau_coding_agent.config import ModelConfigError
+
+    models = config.get("models", {})
+    head, sep, tail = name.rpartition(":")
+    key = head if name not in models and sep and is_valid_thinking_level(tail) else name
+    if key in models:
+        entry = {**models[key], "config_name": key}
+    elif "/" in key:
+        provider, _, model_id = key.partition("/")
+        entry = {"backend": provider, "model": model_id}
+    else:
+        known = ", ".join(sorted(models)) or "none"
+        return f"it is not configured in {default_config_path()} (configured: {known})"
+    try:
+        build_model_from_config(entry)
+    except ModelConfigError as exc:
+        return str(exc)
+    return None
 
 
 def _decode_ext_config_value(raw: str) -> Any:
@@ -897,6 +958,13 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
     # A resumed run keeps the session's model unless --model overrides it.
     fallback_model = prior.model if prior is not None else None
+    if fallback_model is not None and not args.model and not args.provider:
+        problem = recorded_model_problem(config, fallback_model)
+        if problem is not None:
+            raise CLIError(
+                f"the resumed session's model {fallback_model!r} is unavailable: {problem}. "
+                "Pass --model NAME to continue it on a configured model"
+            )
     model_name, model_config = resolve_model_config(
         config,
         args,

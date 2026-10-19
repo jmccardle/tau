@@ -1174,11 +1174,13 @@ async def _handle_get_state(
 ) -> dict[str, Any]:
     session = handler.session
     cursor = session.acting_cursor
+    model_error = session.model_unavailable
     return {
         "session_id": cursor.session_id,
         "status": "running" if cursor.is_streaming else "idle",
         "is_streaming": cursor.is_streaming,
-        "model": session.get_model(),
+        "model": None if model_error is not None else session.get_model(),
+        "model_error": model_error,
         "usage": session.get_usage(),
         "message_count": len(session.messages),
         "leaf": session.acting_cursor.leaf,

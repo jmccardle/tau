@@ -898,7 +898,8 @@ A live cursor as clients see it; sent whenever one opens, moves, closes or chang
 | `label` | string | yes |  |
 | `owner_id` | string \| null | yes |  |
 | `busy` | boolean | yes |  |
-| `model` | string | yes | The config name of the model its next turn calls, as `set_model` takes it and `get_models` lists it; not the model id, which two names may share. |
+| `model` | string | yes | The config name of the model its next turn calls, as `set_model` takes it and `get_models` lists it; not the model id, which two names may share. A recorded model that no longer resolves keeps its name. |
+| `model_error` | string \| null | yes | Why a turn here would be refused for that model, naming the fix; `None` when it resolves (`AgentSession.model_unavailable`). |
 | `request` | [ExtensionRequest](#extensionrequest) \| null | yes | The extension request at its leaf, or `None`. |
 
 ### CursorsEvent
@@ -1331,8 +1332,8 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `context` | [ContextEstimate](#contextestimate) | yes | estimate_context_tokens(session.messages) (compaction.py) projected as {tokens, usage_tokens, trailing_tokens, last_usage_index}: tokens is the total estimate the compaction threshold is checked against; usage_tokens is the anchored provider-reported count up to the last assistant Usage, trailing_tokens the heuristic estimate for messages after it, last_usage_index that message's index (null if no assistant Usage exists yet, in which case tokens==trailing_tokens and the whole list was heuristically estimated). |
-| `context_window` | integer | yes | The active model's context_window (get_model()). |
-| `context_headroom` | integer | yes | context_window - context.tokens. Can be negative: an honest over-budget number, never clamped to zero. |
+| `context_window` | integer \| `null` | yes | The active model's context_window (get_model()); null while that model is unavailable (get_state's model_error says why). |
+| `context_headroom` | integer \| `null` | yes | context_window - context.tokens. Can be negative: an honest over-budget number, never clamped to zero. Null with context_window. |
 | `compaction_settings` | [CompactionSettingsRecord](#compactionsettingsrecord) | yes | The session's EFFECTIVE CompactionSettings — {auto, reserve_tokens, keep_recent_tokens}, read off AgentSession.compaction_settings, which hands back a COPY so a reader cannot retune a turn already in flight. `auto` is AUTOMATIC compaction only; the `compact` verb ignores it. An RPC session starts from the child's config.json `compaction` block — on unless its `auto` says otherwise (docs/PRICING-AND-COMPACTION-CONFIG.md §3) — and set_auto_compaction (D-4) is the one thing that changes it afterwards, so this reports the session's LIVE effective setting at call time, never a constant. |
 | `last_compaction` | [LastCompaction](#lastcompaction) \| null | yes | {id, timestamp, summary, first_kept_id, tokens_before} for the most recent type=='compaction' entry in session_log.entries(), or null if this session has never compacted — an honest absence, never a fabricated entry. |
 | `usage` | [Usage](#usage) \| null | yes | AgentSession.get_usage() — null before the first completion. |
@@ -1344,7 +1345,8 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 | `session_id` | string | yes | AgentSession.state.session_id. |
 | `status` | `"idle"` \| `"running"` | yes | AgentSession.state.status. |
 | `is_streaming` | boolean | yes | AgentSession.is_streaming. |
-| `model` | [ModelSpec](#modelspec) | yes | AgentSession.get_model(): {id, provider, context_window}. |
+| `model` | [ModelSpec](#modelspec) | yes | AgentSession.get_model(): {id, provider, context_window}; null while the session's recorded model is unavailable (model_error says why). |
+| `model_error` | string \| `null` | yes | AgentSession.model_unavailable: why a turn would be refused for its model, naming the model and the fix; null when the model resolves. |
 | `usage` | [Usage](#usage) \| null | yes | AgentSession.get_usage() — null before the first completion. |
 | `message_count` | integer | yes | len(AgentSession.messages). |
 | `leaf` | string \| `null` | yes | cursor.leaf (F3: no host may cache 'the tip'). |

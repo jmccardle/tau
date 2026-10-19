@@ -1464,6 +1464,7 @@ The re-rendered active-path messages (``ConversationTree.context_for``).
 
 - `RuntimeError` — No session is bound.
 - `ValueError` — ``from_entry`` names no entry (checked before the model call), or the summarizer returned nothing usable.
+- `ModelUnavailableError` — the session's model is unavailable.
 
 ### ui
 

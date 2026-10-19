@@ -30,7 +30,11 @@ from tau_coding_agent.backends import (
     prompt_tokens,
 )
 from tau_coding_agent.tagline import pick_tagline
-from tau_coding_agent.headless import apply_resource_flags, resolve_extensions_config
+from tau_coding_agent.headless import (
+    apply_resource_flags,
+    recorded_model_problem,
+    resolve_extensions_config,
+)
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.compare import COMPARE_KEY
 from tau_agent_core.cursor import Cursor
@@ -4065,7 +4069,9 @@ class TauApp(App):
         directly-addressable ref, an exact session id, or a unique id prefix. It
         is also what ``AgentSessionRuntime.switch_session`` uses three lines
         below, so the two resolutions in this method can no longer disagree
-        about what a ref is.
+        about what a ref is. A recorded model that no longer resolves opens
+        unavailable, said once as an error; ``/model`` repairs it
+        (docs/SILENT-DEFAULTS.md §10).
         """
         if self._remote is not None:
             try:
@@ -4077,19 +4083,22 @@ class TauApp(App):
         try:
             session = self.session_catalog.resolve_ref(message.chat_ref, cwd=os.getcwd())
 
-            # Get model config and create backend
             model_config = self.config["models"].get(session.model)
-            if not model_config:
-                self.notify(f"Model {session.model} not found in config", severity="error")
-                return
-
+            problem = recorded_model_problem(self.config, session.model)
+            if problem is None and model_config is None:
+                problem = f"the TUI resumes a config key, and {session.model!r} is not one"
             recorded = session.config
-            resumed = {**model_config, "config_name": session.model}
+            if problem is None:
+                resumed = {**model_config, "config_name": session.model}
+                backend_name = model_config["backend"]
+            else:
+                resumed = {"config_name": session.model, "unavailable": problem}
+                backend_name = session.backend
             if "thinking" in recorded:
                 resumed["thinking"] = recorded["thinking"]
             await self._replace_backend(create_backend(self._apply_run_config(resumed)), "resume")
             self._session_runtime = self._build_session_runtime(
-                self.current_backend, session.model, model_config["backend"]
+                self.current_backend, session.model, backend_name
             )
             if self._session_runtime is not None:
                 result = await self._session_runtime.switch_session(message.chat_ref)
@@ -4113,6 +4122,10 @@ class TauApp(App):
             # Update UI — model + the reloaded conversation's rollup.
             self._refresh_subtitle()
             self.notify(f"Loaded session: {session.display_title()}")
+            agent_session = getattr(self.current_backend, "agent_session", None)
+            unavailable = getattr(agent_session, "model_unavailable", None)
+            if isinstance(unavailable, str):
+                self.notify(unavailable, severity="error")
 
         except Exception as e:
             self.notify(f"Error loading session: {str(e)}", severity="error")

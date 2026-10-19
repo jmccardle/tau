@@ -1507,6 +1507,7 @@ async def run_repl(
         args,
         fallback_model=prior.model if prior is not None else None,
         prior_config=prior.config if prior is not None else None,
+        open_unavailable=True,
     )
     backend_name = model_config.get("backend", "")
     cwd = os.getcwd()
@@ -1547,7 +1548,9 @@ async def run_repl(
     if prior is not None:
         if args.name is not None:
             await _require(backend, "set_session_name")(args.name)
-        if model_name != prior.model or backend_name != prior.backend:
+        if "unavailable" not in model_config and (
+            model_name != prior.model or backend_name != prior.backend
+        ):
             await _require(backend, "record_model_change")(model_name)
 
     unsubscribe = subscribe_session_events(agent_session.route_session_event)
@@ -1598,6 +1601,8 @@ async def run_repl(
         await _require(backend, "emit_session_start")("startup")
         if prior is not None:
             loop.replay(agent_session.messages)
+        if agent_session.model_unavailable is not None:
+            renderer.line("error", agent_session.model_unavailable)
         await loop.run()
         return 0
     finally:

@@ -1390,8 +1390,19 @@
           ]
         },
         "model": {
-          "description": "The config name of the model its next turn calls, as `set_model` takes it and `get_models` lists it; not the model id, which two names may share.",
+          "description": "The config name of the model its next turn calls, as `set_model` takes it and `get_models` lists it; not the model id, which two names may share. A recorded model that no longer resolves keeps its name.",
           "type": "string"
+        },
+        "model_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why a turn here would be refused for that model, naming the fix; `None` when it resolves (`AgentSession.model_unavailable`)."
         },
         "owner_id": {
           "anyOf": [
@@ -1422,6 +1433,7 @@
         "owner_id",
         "busy",
         "model",
+        "model_error",
         "request"
       ],
       "type": "object"
@@ -3323,12 +3335,18 @@
           "description": "estimate_context_tokens(session.messages) (compaction.py) projected as {tokens, usage_tokens, trailing_tokens, last_usage_index}: tokens is the total estimate the compaction threshold is checked against; usage_tokens is the anchored provider-reported count up to the last assistant Usage, trailing_tokens the heuristic estimate for messages after it, last_usage_index that message's index (null if no assistant Usage exists yet, in which case tokens==trailing_tokens and the whole list was heuristically estimated)."
         },
         "context_headroom": {
-          "description": "context_window - context.tokens. Can be negative: an honest over-budget number, never clamped to zero.",
-          "type": "integer"
+          "description": "context_window - context.tokens. Can be negative: an honest over-budget number, never clamped to zero. Null with context_window.",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "context_window": {
-          "description": "The active model's context_window (get_model()).",
-          "type": "integer"
+          "description": "The active model's context_window (get_model()); null while that model is unavailable (get_state's model_error says why).",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "last_compaction": {
           "anyOf": [
@@ -3407,7 +3425,14 @@
         },
         "model": {
           "$ref": "#/$defs/ModelSpec",
-          "description": "AgentSession.get_model(): {id, provider, context_window}."
+          "description": "AgentSession.get_model(): {id, provider, context_window}; null while the session's recorded model is unavailable (model_error says why)."
+        },
+        "model_error": {
+          "description": "AgentSession.model_unavailable: why a turn would be refused for its model, naming the model and the fix; null when the model resolves.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "session_id": {
           "description": "AgentSession.state.session_id.",
@@ -3438,6 +3463,7 @@
         "status",
         "is_streaming",
         "model",
+        "model_error",
         "usage",
         "message_count",
         "leaf",

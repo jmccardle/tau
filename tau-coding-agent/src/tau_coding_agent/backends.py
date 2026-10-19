@@ -36,6 +36,7 @@ from tau_coding_agent.config import (
     validate_compaction_config,
 )
 from tau_agent_core.extension_locks import ExtensionRequest
+from tau_agent_core.model_availability import UnavailableModel
 from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.skills import load_skills
 from tau_agent_core.messages import CUSTOM_ROLE
@@ -1550,7 +1551,9 @@ class TauBackend(Backend):
     :func:`~tau_coding_agent.config.apply_compaction_config`), auto-compaction on
     unless it says otherwise. The head's ``set_model_resolver`` call is what
     configures compaction from then on, and a block naming a summarizer refuses
-    turns until it happens (docs/PRICING-AND-COMPACTION-CONFIG.md §6).
+    turns until it happens (docs/PRICING-AND-COMPACTION-CONFIG.md §6). A config
+    with ``unavailable`` (``headless.resolve_model_config``'s ``open_unavailable``)
+    opens on an :class:`~tau_agent_core.model_availability.UnavailableModel`.
 
     Attributes:
         comparisons: The open comparisons (:meth:`compare`), by id, until ended.
@@ -1559,10 +1562,15 @@ class TauBackend(Backend):
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
 
-        model = build_model_from_config(config)
+        model: Model | UnavailableModel
+        if "unavailable" in config:
+            model = UnavailableModel(config["config_name"], config["unavailable"])
+            self.model_name = model.name
+        else:
+            model = build_model_from_config(config)
+            self.model_name = model.id
         api_key = config.get("api_key")
 
-        self.model_name = model.id
         reasoning_arg = config.get("thinking") or None
 
         cwd = config.get("cwd")
