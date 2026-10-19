@@ -282,7 +282,14 @@ Each item works as described now, and each is a proposal that John may change.
   last segment, or a drop-in path; `--package` picks the package when a drop-in
   shares the name) and `tau ext revoke IDENTIFIER` (full name only, with no
   shorthand, because removing records should not involve a guess).
-  `tau ext list [--json] [-e …]` imports nothing and writes nothing.
+  `tau ext list [--json] [-e …]` imports nothing and writes nothing. Before
+  the first start has written the store, a drop-in it finds is state
+  `authorized` (it would load) with authorization `pending-grandfather` and the
+  reason "no authorization store yet: drop-ins present at τ's first 0.14 start
+  are authorized then", because no record exists to call it `authorized`
+  (2026-10-19). After that start it reads plain `authorized`. Only this
+  no-session listing can show the value; a live session's records, and RPC
+  `list_extensions`, come after the store is written.
 - **TUI prompt:** one dialog per unauthorized extension after a load. Title:
   "Load the new extension X?" or "Load the updated extension X?". Body: what the
   source is (for a package, the distribution and version, or "was updated from

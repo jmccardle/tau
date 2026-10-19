@@ -35,6 +35,7 @@ from tau_agent_core.extension_sources import (
     resolve_explicit,
 )
 from tau_agent_core.sdk import (
+    AWAITING_GRANDFATHER_REASON,
     _load_extensions,
     authorization_prompt,
     authorize_discovered_extension,
@@ -379,6 +380,27 @@ class TestTheListingAndTheCli:
         rows = extension_records(extensions_dir=home / "extensions")
         assert [(r.identifier, r.state) for r in rows] == [("old", "authorized")]
         assert not (home / STORE_FILENAME).exists()
+
+    async def test_before_the_first_start_a_drop_in_is_pending_grandfather(self, home):
+        """No record exists yet, so the listing must not claim one; the first start writes it."""
+        (home / "extensions" / "old.py").write_text(_DROPIN)
+        [before] = extension_records(extensions_dir=home / "extensions")
+        assert (before.state, before.authorization) == ("authorized", "pending-grandfather")
+        assert before.reason == AWAITING_GRANDFATHER_REASON
+
+        await _load_extensions(None, user_dir=str(home / "extensions"))
+        [after] = extension_records(extensions_dir=home / "extensions")
+        assert (after.state, after.authorization, after.reason) == (
+            "authorized",
+            "authorized",
+            None,
+        )
+
+    def test_an_explicit_path_is_never_pending_grandfather(self, home, tmp_path):
+        ext = tmp_path / "named.py"
+        ext.write_text(_DROPIN)
+        [row] = extension_records([str(ext)], extensions_dir=home / "extensions")
+        assert (row.state, row.authorization, row.reason) == ("authorized", "explicit", None)
 
     def test_authorize_then_revoke_round_trips(self, site, home):
         root, top = site

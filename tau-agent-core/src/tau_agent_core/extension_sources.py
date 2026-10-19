@@ -189,12 +189,15 @@ class ExtensionRecord:
         target: Module name or path.
         state: :data:`ExtensionState`.
         reason: Why it is not loaded (``failed``, ``unauthorized``,
-            ``unusable``, ``collision``), else ``None``.
+            ``unusable``, ``collision``), or why a ``pending-grandfather`` one
+            would; else ``None``.
         distribution: The installing distribution, for a package.
         version: Its version, for a package.
         entry_point: The entry point's name, for a package.
         authorization: ``explicit`` (named with ``-e``), ``authorized``,
-            ``new`` or ``update``; ``None`` for an unusable source.
+            ``pending-grandfather`` (a no-session listing before the first start
+            has written the store), ``new`` or ``update``; ``None`` for an
+            unusable source.
         previous_version: For an ``update``, the version that was authorized.
         orphan_topics: Topics this extension subscribed to whose emitter is no
             loaded extension (#44).
