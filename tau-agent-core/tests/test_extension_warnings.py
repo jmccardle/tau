@@ -357,10 +357,36 @@ class TestThreads:
         with pytest.raises(ValueError):
             await asyncio.to_thread(session.set_extension_warning, "probe", "k", "a\nb")
 
-    def test_with_no_loop_anywhere_a_set_is_refused(self):
+    def test_with_no_loop_anywhere_a_set_lands_at_once(self):
         session = _session()
-        with pytest.raises(RuntimeError, match="no loop"):
-            session.set_extension_warning("probe", "k", "m")
+        session.set_extension_warning("probe", "k", "m")
+        assert session.extension_warnings() == [ExtensionWarning("probe", "k", "m", "warning")]
+
+    def test_a_set_from_another_loop_between_turns_never_takes_the_session(self):
+        """tectum's reproduction: one asyncio.run per turn, a warning from a loop thread between."""
+        session = _session()
+        replies = iter(
+            [_reply([TextContent(text="one")], "stop"), _reply([TextContent(text="two")], "stop")]
+        )
+
+        async def fake(model, context, options=None):
+            return _Stream(next(replies))
+
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake):
+            asyncio.run(session.prompt("first"))
+            bound = session._loop
+
+            async def from_its_own_loop() -> None:
+                session.set_extension_warning("probe", "backend", "down")
+
+            worker = threading.Thread(target=lambda: asyncio.run(from_its_own_loop()))
+            worker.start()
+            worker.join()
+            assert session._loop is bound, "a warning write must not rebind the session"
+
+            asyncio.run(session.prompt("second"))
+
+        assert [w.key for w in session.extension_warnings()] == ["backend"]
 
 
 class TestTheReservedSource:

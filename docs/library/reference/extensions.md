@@ -255,7 +255,8 @@ Safe from a worker thread, as :meth:`set_warning` is.
 
 **Raises**
 
-- `RuntimeError` — as :meth:`set_warning`.
+- `RuntimeError` — this api is not bound to a session or to a loaded extension.
+- `ValueError` — the extension is named ``tau``.
 
 ### emit
 
@@ -659,7 +660,9 @@ new, fork and switch until cleared; a disable or a reload clears it.
 
 Safe from a worker thread (``asyncio.to_thread``): the warning is checked
 on the calling thread, then set on the session's loop, where listeners
-run. From a thread the call returns before the warning lands.
+run. From a thread the call returns before the warning lands, and a
+listener's exception goes to the loop's exception handler, not to the
+caller. It never moves the session onto the caller's loop.
 
 **Parameters**
 
@@ -669,8 +672,8 @@ run. From a thread the call returns before the warning lands.
 
 **Raises**
 
-- `RuntimeError` — this api is not bound to a session or to a loaded extension; the extension is named ``tau``, which τ reserves; or there is no loop to set it on.
-- `ValueError` — an empty key, a message that is not one non-empty line, or an unknown severity.
+- `RuntimeError` — this api is not bound to a session or to a loaded extension.
+- `ValueError` — the extension is named ``tau``, which τ reserves; a non-string or blank key or message; a message of more than one line; or an unknown severity.
 
 ### submit
 

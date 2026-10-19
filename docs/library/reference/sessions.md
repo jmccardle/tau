@@ -175,10 +175,6 @@ Remove a warning; clearing an absent one does nothing. Safe from any thread.
 - `source: str` — The extension identifier, or ``"tau"``.
 - `key: str` — The warning's name within ``source``.
 
-**Raises**
-
-- `RuntimeError` — no loop to make the change on (:meth:`_on_own_loop`).
-
 ### close_cursor
 
 ```python
@@ -1427,8 +1423,10 @@ Set the warning ``key`` from ``source``, replacing one already there.
 
 An extension calls :meth:`ExtensionAPI.set_warning`, which names itself;
 τ writes with ``source="tau"``. A new or changed warning is also shown
-once through ``ui.notify`` at ``severity``. Safe from any thread: off the
-session's loop the warning is checked here, then set on the loop.
+once through ``ui.notify`` at ``severity``. Safe from any thread: the
+warning is checked here, then set by :meth:`_on_own_loop`. Marshalled
+from another thread, it returns before the warning lands, and a
+listener's exception goes to the loop's exception handler, not here.
 
 **Parameters**
 
@@ -1439,8 +1437,7 @@ session's loop the warning is checked here, then set on the loop.
 
 **Raises**
 
-- `ValueError` — an empty source or key, a message that is not one non-empty line, or an unknown severity.
-- `RuntimeError` — no loop to make the change on (:meth:`_on_own_loop`).
+- `ValueError` — a non-string or blank source, key or message, a message of more than one line, or an unknown severity.
 
 ### set_headless_ui_defaults
 

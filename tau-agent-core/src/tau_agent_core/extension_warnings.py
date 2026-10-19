@@ -6,6 +6,7 @@ or its extension goes away, so a head or a late client can still read it.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -110,11 +111,12 @@ def validate_warning(warning: ExtensionWarning) -> None:
 class ExtensionWarnings:
     """A session's current warnings, keyed by ``(source, key)``, in first-set order.
 
-    Not thread-safe: :class:`~tau_agent_core.agent_session.AgentSession` mutates
-    it only on its own loop.
+    Every change and its listener calls run under one re-entrant lock, for the
+    case :meth:`AgentSession._on_own_loop` changes it off any loop.
     """
 
     def __init__(self) -> None:
+        self._lock = threading.RLock()
         self._entries: dict[tuple[str, str], ExtensionWarning] = {}
         self._listeners: list[WarningsListener] = []
         self._batch_depth = 0
@@ -122,22 +124,24 @@ class ExtensionWarnings:
 
     def current(self) -> list[ExtensionWarning]:
         """Every current warning, oldest key first."""
-        return list(self._entries.values())
+        with self._lock:
+            return list(self._entries.values())
 
     @contextmanager
     def batch(self) -> Iterator[None]:
         """Hold listener calls until the outermost batch ends, then call them once if the set changed."""
-        if self._batch_depth == 0:
-            self._batch_start = self.current()
-        self._batch_depth += 1
-        try:
-            yield
-        finally:
-            self._batch_depth -= 1
+        with self._lock:
             if self._batch_depth == 0:
-                start, self._batch_start = self._batch_start, None
-                if start != self.current():
-                    self._changed()
+                self._batch_start = self.current()
+            self._batch_depth += 1
+            try:
+                yield
+            finally:
+                self._batch_depth -= 1
+                if self._batch_depth == 0:
+                    start, self._batch_start = self._batch_start, None
+                    if start != self.current():
+                        self._changed()
 
     def set(self, warning: ExtensionWarning) -> bool:
         """Add ``warning`` or replace the one under its ``(source, key)``.
@@ -150,27 +154,30 @@ class ExtensionWarnings:
         """
         validate_warning(warning)
         slot = (warning.source, warning.key)
-        if self._entries.get(slot) == warning:
-            return False
-        self._entries[slot] = warning
-        self._changed()
-        return True
+        with self._lock:
+            if self._entries.get(slot) == warning:
+                return False
+            self._entries[slot] = warning
+            self._changed()
+            return True
 
     def clear(self, source: str, key: str) -> bool:
         """Remove the warning under ``(source, key)``; returns whether there was one."""
-        if self._entries.pop((source, key), None) is None:
-            return False
-        self._changed()
-        return True
+        with self._lock:
+            if self._entries.pop((source, key), None) is None:
+                return False
+            self._changed()
+            return True
 
     def clear_source(self, source: str) -> bool:
         """Remove every warning ``source`` set; returns whether there was any."""
-        slots = [slot for slot in self._entries if slot[0] == source]
-        for slot in slots:
-            del self._entries[slot]
-        if slots:
-            self._changed()
-        return bool(slots)
+        with self._lock:
+            slots = [slot for slot in self._entries if slot[0] == source]
+            for slot in slots:
+                del self._entries[slot]
+            if slots:
+                self._changed()
+            return bool(slots)
 
     def subscribe(self, listener: WarningsListener) -> Callable[[], None]:
         """Call ``listener`` after each change; returns the unsubscribe."""

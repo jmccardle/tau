@@ -2581,7 +2581,9 @@ class ExtensionAPI:
 
         Safe from a worker thread (``asyncio.to_thread``): the warning is checked
         on the calling thread, then set on the session's loop, where listeners
-        run. From a thread the call returns before the warning lands.
+        run. From a thread the call returns before the warning lands, and a
+        listener's exception goes to the loop's exception handler, not to the
+        caller. It never moves the session onto the caller's loop.
 
         Args:
             key: The warning's name within this extension.
@@ -2590,10 +2592,10 @@ class ExtensionAPI:
 
         Raises:
             RuntimeError: this api is not bound to a session or to a loaded
-                extension; the extension is named ``tau``, which τ reserves; or
-                there is no loop to set it on.
-            ValueError: an empty key, a message that is not one non-empty line,
-                or an unknown severity.
+                extension.
+            ValueError: the extension is named ``tau``, which τ reserves; a
+                non-string or blank key or message; a message of more than one
+                line; or an unknown severity.
         """
         session = self._bound_session("set_warning")
         session.set_extension_warning(self._warning_source("set_warning"), key, message, severity)
@@ -2607,7 +2609,8 @@ class ExtensionAPI:
             key: The warning's name within this extension.
 
         Raises:
-            RuntimeError: as :meth:`set_warning`.
+            RuntimeError: this api is not bound to a session or to a loaded extension.
+            ValueError: the extension is named ``tau``.
         """
         session = self._bound_session("clear_warning")
         session.clear_extension_warning(self._warning_source("clear_warning"), key)
@@ -2616,7 +2619,7 @@ class ExtensionAPI:
         """This extension's name as a warning source; ``tau`` is τ's own (#60)."""
         name = self.extension_name
         if name == TAU_SOURCE:
-            raise RuntimeError(
+            raise ValueError(
                 f"api.{verb}: the source name {TAU_SOURCE!r} is reserved for τ's own warnings; "
                 "rename the extension to set warnings"
             )

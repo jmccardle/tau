@@ -1943,35 +1943,25 @@ class AgentSession:
                     ExtensionWarning(TAU_SOURCE, key, f"{name} failed to load{detail}", "error")
                 )
 
-    def _on_own_loop(self, op: str, change: Callable[[], object]) -> None:
-        """Run ``change`` now on the session's loop, or hand it to that loop from another thread.
+    def _on_own_loop(self, change: Callable[[], object]) -> None:
+        """Make a warnings change where it is safe, without ever claiming the session's loop.
 
-        The store and its listeners (serve's publish, the TUI's marker) are
-        loop-only, so a call from a worker thread is marshalled with
-        ``call_soon_threadsafe`` and returns before the change lands.
-
-        Raises:
-            RuntimeError: no running loop here and none bound to the session, so
-                there is nowhere to make the change.
+        While the session's bound loop runs, the change runs on it: inline when
+        called there, otherwise marshalled with ``call_soon_threadsafe``, so
+        listeners (serve's publish, the TUI's marker) see only that loop. With
+        no live bound loop, nothing loop-bound is listening, so the change runs
+        here under the store's lock. Only a turn and ``session_start`` bind a
+        loop; a warning write never does (#60 review).
         """
         try:
             running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
             running = None
         bound = self._loop
-        live = bound is not None and self._loop_owns_session(bound)
-        if running is not None and (running is bound or not live):
-            self._bind_loop()
-            change()
-            return
-        if bound is not None and live:
+        if bound is not None and self._loop_owns_session(bound) and running is not bound:
             bound.call_soon_threadsafe(change)
             return
-        raise RuntimeError(
-            f"{op}: called with no running event loop, and this session is not bound to "
-            "one, so there is no loop to make the change on. Call it from the session's "
-            "loop, or from a worker thread once the session is running."
-        )
+        change()
 
     @agent_facing(topic="extensions")
     def set_extension_warning(
@@ -1981,8 +1971,10 @@ class AgentSession:
 
         An extension calls :meth:`ExtensionAPI.set_warning`, which names itself;
         τ writes with ``source="tau"``. A new or changed warning is also shown
-        once through ``ui.notify`` at ``severity``. Safe from any thread: off the
-        session's loop the warning is checked here, then set on the loop.
+        once through ``ui.notify`` at ``severity``. Safe from any thread: the
+        warning is checked here, then set by :meth:`_on_own_loop`. Marshalled
+        from another thread, it returns before the warning lands, and a
+        listener's exception goes to the loop's exception handler, not here.
 
         Args:
             source: An extension identifier, or ``"tau"``.
@@ -1991,9 +1983,8 @@ class AgentSession:
             severity: ``"warning"`` or ``"error"``.
 
         Raises:
-            ValueError: an empty source or key, a message that is not one
-                non-empty line, or an unknown severity.
-            RuntimeError: no loop to make the change on (:meth:`_on_own_loop`).
+            ValueError: a non-string or blank source, key or message, a message
+                of more than one line, or an unknown severity.
         """
         warning = ExtensionWarning(source, key, message, cast(WarningSeverity, severity))
         validate_warning(warning)
@@ -2002,7 +1993,7 @@ class AgentSession:
             if self._warnings.set(warning):
                 self._extension_api.context.ui.notify(warning.summary(), severity, source=source)
 
-        self._on_own_loop("set_extension_warning", change)
+        self._on_own_loop(change)
 
     @agent_facing(topic="extensions")
     def clear_extension_warning(self, source: str, key: str) -> None:
@@ -2011,11 +2002,8 @@ class AgentSession:
         Args:
             source: The extension identifier, or ``"tau"``.
             key: The warning's name within ``source``.
-
-        Raises:
-            RuntimeError: no loop to make the change on (:meth:`_on_own_loop`).
         """
-        self._on_own_loop("clear_extension_warning", lambda: self._warnings.clear(source, key))
+        self._on_own_loop(lambda: self._warnings.clear(source, key))
 
     def subscribe_extension_warnings(
         self, listener: Callable[[list[ExtensionWarning]], None]

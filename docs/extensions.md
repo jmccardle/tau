@@ -291,12 +291,16 @@ api.clear_warning(key: str) -> None
   warnings that belong to one session.
 - The identifier `tau` is reserved for τ's own warnings, so an extension
   named `tau` that calls `set_warning` or `clear_warning` gets a
-  `RuntimeError`.
-- **Threads.** Both calls are safe from a worker thread, such as a tool's
-  `asyncio.to_thread`. The warning is checked on the calling thread, so a bad
-  one raises there. It is then set on the session's loop, where every listener
-  runs. From a thread the call returns before the warning lands. With no
-  running loop anywhere, both raise `RuntimeError`.
+  `ValueError`.
+- **Threads.** Both calls are safe from any thread, such as a tool's
+  `asyncio.to_thread` or an extension's own loop thread. The warning is checked
+  on the calling thread, so a bad one raises there. While the session's loop
+  runs, the change is made on that loop, where every listener runs. From
+  another thread the call returns before the warning lands, and a listener's
+  exception goes to that loop's exception handler, not to the caller. Between
+  turns of an SDK host that runs one `asyncio.run` per turn, the change is
+  made at once, under the store's lock. A warning write never moves the
+  session onto the caller's loop; only a turn and `session_start` bind one.
 - τ writes its own warnings with source `"tau"` through
   `AgentSession.set_extension_warning`. `AgentSession.extension_warnings()` reads
   the current set.
