@@ -2425,6 +2425,31 @@ no policy the form raises instead of fabricating an answer.
 
 The field's declared ``default`` when present; otherwise the kind's empty value (``""``, ``0``, ``False``, ``[]``), or a ``select``'s first option.
 
+## is_extension_disabled
+<!-- agent: yes -->
+
+```python
+is_extension_disabled(identifier: str, *, extensions_dir: str | Path | None = None, store_path: str | Path | None = None) -> bool
+```
+
+`tau_agent_core.sdk.is_extension_disabled`
+
+Whether ``tau ext disable`` recorded ``identifier`` (#58); reads, never writes.
+
+**Parameters**
+
+- `identifier: str` — A full extension identifier.
+- `extensions_dir: str | Path | None = None` — The drop-in directory; ``None`` is the default.
+- `store_path: str | Path | None = None` — The authorization store; ``None`` is the file beside it.
+
+**Returns**
+
+Whether a disable names it.
+
+**Raises**
+
+- `AuthorizationStoreError` — The store cannot be read.
+
 ## is_path_spec
 <!-- agent: yes -->
 

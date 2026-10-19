@@ -35,7 +35,7 @@ from tau_agent_core.capabilities import CAPABILITIES
 from tau_agent_core.rpc import commands as rpc
 from tau_agent_core.rpc import dialect, records
 from tau_agent_core.rpc.wire_events import WireEventProjector
-from tau_agent_core.sdk import load_failure_notice, withheld_notices
+from tau_agent_core.sdk import LoadExtensionsResult, load_failure_notice, withheld_notices
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.session_log import SessionLog, is_incomplete
 
@@ -336,16 +336,20 @@ class SessionHost:
         result = await self.backend.load_extensions(
             None, discover=True, extensions_config=self.daemon.config.get("extensions_config")
         )
-        for error in result.errors:
-            self.daemon.log(f"{self.tag} {load_failure_notice(error)}")
-        for line in withheld_notices(result):
-            self.daemon.log(f"{self.tag} {line}")
+        self.report_extension_load(result)
         await self.backend.emit_session_start("startup")
         await session.start()
         self.daemon.log(f"{self.tag} loaded: {cwd} (model {session.get_model()['id']})")
         for entry in self.log.entries():
             if is_incomplete(entry):
                 self.daemon.log(f"{self.tag} {entry['type']} entry {entry['id']} left incomplete")
+
+    def report_extension_load(self, result: LoadExtensionsResult) -> None:
+        """Log each load failure (:func:`~tau_agent_core.sdk.load_failure_notice`) and withheld notice."""
+        for error in result.errors:
+            self.daemon.log(f"{self.tag} {load_failure_notice(error)}")
+        for line in withheld_notices(result):
+            self.daemon.log(f"{self.tag} {line}")
 
     async def close(self) -> None:
         """Fire ``session_shutdown`` for the session's extensions."""

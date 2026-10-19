@@ -194,3 +194,29 @@ def test_a_refused_authorize_writes_no_store(capsys):
     (directory / "one.py").write_text("def register(api):\n    pass\n")
     assert main(["ext", "authorize", "nope"]) == 2
     assert not (directory.parent / STORE_FILENAME).exists()
+
+
+def test_authorizing_a_disabled_extension_says_it_stays_off(ext_dir, capsys):
+    (ext_dir.parent / STORE_FILENAME).write_text('{"format": 1}')
+    assert main(["ext", "disable", "broken"]) == 0
+    capsys.readouterr()
+    assert main(["ext", "authorize", "broken"]) == 0
+    out = capsys.readouterr().out
+    assert "it is disabled, so it won't load until `tau ext enable broken`" in out
+    assert "loads at the next start" not in out
+
+
+def test_the_serve_daemon_logs_the_cores_notice():
+    from tau_coding_agent.serve.daemon import SessionHost
+
+    error = ExtensionLoadError(
+        path="/x/broken.py",
+        error="boom",
+        source=ExtensionSource(identifier="broken", kind="dropin", target="/x/broken.py"),
+    )
+    lines: list[str] = []
+    host = SessionHost.__new__(SessionHost)
+    host.tag = "session abcd1234"
+    host.daemon = type("D", (), {"log": staticmethod(lines.append)})()
+    host.report_extension_load(LoadExtensionsResult(errors=[error]))
+    assert lines == [f"session abcd1234 {load_failure_notice(error)}"]

@@ -1280,6 +1280,30 @@ def disable_discovered_extension(
 
 
 @agent_facing(topic="extensions")
+def is_extension_disabled(
+    identifier: str,
+    *,
+    extensions_dir: str | Path | None = None,
+    store_path: str | Path | None = None,
+) -> bool:
+    """Whether ``tau ext disable`` recorded ``identifier`` (#58); reads, never writes.
+
+    Args:
+        identifier: A full extension identifier.
+        extensions_dir: The drop-in directory; ``None`` is the default.
+        store_path: The authorization store; ``None`` is the file beside it.
+
+    Returns:
+        Whether a disable names it.
+
+    Raises:
+        AuthorizationStoreError: The store cannot be read.
+    """
+    _, store = _store_for(extensions_dir, store_path)
+    return store.is_disabled(identifier)
+
+
+@agent_facing(topic="extensions")
 def enable_discovered_extension(
     token: str,
     *,

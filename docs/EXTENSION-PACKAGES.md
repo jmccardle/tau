@@ -374,7 +374,10 @@ stays fatal (§12), unchanged.
   refused. `disable` accepts any identifier discovery or the store knows (so a
   package uninstalled after authorizing can still be disabled) and refuses an
   unknown one, so a typo records nothing. `enable` resolves against the disabled
-  identifiers only. Authorization records are untouched by both.
+  identifiers only. Authorization records are untouched by both, and the
+  reverse holds: a disable is keyed by identifier, so it outlives `tau ext
+  revoke` and `tau ext authorize`, a version change and a reinstall. `tau ext
+  authorize` on a disabled extension says it stays off until `tau ext enable`.
 - **The store.** A `disabled` section maps identifier to `{disabled_at}`, so one
   disable covers a package and a drop-in alike. `format` stays 1: a reader from
   before this change ignores the key and loads the extension, which is the old

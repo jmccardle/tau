@@ -19,6 +19,7 @@ from tau_agent_core.sdk import (
     disable_discovered_extension,
     enable_discovered_extension,
     extension_records,
+    is_extension_disabled,
     revoke_extension_authorization,
 )
 
@@ -124,7 +125,13 @@ def run_ext(argv: Sequence[str]) -> int:
                 if source.kind == "package"
                 else source.target
             )
-            print(f"authorized {source.identifier} ({detail}); it loads at the next start")
+            if is_extension_disabled(source.identifier):
+                print(
+                    f"authorized {source.identifier} ({detail}); it is disabled, so it won't "
+                    f"load until `tau ext enable {source.identifier}`"
+                )
+            else:
+                print(f"authorized {source.identifier} ({detail}); it loads at the next start")
             return 0
         if args.verb == "disable":
             identifier, changed = disable_discovered_extension(args.name)
