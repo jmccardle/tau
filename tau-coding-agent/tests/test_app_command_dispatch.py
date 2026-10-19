@@ -631,3 +631,95 @@ async def test_compact_writes_a_compaction_entry_the_next_turn_cannot_undo(app, 
         rederived = app._cursor.context()
         assert len(rederived) == len(app.messages)
         assert any("[[Compaction summary:" in str(m.get("content")) for m in rederived)
+
+
+async def test_an_unresolvable_ext_name_is_refused_not_sent_to_the_model(
+    app, tmp_path, monkeypatch
+):
+    """#57: the 2.x spelling is a warning naming the qualified form, and no turn starts."""
+    ext = tmp_path / "todos_ext.py"
+    ext.write_text(_TODOS_EXT)
+    app._extension_paths = [str(ext)]
+    app._discover_extensions = False
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        turns: list = []
+        monkeypatch.setattr(app, "_start_turn", lambda sub: turns.append(sub))
+        notes: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            app, "notify", lambda msg, severity="information", **_: notes.append((msg, severity))
+        )
+        messages_before = list(app.messages)
+
+        await _submit(app, "/ext:todos_ext.todos mine")
+        await pilot.pause()
+
+        assert turns == []
+        assert app.messages == messages_before
+        assert notes == [
+            (
+                "/ext:todos_ext.todos is not a command; qualified names are "
+                "/ext:<identifier>:<command>, e.g. /ext:todos_ext:todos",
+                "warning",
+            )
+        ]
+
+
+async def test_an_unresolvable_ext_name_mid_turn_is_refused_at_once(app, tmp_path, monkeypatch):
+    """#57: mid-turn, the refusal itself, not "runs between turns", and the line stays typed."""
+    ext = tmp_path / "todos_ext.py"
+    ext.write_text(_TODOS_EXT)
+    app._extension_paths = [str(ext)]
+    app._discover_extensions = False
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        notes: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            app, "notify", lambda msg, severity="information", **_: notes.append((msg, severity))
+        )
+        app.is_generating = True
+        await _submit(app, "/ext:todos_ext.todos mine")
+        await pilot.pause()
+
+        assert notes == [
+            (
+                "/ext:todos_ext.todos is not a command; qualified names are "
+                "/ext:<identifier>:<command>, e.g. /ext:todos_ext:todos",
+                "warning",
+            )
+        ]
+        app.is_generating = False
+
+
+async def test_a_registered_qualified_name_mid_turn_is_a_command_not_a_refusal(
+    app, tmp_path, monkeypatch
+):
+    """The peek reads the qualified names too, so a real ``/ext:…`` is held, not refused."""
+    ext = tmp_path / "todos_ext.py"
+    ext.write_text(_TODOS_EXT)
+    app._extension_paths = [str(ext)]
+    app._discover_extensions = False
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        notes: list[str] = []
+        monkeypatch.setattr(app, "notify", lambda msg, **_: notes.append(msg))
+        app.is_generating = True
+        await _submit(app, "/ext:todos_ext:todos mine")
+        await pilot.pause()
+        app.is_generating = False
+
+        assert notes == [
+            "/ext:todos_ext:todos runs between turns. Press Enter again when this one finishes."
+        ]

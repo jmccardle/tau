@@ -326,6 +326,31 @@ class ExtensionStartupError(RuntimeError):
         self.phase = phase
 
 
+BUS_DEPENDENCY_HINT = "--bus needs nats-py: pip install 'ffwf-tau-agent-core[bus]'"
+"""The refusal :func:`require_bus_dependency` raises, verbatim (#56)."""
+
+
+@agent_facing(topic="extensions")
+class BusDependencyError(RuntimeError):
+    """A bus was asked for (``--bus``, ``bus_available=True``) but nats-py is not installed."""
+
+
+@agent_facing(topic="extensions")
+def require_bus_dependency() -> None:
+    """Refuse a bus-enabled run whose bus client library is missing (#56).
+
+    Locates ``nats`` with :func:`importlib.util.find_spec`, without importing
+    it. Every head calls this before any extension loads, so a missing extra is
+    reported as itself rather than as some extension's ``No module named 'nats'``.
+
+    Raises:
+        BusDependencyError: ``nats`` is not importable; the message is
+            :data:`BUS_DEPENDENCY_HINT`.
+    """
+    if importlib.util.find_spec("nats") is None:
+        raise BusDependencyError(BUS_DEPENDENCY_HINT)
+
+
 @agent_facing(topic="extensions")
 @dataclass
 class LoadedExtension:
@@ -2141,9 +2166,8 @@ def create_agent_session(
         bus_available: Whether this session has a bus transport a loaded
             extension may declare against (H8, SIM_SPEC_v2 §16.10). ``False``
             — the default — refuses to load any file extension that declares
-            ``TOUCHES_BUS = True`` (see :func:`_load_one_extension`); no NATS
-            wiring exists in this package yet (tau-007), so there is nothing
-            to back that capability with until a caller sets this ``True``.
+            ``TOUCHES_BUS = True`` (see :func:`_load_one_extension`). ``True``
+            requires nats-py (:func:`require_bus_dependency`).
         no_tools: Tool-suppression policy, the SDK equivalent of the CLI's
             ``--no-tools``/``-nt`` and ``--no-builtin-tools``/``-nbt``. One
             resolved value rather than two booleans, for the reason
@@ -2183,6 +2207,7 @@ def create_agent_session(
         no_skills: Skip skill discovery; explicit paths still load.
 
     Raises:
+        BusDependencyError: ``bus_available`` with nats-py not installed.
         ValueError: if ``no_tools`` is given together with a non-empty ``tools``
             (a contradictory request, refused rather than silently resolved), or
             if ``tools`` names a tool that is not a built-in (:func:`_resolve_tools`).
@@ -2194,6 +2219,8 @@ def create_agent_session(
         >>> session = create_agent_session(model="gpt-4o", tools=["read", "bash"])
         >>> messages = await session.prompt("Hello, world!")
     """
+    if bus_available:
+        require_bus_dependency()
     # 1. Resolve model
     if isinstance(model, str):
         model = resolve_model(model, provider=provider, base_url=base_url)

@@ -715,11 +715,17 @@ def extension_command_names(backend: Any) -> list[str]:
     on this path: a test double simply has none, which makes the peek resolve only τ's
     built-ins — those need no backend, being τ's own vocabulary hardcoded in
     :mod:`tau_agent_core.commands`.
+
+    The qualified ``ext:<identifier>:<command>`` names are included, so the peek
+    resolves against the same set ``AgentSession.resolve_command`` does and a
+    registered ``/ext:…`` is not mistaken for a refused one (#57).
     """
-    lister = getattr(backend, "get_extension_commands", None)
-    if lister is None:
-        return []
-    return [name for name, _description in lister()]
+    names: list[str] = []
+    for attr in ("get_extension_commands", "get_qualified_commands"):
+        lister = getattr(backend, attr, None)
+        if lister is not None:
+            names += [name for name, _description in lister()]
+    return names
 
 
 async def _dispatch_command_submission(backend: Any, submission: Submission, mode: str) -> None:

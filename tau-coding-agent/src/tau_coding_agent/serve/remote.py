@@ -861,6 +861,14 @@ class RemoteBackend(Backend):
             if c["origin"] == "extension" and not c["hidden"]
         ]
 
+    def get_qualified_commands(self) -> list[tuple[str, str]]:
+        """The daemon session's qualified ``ext:`` command names, from its surface."""
+        return [
+            (str(c["name"]), str(c["description"]))
+            for c in self.replica.surface["commands"]
+            if c["origin"] == "extension" and c["hidden"]
+        ]
+
     def get_prompt_commands(self) -> tuple[CommandCompletion, ...]:
         """The daemon session's template and skill command words, from its surface."""
         return tuple(

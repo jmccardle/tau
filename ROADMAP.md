@@ -63,6 +63,10 @@ does not repeat them.
     raises (e.g. `--bus` without `nats-py`) only warns, and its tools stay
     offered. Proposed: fail startup for an explicitly named extension.
     Decided 2026-10-18 (see below).
+  - #56 `--bus` without nats-py now exits 2 naming the `[bus]` extra; #57 an
+    unresolvable `/ext:…` is refused with the nearest qualified name; editable
+    layouts are read from the finder/`.pth`; `-e x.pyc` is refused. Built
+    2026-10-19 on `fix/014-followups` (docs/EXTENSION-PACKAGES.md §14).
   - #44 a subscription to an `ext:` topic that no loaded extension emits is
     visible in `tau ext list` and as a debug notice. Companion rule to #35's
     topic rename, which would otherwise break hard-coded subscribers silently.

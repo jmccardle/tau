@@ -236,3 +236,21 @@ async def test_a_line_typed_after_a_mid_turn_form_still_steers(env: ReplEnv) -> 
     assert [sub.multitask_strategy for sub in env.submissions] == ["enqueue", "steer"]
     assert env.submissions[1].text == "use ripgrep instead"
     assert "⏳ use ripgrep instead" in env.text
+
+
+async def test_a_refused_ext_name_mid_turn_is_refused_at_once(env: ReplEnv) -> None:
+    """#57: an unresolvable ``/ext:`` line is not "runs between turns"; it is never a command."""
+
+    def prepare(backend: FakeBackend) -> None:
+        backend.script = list(TURN_WITH_A_TOOL)
+        backend.extension_commands = [("ext:pirate:speak", "")]
+
+    env.install(prepare)
+    await env.run(["do it", "/ext:pirate.speak"])
+    assert env.backend is not None
+    assert env.backend.commands == []
+    assert len(env.submissions) == 1
+    text = " ".join(env.text.split())
+    assert "/ext:pirate.speak is not a command" in text and "e.g. /ext:pirate:speak" in text
+    assert "runs between turns" not in text
+    assert env.reader.drafts == ["/ext:pirate.speak"]

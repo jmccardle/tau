@@ -115,7 +115,7 @@ stale.
 | `--no-builtin-tools` | `-nbt` | drops the built-in set; extension-registered tools survive and are offered |
 | `--extension PATH\|MODULE` (repeatable) | `-e` | explicit load, authorized by being named; always runs even under `--no-extensions` |
 | `--no-extensions` | `-ne` | disables discovery (drop-ins and installed packages) only |
-| `--bus` | | declare this run may reach a message bus, so `TOUCHES_BUS` extensions (e.g. `nats_bus`) are allowed to load |
+| `--bus` | | declare this run may reach a message bus, so `TOUCHES_BUS` extensions (e.g. `nats_bus`) are allowed to load; refuses to start (exit 2) if nats-py is missing |
 | `--ext-config NAME:KEY=VALUE` (repeatable) | | per-extension config override, CLI > `config.json` |
 | `--ui-defaults METHOD=ANSWER,...` | | headless dialog auto-answers; otherwise a headless dialog raises. `--print` only |
 | `--system-prompt` / `--append-system-prompt` (repeatable) | | |

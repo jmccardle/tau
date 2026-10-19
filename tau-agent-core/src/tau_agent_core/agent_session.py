@@ -2995,7 +2995,8 @@ class AgentSession:
 
         Returns:
             The command it would dispatch as, or ``None`` for ordinary text,
-            including an unknown ``/…``, which goes to the model.
+            including an unknown ``/…``, which goes to the model. An unresolvable
+            ``/ext:…`` comes back with ``refusal`` set, which :meth:`submit` refuses.
         """
         return resolve_command(text, self._registry.command_names())
 
@@ -3097,6 +3098,16 @@ class AgentSession:
 
         if sub.expand_commands:
             invocation = self.resolve_command(text)
+            if invocation is not None and invocation.refusal is not None:
+                return (
+                    text,
+                    images,
+                    SubmissionResult(
+                        accepted=False,
+                        submission_id=sub.submission_id,
+                        rejection_reason=invocation.refusal,
+                    ),
+                )
             if invocation is not None:
                 return (
                     text,
@@ -3139,7 +3150,8 @@ class AgentSession:
         2. **The ``input`` hook chain**, which may transform or consume the text.
         3. **Command dispatch**, only when ``sub.expand_commands``: a resolved
            command (:meth:`resolve_command`) runs or steps instead of a turn and is
-           reported on ``SubmissionResult.command``. Off by default, which is a
+           reported on ``SubmissionResult.command``; an unresolvable ``/ext:…``
+           name is refused (``accepted=False``, #57). Off by default, which is a
            security property: a bus payload starting ``/compact`` stays prompt text.
         4. **A pending extension lock** refuses the turn.
         5. **The turn**, persisted unless ``sub.store_history`` is False, bracketed
@@ -3808,11 +3820,13 @@ class AgentSession:
             messages only — see :meth:`_run_one_turn`).
 
         Raises:
-            UnsupportedCommandError: ``text`` resolves to a command. See above —
-                this method has nowhere to put the outcome, so it refuses before
-                anything runs instead of swallowing it.
+            UnsupportedCommandError: ``text`` resolves to a command, or to a refused
+                ``/ext:`` name. See above — this method has nowhere to put the
+                outcome, so it refuses before anything runs instead of swallowing it.
         """
         invocation = self.resolve_command(text)
+        if invocation is not None and invocation.refusal is not None:
+            raise UnsupportedCommandError(invocation.refusal)
         if invocation is not None:
             raise UnsupportedCommandError(
                 f"prompt() was handed the command /{invocation.name}, and its "
