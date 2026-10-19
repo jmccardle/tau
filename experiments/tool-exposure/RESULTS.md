@@ -615,8 +615,16 @@ schema)"). The `before_agent_start` handler sends each through
 renders: a toast in the TUI, an `extension`/`notify` record under
 `tau -p --mode json`, a stderr line under `tau -p` text and under
 `tau --mode rpc` (its stderr contract, item 3), and a `ui` event from the serve
-daemon. The notice goes out once, when the section is built. The exclusion is
-a pure function of the tool set, so the section stays byte-stable.
+daemon. The exclusion is a pure function of the tool set, so the section stays
+byte-stable. Revised in review the same day: the first build queued notices
+only when the section was built, so a failing tool declared later
+(`redeclare_tools`) was refused silently. Now `CodeMode.excluded` queues a
+notice the first time it meets each failure, from the section or from a run,
+and the run's tool handler delivers it at once. A script that names an excluded
+tool gets the notice text, not `Unknown tool`, which is kept for names that do
+not exist. Only the active language's renderer decides an exclusion:
+TypeScript renders a `$ref` as `unknown` and never fails, so nothing is left out
+under `provider: typescript`.
 `tool_search` lists a match whose stub fails as
 `# tool 'X' is unavailable: <reason>` and reports it in
 `details["unavailable"]`. `call_tool` refuses such a tool by any name, with

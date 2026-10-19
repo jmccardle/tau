@@ -221,6 +221,7 @@ class CodeMode:
         self.templates = merge_templates(probe.prompt(), config.prompt)
         self._section: str | None = None
         self._notices: list[str] = []
+        self._noticed: set[str] = set()
         _, self.description = self.render(None)
 
     def render(self, stubs: list[ToolStub] | None) -> tuple[str, str]:
@@ -236,38 +237,46 @@ class CodeMode:
         )
 
     def excluded(self, tools: list[Any]) -> tuple[tuple[str, ...], dict[str, str]]:
-        """The names a script may not call, and the tools left out because their stub fails.
+        """The names a script may not call, and the notice for each tool whose stub fails.
+
+        A failure not seen before queues its notice for :meth:`take_notices`,
+        whether :meth:`section` or :meth:`run` finds it, so no exclusion is silent.
 
         Returns:
             Every excluded name (``codemode``, config ``exclude``, each failure),
-            and :func:`~tau_agent_core.codemode.prompt.stub_failures` of the rest.
+            and ``{real name: notice}`` for the failures.
         """
         configured = (TOOL_NAME, *self.config.exclude)
-        failures = stub_failures(DirectToolInvoker(tools, exclude=configured).stubs())
-        return (*configured, *failures), failures
+        candidates = DirectToolInvoker(tools, exclude=configured).stubs()
+        failures = stub_failures(candidates, self.language)
+        notices = {name: unavailable_notice(name, r) for name, r in failures.items()}
+        for name, notice in notices.items():
+            if name not in self._noticed:
+                self._noticed.add(name)
+                self._notices.append(notice)
+        return (*configured, *failures), notices
 
     def section(self, tools: list[Any]) -> str:
         """The system section, rendered once and then frozen for the session.
 
-        A tool whose stub fails is left out, and a notice for it is queued for
-        :meth:`take_notices`; every other tool is unaffected.
+        A tool whose stub fails is left out, with a notice (:meth:`excluded`);
+        every other tool is unaffected.
 
         Raises:
             ValueError: a tool is one the provider cannot call, in either stub mode.
         """
         if self._section is None:
-            exclude, failures = self.excluded(tools)
+            exclude, _ = self.excluded(tools)
             stubs = DirectToolInvoker(tools, exclude=exclude).stubs()
             check = getattr(self._probe, "check_stubs", None)
             if check is not None:
                 check(stubs)
             snapshot = stubs if self.config.stubs == "snapshot" else None
             self._section, _ = self.render(snapshot)
-            self._notices = [unavailable_notice(n, r) for n, r in failures.items()]
         return self._section
 
     def take_notices(self) -> list[str]:
-        """The notices :meth:`section` queued, once; a later call returns none."""
+        """The notices :meth:`excluded` queued since the last call."""
         notices, self._notices = self._notices, []
         return notices
 
@@ -288,9 +297,11 @@ class CodeMode:
         """Run ``code`` and return the tool-result dict."""
         if self.provider is None:
             self.provider = make_provider(self.config, cwd=cwd)
+        exclude, unavailable = self.excluded(tools)
         invoker = DirectToolInvoker(
             tools,
-            exclude=self.excluded(tools)[0],
+            exclude=exclude,
+            unavailable=unavailable,
             language=self.language,
             max_calls=self.config.limits.max_calls,
             signal=signal,
@@ -357,14 +368,18 @@ def register(api: Any, config: Mapping[str, Any] | None = None) -> None:
         tool_call_id: str, params: dict[str, Any], signal: Any, on_update: Any, ctx: Any
     ) -> dict[str, Any]:
         session = _session_of(ctx)
-        return await mode.run(
-            params["code"],
-            session._turn_tools(),
-            cursor_id=session.acting_cursor.id,
-            call_id=tool_call_id,
-            signal=signal,
-            cwd=ctx.cwd,
-        )
+        try:
+            return await mode.run(
+                params["code"],
+                session._turn_tools(),
+                cursor_id=session.acting_cursor.id,
+                call_id=tool_call_id,
+                signal=signal,
+                cwd=ctx.cwd,
+            )
+        finally:
+            for notice in mode.take_notices():
+                ctx.ui.notify(notice, "warning")
 
     async def before_agent_start(event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
         section = mode.section(_session_of(ctx)._turn_tools())

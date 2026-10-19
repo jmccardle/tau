@@ -109,8 +109,11 @@ def _python_signatures(stubs: Sequence[ToolStub], *, self_arg: bool) -> tuple[li
     return classes, signatures
 
 
-def stub_failures(stubs: Sequence[ToolStub]) -> dict[str, str]:
-    """The stubs whose schema cannot be rendered, each with the reason (docs/CODE-MODE.md §6.3).
+def stub_failures(stubs: Sequence[ToolStub], language: str) -> dict[str, str]:
+    """The stubs ``language``'s renderer cannot render, each with the reason (docs/CODE-MODE.md §6.3).
+
+    Each stub is rendered alone with :data:`STUB_RENDERERS` ``[language]``, so
+    a tool is left out only where that renderer fails; TypeScript's never does.
 
     Returns:
         ``{real name: reason}``, e.g. ``$ref '#/$defs/X' does not resolve (...)``,
@@ -119,7 +122,7 @@ def stub_failures(stubs: Sequence[ToolStub]) -> dict[str, str]:
     failures: dict[str, str] = {}
     for stub in stubs:
         try:
-            StubNamespace().signature(stub.name, stub.parameters, None)
+            STUB_RENDERERS[language]([stub])
         except StubError as exc:
             failures[stub.name] = exc.reason
     return failures

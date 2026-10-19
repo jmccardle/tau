@@ -311,9 +311,85 @@ async def test_a_bad_ref_tool_is_left_out_with_a_notice_and_the_rest_still_work(
             "warning",
         )
     ]
+
     def field(m: Any, key: str) -> Any:
         return m.get(key) if isinstance(m, dict) else getattr(m, key, None)
 
     results = [m for m in seen[1]["messages"] if field(m, "role") == "toolResult"]
     text = field(field(results[0], "content")[0], "text")
-    assert text.startswith("3\nrefused: Unknown tool: remote"), text
+    assert text.startswith(
+        "3\nrefused: tool 'remote' is unavailable in code mode: $ref 'other.json#/Spec' "
+        "is not a local '#/...' pointer"
+    ), text
+
+
+LATE_SCRIPT = """\
+try:
+    await tools.later_bad()
+except Exception as exc:
+    print("refused:", exc)
+"""
+
+
+async def test_a_bad_ref_tool_declared_after_the_first_turn_is_refused_with_a_notice(
+    tmp_path: Any,
+) -> None:
+    async def execute(tool_call_id: str, params: Any, signal: Any, on_update: Any, ctx: Any) -> Any:
+        return {"content": [{"type": "text", "text": "ran"}]}
+
+    def later(api: Any) -> None:
+        api.register_tool(
+            {
+                "name": "later_bad",
+                "description": "Joins late.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"k": {"$ref": "#/$defs/Missing"}},
+                },
+                "execute": execute,
+                "exposure": "deferred",
+            }
+        )
+
+    seen: list[Any] = []
+    script = iter([None, LATE_SCRIPT])
+
+    async def fake_stream_simple(model: Any, context: Any, options: Any = None) -> _Stream:
+        seen.append(context)
+        last = context["messages"][-1]
+        role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
+        code = next(script) if role == "user" else None
+        if code is not None:
+            call = TauToolCall(id=f"c{len(seen)}", name="codemode", arguments={"code": code})
+            return _Stream(_assistant([call], "toolUse"))
+        return _Stream(_assistant([TextContent(text="done")], "stop"))
+
+    session = create_agent_session(
+        model="gpt-4o",
+        tools=["read"],
+        cwd=str(tmp_path),
+        no_context_files=True,
+        extensions=[later, lambda api: register(api, {"provider": "cpython"})],
+    )
+    notices = _Notices()
+    session.set_ui_delegate(notices)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple):
+        try:
+            await session.prompt("first")
+            assert notices.seen == []
+            await session.redeclare_tools({"later_bad": True})
+            await session.prompt("second")
+        finally:
+            await session.emit_session_shutdown()
+
+    notice = (
+        "tool 'later_bad' is unavailable in code mode: $ref '#/$defs/Missing' "
+        "does not resolve (no '$defs' in the schema)"
+    )
+    assert notices.seen == [(notice, "warning")]
+
+    def field(m: Any, key: str) -> Any:
+        return m.get(key) if isinstance(m, dict) else getattr(m, key, None)
+
+    results = [m for m in seen[-1]["messages"] if field(m, "role") == "toolResult"]
+    assert field(field(results[-1], "content")[0], "text").startswith(f"refused: {notice}")

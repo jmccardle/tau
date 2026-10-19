@@ -15,14 +15,14 @@ import math
 import re
 import time
 from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from tau_llm.tools import validate_tool_arguments
 
 from tau_agent_core.codemode.prompt import describe_stub
 from tau_agent_core.codemode.protocol import NestedCall, ToolOutcome, ToolStub, elapsed_ms
-from tau_agent_core.tool_schema import stub_names
+from tau_agent_core.tool_schema import stub_name, stub_names
 from tau_agent_core.tools.base import AgentTool, AgentToolResult
 
 _TOKEN = re.compile(r"[a-z0-9]+")
@@ -105,6 +105,8 @@ class DirectToolInvoker:
     Args:
         tools: The tools a script may call, e.g. the turn's tool list.
         exclude: Names never callable from a script (``codemode`` itself).
+        unavailable: Excluded tools a script may name, each with the text a
+            call or :meth:`describe` answers instead of ``Unknown tool``.
         language: Stub language for :meth:`describe`.
         max_calls: Calls answered before every further call fails.
         signal: The turn's abort signal, handed to each tool.
@@ -120,6 +122,7 @@ class DirectToolInvoker:
         tools: Iterable[AgentTool],
         *,
         exclude: Iterable[str] = ("codemode",),
+        unavailable: Mapping[str, str] | None = None,
         language: str = "python",
         max_calls: int = 1000,
         signal: Any = None,
@@ -128,6 +131,8 @@ class DirectToolInvoker:
         excluded = set(exclude)
         self._tools = {t.name: t for t in tools if t.name not in excluded}
         self._real = stub_names(self._tools)
+        refusals = dict(unavailable or {})
+        self._refusals = {**{stub_name(n): t for n, t in refusals.items()}, **refusals}
         self._stubs = [
             ToolStub(t.name, t.description, dict(t.parameters)) for t in self._tools.values()
         ]
@@ -165,7 +170,8 @@ class DirectToolInvoker:
             )
         tool = self._tools.get(self._real.get(name, name))
         if tool is None:
-            return self._record(name, args, start, ToolOutcome(f"Unknown tool: {name}", True))
+            refusal = self._refusals.get(name, f"Unknown tool: {name}")
+            return self._record(name, args, start, ToolOutcome(refusal, True))
         name = tool.name
         try:
             validated = validate_tool_arguments(tool, args)
@@ -227,4 +233,6 @@ class DirectToolInvoker:
         for stub in self._stubs:
             if stub.name == real:
                 return describe_stub(stub, self._language)
+        if name in self._refusals:
+            raise KeyError(self._refusals[name])
         raise KeyError(f"no tool named {name!r} is callable from scripts")
