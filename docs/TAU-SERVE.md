@@ -727,6 +727,30 @@ and serve's is `0.5`. The pass also found `app.py`'s
 has had no `cursor` attribute since `CURSORS.md`, so the read was always
 `None`. It now reads the head cursor's leaf.
 
+### 7.5 Extension warnings reach a late attach (2026-10-19, #60)
+
+`ui.notify` and `ui.set_status` publish one-off events, so a client that
+attached after a warning was issued never saw it. `AgentSession` now keeps the
+session's current warnings (`extension_warnings()`, docs/extensions.md
+"Warnings"), and both wires carry the set. Neither protocol version moves,
+because RPC 3.0 and serve 0.11 are unreleased.
+
+- **Serve:** `Surface.warnings` is a list of `ExtensionWarning`
+  `{source, key, message, severity}`. `Attached.surface` and `describe` both
+  carry it. Each change pushes the whole set as a `ui` event with op
+  `warnings` (`UiWarnings`, `{op: "warnings", warnings: [...]}`), which
+  replaces `surface.warnings`. That is a new arm of the existing `ui` event,
+  not a new event kind. `ServeClient`'s replica folds it.
+- **RPC:** `get_capabilities` gains `warnings`, the same records. RPC has no
+  push for it: the `ui_methods` channel does not exist (RC3), and a host that
+  wants the set later calls `get_capabilities` again. A human running `--mode
+  rpc` or `-p` still sees each new warning once on stderr, because setting a
+  warning also calls `ui.notify`.
+- **Loader notices:** `load_errors` still carries the loader's records. Each
+  failure is also a `"tau"` error in `warnings`, so a client's warning count
+  covers it. #55's exclusion notice and #58's load-failure text move onto the
+  store once their branches merge.
+
 ## 8. The demo: comparing cursors from one leaf
 
 From any leaf, the user starts N cursors. Each one first writes a `config` entry

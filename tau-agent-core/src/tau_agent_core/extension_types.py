@@ -2570,6 +2570,37 @@ class ExtensionAPI:
         """
         return read_session_name(self._bound_session("get_session_name"))
 
+    def set_warning(self, key: str, message: str, severity: str = "warning") -> None:
+        """Set this extension's warning ``key`` on the session until cleared (#60).
+
+        It stays readable by every head and by a client attaching later, and is
+        shown once through ``ui.notify`` when new or changed. Setting the same
+        key replaces it. A disable, a reload or a session swap clears it.
+
+        Args:
+            key: The warning's name within this extension.
+            message: One line.
+            severity: ``"warning"`` or ``"error"``.
+
+        Raises:
+            RuntimeError: this api is not bound to a session or to a loaded extension.
+            ValueError: an empty key, a message that is not one non-empty line,
+                or an unknown severity.
+        """
+        session = self._bound_session("set_warning")
+        session.set_extension_warning(self.extension_name, key, message, severity)
+
+    def clear_warning(self, key: str) -> None:
+        """Clear this extension's warning ``key``; clearing an absent one does nothing.
+
+        Args:
+            key: The warning's name within this extension.
+
+        Raises:
+            RuntimeError: this api is not bound to a session or to a loaded extension.
+        """
+        self._bound_session("clear_warning").clear_extension_warning(self.extension_name, key)
+
     def _bound_session(self, verb: str) -> Any:
         """The bound ``AgentSession``, or raise naming ``verb`` (Fail-Early)."""
         if self._session is None:

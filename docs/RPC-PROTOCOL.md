@@ -18,7 +18,7 @@
 
 - **Protocol version:** `3.0`
 - **Dialect:** `jsonrpc-2.0`
-- **Counts:** 42 live verbs, 7 declined verbs, 15 event types, 63 type definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 42 live verbs, 7 declined verbs, 15 event types, 64 type definitions. Cite this line; never copy the numbers into hand-written prose.
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
 
@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 179,299 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 180,074 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -206,6 +206,13 @@ what rides on top of this on every response):
         "type": "string"
       },
       "type": "array"
+    },
+    "warnings": {
+      "description": "The session's current extension warnings, as AgentSession.extension_warnings() reads them now (#60). Not pushed on change: a host that wants them later calls this verb again.",
+      "items": {
+        "$ref": "#/$defs/ExtensionWarning"
+      },
+      "type": "array"
     }
   },
   "required": [
@@ -217,6 +224,7 @@ what rides on top of this on every response):
     "ui_methods",
     "declined",
     "limits",
+    "warnings",
     "$defs"
   ],
   "type": "object"
@@ -3039,6 +3047,17 @@ An extension request at a cursor, as `get_pending_request` answers it (docs/EXTE
 | `lock` | boolean | yes | Whether a submission at this cursor is refused. |
 | `ask` | [Ask](#ask) \| null | yes | What it asks, or `None` for a bare lock. |
 | `release` | string \| null | yes | A command that clears the lock, or `None`. |
+
+### ExtensionWarning
+
+One current warning on a session.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `source` | string | yes | The extension identifier that set it, or `"tau"`. |
+| `key` | string | yes | Its name within `source`; setting the same key replaces it. |
+| `message` | string | yes | One line for the user. |
+| `severity` | `"warning"` \| `"error"` | no | One of `WARNING_SEVERITIES`. |
 
 ### FlowStep
 

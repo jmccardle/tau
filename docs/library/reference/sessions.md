@@ -160,6 +160,21 @@ not constructed.
 
 - `ValueError` — ``Unknown tool: <name>`` for the first such name.
 
+### clear_extension_warning
+
+```python
+clear_extension_warning(source: str, key: str) -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.clear_extension_warning`
+
+Remove a warning; clearing an absent one does nothing.
+
+**Parameters**
+
+- `source: str` — The extension identifier, or ``"tau"``.
+- `key: str` — The warning's name within ``source``.
+
 ### close_cursor
 
 ```python
@@ -490,6 +505,25 @@ to dispatch its own veto hook (H2, docs/REMOTE-CONTROL.md §4[6]) through
 the extensions a session already has bound, without a second dispatch
 mechanism. Not a general extension-authoring seam — extensions register
 via ``api.on(...)``, never through this property.
+
+### extension_warnings
+
+```python
+extension_warnings() -> list[ExtensionWarning]
+```
+
+`tau_agent_core.agent_session.AgentSession.extension_warnings`
+
+Every current warning on this session (#60).
+
+Kept until its writer clears it, its extension is disabled or reloaded,
+or the session swaps to another tree. τ mirrors each extension that
+failed to load as a ``"tau"`` error keyed ``load:<label>``, and keeps it
+across a swap, because the failure still holds.
+
+**Returns**
+
+The warnings, oldest key first.
 
 ### get_extension_command_args
 
@@ -1377,6 +1411,31 @@ one; the TUI sets a live delegate instead and ``--mode text`` leaves it unset
 
 - `sink: Any` — Called with each extension record; ``None`` clears it.
 
+### set_extension_warning
+
+```python
+set_extension_warning(source: str, key: str, message: str, severity: str = 'warning') -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.set_extension_warning`
+
+Set the warning ``key`` from ``source``, replacing one already there.
+
+An extension calls :meth:`ExtensionAPI.set_warning`, which names itself;
+τ writes with ``source="tau"``. A new or changed warning is also shown
+once through ``ui.notify`` at ``severity``.
+
+**Parameters**
+
+- `source: str` — An extension identifier, or ``"tau"``.
+- `key: str` — The warning's name within ``source``.
+- `message: str` — One line.
+- `severity: str = 'warning'` — ``"warning"`` or ``"error"``.
+
+**Raises**
+
+- `ValueError` — an empty source or key, a message that is not one non-empty line, or an unknown severity.
+
 ### set_headless_ui_defaults
 
 ```python
@@ -1803,6 +1862,24 @@ about (handlers take these as keywords):
 **Returns**
 
 A callable that removes ``handler``.
+
+### subscribe_extension_warnings
+
+```python
+subscribe_extension_warnings(listener: Callable[[list[ExtensionWarning]], None]) -> Callable[[], None]
+```
+
+`tau_agent_core.agent_session.AgentSession.subscribe_extension_warnings`
+
+Call ``listener`` with every current warning after each change.
+
+**Parameters**
+
+- `listener: Callable[[list[ExtensionWarning]], None]` — Called synchronously, on the thread that made the change.
+
+**Returns**
+
+The unsubscribe.
 
 ### summarize_and_navigate
 

@@ -662,3 +662,24 @@ async def test_a_swap_of_an_idle_head_with_nothing_queued_closes_it_at_once(
     await runtime.new_session(persist=False)
     assert old_cursor not in session.cursors
     assert session.cursors == (session.cursor,)
+
+
+@pytest.mark.parametrize("verb", ["new_session", "fork", "switch_session"])
+async def test_every_swap_clears_the_extension_warnings(session, runtime, catalog, verb):
+    """#60: a warning belongs to the session it was set on, not to the process."""
+    other = catalog.create("/work", "m", "openai")
+    session.session_log = catalog.create("/work", "m", "openai")
+    session.set_extension_warning("probe", "k", "stale")
+    seen: list[list[Any]] = []
+    session.subscribe_extension_warnings(seen.append)
+
+    if verb == "new_session":
+        result = await runtime.new_session(persist=True)
+    elif verb == "fork":
+        result = await runtime.fork()
+    else:
+        result = await runtime.switch_session(other.id)
+
+    assert result["cancelled"] is False
+    assert session.extension_warnings() == []
+    assert seen == [[]]

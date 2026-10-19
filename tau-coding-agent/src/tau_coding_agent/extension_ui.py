@@ -97,6 +97,23 @@ class ExtensionStatusBar(Static):
             self.update("")
 
 
+class WarningsMarker(Static):
+    """A one-line marker that stays while the session holds any extension warning (#60).
+
+    Its text is :func:`~tau_agent_core.extension_warnings.warnings_marker`'s; a
+    toast fades, and this is what still says something is wrong afterwards.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("", id="warnings-marker")
+        self.display = False
+
+    def show(self, text: str | None) -> None:
+        """Show ``text``, or hide the marker when it is ``None``."""
+        self.display = text is not None
+        self.update(text or "")
+
+
 def render_panel_body(body: dict[str, Any]) -> RenderableType:
     """Render a normalized ``ui.panel`` body dict to the panel's body renderable (S68).
 

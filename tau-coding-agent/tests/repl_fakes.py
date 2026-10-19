@@ -69,6 +69,7 @@ class FakeAgentSession:
         self.vocabulary: Vocabulary = BUILTIN
         self.model_resolver: Any = None
         self.extension_state = LoadExtensionsResult()
+        self.warnings: list[Any] = []
         self.compactions: list[str | None] = []
         self.compaction_result: CompactionResult | None = None
 
@@ -86,6 +87,9 @@ class FakeAgentSession:
 
     def extension_records(self) -> list:
         return list(self.extension_state.withheld)
+
+    def extension_warnings(self) -> list:
+        return list(self.warnings)
 
     async def compact(self, custom_instructions: str | None = None) -> CompactionResult | None:
         self.events.append("compact")

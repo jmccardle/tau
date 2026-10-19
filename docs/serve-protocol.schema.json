@@ -2663,6 +2663,36 @@
       ],
       "type": "object"
     },
+    "ExtensionWarning": {
+      "description": "One current warning on a session.",
+      "properties": {
+        "key": {
+          "description": "Its name within `source`; setting the same key replaces it.",
+          "type": "string"
+        },
+        "message": {
+          "description": "One line for the user.",
+          "type": "string"
+        },
+        "severity": {
+          "description": "One of `WARNING_SEVERITIES`.",
+          "enum": [
+            "warning",
+            "error"
+          ]
+        },
+        "source": {
+          "description": "The extension identifier that set it, or `\"tau\"`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "key",
+        "message"
+      ],
+      "type": "object"
+    },
     "Failure": {
       "description": "The answer to a request that failed, matched by `id`.",
       "properties": {
@@ -6123,6 +6153,13 @@
             "type": "array"
           },
           "type": "array"
+        },
+        "warnings": {
+          "description": "The session's current extension warnings (#60); a `ui` event with op `warnings` carries each change.",
+          "items": {
+            "$ref": "#/$defs/ExtensionWarning"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -6131,7 +6168,8 @@
         "shortcuts",
         "extensions",
         "loaded",
-        "load_errors"
+        "load_errors",
+        "warnings"
       ],
       "type": "object"
     },
@@ -6376,6 +6414,9 @@
         },
         {
           "$ref": "#/$defs/UiPanel"
+        },
+        {
+          "$ref": "#/$defs/UiWarnings"
         }
       ]
     },
@@ -6449,6 +6490,25 @@
       "required": [
         "key",
         "text",
+        "op"
+      ],
+      "type": "object"
+    },
+    "UiWarnings": {
+      "description": "The session's extension warnings after a change, every one: replaces `Surface.warnings`.",
+      "properties": {
+        "op": {
+          "const": "warnings"
+        },
+        "warnings": {
+          "items": {
+            "$ref": "#/$defs/ExtensionWarning"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "warnings",
         "op"
       ],
       "type": "object"

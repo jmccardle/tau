@@ -184,3 +184,91 @@ async def test_the_listing_reflects_a_reload_rather_than_the_load_time_snapshot(
         after = app._format_extensions_listing(app.current_backend.get_extension_state())
         assert "beta" in after
         assert "alpha" not in after
+
+
+_WARN_EXT = """
+def register(api):
+    api.set_warning("excluded", "bash was left out", "error")
+"""
+
+
+async def test_a_warning_toasts_once_and_stays_in_the_listing(app, tmp_path, monkeypatch):
+    """#60: shown when set, and found again under ``/extensions`` afterwards."""
+    from tau_coding_agent import transcript
+
+    ext = tmp_path / "warn_ext.py"
+    ext.write_text(_WARN_EXT)
+    app._extension_paths = [str(ext)]
+    app._discover_extensions = False
+    toasts: list[tuple[str, str]] = []
+    shown: list[str] = []
+    real_notify = app.notify
+
+    def notify(message, *args, severity="information", **kwargs):
+        toasts.append((str(message), severity))
+        return real_notify(message, *args, severity=severity, **kwargs)
+
+    def add_message(self, role, content, **kwargs):
+        shown.append(content)
+
+    monkeypatch.setattr(app, "notify", notify)
+    monkeypatch.setattr(transcript.ChatDisplay, "add_message", add_message)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+
+        assert ("warn_ext: bash was left out", "error") in toasts
+        app.action_show_extensions()
+        await pilot.pause()
+
+    listing = next(text for text in shown if "# Extensions" in text)
+    assert "## Warnings\n- **error** warn_ext: bash was left out" in listing
+
+
+async def test_the_warnings_marker_follows_the_store_and_outlasts_the_toast(
+    app, tmp_path, monkeypatch
+):
+    """#60: a toast fades; the marker stays until the warning clears."""
+    from tau_coding_agent import extension_ui
+
+    monkeypatch.setattr(type(app), "NOTIFICATION_TIMEOUT", 0.1)
+    app._extension_paths = []
+    app._discover_extensions = False
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+        marker = app.query_one(extension_ui.WarningsMarker)
+        session = app.current_backend.agent_session
+        assert marker.display is False
+
+        session.set_extension_warning("probe", "excluded", "bash was left out", "error")
+        await pilot.pause(0.4)
+        assert not app._notifications, "the toast has timed out"
+        assert marker.display is True
+        assert str(marker.render()) == "1 extension error — /extensions"
+
+        session.clear_extension_warning("probe", "excluded")
+        await pilot.pause()
+        assert marker.display is False
+
+
+async def test_a_failed_load_shows_the_marker(app, tmp_path):
+    """Master's load failures ride the store as ``tau`` errors, so the marker covers them."""
+    from tau_coding_agent import extension_ui
+
+    broken = tmp_path / "broken_ext.py"
+    broken.write_text("raise RuntimeError('nope')\n")
+    app._extension_paths = [str(broken)]
+    app._discover_extensions = False
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.action_new_chat()
+        await pilot.pause()
+        marker = app.query_one(extension_ui.WarningsMarker)
+        assert marker.display is True
+        assert str(marker.render()) == "1 extension error — /extensions"

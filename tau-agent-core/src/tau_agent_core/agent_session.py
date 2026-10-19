@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
 from uuid import uuid4
 
 from tau_llm.abort import AbortSignal
@@ -59,6 +59,12 @@ from tau_agent_core.messages import (
     create_custom_message,
     last_assistant_text,
     turn_error_message,
+)
+from tau_agent_core.extension_warnings import (
+    TAU_SOURCE,
+    ExtensionWarning,
+    ExtensionWarnings,
+    WarningSeverity,
 )
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.extensions.runner import (
@@ -644,6 +650,7 @@ class AgentSession:
         self._loaded_extensions: dict[str, LoadedExtension] = {}
         self._disabled_paths: set[str] = set()
         self._extension_load_errors: list["ExtensionLoadError"] = []
+        self._warnings = ExtensionWarnings()
         self._extension_withheld: list[ExtensionRecord] = []
         self._extension_dirs: tuple[str | None, str | None] = (None, None)
         self._extension_start_errors: dict[str, str] = {}
@@ -886,6 +893,8 @@ class AgentSession:
     @session_log.setter
     def session_log(self, log: SessionLog) -> None:
         self.cursor = Cursor.newest(log)
+        self._warnings.clear_all()
+        self._sync_load_warnings()
 
     @property
     def state(self) -> SessionState:
@@ -1854,6 +1863,7 @@ class AgentSession:
             self._loaded_extensions[loaded.path] = loaded
             self._disabled_paths.discard(loaded.path)
         self._extension_load_errors = list(result.errors)
+        self._sync_load_warnings()
         self._extension_withheld = list(result.withheld)
         self.check_tool_filters()
         for label, topics in self.orphan_subscriptions().items():
@@ -1893,6 +1903,81 @@ class AgentSession:
             extensions=list(self._loaded_extensions.values()),
             errors=list(self._extension_load_errors),
         )
+
+    @agent_facing(topic="extensions")
+    def extension_warnings(self) -> list[ExtensionWarning]:
+        """Every current warning on this session (#60).
+
+        Kept until its writer clears it, its extension is disabled or reloaded,
+        or the session swaps to another tree. τ mirrors each extension that
+        failed to load as a ``"tau"`` error keyed ``load:<label>``, and keeps it
+        across a swap, because the failure still holds.
+
+        Returns:
+            The warnings, oldest key first.
+        """
+        return self._warnings.current()
+
+    def _sync_load_warnings(self) -> None:
+        """Mirror the load failures into the store, quietly: every head already announced them."""
+        wanted = {f"load:{e.path}": e for e in self._extension_load_errors}
+        for w in self._warnings.current():
+            if w.source == TAU_SOURCE and w.key.startswith("load:") and w.key not in wanted:
+                self._warnings.clear(w.source, w.key)
+        for key, error in wanted.items():
+            lines = error.error.strip().splitlines()
+            detail = f": {lines[0]}" if lines else ""
+            name = extension_identifier(error.path)
+            self._warnings.set(
+                ExtensionWarning(TAU_SOURCE, key, f"{name} failed to load{detail}", "error")
+            )
+
+    @agent_facing(topic="extensions")
+    def set_extension_warning(
+        self, source: str, key: str, message: str, severity: str = "warning"
+    ) -> None:
+        """Set the warning ``key`` from ``source``, replacing one already there.
+
+        An extension calls :meth:`ExtensionAPI.set_warning`, which names itself;
+        τ writes with ``source="tau"``. A new or changed warning is also shown
+        once through ``ui.notify`` at ``severity``.
+
+        Args:
+            source: An extension identifier, or ``"tau"``.
+            key: The warning's name within ``source``.
+            message: One line.
+            severity: ``"warning"`` or ``"error"``.
+
+        Raises:
+            ValueError: an empty source or key, a message that is not one
+                non-empty line, or an unknown severity.
+        """
+        warning = ExtensionWarning(source, key, message, cast(WarningSeverity, severity))
+        if self._warnings.set(warning):
+            self._extension_api.context.ui.notify(warning.summary(), severity, source=source)
+
+    @agent_facing(topic="extensions")
+    def clear_extension_warning(self, source: str, key: str) -> None:
+        """Remove a warning; clearing an absent one does nothing.
+
+        Args:
+            source: The extension identifier, or ``"tau"``.
+            key: The warning's name within ``source``.
+        """
+        self._warnings.clear(source, key)
+
+    def subscribe_extension_warnings(
+        self, listener: Callable[[list[ExtensionWarning]], None]
+    ) -> Callable[[], None]:
+        """Call ``listener`` with every current warning after each change.
+
+        Args:
+            listener: Called synchronously, on the thread that made the change.
+
+        Returns:
+            The unsubscribe.
+        """
+        return self._warnings.subscribe(listener)
 
     @agent_facing(topic="extensions")
     def extension_records(self) -> list[ExtensionRecord]:
@@ -1992,6 +2077,7 @@ class AgentSession:
             self._extension_load_errors.append(
                 ExtensionLoadError(path=source.label, error=str(exc), source=source)
             )
+            self._sync_load_warnings()
             return ExtensionActionResult(
                 "authorize",
                 source.label,
@@ -2147,6 +2233,7 @@ class AgentSession:
             self._registry.unregister_command(name)
         for key in bucket.shortcuts:
             self._registry.unregister_shortcut(key)
+        self._warnings.clear_source(bucket.name)
 
     async def disable_extension(self, path: str) -> ExtensionActionResult:
         """Tear down and detach a loaded extension so its hooks stop firing (S70).

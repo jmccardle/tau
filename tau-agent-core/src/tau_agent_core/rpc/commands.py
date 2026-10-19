@@ -711,6 +711,14 @@ GET_CAPABILITIES_RESULT_SCHEMA: dict[str, Any] = {
                 "honoring E3 gets for free."
             ),
         },
+        "warnings": {
+            "type": "array",
+            "description": (
+                "The session's current extension warnings, as "
+                "AgentSession.extension_warnings() reads them now (#60). Not pushed "
+                "on change: a host that wants them later calls this verb again."
+            ),
+        },
         "$defs": {
             "type": "object",
             "description": (
@@ -728,6 +736,7 @@ GET_CAPABILITIES_RESULT_SCHEMA: dict[str, Any] = {
         "ui_methods",
         "declined",
         "limits",
+        "warnings",
         "$defs",
     ],
 }
@@ -1279,7 +1288,7 @@ async def _handle_get_tools(
 async def _handle_get_capabilities(
     handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    return capabilities.build_capabilities()
+    return capabilities.build_capabilities(warnings=handler.session.extension_warnings())
 
 
 def _require_runtime(handler: "RPCHandler") -> Any:

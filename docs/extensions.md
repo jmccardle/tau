@@ -258,6 +258,40 @@ policy is configured (`--ui-defaults METHOD=ANSWER,...` or `config.json`'s
 True, select→first) with a Fail-Early default, deliberately the stricter
 direction, not the convenient one.
 
+## Warnings
+
+Added 2026-10-19 (#60). A notification is gone once shown. A warning stays on
+the session until it is cleared, so a head opened later, or a serve client that
+attaches after the first turn, still sees it.
+
+```python
+api.set_warning(key: str, message: str, severity: str = "warning") -> None
+api.clear_warning(key: str) -> None
+```
+
+- A warning is keyed by `(extension identifier, key)`. Setting the same key
+  replaces the old one, and clearing an absent key does nothing.
+- `message` is one non-empty line. `severity` is `"warning"` or `"error"`;
+  anything else raises `ValueError`.
+- A new or changed warning is also shown once through `ui.notify`, as
+  `"<extension>: <message>"`.
+- The session clears an extension's warnings when that extension is disabled
+  or reloaded. It clears all of them when it swaps to another session (`new`,
+  `fork`, `switch`/resume).
+- τ writes its own warnings with source `"tau"` through
+  `AgentSession.set_extension_warning`. `AgentSession.extension_warnings()` reads
+  the current set.
+- Each extension that failed to load is mirrored as a `"tau"` error keyed
+  `load:<label>`, without a second notice, because every head already
+  announced the failure. It survives a swap, because the failure still holds.
+
+The TUI keeps a one-line marker above the status strip while any warning is
+current, such as `1 extension error — /extensions`. The text comes from
+`warnings_marker()`, so every head words it the same way. A toast fades after
+about five seconds and the marker does not. The TUI and the REPL list each
+warning under `/extensions`. Serve and RPC carry them as described in
+docs/TAU-SERVE.md §7.5.
+
 ## Hot reload
 
 `/extensions reload <target>` (one named extension, not a bulk

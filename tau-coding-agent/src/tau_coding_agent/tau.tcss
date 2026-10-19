@@ -413,6 +413,16 @@ ZoneTree > .tree--kind-structural { color: $tau-text-quiet; text-style: italic; 
     text-style: dim;
 }
 
+/* === Extension warnings marker (#60) === */
+
+#warnings-marker {
+    height: 1;
+    width: 100%;
+    padding: 0 1;
+    background: $tau-bg-alt;
+    color: $warning;
+}
+
 /* === Extension panel host (E10 §6 / S68) === */
 
 #ext-panel-host {

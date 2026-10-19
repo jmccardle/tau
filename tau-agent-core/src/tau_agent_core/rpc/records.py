@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Never, NotRequired, TypedDict
 
+from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_agent_core.flows import FlowStep, Ready, View
 from tau_agent_core.json_schema import Named, Pattern, Shape
 from tau_llm.types import (
@@ -628,6 +629,7 @@ RESULT_TYPES: dict[str, dict[str, Any]] = {
         "ui_methods": list[str],
         "declined": list[DeclinedVerb],
         "limits": Limits,
+        "warnings": list[ExtensionWarning],
         "$defs": dict[str, dict[str, Any]],
     },
     "new_session": _SESSION,
