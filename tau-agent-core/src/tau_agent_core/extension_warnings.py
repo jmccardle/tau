@@ -1,12 +1,13 @@
-"""Per-session warnings that extensions and τ keep current (docs/extensions.md "Warnings").
+"""Extension warnings that stay current until cleared (docs/extensions.md "Warnings").
 
 A notification is gone once shown; a warning stays until its writer clears it
-or the session swaps, so a head or a client attaching later can still read it.
+or its extension goes away, so a head or a late client can still read it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Literal
 
@@ -82,16 +83,61 @@ WarningsListener = Callable[[list[ExtensionWarning]], None]
 """Called with every current warning after the set changes."""
 
 
+def validate_warning(warning: ExtensionWarning) -> None:
+    """Refuse a warning the store would not hold.
+
+    Args:
+        warning: The warning to check.
+
+    Raises:
+        ValueError: ``source``, ``key`` or ``message`` is not a string or is
+            blank, the message is more than one line, or the severity is unknown.
+    """
+    for field in ("source", "key", "message"):
+        value = getattr(warning, field)
+        if not isinstance(value, str):
+            raise ValueError(f"an extension warning's {field} must be a string, got {value!r}")
+        if not value.strip():
+            raise ValueError(f"an extension warning's {field} must not be blank")
+    if "\n" in warning.message or "\r" in warning.message:
+        raise ValueError(f"an extension warning's message is one line, got {warning.message!r}")
+    if warning.severity not in WARNING_SEVERITIES:
+        raise ValueError(
+            f"severity {warning.severity!r} is not one of {', '.join(WARNING_SEVERITIES)}"
+        )
+
+
 class ExtensionWarnings:
-    """A session's current warnings, keyed by ``(source, key)``, in first-set order."""
+    """A session's current warnings, keyed by ``(source, key)``, in first-set order.
+
+    Not thread-safe: :class:`~tau_agent_core.agent_session.AgentSession` mutates
+    it only on its own loop.
+    """
 
     def __init__(self) -> None:
         self._entries: dict[tuple[str, str], ExtensionWarning] = {}
         self._listeners: list[WarningsListener] = []
+        self._batch_depth = 0
+        self._batch_start: list[ExtensionWarning] | None = None
 
     def current(self) -> list[ExtensionWarning]:
         """Every current warning, oldest key first."""
         return list(self._entries.values())
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """Hold listener calls until the outermost batch ends, then call them once if the set changed."""
+        if self._batch_depth == 0:
+            self._batch_start = self.current()
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if self._batch_depth == 0:
+                start, self._batch_start = self._batch_start, None
+                if start != self.current():
+                    self._changed()
 
     def set(self, warning: ExtensionWarning) -> bool:
         """Add ``warning`` or replace the one under its ``(source, key)``.
@@ -100,17 +146,9 @@ class ExtensionWarnings:
             Whether anything changed; an identical warning changes nothing.
 
         Raises:
-            ValueError: an empty ``source`` or ``key``, a message that is empty
-                or more than one line, or an unknown severity.
+            ValueError: :func:`validate_warning` refused it.
         """
-        if not warning.source or not warning.key:
-            raise ValueError("an extension warning needs a non-empty source and key")
-        if not warning.message.strip() or "\n" in warning.message or "\r" in warning.message:
-            raise ValueError(f"an extension warning is one non-empty line, got {warning.message!r}")
-        if warning.severity not in WARNING_SEVERITIES:
-            raise ValueError(
-                f"severity {warning.severity!r} is not one of {', '.join(WARNING_SEVERITIES)}"
-            )
+        validate_warning(warning)
         slot = (warning.source, warning.key)
         if self._entries.get(slot) == warning:
             return False
@@ -134,21 +172,15 @@ class ExtensionWarnings:
             self._changed()
         return bool(slots)
 
-    def clear_all(self) -> bool:
-        """Remove every warning; returns whether there was any."""
-        if not self._entries:
-            return False
-        self._entries.clear()
-        self._changed()
-        return True
-
     def subscribe(self, listener: WarningsListener) -> Callable[[], None]:
         """Call ``listener`` after each change; returns the unsubscribe."""
         self._listeners.append(listener)
         return lambda: self._listeners.remove(listener)
 
     def _changed(self) -> None:
-        """Tell every listener the new set."""
+        """Tell every listener the new set, unless a batch is holding the calls."""
+        if self._batch_depth:
+            return
         current = self.current()
         for listener in list(self._listeners):
             listener(current)

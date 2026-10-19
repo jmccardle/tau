@@ -168,12 +168,16 @@ clear_extension_warning(source: str, key: str) -> None
 
 `tau_agent_core.agent_session.AgentSession.clear_extension_warning`
 
-Remove a warning; clearing an absent one does nothing.
+Remove a warning; clearing an absent one does nothing. Safe from any thread.
 
 **Parameters**
 
 - `source: str` — The extension identifier, or ``"tau"``.
 - `key: str` — The warning's name within ``source``.
+
+**Raises**
+
+- `RuntimeError` — no loop to make the change on (:meth:`_on_own_loop`).
 
 ### close_cursor
 
@@ -514,12 +518,12 @@ extension_warnings() -> list[ExtensionWarning]
 
 `tau_agent_core.agent_session.AgentSession.extension_warnings`
 
-Every current warning on this session (#60).
+Every current extension warning (#60).
 
-Kept until its writer clears it, its extension is disabled or reloaded,
-or the session swaps to another tree. τ mirrors each extension that
-failed to load as a ``"tau"`` error keyed ``load:<label>``, and keeps it
-across a swap, because the failure still holds.
+Extension state, not session state: kept across new, fork and switch
+until its writer clears or replaces it, or its extension is disabled
+or reloaded. τ mirrors each extension that failed to load as a
+``"tau"`` error keyed ``load:<label>``.
 
 **Returns**
 
@@ -1423,7 +1427,8 @@ Set the warning ``key`` from ``source``, replacing one already there.
 
 An extension calls :meth:`ExtensionAPI.set_warning`, which names itself;
 τ writes with ``source="tau"``. A new or changed warning is also shown
-once through ``ui.notify`` at ``severity``.
+once through ``ui.notify`` at ``severity``. Safe from any thread: off the
+session's loop the warning is checked here, then set on the loop.
 
 **Parameters**
 
@@ -1435,6 +1440,7 @@ once through ``ui.notify`` at ``severity``.
 **Raises**
 
 - `ValueError` — an empty source or key, a message that is not one non-empty line, or an unknown severity.
+- `RuntimeError` — no loop to make the change on (:meth:`_on_own_loop`).
 
 ### set_headless_ui_defaults
 
@@ -1875,7 +1881,7 @@ Call ``listener`` with every current warning after each change.
 
 **Parameters**
 
-- `listener: Callable[[list[ExtensionWarning]], None]` — Called synchronously, on the thread that made the change.
+- `listener: Callable[[list[ExtensionWarning]], None]` — Called on the session's loop, once per change.
 
 **Returns**
 

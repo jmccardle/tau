@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 180,085 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 180,467 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -1749,7 +1749,7 @@ what rides on top of this on every response):
 
 #### `get_extension_state`
 
-*Since 0.9.8.* AgentSession.get_extension_state(), projected through sdk.summarize_extensions — the read the /extensions listing is built from, and the read a head needs before it can offer enable/disable/reload as anything but a blind form. Whether each extension is currently ENABLED is the separate read list_managed_extensions; a host that wants both composes them, which is the division AgentSession.get_extension_state's own docstring states. Read-only: no turn_safety_guard, no `leaf` (E5 rule 2), no require_durable_session (D-7 rule 2 — extension state is runtime state and is never appended to the session log, so this answers the same on a persisted and an unpersisted session).
+*Since 0.9.8.* AgentSession.get_extension_state(), projected through sdk.summarize_extensions — the read the /extensions listing is built from, and the read a head needs before it can offer enable/disable/reload as anything but a blind form. Whether each extension is currently ENABLED is the separate read list_managed_extensions; a host that wants both composes them, which is the division AgentSession.get_extension_state's own docstring states. Read-only: no turn_safety_guard, no `leaf` (E5 rule 2), no require_durable_session (D-7 rule 2 — extension state is runtime state and is never appended to the session log, so this answers the same on a persisted and an unpersisted session). `warnings` is the session's current extension warnings (#60), the read to poll for them.
 
 **Params schema:**
 
@@ -1780,11 +1780,19 @@ what rides on top of this on every response):
         "$ref": "#/$defs/ExtensionInfo"
       },
       "type": "array"
+    },
+    "warnings": {
+      "description": "The session's current extension warnings, as AgentSession.extension_warnings() reads them now (#60): the cheap read for a host that polls, where get_capabilities is the whole protocol document.",
+      "items": {
+        "$ref": "#/$defs/ExtensionWarning"
+      },
+      "type": "array"
     }
   },
   "required": [
     "extensions",
-    "errors"
+    "errors",
+    "warnings"
   ],
   "type": "object"
 }

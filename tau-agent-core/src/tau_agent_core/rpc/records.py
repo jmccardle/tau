@@ -659,7 +659,11 @@ RESULT_TYPES: dict[str, dict[str, Any]] = {
     "get_entry": {"entry": Annotated[dict[str, Any], Shape(Entry)]},
     "get_pending_request": {"request": ExtensionRequest | None},
     "list_managed_extensions": {"extensions": list[ManagedExtension]},
-    "get_extension_state": {"extensions": list[ExtensionInfo], "errors": list[LoadError]},
+    "get_extension_state": {
+        "extensions": list[ExtensionInfo],
+        "errors": list[LoadError],
+        "warnings": list[ExtensionWarning],
+    },
     "list_extensions": {"extensions": list[ExtensionRecordWire]},
     "get_extension_config": {
         "schema": Annotated[dict[str, Any], Shape(FormSpec)] | None,

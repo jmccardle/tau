@@ -27,6 +27,7 @@ from tau_agent_core.commands import (
 )
 from tau_agent_core.compaction import estimate_context_tokens
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_data
+from tau_agent_core.extension_warnings import TAU_SOURCE
 from tau_agent_core.tool_catalog import ExtensionInfo, ToolDescription, match_tools
 from tau_agent_core.tool_pipeline import NestedToolResult
 from tau_agent_core.tools.base import ExtensionToolDefinition
@@ -2574,8 +2575,13 @@ class ExtensionAPI:
         """Set this extension's warning ``key`` on the session until cleared (#60).
 
         It stays readable by every head and by a client attaching later, and is
-        shown once through ``ui.notify`` when new or changed. Setting the same
-        key replaces it. A disable, a reload or a session swap clears it.
+        shown once through ``ui.notify`` when new or changed, and again after a
+        session swap. Setting the same key replaces it. It persists across
+        new, fork and switch until cleared; a disable or a reload clears it.
+
+        Safe from a worker thread (``asyncio.to_thread``): the warning is checked
+        on the calling thread, then set on the session's loop, where listeners
+        run. From a thread the call returns before the warning lands.
 
         Args:
             key: The warning's name within this extension.
@@ -2583,23 +2589,38 @@ class ExtensionAPI:
             severity: ``"warning"`` or ``"error"``.
 
         Raises:
-            RuntimeError: this api is not bound to a session or to a loaded extension.
+            RuntimeError: this api is not bound to a session or to a loaded
+                extension; the extension is named ``tau``, which τ reserves; or
+                there is no loop to set it on.
             ValueError: an empty key, a message that is not one non-empty line,
                 or an unknown severity.
         """
         session = self._bound_session("set_warning")
-        session.set_extension_warning(self.extension_name, key, message, severity)
+        session.set_extension_warning(self._warning_source("set_warning"), key, message, severity)
 
     def clear_warning(self, key: str) -> None:
         """Clear this extension's warning ``key``; clearing an absent one does nothing.
+
+        Safe from a worker thread, as :meth:`set_warning` is.
 
         Args:
             key: The warning's name within this extension.
 
         Raises:
-            RuntimeError: this api is not bound to a session or to a loaded extension.
+            RuntimeError: as :meth:`set_warning`.
         """
-        self._bound_session("clear_warning").clear_extension_warning(self.extension_name, key)
+        session = self._bound_session("clear_warning")
+        session.clear_extension_warning(self._warning_source("clear_warning"), key)
+
+    def _warning_source(self, verb: str) -> str:
+        """This extension's name as a warning source; ``tau`` is τ's own (#60)."""
+        name = self.extension_name
+        if name == TAU_SOURCE:
+            raise RuntimeError(
+                f"api.{verb}: the source name {TAU_SOURCE!r} is reserved for τ's own warnings; "
+                "rename the extension to set warnings"
+            )
+        return name
 
     def _bound_session(self, verb: str) -> Any:
         """The bound ``AgentSession``, or raise naming ``verb`` (Fail-Early)."""

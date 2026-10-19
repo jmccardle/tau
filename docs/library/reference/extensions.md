@@ -247,13 +247,15 @@ clear_warning(key: str) -> None
 
 Clear this extension's warning ``key``; clearing an absent one does nothing.
 
+Safe from a worker thread, as :meth:`set_warning` is.
+
 **Parameters**
 
 - `key: str` — The warning's name within this extension.
 
 **Raises**
 
-- `RuntimeError` — this api is not bound to a session or to a loaded extension.
+- `RuntimeError` — as :meth:`set_warning`.
 
 ### emit
 
@@ -651,8 +653,13 @@ set_warning(key: str, message: str, severity: str = 'warning') -> None
 Set this extension's warning ``key`` on the session until cleared (#60).
 
 It stays readable by every head and by a client attaching later, and is
-shown once through ``ui.notify`` when new or changed. Setting the same
-key replaces it. A disable, a reload or a session swap clears it.
+shown once through ``ui.notify`` when new or changed, and again after a
+session swap. Setting the same key replaces it. It persists across
+new, fork and switch until cleared; a disable or a reload clears it.
+
+Safe from a worker thread (``asyncio.to_thread``): the warning is checked
+on the calling thread, then set on the session's loop, where listeners
+run. From a thread the call returns before the warning lands.
 
 **Parameters**
 
@@ -662,7 +669,7 @@ key replaces it. A disable, a reload or a session swap clears it.
 
 **Raises**
 
-- `RuntimeError` — this api is not bound to a session or to a loaded extension.
+- `RuntimeError` — this api is not bound to a session or to a loaded extension; the extension is named ``tau``, which τ reserves; or there is no loop to set it on.
 - `ValueError` — an empty key, a message that is not one non-empty line, or an unknown severity.
 
 ### submit

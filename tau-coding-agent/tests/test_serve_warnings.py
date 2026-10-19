@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+
 from test_serve import _until, extensions_off, provider, served  # noqa: F401
 
 from tau_coding_agent.serve import protocol as p
@@ -60,3 +63,26 @@ def test_every_warning_field_is_required_in_the_serve_schema():
     assert schema["$defs"]["UiWarnings"]["properties"]["warnings"]["items"] == {
         "$ref": "#/$defs/ExtensionWarning"
     }
+
+
+async def test_a_warning_set_from_a_worker_thread_is_published_on_the_loop(served, tmp_path):
+    """#60 review: serve's publish is loop-only (seq, history, queue.put_nowait)."""
+    client = await served.client()
+    session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"]["session_id"]
+    await client.attach(session_id)
+    host = served.daemon.hosts[session_id]
+    published: list[tuple[str, int]] = []
+    publish = host.publish
+
+    def recording(kind, data):
+        published.append((kind, threading.get_ident()))
+        publish(kind, data)
+
+    host.publish = recording  # type: ignore[method-assign]
+
+    await asyncio.to_thread(host.agent_session.set_extension_warning, "probe", "k", "failing")
+    await _until(lambda: client.replicas[session_id].surface["warnings"] != [])
+
+    loop_thread = threading.get_ident()
+    assert published and all(thread == loop_thread for _, thread in published)
+    await client.close()

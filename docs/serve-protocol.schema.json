@@ -3130,11 +3130,19 @@
             "$ref": "#/$defs/ExtensionInfo"
           },
           "type": "array"
+        },
+        "warnings": {
+          "description": "The session's current extension warnings, as AgentSession.extension_warnings() reads them now (#60): the cheap read for a host that polls, where get_capabilities is the whole protocol document.",
+          "items": {
+            "$ref": "#/$defs/ExtensionWarning"
+          },
+          "type": "array"
         }
       },
       "required": [
         "extensions",
-        "errors"
+        "errors",
+        "warnings"
       ],
       "type": "object"
     },

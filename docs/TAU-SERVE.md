@@ -731,8 +731,12 @@ has had no `cursor` attribute since `CURSORS.md`, so the read was always
 
 `ui.notify` and `ui.set_status` publish one-off events, so a client that
 attached after a warning was issued never saw it. `AgentSession` now keeps the
-session's current warnings (`extension_warnings()`, docs/extensions.md
-"Warnings"), and both wires carry the set. Neither protocol version moves,
+current extension warnings (`extension_warnings()`, docs/extensions.md
+"Warnings"), and both wires carry the set. Warnings are extension state, not
+session state: they persist across new, fork and switch/resume until the
+extension clears or replaces its key. After a swap each warning is shown once
+more, and the set does not change. A later post-swap `session_start` (#60
+decision B) may revisit this for warnings that belong to one session. Neither protocol version moves,
 because RPC 3.0 and serve 0.11 are unreleased.
 
 - **Serve:** `Surface.warnings` is a list of `ExtensionWarning`
@@ -741,18 +745,26 @@ because RPC 3.0 and serve 0.11 are unreleased.
   `warnings` (`UiWarnings`, `{op: "warnings", warnings: [...]}`), which
   replaces `surface.warnings`. That is a new arm of the existing `ui` event,
   not a new event kind. `ServeClient`'s replica folds it.
-- **RPC:** `get_capabilities` gains `warnings`, the same records. RPC has no
-  push for it: the `ui_methods` channel does not exist (RC3), and a host that
-  wants the set later calls `get_capabilities` again. A human running `--mode
+- **RPC:** `get_capabilities` and `get_extension_state` both gain `warnings`,
+  the same records. RPC has no push for it, because the `ui_methods` channel
+  does not exist (RC3). A host that polls reads `get_extension_state`, which
+  is cheap; `get_capabilities` is the whole protocol document (about 185 KB). A human running `--mode
   rpc` or `-p` still sees each new warning once on stderr, because setting a
-  warning also calls `ui.notify`.
+  warning also calls `ui.notify` (docs/extensions.md "Warnings").
+- **One change, one event:** a change that touches several entries, such as
+  re-mirroring load failures after `load_extensions`, is batched into one `ui`
+  warnings event carrying the final set. A warning set from a worker thread is
+  moved onto the session's loop before anything is published.
 - **Loader notices:** `load_errors` still carries the loader's records. Each
   failure is also an entry in `warnings`, so a client's warning count covers
   it. The contract is: `source` is `"tau"`, `key` is `"load:<label>"` where
   `<label>` is the `load_errors` path, `severity` is `"error"`, and `message`
   holds only the error's first line. One entry exists per `load_errors` row,
-  and it is gone when that row is. A client that already shows `load_errors`
-  may drop these by `source == "tau"` and the `load:` key prefix; tau-code does. #55's exclusion notice and #58's load-failure text move onto the
+  and it is gone when that row is. The TUI's warning marker counts these on
+  purpose, so a load failure stays visible after its toast fades. A client
+  that already lists `load_errors` may leave the `load:` entries out of its
+  warnings list (`source == "tau"` and the `load:` key prefix), as tau-code
+  does. #55's exclusion notice and #58's load-failure text move onto the
   store once their branches merge.
 
 ## 8. The demo: comparing cursors from one leaf

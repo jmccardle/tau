@@ -260,9 +260,9 @@ direction, not the convenient one.
 
 ## Warnings
 
-Added 2026-10-19 (#60). A notification is gone once shown. A warning stays on
-the session until it is cleared, so a head opened later, or a serve client that
-attaches after the first turn, still sees it.
+Added 2026-10-19 (#60). A notification is gone once shown. A warning stays
+until it is cleared, so a head opened later, or a serve client that attaches
+after the first turn, still sees it.
 
 ```python
 api.set_warning(key: str, message: str, severity: str = "warning") -> None
@@ -271,19 +271,50 @@ api.clear_warning(key: str) -> None
 
 - A warning is keyed by `(extension identifier, key)`. Setting the same key
   replaces the old one, and clearing an absent key does nothing.
-- `message` is one non-empty line. `severity` is `"warning"` or `"error"`;
-  anything else raises `ValueError`.
+- `key` and `message` are non-blank strings, and `message` is one line.
+  `severity` is `"warning"` or `"error"`. Anything else raises `ValueError`,
+  naming the field.
 - A new or changed warning is also shown once through `ui.notify`, as
-  `"<extension>: <message>"`.
-- The session clears an extension's warnings when that extension is disabled
-  or reloaded. It clears all of them when it swaps to another session (`new`,
-  `fork`, `switch`/resume).
+  `"<extension>: <message>"`. Headless, that is one stderr line,
+  `[τ] <severity>: <extension>: <message>`. Under `--mode json` it is one
+  record instead,
+  `{"type": "extension", "kind": "notify", "extension": "<extension>", "level": "<severity>", "message": "<extension>: <message>"}`.
+  Setting an identical warning again shows nothing.
+- **Lifecycle: warnings are extension state, not session state.** They
+  persist across `new`, `fork` and `switch`/resume until the extension clears
+  or replaces its own key. After each swap, every current warning is shown
+  once more, so the new session's user sees it; the set itself does not
+  change, so no listener or `ui` event fires. Disabling or reloading an
+  extension clears that extension's warnings. Set a warning wherever its
+  condition is found: `register()`, `session_start` or a tool. A later
+  post-swap `session_start` (#60 decision B, open) may revisit this for
+  warnings that belong to one session.
+- The identifier `tau` is reserved for τ's own warnings, so an extension
+  named `tau` that calls `set_warning` or `clear_warning` gets a
+  `RuntimeError`.
+- **Threads.** Both calls are safe from a worker thread, such as a tool's
+  `asyncio.to_thread`. The warning is checked on the calling thread, so a bad
+  one raises there. It is then set on the session's loop, where every listener
+  runs. From a thread the call returns before the warning lands. With no
+  running loop anywhere, both raise `RuntimeError`.
 - τ writes its own warnings with source `"tau"` through
   `AgentSession.set_extension_warning`. `AgentSession.extension_warnings()` reads
   the current set.
 - Each extension that failed to load is mirrored as a `"tau"` error keyed
   `load:<label>`, without a second notice, because every head already
-  announced the failure. It survives a swap, because the failure still holds.
+  announced the failure.
+
+```python
+def register(api):
+    async def search(tool_call_id, params, signal, on_update, ctx):
+        try:
+            hits = await asyncio.to_thread(backend.query, params["q"])
+        except BackendDown as exc:
+            api.set_warning("backend", f"search backend is down: {exc}", "error")
+            raise
+        api.clear_warning("backend")
+        return {"content": [{"type": "text", "text": hits}]}
+```
 
 The TUI keeps a one-line marker above the status strip while any warning is
 current, such as `1 extension error — /extensions`. The text comes from

@@ -1306,6 +1306,7 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 |---|---|---|---|
 | `extensions` | list of [ExtensionInfo](#extensioninfo) | yes | Every loaded extension and what it registered, as [{name, path, tools, commands, shortcuts, hooks, content_hash, subjects}] — sdk.summarize_extensions of the live registry, which is the same projection the TUI's /extensions listing draws. Read LIVE, not from the load-time snapshot, so a reload_extension is reflected here. |
 | `errors` | list of [LoadError](#loaderror) | yes | Every discovered file that FAILED to load, as [{path, error}]. Kept from the last load_extensions call, because a failed import leaves nothing to recompute from. This is the half that makes this a read of its own rather than list_managed_extensions with more fields: a file that cannot import can never be a legal extension_name, and is exactly what a listing must show. |
+| `warnings` | list of [ExtensionWarning](#extensionwarning) | yes | The session's current extension warnings, as AgentSession.extension_warnings() reads them now (#60): the cheap read for a host that polls, where get_capabilities is the whole protocol document. |
 
 ### GetLastAssistantTextResult
 

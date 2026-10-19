@@ -665,13 +665,22 @@ async def test_a_swap_of_an_idle_head_with_nothing_queued_closes_it_at_once(
 
 
 @pytest.mark.parametrize("verb", ["new_session", "fork", "switch_session"])
-async def test_every_swap_clears_the_extension_warnings(session, runtime, catalog, verb):
-    """#60: a warning belongs to the session it was set on, not to the process."""
+async def test_a_warning_set_at_register_survives_every_swap_and_is_shown_again(
+    session, runtime, catalog, verb, tmp_path, capsys
+):
+    """#60: warnings are extension state, so a swap keeps them and repeats each notice once."""
+    ext = tmp_path / "warner.py"
+    ext.write_text(
+        "def register(api):\n"
+        "    api.set_warning('backend', 'the backend is down')\n"
+        "    async def clear(args, ctx):\n"
+        "        api.clear_warning('backend')\n"
+        "    api.register_command('unwarn', {'description': 'clear', 'handler': clear})\n"
+    )
     other = catalog.create("/work", "m", "openai")
     session.session_log = catalog.create("/work", "m", "openai")
-    session.set_extension_warning("probe", "k", "stale")
-    seen: list[list[Any]] = []
-    session.subscribe_extension_warnings(seen.append)
+    await session.load_extensions([str(ext)], discover=False)
+    capsys.readouterr()
 
     if verb == "new_session":
         result = await runtime.new_session(persist=True)
@@ -681,5 +690,7 @@ async def test_every_swap_clears_the_extension_warnings(session, runtime, catalo
         result = await runtime.switch_session(other.id)
 
     assert result["cancelled"] is False
+    assert [w.key for w in session.extension_warnings()] == ["backend"]
+    assert capsys.readouterr().err.count("warner: the backend is down") == 1
+    await session.run_extension_command("unwarn", "")
     assert session.extension_warnings() == []
-    assert seen == [[]]
