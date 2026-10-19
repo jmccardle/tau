@@ -17,6 +17,9 @@ PORTABLE_BASE_ENV = "TAU_PORTABLE_BASE"
 
 HOME_DIRNAME = ".tau"
 
+HOME_ENV_VARS = (HOME_ENV, PORTABLE_BASE_ENV)
+"""Every variable :func:`resolve_tau_home` reads besides ``$HOME``."""
+
 
 class TauHomeError(Exception):
     """``$TAU_HOME`` or ``$TAU_PORTABLE_BASE`` names something that is not a directory."""

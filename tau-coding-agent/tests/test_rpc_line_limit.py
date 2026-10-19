@@ -49,7 +49,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -57,6 +56,7 @@ from typing import Any
 import pytest
 
 from tau_agent_core.rpc import dialect
+from tau_agent_core.testing import child_env
 
 UNREACHABLE_BASE_URL = "http://127.0.0.1:1/v1"
 
@@ -102,7 +102,7 @@ async def _spawn(fake_home: Path) -> asyncio.subprocess.Process:
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env={**os.environ, "HOME": str(fake_home), "TMPDIR": str(fake_home / "tmp")},
+        env=child_env(fake_home, TMPDIR=str(fake_home / "tmp")),
     )
 
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from tau_agent_core.cursor import Cursor
+from tau_agent_core.testing import child_env
 
 from tau_coding_agent.session_store import FileSessionCatalog
 from tau_coding_agent.store_factory import (
@@ -145,7 +146,6 @@ def _run_cli(tmp_path, *argv: str, stdin: str | None = None):
     call with a hand-built ``CLIArgs`` can step over.
     """
     import json
-    import os
     import subprocess
     import sys
 
@@ -172,7 +172,7 @@ def _run_cli(tmp_path, *argv: str, stdin: str | None = None):
         [sys.executable, "-m", "tau_coding_agent.cli", *argv],
         input=stdin,
         cwd=str(tmp_path),
-        env={**os.environ, "HOME": str(home)},
+        env=child_env(home),
         capture_output=True,
         text=True,
         timeout=120,

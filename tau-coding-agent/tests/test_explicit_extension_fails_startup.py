@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from tau_agent_core import extension_sources
+from tau_agent_core.testing import child_env
 from tau_coding_agent.backends import create_backend
 from tau_coding_agent.headless import CLIError, start_extensions
 
@@ -79,14 +80,13 @@ def test_rpc_mode_exits_non_zero_before_the_first_turn(tmp_path):
     ext = tmp_path / "handset_bus.py"
     ext.write_text(_START_RAISES)
     src = Path(__file__).resolve().parents[2]
-    env = {
-        **os.environ,
-        "HOME": str(home),
-        "PYTHONPATH": os.pathsep.join(
+    env = child_env(
+        home,
+        PYTHONPATH=os.pathsep.join(
             str(src / pkg / "src")
             for pkg in ("tau-llm", "tau-agent-core", "tau-coding-agent", "tau-jmfts", "tau-meta")
         ),
-    }
+    )
     proc = subprocess.run(
         [sys.executable, "-m", "tau_coding_agent.cli", "--mode", "rpc", "--no-session"]
         + ["--no-extensions", "-e", str(ext)],

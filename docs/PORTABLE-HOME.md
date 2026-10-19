@@ -121,4 +121,28 @@ the first:
 does not move either.
 
 **For testers and embedders.** `mkdir` a directory, write its `config.json`,
-and set `TAU_HOME` to it. Don't use `TAU_PORTABLE_BASE` for this.
+and set `TAU_HOME` to it. Don't use `TAU_PORTABLE_BASE` for this. The test
+suite never sees either variable (§7).
+
+## 7. The test suite can't see a tester's home (2026-10-19, #54)
+
+**What was wrong.** Subprocess tests wrote a config under a fake `$HOME` and
+passed the rest of the parent's environment through. When the tester's shell
+had `TAU_PORTABLE_BASE` set, which the 0.14.0 test recipe asked for, the child
+resolved the portable home over the fake one and 37 tests failed. `TAU_HOME`
+would have done the same. In-process tests were exposed too: `config.TAU_DIR`
+resolves when the module is first imported.
+
+**Two guards.**
+- The repo-root `conftest.py` removes every name in
+  `tau_home.HOME_ENV_VARS` from `os.environ` when pytest imports it. That is
+  before any package's `tests/conftest.py` or test module, so before
+  `TAU_DIR` resolves. A session-scoped fixture would run after collection,
+  which is too late. Child processes inherit the cleaned environment.
+- `tau_agent_core.testing.child_env(home, **overrides)` builds a subprocess
+  environment: the parent's, minus `HOME_ENV_VARS`, with `HOME` set. Every
+  test that starts a τ child uses it, so a child is isolated even when the
+  helper's caller runs outside this suite (a fork's own tests, Tectum's).
+
+`HOME_ENV_VARS` lives beside `resolve_tau_home`. A third home variable is
+added there, in one place, and both guards pick it up.
