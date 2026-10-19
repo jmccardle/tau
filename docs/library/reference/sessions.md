@@ -5132,7 +5132,10 @@ minted.
 
 An ephemeral session (``create_ephemeral`` — the file store's ``path``-less
 ``Session``, the JMFTS store's ``_EphemeralConversationSession``) declares
-neither attribute and is therefore ``False``.
+neither attribute and is therefore ``False``. A deferred session
+(``SessionCatalog.create_deferred``) declares its location as ``None`` until
+its first write, because no listing returns it before then, so it is
+``False`` until that write and ``True`` after.
 
 A predicate rather than a raise: a caller that was ASKED for an unpersisted
 session made the right one. What it must not do is describe it as addressable.

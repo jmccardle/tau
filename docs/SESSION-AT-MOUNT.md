@@ -43,6 +43,11 @@ command or hook that writes to the tree. An extension that appends in
 `session_start` therefore writes the session at mount. That is the extension's
 write, and the store does not second-guess it. None of τ's built-ins do it.
 
+An unwritten session is not addressable. Its durable location (`Session.path`,
+`root_doc_id`) reads `None` until the first write, so
+`session_log_is_addressable` answers `False` until then. No listing can return
+the session before then, and the function promises exactly that.
+
 `create_deferred` is concrete on the ABC and raises `NotImplementedError`, so a
 catalog opts in. `FileSessionCatalog` and `JmftsSessionCatalog` implement it.
 `RemoteCatalog` refuses every create anyway (§4).
@@ -50,8 +55,15 @@ catalog opts in. `FileSessionCatalog` and `JmftsSessionCatalog` implement it.
 ## 3. The two stores
 
 **File store.** Entry ids are minted client-side, so deferral costs one flag.
-`Session.create(deferred=True)` builds the chain with `path=None`, sets `path`
-afterwards, and the first `_persist_entry` calls `_write_held`. The header
+`Session.create(deferred=True)` keeps the intended path private, and the first
+`_persist_entry` calls `_write_held`. That writes a dot-prefixed temp file in the
+target directory and `os.replace`s it into place, so the session file appears
+whole or not at all. A write that fails partway leaves the session unwritten,
+with no file. The error is raised, and the next append tries again. The first
+version opened the target with `"x"`, so a partial file turned every later
+append into `FileExistsError`. `Session.fork` writes an unwritten source first:
+the fork's header names it as `parent`, and a parent that never reaches disk is
+a dangling reference. The header
 timestamp and filename are the *creation* time, not the time of the first write,
 because that is when the session began. The listing's `modified` is the first
 write.
@@ -68,7 +80,13 @@ cursor, a compare cursor — pointing at an id the mirror no longer contains, an
 its reads fold to nothing without an error. A reload reads real ids from the
 server, which is consistent because the server never saw a held id.
 `root_doc_id` is `None` until the first write. `enrich` says so and skips at
-shutdown. A fork of an unwritten conversation writes the source first, because
+shutdown. **The held write is resumable, not all-or-nothing.** The server has no
+transaction to roll back. `_write_held_locked` posts the root if it is not yet
+posted, then pops held entries one at a time, recording each alias as it lands.
+A POST that fails partway leaves the root and a written prefix on the server.
+The rest stay held with their `unwritten-N` ids, and the next append resumes
+where the failure stopped. `_doc_id` raises a named `RuntimeError` for a held id
+that has not been written, rather than failing inside `int()`. A fork of an unwritten conversation writes the source first, because
 the copy is read from the server and a fork is real activity.
 
 ## 4. Mount
@@ -96,7 +114,18 @@ session's model instead of `Ready`. Four TUI snapshots were re-recorded for that
 line alone.
 
 `--resume` still opens the picker after mount. Choosing a session replaces the
-mount session, which was never written. Under `--connect` no session is opened
+mount session, which was never written.
+
+**A replaced backend is shut down.** `_replace_backend` fires
+`session_shutdown` on the outgoing backend before the new one becomes current,
+with reason `"new"` (a new chat) or `"resume"` (a chosen session). Before this,
+the replaced backend's extensions got `session_start` and never the matching
+shutdown. That was already true of every new chat, and mount made it visible
+under `--resume`: the measured sequence was `start, start, shutdown`. Now it is
+`start, shutdown:resume, start, shutdown:quit`. An extension that pairs a
+resource across the two hooks no longer leaks one per new chat or resume.
+`action_clear_chat` keeps its backend and loads no extensions, so it fires
+neither hook. Under `--connect` no session is opened
 at mount, because the daemon owns sessions. The submission path still opens one
 when none exists: that is the remote case, and a mount that failed (an unknown
 `default_model`, which is notified). If opening fails again, the typed line
@@ -112,10 +141,15 @@ stays in the editor.
   daemon session is open: no extension commands in the hint or completion. The
   commands live in the daemon, and opening a daemon session at mount would
   create one there.
+- **`tau -p` and `tau serve` stay eager by design.** A print run writes because
+  it has a prompt to run, and the daemon hands out a session id that a client
+  attaches to straight away. Deferral is for a head that opens a session before
+  anyone has asked for one. That makes it an intended difference between the
+  heads, not a fix that reached only one.
 - **Double extension load on `--resume`.** The mount session loads extensions,
-  then `on_chat_selected` builds a new backend and loads them again, as every
-  session switch already did. #35 changes when extensions load, which is the
-  place to revisit this.
+  then `on_chat_selected` builds a new backend and loads them again. The two
+  loads are now paired with shutdowns (§4), but the work is still done twice.
+  #35 changes when extensions load, which is the place to revisit this.
 - **No contract-suite coverage of `create_deferred`.** The file and JMFTS
   behaviour is tested in `test_session_store.py` and `test_store_deferred.py`.
   The shared `SessionCatalogContractTests` would need `InMemorySessionCatalog` to
