@@ -2136,7 +2136,8 @@ authorize_discovered_extension(token: str, *, extensions_dir: str | Path | None 
 Write an authorization record for the discovered source ``token`` names.
 
 The non-interactive route to the gate (docs/EXTENSION-PACKAGES.md §9):
-``tau ext authorize``, for a host with no prompt to answer.
+``tau ext authorize``, for a host with no prompt to answer. Creating the
+store grandfathers the drop-ins present first (:func:`_grandfather_before_first_write`).
 
 **Parameters**
 
@@ -2179,8 +2180,8 @@ disable_discovered_extension(token: str, *, extensions_dir: str | Path | None = 
 ``token`` is a drop-in path, an identifier, or its last dotted segment,
 resolved fresh against every identifier discovery or the store knows. An
 unknown name is refused, so a typo cannot record a disable for nothing.
-Creating the store grandfathers the drop-ins present first, as the first
-start would have (§5), so disabling one does not withhold the others.
+Creating the store grandfathers the drop-ins present first
+(:func:`_grandfather_before_first_write`).
 
 **Parameters**
 

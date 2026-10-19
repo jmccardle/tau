@@ -153,3 +153,44 @@ async def test_the_repl_prints_the_cores_notice(env: ReplEnv) -> None:
     env.install(prepare)
     await env.run([])
     assert " ".join(load_failure_notice(error).split()) in " ".join(env.text.split())
+
+
+def test_authorizing_a_package_on_a_fresh_home_keeps_the_drop_ins(tmp_path, monkeypatch, capsys):
+    """The first write of the store grandfathers the drop-ins present, as the first start does."""
+    directory = extension_sources.default_extensions_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "one.py").write_text("def register(api):\n    pass\n")
+    (directory / "two.py").write_text("def register(api):\n    pass\n")
+    site = tmp_path / "site"
+    package = site / "tauext_fresh_home"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "ext.py").write_text("def register(api):\n    pass\n")
+    info = site / "tau_fresh_home-1.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: tau-fresh-home\nVersion: 1.0\n")
+    (info / "entry_points.txt").write_text("[tau.extensions]\next = tauext_fresh_home.ext\n")
+    (info / "RECORD").write_text(f"{info.name}/RECORD,,\n")
+    monkeypatch.syspath_prepend(str(site))
+    assert not (directory.parent / STORE_FILENAME).exists()
+
+    assert main(["ext", "authorize", "tauext_fresh_home.ext"]) == 0
+    capsys.readouterr()
+    main(["ext", "list", "--json"])
+    states = {
+        row["identifier"]: row["state"]
+        for row in map(json.loads, capsys.readouterr().out.splitlines())
+    }
+    assert states == {
+        "one": "authorized",
+        "two": "authorized",
+        "tauext_fresh_home.ext": "authorized",
+    }
+
+
+def test_a_refused_authorize_writes_no_store(capsys):
+    directory = extension_sources.default_extensions_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "one.py").write_text("def register(api):\n    pass\n")
+    assert main(["ext", "authorize", "nope"]) == 2
+    assert not (directory.parent / STORE_FILENAME).exists()

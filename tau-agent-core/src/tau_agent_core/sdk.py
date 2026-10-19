@@ -1145,7 +1145,8 @@ def authorize_discovered_extension(
     """Write an authorization record for the discovered source ``token`` names.
 
     The non-interactive route to the gate (docs/EXTENSION-PACKAGES.md §9):
-    ``tau ext authorize``, for a host with no prompt to answer.
+    ``tau ext authorize``, for a host with no prompt to answer. Creating the
+    store grandfathers the drop-ins present first (:func:`_grandfather_before_first_write`).
 
     Args:
         token: A drop-in path, an identifier, or its last segment.
@@ -1160,11 +1161,9 @@ def authorize_discovered_extension(
         ValueError: ``token`` matches nothing, or more than one source.
         AuthorizationStoreError: The store cannot be read.
     """
-    directory, _ = _discovered_sources(extensions_dir)
+    directory, store = _store_for(extensions_dir, store_path)
     source = find_discovered_extension(token, extensions_dir=directory, kind=kind)
-    store = AuthorizationStore.load(
-        store_path if store_path is not None else store_path_for(directory)
-    )
+    _grandfather_before_first_write(store, directory)
     store.authorize(source)
     store.save()
     return source
@@ -1205,6 +1204,17 @@ def revoke_extension_authorization(
     return removed
 
 
+def _grandfather_before_first_write(store: AuthorizationStore, directory: Path) -> None:
+    """Grandfather the drop-ins in ``directory`` if ``store`` is about to be created (§5).
+
+    A missing store marks the first 0.14.0 start. A ``tau ext`` verb that writes
+    it first would otherwise consume that marker, leaving every drop-in present
+    unauthorized, so it grandfathers exactly as that start would. A no-op once
+    the store exists. Call it only on a path that writes the store anyway.
+    """
+    store.grandfather(extension_sources.discover_dropins(directory))
+
+
 def _store_for(
     extensions_dir: str | Path | None, store_path: str | Path | None
 ) -> tuple[Path, AuthorizationStore]:
@@ -1232,8 +1242,8 @@ def disable_discovered_extension(
     ``token`` is a drop-in path, an identifier, or its last dotted segment,
     resolved fresh against every identifier discovery or the store knows. An
     unknown name is refused, so a typo cannot record a disable for nothing.
-    Creating the store grandfathers the drop-ins present first, as the first
-    start would have (§5), so disabling one does not withhold the others.
+    Creating the store grandfathers the drop-ins present first
+    (:func:`_grandfather_before_first_write`).
 
     Args:
         token: What the user typed.
@@ -1248,11 +1258,13 @@ def disable_discovered_extension(
         AuthorizationStoreError: The store cannot be read.
     """
     directory, store = _store_for(extensions_dir, store_path)
-    dropins = extension_sources.discover_dropins(directory)
     if extension_sources.is_path_spec(token):
         identifier = find_discovered_extension(token, extensions_dir=directory).identifier
     else:
-        found = [*dropins, *extension_sources.discover_packages()]
+        found = [
+            *extension_sources.discover_dropins(directory),
+            *extension_sources.discover_packages(),
+        ]
         known = sorted({s.identifier for s in found} | store.known_identifiers())
         resolved = extension_sources.resolve_shorthand(token, known)
         if resolved is None:
@@ -1260,7 +1272,7 @@ def disable_discovered_extension(
                 f"no discovered or recorded extension is named {token!r}; see `tau ext list`"
             )
         identifier = resolved
-    store.grandfather(dropins)
+    _grandfather_before_first_write(store, directory)
     changed = store.disable(identifier)
     if changed:
         store.save()
