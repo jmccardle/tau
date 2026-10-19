@@ -127,6 +127,25 @@ def apply_resource_flags(
             model_config[switch] = True
 
 
+def unconfigured_model_message(name: str, models: dict[str, Any]) -> str:
+    """Why a bare model name that is not a configured key is refused, and what to write.
+
+    Args:
+        name: The name as given, without a ``:level`` suffix.
+        models: The config ``models`` map.
+
+    Returns:
+        One sentence naming the model, the configured keys and the ad-hoc form.
+    """
+    known = ", ".join(sorted(models)) or "none"
+    return (
+        f"model {name!r} is not configured in {default_config_path()} "
+        f"(configured: {known}). Use one of those, or name the provider for a "
+        f"model that is not configured: --model PROVIDER/{name}, "
+        f"or --provider PROVIDER --model {name}"
+    )
+
+
 def resolve_model_config(
     config: dict,
     args: "CLIArgs",
@@ -141,10 +160,11 @@ def resolve_model_config(
     config entry also sets ``config_name``, the key it was found under; the
     compaction block rides in through :func:`apply_compaction_config`).
 
-    Resolution order, mirroring the TUI and pi's ``resolveCliModel``:
-      1. ``--model NAME`` matching a key in ``config["models"]`` → that entry.
-      2. ``provider/id`` shorthand → an ad-hoc entry (provider from the prefix).
-      3. a bare id → an ad-hoc entry (provider from ``--provider`` or ``openai``).
+    Resolution order:
+      1. A key in ``config["models"]``, with or without a ``:level`` suffix → that entry.
+      2. ``provider/id``, or a bare id with ``--provider`` → an ad-hoc entry.
+      3. Anything else is refused: there is no default provider
+         (docs/SILENT-DEFAULTS.md §7).
     A ``model:level`` thinking suffix (or the ``--thinking`` flag) sets the
     requested reasoning level on ``model_config["thinking"]``.
 
@@ -175,14 +195,18 @@ def resolve_model_config(
         if sep and is_valid_thinking_level(tail):
             suffix_thinking = tail
             spec_id = head
-        # Ad-hoc model not present in the config map.
-        if "/" in spec_id:
-            prov, _, mid = spec_id.partition("/")
+        if spec_id in models:
+            model_config = {**models[spec_id], "config_name": spec_id}
         else:
-            prov, mid = (args.provider or "openai"), spec_id
-        if not mid:
-            raise CLIError(f"invalid --model value: {spec!r}")
-        model_config = {"backend": prov, "model": mid}
+            if "/" in spec_id:
+                prov, _, mid = spec_id.partition("/")
+            elif args.provider:
+                prov, mid = args.provider, spec_id
+            else:
+                raise CLIError(unconfigured_model_message(spec_id, models))
+            if not prov or not mid:
+                raise CLIError(f"invalid --model value: {spec!r}")
+            model_config = {"backend": prov, "model": mid}
 
     thinking = args.thinking or suffix_thinking
     if thinking is None and prior_config is not None and "thinking" in prior_config:

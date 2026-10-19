@@ -805,6 +805,7 @@ class Daemon:
         """Build a backend for ``log`` from the daemon's config, the way ``tau -p --session`` does."""
         from tau_coding_agent.backends import create_backend
         from tau_coding_agent.cli import CLIArgs
+        from tau_coding_agent.config import ConfigError
         from tau_coding_agent.headless import resolve_model_config
 
         cwd = str(log.header.get("cwd") or os.getcwd())
@@ -813,12 +814,15 @@ class Daemon:
                 dialect.NOT_FOUND, f"session cwd {cwd!r} does not exist on this machine"
             )
         prior = log.config
-        _, model_config = resolve_model_config(
-            self.config,
-            CLIArgs(model=model),
-            fallback_model=prior.get("model"),
-            prior_config=prior,
-        )
+        try:
+            _, model_config = resolve_model_config(
+                self.config,
+                CLIArgs(model=model),
+                fallback_model=prior.get("model"),
+                prior_config=prior,
+            )
+        except ConfigError as exc:
+            raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
         if self.config.get("system_prompt"):
             model_config["system_prompt"] = self.config["system_prompt"]
         model_config["cwd"] = cwd
@@ -939,6 +943,7 @@ class Daemon:
     async def _new_session(self, request: p.NewSession) -> p.SessionOpened:
         from tau_coding_agent.backends import create_backend
         from tau_coding_agent.cli import CLIArgs
+        from tau_coding_agent.config import ConfigError
         from tau_coding_agent.headless import resolve_model_config
 
         cwd = os.path.abspath(os.path.expanduser(request.cwd))
@@ -946,7 +951,12 @@ class Daemon:
             raise RequestError(
                 dialect.NOT_FOUND, f"cwd {cwd!r} does not exist on the daemon's machine"
             )
-        model_name, model_config = resolve_model_config(self.config, CLIArgs(model=request.model))
+        try:
+            model_name, model_config = resolve_model_config(
+                self.config, CLIArgs(model=request.model)
+            )
+        except ConfigError as exc:
+            raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
         if self.config.get("system_prompt"):
             model_config["system_prompt"] = self.config["system_prompt"]
         model_config["cwd"] = cwd

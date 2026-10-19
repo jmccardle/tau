@@ -327,7 +327,7 @@ context and the tool list. ``tau_coding_agent.headless`` re-exports it.
 <!-- agent: yes -->
 
 ```python
-create_agent_session(model: str | Model = 'gpt-4o', provider: str = 'openai', base_url: str | None = None, api_key: str | None = None, tools: list[str] | None = None, session_log: SessionLog | None = None, extensions: list[Callable] | None = None, system_prompt: str | None = None, no_context_files: bool = False, thinking_level: str | None = None, cwd: str | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', compaction_policy: CompactionPolicy | None = None, compaction_settings: CompactionSettings | None = None, model_resolver: Callable[[str], Model] | None = None, bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, max_turns: int | None = None, tool_options: dict[str, dict[str, Any]] | None = None, prompt_template_paths: Iterable[str | Path] = (), no_prompt_templates: bool = False, skill_paths: Iterable[str | Path] = (), no_skills: bool = False) -> AgentSession
+create_agent_session(model: str | Model = 'gpt-4o', provider: str | None = None, base_url: str | None = None, api_key: str | None = None, tools: list[str] | None = None, session_log: SessionLog | None = None, extensions: list[Callable] | None = None, system_prompt: str | None = None, no_context_files: bool = False, thinking_level: str | None = None, cwd: str | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', compaction_policy: CompactionPolicy | None = None, compaction_settings: CompactionSettings | None = None, model_resolver: Callable[[str], Model] | None = None, bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, max_turns: int | None = None, tool_options: dict[str, dict[str, Any]] | None = None, prompt_template_paths: Iterable[str | Path] = (), no_prompt_templates: bool = False, skill_paths: Iterable[str | Path] = (), no_skills: bool = False) -> AgentSession
 ```
 
 `tau_agent_core.sdk.create_agent_session`
@@ -358,7 +358,7 @@ settled here.
 **Parameters**
 
 - `model: str | Model = 'gpt-4o'` — Model identifier string or Model object (default: "gpt-4o").
-- `provider: str = 'openai'` — Provider name for model resolution (default: "openai").
+- `provider: str | None = None` — Provider name for model resolution; required for an id that is not built in (:func:`resolve_model`).
 - `base_url: str | None = None` — Optional custom API base URL.
 - `api_key: str | None = None` — Optional API key.
 - `tools: list[str] | None = None` — List of BUILT-IN tool name strings (e.g., ["read", "bash"]), resolved by :func:`_resolve_tools`, which raises ``ValueError`` on any name it does not recognize (NODE-ADDRESSABLE-AGENTS.md §5/W5). This parameter does not accept :class:`~tau_agent_core.tools.base.AgentTool` instances and gains no fallback that does — a custom tool must go through the :class:`~tau_agent_core.agent_session.AgentSession` constructor's ``tools=`` directly, or be registered by an extension (``ExtensionAPI`` tool registration, loaded via ``extensions=``/ ``load_extensions``). Passing a non-empty list together with ``no_tools`` raises — see that parameter.
@@ -604,21 +604,22 @@ The block, or ``""`` for no skills.
 <!-- agent: yes -->
 
 ```python
-resolve_model(model: str, provider: str = 'openai', base_url: str | None = None) -> Model
+resolve_model(model: str, provider: str | None = None, base_url: str | None = None) -> Model
 ```
 
 `tau_agent_core.sdk.resolve_model`
 
 Resolve a model string to a Model object.
 
-A built-in id (``"gpt-4o"``) returns a copy of its default. Any other id gets
-``provider``'s registered wire protocol and endpoint, with ``base_url``
-taking precedence over the endpoint.
+A built-in id (``"gpt-4o"``) returns a copy of its default. Any other id needs
+``provider``, whose registered wire protocol and endpoint it gets, with
+``base_url`` taking precedence over the endpoint. There is no default
+provider (docs/SILENT-DEFAULTS.md §7).
 
 **Parameters**
 
 - `model: str` — Model identifier (e.g., "gpt-4o").
-- `provider: str = 'openai'` — Registered vendor id (default: "openai").
+- `provider: str | None = None` — Registered vendor id; required unless ``model`` is built in.
 - `base_url: str | None = None` — Optional custom API base URL.
 
 **Returns**
@@ -627,7 +628,7 @@ A new Model; the shared built-in defaults are never mutated. A non-built-in id g
 
 **Raises**
 
-- `ValueError` — No ``base_url`` and ``provider`` is not registered with a default endpoint (docs/EXTENSION-PROVIDERS.md §2).
+- `ValueError` — ``model`` is not built in and no ``provider`` is given; or no ``base_url`` and ``provider`` is not registered with a default endpoint (docs/EXTENSION-PROVIDERS.md §2).
 
 ## resource_locations
 <!-- agent: yes -->

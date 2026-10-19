@@ -1680,6 +1680,16 @@ class TestSDKHelpers:
         assert model.api == "anthropic-messages"
         assert model.base_url == "https://api.anthropic.com"
 
+    def test_resolve_model_refuses_a_non_built_in_id_without_a_provider(self):
+        """There is no default provider (docs/SILENT-DEFAULTS.md §7)."""
+        with pytest.raises(ValueError, match=r"resolve_model\('claude-x'\): name its provider"):
+            resolve_model("claude-x")
+
+    def test_resolve_model_a_built_in_id_under_another_provider_is_not_the_default(self):
+        """``provider`` is honoured even for a built-in id."""
+        model = resolve_model("gpt-4o", provider="anthropic")
+        assert (model.provider, model.api) == ("anthropic", "anthropic-messages")
+
     def test_resolve_model_gemini_takes_its_wire_protocol(self):
         """A registered provider's api reaches the Model, not openai-completions."""
         assert resolve_model("gemini-2.5-pro", provider="gemini").api == "google-generative-ai"

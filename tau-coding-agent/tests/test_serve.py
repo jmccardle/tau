@@ -644,3 +644,14 @@ async def test_a_client_that_vanishes_without_a_close_frame_is_one_log_line(serv
     await _until(lambda: "dropped (no close frame)" in served.out.getvalue())
     assert "Traceback" not in served.out.getvalue()
     assert not served.daemon.clients
+
+
+async def test_a_new_session_on_an_unconfigured_bare_model_is_refused(served, tmp_path):
+    """No default provider (docs/SILENT-DEFAULTS.md §7): refused before a session exists."""
+    client = await served.client()
+    with pytest.raises(
+        ServeError, match=f"{dialect.INVALID_PARAMS}.*model 'nope' is not configured"
+    ):
+        await client.request(p.NewSession(cwd=str(tmp_path), model="nope"))
+    assert served.daemon.hosts == {}
+    await client.close()

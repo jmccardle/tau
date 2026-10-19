@@ -378,9 +378,37 @@ def test_resolve_provider_slash_id_shorthand():
     assert mc == {"backend": "openai", "model": "gpt-4o-mini"}
 
 
-def test_resolve_bare_id_uses_provider_default():
-    _name, mc = resolve_model_config(_config(), CLIArgs(model="some-model"))
-    assert mc == {"backend": "openai", "model": "some-model"}
+def test_resolve_refuses_a_bare_id_that_is_not_configured():
+    """No default provider (docs/SILENT-DEFAULTS.md §7): the name, the keys and the fix."""
+    with pytest.raises(CLIError) as excinfo:
+        resolve_model_config(_config(), CLIArgs(model="some-model:low"))
+    message = str(excinfo.value)
+    assert "model 'some-model' is not configured" in message
+    assert "(configured: gpt-4o, local-llm)" in message
+    assert "--model PROVIDER/some-model" in message
+
+
+def test_resolve_refuses_an_unconfigured_default_model():
+    config = {**_config(), "default_model": "gone"}
+    with pytest.raises(CLIError, match="model 'gone' is not configured"):
+        resolve_model_config(config, CLIArgs())
+
+
+def test_resolve_a_provider_prefix_is_ad_hoc():
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="anthropic/some-model"))
+    assert mc == {"backend": "anthropic", "model": "some-model"}
+
+
+def test_resolve_a_bare_id_with_provider_flag_is_ad_hoc():
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="some-model", provider="gemini"))
+    assert mc == {"backend": "gemini", "model": "some-model"}
+
+
+def test_resolve_a_configured_name_with_a_level_suffix_is_that_entry():
+    name, mc = resolve_model_config(_config(), CLIArgs(model="local-llm:high"))
+    assert mc["config_name"] == "local-llm"
+    assert mc["backend"] == _config()["models"]["local-llm"]["backend"]
+    assert mc["thinking"] == "high"
 
 
 def test_resolve_thinking_suffix_sets_level():
@@ -397,7 +425,7 @@ def test_resolve_thinking_flag_on_config_model():
 
 def test_resolve_thinking_flag_overrides_suffix():
     # An explicit --thinking wins over a :level suffix (pi: cliThinking ?? suffix).
-    _name, mc = resolve_model_config(_config(), CLIArgs(model="some-model:low", thinking="high"))
+    _name, mc = resolve_model_config(_config(), CLIArgs(model="gpt-4o:low", thinking="high"))
     assert mc["thinking"] == "high"
 
 

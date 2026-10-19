@@ -496,7 +496,7 @@ class GoogleGenerativeAIProvider(Provider):
         api_key = self.api_key or options.get("api_key")
         if not api_key:
             raise ValueError(
-                f"No API key for provider: {getattr(model, 'provider', 'google')}. "
+                f"No API key for provider: {model.provider}. "
                 "Set GEMINI_API_KEY, pass api_key=..., or configure it in "
                 "τ's config.json."
             )

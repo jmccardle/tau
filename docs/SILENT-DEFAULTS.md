@@ -86,8 +86,51 @@ It is not changed here because each fix has a cost someone should choose:
 
 - `context_window` (§5).
 - `sdk.resolve_model`'s other defaults: it is the SDK's quick-start path and
-  only its window has the §5 problem.
+  only its window has the §5 problem. Its `provider="openai"` default was
+  removed in §7.
 - `tau_agent_core.session.SessionInfo` has no producer in `src` at all; it is
   exported and documented, so retiring it is a separate change.
 - `Backend.model` reads `config.get("model", "")`; `TauBackend` always reaches
   §1's refusal first, and `RemoteBackend` reads the model from the server.
+
+## 7. No default provider (2026-10-19)
+
+**What was wrong.** A bare `--model NAME` that was not a key in `config.json`
+became an ad-hoc model with provider `openai`. Startup, `get_capabilities` and
+`new_session` all succeeded. The first prompt then failed with "No API key for
+provider 'openai'", or, with `OPENAI_API_KEY` set, went to OpenAI. The same
+guess sat in three more places: a config entry with no `backend` was built as
+`openai`, `sdk.resolve_model` gave any non-built-in id `provider="openai"`, and
+a configured name with a `:level` suffix (`local-llm:high`) missed the config
+lookup and became an ad-hoc OpenAI model called `local-llm`.
+
+**The rule.** τ never picks a provider.
+- `headless.resolve_model_config`, which the TUI, `-p`, rpc, repl and the serve
+  daemon all call, takes a configured key (with or without `:level`), or
+  `provider/id`, or a bare id with `--provider`. Anything else raises before a
+  session exists. The message names the model, lists the configured keys and
+  gives both ad-hoc forms. Each head prints it as one `tau: error:` line, exit
+  2; the serve daemon answers `INVALID_PARAMS`. The same check covers an
+  unconfigured `default_model` and a resumed session's stored model.
+- `build_model_from_config` refuses an entry with no `backend`, naming the
+  entry and the registered providers. The packaged template sets one in every
+  entry; a hand-written entry without one now fails at startup and says so.
+- `sdk.resolve_model` and `create_agent_session` take `provider=None`. A
+  built-in id (`gpt-4o`, `gpt-4`, `gpt-4-turbo`) still needs none; any other
+  id without a provider raises. A built-in id with a different provider now
+  gets that provider instead of being silently returned as OpenAI's.
+- The TUI no longer falls back to the name `local-llm` when `default_model` is
+  unset. It says to set `default_model` or pass `--model`.
+
+**What stays, and why.**
+- `create_agent_session()` with no arguments still means `gpt-4o`. That is a
+  documented quick-start default for a caller who named nothing, not a guess
+  about something they did name.
+- An unregistered provider with a `base_url` speaks `openai-completions`
+  (`build_model_from_config`, `resolve_model`). The URL is stated, and that wire
+  is what generic endpoints serve. It is documented in both docstrings.
+- `Settings.default_model = "gpt-4o"`: nothing in any package reads it
+  (`sdk.create_agent_session`'s docstring says so).
+- `AssistantMessageEventStream._make_empty_partial` labels an empty
+  placeholder message `openai-completions`/`openai` when the model object
+  lacks those attributes. It chooses no provider for any request.

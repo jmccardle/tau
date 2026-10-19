@@ -22,7 +22,7 @@ class TestNothingExistingChanges:
     """Every config that worked before must build the same Model."""
 
     def test_a_bare_config_still_gets_the_openai_wire(self):
-        model = backends.build_model_from_config({"model": "gpt-4o"})
+        model = backends.build_model_from_config({"backend": "openai", "model": "gpt-4o"})
         assert model.api == "openai-completions"
         assert model.provider == "openai"
         assert model.base_url == "https://api.openai.com/v1"
@@ -43,7 +43,12 @@ class TestNothingExistingChanges:
         """Groq, OpenRouter and every other OpenAI-compatible vendor τ does not
         ship a spec for."""
         model = backends.build_model_from_config(
-            {"model": "llama-3", "backend": "groq", "base_url": "https://api.groq.com/openai/v1"}
+            {
+                "backend": "openai",
+                "model": "llama-3",
+                "backend": "groq",
+                "base_url": "https://api.groq.com/openai/v1",
+            }
         )
         assert model.api == "openai-completions"
 
@@ -51,7 +56,7 @@ class TestNothingExistingChanges:
 class TestTheVendorSuppliesTheWire:
     def test_backend_anthropic_selects_the_anthropic_wire(self):
         model = backends.build_model_from_config(
-            {"model": "claude-opus-5", "backend": "anthropic"}
+            {"backend": "openai", "model": "claude-opus-5", "backend": "anthropic"}
         )
         assert model.api == "anthropic-messages"
         assert model.provider == "anthropic"
@@ -60,7 +65,7 @@ class TestTheVendorSuppliesTheWire:
         """Defaulting every model to OpenAI's URL would point the Anthropic
         client at the wrong server."""
         model = backends.build_model_from_config(
-            {"model": "claude-opus-5", "backend": "anthropic"}
+            {"backend": "openai", "model": "claude-opus-5", "backend": "anthropic"}
         )
         assert model.base_url == "https://api.anthropic.com"
 
@@ -91,11 +96,15 @@ class TestAStatedApi:
 
     def test_an_unknown_wire_raises_and_names_what_is_registered(self):
         with pytest.raises(ValueError, match="openai-completions"):
-            backends.build_model_from_config({"model": "m", "api": "openai-responses"})
+            backends.build_model_from_config(
+                {"backend": "openai", "model": "m", "api": "openai-responses"}
+            )
 
     def test_the_unknown_case_never_falls_through_to_the_openai_wire(self):
         with pytest.raises(ValueError):
-            backends.build_model_from_config({"model": "m", "api": "not-a-protocol"})
+            backends.build_model_from_config(
+                {"backend": "openai", "model": "m", "api": "not-a-protocol"}
+            )
 
 
 class TestNoEndpointIsNotOpenAIs:
@@ -128,15 +137,17 @@ class TestNoEndpointIsNotOpenAIs:
 
 class TestStrictReasoningFormats:
     def test_it_defaults_off(self):
-        model = backends.build_model_from_config({"model": "gpt-4o"})
+        model = backends.build_model_from_config({"backend": "openai", "model": "gpt-4o"})
         assert model.strict_reasoning_formats is False
 
     def test_it_is_reachable_from_config(self):
         model = backends.build_model_from_config(
-            {"model": "gpt-4o", "strict_reasoning_formats": True}
+            {"backend": "openai", "model": "gpt-4o", "strict_reasoning_formats": True}
         )
         assert model.strict_reasoning_formats is True
 
     def test_a_non_boolean_raises(self):
         with pytest.raises(ValueError, match="must be a boolean"):
-            backends.build_model_from_config({"model": "gpt-4o", "strict_reasoning_formats": "yes"})
+            backends.build_model_from_config(
+                {"backend": "openai", "model": "gpt-4o", "strict_reasoning_formats": "yes"}
+            )

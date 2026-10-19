@@ -94,18 +94,19 @@ _DEFAULT_MODELS: dict[str, Model] = {
 @agent_facing(topic="sdk")
 def resolve_model(
     model: str,
-    provider: str = "openai",
+    provider: str | None = None,
     base_url: str | None = None,
 ) -> Model:
     """Resolve a model string to a Model object.
 
-    A built-in id (``"gpt-4o"``) returns a copy of its default. Any other id gets
-    ``provider``'s registered wire protocol and endpoint, with ``base_url``
-    taking precedence over the endpoint.
+    A built-in id (``"gpt-4o"``) returns a copy of its default. Any other id needs
+    ``provider``, whose registered wire protocol and endpoint it gets, with
+    ``base_url`` taking precedence over the endpoint. There is no default
+    provider (docs/SILENT-DEFAULTS.md §7).
 
     Args:
         model: Model identifier (e.g., "gpt-4o").
-        provider: Registered vendor id (default: "openai").
+        provider: Registered vendor id; required unless ``model`` is built in.
         base_url: Optional custom API base URL.
 
     Returns:
@@ -114,12 +115,19 @@ def resolve_model(
         and speaks ``openai-completions`` when ``provider`` is unregistered.
 
     Raises:
-        ValueError: No ``base_url`` and ``provider`` is not registered with a
-            default endpoint (docs/EXTENSION-PROVIDERS.md §2).
+        ValueError: ``model`` is not built in and no ``provider`` is given; or no
+            ``base_url`` and ``provider`` is not registered with a default
+            endpoint (docs/EXTENSION-PROVIDERS.md §2).
     """
-    if model in _DEFAULT_MODELS:
+    if model in _DEFAULT_MODELS and provider in (None, _DEFAULT_MODELS[model].provider):
         default = _DEFAULT_MODELS[model]
         return default.model_copy(update={"base_url": base_url} if base_url else {})
+    if provider is None:
+        raise ValueError(
+            f"resolve_model({model!r}): name its provider (provider=...); τ does not "
+            f"guess one. Built-in ids that need none: {', '.join(sorted(_DEFAULT_MODELS))}. "
+            f"Registered providers: {', '.join(registered_providers())}."
+        )
     spec = get_provider_spec(provider)
     endpoint = base_url or (spec.base_url if spec else None)
     if not endpoint:
@@ -1858,7 +1866,7 @@ def _build_system_prompt(
 @agent_facing(topic="sdk")
 def create_agent_session(
     model: str | Model = "gpt-4o",
-    provider: str = "openai",
+    provider: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
     tools: list[str] | None = None,
@@ -1906,7 +1914,8 @@ def create_agent_session(
 
     Args:
         model: Model identifier string or Model object (default: "gpt-4o").
-        provider: Provider name for model resolution (default: "openai").
+        provider: Provider name for model resolution; required for an id that
+            is not built in (:func:`resolve_model`).
         base_url: Optional custom API base URL.
         api_key: Optional API key.
         tools: List of BUILT-IN tool name strings (e.g., ["read", "bash"]),

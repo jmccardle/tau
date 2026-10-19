@@ -595,7 +595,16 @@ class TauApp(App):
         :meth:`action_new_chat` refuses to start on, and the pane is where a user
         can see it before typing.
         """
-        name = self._live_model_name() or self.config.get("default_model", "local-llm")
+        name = self._live_model_name() or self.config.get("default_model")
+        if not name:
+            return transcript.SessionFacts(
+                tagline=self._tagline,
+                model=f"none — set default_model in {default_config_path()} or pass --model",
+                endpoint="unusable until this is fixed",
+                cwd=transcript._display_path(self._cwd),
+                tools="",
+                store=self._store_name,
+            )
         entry = self.config.get("models", {}).get(name)
         if entry is None:
             return transcript.SessionFacts(
@@ -2807,7 +2816,13 @@ class TauApp(App):
             Whether a session is now open.
         """
         if model is None:
-            model = self.config.get("default_model", "local-llm")
+            model = self.config.get("default_model")
+        if not model:
+            self.notify(
+                f"No model: set default_model in {default_config_path()}, or pass --model",
+                severity="error",
+            )
+            return False
 
         self.log(f"Starting new chat with model: {model}")
 
@@ -2859,8 +2874,6 @@ class TauApp(App):
         if self._remote is not None:
             await self._remote_new_chat(model)
             return
-        if model is None:
-            model = self.config.get("default_model", "local-llm")
         if not await self._open_new_session(model):
             return
 
@@ -2868,7 +2881,7 @@ class TauApp(App):
         await display.clear_messages()
 
         self._refresh_subtitle()
-        self.notify(f"Started new chat with {model}")
+        self.notify(f"Started new chat with {model or self.config.get('default_model')}")
 
         self.query_one(ChatSidebar).refresh_chats()
 

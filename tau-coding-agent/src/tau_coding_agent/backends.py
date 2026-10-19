@@ -1029,7 +1029,8 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     ``set_model`` takes; an ad-hoc ``--model`` id is named by its id.
 
     Raises:
-        ValueError: No ``model`` id (docs/SILENT-DEFAULTS.md §1); an unimplemented
+        ValueError: No ``model`` id (docs/SILENT-DEFAULTS.md §1); no ``backend``
+            (§7); an unimplemented
             ``api``; no ``base_url`` from either source — never OpenAI's endpoint,
             which would send this vendor's key there (docs/EXTENSION-PROVIDERS.md
             §2); or an invalid typed field.
@@ -1041,8 +1042,14 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
             f"{where} has no 'model' (the id sent to the server); got {model_id!r}. "
             "Set it to the id the endpoint serves."
         )
-    backend_type = config.get("backend", "openai").lower()
     entry = config.get("config_name", model_id)
+    backend = config.get("backend")
+    if not isinstance(backend, str) or not backend:
+        raise ValueError(
+            f"models.{entry} has no 'backend' (the provider); got {backend!r}. τ does not "
+            f"guess one. Registered providers: {', '.join(registered_providers())}."
+        )
+    backend_type = backend.lower()
 
     # Map provider name (TauApp's "backend" field) to tau-agent-core provider.
     provider_map = {"openai": "openai", "anthropic": "anthropic", "gemini": "gemini"}
