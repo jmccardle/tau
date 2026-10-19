@@ -227,13 +227,19 @@ source the user placed; installed means a package the user authorized.
   `/extensions`, the REPL and the RPC/serve verb `list_extensions` render them.
   States: `loaded`, `disabled`, `failed`, `authorized` (would load; no-session
   listing only), `unauthorized`, `unusable`, `collision`.
-- **Wire versions.** `list_extensions` is additive, so RPC goes 2.2 → 2.3 (a
-  MINOR bump). Serve's verb set changed, and serve refuses any version
-  mismatch below 1.0, so serve goes 0.10 → 0.11, which tau-code must match. The
-  qualified-command spelling changed from `ext:<id>.<cmd>` to `ext:<id>:<cmd>`
-  inside existing string fields (`get_commands`, the attach surface). The record
-  treats those names as opaque and did not bump MAJOR for it; a client that
-  parsed them breaks (§9, last item).
+- **Wire versions: RPC 3.0, serve 0.11.** The qualified-command spelling
+  changed from `ext:<id>.<cmd>` to `ext:<id>:<cmd>` inside existing string
+  fields (`get_commands`, the attach surface). By the RPC rule
+  (`rpc/protocol_doc.py`: a field's meaning changed is a MAJOR bump), that
+  breaks a client that parses the names, so RPC goes 2.2 → **3.0**. The additive
+  `list_extensions` rides the same bump. The build first called the names
+  opaque and bumped only to 2.3. John corrected that on 2026-10-18: "I don't
+  mind seeing the RPC number go up, let's just stay consistent with tracking
+  the RPC protocol as we release." Serve is below 1.0, bumps its minor for
+  every change (breaking ones included, as 0.9 did for the `enabled`→`auto`
+  rename), and refuses any mismatch, so it goes 0.10 → 0.11. tau-code must
+  match 0.11, and an RPC host that gates on MAJOR (Tectum gates on 2) must
+  accept 3.
 
 ## 9. Build proposals, for John
 
@@ -287,7 +293,8 @@ Each item works as described now, and each is a proposal that John may change.
   entry's `"tools"` key keeps its 0.13.0 meaning (built-ins only). The
   alternative is a flag that only checks extension names and filters nothing,
   which would not narrow tau-search's two tools to one.
-- **Command names on the wire changed spelling** without a MAJOR bump (§8).
+- ~~**Command names on the wire changed spelling** without a MAJOR bump (§8).~~
+  Decided by John on 2026-10-18: RPC 3.0 (§8, "Wire versions").
 
 ## 10. #44: a subscription nothing can answer
 
