@@ -81,6 +81,11 @@ tau --mode rpc                      # headless: drive τ as a subprocess over st
 (`~/.tau/sessions/`) — a headless run shows up in the TUI's sidebar and can
 be picked up interactively later.
 
+`~/.tau` is τ's home: config, sessions, extensions, themes. Set `TAU_HOME` to
+an existing directory to use that instead, for a throwaway or per-project
+setup; the project's own `./.tau/` (`SYSTEM.md`, project prompts and skills)
+still applies on top. See `docs/PORTABLE-HOME.md`.
+
 ## Packages
 
 Four independently-installable packages, `src/`-layout, stacked bottom-up:

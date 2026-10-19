@@ -80,6 +80,45 @@ the user to create a config there, on the host.
 - **Child processes inherit `$TAU_PORTABLE_BASE`.** A `tau` the agent starts
   through its own bash tool shares the portable home. That is consistent, but
   worth knowing.
-- **There's no `tau --home` flag**, and no `TAU_HOME` that names the home
-  directly. The env var names a *base* to check, which is a deliberately
-  smaller promise.
+- **There's no `tau --home` flag.** `TAU_PORTABLE_BASE` names a *base* to
+  check, which is a deliberately smaller promise. §6 adds `TAU_HOME`, which
+  names the home itself.
+
+## 6. `TAU_HOME`: naming the home outright (2026-10-19, #48)
+
+**What was wrong.** People and parent processes that wanted a throwaway home
+set `TAU_PORTABLE_BASE`, because it was the only variable there was. A typo
+or a missing `mkdir` then meant the real `~/.tau`, with no message, as §2
+says it should. Config, sessions and `extension-authorizations.json` landed
+in the real home. Making `TAU_PORTABLE_BASE` strict is not an option: the
+launcher sets it on every run, with or without a `.tau` beside it.
+
+**The rule.** `resolve_tau_home` now checks `$TAU_HOME` first:
+- Set and non-empty: the home is that directory (`~` expanded, resolved). It
+  wins over `TAU_PORTABLE_BASE` and `~/.tau`.
+- Set to something that is not an existing directory: `TauHomeError`,
+  `TAU_HOME=<x> is not a directory; create it or unset the variable`. Setting
+  the variable is an unambiguous request, so a missing directory is refused,
+  not replaced. τ never creates it.
+- `TAU_PORTABLE_BASE` keeps exactly the meaning §2 gives it.
+
+**Every head says it in one line.** `tau_coding_agent.config.TAU_DIR`
+resolves at import, so `tau_coding_agent.cli` catches `TauHomeError` around
+that import, prints `tau: error: <message>` and exits 2. That covers the TUI,
+`-p`, rpc, repl, `serve` and `ext`, for both `tau` and
+`python -m tau_coding_agent.cli`. A bad `TAU_PORTABLE_BASE` takes the same
+path; it used to print a traceback and exit 1.
+
+**What it does not replace.** τ reads two layers, and `TAU_HOME` moves only
+the first:
+- *The τ home, the user layer:* `config.json`, `settings.json`, sessions,
+  `extensions/`, `skills/`, `prompts/`, themes, logs, the global context
+  file, `extension-authorizations.json`.
+- *The project layer, `<cwd>/.tau/`:* `.tau/SYSTEM.md`, project `prompts/`
+  and `skills/`. It still layers on top of whichever home is in force.
+
+`--mode rpc`'s `<tmp>/.tau-<uid>/sessions` default (§5) is not the home and
+does not move either.
+
+**For testers and embedders.** `mkdir` a directory, write its `config.json`,
+and set `TAU_HOME` to it. Don't use `TAU_PORTABLE_BASE` for this.

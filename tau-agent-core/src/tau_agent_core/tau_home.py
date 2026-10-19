@@ -1,4 +1,4 @@
-"""Where τ keeps per-user state: ``~/.tau``, or a portable ``.tau/`` beside the install.
+"""Where τ keeps per-user state: ``$TAU_HOME``, a portable ``.tau/``, or ``~/.tau``.
 
 Rationale: docs/PORTABLE-HOME.md.
 """
@@ -9,6 +9,9 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
+HOME_ENV = "TAU_HOME"
+"""Names τ's home directory outright; it must already exist."""
+
 PORTABLE_BASE_ENV = "TAU_PORTABLE_BASE"
 """Set by a bundle's launcher to the directory that may hold a portable ``.tau/``."""
 
@@ -16,16 +19,21 @@ HOME_DIRNAME = ".tau"
 
 
 class TauHomeError(Exception):
-    """``$TAU_PORTABLE_BASE`` names something that is not a directory."""
+    """``$TAU_HOME`` or ``$TAU_PORTABLE_BASE`` names something that is not a directory."""
 
 
 def resolve_tau_home(environ: Mapping[str, str] | None = None) -> Path:
     """Return τ's home directory: config, sessions, extensions, themes, logs.
 
-    ``<$TAU_PORTABLE_BASE>/.tau`` when that directory exists, else ``~/.tau``.
-    An unset or empty variable means "not a bundle". A bundle without the
-    directory (a .deb, an AppImage with nothing beside it) is an ordinary
-    install, which is the spec rather than a fallback.
+    First match wins; an empty variable counts as unset:
+
+    1. ``$TAU_HOME``, which must be an existing directory.
+    2. ``<$TAU_PORTABLE_BASE>/.tau`` when that directory exists. A base without
+       it is an ordinary install (a .deb, a bare AppImage): the spec, not a
+       fallback.
+    3. ``~/.tau``.
+
+    The project layer, ``<cwd>/.tau/``, is separate and not chosen here.
 
     Args:
         environ: The environment to read; ``os.environ`` when omitted.
@@ -34,10 +42,18 @@ def resolve_tau_home(environ: Mapping[str, str] | None = None) -> Path:
         The absolute home directory. It is not created here.
 
     Raises:
-        TauHomeError: The variable is set to a path that is not a directory,
-            meaning the launcher that set it is wrong.
+        TauHomeError: ``$TAU_HOME`` is not a directory, or ``$TAU_PORTABLE_BASE``
+            is set to a path that is not a directory.
     """
     env = os.environ if environ is None else environ
+    explicit = env.get(HOME_ENV, "")
+    if explicit:
+        explicit_path = Path(explicit).expanduser()
+        if not explicit_path.is_dir():
+            raise TauHomeError(
+                f"{HOME_ENV}={explicit} is not a directory; create it or unset the variable"
+            )
+        return explicit_path.resolve()
     base = env.get(PORTABLE_BASE_ENV, "")
     if base:
         base_path = Path(base)
