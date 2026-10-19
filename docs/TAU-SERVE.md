@@ -542,6 +542,20 @@ drive a tool-running agent. John chose:
   `packages/server` no longer needs to exist to serve it. A `web_root` that is
   not a directory fails at start.
 
+Built note (2026-10-19, `serve/http.py`, #52): τ logs a rejected handshake
+itself, as one foreground line naming the peer and the reason
+(`handshake rejected from 127.0.0.1:52636: missing Connection header`). A
+connection that closes before it sends a request is a browser preconnect and
+leaves no line. The earlier `DroppedBeforeRequest` filter is retired: it matched
+websockets' `opening handshake failed` ERROR record, which websockets 17 no
+longer emits for most failures, so serve.log lost them. The hook is a
+`create_connection` subclass that reads `protocol.handshake_exc` after the
+handshake, which websockets 14–16 also raise and 17 only stores, so the line
+is the same on both. On 16, the subclass absorbs the `InvalidHandshake` it has
+logged, so there is no second record. A failure that is not an
+`InvalidHandshake`, such as a `process_request` bug, still reaches websockets'
+own ERROR log with its traceback.
+
 ### 6.3 Unix sockets
 
 `asyncio` serves a unix socket with the same handler as TCP, and `websockets`

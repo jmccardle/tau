@@ -1,6 +1,6 @@
 """What ``tau serve`` answers before a WebSocket handshake (docs/TAU-SERVE.md §6.2).
 
-Two jobs, both in ``websockets``' ``process_request`` hook:
+Two jobs in ``websockets``' ``process_request`` hook, and one after it:
 
 - **Origin check, on by default.** Browsers do not apply the same-origin policy
   to WebSocket handshakes, so without it any page the user has open could drive
@@ -10,6 +10,9 @@ Two jobs, both in ``websockets``' ``process_request`` hook:
   ``Host`` rather than the bind address keeps ``ssh -L`` and port remaps working.
 - **The web client.** A plain HTTP request (no ``Upgrade: websocket``) is served
   from ``serve.web_root``, so the page and its socket share one origin.
+- **A rejected handshake is logged by τ**, with the peer and the reason, through
+  :func:`build_connection_class`. A connection closed before it sent a request
+  is a browser preconnect and is not logged.
 """
 
 from __future__ import annotations
@@ -20,7 +23,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
+from websockets.asyncio.server import ServerConnection
 from websockets.datastructures import Headers
+from websockets.exceptions import InvalidHandshake
 from websockets.http11 import Request, Response
 
 ProcessRequest = Callable[[Any, Request], Response | None]
@@ -98,3 +103,53 @@ def build_process_request(
         return None
 
     return process_request
+
+
+def handshake_rejection(exc: BaseException | None) -> str | None:
+    """The reason to log for a handshake that failed with ``exc``, or ``None``.
+
+    ``None`` for no failure, for a connection closed before it sent a request
+    (its cause chain reaches ``EOFError``), and for anything that is not an
+    :class:`InvalidHandshake`, which ``websockets`` logs with its traceback.
+    """
+    if not isinstance(exc, InvalidHandshake):
+        return None
+    link: BaseException | None = exc
+    while link is not None:
+        if isinstance(link, EOFError):
+            return None
+        link = link.__cause__ or link.__context__
+    cause = exc.__cause__
+    return f"{exc}: {cause}" if cause is not None else str(exc)
+
+
+def _peer(address: Any) -> str:
+    if isinstance(address, tuple) and len(address) >= 2:
+        host = str(address[0])
+        return f"[{host}]:{address[1]}" if ":" in host else f"{host}:{address[1]}"
+    return str(address) or "unix socket"
+
+
+def build_connection_class(log: Callable[[str], None]) -> type[ServerConnection]:
+    """A ``create_connection`` class that logs a rejected handshake as one ``log`` line.
+
+    websockets 14-16 raise the handshake failure for the server to log at ERROR;
+    17 logs most failures at DEBUG only. Reading ``protocol.handshake_exc`` after
+    the handshake serves both (docs/TAU-SERVE.md §6.2, 2026-10-19 note).
+    """
+
+    class LoggedHandshake(ServerConnection):
+        """A server connection that reports its own handshake rejection."""
+
+        async def handshake(self, *args: Any, **kwargs: Any) -> None:
+            """Run the handshake; log a rejection in place of raising it."""
+            try:
+                await super().handshake(*args, **kwargs)
+            except InvalidHandshake as exc:
+                if exc is not self.protocol.handshake_exc:
+                    raise
+            reason = handshake_rejection(self.protocol.handshake_exc)
+            if reason is not None:
+                log(f"handshake rejected from {_peer(self.remote_address)}: {reason}")
+
+    return LoggedHandshake
