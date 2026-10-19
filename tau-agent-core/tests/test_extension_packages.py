@@ -17,7 +17,9 @@ import base64
 import hashlib
 import itertools
 import json
+import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -106,8 +108,10 @@ def _install_editable(
 ) -> str:
     """An editable install as setuptools writes one: RECORD lists only a finder or a ``.pth``.
 
-    ``shape`` is ``"finder"`` (``__editable___*_finder.py`` with ``MAPPING``) or
-    ``"pth"`` (a ``.pth`` naming the directory that holds ``top``).
+    ``shape`` is ``"finder"`` (``__editable___*_finder.py`` with the annotated
+    ``MAPPING: dict[str, str] = …`` setuptools >= 69 writes), ``"finder-plain"``
+    (``MAPPING = …``, as older setuptools writes), or ``"pth"`` (a ``.pth`` naming
+    the directory that holds ``top``).
     """
     module = f"{top}.ext"
     package_dir.mkdir(parents=True)
@@ -120,9 +124,12 @@ def _install_editable(
     (info / "direct_url.json").write_text(
         json.dumps({"url": f"file://{checkout}", "dir_info": {"editable": True}})
     )
-    if shape == "finder":
+    if shape.startswith("finder"):
         rel = "__editable___tau_fake_ed_1_0_finder.py"
-        (site / rel).write_text(f"import sys\nMAPPING = {{{top!r}: {str(package_dir)!r}}}\n")
+        annotation = "" if shape == "finder-plain" else ": dict[str, str]"
+        (site / rel).write_text(
+            f"import sys\nMAPPING{annotation} = {{{top!r}: {str(package_dir)!r}}}\n"
+        )
     else:
         rel = "__editable__.tau_fake_ed-1.0.pth"
         (site / rel).write_text(f"{package_dir.parent}\n")
@@ -349,17 +356,98 @@ class TestExplicitModuleNames:
         with pytest.raises(ValueError, match=f"-e {module}"):
             resolve_explicit(str(src / "src" / top / "ext.py"), discover_packages())
 
-    @pytest.mark.parametrize("shape", ["finder", "pth"])
+    @pytest.mark.parametrize("shape", ["finder", "finder-plain", "pth"])
     def test_an_editable_install_with_a_custom_package_dir_is_refused(self, site, tmp_path, shape):
         root, top = site
         checkout = tmp_path / "checkout"
-        package_dir = checkout / "lib" / ("weird" if shape == "finder" else top)
+        package_dir = checkout / "lib" / ("weird" if shape.startswith("finder") else top)
         module = _install_editable(
             root, top=top, checkout=checkout, package_dir=package_dir, shape=shape
         )
         with pytest.raises(ValueError, match=f"-e {module}"):
             resolve_explicit(str(package_dir / "ext.py"), discover_packages())
         assert top not in sys.modules
+
+    @pytest.mark.parametrize(
+        "finder",
+        [
+            "MAPPING: dict[str, str] = dict(x='/nowhere')\n",
+            "import sys\n",
+            "def broken(:\n",
+        ],
+        ids=["not-a-literal", "no-mapping", "unparseable"],
+    )
+    def test_an_unreadable_finder_refuses_a_path_under_its_checkout(self, site, tmp_path, finder):
+        root, top = site
+        checkout = tmp_path / "checkout"
+        package_dir = checkout / "lib" / "weird"
+        module = _install_editable(
+            root, top=top, checkout=checkout, package_dir=package_dir, shape="finder"
+        )
+        (root / "__editable___tau_fake_ed_1_0_finder.py").write_text(finder)
+        with pytest.raises(ValueError, match=f"can't tell whether.*Name the module.*-e {module}"):
+            resolve_explicit(str(package_dir / "ext.py"), discover_packages())
+
+    def test_an_unreadable_finder_does_not_block_a_path_elsewhere(self, site, tmp_path):
+        root, top = site
+        checkout = tmp_path / "checkout"
+        _install_editable(
+            root, top=top, checkout=checkout, package_dir=checkout / "lib" / "x", shape="finder"
+        )
+        (root / "__editable___tau_fake_ed_1_0_finder.py").write_text("import sys\n")
+        other = tmp_path / "elsewhere" / "mine.py"
+        other.parent.mkdir()
+        other.write_text(_DROPIN)
+        assert resolve_explicit(str(other), discover_packages()).kind == "path"
+
+    def test_a_pth_of_only_an_import_hook_is_unreadable_not_guessed(self, site, tmp_path):
+        """No finder and no path entry: the root/src probe would be a guess, so it refuses."""
+        root, top = site
+        checkout = tmp_path / "checkout"
+        package_dir = checkout / "src" / top
+        _install_editable(root, top=top, checkout=checkout, package_dir=package_dir, shape="pth")
+        (root / "__editable__.tau_fake_ed-1.0.pth").write_text("import some_redirector\n")
+        with pytest.raises(ValueError, match="can't tell whether.*import hook"):
+            resolve_explicit(str(package_dir / "ext.py"), discover_packages())
+
+    @pytest.mark.parametrize("mode", ["lenient", "strict"])
+    def test_a_real_setuptools_editable_build_is_read(self, site, tmp_path, mode):
+        """A real PEP 660 editable wheel from the installed setuptools, unpacked as pip would."""
+        pytest.importorskip("setuptools")
+        root, top = site
+        checkout = tmp_path / "checkout"
+        package_dir = checkout / "lib" / "weirddir"
+        package_dir.mkdir(parents=True)
+        (package_dir / "__init__.py").write_text("")
+        (package_dir / "ext.py").write_text(_DROPIN)
+        (checkout / "pyproject.toml").write_text(
+            '[build-system]\nrequires = ["setuptools>=64"]\n'
+            'build-backend = "setuptools.build_meta"\n'
+            f'[project]\nname = "{top}"\nversion = "1.0"\n'
+            f'[project.entry-points."{ENTRY_POINT_GROUP}"]\next = "{top}.ext"\n'
+            f'[tool.setuptools]\npackage-dir = {{"{top}" = "lib/weirddir"}}\n'
+            f'packages = ["{top}"]\n'
+        )
+        wheels = tmp_path / "wheels"
+        wheels.mkdir()
+        script = (
+            "import os, sys, setuptools.build_meta as b; os.chdir(sys.argv[1]); "
+            "print(b.build_editable(sys.argv[2], {'editable_mode': sys.argv[3]}))"
+        )
+        built = subprocess.run(
+            [sys.executable, "-c", script, str(checkout), str(wheels), mode],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        with zipfile.ZipFile(wheels / built.stdout.strip().splitlines()[-1]) as wheel:
+            wheel.extractall(root)
+        [info] = root.glob(f"{top}-1.0.dist-info")
+        (info / "direct_url.json").write_text(
+            json.dumps({"url": f"file://{checkout}", "dir_info": {"editable": True}})
+        )
+        with pytest.raises(ValueError, match=f"-e {top}.ext"):
+            resolve_explicit(str(package_dir / "ext.py"), discover_packages())
 
     def test_a_mapped_editable_install_is_not_probed_at_its_root(self, site, tmp_path):
         """With a mapping, the root/src guess is not consulted: a stray copy there is a path."""

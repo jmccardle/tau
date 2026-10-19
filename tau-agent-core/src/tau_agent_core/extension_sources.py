@@ -319,46 +319,79 @@ def discover_packages() -> list[ExtensionSource]:
     return sorted(found, key=lambda source: source.identifier)
 
 
-def _editable_layout(dist: metadata.Distribution) -> tuple[dict[str, Path], list[Path]]:
+class _UnreadableLayout(Exception):
+    """An editable install records a finder or ``.pth`` whose layout cannot be read."""
+
+
+def _finder_mapping(tree: ast.Module) -> dict[str, Path] | None:
+    """The literal ``MAPPING`` a setuptools finder assigns, annotated or not; ``None`` if absent."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            named = any(isinstance(t, ast.Name) and t.id == "MAPPING" for t in node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            named = isinstance(node.target, ast.Name) and node.target.id == "MAPPING"
+        else:
+            continue
+        if not named or node.value is None:
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except ValueError:
+            return None
+        if not isinstance(value, dict):
+            return None
+        return {str(k): Path(str(v)) for k, v in value.items()}
+    return None
+
+
+def _editable_layout(dist: metadata.Distribution) -> tuple[dict[str, Path], list[Path]] | None:
     """Where an editable install puts its modules, read from its RECORD without importing it.
 
     Two shapes, both listed in RECORD: a setuptools ``__editable___*_finder.py``
-    whose literal ``MAPPING`` maps a top-level name to its directory, and a
-    ``.pth`` whose non-``import`` lines are ``sys.path`` entries (a source root, or
-    the link tree of ``editable_mode=strict``).
+    whose literal ``MAPPING`` (``MAPPING = …`` or ``MAPPING: dict[str, str] = …``)
+    maps a top-level name to its directory, and a ``.pth`` whose non-``import``
+    lines are ``sys.path`` entries (a source root, or the link tree of
+    ``editable_mode=strict``). A ``.pth`` of only ``import`` lines is a finder's hook.
 
     Returns:
-        ``(mapping, path_entries)``; both empty when the install has neither.
+        ``(mapping, path_entries)``, or ``None`` when RECORD lists neither shape.
+
+    Raises:
+        _UnreadableLayout: A finder cannot be read, parsed, or holds no literal
+            ``MAPPING``; a ``.pth`` cannot be read; or the files RECORD lists
+            yield no layout at all. Guessing instead is how a layout went unread.
     """
     mapping: dict[str, Path] = {}
     entries: list[Path] = []
+    seen: list[str] = []
     for f in dist.files or []:
         name = f.name
+        located = Path(str(dist.locate_file(f)))
         if name.startswith("__editable__") and name.endswith("_finder.py"):
+            seen.append(name)
             try:
-                tree = ast.parse(Path(str(dist.locate_file(f))).read_text())
-            except (OSError, SyntaxError, ValueError):
-                continue
-            for node in tree.body:
-                if (
-                    isinstance(node, ast.Assign)
-                    and any(isinstance(t, ast.Name) and t.id == "MAPPING" for t in node.targets)
-                    and isinstance(node.value, ast.Dict)
-                ):
-                    try:
-                        value = ast.literal_eval(node.value)
-                    except ValueError:
-                        continue
-                    mapping.update({str(k): Path(str(v)) for k, v in value.items()})
+                tree = ast.parse(located.read_text())
+            except (OSError, SyntaxError, ValueError) as exc:
+                raise _UnreadableLayout(f"its finder {located} cannot be parsed ({exc})") from exc
+            found = _finder_mapping(tree)
+            if found is None:
+                raise _UnreadableLayout(f"its finder {located} holds no literal MAPPING")
+            mapping.update(found)
         elif name.endswith(".pth"):
-            located = Path(str(dist.locate_file(f)))
+            seen.append(name)
             try:
                 lines = located.read_text().splitlines()
-            except OSError:
-                continue
+            except OSError as exc:
+                raise _UnreadableLayout(f"its {located} cannot be read ({exc})") from exc
             for line in (raw.strip() for raw in lines):
                 if line and not line.startswith(("#", "import ", "import\t")):
                     entries.append(located.parent / line)
+    if not seen:
+        return None
+    if not mapping and not entries:
+        raise _UnreadableLayout(
+            f"its {', '.join(seen)} name no source directory τ can read (an import hook)"
+        )
     return mapping, entries
 
 
@@ -383,8 +416,11 @@ def _module_files(source: ExtensionSource) -> set[Path]:
     ``a.b.c`` is ``a/b/c.py`` or ``a/b/c/__init__.py``: located through RECORD for
     an ordinary install. An editable install's RECORD lists only its finder or
     ``.pth``, so its real layout is read from those (:func:`_editable_layout`);
-    only an editable install with neither is probed at ``<root>`` and
-    ``<root>/src`` of its ``direct_url.json`` directory.
+    only an editable install whose RECORD lists neither is probed at ``<root>``
+    and ``<root>/src`` of its ``direct_url.json`` directory.
+
+    Raises:
+        _UnreadableLayout: The editable install records a layout that cannot be read.
     """
     stem = source.target.replace(".", "/")
     rels = {f"{stem}.py", f"{stem}/__init__.py"}
@@ -396,9 +432,9 @@ def _module_files(source: ExtensionSource) -> set[Path]:
         except metadata.PackageNotFoundError:
             dist = None
     if source.editable_path:
-        mapping, entries = _editable_layout(dist) if dist is not None else ({}, [])
-        if mapping or entries:
-            candidates = _editable_candidates(source.target, mapping, entries)
+        layout = _editable_layout(dist) if dist is not None else None
+        if layout is not None:
+            candidates = _editable_candidates(source.target, *layout)
         else:
             root = Path(source.editable_path)
             candidates = [base / rel for base in (root, root / "src") for rel in rels]
@@ -411,12 +447,32 @@ def _module_files(source: ExtensionSource) -> set[Path]:
 
 
 def _package_owning(path: Path, packages: list[ExtensionSource]) -> ExtensionSource | None:
-    """The discovered package whose module file ``path`` is, else ``None``."""
+    """The discovered package whose module file ``path`` is, else ``None``.
+
+    Raises:
+        ExplicitExtensionError: ``path`` is under an editable package's source
+            directory and that package's layout cannot be read, so whether the
+            path is its module cannot be told. An unreadable package elsewhere
+            is skipped: it cannot own this path.
+    """
     target = path.resolve()
     if target.is_dir():
         target = target / "__init__.py"
     for source in packages:
-        if source.kind == "package" and target in _module_files(source):
+        if source.kind != "package":
+            continue
+        try:
+            files = _module_files(source)
+        except _UnreadableLayout as exc:
+            root = Path(source.editable_path or "/").resolve()
+            if source.editable_path and target.is_relative_to(root):
+                raise ExplicitExtensionError(
+                    f"-e {path}: can't tell whether this path belongs to the editable package "
+                    f"{source.distribution} {source.version}, because {exc}. Name the module "
+                    f"instead (-e {source.identifier})."
+                ) from exc
+            continue
+        if target in files:
             return source
     return None
 
