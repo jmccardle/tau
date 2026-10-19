@@ -826,7 +826,10 @@ class Daemon:
         if self.config.get("system_prompt"):
             model_config["system_prompt"] = self.config["system_prompt"]
         model_config["cwd"] = cwd
-        backend: Any = create_backend(model_config)
+        try:
+            backend: Any = create_backend(model_config)
+        except ConfigError as exc:
+            raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
         backend.agent_session.set_model_resolver(self.model_resolver)
         host = SessionHost(self, log, backend)
         await host.start(cwd)
@@ -960,7 +963,10 @@ class Daemon:
         if self.config.get("system_prompt"):
             model_config["system_prompt"] = self.config["system_prompt"]
         model_config["cwd"] = cwd
-        system_prompt = create_backend(model_config).system_prompt or None
+        try:
+            system_prompt = create_backend(model_config).system_prompt or None
+        except ConfigError as exc:
+            raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
         log = self.catalog.create(
             cwd,
             model_name,

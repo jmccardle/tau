@@ -115,7 +115,7 @@ class TestNoEndpointIsNotOpenAIs:
     """
 
     def test_an_unregistered_vendor_without_base_url_raises(self):
-        with pytest.raises(ValueError, match="'groq' is not a registered provider"):
+        with pytest.raises(ValueError, match="provider 'groq' is not registered"):
             backends.build_model_from_config({"model": "llama-3", "backend": "groq"})
 
     def test_the_message_names_the_registered_vendors(self):

@@ -23,7 +23,8 @@ _CONFIG = {
             "model": "m",
             "base_url": "http://127.0.0.1:1/v1",
             "api_key": "x",
-        }
+        },
+        "ext": {"backend": "acme", "model": "m"},
     },
     "default_model": "local",
 }
@@ -61,13 +62,34 @@ def test_each_head_refuses_an_unconfigured_bare_model(tmp_path: Path, argv: list
     lines = [line for line in out.stderr.splitlines() if not line.startswith("Warning: Input")]
     assert len(lines) == 1, out.stderr
     assert lines[0].startswith("tau: error: model 'nope' is not configured in ")
-    assert "(configured: local)" in lines[0]
+    assert "(configured: ext, local)" in lines[0]
     assert "--model PROVIDER/nope" in lines[0]
     assert not list((tmp_path / "tau-home").rglob("*.jsonl"))
 
 
-def test_print_mode_takes_a_provider_prefixed_name_as_ad_hoc(tmp_path: Path) -> None:
-    """The ad-hoc form gets past model resolution; the run then fails on the provider, not the name."""
-    out = _run(tmp_path, "-p", "--no-session", "--model", "acme/m", "hi")
-    assert "is not configured" not in out.stderr
-    assert "acme" in out.stderr
+_AD_HOC = "tau: error: provider 'foo' is not registered (registered: "
+_ENTRY = "tau: error: models.ext: backend 'acme' is not a registered provider (registered: "
+
+
+@pytest.mark.parametrize("head", [["-p", "--no-session"], ["--mode", "rpc"]], ids=["print", "rpc"])
+@pytest.mark.parametrize(
+    ("model_args", "prefix"),
+    [
+        (["--model", "foo/bar"], _AD_HOC),
+        (["--provider", "foo", "--model", "bar"], _AD_HOC),
+        (["--model", "ext"], _ENTRY),
+    ],
+    ids=["prefix", "provider-flag", "config-entry"],
+)
+def test_an_unregistered_provider_is_one_line(
+    tmp_path: Path, head: list[str], model_args: list[str], prefix: str
+) -> None:
+    """Never a traceback, and no invented ``models.<x>`` path for an ad-hoc id."""
+    argv = [*head, *model_args, *(["hi"] if "-p" in head else [])]
+    out = _run(tmp_path, *argv)
+    assert out.returncode == 2, out.stderr
+    assert out.stderr.count("\n") == 1, out.stderr
+    assert out.stderr.startswith(prefix)
+    assert "an extension that provides it must load first" in out.stderr
+    if prefix == _AD_HOC:
+        assert "models." not in out.stderr

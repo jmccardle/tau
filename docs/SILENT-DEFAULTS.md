@@ -161,5 +161,11 @@ entry is named in the one line, joined by `; `.
 
 One exception: an entry whose `backend` is not registered yet (and that sets no
 `base_url`) is left to the build that selects it, because an extension may
-register that provider first (docs/EXTENSION-PROVIDERS.md §2). The serve
-hello still refuses such an entry, as it did before.
+register that provider first (docs/EXTENSION-PROVIDERS.md §2). When that build
+does happen and the provider is still missing, it raises
+`backends.ProviderNotRegisteredError`, a `ModelConfigError`, so it too is one
+`tau: error:` line, exit 2, and the serve daemon answers `INVALID_PARAMS`. A
+config entry is named (`models.ext: backend 'acme' is not a registered
+provider …`); an ad-hoc `foo/bar` or `--provider foo` has no entry to name, so
+it reads `provider 'foo' is not registered (registered: …); an extension that
+provides it must load first, or give a base_url`.

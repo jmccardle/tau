@@ -655,3 +655,13 @@ async def test_a_new_session_on_an_unconfigured_bare_model_is_refused(served, tm
         await client.request(p.NewSession(cwd=str(tmp_path), model="nope"))
     assert served.daemon.hosts == {}
     await client.close()
+
+
+async def test_a_new_session_on_an_unregistered_provider_is_invalid_params(served, tmp_path):
+    client = await served.client()
+    with pytest.raises(
+        ServeError, match=f"{dialect.INVALID_PARAMS}.*provider 'foo' is not registered"
+    ):
+        await client.request(p.NewSession(cwd=str(tmp_path), model="foo/bar"))
+    assert served.daemon.hosts == {}
+    await client.close()

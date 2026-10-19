@@ -981,8 +981,12 @@ def _warn_undeclared_reasoning(model_id: str) -> None:
 _NUMERIC_STRING = re.compile(r"^[+-]?\d+$")
 
 
-class _ProviderNotYetRegistered(ValueError):
-    """An entry's ``backend`` has no registered endpoint *yet*; an extension may register it."""
+class ProviderNotRegisteredError(ModelConfigError):
+    """A model's provider has no registered endpoint and it gives no ``base_url``.
+
+    Possibly only *yet*: an extension may register the provider before the model
+    is selected, so startup validation defers it (docs/EXTENSION-PROVIDERS.md §2).
+    """
 
 
 def _validate_thinking_level_map(value: Any, entry: str) -> None:
@@ -1070,11 +1074,17 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
 
     base_url = config.get("base_url") or (spec.base_url if spec else None)
     if not base_url:
-        raise _ProviderNotYetRegistered(
-            f"models.{entry}: backend {provider!r} is not a registered provider with a "
-            f"default endpoint, and the entry sets no base_url. Set base_url, or register "
-            f"the provider before this model is built (docs/EXTENSION-PROVIDERS.md §2). "
-            f"Registered providers: {', '.join(registered_providers())}."
+        registered = ", ".join(registered_providers())
+        if "config_name" in config:
+            raise ProviderNotRegisteredError(
+                f"models.{entry}: backend {provider!r} is not a registered provider "
+                f"(registered: {registered}); an extension that provides it must load "
+                "first, or set base_url on the entry (docs/EXTENSION-PROVIDERS.md §2)"
+            )
+        raise ProviderNotRegisteredError(
+            f"provider {provider!r} is not registered (registered: {registered}); an "
+            "extension that provides it must load first, or give a base_url "
+            "(docs/EXTENSION-PROVIDERS.md §2)"
         )
 
     thinking_level = config.get("thinking")
@@ -1231,10 +1241,10 @@ def validate_model_entries(config: Mapping[str, Any]) -> None:
             continue
         try:
             build_model_from_config({**entry, "config_name": name})
+        except ProviderNotRegisteredError:
+            continue
         except ModelConfigError as exc:
             problems.append(str(exc))
-        except _ProviderNotYetRegistered:
-            continue
     if problems:
         raise ModelConfigError(f"{default_config_path()}: " + "; ".join(problems))
 
