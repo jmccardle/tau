@@ -40,19 +40,23 @@ def _offered(backend) -> list[str]:
 
 
 async def test_an_extension_tool_can_be_allowlisted(tmp_path):
-    backend, ext = _backend(tmp_path, tools=["web_fetch"])
+    backend, ext = _backend(tmp_path, tools=["web_fetch"], tool_allowlist=["web_fetch"])
     await backend.load_extensions([ext], discover=False)
     assert _offered(backend) == ["web_fetch"]
 
 
 async def test_built_ins_and_extension_tools_share_one_allowlist(tmp_path):
-    backend, ext = _backend(tmp_path, tools=["read", "web_fetch"])
+    backend, ext = _backend(
+        tmp_path, tools=["read", "web_fetch"], tool_allowlist=["read", "web_fetch"]
+    )
     await backend.load_extensions([ext], discover=False)
     assert _offered(backend) == ["read", "web_fetch"]
 
 
 async def test_a_name_nothing_registers_still_raises_after_loading(tmp_path):
-    backend, ext = _backend(tmp_path, tools=["web_fetch", "web_fecth"])
+    backend, ext = _backend(
+        tmp_path, tools=["web_fetch", "web_fecth"], tool_allowlist=["web_fetch", "web_fecth"]
+    )
     with pytest.raises(ValueError, match="Unknown tool: web_fecth"):
         await backend.load_extensions([ext], discover=False)
 
@@ -72,5 +76,21 @@ async def test_an_unknown_exclusion_raises_too(tmp_path):
 
 def test_the_built_in_resolution_skips_extension_names_and_suppression_drops_the_allowlist():
     assert resolve_tool_names({"tools": ["read", "web_fetch"]}) == ["read"]
-    assert resolve_tool_filters({"tools": [], "no_tools": "builtin"}) == (None, [])
+    assert resolve_tool_filters({"tool_allowlist": ["x"], "no_tools": "builtin"}) == (None, [])
     assert resolve_tool_filters({}) == (None, [])
+
+
+async def test_a_model_entrys_own_tools_key_still_leaves_extension_tools_alone(tmp_path):
+    """Only the --tools flag is an allowlist over every tool; a config entry selects built-ins."""
+    backend, ext = _backend(tmp_path, tools=["read"])
+    await backend.load_extensions([ext], discover=False)
+    assert _offered(backend) == ["read", "web_fetch", "web_search"]
+
+
+def test_the_tools_flag_writes_the_allowlist():
+    from tau_coding_agent.cli import parse_cli_args
+    from tau_coding_agent.headless import resolve_model_config
+
+    args = parse_cli_args(["-p", "x", "--tools", "read,web_fetch", "--model", "openai/m"])
+    _name, model_config = resolve_model_config({}, args)
+    assert model_config["tools"] == model_config["tool_allowlist"] == ["read", "web_fetch"]

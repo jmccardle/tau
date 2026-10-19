@@ -101,15 +101,17 @@ def resolve_tool_filters(config: dict[str, Any]) -> tuple[list[str] | None, list
     :func:`resolve_tool_names` answers which built-ins to construct; this
     answers what the session may offer, extension tools included, and the
     session checks the names once extensions have loaded
-    (``AgentSession.check_tool_filters``). A suppression flag (``no_tools``)
-    empties ``tools`` itself, so it yields no allowlist.
+    (``AgentSession.check_tool_filters``). The allowlist is ``tool_allowlist``,
+    which only the ``--tools`` flag writes: a model entry's own ``tools`` key
+    still selects built-ins and leaves extension tools alone
+    (docs/EXTENSION-PACKAGES.md §11). A suppression flag yields no allowlist.
 
     Returns:
         ``(allowlist or None, denylist)``.
     """
     allow = None
-    if "tools" in config and config.get("no_tools") is None:
-        allow = list(config["tools"])
+    if config.get("tool_allowlist") is not None and config.get("no_tools") is None:
+        allow = list(config["tool_allowlist"])
     return allow, list(config.get("exclude_tools") or [])
 
 

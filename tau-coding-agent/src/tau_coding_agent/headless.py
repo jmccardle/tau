@@ -201,6 +201,7 @@ def resolve_model_config(
         if not names:
             raise CLIError("--tools given but no tool names parsed")
         model_config["tools"] = names
+        model_config["tool_allowlist"] = names
 
     if args.exclude_tools is not None:
         excluded = [t.strip() for t in args.exclude_tools.split(",") if t.strip()]

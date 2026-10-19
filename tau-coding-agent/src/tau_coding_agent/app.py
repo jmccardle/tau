@@ -2629,6 +2629,7 @@ class TauApp(App):
         mc = dict(model_config)
         if self._tool_allowlist is not None:
             mc["tools"] = list(self._tool_allowlist)
+            mc["tool_allowlist"] = list(self._tool_allowlist)
         if self._no_tools:
             mc["no_tools"] = self._no_tools
             mc["tools"] = []
