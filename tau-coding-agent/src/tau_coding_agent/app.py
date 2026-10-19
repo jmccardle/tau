@@ -61,12 +61,17 @@ from tau_agent_core.conversation_tree import summary_message_of
 from tau_agent_core.tree_surgery import plan_branch, plan_paste
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.extension_locks import ExtensionRequest, refusal_reason
+from tau_agent_core.extension_sources import ExtensionRecord
 from tau_agent_core.sdk import (
     BASE_SYSTEM_PROMPT,
     ExtensionInfo,
     ExtensionLoadError,
     LoadExtensionsResult,
+    authorization_prompt,
+    orphan_subscription_notices,
     summarize_extensions,
+    withheld_notice,
+    withheld_notices,
 )
 from tau_agent_core.submission import Submission
 from tau_agent_core.truncation import Truncation, truncation_notice
@@ -242,6 +247,8 @@ class TauApp(App):
         self._extension_paths: list[str] = list(run_config.get("extensions", []))
         self._discover_extensions: bool = not run_config.get("no_extensions", False)
         self._exclude_tools: list[str] = list(run_config.get("exclude_tools", []))
+        self._declined_extensions: set[tuple[str, str]] = set()
+        self._offered_extensions: set[tuple[str, str]] = set()
         self._no_tools: str | None = run_config.get("no_tools")
         self._tool_allowlist: list[str] | None = run_config.get("tools")
         self._append_system_prompt: list[str] = list(run_config.get("append_system_prompt", []))
@@ -2635,6 +2642,7 @@ class TauApp(App):
         mc = dict(model_config)
         if self._tool_allowlist is not None:
             mc["tools"] = list(self._tool_allowlist)
+            mc["tool_allowlist"] = list(self._tool_allowlist)
         if self._no_tools:
             mc["no_tools"] = self._no_tools
             mc["tools"] = []
@@ -2718,10 +2726,55 @@ class TauApp(App):
             self.notify(f"Extension error ({err.path}): {err.error}", severity="warning")
         if result.extensions:
             self.log(f"Loaded {len(result.extensions)} extension(s)")
+        self._surface_withheld_extensions(result)
+        records = getattr(self.current_backend, "extension_records", None)
+        if records is not None:
+            for line in orphan_subscription_notices(records()):
+                self.log(f"debug: {line}")
 
         emit_start = getattr(self.current_backend, "emit_session_start", None)
         if emit_start is not None:
             await emit_start("startup")
+
+    def _surface_withheld_extensions(self, result: LoadExtensionsResult) -> None:
+        """Announce grandfathered drop-ins, offer each unauthorized extension, warn about the rest.
+
+        An unauthorized extension is offered once per app run: "not now" is
+        remembered until the app quits, so a new chat does not ask again, and
+        a load while its prompt is still open does not stack a second one
+        (docs/EXTENSION-PACKAGES.md §9).
+        """
+        if result.grandfathered:
+            self.notify(
+                withheld_notices(LoadExtensionsResult(grandfathered=result.grandfathered))[0]
+            )
+        for record in result.withheld:
+            key = (record.identifier, record.target)
+            if record.state != "unauthorized":
+                self.notify(withheld_notice(record), severity="warning")
+            elif key not in self._declined_extensions and key not in self._offered_extensions:
+                self._offer_extension_authorization(record)
+
+    def _offer_extension_authorization(self, record: ExtensionRecord) -> None:
+        """Push the authorization dialog for ``record`` and act on the answer."""
+        title, body = authorization_prompt(record)
+        key = (record.identifier, record.target)
+        self._offered_extensions.add(key)
+
+        async def _answered(authorize: bool | None) -> None:
+            self._offered_extensions.discard(key)
+            if not authorize:
+                self._declined_extensions.add((record.identifier, record.target))
+                self.notify(withheld_notice(record), severity="warning")
+                return
+            authorizer = getattr(self.current_backend, "authorize_extension", None)
+            if authorizer is None:
+                self.notify("This backend cannot authorize extensions", severity="error")
+                return
+            outcome = await authorizer(record.identifier)
+            self.notify(outcome.message, severity="information" if outcome.ok else "error")
+
+        self.push_screen(modals.ExtensionAuthorizationDialog(title, body), _answered)
 
     async def _replace_backend(self, backend: Any, reason: str) -> None:
         """Make ``backend`` current, first firing ``session_shutdown`` on the one it replaces.
@@ -2890,7 +2943,27 @@ class TauApp(App):
         else:
             self.notify("Extension state is unavailable here", severity="warning")
             return
+        records = getattr(self.current_backend, "extension_records", None)
+        if records is not None:
+            listing += self._format_found_not_loaded(records())
         self.query_one(transcript.ChatDisplay).add_message("system", listing, source="markdown")
+
+    @staticmethod
+    def _format_found_not_loaded(records: list[ExtensionRecord]) -> str:
+        """The listing's tail: extensions found and withheld, and subscriptions nothing answers.
+
+        docs/EXTENSION-PACKAGES.md §7 and #44. Empty when there is neither.
+        """
+        lines: list[str] = []
+        withheld = [r for r in records if r.state in ("unauthorized", "unusable", "collision")]
+        if withheld:
+            lines += ["", "## Found, not loaded"]
+            lines += [f"- **{r.identifier}** ({r.state}): {r.reason}" for r in withheld]
+        orphans = [(r.identifier, t) for r in records for t in r.orphan_topics]
+        if orphans:
+            lines += ["", "## Subscriptions no loaded extension answers"]
+            lines += [f"- **{ident}** subscribes to `{topic}`" for ident, topic in orphans]
+        return "\n".join(lines)
 
     def _disabled_extension_paths(self) -> set[str]:
         """The set of currently runtime-disabled extension paths (E10 §6 / S70).

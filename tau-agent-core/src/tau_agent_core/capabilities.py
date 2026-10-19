@@ -613,7 +613,7 @@ _GET_COMMANDS_RETURNS: dict[str, Any] = {
                     "hidden": {
                         "type": "boolean",
                         "description": (
-                            "True for a private-registry name — `ext:<extension>.<command>`, "
+                            "True for a private-registry name — `ext:<extension>:<command>`, "
                             "which every extension command always has and which nothing can "
                             "take from it (docs/EXTENSION-NAMESPACE.md). It resolves exactly "
                             "like any other name; it is marked because offering both halves "
@@ -1356,6 +1356,25 @@ _GET_EXTENSION_STATE_RETURNS: dict[str, Any] = {
     "required": ["extensions", "errors"],
 }
 
+_LIST_EXTENSIONS_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "extensions": {
+            "type": "array",
+            "description": (
+                "Every extension this session knows of and its state, as the rows of "
+                "`tau ext list` (docs/EXTENSION-PACKAGES.md §7): loaded, disabled, "
+                "failed, and found-but-not-loaded (unauthorized, unusable, "
+                "collision). Each row names the identifier, source kind, target, "
+                "distribution and version for a package, why it is not loaded, and "
+                "the subscribed ext: topics whose emitter is not loaded (#44). "
+                "Read-only: authorizing is not on the wire."
+            ),
+        },
+    },
+    "required": ["extensions"],
+}
+
 _GET_EXTENSION_CONFIG_RETURNS: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1653,6 +1672,14 @@ CAPABILITIES: dict[str, Capability] = {
             "be a legal argument, and is exactly what the listing must show.",
             on_wire=True,
             returns=_GET_EXTENSION_STATE_RETURNS,
+        ),
+        Capability(
+            "list_extensions",
+            "read",
+            "Every extension the session knows of and its state, including those "
+            "found and not loaded, with the reason. The `tau ext list` rows.",
+            on_wire=True,
+            returns=_LIST_EXTENSIONS_RETURNS,
         ),
         Capability(
             "get_extension_config",
@@ -2164,7 +2191,7 @@ class Vocabulary:
         """The flow of that name, or ``None``.
 
         A typed name goes through :attr:`aliases` first, so ``/speak`` finds the flow
-        declared as ``ext:pirate.speak`` while it is bound there, and stops finding it
+        declared as ``ext:pirate:speak`` while it is bound there, and stops finding it
         the moment the binding moves — which is what keeps one extension's argument
         form from being rendered for another's handler.
         """

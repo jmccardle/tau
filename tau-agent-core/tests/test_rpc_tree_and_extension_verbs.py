@@ -399,6 +399,27 @@ async def test_list_managed_extensions_hands_back_the_boolean(handler: RPCHandle
     assert response["result"]["extensions"] == []
 
 
+async def test_list_extensions_lists_what_was_found_and_not_loaded(
+    handler: RPCHandler, tmp_path
+) -> None:
+    """docs/EXTENSION-PACKAGES.md §7: the read tau-code needs to offer enabling one."""
+    ext_dir = tmp_path / "extensions"
+    ext_dir.mkdir()
+    (tmp_path / "extension-authorizations.json").write_text(
+        '{"format": 1, "packages": {}, "dropins": {}}'
+    )
+    (ext_dir / "late.py").write_text("def register(api):\n    pass\n")
+    await handler.session.load_extensions(None, user_dir=str(ext_dir))
+
+    response = await _call(handler, "list_extensions")
+
+    [row] = response["result"]["extensions"]
+    assert (row["identifier"], row["kind"], row["state"]) == ("late", "dropin", "unauthorized")
+    assert row["authorization"] == "new" and row["orphan_topics"] == []
+    entry = commands.COMMAND_TABLE["list_extensions"]
+    assert (entry.tier, entry.since, entry.declined_because) == ("C", "0.14.0", None)
+
+
 # ── complete_message_id ──────────────────────────────────────────────────────
 
 

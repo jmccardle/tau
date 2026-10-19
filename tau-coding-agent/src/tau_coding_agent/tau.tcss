@@ -374,6 +374,7 @@ ZoneTree > .tree--kind-structural { color: $tau-text-quiet; text-style: italic; 
 /* === Extension ask + its transcript row (docs/EXTENSION-LOCKS.md §8, §9) === */
 
 #ext-ask-dialog { width: 76; max-height: 90%; }
+#extension-authorization-dialog { width: 76; max-height: 90%; }
 .ext-ask-panel { color: $tau-text; margin-bottom: 1; }
 #ext-ask-buttons { margin-top: 1; }
 

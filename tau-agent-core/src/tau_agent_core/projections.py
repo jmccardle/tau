@@ -17,6 +17,7 @@ from tau_agent_core.flows import Ready, enumerate_domain, next_step
 
 if TYPE_CHECKING:
     from tau_agent_core.conversation_tree import ConversationTree, MessageIdScope
+    from tau_agent_core.extension_sources import ExtensionRecord
     from tau_agent_core.sdk import LoadExtensionsResult
 
 __all__ = [
@@ -348,4 +349,22 @@ def extension_state(state: LoadExtensionsResult) -> dict[str, Any]:
             for info in summarize_extensions(state)
         ],
         "errors": [{"path": err.path, "error": err.error} for err in state.errors],
+    }
+
+
+def extension_records(records: list[ExtensionRecord]) -> dict[str, Any]:
+    """The ``tau ext list`` rows as ``{extensions: [...]}``, JSON-safe.
+
+    Args:
+        records: From :meth:`AgentSession.extension_records`.
+
+    Returns:
+        ``extensions``: one object per record, with every
+        :class:`~tau_agent_core.extension_sources.ExtensionRecord` field and
+        ``orphan_topics`` as a list.
+    """
+    return {
+        "extensions": [
+            {**asdict(record), "orphan_topics": list(record.orphan_topics)} for record in records
+        ]
     }

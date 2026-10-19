@@ -78,7 +78,7 @@ class TestTheDerivationIsTotal:
             "next_step",
             "prompt",
         ]
-        assert len(live & set(CAPABILITIES)) == 37
+        assert len(live & set(CAPABILITIES)) == 38
 
     def test_no_declined_verb_names_a_capability(self):
         """§6 A4 survives: `declined_because` is prose no declaration produces."""

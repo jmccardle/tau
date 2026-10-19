@@ -6,9 +6,9 @@
 >
 > Design of record: `docs/TAU-SERVE.md` §5–§7.
 
-- **Protocol version:** `0.10`
+- **Protocol version:** `0.11`
 - **Default port:** `8256`
-- **Counts:** 51 requests (36 of them RPC verbs), 10 event kinds, 201 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 52 requests (37 of them RPC verbs), 10 event kinds, 204 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
@@ -381,6 +381,12 @@ RPC `get_extension_state` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs 
 
 **Answered with:** [GetExtensionStateResult](#getextensionstateresult).
 
+### `list_extensions`
+
+RPC `list_extensions` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.
+
+**Answered with:** [ListExtensionsResult](#listextensionsresult).
+
 ### `get_extension_config`
 
 RPC `get_extension_config` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.
@@ -709,7 +715,7 @@ One slash command a session answers, as RPC `get_commands` lists it.
 | `description` | string | yes |  |
 | `origin` | `"builtin"` \| `"extension"` \| `"template"` \| `"skill"` | yes | `builtin` for τ's own, `extension` for one an extension registered, `template` or `skill` for one the session expands into a prompt (docs/PROMPT-TEMPLATES-AND-SKILLS.md). |
 | `flow` | boolean | yes | Whether `NextStep` steps it. |
-| `hidden` | boolean | yes | A qualified extension name (`ext:pirate.speak`): it resolves, and a completion list leaves it out. |
+| `hidden` | boolean | yes | A qualified extension name (`ext:pirate:speak`): it resolves, and a completion list leaves it out. |
 
 ### CommandOutput
 
@@ -1161,6 +1167,24 @@ One loaded extension and what it registered, as `get_extension_state` lists it.
 | `content_hash` | string | yes |  |
 | `subjects` | list of string | yes |  |
 
+### ExtensionRecordWire
+
+One row of `list_extensions`: an extension and its state (`extension_sources.ExtensionRecord`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `identifier` | string | yes |  |
+| `kind` | string | yes |  |
+| `target` | string | yes |  |
+| `state` | string | yes |  |
+| `reason` | string \| null | yes |  |
+| `distribution` | string \| null | yes |  |
+| `version` | string \| null | yes |  |
+| `entry_point` | string \| null | yes |  |
+| `authorization` | string \| null | yes |  |
+| `previous_version` | string \| null | yes |  |
+| `orphan_topics` | list of string | yes |  |
+
 ### ExtensionRequest
 
 An extension request at a cursor, as `get_pending_request` answers it (docs/EXTENSION-LOCKS.md).
@@ -1386,6 +1410,12 @@ The newest compaction entry on the path (`agent_session.CompactionRecord`).
 | `summary` | string | yes |  |
 | `first_kept_id` | string \| null | yes |  |
 | `tokens_before` | integer \| null | yes |  |
+
+### ListExtensionsResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `extensions` | list of [ExtensionRecordWire](#extensionrecordwire) | yes | Every extension this session knows of and its state, as the rows of `tau ext list` (docs/EXTENSION-PACKAGES.md §7): loaded, disabled, failed, and found-but-not-loaded (unauthorized, unusable, collision). Each row names the identifier, source kind, target, distribution and version for a package, why it is not loaded, and the subscribed ext: topics whose emitter is not loaded (#44). Read-only: authorizing is not on the wire. |
 
 ### ListManagedExtensionsResult
 

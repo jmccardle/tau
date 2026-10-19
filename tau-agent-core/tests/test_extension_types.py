@@ -228,16 +228,16 @@ class TestExtensionAPICommands:
         api = _bound_api("helper")
         cmd = {"action": "help"}
         assert api.register_command("help", cmd) is None, "nothing held it, so it is claimed"
-        assert api._registry.get_commands() == {"ext:helper.help": cmd}
-        assert api._registry.get_bindings() == {"help": "ext:helper.help"}
+        assert api._registry.get_commands() == {"ext:helper:help": cmd}
+        assert api._registry.get_bindings() == {"help": "ext:helper:help"}
         assert api.get_command("help") is cmd
-        assert api.get_command("ext:helper.help") is cmd
+        assert api.get_command("ext:helper:help") is cmd
 
     def test_register_multiple_commands(self):
         api = _bound_api("helper")
         api.register_command("help", {"action": "help"})
         api.register_command("status", {"action": "status"})
-        assert sorted(api._registry.get_commands()) == ["ext:helper.help", "ext:helper.status"]
+        assert sorted(api._registry.get_commands()) == ["ext:helper:help", "ext:helper:status"]
 
     def test_re_registering_the_same_name_replaces_in_place(self):
         """A reload re-registers; it is the same owner, so there is no contest."""
@@ -255,23 +255,23 @@ class TestExtensionAPICommands:
         second = _bound_api("beta", registry)
         first.register_command("note", {"action": "a"})
 
-        assert second.register_command("note", {"action": "b"}) == "ext:alpha.note"
-        assert registry.get_bindings() == {"note": "ext:alpha.note"}
-        assert registry.get_command("ext:beta.note") == {"action": "b"}
-        assert registry.command_names() == {"note", "ext:alpha.note", "ext:beta.note"}
+        assert second.register_command("note", {"action": "b"}) == "ext:alpha:note"
+        assert registry.get_bindings() == {"note": "ext:alpha:note"}
+        assert registry.get_command("ext:beta:note") == {"action": "b"}
+        assert registry.command_names() == {"note", "ext:alpha:note", "ext:beta:note"}
 
     def test_a_pin_beats_a_registration(self):
         from tau_agent_core.extensions.registry import ExtensionRegistry
 
         registry = ExtensionRegistry()
-        registry.pin_command("note", "ext:beta.note")
+        registry.pin_command("note", "ext:beta:note")
         first = _bound_api("alpha", registry)
         second = _bound_api("beta", registry)
 
-        assert first.register_command("note", {"action": "a"}) == "ext:beta.note"
+        assert first.register_command("note", {"action": "a"}) == "ext:beta:note"
         assert registry.get_bindings() == {}, "the pinned target is not loaded yet"
         assert second.register_command("note", {"action": "b"}) is None
-        assert registry.get_bindings() == {"note": "ext:beta.note"}
+        assert registry.get_bindings() == {"note": "ext:beta:note"}
 
     def test_an_unbound_api_cannot_register_a_command(self):
         """Fail-Early: no bucket means no identity, and every command needs one."""
@@ -284,7 +284,7 @@ class TestExtensionAPICommands:
         registry = ExtensionRegistry()
         _bound_api("alpha", registry).register_command("note", {"action": "a"})
         with pytest.raises(ValueError, match="belongs to another extension"):
-            _bound_api("beta", registry).unregister_command("ext:alpha.note")
+            _bound_api("beta", registry).unregister_command("ext:alpha:note")
 
 
 class TestExtensionAPIShortcuts:

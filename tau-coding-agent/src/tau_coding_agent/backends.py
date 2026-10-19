@@ -54,6 +54,7 @@ from tau_agent_core.prompt_cache import (
 from tau_agent_core.compare import Comparison, start_comparison
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.extension_sources import ExtensionRecord
 from tau_agent_core.sdk import (
     BASE_SYSTEM_PROMPT,
     DEFAULT_MAX_TOKENS,
@@ -85,14 +86,33 @@ def resolve_tool_names(config: dict[str, Any]) -> list[str]:
     tool-suppression flags — ``--no-tools`` and ``--no-builtin-tools``, each of
     which sets ``tools=[]`` — are already folded in.
 
-    This answers only "which BUILT-INS?". Whether extension-registered tools are
-    also withheld is ``config["no_tools"] == "all"``, decided far downstream in
-    ``AgentSession._build_turn_tools``; it is not this function's question and is
-    deliberately not second-guessed here.
+    This answers only "which BUILT-INS?", so a name that is not a built-in is
+    left for :func:`resolve_tool_filters`; it may be an extension's tool, which
+    does not exist until extensions load (#43).
     """
     names = config.get("tools", list(DEFAULT_TOOL_NAMES))
     exclude = set(config.get("exclude_tools") or [])
-    return [t for t in names if t not in exclude]
+    return [t for t in names if t in DEFAULT_TOOL_NAMES and t not in exclude]
+
+
+def resolve_tool_filters(config: dict[str, Any]) -> tuple[list[str] | None, list[str]]:
+    """The ``--tools`` allowlist and ``--exclude-tools`` denylist over EVERY tool (#43).
+
+    :func:`resolve_tool_names` answers which built-ins to construct; this
+    answers what the session may offer, extension tools included, and the
+    session checks the names once extensions have loaded
+    (``AgentSession.check_tool_filters``). The allowlist is ``tool_allowlist``,
+    which only the ``--tools`` flag writes: a model entry's own ``tools`` key
+    still selects built-ins and leaves extension tools alone
+    (docs/EXTENSION-PACKAGES.md §11). A suppression flag yields no allowlist.
+
+    Returns:
+        ``(allowlist or None, denylist)``.
+    """
+    allow = None
+    if config.get("tool_allowlist") is not None and config.get("no_tools") is None:
+        allow = list(config["tool_allowlist"])
+    return allow, list(config.get("exclude_tools") or [])
 
 
 def json_mode_payloads(projector: MessageDeltaProjector, event: AgentEvent) -> list[dict[str, Any]]:
@@ -1483,6 +1503,7 @@ class TauBackend(Backend):
         )
 
         no_tools = config.get("no_tools")
+        tool_allowlist, tool_denylist = resolve_tool_filters(config)
 
         max_turns = config.get("max_turns")
 
@@ -1502,6 +1523,8 @@ class TauBackend(Backend):
             cwd=cwd,
             prompt_templates=templates,
             skills=skills,
+            tool_allowlist=tool_allowlist,
+            tool_denylist=tool_denylist,
         )
         if compaction.summarizer is not None:
             self.agent_session.require_compaction_resolver(compaction.summarizer)
@@ -1556,14 +1579,13 @@ class TauBackend(Backend):
         """
         self.agent_session.set_headless_ui_defaults(policy)
 
-    async def emit_session_start(self, reason: str = "startup") -> None:
-        """Fire the ``session_start`` lifecycle hook on the wrapped session (S41).
+    async def emit_session_start(self, reason: str = "startup", *, strict: bool = False) -> None:
+        """Fire ``session_start`` on the wrapped session (S41); :meth:`AgentSession.emit_session_start`.
 
-        Delegates to :meth:`AgentSession.emit_session_start`; the frontends call
-        this after :meth:`load_extensions` so a loaded extension's ``session_start``
-        handler runs with its registration in place (state reconstruction, watchers).
+        The frontends call this after :meth:`load_extensions`. ``strict`` makes
+        an explicitly named extension's failure raise (#47).
         """
-        await self.agent_session.emit_session_start(reason)
+        await self.agent_session.emit_session_start(reason, strict=strict)
 
     async def emit_session_shutdown(self, reason: str = "quit") -> None:
         """Fire the ``session_shutdown`` lifecycle hook on the wrapped session (S41).
@@ -1601,6 +1623,14 @@ class TauBackend(Backend):
             extensions_config=extensions_config,
             collect_explicit_errors=collect_explicit_errors,
         )
+
+    def extension_records(self) -> list[ExtensionRecord]:
+        """Every extension the session knows of and its state; :meth:`AgentSession.extension_records`."""
+        return self.agent_session.extension_records()
+
+    async def authorize_extension(self, token: str) -> ExtensionActionResult:
+        """Authorize and load a withheld extension; :meth:`AgentSession.authorize_extension`."""
+        return await self.agent_session.authorize_extension(token)
 
     def list_managed_extensions(self) -> list[tuple[str, bool]]:
         """Every managed file extension as ``(path, enabled)`` (E10 §6 / S70).

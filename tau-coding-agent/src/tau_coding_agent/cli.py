@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tau_llm.models import EXTENDED_THINKING_LEVELS
+from tau_agent_core.commands import UnsupportedCommandError
+from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
 from tau_coding_agent.config import TAU_DIR, ConfigError, load_config
 from tau_coding_agent.headless import (
@@ -199,7 +201,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--tools",
         "-t",
         default=None,
-        help="comma-separated tool allowlist (e.g. read,bash)",
+        help="comma-separated allowlist over built-in AND extension tools (e.g. "
+        "read,web_fetch); names are checked once extensions have loaded",
     )
     parser.add_argument(
         "--no-tools",
@@ -215,15 +218,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="extensions",
         action="append",
         default=None,
-        metavar="PATH",
-        help="load an extension from PATH (repeatable)",
+        metavar="PATH|MODULE",
+        help="load an extension from PATH (holds a '/' or ends in .py) or an installed "
+        "MODULE; naming it authorizes it (repeatable)",
     )
     parser.add_argument(
         "--no-extensions",
         "-ne",
         dest="no_extensions",
         action="store_true",
-        help="disable extension DISCOVERY (explicit --extension paths still load)",
+        help="disable extension DISCOVERY of drop-ins and installed packages "
+        "(explicit --extension values still load)",
     )
     parser.add_argument(
         "--bus",
@@ -240,7 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="exclude_tools",
         default=None,
         metavar="LIST",
-        help="comma-separated tool denylist (e.g. bash,write)",
+        help="comma-separated denylist over built-in and extension tools (e.g. bash,write)",
     )
     parser.add_argument(
         "--no-builtin-tools",
@@ -269,9 +274,9 @@ def build_parser() -> argparse.ArgumentParser:
         dest="ext_config",
         action="append",
         default=None,
-        metavar="NAME.KEY=VALUE",
+        metavar="NAME:KEY=VALUE",
         help="override a per-extension config value (repeatable; CLI > config.json). "
-        "VALUE is JSON-decoded when it parses (e.g. budget.ceiling=5.0), else a string",
+        "VALUE is JSON-decoded when it parses (e.g. budget:ceiling=5.0), else a string",
     )
     parser.add_argument(
         "--ui-defaults",
@@ -747,11 +752,16 @@ def _run_export_html(args: CLIArgs, config: dict) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``tau`` console script.
 
-    ``tau serve ...`` is a subcommand with its own parser (docs/TAU-SERVE.md §6).
+    ``tau serve ...`` is a subcommand with its own parser (docs/TAU-SERVE.md §6),
+    and so is ``tau ext ...`` (docs/EXTENSION-PACKAGES.md §7).
     The word was never a valid bare ``tau`` argument: a message without ``-p``
     is refused below, so claiming it takes nothing from anyone.
     """
     raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == ["ext"]:
+        from tau_coding_agent.ext_cli import run_ext
+
+        return run_ext(raw[1:])
     if raw[:1] == ["serve"]:
         try:
             from tau_coding_agent.serve.cli import run_serve
@@ -938,7 +948,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cwd is not None:
             raise CLIError("--cwd names a directory on a daemon's machine; it needs --connect")
         return _launch_tui(args, config)
-    except (ConfigError, ResourceError) as exc:
+    except (ConfigError, ResourceError, UnsupportedCommandError, ExplicitExtensionError) as exc:
         print(f"tau: error: {exc}", file=sys.stderr)
         return 2
 

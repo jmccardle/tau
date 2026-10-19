@@ -62,7 +62,7 @@ class _LifecycleBackend(BoundPrintFake):
 
         return LoadExtensionsResult()
 
-    async def emit_session_start(self, reason: str = "startup") -> None:
+    async def emit_session_start(self, reason: str = "startup", *, strict: bool = False) -> None:
         self.events.append(f"start:{reason}")
 
     async def emit_session_shutdown(self, reason: str = "quit") -> None:

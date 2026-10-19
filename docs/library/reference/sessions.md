@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentSession(*, model: Model, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS)
+class AgentSession(*, model: Model, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS, tool_allowlist: Sequence[str] | None = None, tool_denylist: Sequence[str] = ())
 ```
 
 `tau_agent_core.agent_session.AgentSession`
@@ -41,6 +41,8 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 - `cwd: str | None = None` — Where tools and ``@path`` references resolve; ``None`` means the process cwd. Stored absolute.
 - `prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES` — The templates ``submit`` expands for ``/name args``; none by default.
 - `skills: SkillCatalog = EMPTY_SKILLS` — The skills ``submit`` expands for ``/skill:name args``; none by default.
+- `tool_allowlist: Sequence[str] | None = None` — ``--tools``: when given, only these names are offered, built-in or extension-registered. Names are checked once extensions have loaded (:meth:`check_tool_filters`, #43).
+- `tool_denylist: Sequence[str] = ()` — ``--exclude-tools``: names never offered, checked the same way.
 
 **Raises**
 
@@ -112,6 +114,51 @@ The dispatched command's :class:`ExtensionCommandResult`. ``handled`` is ``False
 **Raises**
 
 - `ValueError` — no such request, the request carries no ask, an unknown action label, or values that :func:`validate_form_values` rejects. Fail-Early: nothing is coerced and no partial answer is persisted.
+
+### authorize_extension
+
+```python
+async authorize_extension(token: str) -> ExtensionActionResult
+```
+
+`tau_agent_core.agent_session.AgentSession.authorize_extension`
+
+Authorize a withheld, discovered extension and load it into this session.
+
+Writes the authorization record (docs/EXTENSION-PACKAGES.md §5), loads
+the source, and fires its ``session_start`` (reason ``"enable"``). A
+discovered extension that fails to load is reported, not raised, as at
+startup.
+
+**Parameters**
+
+- `token: str` — The withheld extension's identifier, or its last dotted segment.
+
+**Returns**
+
+The outcome, with ``action`` ``"authorize"``.
+
+**Raises**
+
+- `AuthorizationStoreError` — The store cannot be read.
+
+### check_tool_filters
+
+```python
+check_tool_filters() -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.check_tool_filters`
+
+Refuse a ``--tools`` or ``--exclude-tools`` name that no tool answers to (#43).
+
+Called once extensions have loaded, because an extension's tools exist
+only after its ``register`` ran. A built-in name counts even when it was
+not constructed.
+
+**Raises**
+
+- `ValueError` — ``Unknown tool: <name>`` for the first such name.
 
 ### close_cursor
 
@@ -341,7 +388,7 @@ session (docs/SUBMISSION-LIFECYCLE.md "fork").
 ### emit_session_start
 
 ```python
-async emit_session_start(reason: str = 'startup') -> None
+async emit_session_start(reason: str = 'startup', *, strict: bool = False) -> None
 ```
 
 `tau_agent_core.agent_session.AgentSession.emit_session_start`
@@ -350,13 +397,18 @@ Bind this session to the running loop, then fire ``session_start`` (S41).
 
 Call it after extensions are loaded, so a handler finds its registration
 in place. The loop binding (which :meth:`submit_threadsafe` marshals to)
-happens whether or not anything listens. Dispatched through the
-:class:`ExtensionRunner`: a handler's exception is reported through its
-error sink (S44) and the remaining handlers still run.
+happens whether or not anything listens. A handler's exception is
+reported through the runner's error sink (S44), the remaining handlers
+still run, and :meth:`extension_records` shows the extension as failed.
 
 **Parameters**
 
 - `reason: str = 'startup'` — Why the session began, as pi's ``SessionStartEvent.reason``: ``"startup"``, ``"reload"``, ``"new"``, ``"resume"`` or ``"fork"``.
+- `strict: bool = False` — Raise once dispatch is done if an extension named with ``-e`` raised (#47). ``-p`` and ``--mode rpc`` pass True.
+
+**Raises**
+
+- `ExtensionStartupError` — ``strict``, and an explicit extension's handler raised; the first such extension is named.
 
 ### enable_extension
 
@@ -404,6 +456,24 @@ ones, and the hooks are the ones that cursor's turns run.
 **Returns**
 
 The tool's structured value, content and details.
+
+### extension_records
+
+```python
+extension_records() -> list[ExtensionRecord]
+```
+
+`tau_agent_core.agent_session.AgentSession.extension_records`
+
+Every extension this session knows of and its state: the ``tau ext list`` rows, live.
+
+Loaded and disabled extensions, those that failed, and those found and
+withheld (docs/EXTENSION-PACKAGES.md §7). A loaded row carries the
+topics it subscribed to that no loaded extension emits (#44).
+
+**Returns**
+
+The records, from func:`~tau_agent_core.sdk.session_extension_records`.
 
 ### extension_runner
 
@@ -732,36 +802,37 @@ Every file extension under management, enabled or not.
 ### load_extensions
 
 ```python
-async load_extensions(explicit_paths: list[str] | None = None, *, discover: bool = True, user_dir: str | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, collect_explicit_errors: bool = False) -> LoadExtensionsResult
+async load_extensions(explicit_paths: list[str] | None = None, *, discover: bool = True, user_dir: str | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, collect_explicit_errors: bool = False, store_path: str | None = None) -> LoadExtensionsResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.load_extensions`
 
-Load file-path extensions into THIS live session (E5 §2, S26/S27).
+Load the authorized and the explicitly named extensions into THIS session.
 
-Each extension's ``register(api)`` runs against an api bound to its own
-runner bucket (:meth:`_bind_extension_api`), labelled by file path and
-appended in load order, so its hooks fire in this session's loop. Called
-after construction, which resolves the load-vs-bind ordering (E5 D-E5-7).
-Nothing is printed; the caller surfaces ``errors``.
+:func:`~tau_agent_core.sdk.plan_extensions` decides what loads
+(docs/EXTENSION-PACKAGES.md §5). Each extension's ``register(api)`` runs
+against an api bound to its own runner bucket (:meth:`_bind_extension_api`),
+in load order, so its hooks fire in this session's loop. Nothing is
+printed; the caller surfaces ``errors``, ``withheld`` and
+``grandfathered``.
 
 **Parameters**
 
-- `explicit_paths: list[str] | None = None` — ``-e`` paths. A failure here raises unless ``collect_explicit_errors``.
-- `discover: bool = True` — Whether to scan the global extensions dir; ``-ne`` sets False. ``explicit_paths`` load either way.
-- `user_dir: str | None = None` — The global extensions dir; ``None`` means ``~/.tau/extensions``.
-- `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by file stem (S40), stored BEFORE binding so each ``api.config`` is sliced from it. ``None`` keeps the current map.
+- `explicit_paths: list[str] | None = None` — ``-e`` values, paths or module names. A failure here raises unless ``collect_explicit_errors``.
+- `discover: bool = True` — Whether to discover drop-ins and packages; ``-ne`` sets False. ``explicit_paths`` load either way.
+- `user_dir: str | None = None` — The drop-in directory; ``None`` means ``<tau home>/extensions``.
+- `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by identifier (S40), stored BEFORE binding so each ``api.config`` is sliced from it. ``None`` keeps the current map.
 - `collect_explicit_errors: bool = False` — Collect an explicit failure into ``errors`` like a discovered one, and keep loading (the TUI cannot abort mid-load).
+- `store_path: str | None = None` — The authorization store; ``None`` is the file beside the drop-in directory. :meth:`authorize_extension` writes the same one.
 
 **Returns**
 
-The extensions loaded and the failures collected. The failures also replace what :meth:`get_extension_state` reports.
+The extensions loaded, the failures collected and the sources withheld. The failures and withheld sources also replace what meth:`extension_records` reports.
 
 **Raises**
 
-- `FileNotFoundError` — An explicit path names no file.
-- `ExtensionCapabilityError` — An explicit extension declares a capability this session lacks, or an invalid ``CONFIG_SCHEMA``.
-- `Exception` — Whatever an explicit extension's import or ``register`` raises, unchanged. None of these is raised when ``collect_explicit_errors`` is set.
+- `ValueError` — A ``--tools``/``--exclude-tools`` name matches no tool once loading is done (:meth:`check_tool_filters`).
+- `ExtensionStartupError` — An explicit extension failed to import or register (#47), with the original as ``__cause__``; not raised when ``collect_explicit_errors`` is set.
 
 ### messages
 
@@ -827,6 +898,24 @@ The new cursor, registered with this session.
 **Raises**
 
 - `ValueError` — ``at`` names no entry.
+
+### orphan_subscriptions
+
+```python
+orphan_subscriptions() -> dict[str, tuple[str, ...]]
+```
+
+`tau_agent_core.agent_session.AgentSession.orphan_subscriptions`
+
+Per enabled extension, the ``ext:`` topics it subscribed to whose emitter is not loaded (#44).
+
+A topic's emitter is its middle segment, which every emit derives from
+the emitting extension's own identifier, so an emitter that is not
+loaded can never deliver (docs/EXTENSION-PACKAGES.md §10).
+
+**Returns**
+
+``{label: topics}``, for extensions with at least one such topic.
 
 ### pending_request
 
@@ -1109,18 +1198,22 @@ resolve_extension_target(token: str) -> str | None
 
 `tau_agent_core.agent_session.AgentSession.resolve_extension_target`
 
-Resolve a user token (full path or file stem) to a managed path.
+Resolve what a user typed to a managed extension's label.
 
-The listing shows stems, so ``disable 21_reminders`` must map to the
-loaded path.
+``token`` may be the label itself, the identifier, or the identifier's
+last dotted segment (docs/EXTENSION-PACKAGES.md §4), resolved fresh.
 
 **Parameters**
 
-- `token: str` — What the user typed: a managed path, or a file stem.
+- `token: str` — A label, an identifier, or a shorthand segment.
 
 **Returns**
 
-The exact path if managed, else the one path with that stem; ``None`` when nothing matches or the stem is ambiguous (no guessing).
+The managed label, or ``None`` when nothing matches.
+
+**Raises**
+
+- `ValueError` — The shorthand matches two extensions; the message names both.
 
 ### resolve_model
 
@@ -2768,7 +2861,7 @@ writer. The move is visible in ``message``.
 
 **Constructor parameters**
 
-- `action: str` — ``"enable"``, ``"disable"``, ``"reload"`` or ``"configure"``.
+- `action: str` — ``"enable"``, ``"disable"``, ``"reload"``, ``"configure"`` or ``"authorize"``.
 - `path: str` — The resolved extension path, or the caller's token when it named no loaded extension.
 - `ok: bool` — False for a reportable no-op or bad target (not loaded, already in that state); True for a completed action.
 - `message: str` — The human-readable line the listing shows.

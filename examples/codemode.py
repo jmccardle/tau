@@ -9,7 +9,7 @@ loadable entry point, and its stem is the config key::
 
     {"extensions": {"codemode": {"provider": "monty", "lifetime": "session"}}}
 
-or per run: ``--ext-config codemode.provider=monty``. The Monty provider needs
+or per run: ``--ext-config codemode:provider=monty``. The Monty provider needs
 ``pip install 'ffwf-tau-agent-core[codemode-monty]'``.
 """
 

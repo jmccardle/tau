@@ -1207,7 +1207,8 @@ class TestExtensions:
         def my_ext(api):
             api.register_command("mycmd", {"description": "A command"})
             # Installed at its qualified name, reachable by both (EXTENSION-NAMESPACE.md).
-            assert "ext:my_ext.mycmd" in api._registry.get_commands()
+            assert f"ext:{api.extension_name}:mycmd" in api._registry.get_commands()
+            assert api.extension_name.endswith(".<locals>.my_ext")
             assert api.get_command("mycmd") == {"description": "A command"}
 
         self.create_session(extensions=[my_ext])

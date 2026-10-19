@@ -3458,6 +3458,35 @@ async def _handle_get_extension_state(
 
 ### end tier-c:get_extension_state
 
+LIST_EXTENSIONS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("list_extensions")
+
+
+@command(
+    "list_extensions",
+    tier="C",
+    since="0.14.0",
+    notes=(
+        "AgentSession.extension_records(), projected: the rows of `tau ext list` "
+        "(docs/EXTENSION-PACKAGES.md §7). Unlike get_extension_state it lists what "
+        "was found and NOT loaded — unauthorized (with whether it is new or an "
+        "update), unusable, or a collision — so a head can offer to enable it. "
+        "Read-only: no turn_safety_guard, no `leaf`, no require_durable_session. "
+        "Authorizing is deliberately not a wire verb in 0.14.0; a host runs "
+        "`tau ext authorize` or names the extension with -e."
+    ),
+    params_schema=params_schema_for("list_extensions"),
+    result_schema=LIST_EXTENSIONS_RESULT_SCHEMA,
+)
+async def _handle_list_extensions(
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    from tau_agent_core.projections import extension_records
+
+    return extension_records(handler.session.extension_records())
+
+
+### end tier-c:list_extensions
+
 
 @asynccontextmanager
 async def tree_mutation_guard(

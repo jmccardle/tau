@@ -20,7 +20,6 @@ These have NO dependency on the TauApp app module, so they import cleanly.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Literal, Callable
 
 from textual.widget import Widget
@@ -30,6 +29,7 @@ from textual import events, work
 from textual.binding import Binding
 from tau_agent_core.attachments import AttachmentCompletions
 from tau_agent_core.commands import ArgumentCompletions, CommandCompletions
+from tau_agent_core.extension_sources import extension_identifier
 import os
 from datetime import datetime, timedelta
 from textual.app import ComposeResult
@@ -925,18 +925,10 @@ class ChatInput(TextArea):
 
 
 def _extension_display_name(blocked_by: str | None) -> str:
-    """A short, readable name for the vetoing extension (S50).
-
-    The runner attributes a veto by its bucket LABEL — a file path for a
-    discovered/`-e` extension (``…/30_permission_gate.py``) or a ``module:qualname``
-    for an inline factory. Show the file stem when it looks like a path, else the
-    label verbatim; ``None`` (an unattributed block) reads as the honest
-    ``"extension"`` rather than a fabricated name."""
+    """The vetoing extension's identifier (S50), or ``"extension"`` for an unattributed block."""
     if not blocked_by:
         return "extension"
-    if blocked_by.endswith(".py") or "/" in blocked_by:
-        return Path(blocked_by).stem
-    return blocked_by
+    return extension_identifier(blocked_by)
 
 
 ContentSource = Literal["markdown", "verbatim"]

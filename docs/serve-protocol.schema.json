@@ -683,7 +683,7 @@
           "type": "boolean"
         },
         "hidden": {
-          "description": "A qualified extension name (`ext:pirate.speak`): it resolves, and a completion list leaves it out.",
+          "description": "A qualified extension name (`ext:pirate:speak`): it resolves, and a completion list leaves it out.",
           "type": "boolean"
         },
         "name": {
@@ -2506,6 +2506,103 @@
       ],
       "type": "object"
     },
+    "ExtensionRecordWire": {
+      "description": "One row of `list_extensions`: an extension and its state (`extension_sources.ExtensionRecord`).",
+      "properties": {
+        "authorization": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "distribution": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entry_point": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "identifier": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "orphan_topics": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "previous_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "identifier",
+        "kind",
+        "target",
+        "state",
+        "reason",
+        "distribution",
+        "version",
+        "entry_point",
+        "authorization",
+        "previous_version",
+        "orphan_topics"
+      ],
+      "type": "object"
+    },
     "ExtensionRequest": {
       "description": "An extension request at a cursor, as `get_pending_request` answers it (docs/EXTENSION-LOCKS.md).",
       "properties": {
@@ -2837,7 +2934,7 @@
                 "type": "boolean"
               },
               "hidden": {
-                "description": "True for a private-registry name \u2014 `ext:<extension>.<command>`, which every extension command always has and which nothing can take from it (docs/EXTENSION-NAMESPACE.md). It resolves exactly like any other name; it is marked because offering both halves of the same command in one completion list is noise. Show these only once the reader has typed `ext:`. False for every name a reader would type unprompted.",
+                "description": "True for a private-registry name \u2014 `ext:<extension>:<command>`, which every extension command always has and which nothing can take from it (docs/EXTENSION-NAMESPACE.md). It resolves exactly like any other name; it is marked because offering both halves of the same command in one completion list is noise. Show these only once the reader has typed `ext:`. False for every name a reader would type unprompted.",
                 "type": "boolean"
               },
               "name": {
@@ -3737,6 +3834,42 @@
         "summary",
         "first_kept_id",
         "tokens_before"
+      ],
+      "type": "object"
+    },
+    "ListExtensions": {
+      "additionalProperties": false,
+      "description": "RPC `list_extensions` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/ListExtensionsResult"
+      }
+    },
+    "ListExtensionsResult": {
+      "properties": {
+        "extensions": {
+          "description": "Every extension this session knows of and its state, as the rows of `tau ext list` (docs/EXTENSION-PACKAGES.md \u00a77): loaded, disabled, failed, and found-but-not-loaded (unauthorized, unusable, collision). Each row names the identifier, source kind, target, distribution and version for a package, why it is not loaded, and the subscribed ext: topics whose emitter is not loaded (#44). Read-only: authorizing is not on the wire.",
+          "items": {
+            "$ref": "#/$defs/ExtensionRecordWire"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "extensions"
       ],
       "type": "object"
     },
@@ -8040,6 +8173,33 @@
       },
       {
         "additionalProperties": false,
+        "description": "A `list_extensions` request.",
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "method": {
+            "const": "list_extensions"
+          },
+          "params": {
+            "$ref": "#/$defs/ListExtensions"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
         "description": "A `get_extension_config` request.",
         "properties": {
           "id": {
@@ -8407,6 +8567,9 @@
     "hello": {
       "$ref": "#/$defs/HelloResult"
     },
+    "list_extensions": {
+      "$ref": "#/$defs/ListExtensionsResult"
+    },
     "list_managed_extensions": {
       "$ref": "#/$defs/ListManagedExtensionsResult"
     },
@@ -8476,7 +8639,7 @@
     ]
   },
   "description": "The tau serve protocol, JSON-RPC 2.0 over WebSocket (docs/SERVE-PROTOCOL.md). Request records are closed (`additionalProperties: false`), because the daemon refuses an unknown field. Everything the daemon sends is open: a client must ignore a field it does not know, so a minor version may add one. Each request $def is its method's `params` and names its answer in `x-result`, and `Results` maps every method to it; `Event`'s `x-data` maps every `kind` to its data.",
-  "title": "tau serve protocol 0.10",
+  "title": "tau serve protocol 0.11",
   "x-default-port": 8256,
-  "x-protocol-version": "0.10"
+  "x-protocol-version": "0.11"
 }

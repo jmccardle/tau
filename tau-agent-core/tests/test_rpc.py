@@ -478,9 +478,11 @@ def test_the_table_has_exactly_the_2a_2c_phase3_and_tier_b_verbs():
     five tree mutations were callable and undrawable (docs/VSCODE-HEAD.md §6) —
     plus the extension-request pair, `get_pending_request` and `answer_request`,
     without which an RPC host could be refused by a lock it had no verb to
-    release — plus 0.13.0's `set_reasoning` (docs/REASONING-WIRE.md §10) — no
-    more, no less."""
+    release — plus 0.13.0's `set_reasoning` (docs/REASONING-WIRE.md §10) — plus
+    0.14.0's `list_extensions`, the `tau ext list` rows (docs/EXTENSION-PACKAGES.md
+    §7) — no more, no less."""
     assert set(commands.COMMAND_TABLE) == {
+        "list_extensions",
         "get_extension_config",
         "set_extension_config",
         "submit",

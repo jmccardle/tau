@@ -16,9 +16,9 @@
 
 ## Version negotiation
 
-- **Protocol version:** `2.2`
+- **Protocol version:** `3.0`
 - **Dialect:** `jsonrpc-2.0`
-- **Counts:** 41 live verbs, 7 declined verbs, 15 event types, 62 type definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 42 live verbs, 7 declined verbs, 15 event types, 63 type definitions. Cite this line; never copy the numbers into hand-written prose.
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
 
@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 177,220 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 179,299 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -256,7 +256,7 @@ what rides on top of this on every response):
             "type": "boolean"
           },
           "hidden": {
-            "description": "True for a private-registry name \u2014 `ext:<extension>.<command>`, which every extension command always has and which nothing can take from it (docs/EXTENSION-NAMESPACE.md). It resolves exactly like any other name; it is marked because offering both halves of the same command in one completion list is noise. Show these only once the reader has typed `ext:`. False for every name a reader would type unprompted.",
+            "description": "True for a private-registry name \u2014 `ext:<extension>:<command>`, which every extension command always has and which nothing can take from it (docs/EXTENSION-NAMESPACE.md). It resolves exactly like any other name; it is marked because offering both halves of the same command in one completion list is noise. Show these only once the reader has typed `ext:`. False for every name a reader would type unprompted.",
             "type": "boolean"
           },
           "name": {
@@ -1964,6 +1964,41 @@ what rides on top of this on every response):
 }
 ```
 
+#### `list_extensions`
+
+*Since 0.14.0.* AgentSession.extension_records(), projected: the rows of `tau ext list` (docs/EXTENSION-PACKAGES.md §7). Unlike get_extension_state it lists what was found and NOT loaded — unauthorized (with whether it is new or an update), unusable, or a collision — so a head can offer to enable it. Read-only: no turn_safety_guard, no `leaf`, no require_durable_session. Authorizing is deliberately not a wire verb in 0.14.0; a host runs `tau ext authorize` or names the extension with -e.
+
+**Params schema:**
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+**Result schema** (see [Response envelope](#response-envelope) for
+what rides on top of this on every response):
+
+```json
+{
+  "properties": {
+    "extensions": {
+      "description": "Every extension this session knows of and its state, as the rows of `tau ext list` (docs/EXTENSION-PACKAGES.md \u00a77): loaded, disabled, failed, and found-but-not-loaded (unauthorized, unusable, collision). Each row names the identifier, source kind, target, distribution and version for a package, why it is not loaded, and the subscribed ext: topics whose emitter is not loaded (#44). Read-only: authorizing is not on the wire.",
+      "items": {
+        "$ref": "#/$defs/ExtensionRecordWire"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "extensions"
+  ],
+  "type": "object"
+}
+```
+
 #### `list_managed_extensions`
 
 *Since 0.9.8.* The extension_name domain's enumerator, addressed by its own capability name: AgentSession.list_managed_extensions(), projected. Overlaps enumerate_domain {"domain": "extension_name"} the way complete_message_id overlaps its own domain — with one difference worth a host's attention: enumerate_domain has only value/label to work with, so it renders enabled-ness INTO the label ('path (disabled)'), and this verb hands back the boolean. A host deciding whether to offer enable or disable wants this one. Read-only: no turn_safety_guard, no `leaf` (E5 rule 2), no require_durable_session (D-7 rule 2). Answers only about MANAGED file extensions — a file that failed to import is not here, because it can never be a legal extension_name; get_extension_state is the read that shows it.
@@ -2971,6 +3006,24 @@ One loaded extension and what it registered, as `get_extension_state` lists it.
 | `hooks` | list of string | yes |  |
 | `content_hash` | string | yes |  |
 | `subjects` | list of string | yes |  |
+
+### ExtensionRecordWire
+
+One row of `list_extensions`: an extension and its state (`extension_sources.ExtensionRecord`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `identifier` | string | yes |  |
+| `kind` | string | yes |  |
+| `target` | string | yes |  |
+| `state` | string | yes |  |
+| `reason` | string \| null | yes |  |
+| `distribution` | string \| null | yes |  |
+| `version` | string \| null | yes |  |
+| `entry_point` | string \| null | yes |  |
+| `authorization` | string \| null | yes |  |
+| `previous_version` | string \| null | yes |  |
+| `orphan_topics` | list of string | yes |  |
 
 ### ExtensionRequest
 

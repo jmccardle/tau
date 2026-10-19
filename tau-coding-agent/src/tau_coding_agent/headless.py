@@ -201,6 +201,7 @@ def resolve_model_config(
         if not names:
             raise CLIError("--tools given but no tool names parsed")
         model_config["tools"] = names
+        model_config["tool_allowlist"] = names
 
     if args.exclude_tools is not None:
         excluded = [t.strip() for t in args.exclude_tools.split(",") if t.strip()]
@@ -259,25 +260,34 @@ def _decode_ext_config_value(raw: str) -> Any:
 
 
 def parse_ext_config_overrides(items: list[str]) -> dict[str, dict[str, Any]]:
-    """Parse ``--ext-config <name>.<key>=<value>`` items into ``{name: {key: value}}`` (S40).
+    """Parse ``--ext-config NAME:KEY=VALUE`` items into ``{name: {key: value}}`` (S40).
 
-    Each item is split on the FIRST ``=`` (so a value may contain ``=``) into
-    ``NAME.KEY`` and the value; the left side is split on the FIRST ``.`` into the
-    extension ``NAME`` (its file stem) and the ``KEY``. The value is decoded by
-    :func:`_decode_ext_config_value`. Fail-Early: a malformed item (no ``=``, no
-    ``.`` in the key part, or an empty name/key) RAISES :class:`CLIError` rather
-    than being silently dropped.
+    Each item splits on the first ``=``, so a value may contain one, and the
+    left side on the first ``:``, so ``NAME`` keeps its dots
+    (docs/EXTENSION-PACKAGES.md §3). The value is decoded by
+    :func:`_decode_ext_config_value`.
+
+    Raises:
+        CLIError: An item has no ``=``, no ``:`` before it (the 0.13.0
+            ``NAME.KEY`` form is named in the message), or an empty name or key.
     """
     overrides: dict[str, dict[str, Any]] = {}
     for item in items:
         if "=" not in item:
-            raise CLIError(f"--ext-config must be NAME.KEY=VALUE, got {item!r} (missing '=')")
+            raise CLIError(f"--ext-config must be NAME:KEY=VALUE, got {item!r} (missing '=')")
         lhs, _, raw_value = item.partition("=")
-        if "." not in lhs:
-            raise CLIError(
-                f"--ext-config must be NAME.KEY=VALUE, got {item!r} (the NAME.KEY part has no '.')"
+        if ":" not in lhs:
+            hint = (
+                " The NAME.KEY form was replaced in 0.14.0, because an extension's name"
+                " may contain dots; write NAME:KEY=VALUE (e.g. tau_router.planner:profile=p)."
+                if "." in lhs
+                else ""
             )
-        name, _, key = lhs.partition(".")
+            raise CLIError(
+                f"--ext-config must be NAME:KEY=VALUE, got {item!r} (the NAME:KEY part has "
+                f"no ':').{hint}"
+            )
+        name, _, key = lhs.partition(":")
         name, key = name.strip(), key.strip()
         if not name or not key:
             raise CLIError(f"--ext-config NAME and KEY must both be non-empty, got {item!r}")
@@ -291,7 +301,7 @@ def resolve_extensions_config(
     """Merge the config.json per-extension config with ``--ext-config`` overrides (S40).
 
     Base slices come from ``~/.tau/config.json`` ``"extensions": {"<name>": {…}}``
-    (keyed by extension file stem); ``overrides`` (from
+    (keyed by extension identifier); ``overrides`` (from
     :func:`parse_ext_config_overrides`) apply on top per key, so CLI beats
     config.json. Returns ``{name: {…}}`` handed to
     ``AgentSession.load_extensions(extensions_config=…)``; an extension with no
@@ -313,6 +323,65 @@ def resolve_extensions_config(
     for name, kv in overrides.items():
         merged.setdefault(name, {}).update(kv)
     return merged
+
+
+async def start_extensions(
+    backend: Any,
+    explicit: list[str] | None,
+    *,
+    discover: bool,
+    extensions_config: dict[str, dict[str, Any]],
+    verbose: bool = False,
+) -> Any:
+    """Load extensions and fire ``session_start`` strictly, for a head with no human (#47).
+
+    An extension named with ``-e`` that fails to import, register or start
+    stops the run before the first turn, naming the extension and the error
+    (docs/EXTENSION-PACKAGES.md §12). A discovered one warns and is listed as
+    failed. ``--tools`` names are checked here too (#43). With ``verbose``,
+    a subscription no loaded extension answers is a debug line (#44).
+
+    Returns:
+        The load result, for :func:`report_extension_load`.
+
+    Raises:
+        CLIError: Either failure above, or a ``--tools`` name nothing answers to.
+    """
+    from tau_agent_core.sdk import ExtensionStartupError, orphan_subscription_notices
+
+    try:
+        result = await backend.load_extensions(
+            explicit, discover=discover, extensions_config=extensions_config
+        )
+        emit_session_start = getattr(backend, "emit_session_start", None)
+        if emit_session_start is not None:
+            await emit_session_start("startup", strict=True)
+    except ExtensionStartupError as exc:
+        raise CLIError(str(exc)) from exc
+    except ValueError as exc:
+        if not str(exc).startswith("Unknown tool:"):
+            raise
+        raise CLIError(f"{exc} (checked against built-in and extension tools)") from exc
+    records = getattr(backend, "extension_records", None)
+    if verbose and records is not None:
+        for line in orphan_subscription_notices(records()):
+            print(f"[τ] debug: {line}", file=sys.stderr)
+    return result
+
+
+def report_extension_load(result: Any) -> None:
+    """Write a load's failures, grandfathered drop-ins and withheld extensions to stderr.
+
+    Headless heads never prompt: an unauthorized extension is named with the
+    command that authorizes it, and the run goes on without it
+    (docs/EXTENSION-PACKAGES.md §9).
+    """
+    from tau_agent_core.sdk import withheld_notices
+
+    for ext_error in result.errors:
+        print(f"[τ] failed to load extension {ext_error.path}: {ext_error.error}", file=sys.stderr)
+    for line in withheld_notices(result):
+        print(f"[τ] {line}", file=sys.stderr)
 
 
 def parse_ui_defaults(raw: str | None) -> dict[str, str]:
@@ -857,7 +926,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
             set_record_sink(_emit_extension_record)
 
-    emit_session_start = getattr(backend, "emit_session_start", None)
     emit_session_shutdown = getattr(backend, "emit_session_shutdown", None)
     abort = getattr(backend, "abort", None)
     installed_signals: list[signal.Signals] = []
@@ -881,19 +949,14 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         extensions_config = resolve_extensions_config(
             config, parse_ext_config_overrides(args.ext_config)
         )
-        ext_result = await backend.load_extensions(
+        ext_result = await start_extensions(
+            backend,
             explicit_extensions,
             discover=discover_extensions,
             extensions_config=extensions_config,
+            verbose=args.verbose,
         )
-        for ext_error in ext_result.errors:
-            print(
-                f"[τ] failed to load extension {ext_error.path}: {ext_error.error}",
-                file=sys.stderr,
-            )
-
-        if emit_session_start is not None:
-            await emit_session_start("startup")
+        report_extension_load(ext_result)
 
         submission = build_print_submission(prompt_text)
 

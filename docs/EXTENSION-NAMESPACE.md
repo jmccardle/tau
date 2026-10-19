@@ -1,6 +1,7 @@
 # Two names for every extension command
 
-Built 2026-09-11. An extension command now has a name nothing can take from it,
+Built 2026-09-11; §7's grammar revised in 0.14.0. An extension command now has a
+name nothing can take from it,
 and a name anyone can contest. Shadowing stops being a fight over one slot and
 becomes a binding a human can settle.
 
@@ -35,15 +36,15 @@ initializable and silently wrong, which is worse than broken.
 
 ## 2. Two names, three tables
 
-`ext:pirate.speak` is the pirate extension's `speak`. It is minted by
+`ext:pirate:speak` is the pirate extension's `speak`. It is minted by
 `ExtensionAPI.register_command` from the extension's own identity, the extension
 never spells one itself, and only two files sharing a stem can collide on one.
 
 | Table | Key | Contested? |
 |---|---|---|
-| private registry (`_commands`) | `ext:<extension>.<command>` | no |
+| private registry (`_commands`) | `ext:<extension>:<command>` | no |
 | bindings (`_bindings`) | typed name → qualified name | **yes** |
-| flows (`_flows`) | `ext:<extension>.<command>` | no |
+| flows (`_flows`) | `ext:<extension>:<command>` | no |
 
 `register_command` does two things: it installs the command in the private
 registry, where nothing can displace it, and it claims the typed name. The
@@ -87,10 +88,10 @@ resolves at call time, so a disabled extension is a name that stops answering.
 ```python
 def register(api):
     async def note(args, ctx):
-        prior = await api.run_command("ext:a_ext.note", args)
+        prior = await api.run_command("ext:a_ext:note", args)
         return f"B wraps [{prior}]"
     held_by = api.register_command("note", {"description": "…", "handler": note})
-    # held_by is "ext:a_ext.note": A got the typed name, B is at ext:b_ext.note.
+    # held_by is "ext:a_ext:note": A got the typed name, B is at ext:b_ext:note.
 ```
 
 `api.get_command(name)` reads what a name resolves to, so an arriving extension
@@ -118,23 +119,27 @@ registry. The RPC `get_commands` result ships both, with a new `hidden` boolean
 marking the qualified half (`protocol_version` 1.6, additive).
 
 `resolve_command` is handed `registry.command_names()`, the union, so
-`/ext:pirate.speak` runs whether or not `/speak` is bound to it.
+`/ext:pirate:speak` runs whether or not `/speak` is bound to it.
 `ExtensionInfo.commands` — what `/extensions` renders — now holds qualified
 names, so the listing says what an extension OWNS rather than what it asked for.
 
 ## 7. The grammar
 
-`ext:<owner>.<command>`. `parse_command` validates nothing and splits the line on
-its first space, so this needed no parser change.
+`ext:<owner>:<command>`, revised in 0.14.0 (docs/EXTENSION-PACKAGES.md §3);
+built 2026-09-11 as `ext:<owner>:<command>`. `parse_command` validates nothing
+and splits the line on its first space, so neither form needed a parser change.
 
-`split_qualified_command` splits on the LAST `.`, so an owner stem containing one
-(`my.ext.py`) still parses; `qualified_command` refuses a command name containing
-a `.`, which is the half τ controls.
+`split_qualified_command` splits on the LAST `:`. The owner is the extension's
+identifier with its dots kept (`ext:tau_router:planner:budget`), and a module
+name cannot contain a `:`. `qualified_command` refuses a command name
+containing a `:`, which is the half τ controls, and whitespace in either half.
 
-`extension_owner` normalizes the bucket's path label into the owner token: a file
-extension's stem, an inline factory's own name (its label is `module:qualname`),
-then reduced to word characters. That label was documented as "not load-bearing";
-it is now, because a derivative of it is typed after a `/`.
+The owner is `extension_sources.extension_identifier` of the bucket's label: a
+file's stem verbatim, an installed module's name, an inline factory's
+`module.qualname`. The 0.13.0 `extension_owner`, which reduced the label to
+word characters, is gone (#40). A typed `ext:<last segment>:<command>` still
+resolves when exactly one loaded owner ends in that segment
+(docs/EXTENSION-PACKAGES.md §4).
 
 ## 8. Not in this pass
 

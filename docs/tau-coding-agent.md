@@ -110,13 +110,13 @@ stale.
 | `--mode {text,json,rpc}` | | headless output format; `rpc` doesn't combine with `--print` |
 | `--model` | `-m` | config key or `provider/id` shorthand |
 | `--provider` | | long-only |
-| `--tools`/`--no-tools` | `-t`/`-nt` | allowlist / offer the model **zero** tools — built-ins *and* extension-registered ones. Extensions still load: hooks, commands, injections and subscriptions are untouched, only callable tools are withheld |
-| `--exclude-tools` | `-xt` | denylist (built-ins only) |
+| `--tools`/`--no-tools` | `-t`/`-nt` | allowlist over built-in and extension tools, checked once extensions load / offer the model **zero** tools — built-ins *and* extension-registered ones. Extensions still load: hooks, commands, injections and subscriptions are untouched, only callable tools are withheld |
+| `--exclude-tools` | `-xt` | denylist over built-in and extension tools, checked the same way |
 | `--no-builtin-tools` | `-nbt` | drops the built-in set; extension-registered tools survive and are offered |
-| `--extension PATH` (repeatable) | `-e` | explicit load, always runs even under `--no-extensions` |
-| `--no-extensions` | `-ne` | disables discovery only |
+| `--extension PATH\|MODULE` (repeatable) | `-e` | explicit load, authorized by being named; always runs even under `--no-extensions` |
+| `--no-extensions` | `-ne` | disables discovery (drop-ins and installed packages) only |
 | `--bus` | | declare this run may reach a message bus, so `TOUCHES_BUS` extensions (e.g. `nats_bus`) are allowed to load |
-| `--ext-config NAME.KEY=VALUE` (repeatable) | | per-extension config override, CLI > `config.json` |
+| `--ext-config NAME:KEY=VALUE` (repeatable) | | per-extension config override, CLI > `config.json` |
 | `--ui-defaults METHOD=ANSWER,...` | | headless dialog auto-answers; otherwise a headless dialog raises. `--print` only |
 | `--system-prompt` / `--append-system-prompt` (repeatable) | | |
 | `--continue` / `--session REF` / `--fork REF` | `-c` | mutually exclusive with each other and with `--resume` |

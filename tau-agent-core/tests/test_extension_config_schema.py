@@ -20,7 +20,7 @@ import pytest
 from tau_llm.types import Model
 
 from tau_agent_core.agent_session import AgentSession
-from tau_agent_core.sdk import ExtensionCapabilityError
+from tau_agent_core.sdk import ExtensionStartupError
 from tau_agent_core.session_log import InMemorySessionLog
 
 
@@ -99,7 +99,7 @@ class TestTheDeclarationIsReadAndChecked:
         )
         session = _make_session()
 
-        with pytest.raises(ExtensionCapabilityError, match="not a valid form spec"):
+        with pytest.raises(ExtensionStartupError, match="not a valid form spec"):
             await session.load_extensions([str(ext)], discover=False)
 
 

@@ -110,7 +110,7 @@ class TestTheLayerIsAdditiveAndIsolated:
         assert session.vocabulary is not BUILTIN
         # The flow is declared under its qualified name and reached by the typed one
         # (docs/EXTENSION-NAMESPACE.md).
-        assert "ext:todo.done" in session.vocabulary.extension_flows
+        assert "ext:todo:done" in session.vocabulary.extension_flows
         assert session.vocabulary.is_extension_flow("done")
 
     def test_unregistering_the_command_drops_the_flow(self):
