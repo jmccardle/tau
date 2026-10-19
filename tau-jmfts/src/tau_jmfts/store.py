@@ -523,7 +523,7 @@ class JmftsSessionLog:
         the first real activity on it, and the copy is read from the server.
         """
         with source._append_lock:
-            if source._root_doc_id is None:
+            if source._held:
                 source._write_held_locked()
         assert source._root_doc_id is not None
         timestamp = _now_iso()
@@ -609,20 +609,36 @@ class JmftsSessionLog:
         return entry_id
 
     def _write_held_locked(self) -> None:
-        """POST the root, then every held entry in order. The caller holds ``_append_lock``."""
-        self._root_doc_id = self._post_root()
-        for held_id in self._held:
+        """POST the root if it is not posted, then each held entry in order.
+
+        The caller holds ``_append_lock``. Progress is recorded one document at a
+        time, so a POST that fails partway leaves the written prefix aliased and
+        the rest held, and the next write resumes where this one stopped. The
+        server has no transaction to roll back, so this is resumable rather than
+        all-or-nothing: until a retry succeeds, the server holds the root and a
+        prefix of the opening chain.
+        """
+        if self._root_doc_id is None:
+            self._root_doc_id = self._post_root()
+        while self._held:
+            held_id = self._held[0]
             entry = next(e for e in self._snapshot() if e["id"] == held_id)
             tau_payload = {k: v for k, v in entry.items() if k not in ("id", "parentId")}
             doc_id = self._post_locked(entry["parentId"], entry["type"], tau_payload)
             self._alias[held_id] = doc_id
             self._seqs[held_id] = self._seqs.pop(doc_id)
+            self._held.pop(0)
             if entry["type"] == "session_info":
                 self._client.update_document(self._root_doc_id, title=entry["name"], re_embed=False)
-        self._held = []
 
     def _doc_id(self, entry_id: str) -> int:
-        """The JMFTS document id behind a mirror id (a held id maps through ``_alias``)."""
+        """The JMFTS document id behind a mirror id (a held id maps through ``_alias``).
+
+        Raises:
+            RuntimeError: ``entry_id`` is held and not yet written.
+        """
+        if entry_id in self._held:
+            raise RuntimeError(f"entry {entry_id!r} has not been written to JMFTS yet")
         return int(self._alias.get(entry_id, entry_id))
 
     def _stored(self, tau_payload: dict[str, Any]) -> dict[str, Any]:
@@ -705,7 +721,7 @@ class JmftsSessionLog:
             **payload,
         }
         with self._append_lock:
-            if self._root_doc_id is None:
+            if self._held:
                 self._write_held_locked()
             entry_id = self._post_locked(parent_id, kind, tau_payload)
             with self._mirror_lock:

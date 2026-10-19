@@ -255,16 +255,22 @@ class Session:
 
     ``path`` is ``None`` for an in-memory (ephemeral) session — every ``append_*``
     becomes a pure in-memory mutation with no disk flush (seam 1, ``--no-session``).
-    A deferred session (``create(deferred=True)``) has a ``path`` that does not
-    exist yet: its first write creates the file with everything held so far.
+    A deferred session (``create(deferred=True)``) reads ``path`` as ``None``
+    until its first write creates the file with everything held so far, because
+    until then no listing can return it (``session_log_is_addressable``).
     """
 
     def __init__(self, path: Path | None, header: dict[str, Any], entries: list[dict[str, Any]]):
-        self.path = path
+        self._path = path
         self._header = header
         self._entries = entries
         self._ids: set[str] = {e["id"] for e in entries if "id" in e}
         self._unwritten = False
+
+    @property
+    def path(self) -> Path | None:
+        """The session's file: ``None`` when ephemeral, and when deferred until its first write."""
+        return None if self._unwritten else self._path
 
     # --- identity / header -------------------------------------------------
 
@@ -387,7 +393,7 @@ class Session:
         if deferred:
             session = cls(None, header, [])
             session._init_state(model, backend, system_prompt, name)
-            session.path = path
+            session._path = path
             session._unwritten = True
         else:
             directory.mkdir(parents=True, exist_ok=True)
@@ -453,12 +459,16 @@ class Session:
 
         Copies every entry, or with ``at`` only the path to that entry, so the
         fork's default leaf is ``at`` (docs/CURSORS.md §4). The copy is
-        self-contained and the source file is never touched (§5.5).
+        self-contained and a written source file is never touched (§5.5). An
+        unwritten deferred source is written first, so the fork's ``parent``
+        names a session on disk: forking is real activity on it.
 
         Raises:
             ValueError: ``at`` names no entry of ``source``.
         """
         _emit_session_event(SESSION_BEFORE_FORK, source, cwd=cwd)
+        if source._unwritten:
+            source._write_held()
         timestamp = _now_iso()
         session_id = uuid.uuid4().hex
         directory = session_dir_for_cwd(cwd, base_dir)
@@ -585,22 +595,39 @@ class Session:
             handle.write(json.dumps(self._header) + "\n")
 
     def _persist_entry(self, entry: dict[str, Any]) -> None:
-        if self.path is None:
-            return
         if self._unwritten:
             self._write_held()
+            return
+        if self.path is None:
             return
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
 
     def _write_held(self) -> None:
-        """Create a deferred session's file: the header, then every entry held, the new one last."""
-        assert self.path is not None
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("x", encoding="utf-8") as handle:
-            handle.write(json.dumps(self._header) + "\n")
-            for held in self._entries:
-                handle.write(json.dumps(held) + "\n")
+        """Create a deferred session's file: the header, then every entry held, the new one last.
+
+        Written to a temp file in the same directory and renamed into place, so
+        the file appears whole or not at all; a failed write leaves the session
+        unwritten and the next append tries again.
+
+        Raises:
+            FileExistsError: a file already holds this session's path.
+        """
+        assert self._path is not None
+        target = self._path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            raise FileExistsError(f"refusing to overwrite {target} with a new session")
+        fd, staging = tempfile.mkstemp(dir=target.parent, prefix=".", suffix=".partial")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(self._header) + "\n")
+                for held in self._entries:
+                    handle.write(json.dumps(held) + "\n")
+            os.replace(staging, target)
+        except BaseException:
+            Path(staging).unlink(missing_ok=True)
+            raise
         self._unwritten = False
 
 

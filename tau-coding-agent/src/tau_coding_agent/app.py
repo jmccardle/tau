@@ -2723,6 +2723,23 @@ class TauApp(App):
         if emit_start is not None:
             await emit_start("startup")
 
+    async def _replace_backend(self, backend: Any, reason: str) -> None:
+        """Make ``backend`` current, first firing ``session_shutdown`` on the one it replaces.
+
+        The replaced backend's extensions got ``session_start`` when they loaded,
+        so they get the matching shutdown here rather than never: an extension
+        pairing a resource across the two would otherwise leak one per new chat
+        or resume. ``getattr``-guarded like :meth:`on_unmount`.
+
+        Args:
+            backend: The new backend.
+            reason: The shutdown reason, ``"new"`` or ``"resume"``.
+        """
+        emit_shutdown = getattr(self.current_backend, "emit_session_shutdown", None)
+        if emit_shutdown is not None:
+            await emit_shutdown(reason)
+        self.current_backend = backend
+
     async def _open_new_session(self, model: Optional[str]) -> bool:
         """Build a backend for ``model``, open a deferred session on it, load extensions.
 
@@ -2747,14 +2764,13 @@ class TauApp(App):
             return False
 
         try:
-            self.current_backend = create_backend(
-                self._apply_run_config({**model_config, "config_name": model})
-            )
+            backend = create_backend(self._apply_run_config({**model_config, "config_name": model}))
             self.log(f"Created backend: {model_config.get('backend')} for model {model}")
         except Exception as e:
             self.notify(f"Failed to create backend: {str(e)}", severity="error")
             self.log.error(f"Backend creation failed: {e}", exc_info=True)
             return False
+        await self._replace_backend(backend, "new")
 
         system_prompt = getattr(self.current_backend, "system_prompt", "") or ""
         self._session_runtime = self._build_session_runtime(
@@ -3972,7 +3988,7 @@ class TauApp(App):
             resumed = {**model_config, "config_name": session.model}
             if "thinking" in recorded:
                 resumed["thinking"] = recorded["thinking"]
-            self.current_backend = create_backend(self._apply_run_config(resumed))
+            await self._replace_backend(create_backend(self._apply_run_config(resumed)), "resume")
             self._session_runtime = self._build_session_runtime(
                 self.current_backend, session.model, model_config["backend"]
             )
