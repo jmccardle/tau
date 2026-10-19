@@ -1822,9 +1822,10 @@ class AgentSession:
         :func:`~tau_agent_core.sdk.plan_extensions` decides what loads
         (docs/EXTENSION-PACKAGES.md §5). Each extension's ``register(api)`` runs
         against an api bound to its own runner bucket (:meth:`_bind_extension_api`),
-        in load order, so its hooks fire in this session's loop. Nothing is
-        printed; the caller surfaces ``errors``, ``withheld`` and
-        ``grandfathered``.
+        in load order, so its hooks fire in this session's loop. It claims the
+        running loop as the session's, as a turn does, so a thread an extension
+        starts here reaches that loop. Nothing is printed; the caller surfaces
+        ``errors``, ``withheld`` and ``grandfathered``.
 
         Args:
             explicit_paths: ``-e`` values, paths or module names. A failure
@@ -1854,6 +1855,7 @@ class AgentSession:
                 register (#47), with the original as ``__cause__``; not raised
                 when ``collect_explicit_errors`` is set.
         """
+        self._bind_loop()
         if extensions_config is not None:
             self._extensions_config = extensions_config
 
@@ -2011,7 +2013,9 @@ class AgentSession:
         """Call ``listener`` with every current warning after each change.
 
         Args:
-            listener: Called on the session's loop, once per change.
+            listener: Called once per change, on the session's loop once one is
+                bound, under the store's lock: it must not block or wait on
+                another thread.
 
         Returns:
             The unsubscribe.

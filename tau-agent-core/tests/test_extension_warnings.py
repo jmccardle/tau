@@ -362,6 +362,30 @@ class TestThreads:
         session.set_extension_warning("probe", "k", "m")
         assert session.extension_warnings() == [ExtensionWarning("probe", "k", "m", "warning")]
 
+    def test_a_thread_started_during_load_reaches_the_loop_thread(self, tmp_path):
+        """tau-search's case: a health-check thread warns before session_start."""
+        session = _session()
+        path = tmp_path / "health.py"
+        path.write_text(
+            "import threading\n"
+            "def register(api):\n"
+            "    t = threading.Thread(target=api.set_warning, args=('health', 'unreachable'))\n"
+            "    t.start()\n"
+            "    t.join()\n"
+        )
+        listened: list[threading.Thread] = []
+        session.subscribe_extension_warnings(lambda _: listened.append(threading.current_thread()))
+
+        async def load() -> threading.Thread:
+            await session.load_extensions([str(path)], discover=False)
+            await asyncio.sleep(0)
+            return threading.current_thread()
+
+        loop_thread = asyncio.run(load())
+
+        assert [w.key for w in session.extension_warnings()] == ["health"]
+        assert listened == [loop_thread]
+
     def test_a_set_from_another_loop_between_turns_never_takes_the_session(self):
         """tectum's reproduction: one asyncio.run per turn, a warning from a loop thread between."""
         session = _session()
