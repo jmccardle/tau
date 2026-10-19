@@ -98,7 +98,10 @@ onto the session is a wire change and not a small one. It is not built (§7).
 Every key is optional. An absent block means compaction is on with
 `CompactionSettings`' defaults (`reserve_tokens=16384`, `keep_recent_tokens=20000`).
 `tau_coding_agent.config.parse_compaction_config` validates the block and raises
-`ConfigError` naming the key:
+`ConfigError` naming the key. The table shows the top-level block, whose
+messages start with the config path; a model's own block reads
+`models.<name>.compaction` where these read `compaction`
+(`'models.small.compaction.reserve_tokens' must be int; got 'lots'`):
 
 | Input | Message |
 |---|---|

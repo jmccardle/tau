@@ -130,11 +130,12 @@ COMPACTION_KEYS: dict[str, type] = {
 }
 
 
-def parse_compaction_config(block: Any) -> CompactionConfig:
+def parse_compaction_config(block: Any, where: str = "compaction") -> CompactionConfig:
     """Validate a ``"compaction"`` block; ``{}`` is the all-defaults answer.
 
     Args:
         block: The block as loaded from JSON.
+        where: The block's path in config.json, which every message names.
 
     Returns:
         The block as settings plus an optional summarizer name
@@ -146,20 +147,20 @@ def parse_compaction_config(block: Any) -> CompactionConfig:
             count that is not positive, or gives an empty ``summarizer``.
     """
     if not isinstance(block, dict):
-        raise ConfigError(f"'compaction' must be an object; got {type(block).__name__}")
+        raise ConfigError(f"'{where}' must be an object; got {type(block).__name__}")
     for key, value in block.items():
         expected = COMPACTION_KEYS.get(key)
         if expected is None:
             raise ConfigError(
-                f"unknown key 'compaction.{key}'; known keys: {', '.join(COMPACTION_KEYS)}"
+                f"unknown key '{where}.{key}'; known keys: {', '.join(COMPACTION_KEYS)}"
             )
         if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
-            raise ConfigError(f"'compaction.{key}' must be {expected.__name__}; got {value!r}")
+            raise ConfigError(f"'{where}.{key}' must be {expected.__name__}; got {value!r}")
         if isinstance(value, int) and not isinstance(value, bool) and value <= 0:
-            raise ConfigError(f"'compaction.{key}' must be positive; got {value}")
+            raise ConfigError(f"'{where}.{key}' must be positive; got {value}")
     summarizer = block.get("summarizer")
     if summarizer == "":
-        raise ConfigError("'compaction.summarizer' must name a model; got an empty string")
+        raise ConfigError(f"'{where}.summarizer' must name a model; got an empty string")
     overrides = {
         key: block[key] for key in ("auto", "reserve_tokens", "keep_recent_tokens") if key in block
     }
@@ -182,7 +183,8 @@ def compaction_for(config: Mapping[str, Any], name: str | None) -> CompactionCon
 
     Raises:
         ConfigError: the block in force is malformed, or its ``summarizer``
-            names no configured model.
+            names no configured model. A top-level block's message starts with
+            the config path; an entry's names ``models.<name>.compaction``.
     """
     models = config.get("models") or {}
     entry = models.get(name) if name is not None else None
@@ -193,15 +195,16 @@ def compaction_for(config: Mapping[str, Any], name: str | None) -> CompactionCon
     else:
         return CompactionConfig(settings=CompactionSettings())
     try:
-        parsed = parse_compaction_config(block)
+        parsed = parse_compaction_config(block, where)
     except ConfigError as exc:
         if where == "compaction":
-            raise
-        raise ConfigError(f"{where}: {exc}") from exc
+            raise ConfigError(f"{default_config_path()}: {exc}") from exc
+        raise
     if parsed.summarizer is not None and parsed.summarizer not in models:
         known = ", ".join(sorted(models)) or "(none configured)"
+        prefix = f"{default_config_path()}: " if where == "compaction" else ""
         raise ConfigError(
-            f"'{where}.summarizer' names unknown model {parsed.summarizer!r}; "
+            f"{prefix}'{where}.summarizer' names unknown model {parsed.summarizer!r}; "
             f"configured models: {known}"
         )
     return parsed
@@ -227,13 +230,20 @@ def apply_compaction_config(
 
     Raises:
         ConfigError: the block is malformed or ``summarizer`` names no
-            configured model.
+            configured model; an entry's block is named as ``models.<name>.compaction``.
     """
+    models = config.get("models") or {}
+    name = model_config.get("config_name")
     if "compaction" in model_config:
         block = model_config["compaction"]
+        if isinstance(name, str) and isinstance(models.get(name), Mapping):
+            entry = {**models[name], "compaction": block}
+            compaction_for({**config, "models": {**models, name: entry}}, name)
+        else:
+            compaction_for({**config, "compaction": block}, None)
     elif "compaction" in config:
         block = config["compaction"]
+        compaction_for(config, None)
     else:
         return model_config
-    compaction_for({**config, "compaction": block}, None)
     return {**model_config, "compaction": block}

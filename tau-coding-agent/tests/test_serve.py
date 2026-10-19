@@ -743,3 +743,40 @@ async def test_a_session_whose_recorded_model_is_gone_opens_and_refuses_only_a_t
         server.close()
         await server.wait_closed()
         await served.daemon.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("recorded", "why"),
+    [
+        (None, "models.local-llm-tun must be a JSON object; got None"),
+        ("x", "models.local-llm-tun must be a JSON object; got 'x'"),
+        (
+            {**_CONFIG["models"]["fake"], "compaction": {"reserve_tokens": "lots"}},
+            "'models.local-llm-tun.compaction.reserve_tokens' must be int; got 'lots'",
+        ),
+    ],
+    ids=["null", "string", "bad-compaction"],
+)
+async def test_a_recorded_entry_that_does_not_build_attaches_and_reads(
+    tmp_path, provider, extensions_off, recorded, why
+):
+    """A malformed recorded entry opens read-only (§10), never INTERNAL_ERROR or INVALID_PARAMS."""
+    config = {"models": {"fake": _CONFIG["models"]["fake"], "local-llm-tun": recorded}}
+    catalog = FileSessionCatalog(tmp_path / "sessions")
+    log = catalog.create(str(tmp_path), "local-llm-tun", "openai")
+    server, served = await _serve(tmp_path, config)
+    client = await served.client()
+    try:
+        replica = await client.attach(log.id)
+        head = replica.head_cursor_id
+        assert f"'local-llm-tun' is unavailable: {why}" in replica.cursors[head]["model_error"]
+        assert (await _rpc(client, "get_messages", log.id, head))["messages"] == []
+        with patch("tau_agent_core.agent_loop.stream_simple") as never:
+            with pytest.raises(ServeError, match=f"{dialect.SUBMISSION_REJECTED}.*unavailable"):
+                await client.submit_and_wait(log.id, head, "hi", source="rpc", submitter="t")
+            never.assert_not_called()
+    finally:
+        await client.close()
+        server.close()
+        await server.wait_closed()
+        await served.daemon.shutdown()

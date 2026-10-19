@@ -177,7 +177,7 @@ def test_a_bad_model_block_is_that_entrys_build_error_not_the_resolvers():
     config = _config()
     config["models"]["small"]["compaction"] = {"enable": True}
     resolver = make_model_resolver(config)
-    pattern = r"models\.small\.compaction.*compaction\.enable\b"
+    pattern = r"unknown key 'models\.small\.compaction\.enable'"
     with pytest.raises(ModelUnavailableError, match=pattern):
         resolver("small")
     assert sorted(resolver.model_errors()) == ["small"]

@@ -274,7 +274,7 @@ async def test_the_tui_notifies_each_unused_bad_entry_on_mount(make_app) -> None
 
 
 _SQUASH = {**_GOOD, "compaction": {"enable": True}}
-_SQUASH_ERROR = "models.squash.compaction: unknown key 'compaction.enable'"
+_SQUASH_ERROR = "unknown key 'models.squash.compaction.enable'"
 
 
 def _rpc(tmp_path: Path, *requests: dict[str, Any], **extra: Any) -> tuple[Any, dict]:
@@ -329,4 +329,5 @@ def test_a_bad_top_level_compaction_block_is_fatal_whatever_is_selected(
     assert out.returncode == 2, out.stderr
     assert out.stderr.count("\n") == 1, out.stderr
     assert out.stderr.startswith("tau: error: ")
-    assert "unknown key 'compaction.enable'" in out.stderr
+    config = tmp_path / "tau-home" / "config.json"
+    assert out.stderr.startswith(f"tau: error: {config}: unknown key 'compaction.enable'")

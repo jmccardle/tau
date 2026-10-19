@@ -211,7 +211,7 @@ def resolve_model_config(
     suffix_thinking: str | None = None
     if spec in models:
         # Exact config-key match wins (so a key may legitimately contain a colon).
-        model_config = {**models[spec], "config_name": spec}
+        model_config = _entry_config(models, spec)
     else:
         head, sep, tail = spec.rpartition(":")
         spec_id = spec
@@ -219,7 +219,7 @@ def resolve_model_config(
             suffix_thinking = tail
             spec_id = head
         if spec_id in models:
-            model_config = {**models[spec_id], "config_name": spec_id}
+            model_config = _entry_config(models, spec_id)
         else:
             if "/" in spec_id:
                 prov, _, mid = spec_id.partition("/")
@@ -308,24 +308,37 @@ def recorded_model_problem(config: dict[str, Any], name: str) -> str | None:
     Returns:
         The reason, phrased to follow "is unavailable: ", or ``None`` when it builds.
     """
-    from tau_coding_agent.backends import build_model_from_config
+    from tau_coding_agent.backends import build_config_entry, build_model_from_config
     from tau_coding_agent.config import ModelConfigError
 
     models = config.get("models", {})
     key = _entry_key(models, name)
-    if key in models:
-        entry = {**models[key], "config_name": key}
-    elif "/" in key:
-        provider, _, model_id = key.partition("/")
-        entry = {"backend": provider, "model": model_id}
-    else:
-        known = ", ".join(sorted(models)) or "none"
-        return f"it is not configured in {default_config_path()} (configured: {known})"
     try:
-        build_model_from_config(entry)
+        if key in models:
+            build_config_entry(key, models[key], config)
+        elif "/" in key:
+            provider, _, model_id = key.partition("/")
+            build_model_from_config({"backend": provider, "model": model_id})
+        else:
+            known = ", ".join(sorted(models)) or "none"
+            return f"it is not configured in {default_config_path()} (configured: {known})"
     except ModelConfigError as exc:
-        return str(exc)
+        return str(exc).rstrip(".")
     return None
+
+
+def _entry_config(models: dict[str, Any], key: str) -> dict[str, Any]:
+    """Config entry ``key`` as a backend config naming it.
+
+    Raises:
+        ModelConfigError: The entry is not a JSON object.
+    """
+    from tau_coding_agent.config import ModelConfigError
+
+    entry = models[key]
+    if not isinstance(entry, dict):
+        raise ModelConfigError(f"models.{key} must be a JSON object; got {entry!r}")
+    return {**entry, "config_name": key}
 
 
 def _entry_key(models: dict[str, Any], name: str) -> str:
@@ -368,7 +381,7 @@ def check_model_entries(
     path = default_config_path()
     key = _entry_key(config.get("models") or {}, selected) if selected else None
     if key in errors:
-        error = errors.pop(key)
+        error = errors.pop(key).rstrip(".")
         if fatal:
             raise ModelConfigError(
                 f"{path}: the selected model {key!r} does not build: {error}. "

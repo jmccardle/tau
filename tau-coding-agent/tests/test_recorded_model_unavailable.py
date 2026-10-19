@@ -88,7 +88,9 @@ async def test_the_shared_resolution_opens_it_refuses_a_turn_and_set_model_repai
     assert session.get_session_stats().context_window is None
 
     with patch("tau_agent_core.agent_loop.stream_simple") as never:
-        result = await session.submit(Submission(submission_id=uuid4().hex, text="hi", source="test", submitter="t"))
+        result = await session.submit(
+            Submission(submission_id=uuid4().hex, text="hi", source="test", submitter="t")
+        )
         never.assert_not_called()
     assert not result.accepted and result.rejection_reason == message
     assert session.messages == []
@@ -96,7 +98,9 @@ async def test_the_shared_resolution_opens_it_refuses_a_turn_and_set_model_repai
     session.set_model("unused")
     assert session.model_unavailable is None
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_ok):
-        result = await session.submit(Submission(submission_id=uuid4().hex, text="hi", source="test", submitter="t"))
+        result = await session.submit(
+            Submission(submission_id=uuid4().hex, text="hi", source="test", submitter="t")
+        )
     assert result.accepted
 
 
@@ -152,3 +156,100 @@ async def test_the_tui_resumes_it_and_says_why_a_turn_will_be_refused(make_app):
         assert app.messages[-1] == {"role": "user", "content": "hello"}
         [(error, severity)] = [n for n in notes if "unavailable" in n[0]]
         assert severity == "error" and "'local-llm-tun' is unavailable" in error
+
+
+_BROKEN = [
+    (None, "models.local-llm-tun must be a JSON object; got None"),
+    ("x", "models.local-llm-tun must be a JSON object; got 'x'"),
+    (
+        {**_UNUSED, "compaction": {"reserve_tokens": "lots"}},
+        "'models.local-llm-tun.compaction.reserve_tokens' must be int; got 'lots'",
+    ),
+]
+_BROKEN_IDS = ["null", "string", "bad-compaction"]
+
+
+@pytest.mark.parametrize(("recorded", "why"), _BROKEN, ids=_BROKEN_IDS)
+async def test_a_malformed_recorded_entry_opens_and_refuses_only_a_turn(tmp_path, recorded, why):
+    """The resolution REPL, TUI and serve share; never a TypeError or an unnamed block."""
+    config = {"models": {**_CONFIG["models"], "local-llm-tun": recorded}}
+    _, session = _open(tmp_path, config)
+    assert f"'local-llm-tun' is unavailable: {why}" in (session.model_unavailable or "")
+    with patch("tau_agent_core.agent_loop.stream_simple") as never:
+        result = await session.submit(
+            Submission(submission_id=uuid4().hex, text="hi", source="test", submitter="t")
+        )
+        never.assert_not_called()
+    assert not result.accepted
+
+
+def _seeded_child(
+    tmp_path: Path, config: dict[str, Any], *argv: str
+) -> subprocess.CompletedProcess[str]:
+    home = tmp_path / "tau-home"
+    home.mkdir()
+    (home / "config.json").write_text(json.dumps(config))
+    env = child_env(tmp_path / "home", **{HOME_ENV: str(home), "TMPDIR": str(tmp_path)})
+    seed = (
+        "from tau_coding_agent.store_factory import build_session_catalog;"
+        f"build_session_catalog({{}}, None, None).create({str(tmp_path)!r}, 'local-llm-tun', 'openai')"
+    )
+    subprocess.run([sys.executable, "-c", seed], env=env, check=True, timeout=60)
+    return subprocess.run(
+        [sys.executable, "-m", "tau_coding_agent.cli", *argv],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=60,
+    )
+
+
+@pytest.mark.parametrize(("recorded", "why"), _BROKEN, ids=_BROKEN_IDS)
+def test_print_continue_on_a_malformed_recorded_entry_is_the_resumed_one_liner(
+    tmp_path, recorded, why
+):
+    out = _seeded_child(
+        tmp_path, {"models": {**_CONFIG["models"], "local-llm-tun": recorded}}, "-p", "-c", "hi"
+    )
+    assert out.returncode == 2, out.stderr
+    assert out.stderr.count("\n") == 1, out.stderr
+    assert out.stderr.startswith(
+        f"tau: error: the resumed session's model 'local-llm-tun' is unavailable: {why}"
+    )
+    assert out.stderr.rstrip().endswith("Pass --model NAME to continue it on a configured model")
+
+
+@pytest.mark.parametrize(("recorded", "why"), _BROKEN, ids=_BROKEN_IDS)
+def test_repl_continue_on_a_malformed_recorded_entry_opens_and_says_why(tmp_path, recorded, why):
+    out = _seeded_child(
+        tmp_path,
+        {"models": {**_CONFIG["models"], "local-llm-tun": recorded}},
+        "--mode",
+        "repl",
+        "-c",
+    )
+    assert out.returncode == 0, out.stderr
+    assert "Traceback" not in out.stderr and "tau: error" not in out.stderr
+    said = " ".join((out.stdout + out.stderr).split())
+    assert f"'local-llm-tun' is unavailable: {why}" in said
+
+
+@pytest.mark.parametrize(("recorded", "why"), _BROKEN[:1], ids=_BROKEN_IDS[:1])
+async def test_the_tui_resumes_a_malformed_recorded_entry(make_app, recorded, why):
+    app = make_app(
+        config={
+            "models": {**_CONFIG["models"], "local-llm-tun": recorded},
+            "default_model": "unused",
+        }
+    )
+    notes: list[str] = []
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.notify = lambda message, **kw: notes.append(message)  # type: ignore[method-assign]
+        seeded = app.session_catalog.create(os.getcwd(), "local-llm-tun", "openai")
+        app.post_message(ChatSelected(str(seeded.path)))
+        await pilot.pause()
+        assert app.current_session is not None and app.current_session.id == seeded.id
+    assert any(f"'local-llm-tun' is unavailable: {why}" in note for note in notes), notes

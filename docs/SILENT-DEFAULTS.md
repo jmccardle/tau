@@ -202,12 +202,13 @@ in those heads, so it is reported once.
 
 An entry's own `compaction` block is part of the entry. A malformed one, or one
 whose `summarizer` names no configured model, is that entry's error
-(`models.<entry>.compaction: …`): fatal when the entry is selected, otherwise a
+(`'models.<entry>.compaction.reserve_tokens' must be int; got 'lots'`): fatal
+when the entry is selected, otherwise a
 startup warning, a `get_models`/hello/picker error, and a refused switch.
 `ConfigModelResolver` no longer raises at construction for it. The top-level
 `compaction` block applies to every model, so no selection avoids it: a
-malformed one stays fatal in one `tau: error:` line, exit 2, for every command
-that checks models.
+malformed one stays fatal in one `tau: error: <config>: …` line, exit 2, for
+every command that checks models.
 
 Every problem in an entry is reported, not only the first: `models.a.max_tokens
 must be a positive integer…; models.a.grammar must be…`. A type error from the
@@ -268,7 +269,9 @@ config without that key, could no longer be attached, read, forked or repaired
 ad-hoc `openai/local-llm-tun`, which is the silent default §7 removed.
 
 **Now.** A recorded model that no longer resolves or builds opens the session
-on a `tau_agent_core.model_availability.UnavailableModel(name, reason)`, never a
+(an entry that is `null`, not an object, or has a malformed own `compaction`
+block included, since `recorded_model_problem` builds through the same
+`backends.build_config_entry` as §8) on a `tau_agent_core.model_availability.UnavailableModel(name, reason)`, never a
 substitute and never `default_model`:
 - Reads work: attach, `get_messages`, the tree, `get_models`, fork, export.
   The recorded name still shows (`model_name`, the serve `CursorState.model`).

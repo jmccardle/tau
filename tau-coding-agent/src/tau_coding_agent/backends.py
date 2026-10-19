@@ -1240,7 +1240,7 @@ def model_entry_errors(config: Mapping[str, Any]) -> dict[str, str]:
     errors = {}
     for name, entry in models.items():
         try:
-            _build_entry(name, entry, config)
+            build_config_entry(name, entry, config)
         except ProviderNotRegisteredError:
             continue
         except ModelConfigError as exc:
@@ -1248,8 +1248,11 @@ def model_entry_errors(config: Mapping[str, Any]) -> dict[str, str]:
     return errors
 
 
-def _build_entry(name: str, entry: Any, config: Mapping[str, Any]) -> Model:
-    """Build config entry ``name`` and check its ``compaction`` block.
+def build_config_entry(name: str, entry: Any, config: Mapping[str, Any]) -> Model:
+    """Build config entry ``name`` and check its ``compaction`` block (docs/SILENT-DEFAULTS.md §8).
+
+    Every path that builds a configured name goes through this, so each gets the
+    same per-entry error.
 
     Raises:
         ProviderNotRegisteredError: Its provider is not registered; nothing else is checked.
@@ -1326,7 +1329,7 @@ class ConfigModelResolver:
         if name not in self._models:
             known = ", ".join(self.model_names()) or "(none configured)"
             raise KeyError(f"unknown model {name!r}; configured models: {known}")
-        return _build_entry(name, self._models[name], self._config)
+        return build_config_entry(name, self._models[name], self._config)
 
     def model_errors(self) -> dict[str, str]:
         """Each configured name that does not build, with the builder's message.
