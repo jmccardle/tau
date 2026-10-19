@@ -272,6 +272,7 @@ class TauApp(App):
         self._ext_config_overrides: dict[str, dict[str, Any]] = dict(
             run_config.get("ext_config", {})
         )
+        self._model_warnings: list[str] = list(run_config.get("model_warnings", []))
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
@@ -680,6 +681,8 @@ class TauApp(App):
 
         for message in self._theme_errors:
             self.notify(message, title="Theme", severity="error", timeout=10)
+        for message in self._model_warnings:
+            self.notify(message, title="Config", severity="warning", timeout=10)
 
         if self._remote is not None:
             self._start_remote()

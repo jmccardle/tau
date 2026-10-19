@@ -96,10 +96,10 @@ Per head:
   models in the hello from protocol 0.10, at attach, and through
   `enumerate_domain` after that. It must follow the bump (§7).
 
-**An entry that does not build is listed, never offered (2026-10-19).** A
-config entry can fail to build after startup validation, typically because its
-`backend` is a provider no loaded extension has registered yet
-(docs/SILENT-DEFAULTS.md §8). `projections.model_catalog` now builds per entry:
+**An entry that does not build is listed, never offered (2026-10-19).** Any
+entry a command does not select may fail to build: a malformed one, which
+startup warns about, or one whose `backend` no loaded extension has registered
+yet (docs/SILENT-DEFAULTS.md §8). `projections.model_catalog` now builds per entry:
 RPC `get_models` and the serve hello's `models` list such an entry as
 `{name, model: null, error}` instead of failing the whole list, and every other
 entry carries `error: null`. A catalog may declare `model_errors()`

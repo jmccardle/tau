@@ -148,7 +148,7 @@ The built-ins that still need no provider are `gpt-4o`, `gpt-4` and
   placeholder message `openai-completions`/`openai` when the model object
   lacks those attributes. It chooses no provider for any request.
 
-## 8. A malformed model entry stops startup in one line (2026-10-19, #65)
+## 8. A malformed model entry is fatal only when selected (2026-10-19, #65)
 
 **What was wrong.** `build_model_from_config` raised a plain `ValueError` for
 a value it rejects, such as the old `"prompt_cache": "anthropic"`. No head
@@ -162,33 +162,72 @@ hello failed and the parent never got an answer.
 exit 2) and also a `ValueError` (so existing `except ValueError` callers keep
 working). Messages name the entry: `models.litellm-haiku.prompt_cache is a
 boolean; got 'anthropic'. The dialect moved to prompt_cache_dialect…`. A type
-pydantic rejects becomes `models.<entry> is not valid: field: message`.
+pydantic rejects becomes `models.<entry> is not valid: field: message`; an
+entry that is not a JSON object is `models.<entry> must be a JSON object`.
 
-**Every entry is checked at startup**, selected or not, by
-`backends.validate_model_entries`. The TUI, `-p`, rpc and repl run it through
-`cli._load_head_config`; `tau serve` runs it before it listens, so the daemon
-refuses to start with the same line. Checking only the selected entry would
-look friendlier, but a bad entry nobody selected still breaks `get_models`, the
-serve hello and the TUI's model picker later, further from the cause. Every bad
-entry is named in the one line, joined by `; `.
+**Only the entry a command will use is fatal** (John's decision on #65,
+2026-10-19, option c). `headless.check_model_entries(config, selected)` runs at
+startup. The selected entry is `--model`, else a resumed session's recorded
+model, else `default_model`; `tau serve` selects `default_model`, which every
+`new_session` without a model uses. If that entry does not build, the command
+stops with one line, exit 2:
+
+    tau: error: <config>: the selected model 'old' does not build: models.old.prompt_cache is a boolean; …. Fix models.old, or select a model that builds
+
+Every other entry that does not build is reported, never dropped:
+- One line per entry at startup, derived once by `check_model_entries`:
+  `<config>: model 'old' is unavailable and can't be selected: <error>`. `-p`,
+  rpc and repl print it on stderr as `tau: warning: …`. The serve daemon logs
+  it as `warning: …` after its listening line (with `-d`, in `serve.log`). The
+  TUI shows it as a warning notification titled "Config" on mount, because
+  stderr is under the screen.
+- `get_models`, the serve hello and attach list it with `model: null` and its
+  `error`. The picker and completion leave it out, and the TUI and REPL name it
+  when the picker opens (docs/MODEL-PICKER.md §2).
+- Switching to it mid-run (`/model`, RPC `set_model`, `ctx.set_model`) is
+  refused before any request with its error, as `ModelUnavailableError` (§9).
+
+The reason for the split: a bad entry nobody selected harms nothing until
+someone selects it, and then it is refused with its own error, so stopping
+startup for it blocked a working model over an unrelated typo. The earlier
+argument for fatal-on-any (a bad entry breaks `get_models`, the hello and the
+picker) no longer holds, since those build per entry and carry the error. The
+entry a command is about to use is different: running on it cannot work, so it
+fails before a session exists.
+
+A resumed session whose recorded model does not build is §10, not this rule:
+the REPL, the TUI's resume and the serve daemon open it and refuse only a turn;
+`tau -p -c` refuses in its own one line. Such an entry gets no startup warning
+in those heads, so it is reported once.
 
 Every problem in an entry is reported, not only the first: `models.a.max_tokens
 must be a positive integer…; models.a.grammar must be…`. A type error from the
 `Model` constructor itself (for example `temperature: "hot"`) is reported once
 τ's own checks on that entry pass.
 
-Only commands that use models validate them: the TUI, `-p`, rpc, repl, and
+Only commands that use models check them: the TUI, `-p`, rpc, repl, and
 `tau serve` in the foreground or with `-d`. `tau serve --stop`, `--tail` and
 `--schema`, `tau ext …`, `tau --connect` (the daemon's config applies),
-`--import-session`, `--export-session` and `--export-html` do not, so a typo in
-one entry can't stop you stopping or tailing a running daemon.
+`--import-session`, `--export-session` and `--export-html` neither stop nor
+warn, so a typo in an entry can't stop you stopping or tailing a running daemon.
+A `models` value that is not a JSON object is still fatal for every command
+that checks, since no entry can be read.
+
+**For the 0.14.0 release notes.** In 0.13.0 a malformed model entry ended in a
+traceback when selected, and one nobody selected made `get_models` and the
+serve hello fail. In 0.14.0 a bad entry is fatal only when selected: the
+command stops in one `tau: error:` line, exit 2. Any other bad entry is a
+startup warning, is listed as unavailable, and can't be selected. A config
+whose selected model built in 0.13.0 keeps starting; it may now print a warning
+naming an entry that never built.
 
 One exception: an entry whose `backend` is not registered yet (and that sets no
 `base_url`) is left to the build that selects it, because an extension may
-register that provider first (docs/EXTENSION-PROVIDERS.md §2). None of its
-other fields are checked at startup either, since the build stops at the
-provider before reaching them. When that build
-does happen and the provider is still missing, it raises
+register that provider first (docs/EXTENSION-PROVIDERS.md §2). It is neither
+fatal nor warned at startup, selected or not, and none of its other fields are
+checked there either, since the build stops at the provider before reaching
+them. `get_models` and the picker still list it as unavailable until the
+provider registers. When that build does happen and the provider is still missing, it raises
 `backends.ProviderNotRegisteredError`, a `ModelConfigError`, so it too is one
 `tau: error:` line, exit 2, and the serve daemon answers `INVALID_PARAMS`. A
 config entry is named (`models.ext: backend 'acme' is not a registered

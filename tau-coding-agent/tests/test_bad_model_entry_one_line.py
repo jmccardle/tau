@@ -1,7 +1,8 @@
-"""A malformed model entry stops every head in one line, exit 2 (#65, docs/SILENT-DEFAULTS.md §8).
+"""A malformed model entry is fatal only when selected (#65, docs/SILENT-DEFAULTS.md §8).
 
-Every entry is checked at startup, the selected one or not, because
-``get_models``, the serve hello and the TUI's picker build them all.
+The selected entry stops a head in one ``tau: error:`` line, exit 2. Any other
+bad entry is one warning at startup, is listed by ``get_models`` with its
+error, and is refused if a run switches to it.
 """
 
 from __future__ import annotations
@@ -9,59 +10,175 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from tau_agent_core.tau_home import HOME_ENV
 from tau_agent_core.testing import child_env
-from tau_coding_agent.backends import validate_model_entries
+from tau_coding_agent.backends import model_entry_errors
 from tau_coding_agent.config import ConfigError, ModelConfigError
+from tau_coding_agent.headless import check_model_entries
 
 _GOOD = {"backend": "openai", "model": "m", "base_url": "http://127.0.0.1:1/v1", "api_key": "x"}
-_CONFIG = {
-    "models": {"good": _GOOD, "old": {**_GOOD, "prompt_cache": "anthropic"}},
-    "default_model": "good",
-}
+_MODELS = {"good": _GOOD, "old": {**_GOOD, "prompt_cache": "anthropic"}}
+_ERROR = "models.old.prompt_cache is a boolean; got 'anthropic'"
+_FULL_ERROR = (
+    f"{_ERROR}. The dialect moved to prompt_cache_dialect: 'anthropic', "
+    "and 'off' is prompt_cache: false"
+)
 
 
-def _run(tmp_path: Path, *argv: str) -> subprocess.CompletedProcess[str]:
+def _home(tmp_path: Path, default_model: str) -> Path:
     home = tmp_path / "tau-home"
     home.mkdir(exist_ok=True)
-    (home / "config.json").write_text(json.dumps(_CONFIG))
+    config = {"models": _MODELS, "default_model": default_model}
+    (home / "config.json").write_text(json.dumps(config))
+    return home
+
+
+def _env(tmp_path: Path, home: Path) -> dict[str, str]:
+    return child_env(tmp_path / "home", **{HOME_ENV: str(home), "TMPDIR": str(tmp_path)})
+
+
+def _run(
+    tmp_path: Path, *argv: str, default_model: str = "good", stdin: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    home = _home(tmp_path, default_model)
     return subprocess.run(
         [sys.executable, "-m", "tau_coding_agent.cli", *argv],
-        env=child_env(tmp_path / "home", **{HOME_ENV: str(home), "TMPDIR": str(tmp_path)}),
+        env=_env(tmp_path, home),
         cwd=tmp_path,
         capture_output=True,
         text=True,
-        stdin=subprocess.DEVNULL,
+        input=stdin,
+        stdin=None if stdin is not None else subprocess.DEVNULL,
         timeout=60,
     )
 
 
+def _warning(tmp_path: Path) -> str:
+    path = tmp_path / "tau-home" / "config.json"
+    return f"{path}: model 'old' is unavailable and can't be selected: {_FULL_ERROR}"
+
+
 @pytest.mark.parametrize(
-    "argv",
+    ("argv", "default_model"),
     [
-        ["-p", "--model", "old", "hi"],
-        ["-p", "hi"],
-        ["--mode", "rpc"],
-        ["serve", "--listen", "127.0.0.1:0"],
-        ["serve", "-d", "--listen", "127.0.0.1:0"],
+        (["-p", "--model", "old", "hi"], "good"),
+        (["-p", "--model", "old:high", "hi"], "good"),
+        (["-p", "hi"], "old"),
+        (["--mode", "rpc"], "old"),
+        (["--mode", "rpc", "--model", "old"], "good"),
+        (["--mode", "repl"], "old"),
+        ([], "old"),
+        (["--model", "old"], "good"),
+        (["serve", "--listen", "127.0.0.1:0"], "old"),
+        (["serve", "-d", "--listen", "127.0.0.1:0"], "old"),
     ],
-    ids=["print-selected", "print-unselected", "rpc", "serve", "serve-daemon"],
+    ids=[
+        "print-model",
+        "print-model-level",
+        "print-default",
+        "rpc-default",
+        "rpc-model",
+        "repl-default",
+        "tui-default",
+        "tui-model",
+        "serve",
+        "serve-daemon",
+    ],
 )
-def test_a_bad_entry_is_one_line_and_exit_2(tmp_path: Path, argv: list[str]) -> None:
-    out = _run(tmp_path, *argv)
+def test_the_selected_bad_entry_is_one_line_and_exit_2(
+    tmp_path: Path, argv: list[str], default_model: str
+) -> None:
+    out = _run(tmp_path, *argv, default_model=default_model)
     assert out.returncode == 2, out.stderr
-    assert out.stderr.count("\n") == 1, out.stderr
-    assert out.stderr.startswith("tau: error: ")
-    assert "models.old.prompt_cache is a boolean; got 'anthropic'" in out.stderr
-    assert "prompt_cache_dialect" in out.stderr
-    assert "Traceback" not in out.stderr
+    # prompt_toolkit warns about a non-tty stdin when the REPL builds its reader.
+    lines = [line for line in out.stderr.splitlines() if not line.startswith("Warning: Input")]
+    assert len(lines) == 1, out.stderr
+    assert lines[0].startswith("tau: error: ")
+    assert f"the selected model 'old' does not build: {_FULL_ERROR}" in lines[0]
+    assert lines[0].endswith("Fix models.old, or select a model that builds")
 
 
-def test_every_bad_entry_is_named_in_one_config_error(tmp_path: Path, monkeypatch) -> None:
+def test_an_unused_bad_entry_warns_and_rpc_lists_and_refuses_it(tmp_path: Path) -> None:
+    """Startup succeeds; get_models carries the error; set_model to it is refused."""
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "get_models"},
+        {"jsonrpc": "2.0", "id": 2, "method": "set_model", "params": {"name": "old"}},
+        {"jsonrpc": "2.0", "id": 3, "method": "get_state"},
+    ]
+    out = _run(tmp_path, "--mode", "rpc", stdin="".join(json.dumps(r) + "\n" for r in requests))
+    assert out.returncode == 0, out.stderr
+    assert out.stderr.splitlines() == [f"tau: warning: {_warning(tmp_path)}"]
+    replies = {
+        reply["id"]: reply
+        for reply in map(json.loads, out.stdout.splitlines())
+        if reply.get("id") is not None
+    }
+    rows = {row["name"]: row for row in replies[1]["result"]["models"]}
+    assert rows["old"]["model"] is None and _ERROR in rows["old"]["error"]
+    assert rows["good"]["error"] is None
+    assert _ERROR in replies[2]["error"]["message"]
+    assert replies[3]["result"]["model"]["id"] == "m"
+
+
+def test_an_unused_bad_entry_warns_once_before_a_print_run(tmp_path: Path) -> None:
+    out = _run(tmp_path, "-p", "--no-session", "hi")
+    assert out.stderr.splitlines()[0] == f"tau: warning: {_warning(tmp_path)}"
+    assert out.stderr.count(_ERROR) == 1, out.stderr
+    assert "does not build" not in out.stderr
+
+
+def test_the_serve_daemon_logs_an_unused_bad_entry(tmp_path: Path) -> None:
+    home = _home(tmp_path, "good")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "tau_coding_agent.cli", "serve", "--listen", "127.0.0.1:0"],
+        env=_env(tmp_path, home),
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    lines: list[str] = []
+    try:
+        deadline = time.monotonic() + 60
+        assert proc.stdout is not None
+        while time.monotonic() < deadline and not any("warning:" in ln for ln in lines):
+            line = proc.stdout.readline()
+            if not line:
+                break
+            lines.append(line.rstrip("\n"))
+    finally:
+        proc.terminate()
+        proc.wait(timeout=30)
+    assert any(ln.endswith(f" warning: {_warning(tmp_path)}") for ln in lines), lines
+    assert any("tau serve listening on" in ln for ln in lines), lines
+
+
+def test_check_model_entries_raises_only_for_the_selected_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(HOME_ENV, str(tmp_path))
+    config: dict[str, Any] = {"models": _MODELS}
+    assert check_model_entries(config, "good") == [
+        f"{tmp_path / 'config.json'}: model 'old' is unavailable and can't be selected: "
+        + model_entry_errors(config)["old"]
+    ]
+    assert len(check_model_entries(config, None)) == 1
+    assert len(check_model_entries(config, "openai/adhoc")) == 1
+    assert check_model_entries(config, "old", fatal=False) == []
+    with pytest.raises(ModelConfigError, match="the selected model 'old' does not build"):
+        check_model_entries(config, "old:low")
+
+
+def test_every_problem_in_every_bad_entry_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv(HOME_ENV, str(tmp_path))
     config = {
         "models": {
@@ -69,18 +186,19 @@ def test_every_bad_entry_is_named_in_one_config_error(tmp_path: Path, monkeypatc
             "b": {**_GOOD, "temperature": "hot"},
             "c": "not an object",
             "later": {"backend": "registered-by-an-extension", "model": "x"},
+            "good": _GOOD,
         }
     }
+    errors = model_entry_errors(config)
+    assert sorted(errors) == ["a", "b", "c"]
+    assert all("\n" not in message for message in errors.values())
+    assert "models.a.max_tokens must be a positive integer" in errors["a"]
+    assert "models.a.grammar must be 'llguidance' or 'gbnf'" in errors["a"]
+    assert "models.b is not valid: temperature:" in errors["b"]
+    assert errors["c"] == "models.c must be a JSON object; got 'not an object'"
     with pytest.raises(ModelConfigError) as excinfo:
-        validate_model_entries(config)
-    message = str(excinfo.value)
+        model_entry_errors({"models": ["not", "an", "object"]})
     assert isinstance(excinfo.value, ConfigError) and isinstance(excinfo.value, ValueError)
-    assert "\n" not in message
-    assert "models.a.max_tokens must be a positive integer" in message
-    assert "models.a.grammar must be 'llguidance' or 'gbnf'" in message
-    assert "models.b is not valid: temperature:" in message
-    assert "models.c must be a JSON object" in message
-    assert "later" not in message
 
 
 def test_the_model_picker_leaves_out_an_entry_that_does_not_build() -> None:
@@ -90,13 +208,15 @@ def test_the_model_picker_leaves_out_an_entry_that_does_not_build() -> None:
     from tau_coding_agent.backends import make_model_resolver
 
     resolver = make_model_resolver(
-        {"models": {"good": _GOOD, "ext": {"backend": "acme", "model": "m"}}}
+        {"models": {**_MODELS, "ext": {"backend": "acme", "model": "m"}, "c": "x"}}
     )
     found = enumerate_domain("model_name", models=resolver)
     assert [value.value for value in found.values] == ["good"]
-    assert list(unavailable_models(resolver)) == ["ext"]
+    assert sorted(unavailable_models(resolver)) == ["c", "ext", "old"]
     rows = {row["name"]: row for row in model_catalog(resolver)}
     assert rows["ext"]["model"] is None and "'acme'" in rows["ext"]["error"]
+    assert rows["old"]["model"] is None and _ERROR in rows["old"]["error"]
+    assert rows["c"]["error"] == "models.c must be a JSON object; got 'x'"
     assert rows["good"]["error"] is None
 
 
@@ -110,25 +230,40 @@ def test_the_model_picker_leaves_out_an_entry_that_does_not_build() -> None:
     ],
     ids=["serve-stop", "serve-tail", "serve-schema", "ext-list"],
 )
-def test_commands_that_use_no_model_are_not_blocked(tmp_path: Path, argv: list[str]) -> None:
-    """A typo in one entry must not stop you stopping or tailing a running daemon."""
-    out = _run(tmp_path, *argv)
+def test_commands_that_use_no_model_are_not_blocked_or_warned(
+    tmp_path: Path, argv: list[str]
+) -> None:
+    """A typo in the selected entry must not stop you stopping or tailing a running daemon."""
+    out = _run(tmp_path, *argv, default_model="old")
     assert "models.old" not in out.stderr, out.stderr
     assert "Traceback" not in out.stderr
 
 
-def test_an_extension_catches_an_entry_that_does_not_build_by_the_core_name() -> None:
+@pytest.mark.parametrize("name", ["old", "ext"])
+def test_switching_to_a_bad_entry_mid_run_is_refused_with_its_error(name: str) -> None:
     """ctx.set_model's contract error is tau_agent_core's, so no extension imports a head."""
     from tau_agent_core import ModelUnavailableError
     from tau_coding_agent.backends import create_backend, make_model_resolver
 
-    config = {"models": {"good": _GOOD, "ext": {"backend": "acme", "model": "m"}}}
+    config = {"models": {**_MODELS, "ext": {"backend": "acme", "model": "m"}}}
     backend = create_backend({**_GOOD, "config_name": "good"})
     session = backend.agent_session
     session.set_model_resolver(make_model_resolver(config))
     ctx = session._extension_api.context
-    with pytest.raises(ModelUnavailableError, match="backend 'acme' is not a registered"):
-        ctx.set_model("ext")
+    expected = _ERROR if name == "old" else "backend 'acme' is not a registered"
+    with pytest.raises(ModelUnavailableError, match=expected):
+        ctx.set_model(name)
+    with pytest.raises(ModelUnavailableError, match=expected):
+        session.set_model(name)
     with pytest.raises(KeyError, match="unknown model 'nope'"):
         ctx.set_model("nope")
     assert session.model_name == "good"
+
+
+async def test_the_tui_notifies_each_unused_bad_entry_on_mount(make_app) -> None:
+    """The TUI's channel is a notification, not stderr under the screen."""
+    warnings = check_model_entries({"models": _MODELS}, "good")
+    app = make_app(cli_run_config={"model_warnings": warnings})
+    async with app.run_test():
+        notes = [(n.title, n.message, n.severity) for n in app._notifications]
+    assert ("Config", warnings[0], "warning") in notes

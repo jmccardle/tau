@@ -19,7 +19,7 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_agent_core.commands import UnsupportedCommandError
@@ -27,11 +27,11 @@ from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
 from tau_agent_core.sdk import BusDependencyError, require_bus_dependency
 from tau_agent_core.tau_home import TauHomeError, pin_home_variables, resolve_tau_home
-from tau_coding_agent.backends import validate_model_entries
 from tau_coding_agent.config import ConfigError, load_config
 from tau_coding_agent.headless import (
     CLIError,
     parse_ext_config_overrides,
+    check_model_entries,
     resolve_model_config,
     resolve_no_tools,
     run_print,
@@ -510,8 +510,12 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
     )
 
 
-def _launch_tui(args: CLIArgs, config: dict) -> int:
-    """Launch the TauApp TUI, applying model/system-prompt overrides."""
+def _launch_tui(args: CLIArgs, config: dict, model_warnings: Sequence[str] = ()) -> int:
+    """Launch the TauApp TUI, applying model/system-prompt overrides.
+
+    ``model_warnings`` are :func:`~tau_coding_agent.headless.check_model_entries`'
+    lines, which the TUI notifies on mount.
+    """
     overrides: dict = {}
     if args.model or args.provider or args.thinking:
         name, model_config = resolve_model_config(config, args)
@@ -551,6 +555,7 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         "ext_config": ext_config_overrides,
         "store": args.store,
         "session_dir": args.session_dir,
+        "model_warnings": list(model_warnings),
     }
 
     try:
@@ -890,7 +895,7 @@ def main(argv: list[str] | None = None) -> int:
                     "flag). --session-dir IS accepted, and is how a host chooses "
                     "where that startup session lives."
                 )
-            config = _load_head_config()
+            config = load_config()
             from tau_coding_agent.rpc_mode import run_rpc
 
             return asyncio.run(run_rpc(args, config))
@@ -919,7 +924,7 @@ def main(argv: list[str] | None = None) -> int:
                     "--theme selects a TUI stylesheet; --mode repl renders with "
                     "rich in the terminal's own colours."
                 )
-            config = _load_head_config()
+            config = load_config()
             try:
                 from tau_coding_agent.repl import run_repl
             except ModuleNotFoundError as exc:
@@ -946,7 +951,7 @@ def main(argv: list[str] | None = None) -> int:
                 "palette's 'Resume session…')"
             )
         if args.print_mode:
-            return asyncio.run(run_print(args, _load_head_config()))
+            return asyncio.run(run_print(args, load_config()))
         if args.messages:
             raise CLIError(
                 "messages were given without --print; add -p to run headlessly "
@@ -962,8 +967,8 @@ def main(argv: list[str] | None = None) -> int:
             raise CLIError("--cwd names a directory on a daemon's machine; it needs --connect")
         if args.bus:
             require_bus_dependency()
-        validate_model_entries(config)
-        return _launch_tui(args, config)
+        model_warnings = check_model_entries(config, args.model or config.get("default_model"))
+        return _launch_tui(args, config, model_warnings)
     except (
         BusDependencyError,
         ConfigError,
@@ -974,17 +979,6 @@ def main(argv: list[str] | None = None) -> int:
     ) as exc:
         print(f"tau: error: {exc}", file=sys.stderr)
         return 2
-
-
-def _load_head_config() -> dict[str, Any]:
-    """The config a head starts on, with every model entry checked (docs/SILENT-DEFAULTS.md §8).
-
-    Raises:
-        ConfigError: The file is unreadable, or a model entry is malformed.
-    """
-    config = load_config()
-    validate_model_entries(config)
-    return config
 
 
 def _one_line_errors(run: Callable[[list[str]], int], argv: list[str]) -> int:

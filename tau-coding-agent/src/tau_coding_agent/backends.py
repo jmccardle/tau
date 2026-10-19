@@ -1218,41 +1218,40 @@ def _one_line(exc: Exception) -> str:
     return str(exc).replace("\n", " ")
 
 
-def validate_model_entries(config: Mapping[str, Any]) -> None:
-    """Build every ``models`` entry once, so a malformed one stops startup in one line.
-
-    Every entry, not only the selected one: ``get_models``, the serve daemon's
-    hello and the TUI's model picker build them all, so a bad entry nobody
-    selected would otherwise break those later (docs/SILENT-DEFAULTS.md §8).
-    Every problem in an entry is reported, not only the first.
+def model_entry_errors(config: Mapping[str, Any]) -> dict[str, str]:
+    """Each ``models`` entry that does not build, with every problem it has (docs/SILENT-DEFAULTS.md §8).
 
     An entry whose ``backend`` is not registered yet, with no ``base_url``, is
-    left to the build that selects it, because an extension may register that
-    provider first. Its other fields are therefore not checked here either.
+    left out: an extension may register that provider first.
 
     Args:
         config: The loaded config.
 
+    Returns:
+        ``{name: message}``, each message one line naming ``models.<name>``.
+
     Raises:
-        ModelConfigError: One or more entries are malformed; every one is named,
-            joined by ``; ``.
+        ModelConfigError: ``models`` is not a JSON object.
     """
     models = config.get("models") or {}
     if not isinstance(models, dict):
         raise ModelConfigError(f'{default_config_path()} "models" must be a JSON object')
-    problems = []
+    errors = {}
     for name, entry in models.items():
-        if not isinstance(entry, dict):
-            problems.append(f"models.{name} must be a JSON object; got {entry!r}")
-            continue
         try:
-            build_model_from_config({**entry, "config_name": name})
+            _build_entry(name, entry)
         except ProviderNotRegisteredError:
             continue
         except ModelConfigError as exc:
-            problems.append(str(exc))
-    if problems:
-        raise ModelConfigError(f"{default_config_path()}: " + "; ".join(problems))
+            errors[name] = str(exc)
+    return errors
+
+
+def _build_entry(name: str, entry: Any) -> Model:
+    """Build config entry ``name``; a non-object entry is a :class:`ModelConfigError` too."""
+    if not isinstance(entry, dict):
+        raise ModelConfigError(f"models.{name} must be a JSON object; got {entry!r}")
+    return build_model_from_config({**entry, "config_name": name})
 
 
 class ConfigModelResolver:
@@ -1302,11 +1301,10 @@ class ConfigModelResolver:
                 :class:`~tau_agent_core.model_availability.ModelUnavailableError`,
                 the name ``set_model``'s contract gives it.
         """
-        entry = self._models.get(name)
-        if entry is None:
+        if name not in self._models:
             known = ", ".join(self.model_names()) or "(none configured)"
             raise KeyError(f"unknown model {name!r}; configured models: {known}")
-        return build_model_from_config({**entry, "config_name": name})
+        return _build_entry(name, self._models[name])
 
     def model_errors(self) -> dict[str, str]:
         """Each configured name that does not build, with the builder's message.

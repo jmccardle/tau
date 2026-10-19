@@ -93,6 +93,8 @@ from tau_coding_agent.headless import (
     extension_command_names,
     parse_ext_config_overrides,
     resolve_extensions_config,
+    check_model_entries,
+    print_model_warnings,
     resolve_model_config,
     select_session,
     truncation_advice,
@@ -1503,6 +1505,9 @@ async def run_repl(
             "the resumed session already has a system prompt"
         )
 
+    resumed = prior is not None and not args.model and not args.provider
+    selected = args.model or (prior.model if prior is not None else config.get("default_model"))
+    print_model_warnings(check_model_entries(config, selected, fatal=not resumed))
     model_name, model_config = resolve_model_config(
         config,
         args,

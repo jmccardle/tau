@@ -312,8 +312,7 @@ def recorded_model_problem(config: dict[str, Any], name: str) -> str | None:
     from tau_coding_agent.config import ModelConfigError
 
     models = config.get("models", {})
-    head, sep, tail = name.rpartition(":")
-    key = head if name not in models and sep and is_valid_thinking_level(tail) else name
+    key = _entry_key(models, name)
     if key in models:
         entry = {**models[key], "config_name": key}
     elif "/" in key:
@@ -327,6 +326,60 @@ def recorded_model_problem(config: dict[str, Any], name: str) -> str | None:
     except ModelConfigError as exc:
         return str(exc)
     return None
+
+
+def _entry_key(models: dict[str, Any], name: str) -> str:
+    """The config key ``name`` selects: itself, or itself without a ``:level`` suffix."""
+    head, sep, tail = name.rpartition(":")
+    return head if name not in models and sep and is_valid_thinking_level(tail) else name
+
+
+def check_model_entries(
+    config: dict[str, Any], selected: str | None, *, fatal: bool = True
+) -> list[str]:
+    """Refuse the selected model entry if it does not build; a warning for each other bad one.
+
+    Only the entry a command will use stops it; any other bad entry is reported
+    and stays unselectable (docs/SILENT-DEFAULTS.md §8).
+
+    Args:
+        config: The loaded config.
+        selected: The model name the command will use (``--model``, a resumed
+            session's, or ``default_model``); ``None`` or an unconfigured name
+            selects no entry.
+        fatal: ``False`` when the head opens a bad selected entry itself
+            (docs/SILENT-DEFAULTS.md §10); it is then neither raised nor warned.
+
+    Returns:
+        One warning per other entry that does not build, without a prefix.
+
+    Raises:
+        ModelConfigError: The selected entry does not build, or ``models`` is
+            not a JSON object.
+    """
+    from tau_coding_agent.backends import model_entry_errors
+    from tau_coding_agent.config import ModelConfigError
+
+    errors = model_entry_errors(config)
+    path = default_config_path()
+    key = _entry_key(config.get("models") or {}, selected) if selected else None
+    if key in errors:
+        error = errors.pop(key)
+        if fatal:
+            raise ModelConfigError(
+                f"{path}: the selected model {key!r} does not build: {error}. "
+                f"Fix models.{key}, or select a model that builds"
+            )
+    return [
+        f"{path}: model {name!r} is unavailable and can't be selected: {error}"
+        for name, error in errors.items()
+    ]
+
+
+def print_model_warnings(warnings: list[str]) -> None:
+    """Write each of :func:`check_model_entries`' warnings to stderr as a ``tau: warning:`` line."""
+    for warning in warnings:
+        print(f"tau: warning: {warning}", file=sys.stderr)
 
 
 def _decode_ext_config_value(raw: str) -> Any:
@@ -971,6 +1024,8 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
                 f"the resumed session's model {fallback_model!r} is unavailable: {problem}. "
                 "Pass --model NAME to continue it on a configured model"
             )
+    selected = args.model or fallback_model or config.get("default_model")
+    print_model_warnings(check_model_entries(config, selected))
     model_name, model_config = resolve_model_config(
         config,
         args,

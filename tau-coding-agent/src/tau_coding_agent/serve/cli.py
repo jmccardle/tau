@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from websockets.asyncio.server import serve as ws_serve, unix_serve
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
@@ -107,12 +107,13 @@ def serve_settings(web_root: str | None, config: dict[str, Any]) -> dict[str, An
 def run_serve(argv: list[str]) -> int:
     """Entry point for ``tau serve``; returns the process exit code.
 
-    Model entries are validated only on the paths that listen (foreground and
-    ``-d``), so ``--stop`` and ``--tail`` reach a running daemon whatever the
-    config says (docs/SILENT-DEFAULTS.md §8).
+    Model entries are checked only on the paths that listen (foreground and
+    ``-d``): a bad ``default_model`` entry stops them, and any other bad entry is
+    a daemon log warning. ``--stop`` and ``--tail`` reach a running daemon
+    whatever the config says (docs/SILENT-DEFAULTS.md §8).
     """
-    from tau_coding_agent.backends import validate_model_entries
     from tau_coding_agent.config import load_config
+    from tau_coding_agent.headless import check_model_entries
 
     args = build_parser().parse_args(argv)
     if args.schema:
@@ -136,18 +137,27 @@ def run_serve(argv: list[str]) -> int:
     if args.stop:
         token = os.environ.get("TAUD_TOKEN") or settings.get("token")
         return stop_daemon(address, json_output=args.json, token=str(token) if token else None)
-    validate_model_entries(config)
+    model_warnings = check_model_entries(config, config.get("default_model"))
     if args.daemon:
         child_argv = [a for a in argv if a not in ("-d", "--daemon", "--json")]
         token = os.environ.get("TAUD_TOKEN") or settings.get("token")
         return start_background(
             address, child_argv, json_output=args.json, token=str(token) if token else None
         )
-    return asyncio.run(serve(address, {**config, "serve": settings}))
+    return asyncio.run(serve(address, {**config, "serve": settings}, model_warnings))
 
 
-async def serve(address: Address, config: dict[str, Any]) -> int:
-    """Run the daemon in this process until SIGINT or SIGTERM."""
+async def serve(
+    address: Address, config: dict[str, Any], model_warnings: Sequence[str] = ()
+) -> int:
+    """Run the daemon in this process until SIGINT or SIGTERM.
+
+    Args:
+        address: Where to listen.
+        config: The loaded config, its ``serve`` section settled.
+        model_warnings: Lines from :func:`~tau_coding_agent.headless.check_model_entries`,
+            logged once the daemon is listening.
+    """
     from tau_coding_agent.serve.daemon import Daemon
     from tau_coding_agent.store_factory import build_session_catalog
 
@@ -187,6 +197,8 @@ async def serve(address: Address, config: dict[str, Any]) -> int:
         )
     auth = "token required" if daemon.token else "no token"
     daemon.log(f"tau serve listening on {address} ({auth}, pid {os.getpid()})")
+    for warning in model_warnings:
+        daemon.log(f"warning: {warning}")
     try:
         await stop.wait()
     finally:
