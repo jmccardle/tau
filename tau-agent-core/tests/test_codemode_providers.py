@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -115,12 +116,22 @@ async def test_tool_call_and_print(provider: SandboxProvider) -> None:
 
 
 async def test_gather_runs_calls_concurrently(provider: SandboxProvider) -> None:
+    spans: list[tuple[float, float]] = []
+
+    async def timed(seconds: float) -> dict[str, Any]:
+        start = time.monotonic()
+        await asyncio.sleep(seconds)
+        spans.append((start, time.monotonic()))
+        return {"content": [{"type": "text", "text": f"slept {seconds}"}]}
+
+    slow = _tool("slow", timed, {"seconds": {"type": "number"}}, ["seconds"])
     code = "import asyncio\nr = await asyncio.gather(tools.slow(seconds=0.3), tools.slow(seconds=0.3))\nprint(r)"
-    r = await _run(provider, code)
+    r = await _run(provider, code, tools=DirectToolInvoker([slow]))
     assert r.ok, r.error
     assert "slept 0.3" in r.output
-    assert len(r.calls) == 2
-    assert r.duration_ms < 550
+    assert len(r.calls) == 2 and len(spans) == 2
+    (first_start, first_end), (second_start, _) = sorted(spans)
+    assert second_start < first_end, "the second call started only after the first ended"
 
 
 async def test_tool_error_text_reaches_script(provider: SandboxProvider) -> None:
@@ -393,6 +404,9 @@ async def test_monty_refuses_a_tool_it_cannot_reach_and_cpython_calls_it() -> No
         ValueError, match=r"cannot call '_add' \(as tools._add\).*starting with '_'"
     ):
         mode.section(hidden)
+    blind = CodeMode(CodeModeConfig.from_mapping({"provider": "monty", "stubs": "none"}))
+    with pytest.raises(ValueError, match="cannot call '_add'"):
+        blind.section(hidden)
     if HAVE_MONTY:
         monty = _make("monty")
         await monty.start()
@@ -401,3 +415,12 @@ async def test_monty_refuses_a_tool_it_cannot_reach_and_cpython_calls_it() -> No
                 await _run(monty, code, tools=DirectToolInvoker(hidden))
         finally:
             await monty.close()
+
+
+def test_a_sanitised_leading_underscore_gains_the_letter_prefix() -> None:
+    from tau_agent_core.tool_schema import stub_name, stub_names
+
+    assert stub_name("-lead") == "t__lead"
+    assert stub_name("_private") == "_private"
+    with pytest.raises(ValueError, match="'-lead', 't__lead' all stub as 't__lead'"):
+        stub_names(["-lead", "t__lead"])

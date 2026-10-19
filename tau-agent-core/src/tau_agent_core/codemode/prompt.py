@@ -95,7 +95,7 @@ def _python_signatures(stubs: Sequence[ToolStub], *, self_arg: bool) -> tuple[li
     ``tool_search`` uses, with ``-> str`` because a script receives a tool's text.
 
     Raises:
-        ValueError: a ``$ref`` names no ``$defs`` entry.
+        ValueError: a ``$ref`` is not a local pointer or does not resolve.
     """
     namespace = StubNamespace()
     classes: list[str] = []

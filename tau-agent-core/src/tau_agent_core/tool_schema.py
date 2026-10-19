@@ -40,6 +40,7 @@ __all__ = [
     "output_schema_of",
     "render_stub",
     "render_stubs",
+    "stub_clashes",
     "stub_name",
     "stub_names",
     "tool_from_function",
@@ -286,21 +287,27 @@ class _StubWriter:
     def __init__(self) -> None:
         self.classes: dict[str, str] = {}
         self.new: list[str] = []
-        self.defs: dict[str, Any] = {}
         self.tool = ""
-        self._refs: dict[str, str] = {}
+        self.root: dict[str, Any] = {}
+        self.root_title = ""
+        self._refs: dict[Any, str] = {}
+        self._active: set[Any] = set()
 
-    def begin(self, tool: str, defs: dict[str, Any]) -> None:
-        """Start one tool: its name for errors, its ``$defs``, and an empty list of classes it adds."""
+    def begin(self, tool: str) -> None:
+        """Start one tool: its name for errors, and an empty list of classes it adds."""
         self.tool = tool
-        self.defs = defs
         self._refs = {}
         self.new = []
 
-    def define(self, title: str, schema: dict[str, Any], ref: str | None = None) -> str:
+    def at_root(self, root: dict[str, Any], title: str) -> None:
+        """Resolve ``$ref`` against ``root`` from now on; ``#`` names a class ``title``."""
+        self.root = root
+        self.root_title = str(root.get("title") or title)
+
+    def define(self, title: str, schema: dict[str, Any], ref: Any = None) -> str:
         """The identifier of ``schema``'s class, rendering it under a free name if new.
 
-        Classes it uses are inserted before it. ``ref`` keys a ``$defs`` entry,
+        Classes it uses are inserted before it. ``ref`` keys a ``$ref`` target,
         so a self-reference resolves to the name being rendered.
         """
         if ref is not None and ref in self._refs:
@@ -327,18 +334,12 @@ class _StubWriter:
         """The annotation for ``schema``; an object with properties becomes a class.
 
         Raises:
-            ValueError: a ``$ref`` names no ``$defs`` entry.
+            ValueError: a ``$ref`` does not resolve (:meth:`reference`).
         """
         if not isinstance(schema, dict) or not schema:
             return "Any"
         if "$ref" in schema:
-            ref = str(schema["$ref"]).rsplit("/", 1)[-1]
-            if ref not in self.defs:
-                raise ValueError(
-                    f"tool {self.tool!r}: $ref {schema['$ref']!r} names no $defs entry, "
-                    "so it has no type to stub"
-                )
-            return self.define(ref, self.defs[ref], ref)
+            return self.reference(str(schema["$ref"]), hint)
         for key in ("anyOf", "oneOf"):
             if key in schema:
                 parts = [self.annotation(s, hint) for s in schema[key]]
@@ -362,6 +363,52 @@ class _StubWriter:
                 f"dict[str, {self.annotation(extra, hint) if isinstance(extra, dict) else 'Any'}]"
             )
         return "Any"
+
+    def reference(self, ref: str, hint: str) -> str:
+        """The annotation for ``{"$ref": ref}``, an RFC 6901 pointer into the current root.
+
+        A target object with properties is a class named for the pointer's last
+        token (or the root's title, for ``#``), so a recursive reference names
+        it. Any other target renders inline; a cycle through one renders ``Any``.
+
+        Raises:
+            ValueError: ``ref`` is not a local ``#`` pointer, or does not resolve.
+        """
+        key = (id(self.root), ref)
+        if key in self._refs:
+            return self._refs[key]
+        name, target = self._resolve(ref)
+        if isinstance(target, dict) and target.get("properties"):
+            return self.define(str(target.get("title") or name or self.root_title), target, key)
+        if key in self._active:
+            return "Any"
+        self._active.add(key)
+        try:
+            return self.annotation(target, hint)
+        finally:
+            self._active.discard(key)
+
+    def _resolve(self, ref: str) -> tuple[str, Any]:
+        """The last token of ``ref`` (empty for ``#``) and the schema it points at."""
+        if not ref.startswith("#") or (len(ref) > 1 and ref[1] != "/"):
+            raise ValueError(
+                f"tool {self.tool!r}: $ref {ref!r} is not a local '#/...' pointer, "
+                "so it has no type to stub"
+            )
+        node: Any = self.root
+        token = ""
+        for raw in ref[2:].split("/") if len(ref) > 1 else []:
+            token = raw.replace("~1", "/").replace("~0", "~")
+            if isinstance(node, dict) and token in node:
+                node = node[token]
+            elif isinstance(node, list) and token.isdigit() and int(token) < len(node):
+                node = node[int(token)]
+            else:
+                raise ValueError(
+                    f"tool {self.tool!r}: $ref {ref!r} does not resolve "
+                    f"(no {token!r} in the schema), so it has no type to stub"
+                )
+        return token, node
 
     def typeddict(self, schema: dict[str, Any], ident: str) -> str:
         """A ``TypedDict`` named ``ident`` for an object schema.
@@ -392,17 +439,49 @@ def stub_name(name: str) -> str:
     """The identifier a stub gives tool ``name``.
 
     A character an identifier cannot contain becomes ``_`` (``my-tool`` →
-    ``my_tool``), a keyword gains a trailing ``_`` (``from_``), and a name that
-    cannot start an identifier gains ``t_`` (``1tool`` → ``t_1tool``), since
-    Monty refuses an attribute starting with ``_``. ``call_tool`` and code mode
-    resolve it back through :func:`stub_names`, which raises on a clash.
+    ``my_tool``) and a keyword gains a trailing ``_`` (``from_``). A result
+    that cannot start an identifier, or that starts with ``_`` when ``name``
+    did not, gains ``t_`` (``1tool`` → ``t_1tool``, ``-x`` → ``t__x``), because
+    Monty refuses an attribute starting with ``_``. A real leading ``_`` is
+    kept.
+
+    Args:
+        name: The real tool name.
+
+    Returns:
+        A Python identifier; ``call_tool`` and code mode resolve it back
+        through :func:`stub_names`, which raises on a clash.
     """
     ident = "".join(c if f"a{c}".isidentifier() else "_" for c in name)
     if keyword.iskeyword(ident):
         return f"{ident}_"
-    if not ident.isidentifier():
+    if not ident.isidentifier() or (ident.startswith("_") and not name.startswith("_")):
         return f"t_{ident}"
     return ident
+
+
+@agent_facing(topic="tools")
+def stub_clashes(names: Iterable[str]) -> dict[str, list[str]]:
+    """The stub names two or more of ``names`` share, each with the real names sharing it.
+
+    Args:
+        names: Real tool names.
+
+    Returns:
+        ``{stub: [real, ...]}`` for every shared stub; empty when there is none.
+    """
+    groups: dict[str, list[str]] = {}
+    for name in dict.fromkeys(names):
+        groups.setdefault(stub_name(name), []).append(name)
+    return {stub: real for stub, real in groups.items() if len(real) > 1}
+
+
+def clash_message(clashes: dict[str, list[str]]) -> str:
+    """``clashes`` as one sentence naming every tool involved."""
+    listed = "; ".join(
+        f"{', '.join(repr(r) for r in real)} all stub as {stub!r}" for stub, real in clashes.items()
+    )
+    return f"tool names collide once made identifiers: {listed}; rename one"
 
 
 @agent_facing(topic="tools")
@@ -419,17 +498,11 @@ def stub_names(names: Iterable[str]) -> dict[str, str]:
         ValueError: two names share a stub name (``my-tool`` and ``my_tool``),
             so neither stub could say which tool it calls.
     """
-    groups: dict[str, list[str]] = {}
-    for name in dict.fromkeys(names):
-        groups.setdefault(stub_name(name), []).append(name)
-    clashes = {stub: real for stub, real in groups.items() if len(real) > 1}
+    unique = list(dict.fromkeys(names))
+    clashes = stub_clashes(unique)
     if clashes:
-        listed = "; ".join(
-            f"{', '.join(repr(r) for r in real)} all stub as {stub!r}"
-            for stub, real in clashes.items()
-        )
-        raise ValueError(f"tool names collide once made identifiers: {listed}; rename one")
-    return {stub: real[0] for stub, real in groups.items()}
+        raise ValueError(clash_message(clashes))
+    return {stub_name(name): name for name in unique}
 
 
 @agent_facing(topic="tools")
@@ -473,12 +546,12 @@ class StubNamespace:
             classes that use it, and ``async def f(...) -> T`` with no colon.
 
         Raises:
-            ValueError: a ``$ref`` names no ``$defs`` entry.
+            ValueError: a ``$ref`` is not a local pointer or does not resolve.
         """
         writer = self._writer
-        out_defs = (output_schema or {}).get("$defs") or {}
-        writer.begin(name, {**(parameters.get("$defs") or {}), **out_defs})
+        writer.begin(name)
         func_name = stub_name(name)
+        writer.at_root(dict(parameters), f"{func_name}_arguments")
         props = parameters.get("properties") or {}
         if all(_plain_key(p) for p in props):
             required = [p for p in props if p in set(parameters.get("required", []))]
@@ -492,11 +565,11 @@ class StubNamespace:
             args = [f"**kwargs: Unpack[{writer.define(f'{func_name}_arguments', arguments)}]"]
         if self_arg:
             args.insert(0, "self")
-        returns = (
-            "str"
-            if output_schema is None
-            else writer.annotation(dict(output_schema), f"{name}_result")
-        )
+        returns = "str"
+        if output_schema is not None:
+            out = dict(output_schema)
+            writer.at_root(out, f"{func_name}_result")
+            returns = writer.annotation(out, f"{name}_result")
         signature = f"async def {func_name}({', '.join(args)}) -> {returns}"
         return [writer.classes[ident] for ident in writer.new], signature
 
@@ -539,7 +612,7 @@ def render_stub(
         The classes, then the ``async def``, separated by blank lines.
 
     Raises:
-        ValueError: a ``$ref`` names no ``$defs`` entry.
+        ValueError: a ``$ref`` is not a local pointer or does not resolve.
     """
     described = _Described(name, description, parameters, output_schema)
     return "\n\n".join(_stub_blocks(StubNamespace(), described))
@@ -561,7 +634,7 @@ def render_stubs(descriptions: list[Any]) -> str:
 
     Raises:
         ValueError: two tools share a stub name (:func:`stub_names`), or a
-            ``$ref`` names no ``$defs`` entry.
+            ``$ref`` is not a local pointer or does not resolve.
     """
     stub_names(d.name for d in descriptions)
     header = "from typing import Any, Literal, NotRequired, TypedDict, Unpack"

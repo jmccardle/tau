@@ -566,25 +566,47 @@ failed against the code before the fix (ran).
   accept the stub name through that mapping, rather than the stub carrying the
   real name. A code-mode script has no syntax for `tools.my-tool`, so code mode
   needed the mapping whichever option was chosen; using it for `call_tool` too
-  keeps one rule. `tool_search` refuses to list stubs while two tools collide,
-  so a stub never names the wrong tool. `call_tool` tries the real name first,
-  which cannot collide because real names are unique, then the stub name. The
+  keeps one rule. A tool whose stub name another tool shares, hidden ones
+  included, is a configuration fault: `tool_search` refuses to list it and
+  `call_tool` refuses it by real name or stub name, each naming every tool in
+  the clash. A clash among tools a call does not touch does not block it.
+  The check runs per call, not at registration, because two such names are
+  legal in the declared tools block and only the stub surfaces confuse them
+  (revised in review, 2026-10-18; it first refused every search while any
+  clash existed, and `call_tool` skipped the check for a real name). The
   code-mode invoker raises at construction on a collision, and it no longer
   leaves out a tool whose name is not an identifier. Monty refuses an
   attribute that starts with `_` (ran), so a stub name never gains one: a
-  keyword gains a trailing `_`, and a name that cannot start an identifier
-  (`1tool`) gains `t_`. A real `t_1tool` beside it is a collision and raises.
+  keyword gains a trailing `_`, and a result that cannot start an identifier
+  (`1tool`) or starts with `_` when the real name did not (`-x`) gains `t_`.
+  A real `t_1tool` beside `1tool` is a collision and raises.
   Only a tool whose real name starts with `_` still stubs that way. The Monty
   provider raises `ValueError` naming such a tool when it builds the prompt or
-  runs a script, rather than listing a tool it cannot call. The CPython child
+  runs a script, in either stub mode, rather than listing a tool it cannot call.
+  `check_stubs` is an optional provider hook (a no-op on `ScopedProvider`, absent
+  from the `SandboxProvider` protocol), so an out-of-tree provider need not
+  define it. The CPython child
   now refuses only dunders, so it calls such a tool.
-- **Unresolved `$ref` (#34).** `render_stub` raises `ValueError` naming the
-  tool and the `$ref`. It used to write a class name it never defined. Code
-  mode raises the same error, because it renders through the same writer.
+- **Unresolved `$ref` (#34).** A `$ref` is an RFC 6901 pointer into the
+  schema that holds it (the parameters, or the output schema), with `~0` and
+  `~1` decoded, so `#/$defs/X`, draft-07 `#/definitions/X`,
+  zod-to-json-schema's `#/properties/src` and `#` all resolve. The first build
+  resolved only the last token against `$defs` and raised on the other three,
+  which would have stopped code mode's prompt for one such MCP tool (found in
+  review). A target object with properties is a class, so a recursive
+  reference names it; any other target renders inline, and a cycle through
+  one renders `Any` at the cycle. A `$defs` enum now renders as its `Literal`,
+  where it used to be an empty `TypedDict`. A pointer that does not resolve,
+  or one that is not local (`other.json#/x`, `#anchor`), raises `ValueError`
+  naming the tool and the `$ref`. Code mode raises the same error, because it
+  renders through the same writer.
 
 **Left open (read).** In Monty's `type_check` mode, `ty` cannot check
 `tools.my_tool(**{"from": 2})`, because it types the dict literal as
 `dict[str, int]`, not as the `TypedDict`. Annotating the dict works:
 `args: "my_tool_arguments" = {...}` type-checks and runs (ran). The prompt does
 not say so. TypeScript stubs now quote a key that is not an identifier, but
-the TypeScript provider has no runtime, so this is unrun.
+the TypeScript provider has no runtime, so this is unrun. A recursive class
+stub (`class T(TypedDict): kids: list[T]`) reads correctly but raises
+`NameError` if executed, because the class body names itself; master did the
+same for a recursive `$defs` entry.

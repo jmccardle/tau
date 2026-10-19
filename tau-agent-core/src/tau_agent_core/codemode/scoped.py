@@ -70,7 +70,10 @@ class ScopedProvider(Generic[InstanceT]):
         raise NotImplementedError
 
     def check_stubs(self, stubs: Sequence[ToolStub]) -> None:
-        """Raise ``ValueError`` for a stub this runtime cannot call. Default: every one works."""
+        """Raise ``ValueError`` for a stub this runtime cannot call. Default: every one works.
+
+        Optional for a provider outside this class; ``CodeMode`` calls it when present.
+        """
 
     async def _open(self, limits: RunLimits, tools: ToolInvoker) -> InstanceT:
         """Create one interpreter instance."""

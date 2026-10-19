@@ -369,7 +369,7 @@ The classes not yet written in this namespace, each before the classes that use 
 
 **Raises**
 
-- `ValueError` — a ``$ref`` names no ``$defs`` entry.
+- `ValueError` — a ``$ref`` is not a local pointer or does not resolve.
 
 ## ToolBatchResult
 <!-- agent: yes -->
@@ -606,7 +606,7 @@ The ``register_tool`` dict for ``call_tool``, the fixed dispatcher to deferred t
 
 **Returns**
 
-A ``model-only`` tool taking ``name`` (real, or the stub name ``tool_search`` showed) and ``arguments`` that runs a ``direct`` or ``deferred`` tool through ``ctx.execute_tool`` and returns its content and value; any other target is a tool error.
+A ``model-only`` tool taking ``name`` (real, or the stub name ``tool_search`` showed) and ``arguments`` that runs a ``direct`` or ``deferred`` tool through ``ctx.execute_tool`` and returns its content and value; any other target, or one sharing its stub name with another tool, is a tool error.
 
 ## capture_tool_output
 <!-- agent: yes -->
@@ -751,7 +751,7 @@ The classes, then the ``async def``, separated by blank lines.
 
 **Raises**
 
-- `ValueError` — a ``$ref`` names no ``$defs`` entry.
+- `ValueError` — a ``$ref`` is not a local pointer or does not resolve.
 
 ## render_stubs
 <!-- agent: yes -->
@@ -774,7 +774,7 @@ One module's text, ending in a newline. A class is written once; a different sha
 
 **Raises**
 
-- `ValueError` — two tools share a stub name (:func:`stub_names`), or a ``$ref`` names no ``$defs`` entry.
+- `ValueError` — two tools share a stub name (:func:`stub_names`), or a ``$ref`` is not a local pointer or does not resolve.
 
 ## run_nested_call
 <!-- agent: yes -->
@@ -839,6 +839,25 @@ how many words match, then registry order. Only an effective exposure of
 
 At most ``limit`` matches, best first.
 
+## stub_clashes
+<!-- agent: yes -->
+
+```python
+stub_clashes(names: Iterable[str]) -> dict[str, list[str]]
+```
+
+`tau_agent_core.tool_schema.stub_clashes`
+
+The stub names two or more of ``names`` share, each with the real names sharing it.
+
+**Parameters**
+
+- `names: Iterable[str]` — Real tool names.
+
+**Returns**
+
+``{stub: [real, ...]}`` for every shared stub; empty when there is none.
+
 ## stub_name
 <!-- agent: yes -->
 
@@ -851,14 +870,19 @@ stub_name(name: str) -> str
 The identifier a stub gives tool ``name``.
 
 A character an identifier cannot contain becomes ``_`` (``my-tool`` →
-``my_tool``), a keyword gains a trailing ``_`` (``from_``), and a name that
-cannot start an identifier gains ``t_`` (``1tool`` → ``t_1tool``), since
-Monty refuses an attribute starting with ``_``. ``call_tool`` and code mode
-resolve it back through :func:`stub_names`, which raises on a clash.
+``my_tool``) and a keyword gains a trailing ``_`` (``from_``). A result
+that cannot start an identifier, or that starts with ``_`` when ``name``
+did not, gains ``t_`` (``1tool`` → ``t_1tool``, ``-x`` → ``t__x``), because
+Monty refuses an attribute starting with ``_``. A real leading ``_`` is
+kept.
 
 **Parameters**
 
-- `name: str` — *(no description)*
+- `name: str` — The real tool name.
+
+**Returns**
+
+A Python identifier; ``call_tool`` and code mode resolve it back func:`stub_names`, which raises on a clash.
 
 ## stub_names
 <!-- agent: yes -->
@@ -962,7 +986,7 @@ The ``register_tool`` dict for ``tool_search``; its description never changes.
 
 **Returns**
 
-A ``model-only`` tool taking ``query`` whose result lists each deferred match as a Python stub; an empty query, or two tools sharing a stub name (:func:`~tau_agent_core.tool_schema.stub_names`), is a tool error.
+A ``model-only`` tool taking ``query`` whose result lists each deferred match as a Python stub; an empty query, or a match sharing its stub name with another tool (:func:`~tau_agent_core.tool_schema.stub_clashes`), is a tool error.
 
 ## validate_tool_arguments
 <!-- agent: yes -->

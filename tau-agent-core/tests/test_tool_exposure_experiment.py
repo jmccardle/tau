@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
+import re
 import sys
 from typing import Any, Callable
 from unittest.mock import patch
@@ -917,3 +918,104 @@ def test_a_ref_with_no_defs_entry_raises_at_render_naming_tool_and_ref():
     returns = {"$ref": "#/$defs/Missing"}
     with pytest.raises(ValueError, match=r"tool 'probe': \$ref '#/\$defs/Missing'"):
         render_stub("probe", "Probe.", {"type": "object", "properties": {}}, returns)
+
+
+async def test_a_clash_blocks_only_the_tools_it_involves_on_both_paths(tmp_path):
+    async def run(tool_call_id, params, signal, on_update, ctx):
+        return {"content": [{"type": "text", "text": "ran"}]}
+
+    def ext(api):
+        api.register_tool(tool_search_definition())
+        api.register_tool(call_tool_definition())
+        api.register_tool(_tool("my-tool", run, exposure="deferred"))
+        api.register_tool(_tool("my_tool", run, exposure="deferred"))
+        api.register_tool(_tool("vault", run, exposure="deferred"))
+
+    session = _session(tmp_path, ext)
+    model = ScriptedModel(
+        [("s", "tool_search", {"query": "vault"})],
+        [("v", "call_tool", {"name": "vault", "arguments": {}})],
+        [("r", "call_tool", {"name": "my_tool", "arguments": {}})],
+        [("h", "call_tool", {"name": "my-tool", "arguments": {}})],
+    )
+    results = _results(await _prompt(session, model))
+    assert not results["s"].get("is_error") and "async def vault() -> str:" in _text(results["s"])
+    assert _text(results["v"]) == "ran"
+    for key in ("r", "h"):
+        assert results[key]["is_error"]
+        assert "configuration fault" in _text(results[key])
+        assert "'my-tool', 'my_tool' all stub as 'my_tool'" in _text(results[key])
+
+
+@pytest.mark.parametrize(
+    ("parameters", "expected"),
+    [
+        (
+            {
+                "type": "object",
+                "properties": {"src": {"type": "object"}, "dst": {"$ref": "#/properties/src"}},
+            },
+            "dst: dict[str, Any] | None = None",
+        ),
+        (
+            {
+                "type": "object",
+                "definitions": {"Pt": {"type": "object", "properties": {"x": {"type": "integer"}}}},
+                "properties": {"a": {"$ref": "#/definitions/Pt"}},
+            },
+            "a: Pt | None = None",
+        ),
+        (
+            {
+                "type": "object",
+                "title": "Node",
+                "properties": {"name": {"type": "string"}, "child": {"$ref": "#"}},
+            },
+            "child: Node | None = None",
+        ),
+        (
+            {
+                "type": "object",
+                "$defs": {"a/b~c": {"type": "string"}},
+                "properties": {"v": {"$ref": "#/$defs/a~1b~0c"}},
+            },
+            "v: str | None = None",
+        ),
+    ],
+    ids=["properties-pointer", "draft-07-definitions", "root", "escaped-tokens"],
+)
+def test_a_ref_resolves_as_a_json_pointer_against_the_root(parameters, expected):
+    assert expected in render_stub("t", "T.", parameters, None)
+
+
+def test_a_recursive_ref_renders_by_name_and_does_not_loop():
+    tree = {
+        "type": "object",
+        "$defs": {
+            "T": {
+                "type": "object",
+                "properties": {"kids": {"type": "array", "items": {"$ref": "#/$defs/T"}}},
+            },
+            "L": {"type": "array", "items": {"$ref": "#/$defs/L"}},
+        },
+        "properties": {"t": {"$ref": "#/$defs/T"}, "l": {"$ref": "#/$defs/L"}},
+    }
+    stub = render_stub("t", "T.", tree, None)
+    assert "class T(TypedDict):\n    kids: NotRequired[list[T]]" in stub
+    assert "l: list[Any] | None = None" in stub
+    node = {"type": "object", "title": "Node", "properties": {"child": {"$ref": "#"}}}
+    assert "child: NotRequired[Node]" in render_stub("t", "T.", node, None)
+
+
+@pytest.mark.parametrize(
+    ("ref", "reason"),
+    [
+        ("#/$defs/Nope", "does not resolve"),
+        ("other.json#/x", "is not a local"),
+        ("#anchor", "is not a local"),
+    ],
+)
+def test_a_dangling_or_external_ref_raises_naming_tool_and_ref(ref, reason):
+    params = {"type": "object", "properties": {"x": {"$ref": ref}}}
+    with pytest.raises(ValueError, match=f"tool 'probe': \\$ref '{re.escape(ref)}' {reason}"):
+        render_stub("probe", "Probe.", params, None)
