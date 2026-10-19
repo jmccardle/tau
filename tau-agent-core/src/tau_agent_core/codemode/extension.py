@@ -17,7 +17,12 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from tau_agent_core.codemode.invoker import DirectToolInvoker
-from tau_agent_core.codemode.prompt import merge_templates, render_prompt
+from tau_agent_core.codemode.prompt import (
+    merge_templates,
+    render_prompt,
+    stub_failures,
+    unavailable_notice,
+)
 from tau_agent_core.codemode.protocol import (
     LIFETIMES,
     Lifetime,
@@ -215,6 +220,8 @@ class CodeMode:
         self.language = probe.language
         self.templates = merge_templates(probe.prompt(), config.prompt)
         self._section: str | None = None
+        self._notices: list[str] = []
+        self._noticed: set[str] = set()
         _, self.description = self.render(None)
 
     def render(self, stubs: list[ToolStub] | None) -> tuple[str, str]:
@@ -229,20 +236,49 @@ class CodeMode:
             tool_name=TOOL_NAME,
         )
 
+    def excluded(self, tools: list[Any]) -> tuple[tuple[str, ...], dict[str, str]]:
+        """The names a script may not call, and the notice for each tool whose stub fails.
+
+        A failure not seen before queues its notice for :meth:`take_notices`,
+        whether :meth:`section` or :meth:`run` finds it, so no exclusion is silent.
+
+        Returns:
+            Every excluded name (``codemode``, config ``exclude``, each failure),
+            and ``{real name: notice}`` for the failures.
+        """
+        configured = (TOOL_NAME, *self.config.exclude)
+        candidates = DirectToolInvoker(tools, exclude=configured).stubs()
+        failures = stub_failures(candidates, self.language)
+        notices = {name: unavailable_notice(name, r) for name, r in failures.items()}
+        for name, notice in notices.items():
+            if name not in self._noticed:
+                self._noticed.add(name)
+                self._notices.append(notice)
+        return (*configured, *failures), notices
+
     def section(self, tools: list[Any]) -> str:
         """The system section, rendered once and then frozen for the session.
+
+        A tool whose stub fails is left out, with a notice (:meth:`excluded`);
+        every other tool is unaffected.
 
         Raises:
             ValueError: a tool is one the provider cannot call, in either stub mode.
         """
         if self._section is None:
-            stubs = DirectToolInvoker(tools, exclude=(TOOL_NAME, *self.config.exclude)).stubs()
+            exclude, _ = self.excluded(tools)
+            stubs = DirectToolInvoker(tools, exclude=exclude).stubs()
             check = getattr(self._probe, "check_stubs", None)
             if check is not None:
                 check(stubs)
             snapshot = stubs if self.config.stubs == "snapshot" else None
             self._section, _ = self.render(snapshot)
         return self._section
+
+    def take_notices(self) -> list[str]:
+        """The notices :meth:`excluded` queued since the last call."""
+        notices, self._notices = self._notices, []
+        return notices
 
     def scope(self, cursor_id: str) -> str:
         """The instance key for a run on ``cursor_id``."""
@@ -261,9 +297,11 @@ class CodeMode:
         """Run ``code`` and return the tool-result dict."""
         if self.provider is None:
             self.provider = make_provider(self.config, cwd=cwd)
+        exclude, unavailable = self.excluded(tools)
         invoker = DirectToolInvoker(
             tools,
-            exclude=(TOOL_NAME, *self.config.exclude),
+            exclude=exclude,
+            unavailable=unavailable,
             language=self.language,
             max_calls=self.config.limits.max_calls,
             signal=signal,
@@ -330,17 +368,32 @@ def register(api: Any, config: Mapping[str, Any] | None = None) -> None:
         tool_call_id: str, params: dict[str, Any], signal: Any, on_update: Any, ctx: Any
     ) -> dict[str, Any]:
         session = _session_of(ctx)
-        return await mode.run(
-            params["code"],
-            session._turn_tools(),
-            cursor_id=session.acting_cursor.id,
-            call_id=tool_call_id,
-            signal=signal,
-            cwd=ctx.cwd,
-        )
+        try:
+            result = await mode.run(
+                params["code"],
+                session._turn_tools(),
+                cursor_id=session.acting_cursor.id,
+                call_id=tool_call_id,
+                signal=signal,
+                cwd=ctx.cwd,
+            )
+        except BaseException as exc:
+            try:
+                deliver(ctx)
+            except Exception as failed:
+                exc.add_note(f"code mode could not deliver its notices: {failed!r}")
+            raise
+        deliver(ctx)
+        return result
+
+    def deliver(ctx: Any) -> None:
+        """Show every queued exclusion notice; a run's own error is never replaced by this."""
+        for notice in mode.take_notices():
+            ctx.ui.notify(notice, "warning")
 
     async def before_agent_start(event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
         section = mode.section(_session_of(ctx)._turn_tools())
+        deliver(ctx)
         current = event.get("system_prompt") or ""
         if section.strip() in current:
             return None

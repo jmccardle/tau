@@ -424,3 +424,39 @@ def test_a_sanitised_leading_underscore_gains_the_letter_prefix() -> None:
     assert stub_name("_private") == "_private"
     with pytest.raises(ValueError, match="'-lead', 't__lead' all stub as 't__lead'"):
         stub_names(["-lead", "t__lead"])
+
+
+# ── issue #55: an excluded tool is refused with its reason ───────────────────
+
+BAD_REF = _tool("bad-ref", _add, {"k": {"$ref": "#/$defs/Missing"}}, [])
+
+
+async def test_a_script_naming_an_excluded_tool_gets_its_reason_not_unknown_tool() -> None:
+    refusal = "tool 'bad-ref' is unavailable in code mode: $ref '#/$defs/Missing' does not resolve"
+    invoker = DirectToolInvoker(
+        [TOOLS[0], BAD_REF], exclude=("codemode", "bad-ref"), unavailable={"bad-ref": refusal}
+    )
+    assert [s.name for s in invoker.stubs()] == ["add"]
+    for name in ("bad_ref", "bad-ref"):
+        outcome = await invoker.invoke(name, {})
+        assert outcome.is_error and outcome.text == refusal
+        with pytest.raises(KeyError, match="is unavailable in code mode"):
+            invoker.describe(name)
+    unknown = await invoker.invoke("nope", {})
+    assert unknown.text == "Unknown tool: nope"
+
+
+def test_only_the_active_languages_renderer_decides_an_exclusion() -> None:
+    from tau_agent_core.codemode.extension import CodeMode, CodeModeConfig
+
+    python = CodeMode(CodeModeConfig.from_mapping({"provider": "cpython"}))
+    assert "bad_ref" not in python.section([TOOLS[0], BAD_REF])
+    assert [n for n in python.take_notices()] == [
+        "tool 'bad-ref' is unavailable in code mode: $ref '#/$defs/Missing' "
+        "does not resolve (no '$defs' in the schema)"
+    ]
+    typescript = CodeMode(CodeModeConfig.from_mapping({"provider": "typescript"}))
+    assert "bad_ref(args: { k?: unknown }): Promise<string>;" in typescript.section(
+        [TOOLS[0], BAD_REF]
+    )
+    assert typescript.take_notices() == []

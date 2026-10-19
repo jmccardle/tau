@@ -1024,3 +1024,99 @@ def test_a_dangling_or_external_ref_raises_naming_tool_and_ref(ref, reason):
     params = {"type": "object", "properties": {"x": {"$ref": ref}}}
     with pytest.raises(ValueError, match=f"tool 'probe': \\$ref '{re.escape(ref)}' {reason}"):
         render_stub("probe", "Probe.", params, None)
+
+
+# ── issue #55: a tool whose stub fails, and refusals that name the real tool ──
+
+
+async def test_tool_search_lists_a_bad_ref_tool_as_unavailable_and_call_tool_refuses_it(
+    tmp_path,
+):
+    async def run(tool_call_id, params, signal, on_update, ctx):
+        return {"content": [{"type": "text", "text": "ran"}]}
+
+    def ext(api):
+        api.register_tool(tool_search_definition())
+        api.register_tool(call_tool_definition())
+        api.register_tool(_tool("vault_good", run, exposure="deferred"))
+        api.register_tool(
+            {
+                **_tool("vault_bad", run, exposure="deferred"),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"k": {"$ref": "#/$defs/Missing"}},
+                },
+            }
+        )
+
+    session = _session(tmp_path, ext)
+    model = ScriptedModel(
+        [("s", "tool_search", {"query": "vault"})],
+        [("g", "call_tool", {"name": "vault_good", "arguments": {}})],
+        [("b", "call_tool", {"name": "vault_bad", "arguments": {}})],
+    )
+    results = _results(await _prompt(session, model))
+    found = _text(results["s"])
+    assert not results["s"].get("is_error")
+    assert "async def vault_good() -> str:" in found
+    reason = "$ref '#/$defs/Missing' does not resolve (no '$defs' in the schema)"
+    assert f"# tool 'vault_bad' is unavailable: {reason}" in found
+    assert results["s"]["details"]["unavailable"] == {"vault_bad": reason}
+    assert _text(results["g"]) == "ran"
+    assert results["b"]["is_error"]
+    assert f"call_tool: tool 'vault_bad' is unavailable: {reason}" in _text(results["b"])
+
+
+async def test_an_exposure_refusal_by_stub_name_names_the_real_tool(tmp_path):
+    async def inner(tool_call_id, params, signal, on_update, ctx):
+        return {"content": [{"type": "text", "text": "ran"}]}
+
+    def ext(api):
+        api.register_tool(call_tool_definition())
+        api.register_tool(_tool("my-inner", inner, exposure="callable"))
+
+    session = _session(tmp_path, ext)
+    model = ScriptedModel(
+        [("s", "call_tool", {"name": "my_inner", "arguments": {}})],
+        [("r", "call_tool", {"name": "my-inner", "arguments": {}})],
+    )
+    results = _results(await _prompt(session, model))
+    assert "call_tool: 'my_inner' (tool 'my-inner') is not available to you" in _text(results["s"])
+    assert "call_tool: 'my-inner' is not available to you" in _text(results["r"])
+
+
+# ── issue #55 review: ctx.ui writes for the head escape the tool's capture ───
+
+
+async def _notifying_session(tmp_path):
+    async def noisy(tool_call_id, params, signal, on_update, ctx):
+        print("debug from tool")
+        ctx.ui.notify("heads up", "warning")
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    def ext(api):
+        api.register_tool(_tool("noisy", noisy))
+
+    return _session(tmp_path, ext)
+
+
+async def test_a_tool_notify_reaches_real_stderr_not_its_captured_output(tmp_path, capfd):
+    session = await _notifying_session(tmp_path)
+    messages = await _prompt(session, ScriptedModel([("n", "noisy", {})]))
+    captured = _results(messages)["n"]["details"]["captured_output"]
+    assert captured == {"stdout": "debug from tool\n"}
+    out = capfd.readouterr()
+    assert "[τ] warning: heads up" in out.err
+    assert "debug from tool" not in out.out
+
+
+async def test_a_tool_notify_record_reaches_real_stdout_under_a_record_sink(tmp_path, capfd):
+    session = await _notifying_session(tmp_path)
+    session.set_extension_record_sink(lambda record: print(json.dumps(record), flush=True))
+    messages = await _prompt(session, ScriptedModel([("n", "noisy", {})]))
+    captured = _results(messages)["n"]["details"]["captured_output"]
+    assert captured == {"stdout": "debug from tool\n"}
+    records = [json.loads(line) for line in capfd.readouterr().out.splitlines() if line]
+    assert {"kind": "notify", "level": "warning", "message": "heads up"}.items() <= next(
+        r for r in records if r.get("kind") == "notify"
+    ).items()

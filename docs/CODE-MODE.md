@@ -216,7 +216,11 @@ script that stops at a permission request and resumes from the tree.
   text; raises with the tool's error text on failure. Built 2026-10-18: a tool
   whose name is not an identifier is reached by its stub name (`my-tool` as
   `tools.my_tool`, `from` as `tools.from_`), and its stub keeps every
-  parameter name; `experiments/tool-exposure/RESULTS.md` §9.
+  parameter name; `experiments/tool-exposure/RESULTS.md` §9. Built
+  2026-10-19 (#55): a tool whose schema cannot be stubbed (a `$ref` that does
+  not resolve, or is not local) is left out of `tools`, and every head shows
+  "tool X is unavailable in code mode: <reason>"; the other tools are
+  unaffected.
 - `search_tools(query, limit=8, namespace=None)`, `describe_tool(name)`,
   `describe_namespace(name)` — discovery inside the runtime (level 4).
 - `print` and `return` — the only output that reaches the model, with a cap and

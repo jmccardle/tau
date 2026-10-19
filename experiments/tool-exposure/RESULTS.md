@@ -601,6 +601,46 @@ failed against the code before the fix (ran).
   naming the tool and the `$ref`. Code mode raises the same error, because it
   renders through the same writer.
 
+**One bad schema no longer turns code mode off (#55, 2026-10-19).** The
+renderer still raises, now as `tool_schema.StubError` (a `ValueError` carrying
+`tool` and `reason`), and the `render_stub` tests above still test that. One
+level up, `CodeMode` renders each candidate tool's stub on its own
+(`codemode.prompt.stub_failures`) and leaves out each one that fails. The
+section, the script namespace and `describe_tool` never see it, and every
+other tool works. The derivation is in `tau_agent_core`. `CodeMode.section`
+queues one notice per left-out tool, "tool 'X' is unavailable in code mode:
+$ref '…' is not a local '#/...' pointer" (or "does not resolve (no 'Y' in the
+schema)"). The `before_agent_start` handler sends each through
+`ctx.ui.notify(..., "warning")`, the extension notice path every head already
+renders: a toast in the TUI, an `extension`/`notify` record under
+`tau -p --mode json`, a stderr line under `tau -p` text and under
+`tau --mode rpc` (its stderr contract, item 3), and a `ui` event from the serve
+daemon. The exclusion is a pure function of the tool set, so the section stays
+byte-stable. Revised in review the same day: the first build queued notices
+only when the section was built, so a failing tool declared later
+(`redeclare_tools`) was refused silently. Now `CodeMode.excluded` queues a
+notice the first time it meets each failure, from the section or from a run,
+and the run's tool handler delivers it at once. A script that names an excluded
+tool gets the notice text, not `Unknown tool`, which is kept for names that do
+not exist. Only the active language's renderer decides an exclusion:
+TypeScript renders a `$ref` as `unknown` and never fails, so nothing is left out
+under `provider: typescript`. A second review found the late notice still
+lost in every headless head: the tool's own output capture took the stderr
+line and the `--mode json` record into `details.captured_output`. The fix is
+general, because any extension tool calling `ctx.ui` had the same fault:
+`ExtensionUI` writes every record-sink record and stderr line for a head
+inside `tool_output.suspend_capture()`, as `tool_pipeline` already does for
+head events. The TUI delegate and the serve daemon's `ui` events never write
+to a stream, so they were not affected. The code-mode handler delivers
+notices after the run, and a delivery failure during a failed run becomes a
+note on the run's exception instead of replacing it.
+`tool_search` lists a match whose stub fails as
+`# tool 'X' is unavailable: <reason>` and reports it in
+`details["unavailable"]`. `call_tool` refuses such a tool by any name, with
+the same reason, because the model can only have learned of it from that
+listing. A refusal for exposure now names the real tool when the call used a
+stub name: `'my_inner' (tool 'my-inner') is not available to you`.
+
 **Left open (read).** In Monty's `type_check` mode, `ty` cannot check
 `tools.my_tool(**{"from": 2})`, because it types the dict literal as
 `dict[str, int]`, not as the `TypedDict`. Annotating the dict works:
