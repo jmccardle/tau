@@ -336,7 +336,7 @@ def _finder_mapping(tree: ast.Module) -> dict[str, Path] | None:
             continue
         try:
             value = ast.literal_eval(node.value)
-        except ValueError:
+        except (ValueError, TypeError, SyntaxError, RecursionError):
             return None
         if not isinstance(value, dict):
             return None
@@ -381,7 +381,7 @@ def _editable_layout(dist: metadata.Distribution) -> tuple[dict[str, Path], list
             seen.append(name)
             try:
                 lines = located.read_text().splitlines()
-            except OSError as exc:
+            except (OSError, UnicodeDecodeError) as exc:
                 raise _UnreadableLayout(f"its {located} cannot be read ({exc})") from exc
             for line in (raw.strip() for raw in lines):
                 if line and not line.startswith(("#", "import ", "import\t")):
@@ -389,8 +389,10 @@ def _editable_layout(dist: metadata.Distribution) -> tuple[dict[str, Path], list
     if not seen:
         return None
     if not mapping and not entries:
+        names = ", ".join(seen)
+        verb = "names" if len(seen) == 1 else "name"
         raise _UnreadableLayout(
-            f"its {', '.join(seen)} name no source directory τ can read (an import hook)"
+            f"its {names} {verb} no source directory τ can read (an import hook)"
         )
     return mapping, entries
 
@@ -446,14 +448,27 @@ def _module_files(source: ExtensionSource) -> set[Path]:
     return found
 
 
+def _could_be_module(target: Path, module: str) -> bool:
+    """Whether file ``target`` could be ``module`` by its name alone, with no layout.
+
+    ``a.b.c`` can only be a ``c.py`` or a ``c/__init__.py``: submodules import by
+    name, and editable finders remap only top-level names.
+    """
+    last = module.rsplit(".", 1)[-1]
+    if target.name == "__init__.py":
+        return target.parent.name == last
+    return target.name == f"{last}.py"
+
+
 def _package_owning(path: Path, packages: list[ExtensionSource]) -> ExtensionSource | None:
     """The discovered package whose module file ``path`` is, else ``None``.
 
     Raises:
         ExplicitExtensionError: ``path`` is under an editable package's source
-            directory and that package's layout cannot be read, so whether the
-            path is its module cannot be told. An unreadable package elsewhere
-            is skipped: it cannot own this path.
+            directory, is named so it could be that package's module
+            (:func:`_could_be_module`), and the package's layout cannot be read,
+            so whether it is cannot be told. Any other path, and any unreadable
+            package elsewhere, is not refused on that account.
     """
     target = path.resolve()
     if target.is_dir():
@@ -465,11 +480,15 @@ def _package_owning(path: Path, packages: list[ExtensionSource]) -> ExtensionSou
             files = _module_files(source)
         except _UnreadableLayout as exc:
             root = Path(source.editable_path or "/").resolve()
-            if source.editable_path and target.is_relative_to(root):
+            if (
+                source.editable_path
+                and target.is_relative_to(root)
+                and _could_be_module(target, source.target)
+            ):
                 raise ExplicitExtensionError(
-                    f"-e {path}: can't tell whether this path belongs to the editable package "
-                    f"{source.distribution} {source.version}, because {exc}. Name the module "
-                    f"instead (-e {source.identifier})."
+                    f"-e {path}: can't tell whether this is the module {source.target} of the "
+                    f"editable package {source.distribution} {source.version}, because {exc}. "
+                    f"Name the module instead (-e {source.target})."
                 ) from exc
             continue
         if target in files:

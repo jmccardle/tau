@@ -399,8 +399,9 @@ class TestExplicitModuleNames:
             "MAPPING: dict[str, str] = dict(x='/nowhere')\n",
             "import sys\n",
             "def broken(:\n",
+            "MAPPING = {['a']: 'b'}\n",
         ],
-        ids=["not-a-literal", "no-mapping", "unparseable"],
+        ids=["not-a-literal", "no-mapping", "unparseable", "unhashable-key"],
     )
     def test_an_unreadable_finder_refuses_a_path_under_its_checkout(self, site, tmp_path, finder):
         root, top = site
@@ -432,7 +433,47 @@ class TestExplicitModuleNames:
         package_dir = checkout / "src" / top
         _install_editable(root, top=top, checkout=checkout, package_dir=package_dir, shape="pth")
         (root / "__editable__.tau_fake_ed-1.0.pth").write_text("import some_redirector\n")
-        with pytest.raises(ValueError, match="can't tell whether.*import hook"):
+        with pytest.raises(
+            ValueError, match=f"can't tell whether this is the module {top}.ext .*names no source"
+        ):
+            resolve_explicit(str(package_dir / "ext.py"), discover_packages())
+
+    @pytest.mark.parametrize(
+        "rel", ["other.py", "examples/scratch_ext.py", "ext/helper.py", "notext/__init__.py"]
+    )
+    def test_a_file_that_cannot_be_the_module_is_a_path_even_unreadable(self, site, tmp_path, rel):
+        """Only a ``<last segment>.py`` or ``<last segment>/__init__.py`` can be ``top.ext``."""
+        root, top = site
+        checkout = tmp_path / "checkout"
+        _install_editable(
+            root, top=top, checkout=checkout, package_dir=checkout / "src" / top, shape="pth"
+        )
+        (root / "__editable__.tau_fake_ed-1.0.pth").write_text("import some_redirector\n")
+        other = checkout / rel
+        other.parent.mkdir(parents=True, exist_ok=True)
+        other.write_text(_DROPIN)
+        assert resolve_explicit(str(other), discover_packages()).kind == "path"
+
+    def test_a_package_dir_named_like_the_module_is_refused_when_unreadable(self, site, tmp_path):
+        root, top = site
+        checkout = tmp_path / "checkout"
+        _install_editable(
+            root, top=top, checkout=checkout, package_dir=checkout / "src" / top, shape="pth"
+        )
+        (root / "__editable__.tau_fake_ed-1.0.pth").write_text("import some_redirector\n")
+        pkg = checkout / "elsewhere" / "ext"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text(_DROPIN)
+        with pytest.raises(ValueError, match=f"module {top}.ext .*-e {top}.ext"):
+            resolve_explicit(str(pkg), discover_packages())
+
+    def test_a_pth_that_is_not_text_is_unreadable(self, site, tmp_path):
+        root, top = site
+        checkout = tmp_path / "checkout"
+        package_dir = checkout / "src" / top
+        _install_editable(root, top=top, checkout=checkout, package_dir=package_dir, shape="pth")
+        (root / "__editable__.tau_fake_ed-1.0.pth").write_bytes(b"\xff\xfe\x00bad")
+        with pytest.raises(ValueError, match="cannot be read"):
             resolve_explicit(str(package_dir / "ext.py"), discover_packages())
 
     @pytest.mark.parametrize("mode", ["lenient", "strict"])
