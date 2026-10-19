@@ -7,6 +7,7 @@ module name for an installed package and the file stem, verbatim, for a file;
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
@@ -318,25 +319,91 @@ def discover_packages() -> list[ExtensionSource]:
     return sorted(found, key=lambda source: source.identifier)
 
 
+def _editable_layout(dist: metadata.Distribution) -> tuple[dict[str, Path], list[Path]]:
+    """Where an editable install puts its modules, read from its RECORD without importing it.
+
+    Two shapes, both listed in RECORD: a setuptools ``__editable___*_finder.py``
+    whose literal ``MAPPING`` maps a top-level name to its directory, and a
+    ``.pth`` whose non-``import`` lines are ``sys.path`` entries (a source root, or
+    the link tree of ``editable_mode=strict``).
+
+    Returns:
+        ``(mapping, path_entries)``; both empty when the install has neither.
+    """
+    mapping: dict[str, Path] = {}
+    entries: list[Path] = []
+    for f in dist.files or []:
+        name = f.name
+        if name.startswith("__editable__") and name.endswith("_finder.py"):
+            try:
+                tree = ast.parse(Path(str(dist.locate_file(f))).read_text())
+            except (OSError, SyntaxError, ValueError):
+                continue
+            for node in tree.body:
+                if (
+                    isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == "MAPPING" for t in node.targets)
+                    and isinstance(node.value, ast.Dict)
+                ):
+                    try:
+                        value = ast.literal_eval(node.value)
+                    except ValueError:
+                        continue
+                    mapping.update({str(k): Path(str(v)) for k, v in value.items()})
+        elif name.endswith(".pth"):
+            located = Path(str(dist.locate_file(f)))
+            try:
+                lines = located.read_text().splitlines()
+            except OSError:
+                continue
+            for line in (raw.strip() for raw in lines):
+                if line and not line.startswith(("#", "import ", "import\t")):
+                    entries.append(located.parent / line)
+    return mapping, entries
+
+
+def _editable_candidates(module: str, mapping: dict[str, Path], entries: list[Path]) -> list[Path]:
+    """The files ``module`` would load from under an editable layout (:func:`_editable_layout`)."""
+    found: list[Path] = []
+    for key in sorted(mapping, key=len, reverse=True):
+        if module == key or module.startswith(key + "."):
+            rest = [part for part in module[len(key) :].split(".") if part]
+            base = mapping[key].joinpath(*rest)
+            found += [base / "__init__.py", base.with_name(base.name + ".py")]
+            break
+    stem = module.replace(".", "/")
+    for entry in entries:
+        found += [entry / f"{stem}.py", entry / stem / "__init__.py"]
+    return found
+
+
 def _module_files(source: ExtensionSource) -> set[Path]:
     """The installed files that are ``source``'s module, read from metadata only.
 
     ``a.b.c`` is ``a/b/c.py`` or ``a/b/c/__init__.py``: located through RECORD for
-    an ordinary install, and under the ``direct_url.json`` source directory for an
-    editable one, whose RECORD lists only the finder.
+    an ordinary install. An editable install's RECORD lists only its finder or
+    ``.pth``, so its real layout is read from those (:func:`_editable_layout`);
+    only an editable install with neither is probed at ``<root>`` and
+    ``<root>/src`` of its ``direct_url.json`` directory.
     """
     stem = source.target.replace(".", "/")
     rels = {f"{stem}.py", f"{stem}/__init__.py"}
     found: set[Path] = set()
-    if source.editable_path:
-        root = Path(source.editable_path)
-        for base in (root, root / "src"):
-            found.update((base / rel).resolve() for rel in rels if (base / rel).is_file())
+    dist: metadata.Distribution | None = None
     if source.distribution:
         try:
             dist = metadata.distribution(source.distribution)
         except metadata.PackageNotFoundError:
-            return found
+            dist = None
+    if source.editable_path:
+        mapping, entries = _editable_layout(dist) if dist is not None else ({}, [])
+        if mapping or entries:
+            candidates = _editable_candidates(source.target, mapping, entries)
+        else:
+            root = Path(source.editable_path)
+            candidates = [base / rel for base in (root, root / "src") for rel in rels]
+        found.update(c.resolve() for c in candidates if c.is_file())
+    if dist is not None:
         for f in dist.files or []:
             if f.as_posix() in rels:
                 found.add(Path(str(dist.locate_file(f))).resolve())
@@ -352,6 +419,10 @@ def _package_owning(path: Path, packages: list[ExtensionSource]) -> ExtensionSou
         if source.kind == "package" and target in _module_files(source):
             return source
     return None
+
+
+BYTECODE_SUFFIXES = (".pyc", ".pyo")
+"""``-e`` values refused outright: a bytecode file hides its source from the two-identities check."""
 
 
 @agent_facing(topic="extensions")
@@ -376,10 +447,16 @@ def resolve_explicit(raw: str, packages: list[ExtensionSource]) -> ExtensionSour
         The source.
 
     Raises:
-        ExplicitExtensionError: The path is an installed package's module file (it
-            would load twice under two identities), its stem is unusable, the
-            shorthand is ambiguous, or nothing by that name is installed.
+        ExplicitExtensionError: The value names compiled bytecode (``.pyc``), the
+            path is an installed package's module file (it would load twice under
+            two identities), its stem is unusable, the shorthand is ambiguous, or
+            nothing by that name is installed.
     """
+    if raw.endswith(BYTECODE_SUFFIXES):
+        raise ExplicitExtensionError(
+            f"-e {raw}: that is compiled bytecode, which τ does not load; "
+            "load the .py source or name the module"
+        )
     if is_path_spec(raw):
         expanded = os.path.expanduser(raw)
         if not is_path_spec(expanded.rstrip("/")):

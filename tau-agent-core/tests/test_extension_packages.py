@@ -101,6 +101,35 @@ def _install(
     return module
 
 
+def _install_editable(
+    site: Path, *, top: str, checkout: Path, package_dir: Path, shape: str
+) -> str:
+    """An editable install as setuptools writes one: RECORD lists only a finder or a ``.pth``.
+
+    ``shape`` is ``"finder"`` (``__editable___*_finder.py`` with ``MAPPING``) or
+    ``"pth"`` (a ``.pth`` naming the directory that holds ``top``).
+    """
+    module = f"{top}.ext"
+    package_dir.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text("")
+    (package_dir / "ext.py").write_text(_DROPIN)
+    info = site / "tau_fake_ed-1.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: tau-fake-ed\nVersion: 1.0\n")
+    (info / "entry_points.txt").write_text(f"[{ENTRY_POINT_GROUP}]\next = {module}\n")
+    (info / "direct_url.json").write_text(
+        json.dumps({"url": f"file://{checkout}", "dir_info": {"editable": True}})
+    )
+    if shape == "finder":
+        rel = "__editable___tau_fake_ed_1_0_finder.py"
+        (site / rel).write_text(f"import sys\nMAPPING = {{{top!r}: {str(package_dir)!r}}}\n")
+    else:
+        rel = "__editable__.tau_fake_ed-1.0.pth"
+        (site / rel).write_text(f"{package_dir.parent}\n")
+    (info / "RECORD").write_text(f"{_record_line(site, rel)}\n{info.name}/RECORD,,\n")
+    return module
+
+
 @pytest.fixture
 def site(tmp_path, monkeypatch):
     """A fresh ``sys.path`` entry, and a unique top-level package name for this test."""
@@ -319,6 +348,48 @@ class TestExplicitModuleNames:
         module = _install(root, top=top, editable=src)
         with pytest.raises(ValueError, match=f"-e {module}"):
             resolve_explicit(str(src / "src" / top / "ext.py"), discover_packages())
+
+    @pytest.mark.parametrize("shape", ["finder", "pth"])
+    def test_an_editable_install_with_a_custom_package_dir_is_refused(self, site, tmp_path, shape):
+        root, top = site
+        checkout = tmp_path / "checkout"
+        package_dir = checkout / "lib" / ("weird" if shape == "finder" else top)
+        module = _install_editable(
+            root, top=top, checkout=checkout, package_dir=package_dir, shape=shape
+        )
+        with pytest.raises(ValueError, match=f"-e {module}"):
+            resolve_explicit(str(package_dir / "ext.py"), discover_packages())
+        assert top not in sys.modules
+
+    def test_a_mapped_editable_install_is_not_probed_at_its_root(self, site, tmp_path):
+        """With a mapping, the root/src guess is not consulted: a stray copy there is a path."""
+        root, top = site
+        checkout = tmp_path / "checkout"
+        _install_editable(
+            root, top=top, checkout=checkout, package_dir=checkout / "lib" / "x", shape="finder"
+        )
+        stray = checkout / "src" / top
+        stray.mkdir(parents=True)
+        (stray / "ext.py").write_text(_DROPIN)
+        assert resolve_explicit(str(stray / "ext.py"), discover_packages()).kind == "path"
+
+    @pytest.mark.parametrize(
+        "spec",
+        [
+            "{dir}/ext.pyc",
+            "{dir}/__pycache__/ext.cpython-311.pyc",
+            "{dir}/ext.pyo",
+            "{top}.ext.pyc",
+        ],
+    )
+    def test_a_bytecode_file_is_refused_before_anything_resolves(self, site, spec):
+        """A bare ``pkg.ext.pyc`` would otherwise reach find_spec, which imports ``pkg.ext``."""
+        root, top = site
+        _install(root, top=top)
+        raw = spec.format(dir=root / top, top=top)
+        with pytest.raises(ValueError, match="compiled bytecode.*load the .py source or name"):
+            resolve_explicit(raw, discover_packages())
+        assert top not in sys.modules
 
     def test_a_path_beside_a_package_is_not_mistaken_for_it(self, site, tmp_path):
         root, top = site

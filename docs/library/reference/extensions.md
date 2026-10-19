@@ -2505,7 +2505,7 @@ The source.
 
 **Raises**
 
-- `ExplicitExtensionError` — The path is an installed package's module file (it would load twice under two identities), its stem is unusable, the shorthand is ambiguous, or nothing by that name is installed.
+- `ExplicitExtensionError` — The value names compiled bytecode (``.pyc``), the path is an installed package's module file (it would load twice under two identities), its stem is unusable, the shorthand is ambiguous, or nothing by that name is installed.
 
 ## resolve_shorthand
 <!-- agent: yes -->
