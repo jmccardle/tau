@@ -10,7 +10,6 @@ OpenAI-compatible server (docs/REPL-HEAD.md §3, "bind, do not append").
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import threading
@@ -19,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from tau_agent_core.testing import child_env
 from tau_coding_agent.session_store import Session
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -80,7 +80,7 @@ def tau_p(tmp_path):
     (home / ".tau" / "config.json").write_text(json.dumps(config))
     ext = tmp_path / "probe_ext.py"
     ext.write_text(_EXTENSION)
-    env = {**os.environ, "HOME": str(home)}
+    env = child_env(home)
 
     def run(*args: str) -> list[dict]:
         proc = subprocess.run(

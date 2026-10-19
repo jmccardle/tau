@@ -35,7 +35,6 @@ invariant); D-E5-2, D-E5-4.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import threading
@@ -46,6 +45,7 @@ import pytest
 
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.messages import convert_to_llm
+from tau_agent_core.testing import child_env
 from tau_coding_agent.backends import create_backend
 from tau_coding_agent.session_store import Session
 from tau_coding_agent import chat_widgets, transcript
@@ -135,8 +135,7 @@ def demo_run(tmp_path, fake_provider):
     demo = tmp_path / "inject_demo.py"
     demo.write_text(_INJECT_DEMO)
 
-    env = dict(os.environ)
-    env["HOME"] = str(home)
+    env = child_env(home)
     proc = subprocess.run(
         [sys.executable, "-m", "tau_coding_agent.cli", "-p", "-e", str(demo), "hello there"],
         env=env,

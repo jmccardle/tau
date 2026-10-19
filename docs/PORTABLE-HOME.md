@@ -80,6 +80,69 @@ the user to create a config there, on the host.
 - **Child processes inherit `$TAU_PORTABLE_BASE`.** A `tau` the agent starts
   through its own bash tool shares the portable home. That is consistent, but
   worth knowing.
-- **There's no `tau --home` flag**, and no `TAU_HOME` that names the home
-  directly. The env var names a *base* to check, which is a deliberately
-  smaller promise.
+- **There's no `tau --home` flag.** `TAU_PORTABLE_BASE` names a *base* to
+  check, which is a deliberately smaller promise. §6 adds `TAU_HOME`, which
+  names the home itself.
+
+## 6. `TAU_HOME`: naming the home outright (2026-10-19, #48)
+
+**What was wrong.** People and parent processes that wanted a throwaway home
+set `TAU_PORTABLE_BASE`, because it was the only variable there was. A typo
+or a missing `mkdir` then meant the real `~/.tau`, with no message, as §2
+says it should. Config, sessions and `extension-authorizations.json` landed
+in the real home. Making `TAU_PORTABLE_BASE` strict is not an option: the
+launcher sets it on every run, with or without a `.tau` beside it.
+
+**The rule.** `resolve_tau_home` now checks `$TAU_HOME` first:
+- Set and non-empty: the home is that directory (`~` expanded, resolved). It
+  wins over `TAU_PORTABLE_BASE` and `~/.tau`.
+- Set to something that is not an existing directory: `TauHomeError`,
+  `TAU_HOME=<x> is not a directory; create it or unset the variable`. Setting
+  the variable is an unambiguous request, so a missing directory is refused,
+  not replaced. τ never creates it.
+- `TAU_PORTABLE_BASE` keeps exactly the meaning §2 gives it.
+
+**Every head says it in one line.** `tau_coding_agent.config.TAU_DIR`
+resolves at import, so `tau_coding_agent.cli` catches `TauHomeError` around
+that import, prints `tau: error: <message>` and exits 2. That covers the TUI,
+`-p`, rpc, repl, `serve` and `ext`, for both `tau` and
+`python -m tau_coding_agent.cli`. A bad `TAU_PORTABLE_BASE` takes the same
+path; it used to print a traceback and exit 1.
+
+**What it does not replace.** τ reads two layers, and `TAU_HOME` moves only
+the first:
+- *The τ home, the user layer:* `config.json`, `settings.json`, sessions,
+  `extensions/`, `skills/`, `prompts/`, themes, logs, the global context
+  file, `extension-authorizations.json`.
+- *The project layer, `<cwd>/.tau/`:* `.tau/SYSTEM.md`, project `prompts/`
+  and `skills/`. It still layers on top of whichever home is in force.
+
+`--mode rpc`'s `<tmp>/.tau-<uid>/sessions` default (§5) is not the home and
+does not move either.
+
+**For testers and embedders.** `mkdir` a directory, write its `config.json`,
+and set `TAU_HOME` to it. Don't use `TAU_PORTABLE_BASE` for this. The test
+suite never sees either variable (§7).
+
+## 7. The test suite can't see a tester's home (2026-10-19, #54)
+
+**What was wrong.** Subprocess tests wrote a config under a fake `$HOME` and
+passed the rest of the parent's environment through. When the tester's shell
+had `TAU_PORTABLE_BASE` set, which the 0.14.0 test recipe asked for, the child
+resolved the portable home over the fake one and 37 tests failed. `TAU_HOME`
+would have done the same. In-process tests were exposed too: `config.TAU_DIR`
+resolves when the module is first imported.
+
+**Two guards.**
+- The repo-root `conftest.py` removes every name in
+  `tau_home.HOME_ENV_VARS` from `os.environ` when pytest imports it. That is
+  before any package's `tests/conftest.py` or test module, so before
+  `TAU_DIR` resolves. A session-scoped fixture would run after collection,
+  which is too late. Child processes inherit the cleaned environment.
+- `tau_agent_core.testing.child_env(home, **overrides)` builds a subprocess
+  environment: the parent's, minus `HOME_ENV_VARS`, with `HOME` set. Every
+  test that starts a τ child uses it, so a child is isolated even when the
+  helper's caller runs outside this suite (a fork's own tests, Tectum's).
+
+`HOME_ENV_VARS` lives beside `resolve_tau_home`. A third home variable is
+added there, in one place, and both guards pick it up.

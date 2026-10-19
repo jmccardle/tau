@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from tau_agent_core.testing import child_env
+
 _REPO = Path(__file__).resolve().parents[2]
 _TREES = ["tau-llm", "tau-agent-core", "tau-coding-agent", "tau-jmfts", "tau-meta"]
 
@@ -53,10 +55,8 @@ def installed(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     (home / ".tau" / "config.json").write_text(
         json.dumps({"default_model": "m", "models": {"m": model}})
     )
-    env = {k: v for k, v in os.environ.items() if k not in ("TAU_PORTABLE_BASE", "TAU_HOME")}
-    env["HOME"] = str(home)
-    env["TMPDIR"] = str(tmp_path)
-    env["PYTHONPATH"] = os.pathsep.join([str(site), *(str(_REPO / t / "src") for t in _TREES)])
+    pythonpath = os.pathsep.join([str(site), *(str(_REPO / t / "src") for t in _TREES)])
+    env = child_env(home, TMPDIR=str(tmp_path), PYTHONPATH=pythonpath)
     return site, tmp_path, env
 
 

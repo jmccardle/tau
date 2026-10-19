@@ -18,6 +18,9 @@ reasons:
 - A downstream fork writing its own database-backed store gets the conformance suite
   by importing it. The contract is the code, not a document.
 
+Beside them, ``child_env`` builds a subprocess environment that cannot inherit
+the caller's τ home (docs/PORTABLE-HOME.md §7).
+
 Usage::
 
     from tau_agent_core.testing import SessionCatalogContractTests, SessionLogContractTests
@@ -31,8 +34,14 @@ Usage::
             return MyCatalog(...)
 """
 
+from tau_agent_core.testing.home import child_env
 from tau_agent_core.testing.sizing import text_costing_at_least
 from tau_agent_core.testing.session_catalog_contract import SessionCatalogContractTests
 from tau_agent_core.testing.session_log_contract import SessionLogContractTests
 
-__all__ = ["text_costing_at_least", "SessionCatalogContractTests", "SessionLogContractTests"]
+__all__ = [
+    "child_env",
+    "text_costing_at_least",
+    "SessionCatalogContractTests",
+    "SessionLogContractTests",
+]
