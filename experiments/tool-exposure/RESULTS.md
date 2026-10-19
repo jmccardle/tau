@@ -520,7 +520,8 @@ current behaviour. Each fixed one has a test under "issue #20" in
   CODE-MODE §7's `ToolRanker` and route both callers through it. (b) reverses
   §3's decision, which is why it is not built here.
 
-**Found while fixing, not fixed (read).**
+**Found while fixing, not fixed (read).** All three were fixed on 2026-10-18 as
+issues #32, #33 and #34; §9 records how.
 
 - `codemode/prompt.py`'s `python_signature` builds the stubs that code mode puts
   in the model's prompt. It is not `render_stub`, and it **silently drops** a
@@ -540,3 +541,72 @@ third-party module, because it reads the 3.11 `sys.stdlib_module_names`; it now
 carries a `LATER_STDLIB` table. The annotation path was checked by hand on
 3.14.8. Full suite on Python 3.11.2: 6978 passed, 159 skipped, 6 deselected,
 3 xfailed. The four static gates pass on all five `src` trees.
+
+## 9. Stub names and references, issues #32–#34 (2026-10-18)
+
+Each fix has a test, under "issues #32/#33" in `test_codemode_providers.py` or
+"issues #33, #34" in `test_tool_exposure_experiment.py`. The first nine
+failed against the code before the fix (ran).
+
+- **One renderer (#32).** Code mode's prompt, its `ty` stub file and its
+  `describe_tool` all render through `tool_schema.StubNamespace`, which
+  `render_stub` and `render_stubs` also use. The old `python_signature`,
+  which dropped a parameter such as `from`, is gone. Code mode passes
+  `keyword_only=True` and renders `-> str`, because a script receives a tool's
+  text. For the seven core tools the prompt's stub block is byte-identical to
+  before (ran, diffed). Two things change on purpose. A tool whose parameters
+  include an object with properties now gets a `TypedDict` class above
+  `class tools:` where it used to read `dict[str, Any]`. An `enum` renders as
+  `Literal['a']`, where `json.dumps` used to give `Literal["a"]`, and
+  `Literal[true]`, which is not valid Python. The block stays a pure function of
+  the tool set, so the cache holds for an unchanged set.
+- **Stub names (#33).** `stub_name` makes a tool name an identifier
+  (`my-tool` → `my_tool`, `from` → `from_`), and `stub_names` maps a set of
+  them back, raising `ValueError` when two tools share one. The dispatchers
+  accept the stub name through that mapping, rather than the stub carrying the
+  real name. A code-mode script has no syntax for `tools.my-tool`, so code mode
+  needed the mapping whichever option was chosen; using it for `call_tool` too
+  keeps one rule. A tool whose stub name another tool shares, hidden ones
+  included, is a configuration fault: `tool_search` refuses to list it and
+  `call_tool` refuses it by real name or stub name, each naming every tool in
+  the clash. A clash among tools a call does not touch does not block it.
+  The check runs per call, not at registration, because two such names are
+  legal in the declared tools block and only the stub surfaces confuse them
+  (revised in review, 2026-10-18; it first refused every search while any
+  clash existed, and `call_tool` skipped the check for a real name). The
+  code-mode invoker raises at construction on a collision, and it no longer
+  leaves out a tool whose name is not an identifier. Monty refuses an
+  attribute that starts with `_` (ran), so a stub name never gains one: a
+  keyword gains a trailing `_`, and a result that cannot start an identifier
+  (`1tool`) or starts with `_` when the real name did not (`-x`) gains `t_`.
+  A real `t_1tool` beside `1tool` is a collision and raises.
+  Only a tool whose real name starts with `_` still stubs that way. The Monty
+  provider raises `ValueError` naming such a tool when it builds the prompt or
+  runs a script, in either stub mode, rather than listing a tool it cannot call.
+  `check_stubs` is an optional provider hook (a no-op on `ScopedProvider`, absent
+  from the `SandboxProvider` protocol), so an out-of-tree provider need not
+  define it. The CPython child
+  now refuses only dunders, so it calls such a tool.
+- **Unresolved `$ref` (#34).** A `$ref` is an RFC 6901 pointer into the
+  schema that holds it (the parameters, or the output schema), with `~0` and
+  `~1` decoded, so `#/$defs/X`, draft-07 `#/definitions/X`,
+  zod-to-json-schema's `#/properties/src` and `#` all resolve. The first build
+  resolved only the last token against `$defs` and raised on the other three,
+  which would have stopped code mode's prompt for one such MCP tool (found in
+  review). A target object with properties is a class, so a recursive
+  reference names it; any other target renders inline, and a cycle through
+  one renders `Any` at the cycle. A `$defs` enum now renders as its `Literal`,
+  where it used to be an empty `TypedDict`. A pointer that does not resolve,
+  or one that is not local (`other.json#/x`, `#anchor`), raises `ValueError`
+  naming the tool and the `$ref`. Code mode raises the same error, because it
+  renders through the same writer.
+
+**Left open (read).** In Monty's `type_check` mode, `ty` cannot check
+`tools.my_tool(**{"from": 2})`, because it types the dict literal as
+`dict[str, int]`, not as the `TypedDict`. Annotating the dict works:
+`args: "my_tool_arguments" = {...}` type-checks and runs (ran). The prompt does
+not say so. TypeScript stubs now quote a key that is not an identifier, but
+the TypeScript provider has no runtime, so this is unrun. A recursive class
+stub (`class T(TypedDict): kids: list[T]`) reads correctly but raises
+`NameError` if executed, because the class body names itself; master did the
+same for a recursive `$defs` entry.

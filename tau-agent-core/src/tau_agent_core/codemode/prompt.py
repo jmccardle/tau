@@ -21,14 +21,10 @@ from tau_agent_core.codemode.protocol import (
     RunLimits,
     ToolStub,
 )
+from tau_agent_core.tool_schema import StubNamespace
 
 _FIELD = re.compile(r"\{\{(\w+)\}\}")
-_IDENT = re.compile(r"^[A-Za-z_]\w*$")
-_PY_KEYWORDS = frozenset(
-    "False None True and as assert async await break class continue def del elif else "
-    "except finally for from global if import in is lambda nonlocal not or pass raise "
-    "return try while with yield".split()
-)
+_TS_IDENT = re.compile(r"^[A-Za-z_$][\w$]*$")
 
 
 class PromptFieldError(ValueError):
@@ -64,26 +60,6 @@ def _first_sentence(text: str, cap: int = 160) -> str:
     return line if len(line) <= cap else line[: cap - 1] + "…"
 
 
-def _py_type(schema: Mapping[str, Any]) -> str:
-    """A Python annotation for a JSON-schema fragment."""
-    if "enum" in schema:
-        return "Literal[" + ", ".join(json.dumps(v) for v in schema["enum"]) + "]"
-    kind = schema.get("type")
-    if isinstance(kind, list):
-        return " | ".join(_py_type({**schema, "type": k}) for k in kind)
-    if kind == "array":
-        items = schema.get("items")
-        return f"list[{_py_type(items)}]" if isinstance(items, Mapping) else "list[Any]"
-    return {
-        "string": "str",
-        "integer": "int",
-        "number": "float",
-        "boolean": "bool",
-        "object": "dict[str, Any]",
-        "null": "None",
-    }.get(str(kind), "Any")
-
-
 def _ts_type(schema: Mapping[str, Any]) -> str:
     """A TypeScript type for a JSON-schema fragment."""
     if "enum" in schema:
@@ -112,41 +88,51 @@ def _params(stub: ToolStub) -> list[tuple[str, Mapping[str, Any], bool]]:
     return sorted(out, key=lambda p: not p[2])
 
 
-def python_signature(stub: ToolStub, *, self_arg: bool = False) -> str:
-    """``async def name(*, a: str, b: int | None = None) -> str`` for one tool."""
-    parts = ["self"] if self_arg else []
-    params = _params(stub)
-    if params:
-        parts.append("*")
-    for name, schema, required in params:
-        if not _IDENT.match(name) or name in _PY_KEYWORDS:
-            continue
-        annotation = _py_type(schema)
-        parts.append(f"{name}: {annotation}" if required else f"{name}: {annotation} | None = None")
-    return f"async def {stub.name}({', '.join(parts)}) -> str"
+def _python_signatures(stubs: Sequence[ToolStub], *, self_arg: bool) -> tuple[list[str], list[str]]:
+    """The ``TypedDict`` classes the stubs use, and one keyword-only signature per stub.
+
+    Rendered by :class:`~tau_agent_core.tool_schema.StubNamespace`, the renderer
+    ``tool_search`` uses, with ``-> str`` because a script receives a tool's text.
+
+    Raises:
+        ValueError: a ``$ref`` is not a local pointer or does not resolve.
+    """
+    namespace = StubNamespace()
+    classes: list[str] = []
+    signatures: list[str] = []
+    for stub in stubs:
+        new, signature = namespace.signature(
+            stub.name, stub.parameters, None, keyword_only=True, self_arg=self_arg
+        )
+        classes += new
+        signatures.append(signature)
+    return classes, signatures
 
 
 def render_python_stubs(stubs: Sequence[ToolStub]) -> str:
     """The callable tools as a Python class body the model can read.
 
-    Valid Python, so the same text type-checks; ``tools`` is an instance of it.
+    ``tools`` is an instance of the class; the ``TypedDict`` classes its
+    signatures use come first.
     """
     if not stubs:
         return "class tools:  # no tools are callable from scripts\n    pass\n"
+    classes, signatures = _python_signatures(stubs, self_arg=False)
     lines = ["class tools:"]
-    for stub in stubs:
-        lines.append(f"    {python_signature(stub)}:")
+    for stub, signature in zip(stubs, signatures):
+        lines.append(f"    {signature}:")
         lines.append(f'        """{_first_sentence(stub.description)}"""')
-    return "\n".join(lines) + "\n"
+    return "\n\n".join([*classes, "\n".join(lines)]) + "\n"
 
 
 def render_type_check_stubs(stubs: Sequence[ToolStub]) -> str:
     """A ``.pyi`` declaring ``tools`` and the discovery functions, for ``ty``."""
-    lines = ["from typing import Any, Literal", "", "class _Tools:"]
-    for stub in stubs:
-        lines.append(f"    {python_signature(stub, self_arg=True)}: ...")
-    if not stubs:
-        lines.append("    pass")
+    classes, signatures = _python_signatures(stubs, self_arg=True)
+    lines = ["from typing import Any, Literal, NotRequired, TypedDict, Unpack", ""]
+    for block in classes:
+        lines += [block, ""]
+    lines.append("class _Tools:")
+    lines += [f"    {signature}: ..." for signature in signatures] or ["    pass"]
     lines += [
         "",
         "tools: _Tools",
@@ -162,11 +148,12 @@ def render_typescript_stubs(stubs: Sequence[ToolStub]) -> str:
     lines = ["declare const tools: {"]
     for stub in stubs:
         fields = [
-            f"{name}{'' if required else '?'}: {_ts_type(schema)}"
+            f"{name if _TS_IDENT.match(name) else json.dumps(name)}"
+            f"{'' if required else '?'}: {_ts_type(schema)}"
             for name, schema, required in _params(stub)
         ]
         lines.append(f"  /** {_first_sentence(stub.description)} */")
-        lines.append(f"  {stub.name}(args: {{ {'; '.join(fields)} }}): Promise<string>;")
+        lines.append(f"  {stub.attribute}(args: {{ {'; '.join(fields)} }}): Promise<string>;")
     lines.append("};")
     return "\n".join(lines) + "\n"
 
@@ -176,11 +163,12 @@ STUB_RENDERERS = {"python": render_python_stubs, "typescript": render_typescript
 
 
 def describe_stub(stub: ToolStub, language: str) -> str:
-    """One tool's full signature and description, for ``describe_tool``."""
+    """One tool's full signature, with any classes it uses, and description, for ``describe_tool``."""
     if language == "typescript":
         head = render_typescript_stubs([stub]).splitlines()[2].strip()
     else:
-        head = python_signature(stub)
+        classes, signatures = _python_signatures([stub], self_arg=False)
+        head = "\n\n".join([*classes, signatures[0]])
     return (
         f"{head}\n\n{stub.description.strip()}\n\nparameters: {json.dumps(dict(stub.parameters))}"
     )
@@ -258,7 +246,7 @@ def prompt_fields(
         "lifetime": lifetime,
         "limits": _limits_text(limits),
         "stubs": stub_block,
-        "tool_names": ", ".join(s.name for s in stubs or []),
+        "tool_names": ", ".join(s.attribute for s in stubs or []),
     }
     fields["language_notes"] = render_template(templates.language_notes, fields).strip()
     fields["lifetime_text"] = render_template(lifetime_text, fields).strip()

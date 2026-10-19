@@ -213,7 +213,10 @@ script that stops at a permission request and resumes from the tree.
 ### 6.3 What the script sees
 
 - `tools.<name>(**args)` — async; resolves to the tool's structured value, or its
-  text; raises with the tool's error text on failure.
+  text; raises with the tool's error text on failure. Built 2026-10-18: a tool
+  whose name is not an identifier is reached by its stub name (`my-tool` as
+  `tools.my_tool`, `from` as `tools.from_`), and its stub keeps every
+  parameter name; `experiments/tool-exposure/RESULTS.md` §9.
 - `search_tools(query, limit=8, namespace=None)`, `describe_tool(name)`,
   `describe_namespace(name)` — discovery inside the runtime (level 4).
 - `print` and `return` — the only output that reaches the model, with a cap and

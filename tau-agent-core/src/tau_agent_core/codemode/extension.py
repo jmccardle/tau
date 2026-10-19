@@ -211,6 +211,7 @@ class CodeMode:
         self.config = config
         self.provider: SandboxProvider | None = None
         probe = make_provider(config)
+        self._probe = probe
         self.language = probe.language
         self.templates = merge_templates(probe.prompt(), config.prompt)
         self._section: str | None = None
@@ -229,12 +230,18 @@ class CodeMode:
         )
 
     def section(self, tools: list[Any]) -> str:
-        """The system section, rendered once and then frozen for the session."""
+        """The system section, rendered once and then frozen for the session.
+
+        Raises:
+            ValueError: a tool is one the provider cannot call, in either stub mode.
+        """
         if self._section is None:
-            stubs = None
-            if self.config.stubs == "snapshot":
-                stubs = DirectToolInvoker(tools, exclude=(TOOL_NAME, *self.config.exclude)).stubs()
-            self._section, _ = self.render(stubs)
+            stubs = DirectToolInvoker(tools, exclude=(TOOL_NAME, *self.config.exclude)).stubs()
+            check = getattr(self._probe, "check_stubs", None)
+            if check is not None:
+                check(stubs)
+            snapshot = stubs if self.config.stubs == "snapshot" else None
+            self._section, _ = self.render(snapshot)
         return self._section
 
     def scope(self, cursor_id: str) -> str:

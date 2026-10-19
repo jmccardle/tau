@@ -11,7 +11,7 @@ configured call budget.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -23,6 +23,7 @@ from tau_agent_core.codemode.protocol import (
     RunResult,
     SandboxUnavailable,
     ToolInvoker,
+    ToolStub,
 )
 from tau_agent_core.codemode.scoped import ScopedProvider
 
@@ -87,7 +88,7 @@ def _tools_namespace(monty: Any, tools: ToolInvoker) -> Any:
                 return call
 
         _NAMESPACE_CLASS = ToolNamespace
-    names = frozenset(s.name for s in tools.stubs())
+    names = frozenset(s.attribute for s in tools.stubs())
     return _NAMESPACE_CLASS(_Tools(tools), allowed_methods=names)
 
 
@@ -124,6 +125,40 @@ class MontyProvider(ScopedProvider[_Checkout]):
     def prompt(self) -> PromptTemplates:
         """Monty's default templates."""
         return MONTY_TEMPLATES
+
+    def check_stubs(self, stubs: Sequence[ToolStub]) -> None:
+        """Refuse a tool whose ``tools`` attribute starts with ``_``, which Monty will not look up.
+
+        Raises:
+            ValueError: naming each such tool.
+        """
+        bad = [s for s in stubs if s.attribute.startswith("_")]
+        if bad:
+            listed = ", ".join(f"{s.name!r} (as tools.{s.attribute})" for s in bad)
+            raise ValueError(
+                f"the monty provider cannot call {listed}: Monty refuses an attribute "
+                "starting with '_'; rename the tool or exclude it from code mode"
+            )
+
+    async def run(
+        self,
+        code: str,
+        *,
+        tools: ToolInvoker,
+        inputs: Mapping[str, Any] | None = None,
+        limits: RunLimits,
+        scope: str,
+        signal: Any = None,
+    ) -> RunResult:
+        """:meth:`ScopedProvider.run`, after :meth:`check_stubs` on ``tools``.
+
+        Raises:
+            ValueError: a tool is unreachable from Monty.
+        """
+        self.check_stubs(tools.stubs())
+        return await super().run(
+            code, tools=tools, inputs=inputs, limits=limits, scope=scope, signal=signal
+        )
 
     async def start(self) -> None:
         """Import Monty and spawn the pool. Idempotent.
