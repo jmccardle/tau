@@ -49,10 +49,8 @@ async def test_new_chat_calls_set_ui_delegate(app, monkeypatch):
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.action_new_chat()
-        await pilot.pause()
 
-        # set_ui_delegate was called with the app's notify delegate...
+        # Mount built the backend and called set_ui_delegate with the app's delegate...
         assert len(seen) == 1
         assert isinstance(seen[0], extension_ui._ExtensionUIDelegate)
         # ...and the effect landed: the shared ExtensionUI has a live surface.

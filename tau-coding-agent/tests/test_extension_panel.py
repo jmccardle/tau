@@ -221,9 +221,9 @@ async def test_pressing_action_dispatches_command_through_backend(app):
     from tau_agent_core.extension_types import validate_panel_spec
 
     backend = _FakeBackend(ExtensionCommandResult(handled=True, output="aborted c-1"))
-    app.current_backend = backend
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.current_backend = backend
         app.set_extension_panel("fleet", validate_panel_spec(_FLEET_SPEC))
         await pilot.pause()
         button = next(b for b in app.query(extension_ui._PanelActionButton) if b.command == "abort_child")
@@ -238,10 +238,10 @@ async def test_unknown_action_command_surfaces_error(app):
 
     # handled=False → unknown command; the app must SURFACE it, not silently no-op.
     backend = _FakeBackend(ExtensionCommandResult(handled=False))
-    app.current_backend = backend
     notices: list[tuple[str, str]] = []
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.current_backend = backend
         app.notify = lambda msg, severity="information", **kw: notices.append((msg, severity))  # type: ignore[assignment]
         app.set_extension_panel(
             "fleet",

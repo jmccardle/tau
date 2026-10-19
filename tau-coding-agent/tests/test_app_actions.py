@@ -95,9 +95,11 @@ def app(make_app):
 
 
 async def test_new_chat_button_creates_chat(app, tmp_path):
+    """The button replaces the mount session; neither is written until used."""
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.current_session is None
+        mounted = app.current_session
+        assert mounted is not None
 
         app.action_toggle_sidebar()
         await pilot.pause()
@@ -106,9 +108,10 @@ async def test_new_chat_button_creates_chat(app, tmp_path):
         await pilot.pause()
 
         assert app.current_session is not None
+        assert app.current_session is not mounted
         assert app.current_session.model == "m"
         assert app.messages[0] == {"role": "system", "content": "sys"}
-        assert len(list((tmp_path / "sessions").rglob("*.jsonl"))) == 1
+        assert list((tmp_path / "sessions").rglob("*.jsonl")) == []
 
 
 async def test_chat_selected_loads_session_by_ref(app, wait_for_workers_settled):
@@ -636,7 +639,7 @@ async def test_ctrl_c_stops_the_turn_rather_than_the_program(app):
         await pilot.pause()
 
         assert aborted == [True]
-        assert app.sub_title == "Cancelling…"
+        assert app.sub_title.split(" · ")[0] == "Cancelling…"
         assert app.is_running, "the app must still be up"
 
 

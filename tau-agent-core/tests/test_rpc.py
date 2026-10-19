@@ -104,7 +104,7 @@ def _session(**overrides: Any) -> MagicMock:
     session.cursor.session_id = "sess-1"
     session.cursor.is_streaming = False
     session.is_addressable = True
-    session.tools = []
+    session.describe_tools.return_value = []
     session.subscribe.return_value = MagicMock()
     session.abort = MagicMock()
     session.submit = AsyncMock(
@@ -1053,20 +1053,20 @@ async def test_get_commands_does_not_advertise_a_shadowed_extension_command(hand
     assert listed[0]["description"] == FRONTEND_COMMANDS["compact"]
 
 
-async def test_get_tools_reports_name_description_and_schema(handler, session):
+async def test_get_tools_reports_name_description_schema_and_exposure(handler, session):
+    from tau_agent_core.tool_catalog import describe_tool
     from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
-    session.tools = [
-        AgentTool(
-            definition=ToolDefinition(
-                name="bash",
-                label="Bash",
-                description="Execute bash commands",
-                parameters={"type": "object", "properties": {"command": {"type": "string"}}},
-                execute=lambda ctx: "done",
-            )
+    bash = AgentTool(
+        definition=ToolDefinition(
+            name="bash",
+            label="Bash",
+            description="Execute bash commands",
+            parameters={"type": "object", "properties": {"command": {"type": "string"}}},
+            execute=lambda ctx: "done",
         )
-    ]
+    )
+    session.describe_tools.return_value = [describe_tool(bash, "deferred", False)]
 
     await handler._handle_request({"jsonrpc": "2.0", "id": 1, "method": "get_tools"})
 
@@ -1075,6 +1075,8 @@ async def test_get_tools_reports_name_description_and_schema(handler, session):
     assert tool["name"] == "bash"
     assert tool["description"] == "Execute bash commands"
     assert tool["parameters"]["properties"]["command"] == {"type": "string"}
+    assert (tool["exposure"], tool["declared"]) == ("deferred", False)
+    session.describe_tools.assert_called_once_with(include_hidden=True)
 
 
 async def test_get_tools_on_a_session_with_none(handler):

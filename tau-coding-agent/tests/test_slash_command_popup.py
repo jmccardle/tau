@@ -155,24 +155,22 @@ class TestThePopupSaysWhetherTheSlashIsReal:
             assert "/todo" in popup.text
             assert "manage the todo list" in popup.text
 
-    async def test_before_any_chat_an_extension_command_reads_as_unknown(self, make_app):
-        """Not a gap in the popup — the popup reporting a gap accurately.
+    async def test_before_any_chat_an_extension_command_is_offered(self, make_app):
+        """The startup screen is not a special case (#42, docs/SESSION-AT-MOUNT.md).
 
-        ``TauApp.current_backend`` is built by ``action_new_chat``, which the app
-        runs lazily at the FIRST submit, so before then no extension has loaded
-        and no extension command exists. ``on_input_submitted``'s own peek reads
-        the same empty vocabulary and sends such a line to the model as prose.
-        The popup saying so is the first visible sign of that; a popup that
-        listed ``/todo`` here would be promising a dispatch that will not happen.
+        Mount opens the session, so the backend and its extension commands exist
+        before the first keystroke. This test used to pin the opposite: the popup
+        calling ``/todo`` "not a command" until the first submission built a backend.
         """
         app = _app(make_app, _Backend([("todo", "manage the todo list")]))
         async with app.run_test() as pilot:
-            assert app.current_backend is None
+            assert app.current_backend is not None
             editor = app.query_one(chat_widgets.ChatInput)
             popup = app.query_one(editor_widgets.CommandPopup)
             await _type(pilot, editor, "/todo")
-            assert "is not a command" in popup.text
-            assert app._extension_command_names() == []
+            assert "is not a command" not in popup.text
+            assert "manage the todo list" in popup.text
+            assert app._extension_command_names() == ["todo"]
 
     async def test_a_backend_without_extensions_still_shows_the_built_ins(self, make_app):
         app = _app(make_app, _NoExtensionsBackend())

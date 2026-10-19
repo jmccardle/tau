@@ -165,6 +165,8 @@ class SessionCatalog(ABC):
     catalog must supply:
 
     - ``create`` / ``create_ephemeral`` — new persisted / in-memory session.
+      ``create_deferred`` is the optional third: persisted, but written on its
+      first append.
     - ``load(ref)`` — reconstruct a session from a :class:`SessionInfo`'s ``ref``.
     - ``fork(source, cwd, at=)`` — a new session carrying ``source``'s history.
     - ``list(cwd)`` — newest-first listing metadata, ``cwd=None`` for every dir.
@@ -192,6 +194,40 @@ class SessionCatalog(ABC):
         Returns:
             The new session.
         """
+
+    def create_deferred(
+        self,
+        cwd: str,
+        model: str,
+        backend: str,
+        *,
+        system_prompt: str | None = None,
+        name: str | None = None,
+    ) -> ConversationSession:
+        """Create a persisted session that writes nothing until its first append.
+
+        The opening chain ``create`` would write is held in memory; the first
+        ``append_at`` writes it and then the entry. Until then the catalog neither
+        stores nor lists the session, so one nobody writes to leaves nothing
+        behind — a head can open a session before the user does anything
+        (docs/SESSION-AT-MOUNT.md).
+
+        Concrete so a catalog opts in: one that cannot defer raises.
+
+        Args:
+            cwd: Working directory the session belongs to.
+            model: Config model name the session starts with.
+            backend: Backend name the session starts with.
+            system_prompt: System prompt text; ``None`` writes none.
+            name: Session name; ``None`` leaves it unnamed.
+
+        Returns:
+            The new session, readable at once and stored on its first append.
+
+        Raises:
+            NotImplementedError: this catalog cannot defer the first write.
+        """
+        raise NotImplementedError(f"{type(self).__name__} cannot defer a session's first write")
 
     @abstractmethod
     def create_ephemeral(

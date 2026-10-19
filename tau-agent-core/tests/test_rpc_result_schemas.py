@@ -108,7 +108,19 @@ def test_items_without_an_array_type_is_refused_at_import_time() -> None:
 def test_a_bad_element_in_a_declared_array_is_reported_with_its_index() -> None:
     schema = result_schema_for("get_tools")
     violation = commands.validate_params(
-        schema, {"tools": [{"name": "read", "description": "d", "parameters": {}}, {"name": "x"}]}
+        schema,
+        {
+            "tools": [
+                {
+                    "name": "read",
+                    "description": "d",
+                    "parameters": {},
+                    "exposure": "direct",
+                    "declared": True,
+                },
+                {"name": "x"},
+            ]
+        },
     )
     assert violation is not None
     assert "tools[1]" in violation

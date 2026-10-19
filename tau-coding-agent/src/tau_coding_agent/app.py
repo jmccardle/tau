@@ -634,10 +634,16 @@ class TauApp(App):
         yield extension_ui.ExtensionStatusBar()
         yield Footer()
 
-    def on_mount(self):
-        """Set up the application on mount."""
+    async def on_mount(self) -> None:
+        """Wire the editor, then open a session before the first frame.
 
-        # Focus input
+        The session is opened here rather than at the first submission so the
+        startup screen is not a special case: the command hint, Tab completion and
+        the command peek read the extensions that session loaded. It is deferred,
+        so quitting before doing anything writes nothing (docs/SESSION-AT-MOUNT.md).
+        Awaited, not a worker: the first frame waits for it, and so does the first
+        keystroke. Under ``--connect`` the daemon owns sessions and none is opened.
+        """
         chat_input = self.query_one("#chat-input", ChatInput)
         chat_input.focus()
         chat_input.reclaim_pending = self._reclaim_pending_steer
@@ -655,7 +661,10 @@ class TauApp(App):
 
         if self._remote is not None:
             self._start_remote()
-        elif self._resume_on_start:
+            return
+        if await self._open_new_session(None):
+            self._refresh_subtitle()
+        if self._resume_on_start:
             self.call_after_refresh(self.action_resume_session)
 
     def _session_cwd(self) -> str:
@@ -979,9 +988,11 @@ class TauApp(App):
 
         Input history and clearing the widget stay here and are NOT part of the
         submission: they are properties of the ChatInput widget (up-arrow recall),
-        and a bus or timer submission has no widget to recall into. Session
-        materialisation, the working-list append and the rendered user turn stay
-        here too, now gated on the peek.
+        and a bus or timer submission has no widget to recall into. The
+        working-list append and the rendered user turn stay here too, gated on the
+        peek. Mount opens the session, so one is missing here only under
+        ``--connect`` or after a failed mount; it is opened BEFORE the peek,
+        because the peek reads its extension commands.
         """
         input_widget = self.query_one("#chat-input", ChatInput)
 
@@ -989,6 +1000,11 @@ class TauApp(App):
 
         if not message:
             return
+
+        if self.current_session is None:
+            await self.action_new_chat()
+            if self.current_session is None:
+                return
 
         is_command = resolve_command(message, self._extension_command_names()) is not None
 
@@ -1024,10 +1040,6 @@ class TauApp(App):
             expand_commands=True,
             allow_user_input=True,
         )
-
-        if self.current_session is None:
-            await self.action_new_chat()
-        assert self.current_session is not None  # action_new_chat sets current_session
 
         if is_command:
             await self._dispatch_command_submission(submission)
@@ -2758,24 +2770,29 @@ class TauApp(App):
 
         self.push_screen(modals.ExtensionAuthorizationDialog(title, body), _answered)
 
-    async def action_new_chat(self, model: Optional[str] = None):
-        """Start a new chat."""
-        if self._remote is not None:
-            await self._remote_new_chat(model)
-            return
+    async def _open_new_session(self, model: Optional[str]) -> bool:
+        """Build a backend for ``model``, open a deferred session on it, load extensions.
+
+        The session is written on its first append, so one opened and never used
+        leaves nothing in the store. Every failure is notified here.
+
+        Args:
+            model: A config model name; ``None`` is ``default_model``.
+
+        Returns:
+            Whether a session is now open.
+        """
         if model is None:
             model = self.config.get("default_model", "local-llm")
 
         self.log(f"Starting new chat with model: {model}")
 
-        # Get model config
         model_config = self.config["models"].get(model)
         if not model_config:
             self.notify(f"Unknown model: {model}", severity="error")
             self.log(f"Available models: {list(self.config['models'].keys())}")
-            return
+            return False
 
-        # Create backend
         try:
             self.current_backend = create_backend(
                 self._apply_run_config({**model_config, "config_name": model})
@@ -2784,7 +2801,7 @@ class TauApp(App):
         except Exception as e:
             self.notify(f"Failed to create backend: {str(e)}", severity="error")
             self.log.error(f"Backend creation failed: {e}", exc_info=True)
-            return
+            return False
 
         system_prompt = getattr(self.current_backend, "system_prompt", "") or ""
         self._session_runtime = self._build_session_runtime(
@@ -2792,17 +2809,17 @@ class TauApp(App):
         )
         if self._session_runtime is not None:
             result = await self._session_runtime.new_session(
-                persist=True, system_prompt=system_prompt or None
+                persist=True, deferred=True, system_prompt=system_prompt or None
             )
             if result.get("blocked"):
                 self.notify(result["reason"], severity="warning")
-                return
+                return False
             if result["cancelled"]:
                 self.notify("New chat cancelled by an extension", severity="warning")
-                return
+                return False
             self.current_session = result["session"]
         else:
-            self.current_session = self.session_catalog.create(
+            self.current_session = self.session_catalog.create_deferred(
                 os.getcwd(),
                 model,
                 model_config["backend"],
@@ -2812,12 +2829,21 @@ class TauApp(App):
         await self._load_backend_extensions()
         assert self._cursor is not None  # bound with the session above
         self.messages = self._cursor.context()
+        return True
 
-        # Clear display
+    async def action_new_chat(self, model: Optional[str] = None):
+        """Start a new chat, which is stored once something is written to it."""
+        if self._remote is not None:
+            await self._remote_new_chat(model)
+            return
+        if model is None:
+            model = self.config.get("default_model", "local-llm")
+        if not await self._open_new_session(model):
+            return
+
         display = self.query_one(transcript.ChatDisplay)
         await display.clear_messages()
 
-        # Update UI
         self._refresh_subtitle()
         self.notify(f"Started new chat with {model}")
 
@@ -3398,7 +3424,8 @@ class TauApp(App):
 
         The store is append-only, so "clear" can't truncate the file in place —
         it begins a new session carrying just the system prompt (the prior
-        session stays on disk as its own transcript).
+        session stays on disk as its own transcript). Like a new chat, the new
+        session is stored on its first append.
         """
         if not self.current_session:
             return
@@ -3414,7 +3441,7 @@ class TauApp(App):
         )
         if self._session_runtime is not None:
             result = await self._session_runtime.new_session(
-                persist=True, system_prompt=system_prompt
+                persist=True, deferred=True, system_prompt=system_prompt
             )
             if result.get("blocked"):
                 self.notify(result["reason"], severity="warning")
@@ -3424,7 +3451,7 @@ class TauApp(App):
                 return
             self.current_session = result["session"]
         else:
-            self.current_session = self.session_catalog.create(
+            self.current_session = self.session_catalog.create_deferred(
                 os.getcwd(),
                 self.current_session.model,
                 self.current_session.backend,

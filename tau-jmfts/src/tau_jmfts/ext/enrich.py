@@ -211,6 +211,11 @@ def register(api: Any) -> None:
                 f"({type(log).__name__}), so there is nothing to embed or index. "
                 "Run with --store jmfts, or unload this extension."
             )
+        if log.root_doc_id is None:
+            ctx.ui.notify(
+                "enrich: the conversation was never written, so there is nothing to embed"
+            )
+            return
 
         report = enrich_conversation(log.client, log.root_doc_id, index=index, embed=embed)
         ctx.ui.notify(f"enrich: {report.summary()}")

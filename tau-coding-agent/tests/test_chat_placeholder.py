@@ -262,7 +262,7 @@ async def test_facts_are_re_read_when_the_pane_reappears(make_app):
         display = app.query_one(transcript.ChatDisplay)
         display.add_message("user", "hello", source="verbatim")
         await pilot.pause()
-        app.config["default_model"] = "two"
+        await app._cursor.append_config(model="two")
         await display.clear_messages()
         await pilot.pause()
 

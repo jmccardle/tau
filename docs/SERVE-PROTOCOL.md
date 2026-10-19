@@ -1354,7 +1354,7 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `tools` | list of object | yes | This session's bound AgentTool set, in binding order. |
+| `tools` | list of object | yes | Every tool on the acting cursor: constructor tools, then extension tools, narrowed by the cursor's frame; hidden ones included. |
 
 ### GetTreeResult
 

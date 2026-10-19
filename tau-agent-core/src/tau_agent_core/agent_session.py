@@ -699,15 +699,14 @@ class AgentSession:
         name :meth:`set_model` resolved, present only once one is known, which
         is what ``--continue`` resumes on (docs/TURN-SETTINGS.md §6);
         ``system_prompt_digest`` a sha256 of the prompt, never the text;
-        ``extensions`` the inline-factory labels plus every loaded file extension
+        ``tools`` the names the request's ``tools`` block declares, extension
+        tools included; ``extensions`` the inline-factory labels plus every loaded file extension
         not disabled. The API key is never part of it, hashed or otherwise.
         """
         loaded_paths = [
             path for path in self._loaded_extensions if path not in self._disabled_paths
         ]
-        frame = self.acting_cursor.frame
         model = self._turn_model()
-        declared = {t.name for t in self._turn_tools()}
         name = self._turn_model_name()
         return {
             **({} if name is None else {"model": name}),
@@ -717,9 +716,7 @@ class AgentSession:
                 "context_window": model.context_window,
             },
             "thinking": self._turn_reasoning(),
-            "tools": [t.name for t in self._tools if t.name in declared]
-            if frame is None
-            else [t.name for t in self._turn_tools()],
+            "tools": [t.name for t in self._turn_tools()],
             "extensions": [_extension_factory_label(ext) for ext in self._extensions]
             + loaded_paths,
             "cwd": self._cwd,
@@ -1149,14 +1146,16 @@ class AgentSession:
     @property
     @agent_facing(topic="sessions")
     def tools(self) -> list[AgentTool]:
-        """The tools bound to this session, in the order the loop sees them.
+        """Every tool a turn draws on: constructor tools, then active extension tools.
 
-        A fresh list, so a caller listing them cannot append to the session's own.
-        The :class:`~tau_llm.tools.AgentTool` objects themselves are shared — they
-        are what the loop executes, and copying them would hand a reader a tool that
-        is not the one that runs.
+        The merge each turn builds, so an extension tool replaces a same-name
+        built-in. A cursor frame and declarations narrow it further; see
+        :meth:`describe_tools`. A fresh list of the shared tool objects.
+
+        Raises:
+            ValueError: two constructor tools share a name.
         """
-        return list(self._tools)
+        return list(self._build_turn_tools())
 
     @property
     @agent_facing(topic="sessions")
@@ -1342,7 +1341,7 @@ class AgentSession:
 
     def _frame_or_default(self, cursor: Cursor) -> TurnFrame:
         """``cursor``'s frame, or one that changes nothing (every tool, hooks on)."""
-        return cursor.frame or TurnFrame(tools=tuple(t.name for t in self._tools), hooks=True)
+        return cursor.frame or TurnFrame(tools=tuple(t.name for t in self.tools), hooks=True)
 
     def resolve_model(self, name: str) -> tuple[Model, str | None]:
         """The model a config NAME resolves to, and the key it is called with.
