@@ -21,7 +21,7 @@ from tau_agent_core.codemode.protocol import (
     RunLimits,
     ToolStub,
 )
-from tau_agent_core.tool_schema import StubNamespace
+from tau_agent_core.tool_schema import StubError, StubNamespace
 
 _FIELD = re.compile(r"\{\{(\w+)\}\}")
 _TS_IDENT = re.compile(r"^[A-Za-z_$][\w$]*$")
@@ -95,7 +95,7 @@ def _python_signatures(stubs: Sequence[ToolStub], *, self_arg: bool) -> tuple[li
     ``tool_search`` uses, with ``-> str`` because a script receives a tool's text.
 
     Raises:
-        ValueError: a ``$ref`` is not a local pointer or does not resolve.
+        StubError: a ``$ref`` is not a local pointer or does not resolve.
     """
     namespace = StubNamespace()
     classes: list[str] = []
@@ -107,6 +107,30 @@ def _python_signatures(stubs: Sequence[ToolStub], *, self_arg: bool) -> tuple[li
         classes += new
         signatures.append(signature)
     return classes, signatures
+
+
+def stub_failures(stubs: Sequence[ToolStub], language: str) -> dict[str, str]:
+    """The stubs ``language``'s renderer cannot render, each with the reason (docs/CODE-MODE.md §6.3).
+
+    Each stub is rendered alone with :data:`STUB_RENDERERS` ``[language]``, so
+    a tool is left out only where that renderer fails; TypeScript's never does.
+
+    Returns:
+        ``{real name: reason}``, e.g. ``$ref '#/$defs/X' does not resolve (...)``,
+        in ``stubs`` order; empty when every stub renders.
+    """
+    failures: dict[str, str] = {}
+    for stub in stubs:
+        try:
+            STUB_RENDERERS[language]([stub])
+        except StubError as exc:
+            failures[stub.name] = exc.reason
+    return failures
+
+
+def unavailable_notice(name: str, reason: str) -> str:
+    """The notice every head shows for a tool code mode leaves out."""
+    return f"tool {name!r} is unavailable in code mode: {reason}"
 
 
 def render_python_stubs(stubs: Sequence[ToolStub]) -> str:

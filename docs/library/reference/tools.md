@@ -329,6 +329,22 @@ What pydantic's ``TypeAdapter(tp).validate_python`` builds.
 
 The text blocks of :attr:`content`, joined by newlines.
 
+## StubError
+<!-- agent: yes -->
+
+```python
+class StubError(tool: str, reason: str)
+```
+
+`tau_agent_core.tool_schema.StubError`
+
+A tool's schema cannot be stubbed: a ``$ref`` that is not local or does not resolve.
+
+**Constructor parameters**
+
+- `tool: str` — The tool's real name.
+- `reason: str` — Why, naming the ``$ref``, e.g. ``$ref '#/$defs/X' does not resolve``.
+
 ## StubNamespace
 <!-- agent: yes -->
 
@@ -369,7 +385,7 @@ The classes not yet written in this namespace, each before the classes that use 
 
 **Raises**
 
-- `ValueError` — a ``$ref`` is not a local pointer or does not resolve.
+- `StubError` — a ``$ref`` is not a local pointer or does not resolve.
 
 ## ToolBatchResult
 <!-- agent: yes -->
@@ -606,7 +622,7 @@ The ``register_tool`` dict for ``call_tool``, the fixed dispatcher to deferred t
 
 **Returns**
 
-A ``model-only`` tool taking ``name`` (real, or the stub name ``tool_search`` showed) and ``arguments`` that runs a ``direct`` or ``deferred`` tool through ``ctx.execute_tool`` and returns its content and value; any other target, or one sharing its stub name with another tool, is a tool error.
+A ``model-only`` tool taking ``name`` (real, or the stub name ``tool_search`` showed) and ``arguments`` that runs a ``direct`` or ``deferred`` tool through ``ctx.execute_tool`` and returns its content and value; any other target, one sharing its stub name with another tool, or one whose stub fails, is a tool error. A refusal for exposure names the real tool when the call used a stub name.
 
 ## capture_tool_output
 <!-- agent: yes -->
@@ -751,7 +767,7 @@ The classes, then the ``async def``, separated by blank lines.
 
 **Raises**
 
-- `ValueError` — a ``$ref`` is not a local pointer or does not resolve.
+- `StubError` — a ``$ref`` is not a local pointer or does not resolve.
 
 ## render_stubs
 <!-- agent: yes -->
@@ -774,7 +790,8 @@ One module's text, ending in a newline. A class is written once; a different sha
 
 **Raises**
 
-- `ValueError` — two tools share a stub name (:func:`stub_names`), or a ``$ref`` is not a local pointer or does not resolve.
+- `ValueError` — two tools share a stub name (:func:`stub_names`).
+- `StubError` — a ``$ref`` is not a local pointer or does not resolve.
 
 ## run_nested_call
 <!-- agent: yes -->
@@ -986,7 +1003,7 @@ The ``register_tool`` dict for ``tool_search``; its description never changes.
 
 **Returns**
 
-A ``model-only`` tool taking ``query`` whose result lists each deferred match as a Python stub; an empty query, or a match sharing its stub name with another tool (:func:`~tau_agent_core.tool_schema.stub_clashes`), is a tool error.
+A ``model-only`` tool taking ``query`` whose result lists each deferred match as a Python stub, or as unavailable with the reason when its stub fails (:class:`~tau_agent_core.tool_schema.StubError`); an empty query, or a match sharing its stub name with another tool (:func:`~tau_agent_core.tool_schema.stub_clashes`), is a tool error.
 
 ## validate_tool_arguments
 <!-- agent: yes -->

@@ -28,6 +28,7 @@ from tau_agent_core import tree_ops
 from tau_agent_core.attachments import elide_attachment_bodies, human_size
 from tau_agent_core.commands import CommandCompletion
 from tau_agent_core.compaction import CompactionConfig
+from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_coding_agent.config import (
     ModelConfigError,
     compaction_for,
@@ -1758,6 +1759,16 @@ class TauBackend(Backend):
         """
         return self.agent_session.get_extension_state()
 
+    def extension_warnings(self) -> list[ExtensionWarning]:
+        """The session's current extension warnings (:meth:`AgentSession.extension_warnings`)."""
+        return self.agent_session.extension_warnings()
+
+    def subscribe_extension_warnings(
+        self, listener: Callable[[list[ExtensionWarning]], None]
+    ) -> Callable[[], None]:
+        """Call ``listener`` after each change to the warnings; returns the unsubscribe."""
+        return self.agent_session.subscribe_extension_warnings(listener)
+
     def _extension_action(self, outcome: ExtensionActionResult) -> Performed:
         """One :class:`ExtensionActionResult` as the :class:`Performed` all three report.
 
@@ -1846,6 +1857,10 @@ class TauBackend(Backend):
         built-ins.
         """
         return self.agent_session.get_extension_commands()
+
+    def get_qualified_commands(self) -> list[tuple[str, str]]:
+        """Every ``ext:<identifier>:<command>`` name, contested or not (:meth:`AgentSession.get_qualified_commands`)."""
+        return self.agent_session.get_qualified_commands()
 
     def get_prompt_commands(self) -> tuple[CommandCompletion, ...]:
         """Template and skill command words, for a completion list.

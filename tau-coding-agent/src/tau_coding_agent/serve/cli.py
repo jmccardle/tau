@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import logging
 import os
 import signal
 import subprocess
@@ -29,7 +28,7 @@ from websockets.sync.client import connect as sync_connect, unix_connect as sync
 from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.serve import protocol as p
 from tau_coding_agent.serve.client import Address, ServeClient, ServeError, parse_address
-from tau_coding_agent.serve.http import build_process_request
+from tau_coding_agent.serve.http import build_connection_class, build_process_request
 
 LOG_FILE = "serve.log"
 """The background daemon's log, under ``~/.tau``."""
@@ -147,27 +146,6 @@ def run_serve(argv: list[str]) -> int:
     return asyncio.run(serve(address, {**config, "serve": settings}))
 
 
-class DroppedBeforeRequest(logging.Filter):
-    """Drop the handshake failure of a connection closed before it sent a request.
-
-    A browser opens and abandons speculative preconnects, and websockets logged
-    each one as ``opening handshake failed`` with three chained tracebacks. A
-    connection that sent nothing has failed nothing. Every other handshake
-    failure is kept.
-    """
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        """``False`` for a failed handshake whose cause chain reaches ``EOFError``."""
-        if record.getMessage() != "opening handshake failed" or not record.exc_info:
-            return True
-        exc: BaseException | None = record.exc_info[1]
-        while exc is not None:
-            if isinstance(exc, EOFError):
-                return False
-            exc = exc.__cause__ or exc.__context__
-        return True
-
-
 async def serve(address: Address, config: dict[str, Any]) -> int:
     """Run the daemon in this process until SIGINT or SIGTERM."""
     from tau_coding_agent.serve.daemon import Daemon
@@ -182,7 +160,6 @@ async def serve(address: Address, config: dict[str, Any]) -> int:
         return 2
     catalog = build_session_catalog(config, None, None, persist=True)
     daemon = Daemon(config, catalog)
-    logging.getLogger("websockets.server").addFilter(DroppedBeforeRequest())
     stop = daemon.stopping
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -190,9 +167,14 @@ async def serve(address: Address, config: dict[str, Any]) -> int:
             loop.add_signal_handler(signum, stop.set)
         except (NotImplementedError, RuntimeError):
             signal.signal(signum, lambda *_: loop.call_soon_threadsafe(stop.set))
+    connection_class = build_connection_class(daemon.log)
     if address.path is not None:
         server = await unix_serve(
-            daemon.handle, address.path, max_size=None, process_request=process_request
+            daemon.handle,
+            address.path,
+            max_size=None,
+            process_request=process_request,
+            create_connection=connection_class,
         )
     else:
         server = await ws_serve(
@@ -201,6 +183,7 @@ async def serve(address: Address, config: dict[str, Any]) -> int:
             address.port,
             max_size=None,
             process_request=process_request,
+            create_connection=connection_class,
         )
     auth = "token required" if daemon.token else "no token"
     daemon.log(f"tau serve listening on {address} ({auth}, pid {os.getpid()})")

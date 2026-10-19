@@ -76,6 +76,7 @@ from tau_agent_core.flows import (
 )
 from tau_agent_core.sdk import (
     ExtensionStartupError,
+    load_failure_notice,
     summarize_extensions,
     withheld_notice,
     withheld_notices,
@@ -1593,7 +1594,7 @@ async def run_repl(
         except ExtensionStartupError as exc:
             raise CLIError(str(exc)) from exc
         for ext_error in ext_result.errors:
-            renderer.line("error", f"failed to load extension {ext_error.path}: {ext_error.error}")
+            renderer.line("error", load_failure_notice(ext_error))
         for line in withheld_notices(ext_result):
             renderer.line("warning", line)
 
@@ -1776,6 +1777,10 @@ class ReplLoop:
         head_command = _head_command(line)
         invocation = resolve_command(line, extension_command_names(self._backend))
         is_command = head_command is not None or invocation is not None
+        if self._state != IDLE and invocation is not None and invocation.refusal is not None:
+            self._renderer.line("error", invocation.refusal)
+            self._return_to_draft(line)
+            return
         if self._state != IDLE:
             self._hold(line, is_command=is_command)
             return
@@ -2035,6 +2040,8 @@ class ReplLoop:
                 self._renderer.line(
                     "warning", f"{record.identifier} subscribes to {topic}, which nothing emits"
                 )
+        for warning in self._agent_session.extension_warnings():
+            self._renderer.line(warning.severity, warning.summary())
         self._print_shortcuts()
 
     def _print_shortcuts(self) -> None:

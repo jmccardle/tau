@@ -64,6 +64,7 @@ is not.
 
 from __future__ import annotations
 
+import difflib
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -217,11 +218,20 @@ class CommandInvocation:
     Produced by :func:`resolve_command`, which is pure — constructing one runs nothing. It is
     what lets a frontend ask "is a turn coming?" before it renders a user bubble, and what
     ``submit()`` acts on in step 3.
+
+    Attributes:
+        name: The command word, without the leading ``/``.
+        args: Everything after the first space, verbatim (may be ``""``).
+        origin: Where the name came from.
+        refusal: Set when the line is in the ``/ext:`` namespace but names no
+            registered command (:func:`qualified_command_refusal`). Such a line
+            is never a turn; ``submit()`` refuses it with this as the reason.
     """
 
-    name: str  # the command word, without the leading "/"
-    args: str  # everything after the first space, verbatim (may be "")
+    name: str
+    args: str
     origin: CommandOrigin
+    refusal: str | None = None
 
 
 def parse_command(text: str) -> tuple[str, str] | None:
@@ -256,9 +266,10 @@ def resolve_command(
     (:data:`FRONTEND_COMMANDS`) win over an extension that registered the same name, so an
     extension cannot shadow ``/compact``.
 
-    An unknown ``/…`` returns ``None`` and is sent to the model as ordinary text — unchanged
-    behaviour, and deliberately so: refusing every unrecognised slash would break pasting a file
-    path, and the TUI has always fallen through here.
+    An unknown ``/…`` returns ``None`` and is sent to the model as ordinary text: refusing every
+    unrecognised slash would break pasting a file path. The ``/ext:`` namespace is the
+    exception (#57). Nothing but a command starts that way, so an unresolvable one comes back
+    with :attr:`CommandInvocation.refusal` set instead of reaching the model as text.
     """
     parsed = parse_command(text)
     if parsed is None:
@@ -268,10 +279,56 @@ def resolve_command(
         return CommandInvocation(name=name, args=args, origin="builtin")
     if name in extension_commands:
         return CommandInvocation(name=name, args=args, origin="extension")
-    expanded = _expand_owner_shorthand(name, extension_commands)
+    if not name.startswith(NAMESPACE_PREFIX):
+        return None
+    try:
+        expanded = _expand_owner_shorthand(name, extension_commands)
+    except ValueError as exc:
+        return CommandInvocation(
+            name=name, args=args, origin="extension", refusal=f"/{name}: {exc}"
+        )
     if expanded is not None:
         return CommandInvocation(name=expanded, args=args, origin="extension")
-    return None
+    return CommandInvocation(
+        name=name,
+        args=args,
+        origin="extension",
+        refusal=qualified_command_refusal(name, extension_commands),
+    )
+
+
+def qualified_command_refusal(name: str, extension_commands: Collection[str]) -> str:
+    """Why ``/<name>``, in the ``ext:`` namespace, is not a command, and what to type (#57).
+
+    The nearest registered qualified name is suggested: first the 2.x spelling
+    ``ext:<owner>.<command>`` read as ``ext:<owner>:<command>`` (owner shorthand
+    allowed), then the closest by :func:`difflib.get_close_matches`.
+
+    Args:
+        name: The typed command word, without the ``/``; starts with ``ext:``.
+        extension_commands: The registered command names.
+
+    Returns:
+        One sentence naming the qualified form, plus a suggestion when one is close.
+    """
+    qualified = sorted(n for n in extension_commands if is_qualified_command(n))
+    suggestion: str | None = None
+    body = name[len(NAMESPACE_PREFIX) :]
+    if ":" not in body and "." in body:
+        try:
+            suggestion = _expand_owner_shorthand(
+                NAMESPACE_PREFIX + body[: body.rfind(".")] + ":" + body[body.rfind(".") + 1 :],
+                qualified,
+            )
+        except ValueError:
+            suggestion = None
+    if suggestion is None:
+        close = difflib.get_close_matches(name, qualified, n=1, cutoff=0.6)
+        suggestion = close[0] if close else None
+    sentence = (
+        f"/{name} is not a command; qualified names are /{NAMESPACE_PREFIX}<identifier>:<command>"
+    )
+    return f"{sentence}, e.g. /{suggestion}" if suggestion else sentence
 
 
 def _expand_owner_shorthand(name: str, extension_commands: Collection[str]) -> str | None:

@@ -396,3 +396,77 @@ class TestPromptRefusesCommands:
         await session.prompt("/etc/hosts is missing")
 
         assert seen == ["/etc/hosts is missing"]
+
+
+# ── the ext: namespace is never prompt text (#57) ──────────────────────────────
+
+
+class TestAnUnresolvableExtNameIsRefused:
+    def test_the_2x_spelling_is_refused_and_the_qualified_name_suggested(self):
+        invocation = resolve_command("/ext:pirate.speak loudly", {"ext:pirate:speak"})
+        assert invocation is not None
+        assert invocation.refusal == (
+            "/ext:pirate.speak is not a command; qualified names are "
+            "/ext:<identifier>:<command>, e.g. /ext:pirate:speak"
+        )
+
+    def test_the_2x_spelling_with_a_shorthand_owner_suggests_the_full_identifier(self):
+        invocation = resolve_command("/ext:pirate.speak", {"ext:acme.pirate:speak"})
+        assert invocation is not None and invocation.refusal is not None
+        assert invocation.refusal.endswith("e.g. /ext:acme.pirate:speak")
+
+    def test_a_near_miss_suggests_the_closest_registered_name(self):
+        invocation = resolve_command("/ext:pirate:speek", {"ext:pirate:speak", "ext:x:y"})
+        assert invocation is not None and invocation.refusal is not None
+        assert invocation.refusal.endswith("e.g. /ext:pirate:speak")
+
+    @pytest.mark.parametrize("text", ["/ext:", "/ext:pirate", "/ext:pirate:speak"])
+    def test_nothing_close_gives_the_form_and_no_suggestion(self, text):
+        invocation = resolve_command(text, {"ext:zzz:qqq"})
+        assert invocation is not None
+        assert invocation.refusal == (
+            f"{text} is not a command; qualified names are /ext:<identifier>:<command>"
+        )
+
+    def test_an_ambiguous_owner_shorthand_is_a_refusal_not_a_raise(self):
+        invocation = resolve_command(
+            "/ext:pirate:speak", {"ext:a.pirate:speak", "ext:b.pirate:speak"}
+        )
+        assert invocation is not None and invocation.refusal is not None
+        assert "ambiguous" in invocation.refusal
+
+    def test_a_resolvable_name_carries_no_refusal(self):
+        invocation = resolve_command("/ext:pirate:speak", {"ext:pirate:speak"})
+        assert invocation is not None and invocation.refusal is None
+
+    def test_an_unknown_slash_outside_the_namespace_is_still_prompt_text(self):
+        assert resolve_command("/usr/bin/env", {"ext:pirate:speak"}) is None
+
+    async def test_submit_refuses_before_any_turn(self):
+        session = _session()
+        calls: list[tuple[str, str]] = []
+        _register(session, "deploy", calls)
+        before = list(session.session_log.entries())
+
+        result = await session.submit(_human("/ext:deploy.deploy prod", "r-1"))
+
+        assert result.accepted is False
+        assert result.rejection_reason is not None
+        assert result.rejection_reason.endswith("e.g. /ext:deploy:deploy")
+        assert calls == []
+        assert session.session_log.entries() == before
+
+    async def test_a_bus_payload_in_the_namespace_stays_prompt_text(self):
+        session = _session()
+        seen: list[str] = []
+        _record_input(session, seen)
+
+        result = await session.submit(_bus("/ext:deploy.deploy prod", "r-2"))
+
+        assert result.accepted is True
+        assert seen == ["/ext:deploy.deploy prod"]
+
+    async def test_prompt_refuses_with_the_same_reason(self):
+        session = _session()
+        with pytest.raises(UnsupportedCommandError, match="is not a command; qualified names"):
+            await session.prompt("/ext:nope.nope")

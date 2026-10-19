@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import fnmatch
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 from uuid import uuid4
@@ -27,7 +28,9 @@ from tau_agent_core.commands import (
 )
 from tau_agent_core.compaction import estimate_context_tokens
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_data
+from tau_agent_core.extension_warnings import TAU_SOURCE
 from tau_agent_core.tool_catalog import ExtensionInfo, ToolDescription, match_tools
+from tau_agent_core.tool_output import suspend_capture
 from tau_agent_core.tool_pipeline import NestedToolResult
 from tau_agent_core.tools.base import ExtensionToolDefinition
 from tau_agent_core.submission import (
@@ -668,16 +671,16 @@ class ExtensionUI:
         if delegate is not None:
             answers: dict[str, Any] | None = await delegate.form(spec)
             return answers
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "form",
-                    "extension": None,
-                    "title": title,
-                    "fields": fields,
-                }
-            )
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "form",
+                "extension": None,
+                "title": title,
+                "fields": fields,
+            },
+            None,
+        )
         self._headless_token("form", title)  # raises if no policy; only "defaults" is valid
         return {field["name"]: form_headless_value(field) for field in fields}
 
@@ -693,6 +696,18 @@ class ExtensionUI:
                 one stdout line; ``None`` restores the plain stderr output.
         """
         self._record_sink = sink
+
+    def _to_head(self, record: dict[str, Any], line: str | None) -> None:
+        """``record`` to the record sink, else ``line`` (if any) to stderr, outside tool capture.
+
+        A tool calling ``ctx.ui`` runs inside its own output capture, which would
+        otherwise swallow a write meant for the head (``suspend_capture``).
+        """
+        with suspend_capture():
+            if self._record_sink is not None:
+                self._record_sink(record)
+            elif line is not None:
+                print(line, file=sys.stderr)
 
     def notify(self, message: str, level: str = "info", *, source: str | None = None) -> None:
         """Show a notification.
@@ -719,20 +734,16 @@ class ExtensionUI:
         if self._tui_delegate is not None:
             self._tui_delegate.notify(message, level)
             return
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "notify",
-                    "extension": source,
-                    "level": level,
-                    "message": message,
-                }
-            )
-            return
-        import sys
-
-        print(f"[τ] {level}: {message}", file=sys.stderr)
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "notify",
+                "extension": source,
+                "level": level,
+                "message": message,
+            },
+            f"[τ] {level}: {message}",
+        )
 
     def set_status(self, key: str, text: str | None, *, source: str | None = None) -> None:
         """Set (or clear) a keyed slot in the extension status strip (E10 §6 / S67).
@@ -756,21 +767,17 @@ class ExtensionUI:
         if self._tui_delegate is not None:
             self._tui_delegate.set_status(key, text)
             return
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "status",
-                    "extension": source,
-                    "key": key,
-                    "text": text,
-                }
-            )
-            return
-        import sys
-
         shown = "(cleared)" if text is None else text
-        print(f"[τ] status {key}: {shown}", file=sys.stderr)
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "status",
+                "extension": source,
+                "key": key,
+                "text": text,
+            },
+            f"[τ] status {key}: {shown}",
+        )
 
     def panel(self, key: str, spec: dict[str, Any] | None, *, source: str | None = None) -> None:
         """Show, update, or clear a persistent keyed panel (E10 §6 / S68).
@@ -799,21 +806,17 @@ class ExtensionUI:
         if self._tui_delegate is not None:
             self._tui_delegate.panel(key, normalized)
             return
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "panel",
-                    "extension": source,
-                    "key": key,
-                    "spec": normalized,
-                }
-            )
-            return
-        import sys
-
         shown = "(cleared)" if normalized is None else normalized["title"]
-        print(f"[τ] panel {key}: {shown}", file=sys.stderr)
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "panel",
+                "extension": source,
+                "key": key,
+                "spec": normalized,
+            },
+            f"[τ] panel {key}: {shown}",
+        )
 
     def emit_veto(self, *, extension: str | None, tool: str, reason: str) -> None:
         """Emit a blocked-tool VETO record on the headless JSON stream (E7 §3 / S50).
@@ -833,17 +836,17 @@ class ExtensionUI:
             tool: The blocked tool's name.
             reason: The veto reason the hook gave.
         """
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "veto",
-                    "extension": extension,
-                    "tool": tool,
-                    "reason": reason,
-                    "blocked": True,
-                }
-            )
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "veto",
+                "extension": extension,
+                "tool": tool,
+                "reason": reason,
+                "blocked": True,
+            },
+            None,
+        )
 
     def emit_constraints(self, summary: dict[str, Any], *, source: str | None = None) -> None:
         """Echo the decode constraint that shaped a ``ctx.complete()`` call (G4/C).
@@ -861,15 +864,15 @@ class ExtensionUI:
         """
         if summary.get("kind") == "none":
             return
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "constraints",
-                    "extension": source,
-                    "constraints": summary,
-                }
-            )
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "constraints",
+                "extension": source,
+                "constraints": summary,
+            },
+            None,
+        )
 
 
 @agent_facing(topic="extensions")
@@ -2572,6 +2575,60 @@ class ExtensionAPI:
             RuntimeError: this api is not bound to a session.
         """
         return read_session_name(self._bound_session("get_session_name"))
+
+    def set_warning(self, key: str, message: str, severity: str = "warning") -> None:
+        """Set this extension's warning ``key`` on the session until cleared (#60).
+
+        It stays readable by every head and by a client attaching later, and is
+        shown once through ``ui.notify`` when new or changed, and again after a
+        session swap. Setting the same key replaces it. It persists across
+        new, fork and switch until cleared; a disable or a reload clears it.
+
+        Safe from a worker thread: the warning is checked on the calling thread.
+        While the session's loop runs, the write goes onto that loop, returns
+        before it lands, and a listener's exception reaches the loop's handler,
+        not the caller; otherwise it applies at once on the calling thread. It
+        never moves the session onto the caller's loop.
+
+        Args:
+            key: The warning's name within this extension.
+            message: One line.
+            severity: ``"warning"`` or ``"error"``.
+
+        Raises:
+            RuntimeError: this api is not bound to a session or to a loaded
+                extension.
+            ValueError: the extension is named ``tau``, which τ reserves; a
+                non-string or blank key or message; a message of more than one
+                line; or an unknown severity.
+        """
+        session = self._bound_session("set_warning")
+        session.set_extension_warning(self._warning_source("set_warning"), key, message, severity)
+
+    def clear_warning(self, key: str) -> None:
+        """Clear this extension's warning ``key``; clearing an absent one does nothing.
+
+        Safe from a worker thread, as :meth:`set_warning` is.
+
+        Args:
+            key: The warning's name within this extension.
+
+        Raises:
+            RuntimeError: this api is not bound to a session or to a loaded extension.
+            ValueError: the extension is named ``tau``.
+        """
+        session = self._bound_session("clear_warning")
+        session.clear_extension_warning(self._warning_source("clear_warning"), key)
+
+    def _warning_source(self, verb: str) -> str:
+        """This extension's name as a warning source; ``tau`` is τ's own (#60)."""
+        name = self.extension_name
+        if name == TAU_SOURCE:
+            raise ValueError(
+                f"api.{verb}: the source name {TAU_SOURCE!r} is reserved for τ's own warnings; "
+                "rename the extension to set warnings"
+            )
+        return name
 
     def _bound_session(self, verb: str) -> Any:
         """The bound ``AgentSession``, or raise naming ``verb`` (Fail-Early)."""

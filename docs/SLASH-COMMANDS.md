@@ -16,7 +16,9 @@ An unrecognised slash command is sent to the model as ordinary text.
 
 That is the right behaviour and it is not going to change. Refusing every
 unrecognised slash would break pasting a file path, and `/usr/bin/env is on my
-PATH` is a sentence a user is entitled to write.
+PATH` is a sentence a user is entitled to write. The one exception is the
+`/ext:` namespace, which nothing but a command uses: an unresolvable `/ext:…` is
+refused (#57, docs/EXTENSION-NAMESPACE.md §7).
 
 It is also completely silent. A user who types `/exntesions` gets whatever the
 model guesses that meant, and nothing anywhere says the command did not run. The

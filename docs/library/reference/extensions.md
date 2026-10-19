@@ -15,6 +15,8 @@ The user's authorization records, read from and written to one JSON file.
 
 Packages are keyed by identifier and match on distribution, version and
 digest. Drop-ins are keyed by resolved path and carry no version (§5).
+Disables are keyed by identifier, so one covers a package and a drop-in
+alike (#58).
 
 **Constructor parameters**
 
@@ -41,6 +43,52 @@ Record ``source`` as authorized, replacing any earlier record for it.
 
 - `ValueError` — ``source`` is neither a package nor a drop-in.
 
+### disable
+
+```python
+disable(identifier: str) -> bool
+```
+
+`tau_agent_core.extension_auth.AuthorizationStore.disable`
+
+Record ``identifier`` as disabled: found, never imported, never noticed (#58).
+
+**Parameters**
+
+- `identifier: str` — A full extension identifier.
+
+**Returns**
+
+Whether it was newly disabled; ``False`` when it already was.
+
+### disabled_identifiers
+
+```python
+disabled_identifiers() -> list[str]
+```
+
+`tau_agent_core.extension_auth.AuthorizationStore.disabled_identifiers`
+
+The disabled identifiers, sorted.
+
+### enable
+
+```python
+enable(identifier: str) -> bool
+```
+
+`tau_agent_core.extension_auth.AuthorizationStore.enable`
+
+Remove ``identifier``'s disable. Authorization records are untouched.
+
+**Parameters**
+
+- `identifier: str` — A full extension identifier.
+
+**Returns**
+
+Whether a disable was removed.
+
 ### grandfather
 
 ```python
@@ -58,6 +106,30 @@ On the first start with no store, authorize every usable drop-in present and sav
 **Returns**
 
 The identifiers grandfathered, for the one-time notice; empty when the store already existed, which is every start after the first.
+
+### is_disabled
+
+```python
+is_disabled(identifier: str) -> bool
+```
+
+`tau_agent_core.extension_auth.AuthorizationStore.is_disabled`
+
+Whether ``tau ext disable`` recorded ``identifier`` (#58).
+
+**Parameters**
+
+- `identifier: str` — *(no description)*
+
+### known_identifiers
+
+```python
+known_identifiers() -> set[str]
+```
+
+`tau_agent_core.extension_auth.AuthorizationStore.known_identifiers`
+
+Every identifier a record names: authorized packages and drop-ins, and disables.
 
 ### load
 
@@ -179,6 +251,13 @@ empty-but-successful-looking answer.
 - `messages: list[dict[str, Any]]` — The sub-agent turn's messages; empty when ``ok`` is false.
 - `error: str | None` — Why it failed, or ``None`` when ``ok``.
 
+## BusDependencyError
+<!-- agent: yes -->
+
+`tau_agent_core.sdk.BusDependencyError`
+
+A bus was asked for (``--bus``, ``bus_available=True``) but nats-py is not installed.
+
 ## ExplicitExtensionError
 <!-- agent: yes -->
 
@@ -236,6 +315,27 @@ or ``send_user_message``.
 
 - `RuntimeError` — no session with ``_append_custom_entry`` is bound (e.g. a bare ``ExtensionAPI()``); the entry is not dropped silently.
 - `ValueError` — propagated from ``_append_custom_entry`` when ``custom_type`` is empty or ``data`` is not a dict.
+
+### clear_warning
+
+```python
+clear_warning(key: str) -> None
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.clear_warning`
+
+Clear this extension's warning ``key``; clearing an absent one does nothing.
+
+Safe from a worker thread, as :meth:`set_warning` is.
+
+**Parameters**
+
+- `key: str` — The warning's name within this extension.
+
+**Raises**
+
+- `RuntimeError` — this api is not bound to a session or to a loaded extension.
+- `ValueError` — the extension is named ``tau``.
 
 ### emit
 
@@ -621,6 +721,38 @@ Name the session (:func:`apply_session_name`, shared with the RPC verb).
 
 - `RuntimeError` — this api is not bound to a session.
 - `ValueError` — ``name`` is empty.
+
+### set_warning
+
+```python
+set_warning(key: str, message: str, severity: str = 'warning') -> None
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.set_warning`
+
+Set this extension's warning ``key`` on the session until cleared (#60).
+
+It stays readable by every head and by a client attaching later, and is
+shown once through ``ui.notify`` when new or changed, and again after a
+session swap. Setting the same key replaces it. It persists across
+new, fork and switch until cleared; a disable or a reload clears it.
+
+Safe from a worker thread: the warning is checked on the calling thread.
+While the session's loop runs, the write goes onto that loop, returns
+before it lands, and a listener's exception reaches the loop's handler,
+not the caller; otherwise it applies at once on the calling thread. It
+never moves the session onto the caller's loop.
+
+**Parameters**
+
+- `key: str` — The warning's name within this extension.
+- `message: str` — One line.
+- `severity: str = 'warning'` — ``"warning"`` or ``"error"``.
+
+**Raises**
+
+- `RuntimeError` — this api is not bound to a session or to a loaded extension.
+- `ValueError` — the extension is named ``tau``, which τ reserves; a non-string or blank key or message; a message of more than one line; or an unknown severity.
 
 ### submit
 
@@ -1886,6 +2018,43 @@ like :meth:`notify`: the delegate's status strip in the TUI; one
 
 - `ValueError` — ``key`` is not a non-empty string.
 
+## ExtensionWarning
+<!-- agent: yes -->
+
+```python
+class ExtensionWarning(source: str, key: str, message: str, severity: WarningSeverity)
+```
+
+`tau_agent_core.extension_warnings.ExtensionWarning`
+
+One current warning on a session.
+
+A load failure is mirrored as ``source="tau"``, ``key="load:<label>"``,
+severity ``"error"``, with only the error's first line. The full record is
+in ``load_errors``, so a client that shows those may filter these out by
+that prefix.
+
+**Constructor parameters**
+
+- `source: str` — The extension identifier that set it, or ``"tau"``.
+- `key: str` — Its name within ``source``; setting the same key replaces it.
+- `message: str` — One line for the user.
+- `severity: WarningSeverity` — One of :data:`WARNING_SEVERITIES`.
+
+### summary
+
+```python
+summary() -> str
+```
+
+`tau_agent_core.extension_warnings.ExtensionWarning.summary`
+
+The line every head shows for this warning.
+
+**Returns**
+
+``"<source>: <message>"``.
+
 ## HeadlessDialogError
 <!-- agent: yes -->
 
@@ -2067,7 +2236,8 @@ authorize_discovered_extension(token: str, *, extensions_dir: str | Path | None 
 Write an authorization record for the discovered source ``token`` names.
 
 The non-interactive route to the gate (docs/EXTENSION-PACKAGES.md §9):
-``tau ext authorize``, for a host with no prompt to answer.
+``tau ext authorize``, for a host with no prompt to answer. Creating the
+store grandfathers the drop-ins present first (:func:`_grandfather_before_first_write`).
 
 **Parameters**
 
@@ -2095,6 +2265,38 @@ default_extensions_dir() -> Path
 `tau_agent_core.extension_sources.default_extensions_dir`
 
 The drop-in directory: ``<tau home>/extensions``.
+
+## disable_discovered_extension
+<!-- agent: yes -->
+
+```python
+disable_discovered_extension(token: str, *, extensions_dir: str | Path | None = None, store_path: str | Path | None = None) -> tuple[str, bool]
+```
+
+`tau_agent_core.sdk.disable_discovered_extension`
+
+``tau ext disable``: record that a known extension is never loaded or announced (#58).
+
+``token`` is a drop-in path, an identifier, or its last dotted segment,
+resolved fresh against every identifier discovery or the store knows. An
+unknown name is refused, so a typo cannot record a disable for nothing.
+Creating the store grandfathers the drop-ins present first
+(:func:`_grandfather_before_first_write`).
+
+**Parameters**
+
+- `token: str` — What the user typed.
+- `extensions_dir: str | Path | None = None` — The drop-in directory; ``None`` is the default.
+- `store_path: str | Path | None = None` — The authorization store; ``None`` is the file beside it.
+
+**Returns**
+
+``(identifier, changed)``; ``changed`` is ``False`` when it was already disabled.
+
+**Raises**
+
+- `ValueError` — ``token`` names nothing known, or is ambiguous.
+- `AuthorizationStoreError` — The store cannot be read.
 
 ## discover_dropins
 <!-- agent: yes -->
@@ -2136,6 +2338,32 @@ Reads distribution metadata only: the entry points, RECORD and
 **Returns**
 
 One source per entry point, sorted by identifier.
+
+## enable_discovered_extension
+<!-- agent: yes -->
+
+```python
+enable_discovered_extension(token: str, *, extensions_dir: str | Path | None = None, store_path: str | Path | None = None) -> str
+```
+
+`tau_agent_core.sdk.enable_discovered_extension`
+
+``tau ext enable``: remove a disable; the extension's authorization is unchanged (#58).
+
+**Parameters**
+
+- `token: str` — A disabled identifier or its last dotted segment.
+- `extensions_dir: str | Path | None = None` — The drop-in directory; ``None`` is the default.
+- `store_path: str | Path | None = None` — The authorization store; ``None`` is the file beside it.
+
+**Returns**
+
+The identifier enabled.
+
+**Raises**
+
+- `ValueError` — ``token`` names no disabled extension, or is ambiguous.
+- `AuthorizationStoreError` — The store cannot be read.
 
 ## ext_channel
 <!-- agent: yes -->
@@ -2298,6 +2526,31 @@ no policy the form raises instead of fabricating an answer.
 
 The field's declared ``default`` when present; otherwise the kind's empty value (``""``, ``0``, ``False``, ``[]``), or a ``select``'s first option.
 
+## is_extension_disabled
+<!-- agent: yes -->
+
+```python
+is_extension_disabled(identifier: str, *, extensions_dir: str | Path | None = None, store_path: str | Path | None = None) -> bool
+```
+
+`tau_agent_core.sdk.is_extension_disabled`
+
+Whether ``tau ext disable`` recorded ``identifier`` (#58); reads, never writes.
+
+**Parameters**
+
+- `identifier: str` — A full extension identifier.
+- `extensions_dir: str | Path | None = None` — The drop-in directory; ``None`` is the default.
+- `store_path: str | Path | None = None` — The authorization store; ``None`` is the file beside it.
+
+**Returns**
+
+Whether a disable names it.
+
+**Raises**
+
+- `AuthorizationStoreError` — The store cannot be read.
+
 ## is_path_spec
 <!-- agent: yes -->
 
@@ -2312,6 +2565,29 @@ Whether an ``-e`` value names a path: it holds a ``/`` or ends in ``.py``.
 **Parameters**
 
 - `raw: str` — *(no description)*
+
+## load_failure_notice
+<!-- agent: yes -->
+
+```python
+load_failure_notice(error: ExtensionLoadError) -> str
+```
+
+`tau_agent_core.sdk.load_failure_notice`
+
+The one sentence every head shows for an extension that failed to load (#58).
+
+A discovered extension's sentence ends with how to stop loading it. One
+named with ``-e`` overrides a disable, so its sentence says to drop the
+flag instead.
+
+**Parameters**
+
+- `error: ExtensionLoadError` — From :attr:`LoadExtensionsResult.errors`.
+
+**Returns**
+
+A sentence naming the extension and the error, and what silences it.
 
 ## match_choice
 <!-- agent: yes -->
@@ -2380,6 +2656,25 @@ A fresh id for an injected tool call (docs/SEEDED-BRANCHES.md §5).
 
 Nine characters drawn from ``[a-zA-Z0-9]`` by :mod:`secrets`.
 
+## noticed_withheld
+<!-- agent: yes -->
+
+```python
+noticed_withheld(records: Sequence[ExtensionRecord]) -> list[ExtensionRecord]
+```
+
+`tau_agent_core.sdk.noticed_withheld`
+
+The withheld records a head announces: all but ``disabled``, which the user silenced (#58).
+
+**Parameters**
+
+- `records: Sequence[ExtensionRecord]` — Withheld records, from a load result or a listing.
+
+**Returns**
+
+Those that get a notice or a prompt, in order.
+
 ## orphan_subscription_notices
 <!-- agent: yes -->
 
@@ -2415,8 +2710,9 @@ Decide which extensions load, from metadata and paths alone (docs/EXTENSION-PACK
 
 Discovered drop-ins load first, then discovered packages, then the ``-e``
 values in argument order. A discovered source loads only with an
-authorization record. An ``-e`` value is authorized by being named, and
-claims its identifier first: a discovered source with the same identifier
+authorization record and no disable (#58); a disabled one is withheld as
+``disabled`` before anything else is checked. An ``-e`` value is authorized
+by being named, overrides a disable, and claims its identifier first: a discovered source with the same identifier
 but another target is withheld as a ``collision``, as is a later
 discovered source whose identifier an earlier one already claimed. Two
 routes to one file load once.
@@ -2457,6 +2753,25 @@ Read ``session``'s name (:func:`~tau_agent_core.session_log.session_name`).
 
 The newest ``session_info`` name, or ``None`` if never named or the newest name is empty.
 
+## require_bus_dependency
+<!-- agent: yes -->
+
+```python
+require_bus_dependency() -> None
+```
+
+`tau_agent_core.sdk.require_bus_dependency`
+
+Refuse a bus-enabled run whose bus client library is missing (#56).
+
+Locates ``nats`` with :func:`importlib.util.find_spec`, without importing
+it. Every head calls this before any extension loads, so a missing extra is
+reported as itself rather than as some extension's ``No module named 'nats'``.
+
+**Raises**
+
+- `BusDependencyError` — ``nats`` is not importable; the message is :data:`BUS_DEPENDENCY_HINT`.
+
 ## resolve_explicit
 <!-- agent: yes -->
 
@@ -2483,7 +2798,7 @@ The source.
 
 **Raises**
 
-- `ExplicitExtensionError` — The path is an installed package's module file (it would load twice under two identities), its stem is unusable, the shorthand is ambiguous, or nothing by that name is installed.
+- `ExplicitExtensionError` — The value names compiled bytecode (``.pyc``), the path is an installed package's module file (it would load twice under two identities), its stem is unusable, the shorthand is ambiguous, or nothing by that name is installed.
 
 ## resolve_shorthand
 <!-- agent: yes -->
@@ -2756,6 +3071,25 @@ Shared by :meth:`ExtensionUI.panel` and the TUI's ``ExtensionPanel`` widget.
 
 - `ValueError` — a non-dict spec, a non-string title, zero or several body keys, or any malformed body or action.
 
+## warnings_marker
+<!-- agent: yes -->
+
+```python
+warnings_marker(warnings: list[ExtensionWarning]) -> str | None
+```
+
+`tau_agent_core.extension_warnings.warnings_marker`
+
+The persistent one-line marker a head shows while any warning is current.
+
+**Parameters**
+
+- `warnings: list[ExtensionWarning]` — The current warnings, as :meth:`AgentSession.extension_warnings` reads them.
+
+**Returns**
+
+``"1 extension warning — /extensions"``, or with errors counted first, ``"1 extension error, 2 warnings — /extensions"``; ``None`` when empty.
+
 ## withheld_notice
 <!-- agent: yes -->
 
@@ -2795,4 +3129,4 @@ prompt may ask about an ``unauthorized`` record instead of showing its line.
 
 **Returns**
 
-One line for any grandfathered drop-ins, then one per withheld record.
+One line for any grandfathered drop-ins, then one per record in func:`noticed_withheld`.

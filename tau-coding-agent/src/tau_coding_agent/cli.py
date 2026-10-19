@@ -25,6 +25,7 @@ from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
+from tau_agent_core.sdk import BusDependencyError, require_bus_dependency
 from tau_agent_core.tau_home import TauHomeError, pin_home_variables, resolve_tau_home
 from tau_coding_agent.backends import validate_model_entries
 from tau_coding_agent.config import ConfigError, load_config
@@ -243,7 +244,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "declare that this run may reach a message bus, so extensions "
-            "declaring TOUCHES_BUS are allowed to load (e.g. nats_bus)"
+            "declaring TOUCHES_BUS are allowed to load (e.g. nats_bus); needs the "
+            "[bus] extra (nats-py)"
         ),
     )
     parser.add_argument(
@@ -850,6 +852,8 @@ def main(argv: list[str] | None = None) -> int:
                 "--connect/--cwd drive a `tau serve` daemon from the TUI; --print, "
                 "--mode rpc and --mode repl run the agent in this process"
             )
+        if args.bus and (args.mode in ("rpc", "repl") or args.print_mode):
+            require_bus_dependency()
 
         if args.mode == "rpc":
             if args.print_mode:
@@ -956,9 +960,12 @@ def main(argv: list[str] | None = None) -> int:
             return _launch_remote_tui(args, address)
         if args.cwd is not None:
             raise CLIError("--cwd names a directory on a daemon's machine; it needs --connect")
+        if args.bus:
+            require_bus_dependency()
         validate_model_entries(config)
         return _launch_tui(args, config)
     except (
+        BusDependencyError,
         ConfigError,
         ResourceError,
         UnsupportedCommandError,

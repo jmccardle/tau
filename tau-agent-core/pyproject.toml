@@ -76,6 +76,11 @@ dev = [
     # them is its own pass, and until then the gate must mean the same thing in
     # every clone. Raise this bound WITH that pass, never to make a hook go green.
     "mypy==2.1.*",
+    # tests/test_extension_packages.py builds real PEP 660 editable wheels with
+    # setuptools.build_meta in THIS venv, where no [build-system] floor applies,
+    # and a Python 3.12+ venv ships no setuptools at all. 82 writes the annotated
+    # finder MAPPING the editable-layout reader must handle.
+    "setuptools>=82",
 ]
 
 # The PUBLIC repository only. This tree has a second, private git remote whose

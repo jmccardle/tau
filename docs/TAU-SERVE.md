@@ -542,6 +542,32 @@ drive a tool-running agent. John chose:
   `packages/server` no longer needs to exist to serve it. A `web_root` that is
   not a directory fails at start.
 
+Built note (2026-10-19, `serve/http.py`, #52): τ logs every rejected handshake
+itself, as one foreground line naming the peer and the reason, so one grep for
+`handshake rejected from` finds them all:
+
+- `handshake rejected from 127.0.0.1:52814: missing Sec-WebSocket-Key header`
+- `handshake rejected from 127.0.0.1:52796: did not receive a valid HTTP request: connection closed while reading HTTP headers`
+- `handshake rejected from 127.0.0.1:52640: Origin https://evil.example is not Host 127.0.0.1:8256`
+
+The peer is `host:port`, `[v6]:port`, or `unix socket`. A connection that sends
+zero bytes is a browser preconnect and leaves no line. One that sends part of a
+request and closes is a rejection. The test is the byte count, not the
+exception, because both raise the same `EOFError`-caused `InvalidMessage`. A
+plain HTTP GET is answered by `process_request` (the page or a 404) and is not
+a rejection.
+
+The earlier `DroppedBeforeRequest` filter is retired. It matched websockets'
+`opening handshake failed` ERROR record, which websockets 17 no longer emits
+for most failures, so serve.log lost them. The hook is a `create_connection`
+subclass that counts bytes in `data_received` and reads
+`protocol.handshake_exc` after the handshake. websockets 14–16 raise that
+exception and 17 only stores it, so the line is the same on all four; on 14–16
+the subclass absorbs the `InvalidHandshake` it logged, leaving no second
+record. A failure that is not an `InvalidHandshake`, such as a
+`process_request` bug, still reaches websockets' own ERROR log with its
+traceback.
+
 ### 6.3 Unix sockets
 
 `asyncio` serves a unix socket with the same handler as TCP, and `websockets`
@@ -726,6 +752,46 @@ and serve's is `0.5`. The pass also found `app.py`'s
 `action_run_session_flow` reading `getattr(log, "cursor", None)`: `SessionLog`
 has had no `cursor` attribute since `CURSORS.md`, so the read was always
 `None`. It now reads the head cursor's leaf.
+
+### 7.5 Extension warnings reach a late attach (2026-10-19, #60)
+
+`ui.notify` and `ui.set_status` publish one-off events, so a client that
+attached after a warning was issued never saw it. `AgentSession` now keeps the
+current extension warnings (`extension_warnings()`, docs/extensions.md
+"Warnings"), and both wires carry the set. Warnings are extension state, not
+session state: they persist across new, fork and switch/resume until the
+extension clears or replaces its key. After a swap each warning is shown once
+more, and the set does not change. A later post-swap `session_start` (#60
+decision B) may revisit this for warnings that belong to one session. Neither protocol version moves,
+because RPC 3.0 and serve 0.11 are unreleased.
+
+- **Serve:** `Surface.warnings` is a list of `ExtensionWarning`
+  `{source, key, message, severity}`. `Attached.surface` and `describe` both
+  carry it. Each change pushes the whole set as a `ui` event with op
+  `warnings` (`UiWarnings`, `{op: "warnings", warnings: [...]}`), which
+  replaces `surface.warnings`. That is a new arm of the existing `ui` event,
+  not a new event kind. `ServeClient`'s replica folds it.
+- **RPC:** `get_capabilities` and `get_extension_state` both gain `warnings`,
+  the same records. RPC has no push for it, because the `ui_methods` channel
+  does not exist (RC3). A host that polls reads `get_extension_state`, which
+  is cheap; `get_capabilities` is the whole protocol document (about 185 KB). A human running `--mode
+  rpc` or `-p` still sees each new warning once on stderr, because setting a
+  warning also calls `ui.notify` (docs/extensions.md "Warnings").
+- **One change, one event:** a change that touches several entries, such as
+  re-mirroring load failures after `load_extensions`, is batched into one `ui`
+  warnings event carrying the final set. A warning set from a worker thread is
+  moved onto the session's loop before anything is published.
+- **Loader notices:** `load_errors` still carries the loader's records. Each
+  failure is also an entry in `warnings`, so a client's warning count covers
+  it. The contract is: `source` is `"tau"`, `key` is `"load:<label>"` where
+  `<label>` is the `load_errors` path, `severity` is `"error"`, and `message`
+  holds only the error's first line. One entry exists per `load_errors` row,
+  and it is gone when that row is. The TUI's warning marker counts these on
+  purpose, so a load failure stays visible after its toast fades. A client
+  that already lists `load_errors` may leave the `load:` entries out of its
+  warnings list (`source == "tau"` and the `load:` key prefix), as tau-code
+  does. #55's exclusion notice and #58's load-failure text move onto the
+  store once their branches merge.
 
 ## 8. The demo: comparing cursors from one leaf
 

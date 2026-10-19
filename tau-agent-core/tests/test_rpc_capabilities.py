@@ -44,6 +44,7 @@ def test_the_document_has_exactly_k1s_keys():
         "ui_methods",
         "declined",
         "limits",
+        "warnings",
         "$defs",
     }
 

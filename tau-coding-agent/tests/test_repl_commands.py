@@ -206,3 +206,20 @@ async def test_a_head_command_with_stray_text_changes_nothing(env: ReplEnv, line
     """Both of the argument-less words refuse rather than ignore the extra."""
     await env.run([line])
     assert "takes no argument" in env.text
+
+
+async def test_an_unresolvable_ext_name_goes_to_the_command_door_not_the_model(
+    env: ReplEnv,
+) -> None:
+    """#57: the core's peek marks ``/ext:<owner>.<cmd>`` a (refused) command, so no turn."""
+    env.install(
+        _answers(
+            SubmissionResult(accepted=False, submission_id="s", rejection_reason="not a command"),
+            "ext:pirate:speak",
+        )
+    )
+    await env.run(["/ext:pirate.speak"])
+    assert env.backend is not None
+    assert env.submissions == []
+    assert [s.text for s in env.backend.commands] == ["/ext:pirate.speak"]
+    assert "not a command" in env.text

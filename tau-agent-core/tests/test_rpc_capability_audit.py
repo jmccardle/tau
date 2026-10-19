@@ -62,6 +62,7 @@ EXPOSED: dict[str, str] = {
     # audit could not see any of them, which is why the count jumped without a
     # single new behaviour being added.
     "tools": "get_tools",
+    "extension_warnings": "get_capabilities",
     "model_resolver": "get_models",
     "compaction_settings": "get_session_stats",
     "set_auto_compaction": "set_auto_compaction",
@@ -90,6 +91,15 @@ EXPOSED: dict[str, str] = {
 }
 
 NOT_EXPOSED: dict[str, str] = {
+    "set_extension_warning": (
+        "A warning is written by the extension or loader that knows the problem (#60); a "
+        "host reads the set and has no problem of its own to report through it."
+    ),
+    "clear_extension_warning": "Cleared by whoever set it, for set_extension_warning's reason.",
+    "subscribe_extension_warnings": (
+        "An in-process callback; serve pushes each change as a `ui` event, and RPC hosts "
+        "re-read get_capabilities."
+    ),
     "authorize_extension": (
         "Authorizing runs an extension's code on the user's say-so (docs/EXTENSION-PACKAGES.md "
         "§5); a wire verb waits on deciding who may grant that from a remote head."

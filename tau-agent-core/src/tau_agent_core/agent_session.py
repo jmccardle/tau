@@ -27,7 +27,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
 from uuid import uuid4
 
 from tau_llm.abort import AbortSignal
@@ -59,6 +59,13 @@ from tau_agent_core.messages import (
     create_custom_message,
     last_assistant_text,
     turn_error_message,
+)
+from tau_agent_core.extension_warnings import (
+    TAU_SOURCE,
+    ExtensionWarning,
+    ExtensionWarnings,
+    WarningSeverity,
+    validate_warning,
 )
 from tau_agent_core.extensions.registry import ExtensionRegistry
 from tau_agent_core.extensions.runner import (
@@ -650,6 +657,7 @@ class AgentSession:
         self._loaded_extensions: dict[str, LoadedExtension] = {}
         self._disabled_paths: set[str] = set()
         self._extension_load_errors: list["ExtensionLoadError"] = []
+        self._warnings = ExtensionWarnings()
         self._extension_withheld: list[ExtensionRecord] = []
         self._extension_dirs: tuple[str | None, str | None] = (None, None)
         self._extension_start_errors: dict[str, str] = {}
@@ -890,6 +898,17 @@ class AgentSession:
     @session_log.setter
     def session_log(self, log: SessionLog) -> None:
         self.cursor = Cursor.newest(log)
+        self._reannounce_warnings()
+
+    def _reannounce_warnings(self) -> None:
+        """Show each current warning once more, for the user of the session just swapped to.
+
+        Warnings are extension state and survive the swap (#60), so the store and
+        its listeners do not change; only the notices repeat.
+        """
+        ui = self._extension_api.context.ui
+        for warning in self._warnings.current():
+            ui.notify(warning.summary(), warning.severity, source=warning.source)
 
     @property
     def state(self) -> SessionState:
@@ -1830,9 +1849,10 @@ class AgentSession:
         :func:`~tau_agent_core.sdk.plan_extensions` decides what loads
         (docs/EXTENSION-PACKAGES.md §5). Each extension's ``register(api)`` runs
         against an api bound to its own runner bucket (:meth:`_bind_extension_api`),
-        in load order, so its hooks fire in this session's loop. Nothing is
-        printed; the caller surfaces ``errors``, ``withheld`` and
-        ``grandfathered``.
+        in load order, so its hooks fire in this session's loop. It claims the
+        running loop as the session's, as a turn does, so a thread an extension
+        starts here reaches that loop. Nothing is printed; the caller surfaces
+        ``errors``, ``withheld`` and ``grandfathered``.
 
         Args:
             explicit_paths: ``-e`` values, paths or module names. A failure
@@ -1862,6 +1882,7 @@ class AgentSession:
                 register (#47), with the original as ``__cause__``; not raised
                 when ``collect_explicit_errors`` is set.
         """
+        self._bind_loop()
         if extensions_config is not None:
             self._extensions_config = extensions_config
 
@@ -1881,6 +1902,7 @@ class AgentSession:
             self._loaded_extensions[loaded.path] = loaded
             self._disabled_paths.discard(loaded.path)
         self._extension_load_errors = list(result.errors)
+        self._sync_load_warnings()
         self._extension_withheld = list(result.withheld)
         self.check_tool_filters()
         for label, topics in self.orphan_subscriptions().items():
@@ -1920,6 +1942,113 @@ class AgentSession:
             extensions=list(self._loaded_extensions.values()),
             errors=list(self._extension_load_errors),
         )
+
+    @agent_facing(topic="extensions")
+    def extension_warnings(self) -> list[ExtensionWarning]:
+        """Every current extension warning (#60).
+
+        Extension state, not session state: kept across new, fork and switch
+        until its writer clears or replaces it, or its extension is disabled
+        or reloaded. τ mirrors each extension that failed to load as a
+        ``"tau"`` error keyed ``load:<label>``.
+
+        Returns:
+            The warnings, oldest key first.
+        """
+        return self._warnings.current()
+
+    def _sync_load_warnings(self) -> None:
+        """Mirror the load failures into the store, quietly: every head already announced them."""
+        wanted = {f"load:{e.path}": e for e in self._extension_load_errors}
+        with self._warnings.batch():
+            for w in self._warnings.current():
+                if w.source == TAU_SOURCE and w.key.startswith("load:") and w.key not in wanted:
+                    self._warnings.clear(w.source, w.key)
+            for key, error in wanted.items():
+                lines = error.error.strip().splitlines()
+                detail = f": {lines[0]}" if lines else ""
+                name = extension_identifier(error.path)
+                self._warnings.set(
+                    ExtensionWarning(TAU_SOURCE, key, f"{name} failed to load{detail}", "error")
+                )
+
+    def _on_own_loop(self, change: Callable[[], object]) -> None:
+        """Make a warnings change where it is safe, without ever claiming the session's loop.
+
+        While the session's bound loop runs, the change runs on it: inline when
+        called there, otherwise marshalled with ``call_soon_threadsafe``, so
+        listeners (serve's publish, the TUI's marker) see only that loop. With
+        no live bound loop the change runs here under the store's lock, which is
+        safe only while no listener depends on a loop that never bound (an SDK
+        host under ``asyncio.run`` before any turn or ``session_start``; no τ
+        mode does this). Only those two bind a loop; a warning write never does (#60).
+        """
+        try:
+            running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        bound = self._loop
+        if bound is not None and self._loop_owns_session(bound) and running is not bound:
+            bound.call_soon_threadsafe(change)
+            return
+        change()
+
+    @agent_facing(topic="extensions")
+    def set_extension_warning(
+        self, source: str, key: str, message: str, severity: str = "warning"
+    ) -> None:
+        """Set the warning ``key`` from ``source``, replacing one already there.
+
+        An extension calls :meth:`ExtensionAPI.set_warning`, which names itself;
+        τ writes with ``source="tau"``. A new or changed warning is also shown
+        once through ``ui.notify`` at ``severity``. Safe from any thread: the
+        warning is checked here, then set by :meth:`_on_own_loop`. Marshalled
+        from another thread, it returns before the warning lands, and a
+        listener's exception goes to the loop's exception handler, not here.
+
+        Args:
+            source: An extension identifier, or ``"tau"``.
+            key: The warning's name within ``source``.
+            message: One line.
+            severity: ``"warning"`` or ``"error"``.
+
+        Raises:
+            ValueError: a non-string or blank source, key or message, a message
+                of more than one line, or an unknown severity.
+        """
+        warning = ExtensionWarning(source, key, message, cast(WarningSeverity, severity))
+        validate_warning(warning)
+
+        def change() -> None:
+            if self._warnings.set(warning):
+                self._extension_api.context.ui.notify(warning.summary(), severity, source=source)
+
+        self._on_own_loop(change)
+
+    @agent_facing(topic="extensions")
+    def clear_extension_warning(self, source: str, key: str) -> None:
+        """Remove a warning; clearing an absent one does nothing. Safe from any thread.
+
+        Args:
+            source: The extension identifier, or ``"tau"``.
+            key: The warning's name within ``source``.
+        """
+        self._on_own_loop(lambda: self._warnings.clear(source, key))
+
+    def subscribe_extension_warnings(
+        self, listener: Callable[[list[ExtensionWarning]], None]
+    ) -> Callable[[], None]:
+        """Call ``listener`` with every current warning after each change.
+
+        Args:
+            listener: Called once per change, on the session's loop once one is
+                bound, under the store's lock: it must not block or wait on
+                another thread.
+
+        Returns:
+            The unsubscribe.
+        """
+        return self._warnings.subscribe(listener)
 
     @agent_facing(topic="extensions")
     def extension_records(self) -> list[ExtensionRecord]:
@@ -2019,6 +2148,7 @@ class AgentSession:
             self._extension_load_errors.append(
                 ExtensionLoadError(path=source.label, error=str(exc), source=source)
             )
+            self._sync_load_warnings()
             return ExtensionActionResult(
                 "authorize",
                 source.label,
@@ -2174,6 +2304,7 @@ class AgentSession:
             self._registry.unregister_command(name)
         for key in bucket.shortcuts:
             self._registry.unregister_shortcut(key)
+        self._warnings.clear_source(bucket.name)
 
     async def disable_extension(self, path: str) -> ExtensionActionResult:
         """Tear down and detach a loaded extension so its hooks stop firing (S70).
@@ -3063,7 +3194,8 @@ class AgentSession:
 
         Returns:
             The command it would dispatch as, or ``None`` for ordinary text,
-            including an unknown ``/…``, which goes to the model.
+            including an unknown ``/…``, which goes to the model. An unresolvable
+            ``/ext:…`` comes back with ``refusal`` set, which :meth:`submit` refuses.
         """
         return resolve_command(text, self._registry.command_names())
 
@@ -3165,6 +3297,16 @@ class AgentSession:
 
         if sub.expand_commands:
             invocation = self.resolve_command(text)
+            if invocation is not None and invocation.refusal is not None:
+                return (
+                    text,
+                    images,
+                    SubmissionResult(
+                        accepted=False,
+                        submission_id=sub.submission_id,
+                        rejection_reason=invocation.refusal,
+                    ),
+                )
             if invocation is not None:
                 return (
                     text,
@@ -3207,7 +3349,8 @@ class AgentSession:
         2. **The ``input`` hook chain**, which may transform or consume the text.
         3. **Command dispatch**, only when ``sub.expand_commands``: a resolved
            command (:meth:`resolve_command`) runs or steps instead of a turn and is
-           reported on ``SubmissionResult.command``. Off by default, which is a
+           reported on ``SubmissionResult.command``; an unresolvable ``/ext:…``
+           name is refused (``accepted=False``, #57). Off by default, which is a
            security property: a bus payload starting ``/compact`` stays prompt text.
         4. **A pending extension lock** refuses the turn.
         5. **The turn**, persisted unless ``sub.store_history`` is False, bracketed
@@ -3883,11 +4026,13 @@ class AgentSession:
             messages only — see :meth:`_run_one_turn`).
 
         Raises:
-            UnsupportedCommandError: ``text`` resolves to a command. See above —
-                this method has nowhere to put the outcome, so it refuses before
-                anything runs instead of swallowing it.
+            UnsupportedCommandError: ``text`` resolves to a command, or to a refused
+                ``/ext:`` name. See above — this method has nowhere to put the
+                outcome, so it refuses before anything runs instead of swallowing it.
         """
         invocation = self.resolve_command(text)
+        if invocation is not None and invocation.refusal is not None:
+            raise UnsupportedCommandError(invocation.refusal)
         if invocation is not None:
             raise UnsupportedCommandError(
                 f"prompt() was handed the command /{invocation.name}, and its "

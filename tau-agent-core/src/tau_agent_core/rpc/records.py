@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Never, NotRequired, TypedDict
 
+from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_agent_core.flows import FlowStep, Ready, View
 from tau_agent_core.json_schema import Named, Pattern, Shape
 from tau_llm.types import (
@@ -634,6 +635,7 @@ RESULT_TYPES: dict[str, dict[str, Any]] = {
         "ui_methods": list[str],
         "declined": list[DeclinedVerb],
         "limits": Limits,
+        "warnings": list[ExtensionWarning],
         "$defs": dict[str, dict[str, Any]],
     },
     "new_session": _SESSION,
@@ -663,7 +665,11 @@ RESULT_TYPES: dict[str, dict[str, Any]] = {
     "get_entry": {"entry": Annotated[dict[str, Any], Shape(Entry)]},
     "get_pending_request": {"request": ExtensionRequest | None},
     "list_managed_extensions": {"extensions": list[ManagedExtension]},
-    "get_extension_state": {"extensions": list[ExtensionInfo], "errors": list[LoadError]},
+    "get_extension_state": {
+        "extensions": list[ExtensionInfo],
+        "errors": list[LoadError],
+        "warnings": list[ExtensionWarning],
+    },
     "list_extensions": {"extensions": list[ExtensionRecordWire]},
     "get_extension_config": {
         "schema": Annotated[dict[str, Any], Shape(FormSpec)] | None,

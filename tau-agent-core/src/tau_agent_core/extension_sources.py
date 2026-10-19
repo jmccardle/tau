@@ -7,6 +7,7 @@ module name for an installed package and the file stem, verbatim, for a file;
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
@@ -321,40 +322,200 @@ def discover_packages() -> list[ExtensionSource]:
     return sorted(found, key=lambda source: source.identifier)
 
 
+class _UnreadableLayout(Exception):
+    """An editable install records a finder or ``.pth`` whose layout cannot be read.
+
+    Attributes:
+        hook_only: True when the only thing recorded is an import-hook ``.pth``
+            (Hatchling's ``editables``), whose redirector keeps module names;
+            False for a finder or ``.pth`` that could not be read at all.
+    """
+
+    def __init__(self, message: str, *, hook_only: bool = False) -> None:
+        """Carry the reason and whether only an import hook was found."""
+        super().__init__(message)
+        self.hook_only = hook_only
+
+
+def _finder_mapping(tree: ast.Module) -> dict[str, Path] | None:
+    """The literal ``MAPPING`` a setuptools finder assigns, annotated or not; ``None`` if absent."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            named = any(isinstance(t, ast.Name) and t.id == "MAPPING" for t in node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            named = isinstance(node.target, ast.Name) and node.target.id == "MAPPING"
+        else:
+            continue
+        if not named or node.value is None:
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (ValueError, TypeError, SyntaxError, RecursionError):
+            return None
+        if not isinstance(value, dict):
+            return None
+        return {str(k): Path(str(v)) for k, v in value.items()}
+    return None
+
+
+def _editable_layout(dist: metadata.Distribution) -> tuple[dict[str, Path], list[Path]] | None:
+    """Where an editable install puts its modules, read from its RECORD without importing it.
+
+    Two shapes, both listed in RECORD: a setuptools ``__editable___*_finder.py``
+    whose literal ``MAPPING`` (``MAPPING = …`` or ``MAPPING: dict[str, str] = …``)
+    maps a top-level name to its directory, and a ``.pth`` whose non-``import``
+    lines are ``sys.path`` entries (a source root, or the link tree of
+    ``editable_mode=strict``). A ``.pth`` of only ``import`` lines is a finder's hook.
+
+    Returns:
+        ``(mapping, path_entries)``, or ``None`` when RECORD lists neither shape.
+
+    Raises:
+        _UnreadableLayout: A finder cannot be read, parsed, or holds no literal
+            ``MAPPING``; a ``.pth`` cannot be read; or the files RECORD lists
+            yield no layout at all. Guessing instead is how a layout went unread.
+    """
+    mapping: dict[str, Path] = {}
+    entries: list[Path] = []
+    seen: list[str] = []
+    for f in dist.files or []:
+        name = f.name
+        located = Path(str(dist.locate_file(f)))
+        if name.startswith("__editable__") and name.endswith("_finder.py"):
+            seen.append(name)
+            try:
+                tree = ast.parse(located.read_text())
+            except (OSError, SyntaxError, ValueError) as exc:
+                raise _UnreadableLayout(f"its finder {located} cannot be parsed ({exc})") from exc
+            found = _finder_mapping(tree)
+            if found is None:
+                raise _UnreadableLayout(f"its finder {located} holds no literal MAPPING")
+            mapping.update(found)
+        elif name.endswith(".pth"):
+            seen.append(name)
+            try:
+                lines = located.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError) as exc:
+                raise _UnreadableLayout(f"its {located} cannot be read ({exc})") from exc
+            for line in (raw.strip() for raw in lines):
+                if line and not line.startswith(("#", "import ", "import\t")):
+                    entries.append(located.parent / line)
+    if not seen:
+        return None
+    if not mapping and not entries:
+        names = ", ".join(seen)
+        verb = "names" if len(seen) == 1 else "name"
+        raise _UnreadableLayout(
+            f"its {names} {verb} no source directory τ can read (an import hook)",
+            hook_only=True,
+        )
+    return mapping, entries
+
+
+def _editable_candidates(module: str, mapping: dict[str, Path], entries: list[Path]) -> list[Path]:
+    """The files ``module`` would load from under an editable layout (:func:`_editable_layout`)."""
+    found: list[Path] = []
+    for key in sorted(mapping, key=len, reverse=True):
+        if module == key or module.startswith(key + "."):
+            rest = [part for part in module[len(key) :].split(".") if part]
+            base = mapping[key].joinpath(*rest)
+            found += [base / "__init__.py", base.with_name(base.name + ".py")]
+            break
+    stem = module.replace(".", "/")
+    for entry in entries:
+        found += [entry / f"{stem}.py", entry / stem / "__init__.py"]
+    return found
+
+
 def _module_files(source: ExtensionSource) -> set[Path]:
     """The installed files that are ``source``'s module, read from metadata only.
 
     ``a.b.c`` is ``a/b/c.py`` or ``a/b/c/__init__.py``: located through RECORD for
-    an ordinary install, and under the ``direct_url.json`` source directory for an
-    editable one, whose RECORD lists only the finder.
+    an ordinary install. An editable install's RECORD lists only its finder or
+    ``.pth``, so its real layout is read from those (:func:`_editable_layout`);
+    only an editable install whose RECORD lists neither is probed at ``<root>``
+    and ``<root>/src`` of its ``direct_url.json`` directory.
+
+    Raises:
+        _UnreadableLayout: The editable install records a layout that cannot be read.
     """
     stem = source.target.replace(".", "/")
     rels = {f"{stem}.py", f"{stem}/__init__.py"}
     found: set[Path] = set()
-    if source.editable_path:
-        root = Path(source.editable_path)
-        for base in (root, root / "src"):
-            found.update((base / rel).resolve() for rel in rels if (base / rel).is_file())
+    dist: metadata.Distribution | None = None
     if source.distribution:
         try:
             dist = metadata.distribution(source.distribution)
         except metadata.PackageNotFoundError:
-            return found
+            dist = None
+    if source.editable_path:
+        layout = _editable_layout(dist) if dist is not None else None
+        if layout is not None:
+            candidates = _editable_candidates(source.target, *layout)
+        else:
+            root = Path(source.editable_path)
+            candidates = [base / rel for base in (root, root / "src") for rel in rels]
+        found.update(c.resolve() for c in candidates if c.is_file())
+    if dist is not None:
         for f in dist.files or []:
             if f.as_posix() in rels:
                 found.add(Path(str(dist.locate_file(f))).resolve())
     return found
 
 
+def _could_be_module(target: Path, module: str, *, hook_only: bool) -> bool:
+    """Whether file ``target`` could be ``module`` when the layout cannot be read.
+
+    Under an import hook that keeps names (Hatchling's ``editables``, which
+    refuses a prefix-changing source in dev mode), ``a.b.c`` can only be a
+    ``c.py`` or a ``c/__init__.py``. A setuptools finder can map any package,
+    nested ones included, to a directory of any name, so under an unreadable
+    finder every package directory could be the module, and so could ``c.py``.
+    """
+    last = module.rsplit(".", 1)[-1]
+    if target.name == "__init__.py":
+        return not hook_only or target.parent.name == last
+    return target.name == f"{last}.py"
+
+
 def _package_owning(path: Path, packages: list[ExtensionSource]) -> ExtensionSource | None:
-    """The discovered package whose module file ``path`` is, else ``None``."""
+    """The discovered package whose module file ``path`` is, else ``None``.
+
+    Raises:
+        ExplicitExtensionError: ``path`` is under an editable package's source
+            directory, is named so it could be that package's module
+            (:func:`_could_be_module`), and the package's layout cannot be read,
+            so whether it is cannot be told. Any other path, and any unreadable
+            package elsewhere, is not refused on that account.
+    """
     target = path.resolve()
     if target.is_dir():
         target = target / "__init__.py"
     for source in packages:
-        if source.kind == "package" and target in _module_files(source):
+        if source.kind != "package":
+            continue
+        try:
+            files = _module_files(source)
+        except _UnreadableLayout as exc:
+            root = Path(source.editable_path or "/").resolve()
+            if (
+                source.editable_path
+                and target.is_relative_to(root)
+                and _could_be_module(target, source.target, hook_only=exc.hook_only)
+            ):
+                raise ExplicitExtensionError(
+                    f"-e {path}: can't tell whether this is the module {source.target} of the "
+                    f"editable package {source.distribution} {source.version}, because {exc}. "
+                    f"Name the module instead (-e {source.target})."
+                ) from exc
+            continue
+        if target in files:
             return source
     return None
+
+
+BYTECODE_SUFFIXES = (".pyc", ".pyo")
+"""``-e`` values refused outright: a bytecode file hides its source from the two-identities check."""
 
 
 @agent_facing(topic="extensions")
@@ -379,10 +540,16 @@ def resolve_explicit(raw: str, packages: list[ExtensionSource]) -> ExtensionSour
         The source.
 
     Raises:
-        ExplicitExtensionError: The path is an installed package's module file (it
-            would load twice under two identities), its stem is unusable, the
-            shorthand is ambiguous, or nothing by that name is installed.
+        ExplicitExtensionError: The value names compiled bytecode (``.pyc``), the
+            path is an installed package's module file (it would load twice under
+            two identities), its stem is unusable, the shorthand is ambiguous, or
+            nothing by that name is installed.
     """
+    if raw.endswith(BYTECODE_SUFFIXES):
+        raise ExplicitExtensionError(
+            f"-e {raw}: that is compiled bytecode, which τ does not load; "
+            "load the .py source or name the module"
+        )
     if is_path_spec(raw):
         expanded = os.path.expanduser(raw)
         if not is_path_spec(expanded.rstrip("/")):

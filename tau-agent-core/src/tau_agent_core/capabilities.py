@@ -1367,8 +1367,17 @@ _GET_EXTENSION_STATE_RETURNS: dict[str, Any] = {
                 "extension_name, and is exactly what a listing must show."
             ),
         },
+        "warnings": {
+            "type": "array",
+            "description": (
+                "The session's current extension warnings, as "
+                "AgentSession.extension_warnings() reads them now (#60): the cheap "
+                "read for a host that polls, where get_capabilities is the whole "
+                "protocol document."
+            ),
+        },
     },
-    "required": ["extensions", "errors"],
+    "required": ["extensions", "errors", "warnings"],
 }
 
 _LIST_EXTENSIONS_RETURNS: dict[str, Any] = {
@@ -1380,7 +1389,8 @@ _LIST_EXTENSIONS_RETURNS: dict[str, Any] = {
                 "Every extension this session knows of and its state, as the rows of "
                 "`tau ext list` (docs/EXTENSION-PACKAGES.md §7): loaded, disabled, "
                 "failed, and found-but-not-loaded (unauthorized, unusable, "
-                "collision). Each row names the identifier, source kind, target, "
+                "collision). `disabled` is either turned off in this session or, with "
+                "a reason, disabled by `tau ext disable` and never imported (#58). Each row names the identifier, source kind, target, "
                 "distribution and version for a package, why it is not loaded, and "
                 "the subscribed ext: topics whose emitter is not loaded (#44). "
                 "Read-only: authorizing is not on the wire."

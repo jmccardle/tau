@@ -29,6 +29,7 @@ from typing import (
     get_type_hints,
 )
 
+from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_agent_core.flows import FlowStep, Performed, Ready, View
 from tau_agent_core.json_schema import Given, SchemaBuilder, Shape, Tagged, Named, summary
 from tau_agent_core.rpc import capabilities
@@ -445,6 +446,8 @@ class Surface:
         extensions: ``[path, enabled]`` per managed extension.
         loaded: Every loaded extension and what it registered.
         load_errors: ``[path, error]`` per extension file that failed to load.
+        warnings: The session's current extension warnings (#60); a ``ui``
+            event with op ``warnings`` carries each change.
     """
 
     commands: list[CommandInfo]
@@ -453,6 +456,7 @@ class Surface:
     extensions: list[list[Any]]
     loaded: list[ExtensionInfo]
     load_errors: list[list[str]]
+    warnings: list[ExtensionWarning]
 
 
 @dataclass
@@ -848,8 +852,16 @@ class UiPanel:
     op: Literal["panel"] = "panel"
 
 
+@dataclass
+class UiWarnings:
+    """The session's extension warnings after a change, every one: replaces :attr:`Surface.warnings`."""
+
+    warnings: list[ExtensionWarning]
+    op: Literal["warnings"] = "warnings"
+
+
 UiEventData = Annotated[
-    UiNotify | UiStatus | UiPanel,
+    UiNotify | UiStatus | UiPanel | UiWarnings,
     Named("UiEventData", "An extension display call, told apart by `op`."),
 ]
 

@@ -34,6 +34,7 @@ from tau_agent_core.projections import tool_result_for_user
 from tau_agent_core.rpc import dialect
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extension_locks import ExtensionRequest, request_at
+from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_agent_core.flows import DomainValue, DomainValues, FlowStep, Performed, Ready, View
 from tau_agent_core.sdk import ExtensionInfo, ExtensionLoadError, LoadExtensionsResult
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog, SessionInfo
@@ -667,6 +668,7 @@ class RemoteBackend(Backend):
         self._remote = remote
         self._session_id = session_id
         self._delegate: Any = None
+        self._warning_listeners: list[Callable[[list[ExtensionWarning]], None]] = []
         self._ends: dict[str, asyncio.Future[None]] = {}
         self._compacting = 0
         self._compaction_ends: dict[str, dict[str, Any]] = {}
@@ -758,6 +760,17 @@ class RemoteBackend(Backend):
         ]
         return infos, errors
 
+    def extension_warnings(self) -> list[ExtensionWarning]:
+        """The session's current extension warnings, as last described or pushed."""
+        return [ExtensionWarning(**w) for w in self.replica.surface["warnings"]]
+
+    def subscribe_extension_warnings(
+        self, listener: Callable[[list[ExtensionWarning]], None]
+    ) -> Callable[[], None]:
+        """Call ``listener`` after each pushed change to the warnings; returns the unsubscribe."""
+        self._warning_listeners.append(listener)
+        return lambda: self._warning_listeners.remove(listener)
+
     async def chat(self, messages: list[dict]) -> tuple[str, dict, list[dict]]:
         raise RemoteUnsupportedError("chat() is headless-only; the TUI uses submit_turn")
 
@@ -840,6 +853,9 @@ class RemoteBackend(Backend):
                 waiter.set_result(data)
             elif self._compacting:
                 self._compaction_ends[data["compaction_id"]] = data
+        if frame["kind"] == "ui" and data["op"] == "warnings":
+            for listener in list(self._warning_listeners):
+                listener(self.extension_warnings())
         delegate = self._delegate
         if delegate is None:
             return
@@ -869,6 +885,14 @@ class RemoteBackend(Backend):
             (str(c["name"]), str(c["description"]))
             for c in self.replica.surface["commands"]
             if c["origin"] == "extension" and not c["hidden"]
+        ]
+
+    def get_qualified_commands(self) -> list[tuple[str, str]]:
+        """The daemon session's qualified ``ext:`` command names, from its surface."""
+        return [
+            (str(c["name"]), str(c["description"]))
+            for c in self.replica.surface["commands"]
+            if c["origin"] == "extension" and c["hidden"]
         ]
 
     def get_prompt_commands(self) -> tuple[CommandCompletion, ...]:

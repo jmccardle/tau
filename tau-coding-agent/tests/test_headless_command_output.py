@@ -204,3 +204,32 @@ async def test_slash_resume_says_print_mode_cannot_perform_it(monkeypatch, tmp_p
         await run_print(args, _config())
     assert "/resume" in str(exc.value)
     assert "print mode" in str(exc.value)
+
+
+async def test_an_unresolvable_ext_name_is_refused_not_sent_to_the_model(monkeypatch, tmp_path):
+    """#57: the 2.x spelling ``/ext:<owner>.<cmd>`` exits non-zero naming the qualified form."""
+    import pytest
+
+    from tau_coding_agent.backends import TauBackend
+    from tau_coding_agent.headless import CLIError
+
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
+    ext = _write_ext(tmp_path)
+
+    async def _no_turn(*_args, **_kwargs):
+        raise AssertionError("a refused /ext: line reached the model")
+
+    monkeypatch.setattr(TauBackend, "stream_submission", _no_turn)
+
+    args = CLIArgs(
+        messages=["/ext:todos_ext.todos alpha"],
+        print_mode=True,
+        mode="text",
+        model="m",
+        extensions=[ext],
+        no_extensions=True,
+    )
+    with pytest.raises(CLIError) as exc:
+        await run_print(args, _config())
+    assert "/ext:todos_ext.todos is not a command" in str(exc.value)
+    assert str(exc.value).endswith("e.g. /ext:todos_ext:todos")

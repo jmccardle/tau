@@ -2082,3 +2082,30 @@ def test_the_projector_keeps_two_cursors_streaming_at_once_apart():
                 assert payload["replace"] is False
                 rebuilt[payload["cursor_id"]] += payload["delta"]
     assert rebuilt == texts
+
+
+async def test_an_unresolvable_ext_name_is_rejected_on_the_prompt_verb():
+    """#57: the 2.x spelling over RPC is SUBMISSION_REJECTED with the suggestion, never a turn."""
+
+    def my_ext(api):
+        api.register_command("ledger", {"description": "d", "handler": lambda a, c: "42"})
+
+    session = AgentSession(
+        session_log=InMemorySessionLog(), model=_model(), tools=[], extensions=[my_ext]
+    )
+    real_handler = RPCHandler(session)
+    (qualified,) = [n for n, _ in session.get_qualified_commands()]
+    owner = qualified.split(":")[1]
+
+    await real_handler._handle_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "prompt",
+            "params": {"text": f"/ext:{owner}.ledger", "expand_commands": True},
+        }
+    )
+
+    (response,) = await asyncio.wait_for(_drain(real_handler), timeout=5.0)
+    assert response["error"]["code"] == dialect.SUBMISSION_REJECTED
+    assert response["error"]["message"].endswith(f"e.g. /{qualified}")

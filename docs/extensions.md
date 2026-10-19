@@ -44,8 +44,10 @@ source, and loads one only once the user has authorized it:
 
 An unauthorized source is offered in the TUI and named on stderr by the
 headless modes, which never prompt: `tau ext authorize NAME` authorizes it, and
-`tau ext list` shows every source and its state. Drop-ins present at the first
-0.14.0 start are authorized once, automatically. Every explicit
+`tau ext list` shows every source and its state. A discovered extension that
+fails to load gets one notice and the run goes on; `tau ext disable NAME` stops
+loading and announcing it, and `tau ext enable NAME` undoes that. Drop-ins
+present at the first 0.14.0 start are authorized once, automatically. Every explicit
 `-e`/`--extension PATH|MODULE` (repeatable) is authorized by being named and
 still loads under `--no-extensions`, which suppresses discovery only. A value
 holding a `/` or ending in `.py` is a path; anything else names an installed
@@ -257,6 +259,75 @@ policy is configured (`--ui-defaults METHOD=ANSWER,...` or `config.json`'s
 `ui_defaults`) — this replaced an earlier silent auto-resolve (confirm→
 True, select→first) with a Fail-Early default, deliberately the stricter
 direction, not the convenient one.
+
+## Warnings
+
+Added 2026-10-19 (#60). A notification is gone once shown. A warning stays
+until it is cleared, so a head opened later, or a serve client that attaches
+after the first turn, still sees it.
+
+```python
+api.set_warning(key: str, message: str, severity: str = "warning") -> None
+api.clear_warning(key: str) -> None
+```
+
+- A warning is keyed by `(extension identifier, key)`. Setting the same key
+  replaces the old one, and clearing an absent key does nothing.
+- `key` and `message` are non-blank strings, and `message` is one line.
+  `severity` is `"warning"` or `"error"`. Anything else raises `ValueError`,
+  naming the field.
+- A new or changed warning is also shown once through `ui.notify`, as
+  `"<extension>: <message>"`. Headless, that is one stderr line,
+  `[τ] <severity>: <extension>: <message>`. Under `--mode json` it is one
+  record instead,
+  `{"type": "extension", "kind": "notify", "extension": "<extension>", "level": "<severity>", "message": "<extension>: <message>"}`.
+  Setting an identical warning again shows nothing.
+- **Lifecycle: warnings are extension state, not session state.** They
+  persist across `new`, `fork` and `switch`/resume until the extension clears
+  or replaces its own key. After each swap, every current warning is shown
+  once more, so the new session's user sees it; the set itself does not
+  change, so no listener or `ui` event fires. Disabling or reloading an
+  extension clears that extension's warnings. Set a warning wherever its
+  condition is found: `register()`, `session_start` or a tool. A later
+  post-swap `session_start` (#60 decision B, open) may revisit this for
+  warnings that belong to one session.
+- The identifier `tau` is reserved for τ's own warnings, so an extension
+  named `tau` that calls `set_warning` or `clear_warning` gets a
+  `ValueError`.
+- **Threads.** Both calls are safe from any thread, such as a tool's
+  `asyncio.to_thread` or an extension's own loop thread. The warning is checked
+  on the calling thread, so a bad one raises there. While the session's loop
+  runs, the change is made on that loop, where every listener runs. From
+  another thread the call returns before the warning lands, and a listener's
+  exception goes to that loop's exception handler, not to the caller. Between
+  turns of an SDK host that runs one `asyncio.run` per turn, the change is
+  made at once, under the store's lock. A warning write never moves the
+  session onto the caller's loop; only a turn and `session_start` bind one.
+- τ writes its own warnings with source `"tau"` through
+  `AgentSession.set_extension_warning`. `AgentSession.extension_warnings()` reads
+  the current set.
+- Each extension that failed to load is mirrored as a `"tau"` error keyed
+  `load:<label>`, without a second notice, because every head already
+  announced the failure.
+
+```python
+def register(api):
+    async def search(tool_call_id, params, signal, on_update, ctx):
+        try:
+            hits = await asyncio.to_thread(backend.query, params["q"])
+        except BackendDown as exc:
+            api.set_warning("backend", f"search backend is down: {exc}", "error")
+            raise
+        api.clear_warning("backend")
+        return {"content": [{"type": "text", "text": hits}]}
+```
+
+The TUI keeps a one-line marker above the status strip while any warning is
+current, such as `1 extension error — /extensions`. The text comes from
+`warnings_marker()`, so every head words it the same way. A toast fades after
+about five seconds and the marker does not. The TUI and the REPL list each
+warning under `/extensions`. Serve and RPC carry them as described in
+docs/TAU-SERVE.md §7.5.
 
 ## Hot reload
 

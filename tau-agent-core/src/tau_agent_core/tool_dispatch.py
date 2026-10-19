@@ -24,7 +24,13 @@ from typing import Any
 from tau_llm.docs import agent_facing
 
 from tau_agent_core.tool_catalog import DISPATCHABLE_EXPOSURES, ToolDescription
-from tau_agent_core.tool_schema import clash_message, stub_clashes, stub_name, stub_names
+from tau_agent_core.tool_schema import (
+    StubError,
+    clash_message,
+    stub_clashes,
+    stub_name,
+    stub_names,
+)
 from tau_agent_core.tools.base import ToolError
 
 __all__ = ["call_tool_definition", "search_deferred", "tool_search_definition"]
@@ -81,12 +87,25 @@ async def _tool_search(
     if not hits:
         return {"content": [{"type": "text", "text": f"No tool matches {query!r}."}]}
     _refuse_clashes("tool_search", ctx, [stub_name(d.name) for d in hits])
-    stubs = "\n\n".join(d.stub() for d in hits)
+    blocks: list[str] = []
+    unavailable: dict[str, str] = {}
+    for d in hits:
+        try:
+            blocks.append(d.stub())
+        except StubError as exc:
+            unavailable[d.name] = exc.reason
+            blocks.append(f"# {_unavailable(d.name, exc.reason)}")
+    stubs = "\n\n".join(blocks)
     text = f"Found {len(hits)} tool(s). Call them with call_tool(name, arguments).\n\n{stubs}"
     return {
         "content": [{"type": "text", "text": text}],
-        "details": {"found": [d.name for d in hits]},
+        "details": {"found": [d.name for d in hits], "unavailable": unavailable},
     }
+
+
+def _unavailable(name: str, reason: str) -> str:
+    """Why ``tool_search`` lists ``name`` with no stub and ``call_tool`` refuses it."""
+    return f"tool {name!r} is unavailable: {reason}"
 
 
 def _refuse_clashes(op: str, ctx: Any, stubs: list[str]) -> None:
@@ -134,10 +153,15 @@ async def _call_tool(
     if not isinstance(arguments, dict):
         raise ToolError("call_tool: arguments must be an object")
     described = _resolve(ctx, name)
+    shown = repr(name) if name == described.name else f"{name!r} (tool {described.name!r})"
     if described.exposure not in DISPATCHABLE_EXPOSURES:
         raise ToolError(
-            f"call_tool: {name!r} is not available to you (it is {described.exposure!r})"
+            f"call_tool: {shown} is not available to you (it is {described.exposure!r})"
         )
+    try:
+        described.stub()
+    except StubError as exc:
+        raise ToolError(f"call_tool: {_unavailable(described.name, exc.reason)}") from None
     result = await ctx.execute_tool(described.name, arguments)
     return {"content": result.content, "value": result.value}
 
@@ -148,9 +172,10 @@ def tool_search_definition() -> dict[str, Any]:
 
     Returns:
         A ``model-only`` tool taking ``query`` whose result lists each deferred
-        match as a Python stub; an empty query, or a match sharing its stub name
-        with another tool (:func:`~tau_agent_core.tool_schema.stub_clashes`), is a
-        tool error.
+        match as a Python stub, or as unavailable with the reason when its stub
+        fails (:class:`~tau_agent_core.tool_schema.StubError`); an empty query,
+        or a match sharing its stub name with another tool
+        (:func:`~tau_agent_core.tool_schema.stub_clashes`), is a tool error.
     """
     return {
         "name": "tool_search",
@@ -174,8 +199,9 @@ def call_tool_definition() -> dict[str, Any]:
         A ``model-only`` tool taking ``name`` (real, or the stub name
         ``tool_search`` showed) and ``arguments`` that runs a ``direct`` or
         ``deferred`` tool through ``ctx.execute_tool`` and returns its content
-        and value; any other target, or one sharing its stub name with another
-        tool, is a tool error.
+        and value; any other target, one sharing its stub name with another
+        tool, or one whose stub fails, is a tool error. A refusal for exposure
+        names the real tool when the call used a stub name.
     """
     return {
         "name": "call_tool",

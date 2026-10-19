@@ -1,10 +1,11 @@
 # Extensions from installed packages, under one authorization gate
 
-Built 2026-10-18 on branch `feat/ext-packages`, not yet merged; §9 holds the
-build's proposals, which await John. τ loads extensions from installed Python
-packages through entry points. An extension's identifier is its Python module
-name (a file's stem, verbatim), and nothing discovered loads, from a package or
-from `~/.tau/extensions`, until the user has authorized it. Tracked as #35, the
+Built 2026-10-18 on branch `feat/ext-packages` and merged 2026-10-19; §9 holds
+the build's proposals, which await John, and §14 the follow-ups after the
+merge. τ loads extensions from installed Python packages through entry
+points. An extension's identifier is its Python module name (a file's stem,
+verbatim), and nothing discovered loads, from a package or from
+`~/.tau/extensions`, until the user has authorized it. Tracked as #35, the
 headline of 0.14.0, with #40, #43, #44 and #47 on the same branch (§10–§12).
 tau-search and tau-router are the two extensions it ships for.
 
@@ -95,9 +96,9 @@ An `-e` path that *is* an installed extension package's module file is refused,
 with a message naming the module and how to load it (`-e <module>` or
 `tau ext authorize`). Loading it would put the same code in the session twice,
 under two identities, and the second copy dies on its first duplicate tool name.
-The match reads metadata only: RECORD for an ordinary install, the
-`direct_url.json` source directory for an editable one (found by tau-search's
-live test, 2026-10-18).
+The match reads metadata only: RECORD for an ordinary install, and for an
+editable one the layout its finder or `.pth` records (§14). A `.pyc` given to
+`-e` is refused outright (§14).
 - **Alternative rejected:** the entry-point name as the identifier. Two
   distributions can declare the same entry-point name, while a module name is
   unique at import time. That is the property an authorization record needs.
@@ -362,6 +363,46 @@ warn-and-continue (#29's rule), and its record is `failed` with the reason,
 `session_start` failures, because a human is present to read them. The REPL
 turns an explicit load failure into a `CLIError` instead of a traceback.
 
+### 12.1 #58: a discovered failure is a notice, silenced by a disable (2026-10-19)
+
+Decided by John on 2026-10-19, on tau-router's `REQUIRED` proposal: there is no
+`REQUIRED` field. An author does not decide on the user's behalf that an
+extension must load. A discovered extension that fails to load gets a notice
+and the run continues; the user silences it by disabling the extension. `-e`
+stays fatal (§12), unchanged.
+
+- **One sentence, from core.** `sdk.load_failure_notice(error)` reads
+  `extension <id> (<path>) failed to load: <error>. To stop loading it: tau ext
+  disable <id>`. A failure named with `-e` (only the TUI collects one) ends
+  `It was named with -e; drop that to stop loading it` instead. The TUI toast,
+  the `-p`/`--mode rpc` stderr line, the REPL's error line and the daemon log
+  all render it, each on its own channel.
+- **`tau ext disable NAME` / `tau ext enable NAME`.** NAME is an identifier,
+  its last dotted segment, or a drop-in's path, resolved fresh, and ambiguity is
+  refused. `disable` accepts any identifier discovery or the store knows (so a
+  package uninstalled after authorizing can still be disabled) and refuses an
+  unknown one, so a typo records nothing. `enable` resolves against the disabled
+  identifiers only. Authorization records are untouched by both, and the
+  reverse holds: a disable is keyed by identifier, so it outlives `tau ext
+  revoke` and `tau ext authorize`, a version change and a reinstall. `tau ext
+  authorize` on a disabled extension says it stays off until `tau ext enable`.
+- **The store.** A `disabled` section maps identifier to `{disabled_at}`, so one
+  disable covers a package and a drop-in alike. `format` stays 1: a reader from
+  before this change ignores the key and loads the extension, which is the old
+  behaviour, never a misread record. Such a reader drops the section when it
+  next writes the store; no released τ has that reader, since the store is new
+  in 0.14.0. `disable` creating the store grandfathers the drop-ins present
+  first, as the first start would (§5).
+- **Planning.** A disabled discovered source is withheld as `disabled` before
+  any other check, so it is never imported, and `noticed_withheld` leaves it
+  out of every notice and prompt. Its row in `tau ext list` and RPC
+  `list_extensions` says how to undo it. `state` was already a free string
+  carrying `disabled` for a session-level disable, so no schema changed; the
+  description now names both meanings.
+- **`-e` overrides a disable.** Being named is the stronger signal, so an
+  explicit source of a disabled identifier loads, and a failure is still
+  fatal.
+
 ## 13. What is absent
 
 - **A package manager** (installing, upgrading, removing). That is #13. τ
@@ -374,3 +415,65 @@ turns an explicit load failure into a `CLIError` instead of a traceback.
 - **Reloading a package in place across a version change.** `reload_extension`
   on a package calls `importlib.reload` on its module, which does not re-import
   the package's other modules.
+
+## 14. After the build (2026-10-19)
+
+Follow-ups found by Tectum's and tau-router's live tests of the merged branch.
+
+- **`--bus` without nats-py refuses to start (#56).** `--bus` used to start
+  anyway, admit a `TOUCHES_BUS` extension, and fail later inside its import
+  with `No module named 'nats'`. `sdk.require_bus_dependency` locates `nats`
+  with `find_spec`, without importing it, and raises `BusDependencyError`:
+  `--bus needs nats-py: pip install 'ffwf-tau-agent-core[bus]'`. `cli.main`
+  calls it after validating `--connect` (where `--bus` is the local-only-flag
+  error whatever is installed) and before any head starts, so the TUI, `-p`,
+  `--mode rpc` and `--mode repl` all exit 2 with that line. `create_agent_session(bus_available=True)`
+  calls it too, for SDK hosts. `tau serve` takes no `--bus`.
+- **An unresolvable `/ext:…` is refused (#57).** The 2.x spelling
+  `/ext:pirate.speak` used to reach the model as text in every head.
+  `resolve_command` now returns such a line with `refusal` set, and `submit()`
+  answers `accepted=False` with `/ext:pirate.speak is not a command; qualified
+  names are /ext:<identifier>:<command>, e.g. /ext:pirate:speak`. The suggestion
+  reads the 2.x dot as the colon first, then takes the closest registered
+  name. An ambiguous owner shorthand is a refusal too, where it used to raise
+  out of the head's peek. Only `expand_commands` submissions are checked, so a
+  bus payload stays text (docs/EXTENSION-NAMESPACE.md §7). Mid-turn, the TUI
+  and the REPL show the refusal at once instead of "runs between turns", and
+  their peek reads the qualified names as well as the typed ones, so a
+  registered `/ext:…` is never mistaken for a refused one (review, 2026-10-19).
+- **Editable layouts are read, not guessed.** `_module_files` probed only
+  `<root>/<stem>` and `<root>/src/<stem>`, so a `package-dir` such as `lib/`
+  escaped the two-identities refusal (§2.1). It now reads what the editable
+  install recorded in RECORD: a setuptools `__editable___*_finder.py`'s literal
+  `MAPPING` (parsed, never imported; both the `MAPPING = …` of older setuptools
+  and the `MAPPING: dict[str, str] = …` of current setuptools), or a `.pth`'s
+  path entries, which cover a plain source root and `editable_mode=strict`'s
+  link tree. The first cut read only the unannotated form, so against current
+  setuptools the hole stayed open; tectum and tau-search caught it in review.
+  The root/src probe remains only for an editable install whose RECORD lists
+  neither. A finder or `.pth` that is listed but unreadable (no literal
+  `MAPPING`, unparseable, or only an import hook, as Hatchling's `editables`
+  writes) is not guessed past. Under an unreadable setuptools finder, which can
+  map any package (nested ones included) to a directory of any name, an `-e`
+  path under that package's source directory is refused when it is a package
+  directory or named `<last segment>.py` ("can't tell whether this is the
+  module pkg.ext …; name the module instead"). Under an import-hook-only `.pth`
+  (Hatchling's `editables`, which keeps names and refuses a prefix-changing
+  source in dev mode), only `ext.py` or `ext/__init__.py` for `pkg.ext` is
+  refused. Any other path is accepted (tectum's reviews, 2026-10-19).
+  Verified on 2026-10-19 with real `pip install -e` into a throwaway venv on
+  setuptools 82.0.1: a lenient install with `package-dir = {"edmap" =
+  "lib/weirddir"}` (annotated `MAPPING` finder), a strict install of the same
+  layout (`.pth` to the link tree), and a lenient `package-dir = {"" = "lib"}`
+  install (`.pth` to `lib`). The previous code accepted the first as a path;
+  the fixed code refuses all three, and accepts a path outside them. A finder
+  rewritten to a non-literal `MAPPING` was refused under its checkout and
+  ignored elsewhere. The test suite builds real lenient and strict editable
+  wheels with the installed setuptools and keeps a fixture for each `MAPPING`
+  form.
+- **`-e x.pyc` is refused.** An `-e` value ending `.pyc` or `.pyo` raises
+  `ExplicitExtensionError` ("load the .py source or name the module") before
+  anything resolves. As a path it hid its source from the two-identities check.
+  As a bare `pkg.ext.pyc` it reached `find_spec`, which imports `pkg.ext`.
+  Mapping bytecode back to its source was rejected because a `.pyc` with no
+  source beside it has nothing to map to, and the user can name the source.

@@ -32,12 +32,14 @@ from tau_coding_agent.backends import (
 from tau_coding_agent.tagline import pick_tagline
 from tau_coding_agent.headless import (
     apply_resource_flags,
+    extension_command_names,
     recorded_model_problem,
     resolve_extensions_config,
 )
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.compare import COMPARE_KEY
 from tau_agent_core.cursor import Cursor
+from tau_agent_core.extension_warnings import ExtensionWarning, warnings_marker
 from tau_agent_core.session_log import config_at
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.tau_home import resolve_tau_home
@@ -73,6 +75,8 @@ from tau_agent_core.sdk import (
     ExtensionLoadError,
     LoadExtensionsResult,
     authorization_prompt,
+    load_failure_notice,
+    noticed_withheld,
     orphan_subscription_notices,
     summarize_extensions,
     withheld_notice,
@@ -277,6 +281,7 @@ class TauApp(App):
         self._configured_enter_key_mode()
 
         self._theme_errors: list[str] = []
+        self._unsubscribe_warnings: Callable[[], None] | None = None
         self._theme_registry = build_theme_registry(errors=self._theme_errors)
         self._apply_theme(self._configured_theme_name())
 
@@ -647,6 +652,7 @@ class TauApp(App):
             yield extension_ui.ExtensionPanelHost()
 
         yield editor_widgets.StreamStrip()
+        yield extension_ui.WarningsMarker()
         yield extension_ui.ExtensionStatusBar()
         yield Footer()
 
@@ -800,6 +806,23 @@ class TauApp(App):
         only bound after mount, so no pre-mount call can reach here.
         """
         self.query_one(extension_ui.ExtensionStatusBar).set_slot(key, text)
+
+    def _watch_warnings(self) -> None:
+        """Drive the warnings marker from the current backend's store, dropping the last one's."""
+        if self._unsubscribe_warnings is not None:
+            self._unsubscribe_warnings()
+            self._unsubscribe_warnings = None
+        backend: Any = self.current_backend
+        subscribe = getattr(backend, "subscribe_extension_warnings", None)
+        if subscribe is None:
+            self._show_warnings_marker([])
+            return
+        self._unsubscribe_warnings = subscribe(self._show_warnings_marker)
+        self._show_warnings_marker(backend.extension_warnings())
+
+    def _show_warnings_marker(self, warnings: list[ExtensionWarning]) -> None:
+        """Render :func:`warnings_marker` for ``warnings``."""
+        self.query_one(extension_ui.WarningsMarker).show(warnings_marker(warnings))
 
     def set_extension_panel(self, key: str, spec: dict[str, Any] | None) -> None:
         """Mount, update, or clear one keyed extension panel (E10 §6 / S68).
@@ -1022,9 +1045,13 @@ class TauApp(App):
             if self.current_session is None:
                 return
 
-        is_command = resolve_command(message, self._extension_command_names()) is not None
+        invocation = resolve_command(message, self._extension_command_names())
+        is_command = invocation is not None
 
         if self.is_generating:
+            if invocation is not None and invocation.refusal is not None:
+                self.notify(invocation.refusal, severity="warning")
+                return
             if is_command:
                 self.notify(
                     f"{message.split()[0]} runs between turns. Press Enter again "
@@ -1304,8 +1331,9 @@ class TauApp(App):
         makes the peek fall through to the model — the same thing an unregistered
         ``/…`` has always done. The built-in commands need no backend at all; they
         are τ's own vocabulary, hardcoded in :mod:`tau_agent_core.commands`.
+        Qualified names are included (:func:`~tau_coding_agent.headless.extension_command_names`).
         """
-        return list(self._extension_command_table())
+        return extension_command_names(self.current_backend)
 
     def _extension_command_table(self) -> dict[str, str]:
         """Extension-registered command names mapped to their descriptions.
@@ -2732,6 +2760,7 @@ class TauApp(App):
         set_delegate = getattr(self.current_backend, "set_ui_delegate", None)
         if set_delegate is not None:
             set_delegate(extension_ui._ExtensionUIDelegate(self))
+        self._watch_warnings()
 
         loader = getattr(self.current_backend, "load_extensions", None)
         if loader is None:
@@ -2749,7 +2778,7 @@ class TauApp(App):
             self.log.error(f"Extension load failed: {e}", exc_info=True)
             return
         for err in result.errors:
-            self.notify(f"Extension error ({err.path}): {err.error}", severity="warning")
+            self.notify(load_failure_notice(err), severity="warning")
         if result.extensions:
             self.log(f"Loaded {len(result.extensions)} extension(s)")
         self._surface_withheld_extensions(result)
@@ -2765,6 +2794,8 @@ class TauApp(App):
     def _surface_withheld_extensions(self, result: LoadExtensionsResult) -> None:
         """Announce grandfathered drop-ins, offer each unauthorized extension, warn about the rest.
 
+        A ``disabled`` record is silent (:func:`~tau_agent_core.sdk.noticed_withheld`).
+
         An unauthorized extension is offered once per app run: "not now" is
         remembered until the app quits, so a new chat does not ask again, and
         a load while its prompt is still open does not stack a second one
@@ -2774,7 +2805,7 @@ class TauApp(App):
             self.notify(
                 withheld_notices(LoadExtensionsResult(grandfathered=result.grandfathered))[0]
             )
-        for record in result.withheld:
+        for record in noticed_withheld(result.withheld):
             key = (record.identifier, record.target)
             if record.state != "unauthorized":
                 self.notify(withheld_notice(record), severity="warning")
@@ -2976,7 +3007,19 @@ class TauApp(App):
         records = getattr(self.current_backend, "extension_records", None)
         if records is not None:
             listing += self._format_found_not_loaded(records())
+        warnings = getattr(self.current_backend, "extension_warnings", None)
+        if warnings is not None:
+            listing += self._format_warnings(warnings())
         self.query_one(transcript.ChatDisplay).add_message("system", listing, source="markdown")
+
+    @staticmethod
+    def _format_warnings(warnings: list[ExtensionWarning]) -> str:
+        """The listing's warnings section (#60); empty when there are none."""
+        if not warnings:
+            return ""
+        lines = ["", "## Warnings"]
+        lines += [f"- **{w.severity}** {w.summary()}" for w in warnings]
+        return "\n".join(lines)
 
     @staticmethod
     def _format_found_not_loaded(records: list[ExtensionRecord]) -> str:

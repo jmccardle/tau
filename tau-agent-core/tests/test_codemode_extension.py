@@ -232,3 +232,233 @@ async def test_typescript_provider_refuses_to_run(tmp_path: Any) -> None:
         "console.log(1)", [], cursor_id="c", call_id="x", signal=None, cwd=str(tmp_path)
     )
     assert out["is_error"] and "no runtime" in out["content"][0]["text"]
+
+
+# ── issue #55: a tool whose stub fails is left out, visibly ──────────────────
+
+
+def _bad_ref_extension(api: Any) -> None:
+    async def execute(tool_call_id: str, params: Any, signal: Any, on_update: Any, ctx: Any) -> Any:
+        return {"content": [{"type": "text", "text": "ran"}]}
+
+    api.register_tool(
+        {
+            "name": "remote",
+            "description": "A tool whose schema points outside itself.",
+            "parameters": {
+                "type": "object",
+                "properties": {"spec": {"$ref": "other.json#/Spec"}},
+            },
+            "execute": execute,
+        }
+    )
+
+
+BAD_REF_SCRIPT = """\
+print(len(await tools.read(path="a.txt")))
+try:
+    await tools.remote(spec={})
+except Exception as exc:
+    print("refused:", exc)
+"""
+
+
+class _Notices:
+    def __init__(self) -> None:
+        self.seen: list[tuple[str, str]] = []
+
+    def notify(self, message: str, level: str = "info") -> None:
+        self.seen.append((message, level))
+
+
+async def test_a_bad_ref_tool_is_left_out_with_a_notice_and_the_rest_still_work(
+    tmp_path: Any,
+) -> None:
+    (tmp_path / "a.txt").write_text("abc")
+    seen: list[Any] = []
+
+    async def fake_stream_simple(model: Any, context: Any, options: Any = None) -> _Stream:
+        seen.append(context)
+        if len(seen) == 1:
+            call = TauToolCall(id="c1", name="codemode", arguments={"code": BAD_REF_SCRIPT})
+            return _Stream(_assistant([call], "toolUse"))
+        return _Stream(_assistant([TextContent(text="done")], "stop"))
+
+    session = create_agent_session(
+        model="gpt-4o",
+        tools=["read"],
+        cwd=str(tmp_path),
+        no_context_files=True,
+        extensions=[_bad_ref_extension, lambda api: register(api, {"provider": "cpython"})],
+    )
+    notices = _Notices()
+    session.set_ui_delegate(notices)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple):
+        try:
+            await session.prompt("go")
+            await session.prompt("again")
+        finally:
+            await session.emit_session_shutdown()
+
+    system = str(seen[0]["messages"][0]["content"])
+    assert "async def read(*, path: str" in system
+    assert "remote" not in system.split("Tools callable from scripts:")[1]
+    assert str(seen[-1]["messages"][0]["content"]) == system
+    assert notices.seen == [
+        (
+            "tool 'remote' is unavailable in code mode: $ref 'other.json#/Spec' "
+            "is not a local '#/...' pointer",
+            "warning",
+        )
+    ]
+
+    def field(m: Any, key: str) -> Any:
+        return m.get(key) if isinstance(m, dict) else getattr(m, key, None)
+
+    results = [m for m in seen[1]["messages"] if field(m, "role") == "toolResult"]
+    text = field(field(results[0], "content")[0], "text")
+    assert text.startswith(
+        "3\nrefused: tool 'remote' is unavailable in code mode: $ref 'other.json#/Spec' "
+        "is not a local '#/...' pointer"
+    ), text
+
+
+LATE_SCRIPT = """\
+try:
+    await tools.later_bad()
+except Exception as exc:
+    print("refused:", exc)
+"""
+
+
+async def test_a_bad_ref_tool_declared_after_the_first_turn_is_refused_with_a_notice(
+    tmp_path: Any,
+) -> None:
+    async def execute(tool_call_id: str, params: Any, signal: Any, on_update: Any, ctx: Any) -> Any:
+        return {"content": [{"type": "text", "text": "ran"}]}
+
+    def later(api: Any) -> None:
+        api.register_tool(
+            {
+                "name": "later_bad",
+                "description": "Joins late.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"k": {"$ref": "#/$defs/Missing"}},
+                },
+                "execute": execute,
+                "exposure": "deferred",
+            }
+        )
+
+    seen: list[Any] = []
+    script = iter([None, LATE_SCRIPT])
+
+    async def fake_stream_simple(model: Any, context: Any, options: Any = None) -> _Stream:
+        seen.append(context)
+        last = context["messages"][-1]
+        role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
+        code = next(script) if role == "user" else None
+        if code is not None:
+            call = TauToolCall(id=f"c{len(seen)}", name="codemode", arguments={"code": code})
+            return _Stream(_assistant([call], "toolUse"))
+        return _Stream(_assistant([TextContent(text="done")], "stop"))
+
+    session = create_agent_session(
+        model="gpt-4o",
+        tools=["read"],
+        cwd=str(tmp_path),
+        no_context_files=True,
+        extensions=[later, lambda api: register(api, {"provider": "cpython"})],
+    )
+    notices = _Notices()
+    session.set_ui_delegate(notices)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple):
+        try:
+            await session.prompt("first")
+            assert notices.seen == []
+            await session.redeclare_tools({"later_bad": True})
+            await session.prompt("second")
+        finally:
+            await session.emit_session_shutdown()
+
+    notice = (
+        "tool 'later_bad' is unavailable in code mode: $ref '#/$defs/Missing' "
+        "does not resolve (no '$defs' in the schema)"
+    )
+    assert notices.seen == [(notice, "warning")]
+
+    def field(m: Any, key: str) -> Any:
+        return m.get(key) if isinstance(m, dict) else getattr(m, key, None)
+
+    results = [m for m in seen[-1]["messages"] if field(m, "role") == "toolResult"]
+    assert field(field(results[-1], "content")[0], "text").startswith(f"refused: {notice}")
+
+
+@pytest.mark.parametrize("head", ["stderr", "json"])
+async def test_a_late_exclusion_notice_reaches_a_headless_head_not_captured_output(
+    tmp_path: Any, capfd: Any, head: str
+) -> None:
+    import json
+
+    async def execute(tool_call_id: str, params: Any, signal: Any, on_update: Any, ctx: Any) -> Any:
+        return {"content": [{"type": "text", "text": "ran"}]}
+
+    def later(api: Any) -> None:
+        api.register_tool(
+            {
+                "name": "later_bad",
+                "description": "Joins late.",
+                "parameters": {"type": "object", "properties": {"k": {"$ref": "#/$defs/Missing"}}},
+                "execute": execute,
+                "exposure": "deferred",
+            }
+        )
+
+    seen: list[Any] = []
+    script = iter([None, LATE_SCRIPT])
+
+    async def fake_stream_simple(model: Any, context: Any, options: Any = None) -> _Stream:
+        seen.append(context)
+        last = context["messages"][-1]
+        role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
+        code = next(script) if role == "user" else None
+        if code is not None:
+            call = TauToolCall(id=f"c{len(seen)}", name="codemode", arguments={"code": code})
+            return _Stream(_assistant([call], "toolUse"))
+        return _Stream(_assistant([TextContent(text="done")], "stop"))
+
+    session = create_agent_session(
+        model="gpt-4o",
+        tools=["read"],
+        cwd=str(tmp_path),
+        no_context_files=True,
+        extensions=[later, lambda api: register(api, {"provider": "cpython"})],
+    )
+    if head == "json":
+        session.set_extension_record_sink(lambda r: print(json.dumps(r), flush=True))
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple):
+        try:
+            await session.prompt("first")
+            await session.redeclare_tools({"later_bad": True})
+            await session.prompt("second")
+        finally:
+            await session.emit_session_shutdown()
+
+    notice = (
+        "tool 'later_bad' is unavailable in code mode: $ref '#/$defs/Missing' "
+        "does not resolve (no '$defs' in the schema)"
+    )
+    out = capfd.readouterr()
+    if head == "stderr":
+        assert f"[τ] warning: {notice}" in out.err
+    else:
+        records = [json.loads(line) for line in out.out.splitlines() if line.startswith("{")]
+        assert any(r.get("kind") == "notify" and r.get("message") == notice for r in records)
+
+    def field(m: Any, key: str) -> Any:
+        return m.get(key) if isinstance(m, dict) else getattr(m, key, None)
+
+    results = [m for m in seen[-1]["messages"] if field(m, "role") == "toolResult"]
+    details = field(results[-1], "details") or {}
+    assert notice not in json.dumps(details.get("captured_output", {}))

@@ -48,6 +48,11 @@ ways to grant that:
   hand-sketching a config — it is a real, working `responder` node against a
   live NATS bus and a local llama.cpp model.
 
+Either grant first checks that nats-py is installed (`require_bus_dependency`,
+located with `find_spec`, never imported) and refuses with
+`--bus needs nats-py: pip install 'ffwf-tau-agent-core[bus]'` — exit 2 from the
+CLI, `BusDependencyError` from the SDK (#56, 2026-10-19).
+
 There is no auto-discovery: `extensions_builtin/` is not on the default
 `~/.tau/extensions/` search path. This file is loaded the same way any
 user-dropped extension is, using `Path(__file__)` as an explicit entry point
