@@ -378,8 +378,9 @@ Follow-ups found by Tectum's and tau-router's live tests of the merged branch.
   with `No module named 'nats'`. `sdk.require_bus_dependency` locates `nats`
   with `find_spec`, without importing it, and raises `BusDependencyError`:
   `--bus needs nats-py: pip install 'ffwf-tau-agent-core[bus]'`. `cli.main`
-  calls it once before the heads branch, so the TUI, `-p`, `--mode rpc` and
-  `--mode repl` all exit 2 with that line. `create_agent_session(bus_available=True)`
+  calls it after validating `--connect` (where `--bus` is the local-only-flag
+  error whatever is installed) and before any head starts, so the TUI, `-p`,
+  `--mode rpc` and `--mode repl` all exit 2 with that line. `create_agent_session(bus_available=True)`
   calls it too, for SDK hosts. `tau serve` takes no `--bus`.
 - **An unresolvable `/ext:…` is refused (#57).** The 2.x spelling
   `/ext:pirate.speak` used to reach the model as text in every head.
@@ -389,16 +390,35 @@ Follow-ups found by Tectum's and tau-router's live tests of the merged branch.
   reads the 2.x dot as the colon first, then takes the closest registered
   name. An ambiguous owner shorthand is a refusal too, where it used to raise
   out of the head's peek. Only `expand_commands` submissions are checked, so a
-  bus payload stays text (docs/EXTENSION-NAMESPACE.md §7).
+  bus payload stays text (docs/EXTENSION-NAMESPACE.md §7). Mid-turn, the TUI
+  and the REPL show the refusal at once instead of "runs between turns", and
+  their peek reads the qualified names as well as the typed ones, so a
+  registered `/ext:…` is never mistaken for a refused one (review, 2026-10-19).
 - **Editable layouts are read, not guessed.** `_module_files` probed only
   `<root>/<stem>` and `<root>/src/<stem>`, so a `package-dir` such as `lib/`
   escaped the two-identities refusal (§2.1). It now reads what the editable
   install recorded in RECORD: a setuptools `__editable___*_finder.py`'s literal
-  `MAPPING` (parsed, never imported), or a `.pth`'s path entries, which cover a
-  plain source root and `editable_mode=strict`'s link tree. The root/src probe
-  remains only for an editable install with neither. Checked against real
-  `pip install -e` installs of all three shapes. Hatchling's `editables`
-  redirector is not read and falls back to the probe.
+  `MAPPING` (parsed, never imported; both the `MAPPING = …` of older setuptools
+  and the `MAPPING: dict[str, str] = …` of current setuptools), or a `.pth`'s
+  path entries, which cover a plain source root and `editable_mode=strict`'s
+  link tree. The first cut read only the unannotated form, so against current
+  setuptools the hole stayed open; tectum and tau-search caught it in review.
+  The root/src probe remains only for an editable install whose RECORD lists
+  neither. A finder or `.pth` that is listed but unreadable (no literal
+  `MAPPING`, unparseable, or only an import hook, as Hatchling's `editables`
+  writes) is not guessed past: an `-e` path under that package's source
+  directory is refused ("can't tell whether this path belongs to …; name the
+  module instead"), and an `-e` path elsewhere is unaffected.
+  Verified on 2026-10-19 with real `pip install -e` into a throwaway venv on
+  setuptools 82.0.1: a lenient install with `package-dir = {"edmap" =
+  "lib/weirddir"}` (annotated `MAPPING` finder), a strict install of the same
+  layout (`.pth` to the link tree), and a lenient `package-dir = {"" = "lib"}`
+  install (`.pth` to `lib`). The previous code accepted the first as a path;
+  the fixed code refuses all three, and accepts a path outside them. A finder
+  rewritten to a non-literal `MAPPING` was refused under its checkout and
+  ignored elsewhere. The test suite builds real lenient and strict editable
+  wheels with the installed setuptools and keeps a fixture for each `MAPPING`
+  form.
 - **`-e x.pyc` is refused.** An `-e` value ending `.pyc` or `.pyo` raises
   `ExplicitExtensionError` ("load the .py source or name the module") before
   anything resolves. As a path it hid its source from the two-identities check.
