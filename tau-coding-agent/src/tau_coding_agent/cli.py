@@ -783,8 +783,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"τ-coding-agent args: {args}", file=sys.stderr)
 
     try:
-        if args.bus:
-            require_bus_dependency()
         if args.export_html is not None:
             if (
                 args.print_mode
@@ -845,6 +843,8 @@ def main(argv: list[str] | None = None) -> int:
                 "--connect/--cwd drive a `tau serve` daemon from the TUI; --print, "
                 "--mode rpc and --mode repl run the agent in this process"
             )
+        if args.bus and (args.mode in ("rpc", "repl") or args.print_mode):
+            require_bus_dependency()
 
         if args.mode == "rpc":
             if args.print_mode:
@@ -951,6 +951,8 @@ def main(argv: list[str] | None = None) -> int:
             return _launch_remote_tui(args, address)
         if args.cwd is not None:
             raise CLIError("--cwd names a directory on a daemon's machine; it needs --connect")
+        if args.bus:
+            require_bus_dependency()
         return _launch_tui(args, config)
     except (
         BusDependencyError,

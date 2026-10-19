@@ -33,12 +33,21 @@ def no_nats(monkeypatch):
 
 @pytest.fixture
 def nothing_proceeds(monkeypatch):
-    """Fail if startup reaches config loading, which every head does before it loads anything."""
+    """Fail if startup reaches any head's launch; config loads as an empty one."""
+    import tau_coding_agent.repl as repl
+    import tau_coding_agent.rpc_mode as rpc_mode
 
     def boom(*_args, **_kwargs):
         raise AssertionError("startup proceeded past the --bus dependency check")
 
-    monkeypatch.setattr(cli, "load_config", boom)
+    monkeypatch.setattr(cli, "load_config", lambda: {})
+    for module, name in (
+        (cli, "_launch_tui"),
+        (cli, "run_print"),
+        (rpc_mode, "run_rpc"),
+        (repl, "run_repl"),
+    ):
+        monkeypatch.setattr(module, name, boom)
 
 
 def test_require_bus_dependency_refuses_with_the_hint(no_nats):
@@ -77,3 +86,19 @@ def test_every_head_exits_2_with_the_hint(argv, no_nats, nothing_proceeds, capsy
 def test_no_bus_flag_does_not_check(no_nats, nothing_proceeds):
     with pytest.raises(AssertionError, match="proceeded past"):
         cli.main(["-p", "hi"])
+
+
+@pytest.mark.parametrize(
+    ("argv", "config"),
+    [(["--connect", "127.0.0.1:1", "--bus"], {}), (["--bus"], {"serve": {"autostart": True}})],
+    ids=["connect", "autostart"],
+)
+def test_bus_under_connect_is_the_local_only_error_not_the_dependency(
+    argv, config, no_nats, monkeypatch, capsys
+):
+    """The flag is wrong there whatever is installed, so that is the error reported."""
+    monkeypatch.setattr(cli, "load_config", lambda: config)
+    assert cli.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "--bus configures a session in this process" in err
+    assert "nats-py" not in err
