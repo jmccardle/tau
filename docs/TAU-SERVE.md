@@ -747,8 +747,12 @@ because RPC 3.0 and serve 0.11 are unreleased.
   rpc` or `-p` still sees each new warning once on stderr, because setting a
   warning also calls `ui.notify`.
 - **Loader notices:** `load_errors` still carries the loader's records. Each
-  failure is also a `"tau"` error in `warnings`, so a client's warning count
-  covers it. #55's exclusion notice and #58's load-failure text move onto the
+  failure is also an entry in `warnings`, so a client's warning count covers
+  it. The contract is: `source` is `"tau"`, `key` is `"load:<label>"` where
+  `<label>` is the `load_errors` path, `severity` is `"error"`, and `message`
+  holds only the error's first line. One entry exists per `load_errors` row,
+  and it is gone when that row is. A client that already shows `load_errors`
+  may drop these by `source == "tau"` and the `load:` key prefix; tau-code does. #55's exclusion notice and #58's load-failure text move onto the
   store once their branches merge.
 
 ## 8. The demo: comparing cursors from one leaf

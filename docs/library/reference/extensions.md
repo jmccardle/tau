@@ -1937,6 +1937,11 @@ class ExtensionWarning(source: str, key: str, message: str, severity: WarningSev
 
 One current warning on a session.
 
+A load failure is mirrored as ``source="tau"``, ``key="load:<label>"``,
+severity ``"error"``, with only the error's first line. The full record is
+in ``load_errors``, so a client that shows those may filter these out by
+that prefix.
+
 **Constructor parameters**
 
 - `source: str` — The extension identifier that set it, or ``"tau"``.

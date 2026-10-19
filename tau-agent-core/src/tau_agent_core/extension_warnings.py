@@ -27,6 +27,11 @@ TAU_SOURCE = "tau"
 class ExtensionWarning:
     """One current warning on a session.
 
+    A load failure is mirrored as ``source="tau"``, ``key="load:<label>"``,
+    severity ``"error"``, with only the error's first line. The full record is
+    in ``load_errors``, so a client that shows those may filter these out by
+    that prefix.
+
     Attributes:
         source: The extension identifier that set it, or ``"tau"``.
         key: Its name within ``source``; setting the same key replaces it.
