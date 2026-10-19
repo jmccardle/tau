@@ -207,17 +207,6 @@ def compaction_for(config: Mapping[str, Any], name: str | None) -> CompactionCon
     return parsed
 
 
-def validate_compaction_config(config: Mapping[str, Any]) -> None:
-    """Parse the top-level ``"compaction"`` block and every model's own, so a bad one fails at startup.
-
-    Raises:
-        ConfigError: any block fails :func:`compaction_for`.
-    """
-    compaction_for(config, None)
-    for name in config.get("models") or {}:
-        compaction_for(config, name)
-
-
 def apply_compaction_config(
     model_config: dict[str, Any], config: Mapping[str, Any]
 ) -> dict[str, Any]:

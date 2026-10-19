@@ -233,7 +233,9 @@ hands out a model and its key:
   `models`, because the top-level block is part of what a name resolves to.
   `make_model_resolver(config)` does the same, and all five call sites pass the
   config: the TUI, `tau -p`, `--mode rpc`, `--mode repl` and `tau serve`'s
-  `_host_for`. The resolver validates every block when it is constructed.
+  `_host_for`. The resolver validates the top-level block when it is
+  constructed. A model's own block is checked when that name resolves, and a
+  bad one is that entry's build error (docs/SILENT-DEFAULTS.md §8, 2026-10-19).
 - `ConfigModelResolver.compaction(name)` returns a
   `tau_agent_core.compaction.CompactionConfig(settings, summarizer)`. It uses
   the model's own block, else the top-level block, else the defaults. A name
@@ -258,7 +260,8 @@ Every head calls `set_model_resolver` right after `create_backend`, so that call
 is where compaction is configured. `tau serve`'s `_new_session` builds a
 throwaway backend only to read its system prompt, and runs no turn on it. An
 unknown summarizer, or one whose window is too small, raises when the resolver is
-constructed or bound (`ConfigError`, or `CompactionPolicyError`).
+constructed or bound (`ConfigError`, or `CompactionPolicyError`); in a model's
+own block, an unknown summarizer is that entry's build error instead.
 
 **`enabled` said the wrong thing.** `CompactionSettings.enabled` was read only by
 the two automatic paths: the mid-turn compactor and the end-of-turn check.

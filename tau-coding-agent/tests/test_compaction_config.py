@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tau_agent_core import ModelUnavailableError
 from tau_agent_core.compaction import DEFAULT_COMPACTION_SETTINGS
 from tau_agent_core.compaction_policy import CompactionPolicyError
 from tau_agent_core.rpc import RPCHandler
@@ -171,11 +172,16 @@ def test_the_resolver_hands_out_compaction_by_name():
     assert resolver.compaction("small").settings.reserve_tokens == 4000
 
 
-def test_the_resolver_validates_every_block_at_construction():
+def test_a_bad_model_block_is_that_entrys_build_error_not_the_resolvers():
+    """Only the selected entry is fatal, its block included (docs/SILENT-DEFAULTS.md §8)."""
     config = _config()
     config["models"]["small"]["compaction"] = {"enable": True}
-    with pytest.raises(ConfigError, match=r"models\.small\.compaction.*compaction\.enable\b"):
-        make_model_resolver(config)
+    resolver = make_model_resolver(config)
+    pattern = r"models\.small\.compaction.*compaction\.enable\b"
+    with pytest.raises(ModelUnavailableError, match=pattern):
+        resolver("small")
+    assert sorted(resolver.model_errors()) == ["small"]
+    assert resolver("main").id == "main-id"
 
 
 def test_an_unknown_summarizer_raises_at_resolver_construction():

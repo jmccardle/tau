@@ -200,6 +200,15 @@ the REPL, the TUI's resume and the serve daemon open it and refuse only a turn;
 `tau -p -c` refuses in its own one line. Such an entry gets no startup warning
 in those heads, so it is reported once.
 
+An entry's own `compaction` block is part of the entry. A malformed one, or one
+whose `summarizer` names no configured model, is that entry's error
+(`models.<entry>.compaction: …`): fatal when the entry is selected, otherwise a
+startup warning, a `get_models`/hello/picker error, and a refused switch.
+`ConfigModelResolver` no longer raises at construction for it. The top-level
+`compaction` block applies to every model, so no selection avoids it: a
+malformed one stays fatal in one `tau: error:` line, exit 2, for every command
+that checks models.
+
 Every problem in an entry is reported, not only the first: `models.a.max_tokens
 must be a positive integer…; models.a.grammar must be…`. A type error from the
 `Model` constructor itself (for example `temperature: "hot"`) is reported once

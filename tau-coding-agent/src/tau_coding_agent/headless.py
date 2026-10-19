@@ -339,8 +339,10 @@ def check_model_entries(
 ) -> list[str]:
     """Refuse the selected model entry if it does not build; a warning for each other bad one.
 
-    Only the entry a command will use stops it; any other bad entry is reported
-    and stays unselectable (docs/SILENT-DEFAULTS.md §8).
+    Only the entry a command will use stops it; any other bad entry, its own
+    ``compaction`` block included, is reported and stays unselectable. The
+    top-level ``compaction`` block applies to every model, so it always stops it
+    (docs/SILENT-DEFAULTS.md §8).
 
     Args:
         config: The loaded config.
@@ -356,10 +358,12 @@ def check_model_entries(
     Raises:
         ModelConfigError: The selected entry does not build, or ``models`` is
             not a JSON object.
+        ConfigError: The top-level ``compaction`` block is malformed.
     """
     from tau_coding_agent.backends import model_entry_errors
-    from tau_coding_agent.config import ModelConfigError
+    from tau_coding_agent.config import ModelConfigError, compaction_for
 
+    compaction_for(config, None)
     errors = model_entry_errors(config)
     path = default_config_path()
     key = _entry_key(config.get("models") or {}, selected) if selected else None

@@ -31,10 +31,10 @@ _FULL_ERROR = (
 )
 
 
-def _home(tmp_path: Path, default_model: str) -> Path:
+def _home(tmp_path: Path, default_model: str, **extra: Any) -> Path:
     home = tmp_path / "tau-home"
     home.mkdir(exist_ok=True)
-    config = {"models": _MODELS, "default_model": default_model}
+    config = {"models": _MODELS, "default_model": default_model, **extra}
     (home / "config.json").write_text(json.dumps(config))
     return home
 
@@ -44,9 +44,13 @@ def _env(tmp_path: Path, home: Path) -> dict[str, str]:
 
 
 def _run(
-    tmp_path: Path, *argv: str, default_model: str = "good", stdin: str | None = None
+    tmp_path: Path,
+    *argv: str,
+    default_model: str = "good",
+    stdin: str | None = None,
+    **extra: Any,
 ) -> subprocess.CompletedProcess[str]:
-    home = _home(tmp_path, default_model)
+    home = _home(tmp_path, default_model, **extra)
     return subprocess.run(
         [sys.executable, "-m", "tau_coding_agent.cli", *argv],
         env=_env(tmp_path, home),
@@ -267,3 +271,62 @@ async def test_the_tui_notifies_each_unused_bad_entry_on_mount(make_app) -> None
     async with app.run_test():
         notes = [(n.title, n.message, n.severity) for n in app._notifications]
     assert ("Config", warnings[0], "warning") in notes
+
+
+_SQUASH = {**_GOOD, "compaction": {"enable": True}}
+_SQUASH_ERROR = "models.squash.compaction: unknown key 'compaction.enable'"
+
+
+def _rpc(tmp_path: Path, *requests: dict[str, Any], **extra: Any) -> tuple[Any, dict]:
+    stdin = "".join(json.dumps({"jsonrpc": "2.0", **r}) + "\n" for r in requests)
+    out = _run(tmp_path, "--mode", "rpc", stdin=stdin, **extra)
+    replies = {
+        reply["id"]: reply
+        for reply in map(json.loads, out.stdout.splitlines())
+        if reply.get("id") is not None
+    }
+    return out, replies
+
+
+def test_an_unused_entry_with_a_bad_compaction_block_warns_lists_and_refuses(
+    tmp_path: Path,
+) -> None:
+    """Its own block is part of the entry, so it is that entry's error, not startup's."""
+    out, replies = _rpc(
+        tmp_path,
+        {"id": 1, "method": "get_models"},
+        {"id": 2, "method": "set_model", "params": {"name": "squash"}},
+        models={"good": _GOOD, "squash": _SQUASH},
+    )
+    assert out.returncode == 0, out.stderr
+    [line] = out.stderr.splitlines()
+    assert line.startswith("tau: warning: ") and "model 'squash' is unavailable" in line
+    assert _SQUASH_ERROR in line
+    rows = {row["name"]: row for row in replies[1]["result"]["models"]}
+    assert rows["squash"]["model"] is None and _SQUASH_ERROR in rows["squash"]["error"]
+    assert _SQUASH_ERROR in replies[2]["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    "argv", [["-p", "--model", "squash", "hi"], ["--mode", "rpc", "--model", "squash"]]
+)
+def test_a_selected_entry_with_a_bad_compaction_block_is_exit_2(
+    tmp_path: Path, argv: list[str]
+) -> None:
+    out = _run(tmp_path, *argv, models={"good": _GOOD, "squash": _SQUASH})
+    assert out.returncode == 2, out.stderr
+    assert out.stderr.count("\n") == 1, out.stderr
+    assert out.stderr.startswith("tau: error: ")
+    assert f"the selected model 'squash' does not build: {_SQUASH_ERROR}" in out.stderr
+
+
+@pytest.mark.parametrize("argv", [["-p", "hi"], ["--mode", "rpc"]])
+def test_a_bad_top_level_compaction_block_is_fatal_whatever_is_selected(
+    tmp_path: Path, argv: list[str]
+) -> None:
+    """The top-level block applies to every model, so no selection avoids it."""
+    out = _run(tmp_path, *argv, models={"good": _GOOD}, compaction={"enable": True})
+    assert out.returncode == 2, out.stderr
+    assert out.stderr.count("\n") == 1, out.stderr
+    assert out.stderr.startswith("tau: error: ")
+    assert "unknown key 'compaction.enable'" in out.stderr

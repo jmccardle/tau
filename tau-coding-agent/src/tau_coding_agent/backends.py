@@ -30,11 +30,11 @@ from tau_agent_core.commands import CommandCompletion
 from tau_agent_core.compaction import CompactionConfig
 from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_coding_agent.config import (
+    ConfigError,
     ModelConfigError,
     compaction_for,
     default_config_path,
     parse_compaction_config,
-    validate_compaction_config,
 )
 from tau_agent_core.extension_locks import ExtensionRequest
 from tau_agent_core.model_availability import UnavailableModel
@@ -1221,8 +1221,9 @@ def _one_line(exc: Exception) -> str:
 def model_entry_errors(config: Mapping[str, Any]) -> dict[str, str]:
     """Each ``models`` entry that does not build, with every problem it has (docs/SILENT-DEFAULTS.md §8).
 
-    An entry whose ``backend`` is not registered yet, with no ``base_url``, is
-    left out: an extension may register that provider first.
+    An entry's own ``compaction`` block is part of it. An entry whose
+    ``backend`` is not registered yet, with no ``base_url``, is left out: an
+    extension may register that provider first.
 
     Args:
         config: The loaded config.
@@ -1239,7 +1240,7 @@ def model_entry_errors(config: Mapping[str, Any]) -> dict[str, str]:
     errors = {}
     for name, entry in models.items():
         try:
-            _build_entry(name, entry)
+            _build_entry(name, entry, config)
         except ProviderNotRegisteredError:
             continue
         except ModelConfigError as exc:
@@ -1247,11 +1248,32 @@ def model_entry_errors(config: Mapping[str, Any]) -> dict[str, str]:
     return errors
 
 
-def _build_entry(name: str, entry: Any) -> Model:
-    """Build config entry ``name``; a non-object entry is a :class:`ModelConfigError` too."""
+def _build_entry(name: str, entry: Any, config: Mapping[str, Any]) -> Model:
+    """Build config entry ``name`` and check its ``compaction`` block.
+
+    Raises:
+        ProviderNotRegisteredError: Its provider is not registered; nothing else is checked.
+        ModelConfigError: It is not an object, or it or its block is malformed;
+            every problem is named, joined by ``; ``.
+    """
     if not isinstance(entry, dict):
         raise ModelConfigError(f"models.{name} must be a JSON object; got {entry!r}")
-    return build_model_from_config({**entry, "config_name": name})
+    problems = []
+    model = None
+    try:
+        model = build_model_from_config({**entry, "config_name": name})
+    except ProviderNotRegisteredError:
+        raise
+    except ModelConfigError as exc:
+        problems.append(str(exc))
+    if "compaction" in entry:
+        try:
+            compaction_for(config, name)
+        except ConfigError as exc:
+            problems.append(str(exc))
+    if problems or model is None:
+        raise ModelConfigError("; ".join(problems))
+    return model
 
 
 class ConfigModelResolver:
@@ -1277,7 +1299,7 @@ class ConfigModelResolver:
     """
 
     def __init__(self, config: Mapping[str, Any]) -> None:
-        validate_compaction_config(config)
+        compaction_for(config, None)
         self._config = dict(config)
         self._models = dict(config.get("models") or {})
 
@@ -1304,7 +1326,7 @@ class ConfigModelResolver:
         if name not in self._models:
             known = ", ".join(self.model_names()) or "(none configured)"
             raise KeyError(f"unknown model {name!r}; configured models: {known}")
-        return _build_entry(name, self._models[name])
+        return _build_entry(name, self._models[name], self._config)
 
     def model_errors(self) -> dict[str, str]:
         """Each configured name that does not build, with the builder's message.
@@ -1337,8 +1359,8 @@ class ConfigModelResolver:
         The model's own ``"compaction"`` block, else the top-level one, else the
         defaults; a name that is not a configured model (an ad-hoc ``provider/id``)
         gets the top-level block. ``AgentSession`` reads this whenever its model
-        changes (docs/PRICING-AND-COMPACTION-CONFIG.md §6). Every block was
-        validated at construction, so this does not raise for a configured config.
+        changes (docs/PRICING-AND-COMPACTION-CONFIG.md §6), after resolving
+        ``name`` has checked its block, so this does not raise for a name that resolved.
         """
         return compaction_for(self._config, name)
 
@@ -1354,7 +1376,8 @@ def make_model_resolver(config: Mapping[str, Any]) -> ConfigModelResolver:
     (docs/PRICING-AND-COMPACTION-CONFIG.md §6).
 
     Raises:
-        ConfigError: a ``"compaction"`` block in ``config`` is malformed.
+        ConfigError: The top-level ``"compaction"`` block is malformed. A model's
+            own block is that entry's build error instead (docs/SILENT-DEFAULTS.md §8).
     """
     return ConfigModelResolver(config)
 
