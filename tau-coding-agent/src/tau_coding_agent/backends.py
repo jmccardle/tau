@@ -1738,6 +1738,10 @@ class TauBackend(Backend):
         """
         return self.agent_session.get_extension_commands()
 
+    def get_qualified_commands(self) -> list[tuple[str, str]]:
+        """Every ``ext:<identifier>:<command>`` name, contested or not (:meth:`AgentSession.get_qualified_commands`)."""
+        return self.agent_session.get_qualified_commands()
+
     def get_prompt_commands(self) -> tuple[CommandCompletion, ...]:
         """Template and skill command words, for a completion list.
 

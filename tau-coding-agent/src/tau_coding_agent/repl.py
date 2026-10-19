@@ -1770,6 +1770,10 @@ class ReplLoop:
         head_command = _head_command(line)
         invocation = resolve_command(line, extension_command_names(self._backend))
         is_command = head_command is not None or invocation is not None
+        if self._state != IDLE and invocation is not None and invocation.refusal is not None:
+            self._renderer.line("error", invocation.refusal)
+            self._return_to_draft(line)
+            return
         if self._state != IDLE:
             self._hold(line, is_command=is_command)
             return

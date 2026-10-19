@@ -30,7 +30,11 @@ from tau_coding_agent.backends import (
     prompt_tokens,
 )
 from tau_coding_agent.tagline import pick_tagline
-from tau_coding_agent.headless import apply_resource_flags, resolve_extensions_config
+from tau_coding_agent.headless import (
+    apply_resource_flags,
+    extension_command_names,
+    resolve_extensions_config,
+)
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.compare import COMPARE_KEY
 from tau_agent_core.cursor import Cursor
@@ -1007,9 +1011,13 @@ class TauApp(App):
             if self.current_session is None:
                 return
 
-        is_command = resolve_command(message, self._extension_command_names()) is not None
+        invocation = resolve_command(message, self._extension_command_names())
+        is_command = invocation is not None
 
         if self.is_generating:
+            if invocation is not None and invocation.refusal is not None:
+                self.notify(invocation.refusal, severity="warning")
+                return
             if is_command:
                 self.notify(
                     f"{message.split()[0]} runs between turns. Press Enter again "
@@ -1289,8 +1297,9 @@ class TauApp(App):
         makes the peek fall through to the model — the same thing an unregistered
         ``/…`` has always done. The built-in commands need no backend at all; they
         are τ's own vocabulary, hardcoded in :mod:`tau_agent_core.commands`.
+        Qualified names are included (:func:`~tau_coding_agent.headless.extension_command_names`).
         """
-        return list(self._extension_command_table())
+        return extension_command_names(self.current_backend)
 
     def _extension_command_table(self) -> dict[str, str]:
         """Extension-registered command names mapped to their descriptions.
