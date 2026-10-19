@@ -26,14 +26,21 @@ from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
 from tau_agent_core.sdk import BusDependencyError, require_bus_dependency
-from tau_coding_agent.config import TAU_DIR, ConfigError, load_config
-from tau_coding_agent.headless import (
-    CLIError,
-    parse_ext_config_overrides,
-    resolve_model_config,
-    resolve_no_tools,
-    run_print,
-)
+from tau_agent_core.tau_home import TauHomeError
+
+try:
+    from tau_coding_agent.config import TAU_DIR, ConfigError, load_config
+    from tau_coding_agent.headless import (
+        CLIError,
+        parse_ext_config_overrides,
+        resolve_model_config,
+        resolve_no_tools,
+        run_print,
+    )
+except TauHomeError as _home_error:
+    # config.TAU_DIR resolves at import, so every head's bad-home refusal happens here.
+    print(f"tau: error: {_home_error}", file=sys.stderr)
+    raise SystemExit(2) from None
 from tau_coding_agent.tagline import FUN_DEFAULT
 
 __all__ = ["TAU_DIR", "load_config", "main"]
@@ -149,7 +156,11 @@ def build_parser() -> argparse.ArgumentParser:
             "--continue or --session REF.\n"
             "--mode rpc runs a persistent protocol server (docs/REMOTE-CONTROL.md) "
             "and --mode repl an interactive prompt loop (docs/REPL-HEAD.md); "
-            "neither combines with --print."
+            "neither combines with --print.\n"
+            "\n"
+            "environment:\n"
+            "  TAU_HOME    τ's home (config, sessions, extensions, themes) in place\n"
+            "              of ~/.tau; it must exist. The project's ./.tau still applies.\n"
         ),
     )
     parser.add_argument("--version", "-v", action="version", version=f"tau {_version()}")

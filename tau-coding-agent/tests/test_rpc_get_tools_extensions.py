@@ -1,7 +1,7 @@
 """``--mode rpc`` lists extension tools through ``get_tools`` (issue #46).
 
 Drives a real ``python -m tau_coding_agent.cli --mode rpc`` child over pipes,
-with its own ``$HOME`` and ``$TMPDIR`` and no ``$TAU_PORTABLE_BASE``, so it
+with its own ``$HOME`` and ``$TMPDIR`` and no inherited τ home, so it
 cannot read a tester's config or extensions. No turn is sent, so the model's
 base URL is never reached.
 """
@@ -9,12 +9,11 @@ base URL is never reached.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
 
-from tau_agent_core.tau_home import PORTABLE_BASE_ENV
+from tau_agent_core.testing import child_env
 
 _EXTENSION = """
 async def _run(tool_call_id, params, signal, on_update, ctx):
@@ -54,8 +53,7 @@ def _child_env(tmp_path: Path) -> dict[str, str]:
         )
     )
     (tmp_path / "tmp").mkdir()
-    env = {k: v for k, v in os.environ.items() if k != PORTABLE_BASE_ENV}
-    return {**env, "HOME": str(tmp_path / "home"), "TMPDIR": str(tmp_path / "tmp")}
+    return child_env(tmp_path / "home", TMPDIR=str(tmp_path / "tmp"))
 
 
 def test_no_builtin_tools_with_two_extensions_lists_exactly_their_tools(tmp_path):

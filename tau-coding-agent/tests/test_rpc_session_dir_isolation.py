@@ -36,7 +36,6 @@ resolvable model config to start, not a reachable one.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +43,7 @@ from pathlib import Path
 import pytest
 
 from tau_agent_core.cursor import Cursor
+from tau_agent_core.testing import child_env
 
 from tau_coding_agent.session_store import (
     Session,
@@ -154,7 +154,7 @@ def _run_rpc_child(
         ],
         input=line + "\n",
         cwd=str(env["workdir"]),
-        env={**os.environ, "HOME": str(env["home"]), "TMPDIR": str(env["tmpdir"])},
+        env=child_env(env["home"], TMPDIR=str(env["tmpdir"])),
         capture_output=True,
         text=True,
         timeout=120,

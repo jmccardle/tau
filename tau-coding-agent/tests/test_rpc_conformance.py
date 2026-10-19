@@ -45,7 +45,7 @@ import pytest
 
 from tau_agent_core.compaction import DEFAULT_COMPACTION_SETTINGS
 from tau_agent_core.rpc import DEFAULT_OUTPUT_QUEUE_EVENT_BOUND, dialect
-from tau_agent_core.testing import text_costing_at_least
+from tau_agent_core.testing import child_env, text_costing_at_least
 from tau_agent_core.rpc import commands as rpc_commands
 from tau_coding_agent.session_store import Session, rpc_tmp_dirname, session_dir_for_cwd
 
@@ -238,7 +238,7 @@ def _child_env(fake_home: Path) -> dict[str, str]:
     """
     child_tmp = fake_home / "tmp"
     child_tmp.mkdir(exist_ok=True)
-    return {**os.environ, "HOME": str(fake_home), "TMPDIR": str(child_tmp)}
+    return child_env(fake_home, TMPDIR=str(child_tmp))
 
 
 def rpc_session_base(fake_home: Path) -> Path:
