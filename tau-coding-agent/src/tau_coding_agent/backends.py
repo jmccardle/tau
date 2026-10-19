@@ -29,6 +29,7 @@ from tau_agent_core.attachments import elide_attachment_bodies, human_size
 from tau_agent_core.commands import CommandCompletion
 from tau_agent_core.compaction import CompactionConfig
 from tau_coding_agent.config import (
+    ModelConfigError,
     compaction_for,
     default_config_path,
     parse_compaction_config,
@@ -980,7 +981,11 @@ def _warn_undeclared_reasoning(model_id: str) -> None:
 _NUMERIC_STRING = re.compile(r"^[+-]?\d+$")
 
 
-def _validate_thinking_level_map(value: Any, model_id: str) -> None:
+class _ProviderNotYetRegistered(ValueError):
+    """An entry's ``backend`` has no registered endpoint *yet*; an extension may register it."""
+
+
+def _validate_thinking_level_map(value: Any, entry: str) -> None:
     """Fail-Early on a ``thinking_level_map`` that cannot mean what it says.
 
     Pydantic already rejects a wrong TYPE at ``Model`` construction. This catches
@@ -991,28 +996,28 @@ def _validate_thinking_level_map(value: Any, model_id: str) -> None:
     if value is None:
         return
     if not isinstance(value, dict):
-        raise ValueError(
-            f"models.{model_id}.thinking_level_map must be a JSON object; got {value!r}"
+        raise ModelConfigError(
+            f"models.{entry}.thinking_level_map must be a JSON object; got {value!r}"
         )
     for level, mapped in value.items():
         if not is_valid_thinking_level(level):
             known = ", ".join(EXTENDED_THINKING_LEVELS)
-            raise ValueError(
-                f"models.{model_id}.thinking_level_map has key {level!r}, which is not "
+            raise ModelConfigError(
+                f"models.{entry}.thinking_level_map has key {level!r}, which is not "
                 f"a thinking level ({known}). A key that names no level maps nothing."
             )
         if mapped is None or isinstance(mapped, str):
             continue
         if not isinstance(mapped, dict):
-            raise ValueError(
-                f"models.{model_id}.thinking_level_map[{level!r}] must be a string "
+            raise ModelConfigError(
+                f"models.{entry}.thinking_level_map[{level!r}] must be a string "
                 f"(sent as reasoning_effort), a request-body object, or null; "
                 f"got {mapped!r}"
             )
         for key, fragment_value in mapped.items():
             if isinstance(fragment_value, str) and _NUMERIC_STRING.match(fragment_value):
-                raise ValueError(
-                    f"models.{model_id}.thinking_level_map[{level!r}][{key!r}] is the "
+                raise ModelConfigError(
+                    f"models.{entry}.thinking_level_map[{level!r}][{key!r}] is the "
                     f"string {fragment_value!r}, not the number {fragment_value}. "
                     "A numeric field sent as a JSON string is accepted and silently "
                     "ignored by llama.cpp — the request succeeds and the setting "
@@ -1038,14 +1043,14 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     model_id = config.get("model")
     if not isinstance(model_id, str) or not model_id:
         where = f"models.{config['config_name']}" if "config_name" in config else "model config"
-        raise ValueError(
+        raise ModelConfigError(
             f"{where} has no 'model' (the id sent to the server); got {model_id!r}. "
             "Set it to the id the endpoint serves."
         )
     entry = config.get("config_name", model_id)
     backend = config.get("backend")
     if not isinstance(backend, str) or not backend:
-        raise ValueError(
+        raise ModelConfigError(
             f"models.{entry} has no 'backend' (the provider); got {backend!r}. τ does not "
             f"guess one. Registered providers: {', '.join(registered_providers())}."
         )
@@ -1058,14 +1063,14 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     spec = get_provider_spec(provider)
     api = config.get("api") or (spec.api if spec else "openai-completions")
     if api not in registered_apis():
-        raise ValueError(
+        raise ModelConfigError(
             f"models.{entry}.api is {api!r}, which τ does not implement. "
             f"Registered wire protocols: {', '.join(sorted(registered_apis()))}."
         )
 
     base_url = config.get("base_url") or (spec.base_url if spec else None)
     if not base_url:
-        raise ValueError(
+        raise _ProviderNotYetRegistered(
             f"models.{entry}: backend {provider!r} is not a registered provider with a "
             f"default endpoint, and the entry sets no base_url. Set base_url, or register "
             f"the provider before this model is built (docs/EXTENSION-PROVIDERS.md §2). "
@@ -1080,11 +1085,12 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
 
     reasoning_replay = config.get("reasoning_replay")
     if reasoning_replay is not None and reasoning_replay not in ("all", "turn", "off"):
-        raise ValueError(
-            f"reasoning_replay must be one of 'all', 'turn', 'off'; got {reasoning_replay!r}"
+        raise ModelConfigError(
+            f"models.{entry}.reasoning_replay must be one of 'all', 'turn', 'off'; "
+            f"got {reasoning_replay!r}"
         )
     if reasoning_replay == "off" and api == "anthropic-messages":
-        raise ValueError(
+        raise ModelConfigError(
             f"models.{entry}.reasoning_replay is 'off', which the Anthropic Messages API "
             "cannot honour. Use 'turn' to drop prior turns' thinking "
             "(docs/REASONING-WIRE.md §6)."
@@ -1093,50 +1099,59 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
 
     strict_reasoning_formats = config.get("strict_reasoning_formats", False)
     if not isinstance(strict_reasoning_formats, bool):
-        raise ValueError(
-            "models.<name>.strict_reasoning_formats must be a boolean; got "
+        raise ModelConfigError(
+            f"models.{entry}.strict_reasoning_formats must be a boolean; got "
             f"{strict_reasoning_formats!r}"
         )
 
     grammar_dialect = config.get("grammar")
     if grammar_dialect is not None and grammar_dialect not in ("llguidance", "gbnf"):
-        raise ValueError(
-            f"models.<name>.grammar must be 'llguidance' or 'gbnf'; got {grammar_dialect!r}"
+        raise ModelConfigError(
+            f"models.{entry}.grammar must be 'llguidance' or 'gbnf'; got {grammar_dialect!r}"
         )
     grammar_dialect = cast("Literal['llguidance', 'gbnf'] | None", grammar_dialect)
 
     prompt_cache = config.get("prompt_cache", True)
     if isinstance(prompt_cache, str):
-        raise ValueError(
-            f"models.<name>.prompt_cache is a boolean; got {prompt_cache!r}. The dialect "
+        raise ModelConfigError(
+            f"models.{entry}.prompt_cache is a boolean; got {prompt_cache!r}. The dialect "
             "moved to prompt_cache_dialect: 'anthropic', and 'off' is prompt_cache: false"
         )
     if not isinstance(prompt_cache, bool):
-        raise ValueError(f"models.<name>.prompt_cache must be a boolean; got {prompt_cache!r}")
+        raise ModelConfigError(
+            f"models.{entry}.prompt_cache must be a boolean; got {prompt_cache!r}"
+        )
 
     cache_dialect = config.get("prompt_cache_dialect")
     if cache_dialect is not None and cache_dialect != "anthropic":
-        raise ValueError(
-            f"models.<name>.prompt_cache_dialect must be 'anthropic'; got {cache_dialect!r}"
+        raise ModelConfigError(
+            f"models.{entry}.prompt_cache_dialect must be 'anthropic'; got {cache_dialect!r}"
         )
     cache_dialect = cast("Literal['anthropic'] | None", cache_dialect)
 
-    _validate_thinking_level_map(config.get("thinking_level_map"), model_id)
+    _validate_thinking_level_map(config.get("thinking_level_map"), entry)
 
     extra_body = config.get("extra_body") or {}
     if not isinstance(extra_body, dict):
-        raise ValueError(f"models.<name>.extra_body must be a JSON object; got {extra_body!r}")
+        raise ModelConfigError(
+            f"models.{entry}.extra_body must be a JSON object; got {extra_body!r}"
+        )
 
     server_features = config.get("server_features") or []
     if not isinstance(server_features, list):
-        raise ValueError(
-            f"models.<name>.server_features must be a list of strings; got {server_features!r}"
+        raise ModelConfigError(
+            f"models.{entry}.server_features must be a list of strings; got {server_features!r}"
         )
 
     compat_config = config.get("compat")
     if compat_config is not None and not isinstance(compat_config, dict):
-        raise ValueError(f"models.<name>.compat must be a JSON object; got {compat_config!r}")
-    compat = Compat(**compat_config) if compat_config else None
+        raise ModelConfigError(
+            f"models.{entry}.compat must be a JSON object; got {compat_config!r}"
+        )
+    try:
+        compat = Compat(**compat_config) if compat_config else None
+    except (TypeError, ValueError) as exc:
+        raise ModelConfigError(f"models.{entry}.compat is not valid: {_one_line(exc)}") from exc
 
     context_window = config.get("context_window", 128000)
     if (
@@ -1144,35 +1159,84 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         or not isinstance(context_window, int)
         or context_window <= 0
     ):
-        raise ValueError(
-            f"models.<name>.context_window must be a positive integer; got {context_window!r}"
+        raise ModelConfigError(
+            f"models.{entry}.context_window must be a positive integer; got {context_window!r}"
         )
     max_tokens = config.get("max_tokens", DEFAULT_MAX_TOKENS)
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
-        raise ValueError(f"models.<name>.max_tokens must be a positive integer; got {max_tokens!r}")
+        raise ModelConfigError(
+            f"models.{entry}.max_tokens must be a positive integer; got {max_tokens!r}"
+        )
 
-    return Model(
-        id=model_id,
-        name=str(config.get("config_name", model_id)),
-        api=api,
-        provider=provider,
-        base_url=base_url,
-        context_window=context_window,
-        max_tokens=max_tokens,
-        reasoning=model_reasoning,
-        thinking_level_map=config.get("thinking_level_map"),
-        reasoning_replay=reasoning_replay,
-        strict_reasoning_formats=strict_reasoning_formats,
-        grammar_dialect=grammar_dialect,
-        prompt_cache=prompt_cache,
-        prompt_cache_dialect=cache_dialect,
-        extra_body=dict(extra_body),
-        server_features=list(server_features),
-        stream=config.get("stream", True),
-        request_timeout=config.get("request_timeout"),
-        temperature=config.get("temperature"),
-        compat=compat,
-    )
+    try:
+        return Model(
+            id=model_id,
+            name=str(config.get("config_name", model_id)),
+            api=api,
+            provider=provider,
+            base_url=base_url,
+            context_window=context_window,
+            max_tokens=max_tokens,
+            reasoning=model_reasoning,
+            thinking_level_map=config.get("thinking_level_map"),
+            reasoning_replay=reasoning_replay,
+            strict_reasoning_formats=strict_reasoning_formats,
+            grammar_dialect=grammar_dialect,
+            prompt_cache=prompt_cache,
+            prompt_cache_dialect=cache_dialect,
+            extra_body=dict(extra_body),
+            server_features=list(server_features),
+            stream=config.get("stream", True),
+            request_timeout=config.get("request_timeout"),
+            temperature=config.get("temperature"),
+            compat=compat,
+        )
+    except ValueError as exc:
+        raise ModelConfigError(f"models.{entry} is not valid: {_one_line(exc)}") from exc
+
+
+def _one_line(exc: Exception) -> str:
+    """An error as one line; a pydantic one as ``field: message`` pairs joined by ``; ``."""
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        return "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in errors()
+        )
+    return str(exc).replace("\n", " ")
+
+
+def validate_model_entries(config: Mapping[str, Any]) -> None:
+    """Build every ``models`` entry once, so a malformed one stops startup in one line.
+
+    Every entry, not only the selected one: ``get_models``, the serve daemon's
+    hello and the TUI's model picker build them all, so a bad entry nobody
+    selected would otherwise break those later (docs/SILENT-DEFAULTS.md §8). An
+    entry whose ``backend`` is not registered yet is left to the build that
+    selects it, because an extension may register that provider first.
+
+    Args:
+        config: The loaded config.
+
+    Raises:
+        ModelConfigError: One or more entries are malformed; every one is named,
+            joined by ``; ``.
+    """
+    models = config.get("models") or {}
+    if not isinstance(models, dict):
+        raise ModelConfigError(f'{default_config_path()} "models" must be a JSON object')
+    problems = []
+    for name, entry in models.items():
+        if not isinstance(entry, dict):
+            problems.append(f"models.{name} must be a JSON object; got {entry!r}")
+            continue
+        try:
+            build_model_from_config({**entry, "config_name": name})
+        except ModelConfigError as exc:
+            problems.append(str(exc))
+        except _ProviderNotYetRegistered:
+            continue
+    if problems:
+        raise ModelConfigError(f"{default_config_path()}: " + "; ".join(problems))
 
 
 class ConfigModelResolver:

@@ -107,6 +107,7 @@ def serve_settings(web_root: str | None, config: dict[str, Any]) -> dict[str, An
 
 def run_serve(argv: list[str]) -> int:
     """Entry point for ``tau serve``; returns the process exit code."""
+    from tau_coding_agent.backends import validate_model_entries
     from tau_coding_agent.config import load_config
 
     args = build_parser().parse_args(argv)
@@ -119,6 +120,7 @@ def run_serve(argv: list[str]) -> int:
         print("tau serve: --json reports what -d or --stop did; use it with one", file=sys.stderr)
         return 2
     config = load_config()
+    validate_model_entries(config)
     try:
         address = listen_address(args.listen, config)
     except ValueError as exc:

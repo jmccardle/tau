@@ -134,3 +134,32 @@ lookup and became an ad-hoc OpenAI model called `local-llm`.
 - `AssistantMessageEventStream._make_empty_partial` labels an empty
   placeholder message `openai-completions`/`openai` when the model object
   lacks those attributes. It chooses no provider for any request.
+
+## 8. A malformed model entry stops startup in one line (2026-10-19, #65)
+
+**What was wrong.** `build_model_from_config` raised a plain `ValueError` for
+a value it rejects, such as the old `"prompt_cache": "anthropic"`. No head
+caught that, so `--model <entry>` ended in a traceback. The message also said
+`models.<name>` literally instead of naming the entry. And `tau serve -d`
+never came up: every hello builds every entry for its model list, so each
+hello failed and the parent never got an answer.
+
+**Now.** The rejections raise `config.ModelConfigError`, which is a
+`ConfigError` (so every head's handler prints it as one `tau: error:` line,
+exit 2) and also a `ValueError` (so existing `except ValueError` callers keep
+working). Messages name the entry: `models.litellm-haiku.prompt_cache is a
+boolean; got 'anthropic'. The dialect moved to prompt_cache_dialect…`. A type
+pydantic rejects becomes `models.<entry> is not valid: field: message`.
+
+**Every entry is checked at startup**, selected or not, by
+`backends.validate_model_entries`. The TUI, `-p`, rpc and repl run it through
+`cli._load_head_config`; `tau serve` runs it before it listens, so the daemon
+refuses to start with the same line. Checking only the selected entry would
+look friendlier, but a bad entry nobody selected still breaks `get_models`, the
+serve hello and the TUI's model picker later, further from the cause. Every bad
+entry is named in the one line, joined by `; `.
+
+One exception: an entry whose `backend` is not registered yet (and that sets no
+`base_url`) is left to the build that selects it, because an extension may
+register that provider first (docs/EXTENSION-PROVIDERS.md §2). The serve
+hello still refuses such an entry, as it did before.

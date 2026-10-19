@@ -26,6 +26,7 @@ from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
 from tau_agent_core.tau_home import TauHomeError, pin_home_variables, resolve_tau_home
+from tau_coding_agent.backends import validate_model_entries
 from tau_coding_agent.config import ConfigError, load_config
 from tau_coding_agent.headless import (
     CLIError,
@@ -768,7 +769,7 @@ def main(argv: list[str] | None = None) -> int:
     if raw[:1] == ["ext"]:
         from tau_coding_agent.ext_cli import run_ext
 
-        return _refusing_a_bad_home(run_ext, raw[1:])
+        return _one_line_errors(run_ext, raw[1:])
     if raw[:1] == ["serve"]:
         try:
             from tau_coding_agent.serve.cli import run_serve
@@ -781,7 +782,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        return _refusing_a_bad_home(run_serve, raw[1:])
+        return _one_line_errors(run_serve, raw[1:])
     args = parse_cli_args(argv)
 
     if args.verbose:
@@ -885,7 +886,7 @@ def main(argv: list[str] | None = None) -> int:
                     "flag). --session-dir IS accepted, and is how a host chooses "
                     "where that startup session lives."
                 )
-            config = load_config()
+            config = _load_head_config()
             from tau_coding_agent.rpc_mode import run_rpc
 
             return asyncio.run(run_rpc(args, config))
@@ -914,7 +915,7 @@ def main(argv: list[str] | None = None) -> int:
                     "--theme selects a TUI stylesheet; --mode repl renders with "
                     "rich in the terminal's own colours."
                 )
-            config = load_config()
+            config = _load_head_config()
             try:
                 from tau_coding_agent.repl import run_repl
             except ModuleNotFoundError as exc:
@@ -940,7 +941,7 @@ def main(argv: list[str] | None = None) -> int:
                 "TUI, resume a session with --resume (or /resume, or the command "
                 "palette's 'Resume session…')"
             )
-        config = load_config()
+        config = _load_head_config()
         if args.print_mode:
             return asyncio.run(run_print(args, config))
         if args.messages:
@@ -967,14 +968,25 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
-def _refusing_a_bad_home(run: Callable[[list[str]], int], argv: list[str]) -> int:
-    """Run a subcommand, turning a bad τ home into one ``tau: error:`` line and exit 2.
+def _load_head_config() -> dict[str, Any]:
+    """The config a head starts on, with every model entry checked (docs/SILENT-DEFAULTS.md §8).
+
+    Raises:
+        ConfigError: The file is unreadable, or a model entry is malformed.
+    """
+    config = load_config()
+    validate_model_entries(config)
+    return config
+
+
+def _one_line_errors(run: Callable[[list[str]], int], argv: list[str]) -> int:
+    """Run a subcommand, turning a bad τ home or config into one ``tau: error:`` line, exit 2.
 
     The subcommand parses first, so its ``--help`` works whatever the home is.
     """
     try:
         return run(argv)
-    except TauHomeError as exc:
+    except (TauHomeError, ConfigError) as exc:
         print(f"tau: error: {exc}", file=sys.stderr)
         return 2
 

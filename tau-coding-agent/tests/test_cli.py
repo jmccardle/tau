@@ -34,6 +34,14 @@ def _no_ts(message: dict) -> dict:
 # ── a config like ~/.tau/config.json ───────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _empty_tau_home(tmp_path, monkeypatch):
+    """No test here may read the developer's real config.json."""
+    home = tmp_path / "tau-home"
+    home.mkdir()
+    monkeypatch.setenv("TAU_HOME", str(home))
+
+
 def _config() -> dict:
     return {
         "models": {

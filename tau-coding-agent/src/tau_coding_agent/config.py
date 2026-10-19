@@ -43,6 +43,13 @@ class ConfigError(Exception):
     """
 
 
+class ModelConfigError(ConfigError, ValueError):
+    """A ``models.<name>`` entry τ cannot use as written; the message names the key and the fix.
+
+    Also a ``ValueError``, so callers that already catch that keep working.
+    """
+
+
 def load_config(path: Path | None = None) -> dict[str, Any]:
     """Load ``~/.tau/config.json``; ``{}`` when absent.
 
