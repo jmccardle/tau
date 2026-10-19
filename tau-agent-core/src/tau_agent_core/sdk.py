@@ -733,6 +733,14 @@ def _withheld(source: ExtensionSource, state: str, reason: str, **extra: Any) ->
     )
 
 
+def _disabled_reason(identifier: str) -> str:
+    """The listing reason for a source ``tau ext disable`` withheld."""
+    return (
+        f"disabled with `tau ext disable`; `tau ext enable {identifier}` restores it, "
+        "and naming it with -e loads it anyway"
+    )
+
+
 def _unauthorized_reason(source: ExtensionSource, verdict: str, previous: str | None) -> str:
     """The sentence a head shows for a discovered, unauthorized source."""
     if source.kind == "package" and verdict == "update" and previous == source.version:
@@ -777,8 +785,9 @@ def plan_extensions(
 
     Discovered drop-ins load first, then discovered packages, then the ``-e``
     values in argument order. A discovered source loads only with an
-    authorization record. An ``-e`` value is authorized by being named, and
-    claims its identifier first: a discovered source with the same identifier
+    authorization record and no disable (#58); a disabled one is withheld as
+    ``disabled`` before anything else is checked. An ``-e`` value is authorized
+    by being named, overrides a disable, and claims its identifier first: a discovered source with the same identifier
     but another target is withheld as a ``collision``, as is a later
     discovered source whose identifier an earlier one already claimed. Two
     routes to one file load once.
@@ -832,6 +841,9 @@ def plan_extensions(
         explicit_keys = {_target_key(s) for s in explicit_sources}
         for source in [*dropins, *packages]:
             key = _target_key(source)
+            if store.is_disabled(source.identifier) and key not in explicit_keys:
+                withheld.append(_withheld(source, "disabled", _disabled_reason(source.identifier)))
+                continue
             if source.unusable is not None:
                 withheld.append(_withheld(source, "unusable", source.unusable))
                 continue
@@ -1193,6 +1205,98 @@ def revoke_extension_authorization(
     return removed
 
 
+def _store_for(
+    extensions_dir: str | Path | None, store_path: str | Path | None
+) -> tuple[Path, AuthorizationStore]:
+    """The drop-in directory in use and the authorization store governing it."""
+    directory = (
+        Path(extensions_dir)
+        if extensions_dir is not None
+        else extension_sources.default_extensions_dir()
+    )
+    store = AuthorizationStore.load(
+        store_path if store_path is not None else store_path_for(directory)
+    )
+    return directory, store
+
+
+@agent_facing(topic="extensions")
+def disable_discovered_extension(
+    token: str,
+    *,
+    extensions_dir: str | Path | None = None,
+    store_path: str | Path | None = None,
+) -> tuple[str, bool]:
+    """``tau ext disable``: record that a known extension is never loaded or announced (#58).
+
+    ``token`` is a drop-in path, an identifier, or its last dotted segment,
+    resolved fresh against every identifier discovery or the store knows. An
+    unknown name is refused, so a typo cannot record a disable for nothing.
+    Creating the store grandfathers the drop-ins present first, as the first
+    start would have (§5), so disabling one does not withhold the others.
+
+    Args:
+        token: What the user typed.
+        extensions_dir: The drop-in directory; ``None`` is the default.
+        store_path: The authorization store; ``None`` is the file beside it.
+
+    Returns:
+        ``(identifier, changed)``; ``changed`` is ``False`` when it was already disabled.
+
+    Raises:
+        ValueError: ``token`` names nothing known, or is ambiguous.
+        AuthorizationStoreError: The store cannot be read.
+    """
+    directory, store = _store_for(extensions_dir, store_path)
+    dropins = extension_sources.discover_dropins(directory)
+    if extension_sources.is_path_spec(token):
+        identifier = find_discovered_extension(token, extensions_dir=directory).identifier
+    else:
+        found = [*dropins, *extension_sources.discover_packages()]
+        known = sorted({s.identifier for s in found} | store.known_identifiers())
+        resolved = extension_sources.resolve_shorthand(token, known)
+        if resolved is None:
+            raise ValueError(
+                f"no discovered or recorded extension is named {token!r}; see `tau ext list`"
+            )
+        identifier = resolved
+    store.grandfather(dropins)
+    changed = store.disable(identifier)
+    if changed:
+        store.save()
+    return identifier, changed
+
+
+@agent_facing(topic="extensions")
+def enable_discovered_extension(
+    token: str,
+    *,
+    extensions_dir: str | Path | None = None,
+    store_path: str | Path | None = None,
+) -> str:
+    """``tau ext enable``: remove a disable; the extension's authorization is unchanged (#58).
+
+    Args:
+        token: A disabled identifier or its last dotted segment.
+        extensions_dir: The drop-in directory; ``None`` is the default.
+        store_path: The authorization store; ``None`` is the file beside it.
+
+    Returns:
+        The identifier enabled.
+
+    Raises:
+        ValueError: ``token`` names no disabled extension, or is ambiguous.
+        AuthorizationStoreError: The store cannot be read.
+    """
+    _, store = _store_for(extensions_dir, store_path)
+    identifier = extension_sources.resolve_shorthand(token, store.disabled_identifiers())
+    if identifier is None:
+        raise ValueError(f"no disabled extension is named {token!r}; see `tau ext list`")
+    store.enable(identifier)
+    store.save()
+    return identifier
+
+
 @agent_facing(topic="extensions")
 def withheld_notices(result: LoadExtensionsResult) -> list[str]:
     """The lines a head shows after a load for what was grandfathered or withheld.
@@ -1204,7 +1308,8 @@ def withheld_notices(result: LoadExtensionsResult) -> list[str]:
         result: The load result.
 
     Returns:
-        One line for any grandfathered drop-ins, then one per withheld record.
+        One line for any grandfathered drop-ins, then one per record in
+        :func:`noticed_withheld`.
     """
     lines = []
     if result.grandfathered:
@@ -1213,9 +1318,51 @@ def withheld_notices(result: LoadExtensionsResult) -> list[str]:
             f"{', '.join(result.grandfathered)}. From now on τ loads a new drop-in or package "
             "only once it is authorized; `tau ext list` shows each one's state."
         )
-    for record in result.withheld:
+    for record in noticed_withheld(result.withheld):
         lines.append(withheld_notice(record))
     return lines
+
+
+@agent_facing(topic="extensions")
+def noticed_withheld(records: Sequence[ExtensionRecord]) -> list[ExtensionRecord]:
+    """The withheld records a head announces: all but ``disabled``, which the user silenced (#58).
+
+    Args:
+        records: Withheld records, from a load result or a listing.
+
+    Returns:
+        Those that get a notice or a prompt, in order.
+    """
+    return [record for record in records if record.state != "disabled"]
+
+
+@agent_facing(topic="extensions")
+def load_failure_notice(error: ExtensionLoadError) -> str:
+    """The one sentence every head shows for an extension that failed to load (#58).
+
+    A discovered extension's sentence ends with how to stop loading it. One
+    named with ``-e`` overrides a disable, so its sentence says to drop the
+    flag instead.
+
+    Args:
+        error: From :attr:`LoadExtensionsResult.errors`.
+
+    Returns:
+        A sentence naming the extension and the error, and what silences it.
+    """
+    identifier = (
+        error.source.identifier if error.source is not None else extension_identifier(error.path)
+    )
+    where = identifier if error.path == identifier else f"{identifier} ({error.path})"
+    if error.explicit:
+        return (
+            f"extension {where} failed to load: {error.error}. It was named with -e; "
+            "drop that to stop loading it"
+        )
+    return (
+        f"extension {where} failed to load: {error.error}. "
+        f"To stop loading it: tau ext disable {identifier}"
+    )
 
 
 @agent_facing(topic="extensions")

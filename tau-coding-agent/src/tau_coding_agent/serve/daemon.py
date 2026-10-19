@@ -35,7 +35,7 @@ from tau_agent_core.capabilities import CAPABILITIES
 from tau_agent_core.rpc import commands as rpc
 from tau_agent_core.rpc import dialect, records
 from tau_agent_core.rpc.wire_events import WireEventProjector
-from tau_agent_core.sdk import withheld_notices
+from tau_agent_core.sdk import load_failure_notice, withheld_notices
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.session_log import SessionLog, is_incomplete
 
@@ -337,7 +337,7 @@ class SessionHost:
             None, discover=True, extensions_config=self.daemon.config.get("extensions_config")
         )
         for error in result.errors:
-            self.daemon.log(f"{self.tag} extension {error.path} failed: {error.error}")
+            self.daemon.log(f"{self.tag} {load_failure_notice(error)}")
         for line in withheld_notices(result):
             self.daemon.log(f"{self.tag} {line}")
         await self.backend.emit_session_start("startup")

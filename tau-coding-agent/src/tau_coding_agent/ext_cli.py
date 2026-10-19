@@ -1,4 +1,4 @@
-"""``tau ext``: list, authorize and revoke extensions, with no session and no model.
+"""``tau ext``: list, authorize, revoke, disable and enable extensions, with no session and no model.
 
 Rationale: docs/EXTENSION-PACKAGES.md §7 (the listing is one core function
 every head renders) and §9 (the non-interactive route to the gate).
@@ -16,6 +16,8 @@ from tau_agent_core.extension_auth import AuthorizationStoreError
 from tau_agent_core.extension_sources import ExtensionRecord
 from tau_agent_core.sdk import (
     authorize_discovered_extension,
+    disable_discovered_extension,
+    enable_discovered_extension,
     extension_records,
     revoke_extension_authorization,
 )
@@ -48,10 +50,14 @@ def render_extension_records(records: Sequence[ExtensionRecord]) -> list[str]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """The ``tau ext`` parser and its three verbs."""
+    """The ``tau ext`` parser and its five verbs."""
     parser = argparse.ArgumentParser(
         prog="tau ext",
-        description="List, authorize and revoke τ extensions (docs/EXTENSION-PACKAGES.md).",
+        description=(
+            "List, authorize, revoke, disable and enable τ extensions "
+            "(docs/EXTENSION-PACKAGES.md). A disabled extension is found but never "
+            "loaded or announced, until enabled or named with -e."
+        ),
     )
     verbs = parser.add_subparsers(dest="verb", required=True)
     listing = verbs.add_parser(
@@ -78,6 +84,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     revoke = verbs.add_parser("revoke", help="remove every authorization record for IDENTIFIER")
     revoke.add_argument("identifier", help="the full identifier")
+    disable = verbs.add_parser(
+        "disable",
+        help="stop loading a discovered extension, and stop its notices; -e still loads it",
+    )
+    disable.add_argument("name", help="an identifier, its last dotted segment, or a drop-in's path")
+    enable = verbs.add_parser("enable", help="undo `tau ext disable`")
+    enable.add_argument("name", help="a disabled identifier or its last dotted segment")
     return parser
 
 
@@ -112,6 +125,17 @@ def run_ext(argv: Sequence[str]) -> int:
                 else source.target
             )
             print(f"authorized {source.identifier} ({detail}); it loads at the next start")
+            return 0
+        if args.verb == "disable":
+            identifier, changed = disable_discovered_extension(args.name)
+            if changed:
+                print(f"disabled {identifier}; it is not loaded or announced from the next start")
+            else:
+                print(f"{identifier} was already disabled")
+            return 0
+        if args.verb == "enable":
+            identifier = enable_discovered_extension(args.name)
+            print(f"enabled {identifier}; it loads at the next start if it is authorized")
             return 0
         removed = revoke_extension_authorization(args.identifier)
         if not removed:

@@ -21,7 +21,11 @@ STORE_FILENAME = "extension-authorizations.json"
 """The store's file name, beside the extensions directory it governs (§9, proposal)."""
 
 STORE_FORMAT = 1
-"""The ``format`` member a store this module writes carries; another value is refused."""
+"""The ``format`` member a store this module writes carries; another value is refused.
+
+The ``disabled`` section (#58) was added without a bump: a reader that predates it
+ignores the key, which loads a disabled extension, never misreads a record.
+"""
 
 Verdict = Literal["authorized", "new", "update"]
 """``new``: never authorized. ``update``: the same distribution at another version or digest."""
@@ -69,6 +73,8 @@ class AuthorizationStore:
 
     Packages are keyed by identifier and match on distribution, version and
     digest. Drop-ins are keyed by resolved path and carry no version (§5).
+    Disables are keyed by identifier, so one covers a package and a drop-in
+    alike (#58).
 
     Attributes:
         path: The store file.
@@ -83,6 +89,7 @@ class AuthorizationStore:
         self.existed = existed
         self._packages: dict[str, dict[str, Any]] = data.get("packages", {})
         self._dropins: dict[str, dict[str, Any]] = data.get("dropins", {})
+        self._disabled: dict[str, dict[str, Any]] = data.get("disabled", {})
 
     @classmethod
     def load(cls, path: str | Path) -> AuthorizationStore:
@@ -113,7 +120,7 @@ class AuthorizationStore:
                 f"{store_path} is not an extension authorization store of format "
                 f"{STORE_FORMAT}; fix or delete it."
             )
-        for section in ("packages", "dropins"):
+        for section in ("packages", "dropins", "disabled"):
             value = data.get(section, {})
             if not isinstance(value, dict) or not all(isinstance(v, dict) for v in value.values()):
                 raise AuthorizationStoreError(
@@ -193,10 +200,56 @@ class AuthorizationStore:
             removed += 1
         return removed
 
+    def known_identifiers(self) -> set[str]:
+        """Every identifier a record names: authorized packages and drop-ins, and disables."""
+        return {
+            *self._packages,
+            *(str(v.get("identifier")) for v in self._dropins.values() if v.get("identifier")),
+            *self._disabled,
+        }
+
+    def is_disabled(self, identifier: str) -> bool:
+        """Whether ``tau ext disable`` recorded ``identifier`` (#58)."""
+        return identifier in self._disabled
+
+    def disabled_identifiers(self) -> list[str]:
+        """The disabled identifiers, sorted."""
+        return sorted(self._disabled)
+
+    def disable(self, identifier: str) -> bool:
+        """Record ``identifier`` as disabled: found, never imported, never noticed (#58).
+
+        Args:
+            identifier: A full extension identifier.
+
+        Returns:
+            Whether it was newly disabled; ``False`` when it already was.
+        """
+        if identifier in self._disabled:
+            return False
+        self._disabled[identifier] = {"disabled_at": _now()}
+        return True
+
+    def enable(self, identifier: str) -> bool:
+        """Remove ``identifier``'s disable. Authorization records are untouched.
+
+        Args:
+            identifier: A full extension identifier.
+
+        Returns:
+            Whether a disable was removed.
+        """
+        return self._disabled.pop(identifier, None) is not None
+
     def save(self) -> None:
         """Write the store atomically, creating its directory if needed."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"format": STORE_FORMAT, "packages": self._packages, "dropins": self._dropins}
+        payload = {
+            "format": STORE_FORMAT,
+            "packages": self._packages,
+            "dropins": self._dropins,
+            "disabled": self._disabled,
+        }
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".ext-auth-", suffix=".json")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:

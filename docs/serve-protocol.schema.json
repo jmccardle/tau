@@ -3861,7 +3861,7 @@
     "ListExtensionsResult": {
       "properties": {
         "extensions": {
-          "description": "Every extension this session knows of and its state, as the rows of `tau ext list` (docs/EXTENSION-PACKAGES.md \u00a77): loaded, disabled, failed, and found-but-not-loaded (unauthorized, unusable, collision). Each row names the identifier, source kind, target, distribution and version for a package, why it is not loaded, and the subscribed ext: topics whose emitter is not loaded (#44). Read-only: authorizing is not on the wire.",
+          "description": "Every extension this session knows of and its state, as the rows of `tau ext list` (docs/EXTENSION-PACKAGES.md \u00a77): loaded, disabled, failed, and found-but-not-loaded (unauthorized, unusable, collision). `disabled` is either turned off in this session or, with a reason, disabled by `tau ext disable` and never imported (#58). Each row names the identifier, source kind, target, distribution and version for a package, why it is not loaded, and the subscribed ext: topics whose emitter is not loaded (#44). Read-only: authorizing is not on the wire.",
           "items": {
             "$ref": "#/$defs/ExtensionRecordWire"
           },

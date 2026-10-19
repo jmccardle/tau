@@ -1415,7 +1415,7 @@ The newest compaction entry on the path (`agent_session.CompactionRecord`).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `extensions` | list of [ExtensionRecordWire](#extensionrecordwire) | yes | Every extension this session knows of and its state, as the rows of `tau ext list` (docs/EXTENSION-PACKAGES.md §7): loaded, disabled, failed, and found-but-not-loaded (unauthorized, unusable, collision). Each row names the identifier, source kind, target, distribution and version for a package, why it is not loaded, and the subscribed ext: topics whose emitter is not loaded (#44). Read-only: authorizing is not on the wire. |
+| `extensions` | list of [ExtensionRecordWire](#extensionrecordwire) | yes | Every extension this session knows of and its state, as the rows of `tau ext list` (docs/EXTENSION-PACKAGES.md §7): loaded, disabled, failed, and found-but-not-loaded (unauthorized, unusable, collision). `disabled` is either turned off in this session or, with a reason, disabled by `tau ext disable` and never imported (#58). Each row names the identifier, source kind, target, distribution and version for a package, why it is not loaded, and the subscribed ext: topics whose emitter is not loaded (#44). Read-only: authorizing is not on the wire. |
 
 ### ListManagedExtensionsResult
 
