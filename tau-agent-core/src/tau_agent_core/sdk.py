@@ -735,6 +735,8 @@ def _withheld(source: ExtensionSource, state: str, reason: str, **extra: Any) ->
 
 def _unauthorized_reason(source: ExtensionSource, verdict: str, previous: str | None) -> str:
     """The sentence a head shows for a discovered, unauthorized source."""
+    if source.kind == "package" and verdict == "update" and previous == source.version:
+        return f"{source.distribution} {source.version}'s files changed since it was authorized"
     if source.kind == "package" and verdict == "update":
         return (
             f"{source.distribution} changed from {previous} to {source.version} "
@@ -1249,10 +1251,16 @@ def authorization_prompt(record: ExtensionRecord) -> tuple[str, str]:
         ``(title, body)``.
     """
     if record.kind == "package" and record.authorization == "update":
-        what = (
-            f"{record.distribution} was updated from {record.previous_version} to "
-            f"{record.version} since you authorized it."
-        )
+        if record.previous_version == record.version:
+            what = (
+                f"{record.distribution} {record.version}'s installed files changed since "
+                "you authorized it."
+            )
+        else:
+            what = (
+                f"{record.distribution} was updated from {record.previous_version} to "
+                f"{record.version} since you authorized it."
+            )
         title = f"Load the updated extension {record.identifier}?"
     elif record.kind == "package":
         what = (

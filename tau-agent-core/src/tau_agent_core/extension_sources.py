@@ -313,6 +313,42 @@ def discover_packages() -> list[ExtensionSource]:
     return sorted(found, key=lambda source: source.identifier)
 
 
+def _module_files(source: ExtensionSource) -> set[Path]:
+    """The installed files that are ``source``'s module, read from metadata only.
+
+    ``a.b.c`` is ``a/b/c.py`` or ``a/b/c/__init__.py``: located through RECORD for
+    an ordinary install, and under the ``direct_url.json`` source directory for an
+    editable one, whose RECORD lists only the finder.
+    """
+    stem = source.target.replace(".", "/")
+    rels = {f"{stem}.py", f"{stem}/__init__.py"}
+    found: set[Path] = set()
+    if source.editable_path:
+        root = Path(source.editable_path)
+        for base in (root, root / "src"):
+            found.update((base / rel).resolve() for rel in rels if (base / rel).is_file())
+    if source.distribution:
+        try:
+            dist = metadata.distribution(source.distribution)
+        except metadata.PackageNotFoundError:
+            return found
+        for f in dist.files or []:
+            if f.as_posix() in rels:
+                found.add(Path(str(dist.locate_file(f))).resolve())
+    return found
+
+
+def _package_owning(path: Path, packages: list[ExtensionSource]) -> ExtensionSource | None:
+    """The discovered package whose module file ``path`` is, else ``None``."""
+    target = path.resolve()
+    if target.is_dir():
+        target = target / "__init__.py"
+    for source in packages:
+        if source.kind == "package" and target in _module_files(source):
+            return source
+    return None
+
+
 @agent_facing(topic="extensions")
 def is_path_spec(raw: str) -> bool:
     """Whether an ``-e`` value names a path: it holds a ``/`` or ends in ``.py``."""
@@ -335,13 +371,22 @@ def resolve_explicit(raw: str, packages: list[ExtensionSource]) -> ExtensionSour
         The source.
 
     Raises:
-        ValueError: The path's stem is unusable, the shorthand is ambiguous,
-            or nothing by that name is installed.
+        ValueError: The path is an installed package's module file (it would load
+            twice under two identities), its stem is unusable, the shorthand is
+            ambiguous, or nothing by that name is installed.
     """
     if is_path_spec(raw):
         expanded = os.path.expanduser(raw)
         if not is_path_spec(expanded.rstrip("/")):
             expanded = os.path.abspath(expanded)
+        owner = _package_owning(Path(expanded), packages)
+        if owner is not None:
+            raise ValueError(
+                f"-e {raw}: that is the module {owner.identifier} of the installed package "
+                f"{owner.distribution} {owner.version}. Name it by module (-e {owner.identifier}) "
+                f"or authorize it (tau ext authorize {owner.identifier}); loading it by path "
+                "would load the same code a second time under another identity."
+            )
         source = _source_for_file(Path(expanded), "path")
         if source.unusable is not None:
             raise ValueError(f"-e {raw}: cannot load it, because {source.unusable}")

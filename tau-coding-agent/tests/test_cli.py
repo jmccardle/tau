@@ -460,6 +460,21 @@ def test_main_resume_errors_only_under_print(capsys):
     assert "--continue" in err and "--session REF" in err
 
 
+def test_a_command_print_mode_cannot_perform_is_one_error_line(capsys, monkeypatch):
+    """``tau -p "/extensions"`` printed a traceback; it is a usage error, exit 2."""
+    from tau_agent_core.commands import UnsupportedCommandError
+
+    async def refuse(args, config, catalog=None):
+        raise UnsupportedCommandError("/extensions opens a view, which print mode (tau -p) cannot")
+
+    monkeypatch.setattr(cli, "run_print", refuse)
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: {})
+    rc = cli.main(["-p", "--no-extensions", "/extensions"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert err == "tau: error: /extensions opens a view, which print mode (tau -p) cannot\n"
+
+
 def test_resume_help_and_behaviour_tell_the_same_story():
     """A regression guard on the contradiction itself, not on either wording.
 

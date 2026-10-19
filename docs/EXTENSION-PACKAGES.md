@@ -90,6 +90,14 @@ name from the path's directories. Which directory is the package root depends
 on `sys.path`, and the path doesn't record it, so any derivation would be a
 guess (decision 10). A host that wants the dotted name ships the module as an
 entry point and names it with `-e <module.name>`.
+
+An `-e` path that *is* an installed extension package's module file is refused,
+with a message naming the module and how to load it (`-e <module>` or
+`tau ext authorize`). Loading it would put the same code in the session twice,
+under two identities, and the second copy dies on its first duplicate tool name.
+The match reads metadata only: RECORD for an ordinary install, the
+`direct_url.json` source directory for an editable one (found by tau-search's
+live test, 2026-10-18).
 - **Alternative rejected:** the entry-point name as the identifier. Two
   distributions can declare the same entry-point name, while a module name is
   unique at import time. That is the property an authorization record needs.

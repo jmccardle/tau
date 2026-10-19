@@ -190,6 +190,21 @@ class TestFindingIsNotLoading:
         assert (record.authorization, record.previous_version) == ("update", "1.0")
         assert "changed from 1.0 to 2.0" in record.reason
 
+    async def test_changed_files_at_the_same_version_say_so(self, site, home, tmp_path):
+        root, top = site
+        module = _install(root, top=top, version="1.0")
+        _authorize_all(home)
+        (root / top / "helper.py").write_text("TOOL_NAME = 'changed'\n")
+        info = root / "tau_fake-1.0.dist-info"
+        rels = [f"{top}/__init__.py", f"{top}/helper.py", f"{top}/ext.py"]
+        lines = [_record_line(root, rel) for rel in rels] + [f"{info.name}/RECORD,,"]
+        (info / "RECORD").write_text("\n".join(lines) + "\n")
+        result = await _load_extensions(None, user_dir=str(home / "extensions"))
+        [record] = [r for r in result.withheld if r.identifier == module]
+        assert record.authorization == "update"
+        assert "tau-fake 1.0's files changed since it was authorized" in record.reason
+        assert "from 1.0 to 1.0" not in record.reason
+
     def test_an_editable_install_is_keyed_to_its_path(self, site):
         root, top = site
         module = _install(root, top=top, editable=Path("/src/fake"))
@@ -281,6 +296,31 @@ class TestExplicitModuleNames:
             resolve_explicit("ext", discover_packages())
         for name in [m for m in sys.modules if m.startswith(top + "_b")]:
             del sys.modules[name]
+
+    def test_a_path_that_is_an_installed_packages_module_is_refused(self, site):
+        root, top = site
+        module = _install(root, top=top)
+        with pytest.raises(
+            ValueError, match=f"module {module} of the installed package tau-fake 1.0"
+        ):
+            resolve_explicit(str(root / top / "ext.py"), discover_packages())
+        assert top not in sys.modules
+
+    def test_a_path_into_an_editable_install_is_refused(self, site, tmp_path):
+        root, top = site
+        src = tmp_path / "checkout"
+        (src / "src" / top).mkdir(parents=True)
+        (src / "src" / top / "ext.py").write_text(_EXT_SOURCE)
+        module = _install(root, top=top, editable=src)
+        with pytest.raises(ValueError, match=f"-e {module}"):
+            resolve_explicit(str(src / "src" / top / "ext.py"), discover_packages())
+
+    def test_a_path_beside_a_package_is_not_mistaken_for_it(self, site, tmp_path):
+        root, top = site
+        _install(root, top=top)
+        other = tmp_path / "ext.py"
+        other.write_text(_DROPIN)
+        assert resolve_explicit(str(other), discover_packages()).kind == "path"
 
     def test_an_importable_module_without_an_entry_point_loads_by_name(self):
         assert resolve_explicit("json", []).kind == "module"
