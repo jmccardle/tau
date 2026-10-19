@@ -167,3 +167,26 @@ bad one in one line with exit 2.
 **For tests and embedders.** There is nothing left to monkeypatch. Set
 `TAU_HOME` to an existing directory; `testing.sandbox.sandbox_tau_home` does
 exactly that.
+
+## 9. A relative `TAU_HOME` is pinned for children (2026-10-19)
+
+**What was wrong.** `TAU_HOME=scratch tau` resolved `scratch` against the cwd,
+but left the variable relative. A child τ started from another directory (the
+bash tool, a delegate, `examples/20_delegate.py`) resolved a different home,
+or exited 2 because there was none.
+
+**Now.** `cli.main` calls `tau_home.pin_home_variables()` first. It rewrites a
+relative `TAU_HOME` or `TAU_PORTABLE_BASE` in `os.environ` as an absolute path,
+so every child inherits the home the head chose. It checks nothing and can't
+fail; a bad value is still refused at resolution, after `--help` has had its
+chance.
+
+**Why rewrite rather than refuse.** A relative path typed in a shell has one
+obvious meaning, the directory it was typed in. Refusing it would make the
+user restate something τ can work out, which is an error without a decision
+behind it.
+
+**Not covered.** A program that embeds `tau_agent_core` without going through
+`cli.main` gets no pinning: `resolve_tau_home` resolves a relative value
+against the cwd of each call. Such a program should call
+`pin_home_variables()` itself before it starts children or changes directory.

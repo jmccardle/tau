@@ -106,3 +106,27 @@ def test_importing_the_cli_with_a_bad_tau_home_does_not_raise(tmp_path: Path) ->
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout == "ok\n"
+
+
+def test_a_relative_tau_home_reaches_a_child_started_elsewhere(tmp_path: Path) -> None:
+    """The head pins a relative ``TAU_HOME``, so a child run from ``/`` gets the same home."""
+    (tmp_path / "work" / "scratch").mkdir(parents=True)
+    probe = (
+        "import os, subprocess, sys\n"
+        "from tau_coding_agent import cli\n"
+        "assert cli.main(['ext', 'list']) == 0\n"
+        "child = 'import tau_coding_agent.config as c; print(c.default_config_path().parent)'\n"
+        "out = subprocess.run([sys.executable, '-c', child], cwd='/', capture_output=True,"
+        " text=True, check=True)\n"
+        "print('CHILD', out.stdout.strip())\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path / "work",
+        env=child_env(tmp_path / "home", **{HOME_ENV: "scratch"}),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.splitlines()[-1] == f"CHILD {(tmp_path / 'work' / 'scratch').resolve()}"

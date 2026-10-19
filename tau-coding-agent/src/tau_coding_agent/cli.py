@@ -25,7 +25,7 @@ from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
-from tau_agent_core.tau_home import TauHomeError, resolve_tau_home
+from tau_agent_core.tau_home import TauHomeError, pin_home_variables, resolve_tau_home
 from tau_coding_agent.config import ConfigError, load_config
 from tau_coding_agent.headless import (
     CLIError,
@@ -762,6 +762,7 @@ def main(argv: list[str] | None = None) -> int:
     The word was never a valid bare ``tau`` argument: a message without ``-p``
     is refused below, so claiming it takes nothing from anyone.
     """
+    pin_home_variables()
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw[:1] == ["ext"]:
         from tau_coding_agent.ext_cli import run_ext
