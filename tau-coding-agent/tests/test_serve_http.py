@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,7 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve as ws_serve
 from websockets.exceptions import InvalidStatus
 
-from tau_coding_agent.serve.http import build_process_request, origin_allowed
+from tau_coding_agent.serve.http import build_process_request, origin_allowed, peer
 
 
 async def _echo(ws) -> None:
@@ -48,6 +49,12 @@ def test_origin_rules():
     )
 
 
+def test_peer_formats_every_address_family():
+    assert peer(("127.0.0.1", 5000)) == "127.0.0.1:5000"
+    assert peer(("::1", 5000, 0, 0)) == "[::1]:5000"
+    assert peer("") == "unix socket"
+
+
 async def test_a_foreign_origin_is_refused_and_a_client_without_one_is_not():
     logged: list[str] = []
     server, port = await _served({}, logged)
@@ -58,7 +65,12 @@ async def test_a_foreign_origin_is_refused_and_a_client_without_one_is_not():
         with pytest.raises(InvalidStatus) as refused:
             await connect(f"ws://127.0.0.1:{port}/", origin="https://evil.example")
         assert refused.value.response.status_code == 403
-        assert "https://evil.example" in logged[0]
+        assert len(logged) == 1
+        assert re.fullmatch(
+            rf"handshake rejected from 127\.0\.0\.1:\d+: "
+            rf"Origin https://evil\.example is not Host 127\.0\.0\.1:{port}",
+            logged[0],
+        ), logged
         async with connect(f"ws://127.0.0.1:{port}/", origin=f"http://127.0.0.1:{port}"):
             pass
     finally:

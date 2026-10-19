@@ -542,19 +542,31 @@ drive a tool-running agent. John chose:
   `packages/server` no longer needs to exist to serve it. A `web_root` that is
   not a directory fails at start.
 
-Built note (2026-10-19, `serve/http.py`, #52): τ logs a rejected handshake
-itself, as one foreground line naming the peer and the reason
-(`handshake rejected from 127.0.0.1:52636: missing Connection header`). A
-connection that closes before it sends a request is a browser preconnect and
-leaves no line. The earlier `DroppedBeforeRequest` filter is retired: it matched
-websockets' `opening handshake failed` ERROR record, which websockets 17 no
-longer emits for most failures, so serve.log lost them. The hook is a
-`create_connection` subclass that reads `protocol.handshake_exc` after the
-handshake, which websockets 14–16 also raise and 17 only stores, so the line
-is the same on both. On 16, the subclass absorbs the `InvalidHandshake` it has
-logged, so there is no second record. A failure that is not an
-`InvalidHandshake`, such as a `process_request` bug, still reaches websockets'
-own ERROR log with its traceback.
+Built note (2026-10-19, `serve/http.py`, #52): τ logs every rejected handshake
+itself, as one foreground line naming the peer and the reason, so one grep for
+`handshake rejected from` finds them all:
+
+- `handshake rejected from 127.0.0.1:52814: missing Sec-WebSocket-Key header`
+- `handshake rejected from 127.0.0.1:52796: did not receive a valid HTTP request: connection closed while reading HTTP headers`
+- `handshake rejected from 127.0.0.1:52640: Origin https://evil.example is not Host 127.0.0.1:8256`
+
+The peer is `host:port`, `[v6]:port`, or `unix socket`. A connection that sends
+zero bytes is a browser preconnect and leaves no line. One that sends part of a
+request and closes is a rejection. The test is the byte count, not the
+exception, because both raise the same `EOFError`-caused `InvalidMessage`. A
+plain HTTP GET is answered by `process_request` (the page or a 404) and is not
+a rejection.
+
+The earlier `DroppedBeforeRequest` filter is retired. It matched websockets'
+`opening handshake failed` ERROR record, which websockets 17 no longer emits
+for most failures, so serve.log lost them. The hook is a `create_connection`
+subclass that counts bytes in `data_received` and reads
+`protocol.handshake_exc` after the handshake. websockets 14–16 raise that
+exception and 17 only stores it, so the line is the same on all four; on 14–16
+the subclass absorbs the `InvalidHandshake` it logged, leaving no second
+record. A failure that is not an `InvalidHandshake`, such as a
+`process_request` bug, still reaches websockets' own ERROR log with its
+traceback.
 
 ### 6.3 Unix sockets
 

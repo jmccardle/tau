@@ -11,7 +11,7 @@ Two jobs in ``websockets``' ``process_request`` hook, and one after it:
 - **The web client.** A plain HTTP request (no ``Upgrade: websocket``) is served
   from ``serve.web_root``, so the page and its socket share one origin.
 - **A rejected handshake is logged by τ**, with the peer and the reason, through
-  :func:`build_connection_class`. A connection closed before it sent a request
+  :func:`build_connection_class`. A connection that sent no bytes
   is a browser preconnect and is not logged.
 """
 
@@ -98,48 +98,53 @@ def build_process_request(
             return static_response(web_root, request.path)
         origin = headers.get("Origin")
         if not origin_allowed(origin, headers.get("Host"), allowed):
-            log(f"handshake refused: Origin {origin} is not Host {headers.get('Host')}")
+            log(
+                f"handshake rejected from {peer(connection.remote_address)}: "
+                f"Origin {origin} is not Host {headers.get('Host')}"
+            )
             return _text(403, "Forbidden", "origin not allowed; see serve.allowed_origins\n")
         return None
 
     return process_request
 
 
-def handshake_rejection(exc: BaseException | None) -> str | None:
-    """The reason to log for a handshake that failed with ``exc``, or ``None``.
-
-    ``None`` for no failure, for a connection closed before it sent a request
-    (its cause chain reaches ``EOFError``), and for anything that is not an
-    :class:`InvalidHandshake`, which ``websockets`` logs with its traceback.
-    """
-    if not isinstance(exc, InvalidHandshake):
-        return None
-    link: BaseException | None = exc
-    while link is not None:
-        if isinstance(link, EOFError):
-            return None
-        link = link.__cause__ or link.__context__
-    cause = exc.__cause__
-    return f"{exc}: {cause}" if cause is not None else str(exc)
-
-
-def _peer(address: Any) -> str:
+def peer(address: Any) -> str:
+    """A connection's remote address as ``host:port``, ``[v6]:port``, or ``unix socket``."""
     if isinstance(address, tuple) and len(address) >= 2:
         host = str(address[0])
         return f"[{host}]:{address[1]}" if ":" in host else f"{host}:{address[1]}"
     return str(address) or "unix socket"
 
 
+def handshake_rejection(exc: BaseException | None, received: int) -> str | None:
+    """The reason to log for a handshake that failed with ``exc``, or ``None``.
+
+    ``None`` for a connection that sent no bytes (a browser preconnect), for no
+    failure, and for anything that is not an :class:`InvalidHandshake`, which
+    ``websockets`` logs itself with its traceback.
+    """
+    if received == 0 or not isinstance(exc, InvalidHandshake):
+        return None
+    cause = exc.__cause__
+    return f"{exc}: {cause}" if cause is not None else str(exc)
+
+
 def build_connection_class(log: Callable[[str], None]) -> type[ServerConnection]:
     """A ``create_connection`` class that logs a rejected handshake as one ``log`` line.
 
-    websockets 14-16 raise the handshake failure for the server to log at ERROR;
-    17 logs most failures at DEBUG only. Reading ``protocol.handshake_exc`` after
-    the handshake serves both (docs/TAU-SERVE.md §6.2, 2026-10-19 note).
+    Reads ``protocol.handshake_exc`` after the handshake, which websockets 14-16
+    raise and 17 only stores (docs/TAU-SERVE.md §6.2, 2026-10-19 note).
     """
 
     class LoggedHandshake(ServerConnection):
         """A server connection that reports its own handshake rejection."""
+
+        received = 0
+
+        def data_received(self, data: bytes) -> None:
+            """Count the bytes the peer sent, then let websockets process them."""
+            self.received += len(data)
+            super().data_received(data)
 
         async def handshake(self, *args: Any, **kwargs: Any) -> None:
             """Run the handshake; log a rejection in place of raising it."""
@@ -148,8 +153,8 @@ def build_connection_class(log: Callable[[str], None]) -> type[ServerConnection]
             except InvalidHandshake as exc:
                 if exc is not self.protocol.handshake_exc:
                     raise
-            reason = handshake_rejection(self.protocol.handshake_exc)
+            reason = handshake_rejection(self.protocol.handshake_exc, self.received)
             if reason is not None:
-                log(f"handshake rejected from {_peer(self.remote_address)}: {reason}")
+                log(f"handshake rejected from {peer(self.remote_address)}: {reason}")
 
     return LoggedHandshake
