@@ -202,7 +202,9 @@ because config is recorded where it takes effect. A move needs no reset, because
 the walk at the new leaf is the comparison. The keys are `CONFIG_KEYS`
 (`session_log.py`). The prompt is recorded as `system_prompt_digest`, a sha256 and
 never the text, and the model as `model_spec`. Resume reads `thinking` back
-through `resolve_model_config(prior_config=…)`.
+through `resolve_model_config(prior_config=…)`. `tools` lists extension tools
+since 0.14 (#46), so an older session with one writes one extra config entry on
+its first resume.
 
 **The alternative loses.** That alternative is reading the newest `model_change` in
 log order (`Session.model`, `session_store.py:337-350`). It makes a branch's

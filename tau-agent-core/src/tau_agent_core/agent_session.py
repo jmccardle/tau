@@ -700,7 +700,8 @@ class AgentSession:
         is what ``--continue`` resumes on (docs/TURN-SETTINGS.md §6);
         ``system_prompt_digest`` a sha256 of the prompt, never the text;
         ``tools`` the names the request's ``tools`` block declares, extension
-        tools included; ``extensions`` the inline-factory labels plus every loaded file extension
+        tools included (an older session with one gains a config entry on first
+        resume, docs/CURSORS.md §5); ``extensions`` the inline-factory labels plus every loaded file extension
         not disabled. The API key is never part of it, hashed or otherwise.
         """
         loaded_paths = [
@@ -1150,7 +1151,9 @@ class AgentSession:
 
         The merge each turn builds, so an extension tool replaces a same-name
         built-in. A cursor frame and declarations narrow it further; see
-        :meth:`describe_tools`. A fresh list of the shared tool objects.
+        :meth:`describe_tools`. A fresh list: constructor tools are the shared
+        objects, extension tools are rewrapped on every read. ``[]`` under
+        ``no_tools="all"``.
 
         Raises:
             ValueError: two constructor tools share a name.

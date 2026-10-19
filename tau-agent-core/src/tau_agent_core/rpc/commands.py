@@ -1234,7 +1234,12 @@ async def _handle_get_commands(
     "get_tools",
     tier="A",
     since="2A",
-    notes="AgentSession.describe_tools(include_hidden=True); lists extension tools since #46.",
+    notes=(
+        "AgentSession.describe_tools(include_hidden=True): constructor and extension "
+        "tools, narrowed by the acting cursor's frame, hidden ones included. Each entry "
+        "carries required `exposure` (effective, overrides applied) and `declared`; "
+        "those two fields follow the experimental tool-exposure model and may change with it."
+    ),
     params_schema=params_schema_for("get_tools"),
     result_schema=GET_TOOLS_RESULT_SCHEMA,
 )

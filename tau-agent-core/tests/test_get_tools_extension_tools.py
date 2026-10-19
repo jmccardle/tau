@@ -17,6 +17,7 @@ from tau_agent_core.compare import start_comparison
 from tau_agent_core.rpc import commands
 from tau_agent_core.rpc.handler import RPCHandler
 from tau_agent_core.sdk import create_agent_session
+from tau_agent_core.session_log import config_at
 
 _PROBE = """
 async def _run(tool_call_id, params, signal, on_update, ctx):
@@ -98,6 +99,21 @@ async def test_a_disabled_extensions_tool_disappears(tmp_path):
     assert (await session.disable_extension(path)).ok
 
     assert [t["name"] for t in await _get_tools(session)] == ["read"]
+
+
+async def test_a_reloaded_extensions_tools_are_listed_once_everywhere(tmp_path):
+    session = create_agent_session(model=_model(), tools=["read"])
+    path = await _load(session, tmp_path, "probe", "other")
+    await session._record_config()
+
+    assert (await session.reload_extension(path)).ok
+    await session._record_config()
+
+    expected = ["read", "probe", "other"]
+    cursor = session.cursor
+    assert [t["name"] for t in await _get_tools(session)] == expected
+    assert [t.name for t in session.tools] == expected
+    assert config_at(cursor.entries(), cursor.leaf)["tools"] == expected
 
 
 async def test_exposure_overrides_and_withdrawals_are_reported(tmp_path):
