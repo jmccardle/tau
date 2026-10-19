@@ -141,6 +141,14 @@ word characters, is gone (#40). A typed `ext:<last segment>:<command>` still
 resolves when exactly one loaded owner ends in that segment
 (docs/EXTENSION-PACKAGES.md §4).
 
+A submitted `/ext:…` that resolves to nothing — the 2.x spelling
+`/ext:pirate.speak`, a typo, an ambiguous shorthand — is refused, never sent to
+the model (#57, 2026-10-19). `resolve_command` returns it with `refusal` set,
+`submit()` answers `accepted=False` with that sentence, and it suggests the
+nearest registered name: `/ext:pirate.speak is not a command; qualified names are
+/ext:<identifier>:<command>, e.g. /ext:pirate:speak`. Only a submission with
+`expand_commands` is checked, so a bus payload stays prompt text.
+
 ## 8. Not in this pass
 
 - **The `/ext:` completion grammar.** Typing `ext:` should complete extension

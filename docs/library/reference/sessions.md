@@ -1067,7 +1067,7 @@ List of messages produced by the agent loop (this turn's new messages only — s
 
 **Raises**
 
-- `UnsupportedCommandError` — ``text`` resolves to a command. See above — this method has nowhere to put the outcome, so it refuses before anything runs instead of swallowing it.
+- `UnsupportedCommandError` — ``text`` resolves to a command, or to a refused ``/ext:`` name. See above — this method has nowhere to put the outcome, so it refuses before anything runs instead of swallowing it.
 
 ### record_side_usage
 
@@ -1188,7 +1188,7 @@ ordering rule (built-ins win).
 
 **Returns**
 
-The command it would dispatch as, or ``None`` for ordinary text, including an unknown ``/…``, which goes to the model.
+The command it would dispatch as, or ``None`` for ordinary text, including an unknown ``/…``, which goes to the model. An unresolvable ``/ext:…`` comes back with ``refusal`` set, which :meth:`submit` refuses.
 
 ### resolve_extension_target
 
@@ -1672,7 +1672,8 @@ Reference: docs/SUBMISSION-LIFECYCLE.md, "The one door". In order:
 2. **The ``input`` hook chain**, which may transform or consume the text.
 3. **Command dispatch**, only when ``sub.expand_commands``: a resolved
    command (:meth:`resolve_command`) runs or steps instead of a turn and is
-   reported on ``SubmissionResult.command``. Off by default, which is a
+   reported on ``SubmissionResult.command``; an unresolvable ``/ext:…``
+   name is refused (``accepted=False``, #57). Off by default, which is a
    security property: a bus payload starting ``/compact`` stays prompt text.
 4. **A pending extension lock** refuses the turn.
 5. **The turn**, persisted unless ``sub.store_history`` is False, bracketed
