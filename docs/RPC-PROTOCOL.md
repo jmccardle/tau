@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 176,645 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 176,988 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -411,7 +411,7 @@ what rides on top of this on every response):
 
 #### `get_tools`
 
-*Since 2A.* Already implemented pre-2A; ported onto the table verbatim, no behaviour change.
+*Since 2A.* AgentSession.describe_tools(include_hidden=True); lists extension tools since #46.
 
 **Params schema:**
 
@@ -430,11 +430,26 @@ what rides on top of this on every response):
 {
   "properties": {
     "tools": {
-      "description": "This session's bound AgentTool set, in binding order.",
+      "description": "Every tool on the acting cursor: constructor tools, then extension tools, narrowed by the cursor's frame; hidden ones included.",
       "items": {
         "properties": {
+          "declared": {
+            "description": "Whether the request's `tools` block declares it.",
+            "type": "boolean"
+          },
           "description": {
             "description": "What the model is told the tool does.",
+            "type": "string"
+          },
+          "exposure": {
+            "description": "The effective exposure, overrides applied.",
+            "enum": [
+              "direct",
+              "model-only",
+              "callable",
+              "deferred",
+              "hidden"
+            ],
             "type": "string"
           },
           "name": {
@@ -450,7 +465,9 @@ what rides on top of this on every response):
         "required": [
           "name",
           "description",
-          "parameters"
+          "parameters",
+          "exposure",
+          "declared"
         ],
         "type": "object"
       },
