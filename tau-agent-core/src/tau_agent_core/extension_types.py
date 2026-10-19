@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import fnmatch
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
 from uuid import uuid4
@@ -28,6 +29,7 @@ from tau_agent_core.commands import (
 from tau_agent_core.compaction import estimate_context_tokens
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_data
 from tau_agent_core.tool_catalog import ExtensionInfo, ToolDescription, match_tools
+from tau_agent_core.tool_output import suspend_capture
 from tau_agent_core.tool_pipeline import NestedToolResult
 from tau_agent_core.tools.base import ExtensionToolDefinition
 from tau_agent_core.submission import (
@@ -668,16 +670,16 @@ class ExtensionUI:
         if delegate is not None:
             answers: dict[str, Any] | None = await delegate.form(spec)
             return answers
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "form",
-                    "extension": None,
-                    "title": title,
-                    "fields": fields,
-                }
-            )
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "form",
+                "extension": None,
+                "title": title,
+                "fields": fields,
+            },
+            None,
+        )
         self._headless_token("form", title)  # raises if no policy; only "defaults" is valid
         return {field["name"]: form_headless_value(field) for field in fields}
 
@@ -693,6 +695,18 @@ class ExtensionUI:
                 one stdout line; ``None`` restores the plain stderr output.
         """
         self._record_sink = sink
+
+    def _to_head(self, record: dict[str, Any], line: str | None) -> None:
+        """``record`` to the record sink, else ``line`` (if any) to stderr, outside tool capture.
+
+        A tool calling ``ctx.ui`` runs inside its own output capture, which would
+        otherwise swallow a write meant for the head (``suspend_capture``).
+        """
+        with suspend_capture():
+            if self._record_sink is not None:
+                self._record_sink(record)
+            elif line is not None:
+                print(line, file=sys.stderr)
 
     def notify(self, message: str, level: str = "info", *, source: str | None = None) -> None:
         """Show a notification.
@@ -719,20 +733,16 @@ class ExtensionUI:
         if self._tui_delegate is not None:
             self._tui_delegate.notify(message, level)
             return
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "notify",
-                    "extension": source,
-                    "level": level,
-                    "message": message,
-                }
-            )
-            return
-        import sys
-
-        print(f"[τ] {level}: {message}", file=sys.stderr)
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "notify",
+                "extension": source,
+                "level": level,
+                "message": message,
+            },
+            f"[τ] {level}: {message}",
+        )
 
     def set_status(self, key: str, text: str | None, *, source: str | None = None) -> None:
         """Set (or clear) a keyed slot in the extension status strip (E10 §6 / S67).
@@ -756,21 +766,17 @@ class ExtensionUI:
         if self._tui_delegate is not None:
             self._tui_delegate.set_status(key, text)
             return
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "status",
-                    "extension": source,
-                    "key": key,
-                    "text": text,
-                }
-            )
-            return
-        import sys
-
         shown = "(cleared)" if text is None else text
-        print(f"[τ] status {key}: {shown}", file=sys.stderr)
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "status",
+                "extension": source,
+                "key": key,
+                "text": text,
+            },
+            f"[τ] status {key}: {shown}",
+        )
 
     def panel(self, key: str, spec: dict[str, Any] | None, *, source: str | None = None) -> None:
         """Show, update, or clear a persistent keyed panel (E10 §6 / S68).
@@ -799,21 +805,17 @@ class ExtensionUI:
         if self._tui_delegate is not None:
             self._tui_delegate.panel(key, normalized)
             return
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "panel",
-                    "extension": source,
-                    "key": key,
-                    "spec": normalized,
-                }
-            )
-            return
-        import sys
-
         shown = "(cleared)" if normalized is None else normalized["title"]
-        print(f"[τ] panel {key}: {shown}", file=sys.stderr)
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "panel",
+                "extension": source,
+                "key": key,
+                "spec": normalized,
+            },
+            f"[τ] panel {key}: {shown}",
+        )
 
     def emit_veto(self, *, extension: str | None, tool: str, reason: str) -> None:
         """Emit a blocked-tool VETO record on the headless JSON stream (E7 §3 / S50).
@@ -833,17 +835,17 @@ class ExtensionUI:
             tool: The blocked tool's name.
             reason: The veto reason the hook gave.
         """
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "veto",
-                    "extension": extension,
-                    "tool": tool,
-                    "reason": reason,
-                    "blocked": True,
-                }
-            )
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "veto",
+                "extension": extension,
+                "tool": tool,
+                "reason": reason,
+                "blocked": True,
+            },
+            None,
+        )
 
     def emit_constraints(self, summary: dict[str, Any], *, source: str | None = None) -> None:
         """Echo the decode constraint that shaped a ``ctx.complete()`` call (G4/C).
@@ -861,15 +863,15 @@ class ExtensionUI:
         """
         if summary.get("kind") == "none":
             return
-        if self._record_sink is not None:
-            self._record_sink(
-                {
-                    "type": "extension",
-                    "kind": "constraints",
-                    "extension": source,
-                    "constraints": summary,
-                }
-            )
+        self._to_head(
+            {
+                "type": "extension",
+                "kind": "constraints",
+                "extension": source,
+                "constraints": summary,
+            },
+            None,
+        )
 
 
 @agent_facing(topic="extensions")

@@ -1083,3 +1083,40 @@ async def test_an_exposure_refusal_by_stub_name_names_the_real_tool(tmp_path):
     results = _results(await _prompt(session, model))
     assert "call_tool: 'my_inner' (tool 'my-inner') is not available to you" in _text(results["s"])
     assert "call_tool: 'my-inner' is not available to you" in _text(results["r"])
+
+
+# ── issue #55 review: ctx.ui writes for the head escape the tool's capture ───
+
+
+async def _notifying_session(tmp_path):
+    async def noisy(tool_call_id, params, signal, on_update, ctx):
+        print("debug from tool")
+        ctx.ui.notify("heads up", "warning")
+        return {"content": [{"type": "text", "text": "ok"}]}
+
+    def ext(api):
+        api.register_tool(_tool("noisy", noisy))
+
+    return _session(tmp_path, ext)
+
+
+async def test_a_tool_notify_reaches_real_stderr_not_its_captured_output(tmp_path, capfd):
+    session = await _notifying_session(tmp_path)
+    messages = await _prompt(session, ScriptedModel([("n", "noisy", {})]))
+    captured = _results(messages)["n"]["details"]["captured_output"]
+    assert captured == {"stdout": "debug from tool\n"}
+    out = capfd.readouterr()
+    assert "[τ] warning: heads up" in out.err
+    assert "debug from tool" not in out.out
+
+
+async def test_a_tool_notify_record_reaches_real_stdout_under_a_record_sink(tmp_path, capfd):
+    session = await _notifying_session(tmp_path)
+    session.set_extension_record_sink(lambda record: print(json.dumps(record), flush=True))
+    messages = await _prompt(session, ScriptedModel([("n", "noisy", {})]))
+    captured = _results(messages)["n"]["details"]["captured_output"]
+    assert captured == {"stdout": "debug from tool\n"}
+    records = [json.loads(line) for line in capfd.readouterr().out.splitlines() if line]
+    assert {"kind": "notify", "level": "warning", "message": "heads up"}.items() <= next(
+        r for r in records if r.get("kind") == "notify"
+    ).items()

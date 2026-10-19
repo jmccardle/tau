@@ -624,7 +624,16 @@ and the run's tool handler delivers it at once. A script that names an excluded
 tool gets the notice text, not `Unknown tool`, which is kept for names that do
 not exist. Only the active language's renderer decides an exclusion:
 TypeScript renders a `$ref` as `unknown` and never fails, so nothing is left out
-under `provider: typescript`.
+under `provider: typescript`. A second review found the late notice still
+lost in every headless head: the tool's own output capture took the stderr
+line and the `--mode json` record into `details.captured_output`. The fix is
+general, because any extension tool calling `ctx.ui` had the same fault:
+`ExtensionUI` writes every record-sink record and stderr line for a head
+inside `tool_output.suspend_capture()`, as `tool_pipeline` already does for
+head events. The TUI delegate and the serve daemon's `ui` events never write
+to a stream, so they were not affected. The code-mode handler delivers
+notices after the run, and a delivery failure during a failed run becomes a
+note on the run's exception instead of replacing it.
 `tool_search` lists a match whose stub fails as
 `# tool 'X' is unavailable: <reason>` and reports it in
 `details["unavailable"]`. `call_tool` refuses such a tool by any name, with

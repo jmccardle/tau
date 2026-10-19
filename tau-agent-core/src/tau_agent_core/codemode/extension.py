@@ -369,7 +369,7 @@ def register(api: Any, config: Mapping[str, Any] | None = None) -> None:
     ) -> dict[str, Any]:
         session = _session_of(ctx)
         try:
-            return await mode.run(
+            result = await mode.run(
                 params["code"],
                 session._turn_tools(),
                 cursor_id=session.acting_cursor.id,
@@ -377,14 +377,23 @@ def register(api: Any, config: Mapping[str, Any] | None = None) -> None:
                 signal=signal,
                 cwd=ctx.cwd,
             )
-        finally:
-            for notice in mode.take_notices():
-                ctx.ui.notify(notice, "warning")
+        except BaseException as exc:
+            try:
+                deliver(ctx)
+            except Exception as failed:
+                exc.add_note(f"code mode could not deliver its notices: {failed!r}")
+            raise
+        deliver(ctx)
+        return result
+
+    def deliver(ctx: Any) -> None:
+        """Show every queued exclusion notice; a run's own error is never replaced by this."""
+        for notice in mode.take_notices():
+            ctx.ui.notify(notice, "warning")
 
     async def before_agent_start(event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
         section = mode.section(_session_of(ctx)._turn_tools())
-        for notice in mode.take_notices():
-            ctx.ui.notify(notice, "warning")
+        deliver(ctx)
         current = event.get("system_prompt") or ""
         if section.strip() in current:
             return None
