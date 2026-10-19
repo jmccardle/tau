@@ -122,6 +122,19 @@ lookup and became an ad-hoc OpenAI model called `local-llm`.
 - The TUI no longer falls back to the name `local-llm` when `default_model` is
   unset. It says to set `default_model` or pass `--model`.
 
+**SDK migration (for the 0.14.0 release notes).** A call that named a model
+outside the built-ins and relied on the old `provider="openai"` now raises.
+Name the provider:
+
+```python
+create_agent_session(model="mistral-small", provider="openai", base_url="http://localhost:8080/v1")
+resolve_model("mistral-small", provider="openai", base_url="http://localhost:8080/v1")
+```
+
+The built-ins that still need no provider are `gpt-4o`, `gpt-4` and
+`gpt-4-turbo`. CLI users get the same rule: `--model openai/mistral-small`, or
+`--provider openai --model mistral-small`, or a `config.json` entry.
+
 **What stays, and why.**
 - `create_agent_session()` with no arguments still means `gpt-4o`. That is a
   documented quick-start default for a caller who named nothing, not a guess
@@ -159,9 +172,22 @@ look friendlier, but a bad entry nobody selected still breaks `get_models`, the
 serve hello and the TUI's model picker later, further from the cause. Every bad
 entry is named in the one line, joined by `; `.
 
+Every problem in an entry is reported, not only the first: `models.a.max_tokens
+must be a positive integer…; models.a.grammar must be…`. A type error from the
+`Model` constructor itself (for example `temperature: "hot"`) is reported once
+τ's own checks on that entry pass.
+
+Only commands that use models validate them: the TUI, `-p`, rpc, repl, and
+`tau serve` in the foreground or with `-d`. `tau serve --stop`, `--tail` and
+`--schema`, `tau ext …`, `tau --connect` (the daemon's config applies),
+`--import-session`, `--export-session` and `--export-html` do not, so a typo in
+one entry can't stop you stopping or tailing a running daemon.
+
 One exception: an entry whose `backend` is not registered yet (and that sets no
 `base_url`) is left to the build that selects it, because an extension may
-register that provider first (docs/EXTENSION-PROVIDERS.md §2). When that build
+register that provider first (docs/EXTENSION-PROVIDERS.md §2). None of its
+other fields are checked at startup either, since the build stops at the
+provider before reaching them. When that build
 does happen and the provider is still missing, it raises
 `backends.ProviderNotRegisteredError`, a `ModelConfigError`, so it too is one
 `tau: error:` line, exit 2, and the serve daemon answers `INVALID_PARAMS`. A

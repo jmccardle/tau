@@ -92,7 +92,6 @@ def _fake(model, context, options=None):
 
 def json_stream_probe(capture: bool) -> dict:
     """Run ``tau -p --mode json`` once with the noisy tool; count non-JSON stdout lines."""
-    import tau_coding_agent.session_store as store
     from tau_coding_agent.cli import CLIArgs
     from tau_coding_agent.headless import run_print
 
@@ -126,7 +125,7 @@ def json_stream_probe(capture: bool) -> dict:
         )
         try:
             with (
-                patch.object(store, "TAU_DIR", Path(tmp)),
+                patch.dict(os.environ, {"TAU_HOME": tmp}),
                 patch("tau_agent_core.agent_loop.stream_simple", side_effect=_fake),
                 disable,
                 contextlib.redirect_stdout(out),

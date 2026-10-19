@@ -132,3 +132,17 @@ def test_pin_leaves_absolute_empty_and_unset_values_alone(tmp_path: Path) -> Non
     env = {HOME_ENV: str(tmp_path), PORTABLE_BASE_ENV: ""}
     pin_home_variables(env)
     assert env == {HOME_ENV: str(tmp_path), PORTABLE_BASE_ENV: ""}
+
+
+def test_pin_resolves_like_resolve_tau_home_through_a_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``lnk/../h`` pins to the same directory ``resolve_tau_home`` would pick."""
+    (tmp_path / "real" / "inner").mkdir(parents=True)
+    (tmp_path / "real" / "h").mkdir()
+    (tmp_path / "lnk").symlink_to(tmp_path / "real" / "inner")
+    monkeypatch.chdir(tmp_path)
+    env = {HOME_ENV: "lnk/../h"}
+    expected = resolve_tau_home(env)
+    pin_home_variables(env)
+    assert env[HOME_ENV] == str(expected) == str(tmp_path / "real" / "h")

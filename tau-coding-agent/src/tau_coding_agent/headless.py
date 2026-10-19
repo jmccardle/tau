@@ -552,22 +552,15 @@ def _emit_command_output(mode: str, command: str, text: str | None) -> None:
 def truncation_advice() -> str:
     """What to DO about a completion cut at the output cap, in one sentence.
 
-    Shared by print mode and the REPL. It names the config file resolved now.
+    Beside :func:`report_truncation` because a head that renders the notice itself
+    (the REPL's scrollback, print mode's stderr) must give the same advice
+    (docs/REPL-HEAD.md §4). It names the config file resolved now.
     """
     return (
         f"Raise max_tokens for this model in {default_config_path()}, or lower the "
         "reasoning budget so the answer fits under the cap. "
         "See docs/TRUNCATED-TOOL-CALLS.md."
     )
-
-
-"""What to DO about a truncated answer, said in one sentence.
-
-Beside :func:`report_truncation` rather than inside it because a head that
-renders the notice itself — the REPL prints it in the scrollback, where print
-mode writes stderr — must give the same advice rather than a second wording of
-it (docs/REPL-HEAD.md §4).
-"""
 
 
 def cache_dialect_advice(model_name: str) -> str:

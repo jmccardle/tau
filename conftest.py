@@ -2,10 +2,10 @@
 
 ``TAU_HOME`` and ``TAU_PORTABLE_BASE`` are removed from ``os.environ`` when
 this file is imported, which pytest does before it imports any package's
-``tests/conftest.py`` or test module. A session fixture would be too late:
-``tau_coding_agent.config.TAU_DIR`` resolves the home at import, during
-collection. Child processes inherit the cleaned environment; a subprocess
-test still builds its env with ``tau_agent_core.testing.child_env``.
+``tests/conftest.py`` or test module, so nothing imported during collection
+can see them either. The home is resolved per call (docs/PORTABLE-HOME.md
+§8). Child processes inherit the cleaned environment; a subprocess test still
+builds its env with ``tau_agent_core.testing.child_env``.
 
 Rationale: docs/PORTABLE-HOME.md §7.
 """

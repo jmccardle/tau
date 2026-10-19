@@ -156,7 +156,9 @@ and any program importing `tau_coding_agent.cli` to reach `build_parser` was
 killed by the import.
 
 **Now.** Neither constant exists. Every reader calls `resolve_tau_home()`
-when it needs the home: `config.default_config_path()`, the file session
+when it needs the home, and nothing caches the answer, so a long-lived
+process (the serve daemon, an embedding program) sees a change to `TAU_HOME`
+or `HOME` at its next read: `config.default_config_path()`, the file session
 store's default base, the serve log, the REPL history, themes and exports.
 `cli.main` resolves once right after argument parsing, inside the handler
 that prints `tau: error:`. `tau ext` and `tau serve` run through the same

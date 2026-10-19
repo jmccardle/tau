@@ -51,7 +51,7 @@ class ModelConfigError(ConfigError, ValueError):
 
 
 def load_config(path: Path | None = None) -> dict[str, Any]:
-    """Load ``~/.tau/config.json``; ``{}`` when absent.
+    """Load τ's ``config.json`` (``<τ home>/config.json`` unless ``path``); ``{}`` when absent.
 
     Fail-Early: a config file that exists but is not a JSON object raises rather
     than being silently coerced to an empty config (which would look like "no

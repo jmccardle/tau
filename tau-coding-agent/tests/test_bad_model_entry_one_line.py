@@ -65,7 +65,7 @@ def test_every_bad_entry_is_named_in_one_config_error(tmp_path: Path, monkeypatc
     monkeypatch.setenv(HOME_ENV, str(tmp_path))
     config = {
         "models": {
-            "a": {**_GOOD, "max_tokens": 0},
+            "a": {**_GOOD, "max_tokens": 0, "grammar": "regex"},
             "b": {**_GOOD, "temperature": "hot"},
             "c": "not an object",
             "later": {"backend": "registered-by-an-extension", "model": "x"},
@@ -77,6 +77,7 @@ def test_every_bad_entry_is_named_in_one_config_error(tmp_path: Path, monkeypatc
     assert isinstance(excinfo.value, ConfigError) and isinstance(excinfo.value, ValueError)
     assert "\n" not in message
     assert "models.a.max_tokens must be a positive integer" in message
+    assert "models.a.grammar must be 'llguidance' or 'gbnf'" in message
     assert "models.b is not valid: temperature:" in message
     assert "models.c must be a JSON object" in message
     assert "later" not in message
@@ -97,3 +98,20 @@ def test_the_model_picker_leaves_out_an_entry_that_does_not_build() -> None:
     rows = {row["name"]: row for row in model_catalog(resolver)}
     assert rows["ext"]["model"] is None and "'acme'" in rows["ext"]["error"]
     assert rows["good"]["error"] is None
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["serve", "--stop", "--listen", "127.0.0.1:1"],
+        ["serve", "--tail", "--listen", "127.0.0.1:1"],
+        ["serve", "--schema"],
+        ["ext", "list"],
+    ],
+    ids=["serve-stop", "serve-tail", "serve-schema", "ext-list"],
+)
+def test_commands_that_use_no_model_are_not_blocked(tmp_path: Path, argv: list[str]) -> None:
+    """A typo in one entry must not stop you stopping or tailing a running daemon."""
+    out = _run(tmp_path, *argv)
+    assert "models.old" not in out.stderr, out.stderr
+    assert "Traceback" not in out.stderr

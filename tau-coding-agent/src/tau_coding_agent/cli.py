@@ -941,9 +941,8 @@ def main(argv: list[str] | None = None) -> int:
                 "TUI, resume a session with --resume (or /resume, or the command "
                 "palette's 'Resume session…')"
             )
-        config = _load_head_config()
         if args.print_mode:
-            return asyncio.run(run_print(args, config))
+            return asyncio.run(run_print(args, _load_head_config()))
         if args.messages:
             raise CLIError(
                 "messages were given without --print; add -p to run headlessly "
@@ -951,11 +950,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.mode == "json":
             raise CLIError("--mode json only applies to headless --print runs")
+        config = load_config()
         address = _remote_address(args, config)
         if address is not None:
             return _launch_remote_tui(args, address)
         if args.cwd is not None:
             raise CLIError("--cwd names a directory on a daemon's machine; it needs --connect")
+        validate_model_entries(config)
         return _launch_tui(args, config)
     except (
         ConfigError,

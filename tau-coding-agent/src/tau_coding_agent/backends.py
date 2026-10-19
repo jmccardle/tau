@@ -1093,14 +1093,15 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     if reasoning_arg is not None and not model_reasoning:
         _warn_undeclared_reasoning(model_id)
 
+    problems: list[str] = []
     reasoning_replay = config.get("reasoning_replay")
     if reasoning_replay is not None and reasoning_replay not in ("all", "turn", "off"):
-        raise ModelConfigError(
+        problems.append(
             f"models.{entry}.reasoning_replay must be one of 'all', 'turn', 'off'; "
             f"got {reasoning_replay!r}"
         )
     if reasoning_replay == "off" and api == "anthropic-messages":
-        raise ModelConfigError(
+        problems.append(
             f"models.{entry}.reasoning_replay is 'off', which the Anthropic Messages API "
             "cannot honour. Use 'turn' to drop prior turns' thinking "
             "(docs/REASONING-WIRE.md §6)."
@@ -1109,59 +1110,58 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
 
     strict_reasoning_formats = config.get("strict_reasoning_formats", False)
     if not isinstance(strict_reasoning_formats, bool):
-        raise ModelConfigError(
+        problems.append(
             f"models.{entry}.strict_reasoning_formats must be a boolean; got "
             f"{strict_reasoning_formats!r}"
         )
 
     grammar_dialect = config.get("grammar")
     if grammar_dialect is not None and grammar_dialect not in ("llguidance", "gbnf"):
-        raise ModelConfigError(
+        problems.append(
             f"models.{entry}.grammar must be 'llguidance' or 'gbnf'; got {grammar_dialect!r}"
         )
     grammar_dialect = cast("Literal['llguidance', 'gbnf'] | None", grammar_dialect)
 
     prompt_cache = config.get("prompt_cache", True)
     if isinstance(prompt_cache, str):
-        raise ModelConfigError(
+        problems.append(
             f"models.{entry}.prompt_cache is a boolean; got {prompt_cache!r}. The dialect "
             "moved to prompt_cache_dialect: 'anthropic', and 'off' is prompt_cache: false"
         )
-    if not isinstance(prompt_cache, bool):
-        raise ModelConfigError(
-            f"models.{entry}.prompt_cache must be a boolean; got {prompt_cache!r}"
-        )
+    elif not isinstance(prompt_cache, bool):
+        problems.append(f"models.{entry}.prompt_cache must be a boolean; got {prompt_cache!r}")
 
     cache_dialect = config.get("prompt_cache_dialect")
     if cache_dialect is not None and cache_dialect != "anthropic":
-        raise ModelConfigError(
+        problems.append(
             f"models.{entry}.prompt_cache_dialect must be 'anthropic'; got {cache_dialect!r}"
         )
     cache_dialect = cast("Literal['anthropic'] | None", cache_dialect)
 
-    _validate_thinking_level_map(config.get("thinking_level_map"), entry)
+    try:
+        _validate_thinking_level_map(config.get("thinking_level_map"), entry)
+    except ModelConfigError as exc:
+        problems.append(str(exc))
 
     extra_body = config.get("extra_body") or {}
     if not isinstance(extra_body, dict):
-        raise ModelConfigError(
-            f"models.{entry}.extra_body must be a JSON object; got {extra_body!r}"
-        )
+        problems.append(f"models.{entry}.extra_body must be a JSON object; got {extra_body!r}")
 
     server_features = config.get("server_features") or []
     if not isinstance(server_features, list):
-        raise ModelConfigError(
+        problems.append(
             f"models.{entry}.server_features must be a list of strings; got {server_features!r}"
         )
 
     compat_config = config.get("compat")
+    compat = None
     if compat_config is not None and not isinstance(compat_config, dict):
-        raise ModelConfigError(
-            f"models.{entry}.compat must be a JSON object; got {compat_config!r}"
-        )
-    try:
-        compat = Compat(**compat_config) if compat_config else None
-    except (TypeError, ValueError) as exc:
-        raise ModelConfigError(f"models.{entry}.compat is not valid: {_one_line(exc)}") from exc
+        problems.append(f"models.{entry}.compat must be a JSON object; got {compat_config!r}")
+    elif compat_config:
+        try:
+            compat = Compat(**compat_config)
+        except (TypeError, ValueError) as exc:
+            problems.append(f"models.{entry}.compat is not valid: {_one_line(exc)}")
 
     context_window = config.get("context_window", 128000)
     if (
@@ -1169,14 +1169,15 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         or not isinstance(context_window, int)
         or context_window <= 0
     ):
-        raise ModelConfigError(
+        problems.append(
             f"models.{entry}.context_window must be a positive integer; got {context_window!r}"
         )
     max_tokens = config.get("max_tokens", DEFAULT_MAX_TOKENS)
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
-        raise ModelConfigError(
-            f"models.{entry}.max_tokens must be a positive integer; got {max_tokens!r}"
-        )
+        problems.append(f"models.{entry}.max_tokens must be a positive integer; got {max_tokens!r}")
+
+    if problems:
+        raise ModelConfigError("; ".join(problems))
 
     try:
         return Model(
@@ -1220,9 +1221,12 @@ def validate_model_entries(config: Mapping[str, Any]) -> None:
 
     Every entry, not only the selected one: ``get_models``, the serve daemon's
     hello and the TUI's model picker build them all, so a bad entry nobody
-    selected would otherwise break those later (docs/SILENT-DEFAULTS.md §8). An
-    entry whose ``backend`` is not registered yet is left to the build that
-    selects it, because an extension may register that provider first.
+    selected would otherwise break those later (docs/SILENT-DEFAULTS.md §8).
+    Every problem in an entry is reported, not only the first.
+
+    An entry whose ``backend`` is not registered yet, with no ``base_url``, is
+    left to the build that selects it, because an extension may register that
+    provider first. Its other fields are therefore not checked here either.
 
     Args:
         config: The loaded config.

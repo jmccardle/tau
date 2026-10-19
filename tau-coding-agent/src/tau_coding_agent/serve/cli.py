@@ -106,7 +106,12 @@ def serve_settings(web_root: str | None, config: dict[str, Any]) -> dict[str, An
 
 
 def run_serve(argv: list[str]) -> int:
-    """Entry point for ``tau serve``; returns the process exit code."""
+    """Entry point for ``tau serve``; returns the process exit code.
+
+    Model entries are validated only on the paths that listen (foreground and
+    ``-d``), so ``--stop`` and ``--tail`` reach a running daemon whatever the
+    config says (docs/SILENT-DEFAULTS.md §8).
+    """
     from tau_coding_agent.backends import validate_model_entries
     from tau_coding_agent.config import load_config
 
@@ -120,7 +125,6 @@ def run_serve(argv: list[str]) -> int:
         print("tau serve: --json reports what -d or --stop did; use it with one", file=sys.stderr)
         return 2
     config = load_config()
-    validate_model_entries(config)
     try:
         address = listen_address(args.listen, config)
     except ValueError as exc:
@@ -133,6 +137,7 @@ def run_serve(argv: list[str]) -> int:
     if args.stop:
         token = os.environ.get("TAUD_TOKEN") or settings.get("token")
         return stop_daemon(address, json_output=args.json, token=str(token) if token else None)
+    validate_model_entries(config)
     if args.daemon:
         child_argv = [a for a in argv if a not in ("-d", "--daemon", "--json")]
         token = os.environ.get("TAUD_TOKEN") or settings.get("token")

@@ -39,7 +39,7 @@ def pin_home_variables(environ: MutableMapping[str, str] | None = None) -> None:
     for name in HOME_ENV_VARS:
         value = env.get(name, "")
         if value and not os.path.isabs(os.path.expanduser(value)):
-            env[name] = os.path.abspath(value)
+            env[name] = os.path.realpath(value)
 
 
 def resolve_tau_home(environ: Mapping[str, str] | None = None) -> Path:
