@@ -21,7 +21,7 @@ from tau_agent_core.codemode.protocol import (
     RunLimits,
     ToolStub,
 )
-from tau_agent_core.tool_schema import StubNamespace
+from tau_agent_core.tool_schema import StubError, StubNamespace
 
 _FIELD = re.compile(r"\{\{(\w+)\}\}")
 _TS_IDENT = re.compile(r"^[A-Za-z_$][\w$]*$")
@@ -95,7 +95,7 @@ def _python_signatures(stubs: Sequence[ToolStub], *, self_arg: bool) -> tuple[li
     ``tool_search`` uses, with ``-> str`` because a script receives a tool's text.
 
     Raises:
-        ValueError: a ``$ref`` is not a local pointer or does not resolve.
+        StubError: a ``$ref`` is not a local pointer or does not resolve.
     """
     namespace = StubNamespace()
     classes: list[str] = []
@@ -107,6 +107,27 @@ def _python_signatures(stubs: Sequence[ToolStub], *, self_arg: bool) -> tuple[li
         classes += new
         signatures.append(signature)
     return classes, signatures
+
+
+def stub_failures(stubs: Sequence[ToolStub]) -> dict[str, str]:
+    """The stubs whose schema cannot be rendered, each with the reason (docs/CODE-MODE.md §6.3).
+
+    Returns:
+        ``{real name: reason}``, e.g. ``$ref '#/$defs/X' does not resolve (...)``,
+        in ``stubs`` order; empty when every stub renders.
+    """
+    failures: dict[str, str] = {}
+    for stub in stubs:
+        try:
+            StubNamespace().signature(stub.name, stub.parameters, None)
+        except StubError as exc:
+            failures[stub.name] = exc.reason
+    return failures
+
+
+def unavailable_notice(name: str, reason: str) -> str:
+    """The notice every head shows for a tool code mode leaves out."""
+    return f"tool {name!r} is unavailable in code mode: {reason}"
 
 
 def render_python_stubs(stubs: Sequence[ToolStub]) -> str:

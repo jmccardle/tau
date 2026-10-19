@@ -232,3 +232,88 @@ async def test_typescript_provider_refuses_to_run(tmp_path: Any) -> None:
         "console.log(1)", [], cursor_id="c", call_id="x", signal=None, cwd=str(tmp_path)
     )
     assert out["is_error"] and "no runtime" in out["content"][0]["text"]
+
+
+# ── issue #55: a tool whose stub fails is left out, visibly ──────────────────
+
+
+def _bad_ref_extension(api: Any) -> None:
+    async def execute(tool_call_id: str, params: Any, signal: Any, on_update: Any, ctx: Any) -> Any:
+        return {"content": [{"type": "text", "text": "ran"}]}
+
+    api.register_tool(
+        {
+            "name": "remote",
+            "description": "A tool whose schema points outside itself.",
+            "parameters": {
+                "type": "object",
+                "properties": {"spec": {"$ref": "other.json#/Spec"}},
+            },
+            "execute": execute,
+        }
+    )
+
+
+BAD_REF_SCRIPT = """\
+print(len(await tools.read(path="a.txt")))
+try:
+    await tools.remote(spec={})
+except Exception as exc:
+    print("refused:", exc)
+"""
+
+
+class _Notices:
+    def __init__(self) -> None:
+        self.seen: list[tuple[str, str]] = []
+
+    def notify(self, message: str, level: str = "info") -> None:
+        self.seen.append((message, level))
+
+
+async def test_a_bad_ref_tool_is_left_out_with_a_notice_and_the_rest_still_work(
+    tmp_path: Any,
+) -> None:
+    (tmp_path / "a.txt").write_text("abc")
+    seen: list[Any] = []
+
+    async def fake_stream_simple(model: Any, context: Any, options: Any = None) -> _Stream:
+        seen.append(context)
+        if len(seen) == 1:
+            call = TauToolCall(id="c1", name="codemode", arguments={"code": BAD_REF_SCRIPT})
+            return _Stream(_assistant([call], "toolUse"))
+        return _Stream(_assistant([TextContent(text="done")], "stop"))
+
+    session = create_agent_session(
+        model="gpt-4o",
+        tools=["read"],
+        cwd=str(tmp_path),
+        no_context_files=True,
+        extensions=[_bad_ref_extension, lambda api: register(api, {"provider": "cpython"})],
+    )
+    notices = _Notices()
+    session.set_ui_delegate(notices)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple):
+        try:
+            await session.prompt("go")
+            await session.prompt("again")
+        finally:
+            await session.emit_session_shutdown()
+
+    system = str(seen[0]["messages"][0]["content"])
+    assert "async def read(*, path: str" in system
+    assert "remote" not in system.split("Tools callable from scripts:")[1]
+    assert str(seen[-1]["messages"][0]["content"]) == system
+    assert notices.seen == [
+        (
+            "tool 'remote' is unavailable in code mode: $ref 'other.json#/Spec' "
+            "is not a local '#/...' pointer",
+            "warning",
+        )
+    ]
+    def field(m: Any, key: str) -> Any:
+        return m.get(key) if isinstance(m, dict) else getattr(m, key, None)
+
+    results = [m for m in seen[1]["messages"] if field(m, "role") == "toolResult"]
+    text = field(field(results[0], "content")[0], "text")
+    assert text.startswith("3\nrefused: Unknown tool: remote"), text

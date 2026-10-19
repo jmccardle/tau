@@ -17,7 +17,12 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from tau_agent_core.codemode.invoker import DirectToolInvoker
-from tau_agent_core.codemode.prompt import merge_templates, render_prompt
+from tau_agent_core.codemode.prompt import (
+    merge_templates,
+    render_prompt,
+    stub_failures,
+    unavailable_notice,
+)
 from tau_agent_core.codemode.protocol import (
     LIFETIMES,
     Lifetime,
@@ -215,6 +220,7 @@ class CodeMode:
         self.language = probe.language
         self.templates = merge_templates(probe.prompt(), config.prompt)
         self._section: str | None = None
+        self._notices: list[str] = []
         _, self.description = self.render(None)
 
     def render(self, stubs: list[ToolStub] | None) -> tuple[str, str]:
@@ -229,20 +235,41 @@ class CodeMode:
             tool_name=TOOL_NAME,
         )
 
+    def excluded(self, tools: list[Any]) -> tuple[tuple[str, ...], dict[str, str]]:
+        """The names a script may not call, and the tools left out because their stub fails.
+
+        Returns:
+            Every excluded name (``codemode``, config ``exclude``, each failure),
+            and :func:`~tau_agent_core.codemode.prompt.stub_failures` of the rest.
+        """
+        configured = (TOOL_NAME, *self.config.exclude)
+        failures = stub_failures(DirectToolInvoker(tools, exclude=configured).stubs())
+        return (*configured, *failures), failures
+
     def section(self, tools: list[Any]) -> str:
         """The system section, rendered once and then frozen for the session.
+
+        A tool whose stub fails is left out, and a notice for it is queued for
+        :meth:`take_notices`; every other tool is unaffected.
 
         Raises:
             ValueError: a tool is one the provider cannot call, in either stub mode.
         """
         if self._section is None:
-            stubs = DirectToolInvoker(tools, exclude=(TOOL_NAME, *self.config.exclude)).stubs()
+            exclude, failures = self.excluded(tools)
+            stubs = DirectToolInvoker(tools, exclude=exclude).stubs()
             check = getattr(self._probe, "check_stubs", None)
             if check is not None:
                 check(stubs)
             snapshot = stubs if self.config.stubs == "snapshot" else None
             self._section, _ = self.render(snapshot)
+            self._notices = [unavailable_notice(n, r) for n, r in failures.items()]
         return self._section
+
+    def take_notices(self) -> list[str]:
+        """The notices :meth:`section` queued, once; a later call returns none."""
+        notices, self._notices = self._notices, []
+        return notices
 
     def scope(self, cursor_id: str) -> str:
         """The instance key for a run on ``cursor_id``."""
@@ -263,7 +290,7 @@ class CodeMode:
             self.provider = make_provider(self.config, cwd=cwd)
         invoker = DirectToolInvoker(
             tools,
-            exclude=(TOOL_NAME, *self.config.exclude),
+            exclude=self.excluded(tools)[0],
             language=self.language,
             max_calls=self.config.limits.max_calls,
             signal=signal,
@@ -341,6 +368,8 @@ def register(api: Any, config: Mapping[str, Any] | None = None) -> None:
 
     async def before_agent_start(event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
         section = mode.section(_session_of(ctx)._turn_tools())
+        for notice in mode.take_notices():
+            ctx.ui.notify(notice, "warning")
         current = event.get("system_prompt") or ""
         if section.strip() in current:
             return None

@@ -35,6 +35,7 @@ from pydantic import TypeAdapter, create_model
 from tau_llm.docs import agent_facing
 
 __all__ = [
+    "StubError",
     "StubNamespace",
     "output_schema_for",
     "output_schema_of",
@@ -277,6 +278,21 @@ def _plain_key(key: str) -> bool:
     return key.isidentifier() and not keyword.iskeyword(key) and not mangled
 
 
+@agent_facing(topic="tools")
+class StubError(ValueError):
+    """A tool's schema cannot be stubbed: a ``$ref`` that is not local or does not resolve.
+
+    Attributes:
+        tool: The tool's real name.
+        reason: Why, naming the ``$ref``, e.g. ``$ref '#/$defs/X' does not resolve``.
+    """
+
+    def __init__(self, tool: str, reason: str) -> None:
+        super().__init__(f"tool {tool!r}: {reason}, so it has no type to stub")
+        self.tool = tool
+        self.reason = reason
+
+
 class _StubWriter:
     """Renders JSON Schema as Python annotations, collecting ``TypedDict`` classes.
 
@@ -334,7 +350,7 @@ class _StubWriter:
         """The annotation for ``schema``; an object with properties becomes a class.
 
         Raises:
-            ValueError: a ``$ref`` does not resolve (:meth:`reference`).
+            StubError: a ``$ref`` does not resolve (:meth:`reference`).
         """
         if not isinstance(schema, dict) or not schema:
             return "Any"
@@ -372,7 +388,7 @@ class _StubWriter:
         it. Any other target renders inline; a cycle through one renders ``Any``.
 
         Raises:
-            ValueError: ``ref`` is not a local ``#`` pointer, or does not resolve.
+            StubError: ``ref`` is not a local ``#`` pointer, or does not resolve.
         """
         key = (id(self.root), ref)
         if key in self._refs:
@@ -391,10 +407,7 @@ class _StubWriter:
     def _resolve(self, ref: str) -> tuple[str, Any]:
         """The last token of ``ref`` (empty for ``#``) and the schema it points at."""
         if not ref.startswith("#") or (len(ref) > 1 and ref[1] != "/"):
-            raise ValueError(
-                f"tool {self.tool!r}: $ref {ref!r} is not a local '#/...' pointer, "
-                "so it has no type to stub"
-            )
+            raise StubError(self.tool, f"$ref {ref!r} is not a local '#/...' pointer")
         node: Any = self.root
         token = ""
         for raw in ref[2:].split("/") if len(ref) > 1 else []:
@@ -404,9 +417,8 @@ class _StubWriter:
             elif isinstance(node, list) and token.isdigit() and int(token) < len(node):
                 node = node[int(token)]
             else:
-                raise ValueError(
-                    f"tool {self.tool!r}: $ref {ref!r} does not resolve "
-                    f"(no {token!r} in the schema), so it has no type to stub"
+                raise StubError(
+                    self.tool, f"$ref {ref!r} does not resolve (no {token!r} in the schema)"
                 )
         return token, node
 
@@ -546,7 +558,7 @@ class StubNamespace:
             classes that use it, and ``async def f(...) -> T`` with no colon.
 
         Raises:
-            ValueError: a ``$ref`` is not a local pointer or does not resolve.
+            StubError: a ``$ref`` is not a local pointer or does not resolve.
         """
         writer = self._writer
         writer.begin(name)
@@ -612,7 +624,7 @@ def render_stub(
         The classes, then the ``async def``, separated by blank lines.
 
     Raises:
-        ValueError: a ``$ref`` is not a local pointer or does not resolve.
+        StubError: a ``$ref`` is not a local pointer or does not resolve.
     """
     described = _Described(name, description, parameters, output_schema)
     return "\n\n".join(_stub_blocks(StubNamespace(), described))
@@ -633,8 +645,8 @@ def render_stubs(descriptions: list[Any]) -> str:
         the stubs that use it say so.
 
     Raises:
-        ValueError: two tools share a stub name (:func:`stub_names`), or a
-            ``$ref`` is not a local pointer or does not resolve.
+        ValueError: two tools share a stub name (:func:`stub_names`).
+        StubError: a ``$ref`` is not a local pointer or does not resolve.
     """
     stub_names(d.name for d in descriptions)
     header = "from typing import Any, Literal, NotRequired, TypedDict, Unpack"
