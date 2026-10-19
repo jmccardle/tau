@@ -22,8 +22,9 @@ import pytest
 from pathlib import Path
 
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.sdk import ExtensionStartupError
 from tau_agent_core.run_manifest import build_run_manifest, extension_manifest_entries
-from tau_agent_core.sdk import ExtensionCapabilityError, summarize_extensions
+from tau_agent_core.sdk import summarize_extensions
 from tau_agent_core.compaction_policy import CompactionPolicy
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import Model
@@ -91,14 +92,14 @@ class TestSubjectsIsRequiredForABusTouchingExtension:
         ext = _write(tmp_path / "bus_ext.py", _BUS_EXT_NO_SUBJECTS)
         session = _make_session(bus_available=True)
 
-        with pytest.raises(ExtensionCapabilityError, match="SUBJECTS"):
+        with pytest.raises(ExtensionStartupError, match="SUBJECTS"):
             await session.load_extensions([str(ext)], discover=False)
 
     async def test_touches_bus_with_empty_subjects_fails_load(self, tmp_path):
         ext = _write(tmp_path / "bus_ext.py", _BUS_EXT_EMPTY_SUBJECTS)
         session = _make_session(bus_available=True)
 
-        with pytest.raises(ExtensionCapabilityError, match="SUBJECTS"):
+        with pytest.raises(ExtensionStartupError, match="SUBJECTS"):
             await session.load_extensions([str(ext)], discover=False)
 
     async def test_omission_never_reaches_register(self, tmp_path):
@@ -106,7 +107,7 @@ class TestSubjectsIsRequiredForABusTouchingExtension:
         ext = _write(tmp_path / "bus_ext.py", _BUS_EXT_NO_SUBJECTS)
         session = _make_session(bus_available=True)
 
-        with pytest.raises(ExtensionCapabilityError):
+        with pytest.raises(ExtensionStartupError):
             await session.load_extensions([str(ext)], discover=False)
 
         assert session.list_managed_extensions() == []
@@ -144,7 +145,7 @@ class TestCapabilityPreflightRefusesAtTheFactory:
         ext = _write(tmp_path / "bus_ext.py", _BUS_EXT)
         session = _make_session(bus_available=False)
 
-        with pytest.raises(ExtensionCapabilityError, match="bus_available=False"):
+        with pytest.raises(ExtensionStartupError, match="bus_available=False"):
             await session.load_extensions([str(ext)], discover=False)
 
         assert session.list_managed_extensions() == []

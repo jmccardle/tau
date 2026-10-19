@@ -646,6 +646,7 @@ class AgentSession:
         self._extension_load_errors: list["ExtensionLoadError"] = []
         self._extension_withheld: list[ExtensionRecord] = []
         self._extension_dirs: tuple[str | None, str | None] = (None, None)
+        self._extension_start_errors: dict[str, str] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         try:
             self._loop = asyncio.get_running_loop()
@@ -1709,23 +1710,56 @@ class AgentSession:
         self._session_event_tasks.add(task)
         task.add_done_callback(self._session_event_tasks.discard)
 
-    async def emit_session_start(self, reason: str = "startup") -> None:
+    async def emit_session_start(self, reason: str = "startup", *, strict: bool = False) -> None:
         """Bind this session to the running loop, then fire ``session_start`` (S41).
 
         Call it after extensions are loaded, so a handler finds its registration
         in place. The loop binding (which :meth:`submit_threadsafe` marshals to)
-        happens whether or not anything listens. Dispatched through the
-        :class:`ExtensionRunner`: a handler's exception is reported through its
-        error sink (S44) and the remaining handlers still run.
+        happens whether or not anything listens. A handler's exception is
+        reported through the runner's error sink (S44), the remaining handlers
+        still run, and :meth:`extension_records` shows the extension as failed.
 
         Args:
             reason: Why the session began, as pi's ``SessionStartEvent.reason``:
                 ``"startup"``, ``"reload"``, ``"new"``, ``"resume"`` or ``"fork"``.
+            strict: Raise once dispatch is done if an extension named with
+                ``-e`` raised (#47). ``-p`` and ``--mode rpc`` pass True.
+
+        Raises:
+            ExtensionStartupError: ``strict``, and an explicit extension's
+                handler raised; the first such extension is named.
         """
         self._bind_loop()
         if not self._extension_runner.has_handlers("session_start"):
             return
-        await self._extension_runner.emit_session_start({"type": "session_start", "reason": reason})
+        failures: list[Any] = []
+
+        def _collect(error: Any) -> None:
+            if error.event == "session_start":
+                failures.append(error)
+
+        stop = self._extension_runner.on_error(_collect)
+        try:
+            await self._extension_runner.emit_session_start(
+                {"type": "session_start", "reason": reason}
+            )
+        finally:
+            stop()
+        for failure in failures:
+            self._extension_start_errors[failure.extension_path] = failure.error
+        if not strict:
+            return
+        for failure in failures:
+            loaded = self._loaded_extensions.get(failure.extension_path)
+            if loaded is not None and loaded.explicit:
+                from tau_agent_core.sdk import ExtensionStartupError
+
+                raise ExtensionStartupError(
+                    extension_identifier(failure.extension_path),
+                    failure.extension_path,
+                    "session_start",
+                    failure.error,
+                )
 
     async def emit_session_shutdown(self, reason: str = "quit") -> None:
         """Fire the ``session_shutdown`` hook (S41) after cancelling background work.
@@ -1795,12 +1829,9 @@ class AgentSession:
         Raises:
             ValueError: A ``--tools``/``--exclude-tools`` name matches no tool
                 once loading is done (:meth:`check_tool_filters`).
-            FileNotFoundError: An explicit path names no file.
-            ExtensionCapabilityError: An explicit extension declares a capability
-                this session lacks, or an invalid ``CONFIG_SCHEMA``.
-            Exception: Whatever an explicit extension's import or ``register``
-                raises, unchanged. None of these is raised when
-                ``collect_explicit_errors`` is set.
+            ExtensionStartupError: An explicit extension failed to import or
+                register (#47), with the original as ``__cause__``; not raised
+                when ``collect_explicit_errors`` is set.
         """
         if extensions_config is not None:
             self._extensions_config = extensions_config
@@ -1881,6 +1912,7 @@ class AgentSession:
             self._extension_load_errors,
             self._extension_withheld,
             self.orphan_subscriptions(),
+            self._extension_start_errors,
         )
 
     def orphan_subscriptions(self) -> dict[str, tuple[str, ...]]:

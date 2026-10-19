@@ -62,8 +62,8 @@ from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.sdk import ExtensionStartupError
 from tau_agent_core.extensions_builtin import nats_bus
-from tau_agent_core.sdk import ExtensionCapabilityError
 from tau_agent_core.session_log import InMemorySessionLog
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
@@ -186,14 +186,14 @@ class TestDeclarationAndPreflightNoNetworkNeeded:
 
     async def test_refused_when_session_has_no_bus(self):
         session = _make_session(bus_available=False)
-        with pytest.raises(ExtensionCapabilityError, match="bus_available=False"):
+        with pytest.raises(ExtensionStartupError, match="bus_available=False"):
             await session.load_extensions([_EXT_PATH], discover=False)
 
     async def test_requires_workspace_config(self):
         """Fail-Early: no default workspace — a silent one binds every subject
         to the wrong world."""
         session = _make_session(bus_available=True, extensions_config={})
-        with pytest.raises(ValueError, match="workspace"):
+        with pytest.raises(ExtensionStartupError, match="workspace"):
             await session.load_extensions([_EXT_PATH], discover=False)
 
     async def test_requires_inbound_subject_config(self):
@@ -203,14 +203,14 @@ class TestDeclarationAndPreflightNoNetworkNeeded:
         session = _make_session(
             bus_available=True, extensions_config={"nats_bus": {"workspace": "demo"}}
         )
-        with pytest.raises(ValueError, match="inbound_subject"):
+        with pytest.raises(ExtensionStartupError, match="inbound_subject"):
             await session.load_extensions([_EXT_PATH], discover=False)
 
     async def test_unknown_verb_raises_rather_than_guessing_an_ack_subject(self):
         """A verb with no known ack contract cannot be served: a guessed subject
         makes every call wait out the full timeout."""
         session = _make_session(bus_available=True, extensions_config=_config(verbs=("teleport",)))
-        with pytest.raises(ValueError, match="no ack contract known"):
+        with pytest.raises(ExtensionStartupError, match="no ack contract known"):
             await session.load_extensions([_EXT_PATH], discover=False)
 
     async def test_registers_one_tool_per_verb(self):
@@ -552,7 +552,7 @@ class TestDraftStatus:
 
     async def test_draft_subject_must_be_a_string(self):
         session = _make_session(bus_available=True, extensions_config=_config(draft_subject=123))
-        with pytest.raises(ValueError, match="draft_subject"):
+        with pytest.raises(ExtensionStartupError, match="draft_subject"):
             await session.load_extensions([_EXT_PATH], discover=False)
 
 

@@ -73,7 +73,12 @@ from tau_agent_core.flows import (
     flow_form_spec,
     next_step,
 )
-from tau_agent_core.sdk import summarize_extensions, withheld_notice, withheld_notices
+from tau_agent_core.sdk import (
+    ExtensionStartupError,
+    summarize_extensions,
+    withheld_notice,
+    withheld_notices,
+)
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import MultitaskStrategy, Submission
 from tau_agent_core.tools.image_resize import DEFAULT_MAX_IMAGE_DIMENSION
@@ -1573,13 +1578,16 @@ async def run_repl(
     try:
         # Before load_extensions, so a module body's own notify reaches a live surface.
         _require(backend, "set_ui_delegate")(loop.delegate)
-        ext_result = await backend.load_extensions(
-            model_config.get("extensions") or None,
-            discover=not model_config.get("no_extensions", False),
-            extensions_config=resolve_extensions_config(
-                config, parse_ext_config_overrides(list(args.ext_config or []))
-            ),
-        )
+        try:
+            ext_result = await backend.load_extensions(
+                model_config.get("extensions") or None,
+                discover=not model_config.get("no_extensions", False),
+                extensions_config=resolve_extensions_config(
+                    config, parse_ext_config_overrides(list(args.ext_config or []))
+                ),
+            )
+        except ExtensionStartupError as exc:
+            raise CLIError(str(exc)) from exc
         for ext_error in ext_result.errors:
             renderer.line("error", f"failed to load extension {ext_error.path}: {ext_error.error}")
         for line in withheld_notices(ext_result):

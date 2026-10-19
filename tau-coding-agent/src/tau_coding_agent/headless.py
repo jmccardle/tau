@@ -324,6 +324,50 @@ def resolve_extensions_config(
     return merged
 
 
+async def start_extensions(
+    backend: Any,
+    explicit: list[str] | None,
+    *,
+    discover: bool,
+    extensions_config: dict[str, dict[str, Any]],
+    verbose: bool = False,
+) -> Any:
+    """Load extensions and fire ``session_start`` strictly, for a head with no human (#47).
+
+    An extension named with ``-e`` that fails to import, register or start
+    stops the run before the first turn, naming the extension and the error
+    (docs/EXTENSION-PACKAGES.md §12). A discovered one warns and is listed as
+    failed. ``--tools`` names are checked here too (#43). With ``verbose``,
+    a subscription no loaded extension answers is a debug line (#44).
+
+    Returns:
+        The load result, for :func:`report_extension_load`.
+
+    Raises:
+        CLIError: Either failure above, or a ``--tools`` name nothing answers to.
+    """
+    from tau_agent_core.sdk import ExtensionStartupError, orphan_subscription_notices
+
+    try:
+        result = await backend.load_extensions(
+            explicit, discover=discover, extensions_config=extensions_config
+        )
+        emit_session_start = getattr(backend, "emit_session_start", None)
+        if emit_session_start is not None:
+            await emit_session_start("startup", strict=True)
+    except ExtensionStartupError as exc:
+        raise CLIError(str(exc)) from exc
+    except ValueError as exc:
+        if not str(exc).startswith("Unknown tool:"):
+            raise
+        raise CLIError(f"{exc} (checked against built-in and extension tools)") from exc
+    records = getattr(backend, "extension_records", None)
+    if verbose and records is not None:
+        for line in orphan_subscription_notices(records()):
+            print(f"[τ] debug: {line}", file=sys.stderr)
+    return result
+
+
 def report_extension_load(result: Any) -> None:
     """Write a load's failures, grandfathered drop-ins and withheld extensions to stderr.
 
@@ -881,7 +925,6 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
             set_record_sink(_emit_extension_record)
 
-    emit_session_start = getattr(backend, "emit_session_start", None)
     emit_session_shutdown = getattr(backend, "emit_session_shutdown", None)
     abort = getattr(backend, "abort", None)
     installed_signals: list[signal.Signals] = []
@@ -905,15 +948,14 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
         extensions_config = resolve_extensions_config(
             config, parse_ext_config_overrides(args.ext_config)
         )
-        ext_result = await backend.load_extensions(
+        ext_result = await start_extensions(
+            backend,
             explicit_extensions,
             discover=discover_extensions,
             extensions_config=extensions_config,
+            verbose=args.verbose,
         )
         report_extension_load(ext_result)
-
-        if emit_session_start is not None:
-            await emit_session_start("startup")
 
         submission = build_print_submission(prompt_text)
 

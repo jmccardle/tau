@@ -388,7 +388,7 @@ session (docs/SUBMISSION-LIFECYCLE.md "fork").
 ### emit_session_start
 
 ```python
-async emit_session_start(reason: str = 'startup') -> None
+async emit_session_start(reason: str = 'startup', *, strict: bool = False) -> None
 ```
 
 `tau_agent_core.agent_session.AgentSession.emit_session_start`
@@ -397,13 +397,18 @@ Bind this session to the running loop, then fire ``session_start`` (S41).
 
 Call it after extensions are loaded, so a handler finds its registration
 in place. The loop binding (which :meth:`submit_threadsafe` marshals to)
-happens whether or not anything listens. Dispatched through the
-:class:`ExtensionRunner`: a handler's exception is reported through its
-error sink (S44) and the remaining handlers still run.
+happens whether or not anything listens. A handler's exception is
+reported through the runner's error sink (S44), the remaining handlers
+still run, and :meth:`extension_records` shows the extension as failed.
 
 **Parameters**
 
 - `reason: str = 'startup'` — Why the session began, as pi's ``SessionStartEvent.reason``: ``"startup"``, ``"reload"``, ``"new"``, ``"resume"`` or ``"fork"``.
+- `strict: bool = False` — Raise once dispatch is done if an extension named with ``-e`` raised (#47). ``-p`` and ``--mode rpc`` pass True.
+
+**Raises**
+
+- `ExtensionStartupError` — ``strict``, and an explicit extension's handler raised; the first such extension is named.
 
 ### enable_extension
 
@@ -827,9 +832,7 @@ The extensions loaded, the failures collected and the sources withheld. The fail
 **Raises**
 
 - `ValueError` — A ``--tools``/``--exclude-tools`` name matches no tool once loading is done (:meth:`check_tool_filters`).
-- `FileNotFoundError` — An explicit path names no file.
-- `ExtensionCapabilityError` — An explicit extension declares a capability this session lacks, or an invalid ``CONFIG_SCHEMA``.
-- `Exception` — Whatever an explicit extension's import or ``register`` raises, unchanged. None of these is raised when ``collect_explicit_errors`` is set.
+- `ExtensionStartupError` — An explicit extension failed to import or register (#47), with the original as ``__cause__``; not raised when ``collect_explicit_errors`` is set.
 
 ### messages
 

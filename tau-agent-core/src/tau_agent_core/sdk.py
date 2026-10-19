@@ -304,6 +304,29 @@ class ExtensionCapabilityError(Exception):
 
 
 @agent_facing(topic="extensions")
+class ExtensionStartupError(RuntimeError):
+    """An extension named with ``-e`` failed to load or to start (#47).
+
+    Being named is a clear signal the extension is intended
+    (docs/EXTENSION-PACKAGES.md §12), so its failure stops startup instead of
+    warning. The original exception is ``__cause__``.
+
+    Attributes:
+        identifier: The extension's identifier.
+        label: Its path or module name.
+        phase: ``"load"`` (import or ``register``) or ``"session_start"``.
+    """
+
+    def __init__(self, identifier: str, label: str, phase: str, error: str) -> None:
+        """Name the extension, the phase and the error in the message."""
+        where = label if label == identifier else f"{identifier} ({label})"
+        super().__init__(f"extension {where}, named with -e, failed at {phase}: {error}")
+        self.identifier = identifier
+        self.label = label
+        self.phase = phase
+
+
+@agent_facing(topic="extensions")
 @dataclass
 class LoadedExtension:
     """A successfully loaded extension.
@@ -890,8 +913,8 @@ async def _load_extensions(
         and any drop-ins grandfathered.
 
     Raises:
-        Exception: From an explicit extension that fails to load, unless
-            ``collect_explicit_errors``.
+        ExtensionStartupError: An explicit extension failed to load, unless
+            ``collect_explicit_errors``; the original is ``__cause__`` (#47).
         ValueError: An ``-e`` value names nothing installed, or is ambiguous.
         AuthorizationStoreError: The authorization store cannot be read.
     """
@@ -910,7 +933,9 @@ async def _load_extensions(
             loaded = await _load_source(source, api_factory, bus_available=bus_available)
         except Exception as exc:
             if is_explicit and not collect_explicit_errors:
-                raise
+                raise ExtensionStartupError(
+                    source.identifier, source.label, "load", f"{type(exc).__name__}: {exc}"
+                ) from exc
             result.errors.append(
                 ExtensionLoadError(
                     path=source.label, error=str(exc), explicit=is_explicit, source=source
@@ -954,6 +979,7 @@ def session_extension_records(
     errors: Sequence[ExtensionLoadError],
     withheld: Sequence[ExtensionRecord],
     orphan_topics: Mapping[str, tuple[str, ...]] | None = None,
+    start_errors: Mapping[str, str] | None = None,
 ) -> list[ExtensionRecord]:
     """The ``tau ext list`` rows for a live session (docs/EXTENSION-PACKAGES.md §7).
 
@@ -964,17 +990,25 @@ def session_extension_records(
         withheld: The sources found and not loaded.
         orphan_topics: Per label, subscribed topics whose emitter is no loaded
             extension (#44).
+        start_errors: Per label, what its ``session_start`` handler raised; such
+            an extension is ``failed`` though its registrations stand (#47).
 
     Returns:
         Loaded and disabled rows, then failed, then withheld.
     """
     orphans = orphan_topics or {}
+    started = start_errors or {}
     records = [
         replace(
             _record_for_source(
                 _source_of(ext.path, ext.source),
-                "disabled" if ext.path in disabled else "loaded",
+                "disabled"
+                if ext.path in disabled
+                else ("failed" if ext.path in started else "loaded"),
                 explicit=ext.explicit,
+                reason=f"session_start raised: {started[ext.path]}"
+                if ext.path in started
+                else None,
             ),
             orphan_topics=orphans.get(ext.path, ()),
         )
@@ -1235,6 +1269,27 @@ def authorization_prompt(record: ExtensionRecord) -> tuple[str, str]:
         f"`tau ext revoke {record.identifier}` undoes it."
     )
     return title, body
+
+
+@agent_facing(topic="extensions")
+def orphan_subscription_notices(records: Sequence[ExtensionRecord]) -> list[str]:
+    """The debug lines for subscriptions no loaded extension can answer (#44).
+
+    A notice, never an error: a subscriber may wait for an optional extension
+    (docs/EXTENSION-PACKAGES.md §10).
+
+    Args:
+        records: From :meth:`AgentSession.extension_records`.
+
+    Returns:
+        One line per orphaned topic.
+    """
+    return [
+        f"{record.identifier} subscribes to {topic}, but no loaded extension emits "
+        f"under {topic.split(':', 1)[1].rpartition(':')[0]!r}"
+        for record in records
+        for topic in record.orphan_topics
+    ]
 
 
 BASE_SYSTEM_PROMPT = """\

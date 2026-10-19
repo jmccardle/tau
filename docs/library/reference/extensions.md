@@ -1598,6 +1598,28 @@ One extension τ found or was told about, before anything is imported.
 
 The runner bucket label: the module name, or the path.
 
+## ExtensionStartupError
+<!-- agent: yes -->
+
+```python
+class ExtensionStartupError(identifier: str, label: str, phase: str, error: str)
+```
+
+`tau_agent_core.sdk.ExtensionStartupError`
+
+An extension named with ``-e`` failed to load or to start (#47).
+
+Being named is a clear signal the extension is intended
+(docs/EXTENSION-PACKAGES.md §12), so its failure stops startup instead of
+warning. The original exception is ``__cause__``.
+
+**Constructor parameters**
+
+- `identifier: str` — The extension's identifier.
+- `label: str` — Its path or module name.
+- `phase: str` — ``"load"`` (import or ``register``) or ``"session_start"``.
+- `error: str` — *(no description)*
+
 ## ExtensionUI
 <!-- agent: yes -->
 
@@ -2347,6 +2369,28 @@ A fresh id for an injected tool call (docs/SEEDED-BRANCHES.md §5).
 
 Nine characters drawn from ``[a-zA-Z0-9]`` by :mod:`secrets`.
 
+## orphan_subscription_notices
+<!-- agent: yes -->
+
+```python
+orphan_subscription_notices(records: Sequence[ExtensionRecord]) -> list[str]
+```
+
+`tau_agent_core.sdk.orphan_subscription_notices`
+
+The debug lines for subscriptions no loaded extension can answer (#44).
+
+A notice, never an error: a subscriber may wait for an optional extension
+(docs/EXTENSION-PACKAGES.md §10).
+
+**Parameters**
+
+- `records: Sequence[ExtensionRecord]` — From :meth:`AgentSession.extension_records`.
+
+**Returns**
+
+One line per orphaned topic.
+
 ## plan_extensions
 <!-- agent: yes -->
 
@@ -2509,7 +2553,7 @@ An injected tool call and its answer, ready for ``spawn_branch(seed=…)``.
 <!-- agent: yes -->
 
 ```python
-session_extension_records(loaded: Sequence[LoadedExtension], disabled: Collection[str], errors: Sequence[ExtensionLoadError], withheld: Sequence[ExtensionRecord], orphan_topics: Mapping[str, tuple[str, ...]] | None = None) -> list[ExtensionRecord]
+session_extension_records(loaded: Sequence[LoadedExtension], disabled: Collection[str], errors: Sequence[ExtensionLoadError], withheld: Sequence[ExtensionRecord], orphan_topics: Mapping[str, tuple[str, ...]] | None = None, start_errors: Mapping[str, str] | None = None) -> list[ExtensionRecord]
 ```
 
 `tau_agent_core.sdk.session_extension_records`
@@ -2523,6 +2567,7 @@ The ``tau ext list`` rows for a live session (docs/EXTENSION-PACKAGES.md §7).
 - `errors: Sequence[ExtensionLoadError]` — The extensions that failed to load.
 - `withheld: Sequence[ExtensionRecord]` — The sources found and not loaded.
 - `orphan_topics: Mapping[str, tuple[str, ...]] | None = None` — Per label, subscribed topics whose emitter is no loaded extension (#44).
+- `start_errors: Mapping[str, str] | None = None` — Per label, what its ``session_start`` handler raised; such an extension is ``failed`` though its registrations stand (#47).
 
 **Returns**
 

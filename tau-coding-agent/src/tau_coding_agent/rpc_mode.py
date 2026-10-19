@@ -151,6 +151,7 @@ from tau_coding_agent.headless import (
     CLIError,
     parse_ext_config_overrides,
     report_extension_load,
+    start_extensions,
     parse_ui_defaults,
     resolve_extensions_config,
     resolve_model_config,
@@ -273,16 +274,14 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
         extensions_config = resolve_extensions_config(
             config, parse_ext_config_overrides(args.ext_config)
         )
-        ext_result = await backend.load_extensions(
+        ext_result = await start_extensions(
+            backend,
             explicit_extensions,
             discover=discover_extensions,
             extensions_config=extensions_config,
+            verbose=args.verbose,
         )
         report_extension_load(ext_result)
-
-        emit_session_start = getattr(backend, "emit_session_start", None)
-        if emit_session_start is not None:
-            await emit_session_start("startup")
 
         assert agent_session is not None, (
             "create_backend() returned a backend with no .agent_session — "

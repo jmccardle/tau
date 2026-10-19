@@ -1577,14 +1577,13 @@ class TauBackend(Backend):
         """
         self.agent_session.set_headless_ui_defaults(policy)
 
-    async def emit_session_start(self, reason: str = "startup") -> None:
-        """Fire the ``session_start`` lifecycle hook on the wrapped session (S41).
+    async def emit_session_start(self, reason: str = "startup", *, strict: bool = False) -> None:
+        """Fire ``session_start`` on the wrapped session (S41); :meth:`AgentSession.emit_session_start`.
 
-        Delegates to :meth:`AgentSession.emit_session_start`; the frontends call
-        this after :meth:`load_extensions` so a loaded extension's ``session_start``
-        handler runs with its registration in place (state reconstruction, watchers).
+        The frontends call this after :meth:`load_extensions`. ``strict`` makes
+        an explicitly named extension's failure raise (#47).
         """
-        await self.agent_session.emit_session_start(reason)
+        await self.agent_session.emit_session_start(reason, strict=strict)
 
     async def emit_session_shutdown(self, reason: str = "quit") -> None:
         """Fire the ``session_shutdown`` lifecycle hook on the wrapped session (S41).

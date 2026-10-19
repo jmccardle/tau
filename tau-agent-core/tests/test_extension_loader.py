@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from tau_agent_core.extension_sources import discover_dropins
+from tau_agent_core.sdk import ExtensionStartupError
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.sdk import (
     ExtensionLoadError,
@@ -255,7 +256,7 @@ class TestSiblingImports:
         ext = home / "ext.py"
         ext.write_text("def register(api):\n    import late\n")
 
-        with pytest.raises(ModuleNotFoundError, match="late"):
+        with pytest.raises(ExtensionStartupError, match="late"):
             await _load_extensions([str(ext)], discover=False)
 
 
@@ -302,11 +303,11 @@ class TestErrorPolicy:
         noreg = tmp_path / "noreg.py"
         noreg.write_text(_NO_REGISTER_EXT)
 
-        with pytest.raises(AttributeError, match="register"):
+        with pytest.raises(ExtensionStartupError, match="register"):
             await _load_extensions([str(noreg)], discover=False)
 
     async def test_missing_explicit_path_raises(self, tmp_path):
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(ExtensionStartupError):
             await _load_extensions([str(tmp_path / "nope.py")], discover=False)
 
     async def test_broken_explicit_collected_when_opted_in(self, tmp_path):
