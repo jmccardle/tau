@@ -68,6 +68,7 @@ from tau_agent_core.sdk import (
     ExtensionLoadError,
     LoadExtensionsResult,
     authorization_prompt,
+    orphan_subscription_notices,
     summarize_extensions,
     withheld_notice,
     withheld_notices,
@@ -2712,6 +2713,10 @@ class TauApp(App):
         if result.extensions:
             self.log(f"Loaded {len(result.extensions)} extension(s)")
         self._surface_withheld_extensions(result)
+        records = getattr(self.current_backend, "extension_records", None)
+        if records is not None:
+            for line in orphan_subscription_notices(records()):
+                self.log(f"debug: {line}")
 
         emit_start = getattr(self.current_backend, "emit_session_start", None)
         if emit_start is not None:
