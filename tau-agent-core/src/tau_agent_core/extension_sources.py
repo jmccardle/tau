@@ -37,6 +37,11 @@ UNUSABLE_CHARACTERS = ":"
 
 
 @agent_facing(topic="extensions")
+class ExplicitExtensionError(ValueError):
+    """An ``-e`` value names nothing loadable; a head reports it as a usage error (exit 2)."""
+
+
+@agent_facing(topic="extensions")
 def extension_identifier(label: str) -> str:
     """The identifier of the extension a runner bucket label names.
 
@@ -371,9 +376,9 @@ def resolve_explicit(raw: str, packages: list[ExtensionSource]) -> ExtensionSour
         The source.
 
     Raises:
-        ValueError: The path is an installed package's module file (it would load
-            twice under two identities), its stem is unusable, the shorthand is
-            ambiguous, or nothing by that name is installed.
+        ExplicitExtensionError: The path is an installed package's module file (it
+            would load twice under two identities), its stem is unusable, the
+            shorthand is ambiguous, or nothing by that name is installed.
     """
     if is_path_spec(raw):
         expanded = os.path.expanduser(raw)
@@ -381,7 +386,7 @@ def resolve_explicit(raw: str, packages: list[ExtensionSource]) -> ExtensionSour
             expanded = os.path.abspath(expanded)
         owner = _package_owning(Path(expanded), packages)
         if owner is not None:
-            raise ValueError(
+            raise ExplicitExtensionError(
                 f"-e {raw}: that is the module {owner.identifier} of the installed package "
                 f"{owner.distribution} {owner.version}. Name it by module (-e {owner.identifier}) "
                 f"or authorize it (tau ext authorize {owner.identifier}); loading it by path "
@@ -389,10 +394,13 @@ def resolve_explicit(raw: str, packages: list[ExtensionSource]) -> ExtensionSour
             )
         source = _source_for_file(Path(expanded), "path")
         if source.unusable is not None:
-            raise ValueError(f"-e {raw}: cannot load it, because {source.unusable}")
+            raise ExplicitExtensionError(f"-e {raw}: cannot load it, because {source.unusable}")
         return source
     usable = {p.identifier: p for p in packages if p.unusable is None}
-    resolved = resolve_shorthand(raw, list(usable))
+    try:
+        resolved = resolve_shorthand(raw, list(usable))
+    except ValueError as err:
+        raise ExplicitExtensionError(f"-e {raw}: {err}") from None
     if resolved is not None:
         return usable[resolved]
     try:
@@ -401,7 +409,7 @@ def resolve_explicit(raw: str, packages: list[ExtensionSource]) -> ExtensionSour
         spec = None
     if spec is not None:
         return ExtensionSource(identifier=raw, kind="module", target=raw)
-    raise ValueError(
+    raise ExplicitExtensionError(
         f"-e {raw}: no installed module or {ENTRY_POINT_GROUP} entry point is named {raw!r}. "
         "A path needs a '/' or a '.py' suffix (e.g. ./my_ext)."
     )

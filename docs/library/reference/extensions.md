@@ -179,6 +179,13 @@ empty-but-successful-looking answer.
 - `messages: list[dict[str, Any]]` — The sub-agent turn's messages; empty when ``ok`` is false.
 - `error: str | None` — Why it failed, or ``None`` when ``ok``.
 
+## ExplicitExtensionError
+<!-- agent: yes -->
+
+`tau_agent_core.extension_sources.ExplicitExtensionError`
+
+An ``-e`` value names nothing loadable; a head reports it as a usage error (exit 2).
+
 ## ExtensionAPI
 <!-- agent: yes -->
 
@@ -2472,7 +2479,7 @@ The source.
 
 **Raises**
 
-- `ValueError` — The path is an installed package's module file (it would load twice under two identities), its stem is unusable, the shorthand is ambiguous, or nothing by that name is installed.
+- `ExplicitExtensionError` — The path is an installed package's module file (it would load twice under two identities), its stem is unusable, the shorthand is ambiguous, or nothing by that name is installed.
 
 ## resolve_shorthand
 <!-- agent: yes -->

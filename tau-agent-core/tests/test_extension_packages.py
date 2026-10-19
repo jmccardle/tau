@@ -36,6 +36,7 @@ from tau_agent_core.extension_sources import (
 )
 from tau_agent_core.sdk import (
     _load_extensions,
+    authorization_prompt,
     authorize_discovered_extension,
     extension_records,
     plan_extensions,
@@ -204,6 +205,10 @@ class TestFindingIsNotLoading:
         assert record.authorization == "update"
         assert "tau-fake 1.0's files changed since it was authorized" in record.reason
         assert "from 1.0 to 1.0" not in record.reason
+        title, body = authorization_prompt(record)
+        assert title == f"Load the updated extension {module}?"
+        assert "tau-fake 1.0's installed files changed since you authorized it." in body
+        assert "from 1.0 to 1.0" not in body
 
     def test_an_editable_install_is_keyed_to_its_path(self, site):
         root, top = site

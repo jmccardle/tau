@@ -23,6 +23,7 @@ from typing import Any
 
 from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_agent_core.commands import UnsupportedCommandError
+from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
 from tau_coding_agent.config import TAU_DIR, ConfigError, load_config
 from tau_coding_agent.headless import (
@@ -947,7 +948,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cwd is not None:
             raise CLIError("--cwd names a directory on a daemon's machine; it needs --connect")
         return _launch_tui(args, config)
-    except (ConfigError, ResourceError, UnsupportedCommandError) as exc:
+    except (ConfigError, ResourceError, UnsupportedCommandError, ExplicitExtensionError) as exc:
         print(f"tau: error: {exc}", file=sys.stderr)
         return 2
 
