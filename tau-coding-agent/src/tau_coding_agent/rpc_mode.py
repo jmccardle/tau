@@ -109,8 +109,9 @@ point of naming it: a host draining stderr unread is only reasonable once
 §1.3 records a consumer that already does this and would otherwise never
 see a τ-side error)**:
 
-1. Extension load failures — ``f"[τ] failed to load extension {path}: {error}"``
-   (this module, mirroring ``run_print``'s wording exactly).
+1. Extension load failures — ``"[τ] "`` plus
+   :func:`~tau_agent_core.sdk.load_failure_notice` (``headless.report_extension_load``,
+   shared with ``run_print``).
 2. A ``submit``/``prompt`` turn that fails AFTER admission (so the C3
    acceptance response has already gone out and cannot carry the failure) —
    ``f"[τ-rpc] submission {id!r} failed after admission: {exc!r}"``

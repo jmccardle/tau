@@ -75,6 +75,7 @@ from tau_agent_core.flows import (
 )
 from tau_agent_core.sdk import (
     ExtensionStartupError,
+    load_failure_notice,
     summarize_extensions,
     withheld_notice,
     withheld_notices,
@@ -1589,7 +1590,7 @@ async def run_repl(
         except ExtensionStartupError as exc:
             raise CLIError(str(exc)) from exc
         for ext_error in ext_result.errors:
-            renderer.line("error", f"failed to load extension {ext_error.path}: {ext_error.error}")
+            renderer.line("error", load_failure_notice(ext_error))
         for line in withheld_notices(ext_result):
             renderer.line("warning", line)
 

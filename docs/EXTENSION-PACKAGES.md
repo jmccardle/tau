@@ -355,6 +355,46 @@ warn-and-continue (#29's rule), and its record is `failed` with the reason,
 `session_start` failures, because a human is present to read them. The REPL
 turns an explicit load failure into a `CLIError` instead of a traceback.
 
+### 12.1 #58: a discovered failure is a notice, silenced by a disable (2026-10-19)
+
+Decided by John on 2026-10-19, on tau-router's `REQUIRED` proposal: there is no
+`REQUIRED` field. An author does not decide on the user's behalf that an
+extension must load. A discovered extension that fails to load gets a notice
+and the run continues; the user silences it by disabling the extension. `-e`
+stays fatal (§12), unchanged.
+
+- **One sentence, from core.** `sdk.load_failure_notice(error)` reads
+  `extension <id> (<path>) failed to load: <error>. To stop loading it: tau ext
+  disable <id>`. A failure named with `-e` (only the TUI collects one) ends
+  `It was named with -e; drop that to stop loading it` instead. The TUI toast,
+  the `-p`/`--mode rpc` stderr line, the REPL's error line and the daemon log
+  all render it, each on its own channel.
+- **`tau ext disable NAME` / `tau ext enable NAME`.** NAME is an identifier,
+  its last dotted segment, or a drop-in's path, resolved fresh, and ambiguity is
+  refused. `disable` accepts any identifier discovery or the store knows (so a
+  package uninstalled after authorizing can still be disabled) and refuses an
+  unknown one, so a typo records nothing. `enable` resolves against the disabled
+  identifiers only. Authorization records are untouched by both, and the
+  reverse holds: a disable is keyed by identifier, so it outlives `tau ext
+  revoke` and `tau ext authorize`, a version change and a reinstall. `tau ext
+  authorize` on a disabled extension says it stays off until `tau ext enable`.
+- **The store.** A `disabled` section maps identifier to `{disabled_at}`, so one
+  disable covers a package and a drop-in alike. `format` stays 1: a reader from
+  before this change ignores the key and loads the extension, which is the old
+  behaviour, never a misread record. Such a reader drops the section when it
+  next writes the store; no released τ has that reader, since the store is new
+  in 0.14.0. `disable` creating the store grandfathers the drop-ins present
+  first, as the first start would (§5).
+- **Planning.** A disabled discovered source is withheld as `disabled` before
+  any other check, so it is never imported, and `noticed_withheld` leaves it
+  out of every notice and prompt. Its row in `tau ext list` and RPC
+  `list_extensions` says how to undo it. `state` was already a free string
+  carrying `disabled` for a session-level disable, so no schema changed; the
+  description now names both meanings.
+- **`-e` overrides a disable.** Being named is the stronger signal, so an
+  explicit source of a disabled identifier loads, and a failure is still
+  fatal.
+
 ## 13. What is absent
 
 - **A package manager** (installing, upgrading, removing). That is #13. τ

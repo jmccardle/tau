@@ -44,8 +44,10 @@ source, and loads one only once the user has authorized it:
 
 An unauthorized source is offered in the TUI and named on stderr by the
 headless modes, which never prompt: `tau ext authorize NAME` authorizes it, and
-`tau ext list` shows every source and its state. Drop-ins present at the first
-0.14.0 start are authorized once, automatically. Every explicit
+`tau ext list` shows every source and its state. A discovered extension that
+fails to load gets one notice and the run goes on; `tau ext disable NAME` stops
+loading and announcing it, and `tau ext enable NAME` undoes that. Drop-ins
+present at the first 0.14.0 start are authorized once, automatically. Every explicit
 `-e`/`--extension PATH|MODULE` (repeatable) is authorized by being named and
 still loads under `--no-extensions`, which suppresses discovery only. A value
 holding a `/` or ending in `.py` is a path; anything else names an installed

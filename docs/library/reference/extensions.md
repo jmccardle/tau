@@ -15,6 +15,8 @@ The user's authorization records, read from and written to one JSON file.
 
 Packages are keyed by identifier and match on distribution, version and
 digest. Drop-ins are keyed by resolved path and carry no version (§5).
+Disables are keyed by identifier, so one covers a package and a drop-in
+alike (#58).
 
 **Constructor parameters**
 
@@ -41,6 +43,52 @@ Record ``source`` as authorized, replacing any earlier record for it.
 
 - `ValueError` — ``source`` is neither a package nor a drop-in.
 
+### disable
+
+```python
+disable(identifier: str) -> bool
+```
+
+`tau_agent_core.extension_auth.AuthorizationStore.disable`
+
+Record ``identifier`` as disabled: found, never imported, never noticed (#58).
+
+**Parameters**
+
+- `identifier: str` — A full extension identifier.
+
+**Returns**
+
+Whether it was newly disabled; ``False`` when it already was.
+
+### disabled_identifiers
+
+```python
+disabled_identifiers() -> list[str]
+```
+
+`tau_agent_core.extension_auth.AuthorizationStore.disabled_identifiers`
+
+The disabled identifiers, sorted.
+
+### enable
+
+```python
+enable(identifier: str) -> bool
+```
+
+`tau_agent_core.extension_auth.AuthorizationStore.enable`
+
+Remove ``identifier``'s disable. Authorization records are untouched.
+
+**Parameters**
+
+- `identifier: str` — A full extension identifier.
+
+**Returns**
+
+Whether a disable was removed.
+
 ### grandfather
 
 ```python
@@ -58,6 +106,30 @@ On the first start with no store, authorize every usable drop-in present and sav
 **Returns**
 
 The identifiers grandfathered, for the one-time notice; empty when the store already existed, which is every start after the first.
+
+### is_disabled
+
+```python
+is_disabled(identifier: str) -> bool
+```
+
+`tau_agent_core.extension_auth.AuthorizationStore.is_disabled`
+
+Whether ``tau ext disable`` recorded ``identifier`` (#58).
+
+**Parameters**
+
+- `identifier: str` — *(no description)*
+
+### known_identifiers
+
+```python
+known_identifiers() -> set[str]
+```
+
+`tau_agent_core.extension_auth.AuthorizationStore.known_identifiers`
+
+Every identifier a record names: authorized packages and drop-ins, and disables.
 
 ### load
 
@@ -2064,7 +2136,8 @@ authorize_discovered_extension(token: str, *, extensions_dir: str | Path | None 
 Write an authorization record for the discovered source ``token`` names.
 
 The non-interactive route to the gate (docs/EXTENSION-PACKAGES.md §9):
-``tau ext authorize``, for a host with no prompt to answer.
+``tau ext authorize``, for a host with no prompt to answer. Creating the
+store grandfathers the drop-ins present first (:func:`_grandfather_before_first_write`).
 
 **Parameters**
 
@@ -2092,6 +2165,38 @@ default_extensions_dir() -> Path
 `tau_agent_core.extension_sources.default_extensions_dir`
 
 The drop-in directory: ``<tau home>/extensions``.
+
+## disable_discovered_extension
+<!-- agent: yes -->
+
+```python
+disable_discovered_extension(token: str, *, extensions_dir: str | Path | None = None, store_path: str | Path | None = None) -> tuple[str, bool]
+```
+
+`tau_agent_core.sdk.disable_discovered_extension`
+
+``tau ext disable``: record that a known extension is never loaded or announced (#58).
+
+``token`` is a drop-in path, an identifier, or its last dotted segment,
+resolved fresh against every identifier discovery or the store knows. An
+unknown name is refused, so a typo cannot record a disable for nothing.
+Creating the store grandfathers the drop-ins present first
+(:func:`_grandfather_before_first_write`).
+
+**Parameters**
+
+- `token: str` — What the user typed.
+- `extensions_dir: str | Path | None = None` — The drop-in directory; ``None`` is the default.
+- `store_path: str | Path | None = None` — The authorization store; ``None`` is the file beside it.
+
+**Returns**
+
+``(identifier, changed)``; ``changed`` is ``False`` when it was already disabled.
+
+**Raises**
+
+- `ValueError` — ``token`` names nothing known, or is ambiguous.
+- `AuthorizationStoreError` — The store cannot be read.
 
 ## discover_dropins
 <!-- agent: yes -->
@@ -2133,6 +2238,32 @@ Reads distribution metadata only: the entry points, RECORD and
 **Returns**
 
 One source per entry point, sorted by identifier.
+
+## enable_discovered_extension
+<!-- agent: yes -->
+
+```python
+enable_discovered_extension(token: str, *, extensions_dir: str | Path | None = None, store_path: str | Path | None = None) -> str
+```
+
+`tau_agent_core.sdk.enable_discovered_extension`
+
+``tau ext enable``: remove a disable; the extension's authorization is unchanged (#58).
+
+**Parameters**
+
+- `token: str` — A disabled identifier or its last dotted segment.
+- `extensions_dir: str | Path | None = None` — The drop-in directory; ``None`` is the default.
+- `store_path: str | Path | None = None` — The authorization store; ``None`` is the file beside it.
+
+**Returns**
+
+The identifier enabled.
+
+**Raises**
+
+- `ValueError` — ``token`` names no disabled extension, or is ambiguous.
+- `AuthorizationStoreError` — The store cannot be read.
 
 ## ext_channel
 <!-- agent: yes -->
@@ -2294,6 +2425,31 @@ no policy the form raises instead of fabricating an answer.
 
 The field's declared ``default`` when present; otherwise the kind's empty value (``""``, ``0``, ``False``, ``[]``), or a ``select``'s first option.
 
+## is_extension_disabled
+<!-- agent: yes -->
+
+```python
+is_extension_disabled(identifier: str, *, extensions_dir: str | Path | None = None, store_path: str | Path | None = None) -> bool
+```
+
+`tau_agent_core.sdk.is_extension_disabled`
+
+Whether ``tau ext disable`` recorded ``identifier`` (#58); reads, never writes.
+
+**Parameters**
+
+- `identifier: str` — A full extension identifier.
+- `extensions_dir: str | Path | None = None` — The drop-in directory; ``None`` is the default.
+- `store_path: str | Path | None = None` — The authorization store; ``None`` is the file beside it.
+
+**Returns**
+
+Whether a disable names it.
+
+**Raises**
+
+- `AuthorizationStoreError` — The store cannot be read.
+
 ## is_path_spec
 <!-- agent: yes -->
 
@@ -2308,6 +2464,29 @@ Whether an ``-e`` value names a path: it holds a ``/`` or ends in ``.py``.
 **Parameters**
 
 - `raw: str` — *(no description)*
+
+## load_failure_notice
+<!-- agent: yes -->
+
+```python
+load_failure_notice(error: ExtensionLoadError) -> str
+```
+
+`tau_agent_core.sdk.load_failure_notice`
+
+The one sentence every head shows for an extension that failed to load (#58).
+
+A discovered extension's sentence ends with how to stop loading it. One
+named with ``-e`` overrides a disable, so its sentence says to drop the
+flag instead.
+
+**Parameters**
+
+- `error: ExtensionLoadError` — From :attr:`LoadExtensionsResult.errors`.
+
+**Returns**
+
+A sentence naming the extension and the error, and what silences it.
 
 ## match_choice
 <!-- agent: yes -->
@@ -2376,6 +2555,25 @@ A fresh id for an injected tool call (docs/SEEDED-BRANCHES.md §5).
 
 Nine characters drawn from ``[a-zA-Z0-9]`` by :mod:`secrets`.
 
+## noticed_withheld
+<!-- agent: yes -->
+
+```python
+noticed_withheld(records: Sequence[ExtensionRecord]) -> list[ExtensionRecord]
+```
+
+`tau_agent_core.sdk.noticed_withheld`
+
+The withheld records a head announces: all but ``disabled``, which the user silenced (#58).
+
+**Parameters**
+
+- `records: Sequence[ExtensionRecord]` — Withheld records, from a load result or a listing.
+
+**Returns**
+
+Those that get a notice or a prompt, in order.
+
 ## orphan_subscription_notices
 <!-- agent: yes -->
 
@@ -2411,8 +2609,9 @@ Decide which extensions load, from metadata and paths alone (docs/EXTENSION-PACK
 
 Discovered drop-ins load first, then discovered packages, then the ``-e``
 values in argument order. A discovered source loads only with an
-authorization record. An ``-e`` value is authorized by being named, and
-claims its identifier first: a discovered source with the same identifier
+authorization record and no disable (#58); a disabled one is withheld as
+``disabled`` before anything else is checked. An ``-e`` value is authorized
+by being named, overrides a disable, and claims its identifier first: a discovered source with the same identifier
 but another target is withheld as a ``collision``, as is a later
 discovered source whose identifier an earlier one already claimed. Two
 routes to one file load once.
@@ -2791,4 +2990,4 @@ prompt may ask about an ``unauthorized`` record instead of showing its line.
 
 **Returns**
 
-One line for any grandfathered drop-ins, then one per withheld record.
+One line for any grandfathered drop-ins, then one per record in func:`noticed_withheld`.

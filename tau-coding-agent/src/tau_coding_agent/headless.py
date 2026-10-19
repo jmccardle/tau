@@ -376,10 +376,10 @@ def report_extension_load(result: Any) -> None:
     command that authorizes it, and the run goes on without it
     (docs/EXTENSION-PACKAGES.md §9).
     """
-    from tau_agent_core.sdk import withheld_notices
+    from tau_agent_core.sdk import load_failure_notice, withheld_notices
 
     for ext_error in result.errors:
-        print(f"[τ] failed to load extension {ext_error.path}: {ext_error.error}", file=sys.stderr)
+        print(f"[τ] {load_failure_notice(ext_error)}", file=sys.stderr)
     for line in withheld_notices(result):
         print(f"[τ] {line}", file=sys.stderr)
 

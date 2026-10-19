@@ -68,6 +68,8 @@ from tau_agent_core.sdk import (
     ExtensionLoadError,
     LoadExtensionsResult,
     authorization_prompt,
+    load_failure_notice,
+    noticed_withheld,
     orphan_subscription_notices,
     summarize_extensions,
     withheld_notice,
@@ -2723,7 +2725,7 @@ class TauApp(App):
             self.log.error(f"Extension load failed: {e}", exc_info=True)
             return
         for err in result.errors:
-            self.notify(f"Extension error ({err.path}): {err.error}", severity="warning")
+            self.notify(load_failure_notice(err), severity="warning")
         if result.extensions:
             self.log(f"Loaded {len(result.extensions)} extension(s)")
         self._surface_withheld_extensions(result)
@@ -2739,6 +2741,8 @@ class TauApp(App):
     def _surface_withheld_extensions(self, result: LoadExtensionsResult) -> None:
         """Announce grandfathered drop-ins, offer each unauthorized extension, warn about the rest.
 
+        A ``disabled`` record is silent (:func:`~tau_agent_core.sdk.noticed_withheld`).
+
         An unauthorized extension is offered once per app run: "not now" is
         remembered until the app quits, so a new chat does not ask again, and
         a load while its prompt is still open does not stack a second one
@@ -2748,7 +2752,7 @@ class TauApp(App):
             self.notify(
                 withheld_notices(LoadExtensionsResult(grandfathered=result.grandfathered))[0]
             )
-        for record in result.withheld:
+        for record in noticed_withheld(result.withheld):
             key = (record.identifier, record.target)
             if record.state != "unauthorized":
                 self.notify(withheld_notice(record), severity="warning")
