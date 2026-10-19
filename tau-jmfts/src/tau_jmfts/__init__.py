@@ -21,7 +21,13 @@ Reference: docs/JMFTS-INTEGRATION-PLAN.md
 __version__ = "0.13.0"
 
 from tau_jmfts.catalog import JmftsSessionCatalog
-from tau_jmfts.client import DocumentDict, JmftsClient, JmftsError, JmftsTextTooLongError
+from tau_jmfts.client import (
+    DocumentDict,
+    JmftsClient,
+    JmftsError,
+    JmftsTextTooLongError,
+    JmftsVersionError,
+)
 from tau_jmfts.importer import export_session, import_session
 from tau_jmfts.store import JmftsSessionLog
 
@@ -30,6 +36,7 @@ __all__ = [
     "JmftsClient",
     "JmftsError",
     "JmftsTextTooLongError",
+    "JmftsVersionError",
     "DocumentDict",
     "JmftsSessionLog",
     "JmftsSessionCatalog",

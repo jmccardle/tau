@@ -235,6 +235,7 @@ def register(api: Any) -> None:
         content = str(params["content"])
         if not content.strip():
             raise ValueError("jmfts_ingest: content is empty — there is nothing to file.")
+        client.require_chunk_contract()  # before the write, so an old server leaves no orphan
         doc = client.create_document(
             title=str(params["title"]),
             content=content,
