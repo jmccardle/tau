@@ -12,6 +12,7 @@ module -- a dead or erroring server must propagate to the caller.
 
 from __future__ import annotations
 
+import re
 from types import TracebackType
 from typing import Any
 
@@ -93,21 +94,39 @@ class JmftsTextTooLongError(JmftsError):
 
 
 class JmftsVersionError(Exception):
-    """The server's ``GET /`` version is older than a request needs, or unreadable."""
+    """The server's ``GET /`` version is older than a request needs, or unreadable.
+
+    Not a :class:`JmftsError`: the server answered 200, so there is no status or
+    detail to carry, and a caller catching transport/HTTP failures should not catch it.
+    """
 
 
-def _parse_server_version(version: Any) -> tuple[int, int, int]:
-    """``(major, minor, patch)`` from a ``HealthResponse.version`` such as ``"0.7.1"``.
+_PEP440 = re.compile(
+    r"^v?(\d+)\.(\d+)(?:\.(\d+))?"
+    r"(?P<pre>[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?\d*)?"
+    r"(?:[-_.]?post[-_.]?\d*)?"
+    r"(?P<dev>[-_.]?dev[-_.]?\d*)?"
+    r"(?:\+[a-z0-9.]+)?$",
+    re.IGNORECASE,
+)
+
+
+def _server_version_at_least(version: Any, minimum: tuple[int, int, int]) -> bool:
+    """Whether a ``HealthResponse.version`` is at least ``minimum`` under PEP 440.
+
+    A pre-release or dev release of ``minimum`` itself (``0.7.0rc1``, ``0.7.0.dev0``)
+    sorts before it, so it does not qualify; one of a later release (``0.8.0rc1``) does.
 
     Raises:
-        JmftsVersionError: ``version`` does not start with three dot-separated integers.
+        JmftsVersionError: ``version`` is not a PEP 440 version.
     """
-    parts = str(version).split(".")
-    try:
-        major, minor, patch = (int(p) for p in parts[:3])
-    except ValueError:
-        raise JmftsVersionError(f"JMFTS reported an unreadable version {version!r}") from None
-    return major, minor, patch
+    match = _PEP440.match(str(version))
+    if match is None:
+        raise JmftsVersionError(f"JMFTS reported an unreadable version {version!r}")
+    release = (int(match[1]), int(match[2]), int(match[3] or 0))
+    if release != minimum:
+        return release > minimum
+    return match["pre"] is None and match["dev"] is None
 
 
 DocumentDict = dict[str, Any]
@@ -213,7 +232,7 @@ class JmftsClient:
         if self._chunk_contract_checked:
             return
         version = self.health().get("version")
-        if _parse_server_version(version) < MIN_CHUNK_SERVER_VERSION:
+        if not _server_version_at_least(version, MIN_CHUNK_SERVER_VERSION):
             needed = ".".join(map(str, MIN_CHUNK_SERVER_VERSION))
             raise JmftsVersionError(
                 f"chunk_document needs JMFTS >= {needed} (max_words); the server is {version}"

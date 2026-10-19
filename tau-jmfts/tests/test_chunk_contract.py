@@ -12,14 +12,22 @@ from typing import Any
 import httpx
 import pytest
 
-from tau_jmfts.client import JmftsClient, JmftsVersionError
+from tau_jmfts.client import JmftsClient, JmftsError, JmftsVersionError
 
 
-def _client(version: str, seen: list[httpx.Request]) -> JmftsClient:
+def _client(version: str | None, seen: list[httpx.Request], *, health_down: int = 0) -> JmftsClient:
+    failures = [health_down]
+
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         if request.url.path == "/":
-            return httpx.Response(200, json={"status": "ok", "version": version})
+            if failures[0]:
+                failures[0] -= 1
+                raise httpx.ConnectError("refused", request=request)
+            body: dict[str, Any] = {"status": "ok"}
+            if version is not None:
+                body["version"] = version
+            return httpx.Response(200, json=body)
         if request.url.path.endswith("/chunk"):
             return httpx.Response(200, json={"parent_id": 7, "chunks": []})
         return httpx.Response(200, json=[])
@@ -77,3 +85,59 @@ def test_an_unreadable_version_is_refused() -> None:
     with _client("dev", seen) as client, pytest.raises(JmftsVersionError, match="unreadable"):
         client.chunk_document(7)
     assert _chunk_bodies(seen) == []
+
+
+@pytest.mark.parametrize(
+    ("version", "accepted"),
+    [
+        ("0.7.0", True),
+        ("0.7.1", True),
+        ("0.8", True),
+        ("0.8.0rc1", True),
+        ("0.8.0.dev0", True),
+        ("0.7.0.post1", True),
+        ("1.0.0+local.3", True),
+        ("0.7.0rc1", False),
+        ("0.7.0.dev0", False),
+        ("0.6.99", False),
+    ],
+)
+def test_the_version_check_follows_pep_440(version: str, accepted: bool) -> None:
+    seen: list[httpx.Request] = []
+    with _client(version, seen) as client:
+        if accepted:
+            client.chunk_document(7)
+            assert len(_chunk_bodies(seen)) == 1
+        else:
+            with pytest.raises(
+                JmftsVersionError, match=version.replace(".", r"\.").replace("+", r"\+")
+            ):
+                client.chunk_document(7)
+            assert _chunk_bodies(seen) == []
+
+
+def test_a_health_body_without_a_version_is_refused() -> None:
+    seen: list[httpx.Request] = []
+    with _client(None, seen) as client, pytest.raises(JmftsVersionError, match="unreadable"):
+        client.chunk_document(7)
+    assert _chunk_bodies(seen) == []
+
+
+def test_an_unreachable_health_check_is_a_transport_error_and_is_asked_again() -> None:
+    seen: list[httpx.Request] = []
+    with _client("0.7.1", seen, health_down=1) as client:
+        with pytest.raises(JmftsError) as excinfo:
+            client.chunk_document(7)
+        assert not isinstance(excinfo.value, JmftsVersionError)
+        assert excinfo.value.status_code == 0
+        client.chunk_document(7)
+    assert [r.url.path for r in seen].count("/") == 2
+    assert len(_chunk_bodies(seen)) == 1
+
+
+def test_the_session_store_path_never_asks_the_server_version() -> None:
+    seen: list[httpx.Request] = []
+    with _client("0.7.1", seen) as client:
+        client.create_document(title="t", content="c", usetype="tau:message")
+        client.get_document(1)
+    assert "/" not in [r.url.path for r in seen]
