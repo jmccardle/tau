@@ -141,3 +141,23 @@ def test_the_session_store_path_never_asks_the_server_version() -> None:
         client.create_document(title="t", content="c", usetype="tau:message")
         client.get_document(1)
     assert "/" not in [r.url.path for r in seen]
+
+
+async def test_ingest_refuses_an_old_server_before_writing_anything() -> None:
+    """``jmfts_ingest`` used to create the document, then fail the version check."""
+    from types import SimpleNamespace
+
+    from tau_jmfts.ext import tools as tools_module
+
+    seen: list[httpx.Request] = []
+    client = _client("0.6.2", seen)
+    registered: dict[str, Any] = {}
+    api = SimpleNamespace(config={}, register_tool=lambda d: registered.__setitem__(d["name"], d))
+    tools_module.register(api)
+    log = SimpleNamespace(client=client, id="s")
+    ctx = SimpleNamespace(_require_session=lambda: SimpleNamespace(session_log=log))
+    with client, pytest.raises(JmftsVersionError):
+        await registered["jmfts_ingest"]["execute"](
+            "t1", {"title": "t", "content": "some text"}, None, None, ctx
+        )
+    assert [r.url.path for r in seen] == ["/"], "nothing written before the refusal"
