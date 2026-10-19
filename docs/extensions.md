@@ -26,17 +26,36 @@ The parameter is named `api`, not `pi` — every real extension in
 
 ## Discovery
 
-Two sources, in this order, deduped by resolved path (first occurrence
-wins): the global directory `~/.tau/extensions/` (bare `*.py` files or
-`<dir>/__init__.py` packages, loaded alphabetically), then every explicit
-`-e`/`--extension PATH` (repeatable; still loads under `--no-extensions`,
-which suppresses discovery only). **There is no project-local
+Finding is not loading (docs/EXTENSION-PACKAGES.md). τ discovers two kinds of
+source, and loads one only once the user has authorized it:
+
+- **drop-ins** in `~/.tau/extensions/`: bare `*.py` files or `<dir>/__init__.py`
+  packages, alphabetically. The identifier is the file's stem, verbatim.
+- **installed packages** that declare an entry point in the `tau.extensions`
+  group, naming a module that exposes `register(api)`:
+
+  ```toml
+  [project.entry-points."tau.extensions"]
+  planner = "tau_router.planner"
+  ```
+
+  The identifier is the module name (`tau_router.planner`), and the module is
+  imported under that real name.
+
+An unauthorized source is offered in the TUI and named on stderr by the
+headless modes, which never prompt: `tau ext authorize NAME` authorizes it, and
+`tau ext list` shows every source and its state. Drop-ins present at the first
+0.14.0 start are authorized once, automatically. Every explicit
+`-e`/`--extension PATH|MODULE` (repeatable) is authorized by being named and
+still loads under `--no-extensions`, which suppresses discovery only. A value
+holding a `/` or ending in `.py` is a path; anything else names an installed
+module. **There is no project-local
 `<cwd>/.tau/extensions/` discovery** — deliberately deferred pending the
 Tier-8 trust gate, not an oversight. There is also no dependency-manifest
 convention (`requirements.txt`, `package.json`) inside an extension
 directory — dependency management is the operator's own venv; a missing
-import surfaces as a load error (raises for an explicit `-e` path,
-collected into an errors list for a discovered one).
+import surfaces as a load error (stops startup for an explicit `-e` in `-p`
+and `--mode rpc`, collected into an errors list for a discovered one).
 
 An extension can import the modules sitting **beside** it: the loader puts
 the extension's own directory on `sys.path` for the length of the import
@@ -55,7 +74,7 @@ uniformly:
 - **Tools** — a duplicate name **raises** `ValueError` at load time
   (a deliberate divergence: silent first-wins was pi's answer, τ's is not).
 - **Commands** — first-wins on the typed name, and the loser keeps
-  `ext:<extension>.<command>`; see `docs/EXTENSION-NAMESPACE.md`.
+  `ext:<extension>:<command>`; see `docs/EXTENSION-NAMESPACE.md`.
 - **Shortcuts** — last-write-wins, with a logged warning.
 - **Hook chains** — first `block: True` wins for `tool_call`; `before_agent_start`'s
   `system_prompt` contribution is last-wins.
@@ -148,7 +167,7 @@ api.context -> ExtensionContext
 deleted, not deprecated — they never populated a value. `api.config` is
 the real replacement: sourced from `~/.tau/config.json`'s
 `extensions.<name>` block (keyed by file stem), overridable per-run with
-`--ext-config NAME.KEY=VALUE` (CLI wins over config.json).
+`--ext-config NAME:KEY=VALUE` (CLI wins over config.json).
 `send_user_message`'s default is `"followUp"`, not `"steer"` — the other
 valid values are `"nextTurn"` and `"steer"`. `send_message` used to be
 inert (called a method that didn't exist); it's wired now.

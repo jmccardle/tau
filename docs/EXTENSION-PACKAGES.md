@@ -1,11 +1,12 @@
 # Extensions from installed packages, under one authorization gate
 
-Decision record (2026-10-18), nothing built. τ will load extensions from
-installed Python packages through entry points. An extension's identifier
-becomes its Python module name, and nothing loads, from a package or from
-`~/.tau/extensions`, until the user has authorized it. Tracked as #35, the
-headline of 0.14.0. tau-search and tau-router are the two extensions it ships
-for.
+Built 2026-10-18 on branch `feat/ext-packages`, not yet merged; §9 holds the
+build's proposals, which await John. τ loads extensions from installed Python
+packages through entry points. An extension's identifier is its Python module
+name (a file's stem, verbatim), and nothing discovered loads, from a package or
+from `~/.tau/extensions`, until the user has authorized it. Tracked as #35, the
+headline of 0.14.0, with #40, #43, #44 and #47 on the same branch (§10–§12).
+tau-search and tau-router are the two extensions it ships for.
 
 ## 1. What is wrong at 0.13.0
 
@@ -49,7 +50,8 @@ what `-e` accepts, and what an authorization record names.
 A drop-in, or a file named with `-e PATH`, has no module name of its own.
 `my-ext.py` is a legal filename, but `my-ext` is not a Python identifier, so it
 cannot be imported as `my-ext`. Python already handles this case by keeping
-two names apart (proposal; the precedents are below):
+two names apart (decided by John on 2026-10-18, #35 decision 10; the precedents
+are below):
 
 - **The identifier is the stem, verbatim.** For `my-ext.py` it is `my-ext`, and
   for a package directory it is the directory's name. τ uses it as config key,
@@ -86,7 +88,7 @@ An extension loaded by explicit path (`-e /abs/dir/handset_bus.py`) follows
 the same rule, so its identifier is `handset_bus`. τ does not derive a dotted
 name from the path's directories. Which directory is the package root depends
 on `sys.path`, and the path doesn't record it, so any derivation would be a
-guess (proposal). A host that wants the dotted name ships the module as an
+guess (decision 10). A host that wants the dotted name ships the module as an
 entry point and names it with `-e <module.name>`.
 - **Alternative rejected:** the entry-point name as the identifier. Two
   distributions can declare the same entry-point name, while a module name is
@@ -155,7 +157,7 @@ Decided 2026-10-18 (#35 decisions 1, 3 and 8).
   same-named extension from an unauthorized source is offered to the user. It
   is never loaded silently, and it never stops τ.
 - **Existing drop-ins are grandfathered at upgrade**, so no 0.13.0 setup breaks.
-  Proposal for the mechanism: on the first 0.14.0 start, write a path record
+  The mechanism, as built (§9): on the first 0.14.0 start, write a path record
   for every drop-in present, and announce it once.
 - **Accepted hole:** a file planted in `~/.tau/extensions` before the upgrade is
   grandfathered. John accepted this, because anyone who can write that directory
@@ -192,14 +194,161 @@ source the user placed; installed means a package the user authorized.
 - #38 (embedding serve with an explicit extension list) is the programmatic
   half of the same question.
 
-## 8. What is absent
+## 8. How it was built
+
+- **Identity** is one function, `extension_sources.extension_identifier(label)`,
+  over the runner bucket's label: a file path gives the stem verbatim, a package
+  directory its name, an installed module its name, and an inline SDK factory
+  its `module.qualname`. `ExtensionHandlers.name` reads it, and so do the config
+  key, the topic emitter, `ExtensionAPI.extension_name`, `/extensions` and a
+  lock's display name. `extension_owner()` is deleted (#40).
+- **An inline factory is `module.qualname`**, not its last segment, so two
+  factories both named `register` no longer collide (the third case of #40).
+  This is a build decision that follows decision 2; the shorthand (§4) lets a
+  user still type the last segment.
+- **Planning is separate from importing.** `sdk.plan_extensions` decides from
+  metadata, paths and the store what loads and what is withheld, and writes
+  nothing except the grandfathering store. `_load_extensions` imports the plan.
+  `tau ext list` calls the planner with `write=False`.
+- **Load order and collisions.** Discovered drop-ins load first, then
+  discovered packages, then `-e` values in argument order. An `-e` value
+  claims its identifier before discovery runs. A discovered source whose
+  identifier an earlier one claimed is withheld as `collision`; τ keeps running
+  (decision 1). Two routes to one file load it once, as explicit.
+- **`-e VALUE`** is a path when it holds a `/` or ends in `.py`. Anything else
+  is tried as an entry point's module, then as the last dotted segment of one
+  (refusing on ambiguity, naming both), then as any importable module
+  (`kind="module"`).
+- **Explicit failures** raise `ExtensionStartupError` naming the extension and
+  phase, with the original exception as `__cause__` (§12).
+- **The listing** is `sdk.extension_records` (no session) and
+  `AgentSession.extension_records` (live), both returning
+  `extension_sources.ExtensionRecord`. The CLI (`tau ext list`), the TUI's
+  `/extensions`, the REPL and the RPC/serve verb `list_extensions` render them.
+  States: `loaded`, `disabled`, `failed`, `authorized` (would load; no-session
+  listing only), `unauthorized`, `unusable`, `collision`.
+- **Wire versions.** `list_extensions` is additive, so RPC goes 2.2 → 2.3 (a
+  MINOR bump). Serve's verb set changed, and serve refuses any version
+  mismatch below 1.0, so serve goes 0.10 → 0.11, which tau-code must match. The
+  qualified-command spelling changed from `ext:<id>.<cmd>` to `ext:<id>:<cmd>`
+  inside existing string fields (`get_commands`, the attach surface). The record
+  treats those names as opaque and did not bump MAJOR for it; a client that
+  parsed them breaks (§9, last item).
+
+## 9. Build proposals, for John
+
+Each item works as described now, and each is a proposal that John may change.
+
+- **Store location:** `<tau home>/extension-authorizations.json`, beside the
+  extensions directory it governs (`store_path_for`). A test or host that points
+  the drop-in directory elsewhere gets its own store beside it.
+- **Store format:** JSON, `{"format": 1, "packages": {...}, "dropins": {...}}`.
+  `packages` is keyed by module name, each with `distribution`, `version`,
+  `digest` (`sha256:` over the RECORD lines of the module's top-level package,
+  or `null`), `editable_path` (from PEP 610 `direct_url.json`, or `null`) and
+  `authorized_at`. `dropins` is keyed by resolved path, each with `identifier`,
+  `authorized_at` and `grandfathered: true` when written at upgrade. A record
+  matches only when distribution, version, digest and editable path are all
+  equal. A changed one is an `update` that names the previous version. A store
+  that fails to parse, or has another `format`, stops startup with "fix or
+  delete it". The write is atomic.
+- **Grandfathering:** the first discovery that finds no store writes one,
+  recording every usable drop-in present, and every head announces it once:
+  "authorized N existing drop-in extension(s) at upgrade: a, b. From now on τ
+  loads a new drop-in or package only once it is authorized; `tau ext list`
+  shows each one's state." Packages are never grandfathered. `--no-extensions`
+  writes no store.
+- **Entry-point group:** `tau.extensions` is kept as the final name. tau-router
+  already ships it.
+- **Headless behaviour:** `-p`, `--mode rpc`, `--mode repl` and the serve
+  daemon never prompt and never block. Each unauthorized extension is skipped
+  with one stderr line (the daemon logs it), and the run goes on: "[τ] extension
+  X (dist) was found but not loaded: <reason>. To load it: tau ext authorize X".
+- **The non-interactive route:** `tau ext authorize NAME` (an identifier, its
+  last segment, or a drop-in path; `--package` picks the package when a drop-in
+  shares the name) and `tau ext revoke IDENTIFIER` (full name only, with no
+  shorthand, because removing records should not involve a guess).
+  `tau ext list [--json] [-e …]` imports nothing and writes nothing.
+- **TUI prompt:** one dialog per unauthorized extension after a load. Title:
+  "Load the new extension X?" or "Load the updated extension X?". Body: what the
+  source is (for a package, the distribution and version, or "was updated from
+  A to B since you authorized it"), "An extension runs its own code in every τ
+  session that loads it. Authorizing it is remembered until its package version
+  changes; `tau ext revoke X` undoes it." The buttons are "Authorize and load",
+  which writes the record and loads it into the running session, and "Not now".
+  Escape is "Not now". "Not now" is remembered until the app quits, so a new
+  chat does not ask again. The text comes from `sdk.authorization_prompt`, so
+  another head can show the same words.
+- **No authorizing over the wire in 0.14.0.** `list_extensions` is read-only.
+  `AgentSession.authorize_extension` exists for the TUI, and putting it on RPC
+  waits on deciding who may grant code execution from a remote head.
+- **The `--tools` flag is an allowlist over every tool** (§11), so
+  `--tools read,bash -e ext.py` no longer offers ext.py's tools. A model
+  entry's `"tools"` key keeps its 0.13.0 meaning (built-ins only). The
+  alternative is a flag that only checks extension names and filters nothing,
+  which would not narrow tau-search's two tools to one.
+- **Command names on the wire changed spelling** without a MAJOR bump (§8).
+
+## 10. #44: a subscription nothing can answer
+
+The issue left one point open: whether "emits" means declared topics or
+observed emitters. **The build checks observed emitters.** The topic's middle
+segment is its emitter, and `api.emit` always derives that segment from the
+emitting extension's own identifier. So a subscription to
+`ext:<emitter>:<topic>` whose emitter is not a loaded extension can never be
+delivered, and checking that needs no declaration. It catches the case that
+motivated the issue: a subscriber still on `ext:planner:need_router` after the
+emitter became `tau_router.planner`.
+
+Each bucket records its `ext:` subscriptions, and an unsubscribe removes one.
+`AgentSession.orphan_subscriptions()` compares them with the loaded
+identifiers. The result is each record's `orphan_topics` in every listing, and
+a debug notice after load: the `tau.extensions` logger, the TUI's log, and
+`-p`/`--mode rpc` stderr under `--verbose`. It is never an error.
+
+**Not caught:** a loaded emitter that never emits the subscribed topic. That
+needs a declaration (an `EMITS` module attribute, like `SUBJECTS`), which
+nothing reads yet (§13).
+
+## 11. #43: `--tools` after extensions load
+
+Built-in names in `--tools` are still constructed up front
+(`resolve_tool_names` skips other names). Both `--tools` and `--exclude-tools`
+now reach `AgentSession` as an allowlist and a denylist over every tool it
+offers, extension tools included. The allowlist rides its own config key,
+`tool_allowlist`, which only the flag writes. A model entry's own `"tools"`
+key in `config.json` still selects built-ins and leaves extension tools
+offered, as two existing tests encode (`test_backend_tool_filter.py`,
+`test_json_mode_tool_prints.py`). `AgentSession.check_tool_filters` raises
+`Unknown tool: <name>` for a name that matches no built-in and no registered
+tool, and `load_extensions` calls it once loading is done. `--exclude-tools`
+had the mirror defect: a name that was not a built-in was ignored silently. It
+now filters extension tools and is checked the same way. A suppression flag
+(`--no-tools`, `--no-builtin-tools`) yields no allowlist. The SDK's
+`create_agent_session(tools=…)` still takes built-in names only.
+
+## 12. #47: an explicitly named extension that fails stops startup
+
+Decided by John on 2026-10-18 (#47). In `-p` and `--mode rpc`,
+`headless.start_extensions` loads and then fires
+`emit_session_start(strict=True)`. An extension named with `-e` whose import,
+`register()` or `session_start` raises becomes a `CLIError` with a non-zero
+exit before the first turn. The message is `extension <id> (<path>), named with
+-e, failed at <load|session_start>: <error>`. A discovered extension keeps
+warn-and-continue (#29's rule), and its record is `failed` with the reason,
+`session_start raised: …` included. The TUI and `--mode repl` keep collecting
+`session_start` failures, because a human is present to read them. The REPL
+turns an explicit load failure into a `CLIError` instead of a traceback.
+
+## 13. What is absent
 
 - **A package manager** (installing, upgrading, removing). That is #13. τ
   authorizes what pip installed and never installs anything itself.
 - **Checking PyPI for updates.** Filed separately as #41.
 - **A content hash for drop-ins.** John chose path records; §5 states what that
   leaves open.
-- **The final entry-point group name.** `tau.extensions` is provisional until
-  the build.
-- **The authorization store's format and location**, and the prompt's text in
-  each head. These are build decisions, to be recorded here when made.
+- **Authorizing over RPC/serve** (§9).
+- **Declared topics (`EMITS`)** for #44's topic-level check (§10).
+- **Reloading a package in place across a version change.** `reload_extension`
+  on a package calls `importlib.reload` on its module, which does not re-import
+  the package's other modules.

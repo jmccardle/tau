@@ -1,7 +1,7 @@
 """Example 61: Wrapping another extension's command by name.
 
 Reference: docs/EXTENSION-NAMESPACE.md §4. Every extension command has two
-names: ``ext:<extension>.<command>``, which nothing can take from it, and the
+names: ``ext:<extension>:<command>``, which nothing can take from it, and the
 typed name it asks for, which is first-come. This example claims ``/ni`` if
 nobody has it, and wraps whoever does if somebody has.
 
