@@ -89,6 +89,7 @@ from tau_agent_core.flows import (
     flow_form_spec,
     next_step,
     step_form_spec,
+    unavailable_models,
 )
 from tau_agent_core.commands import (
     FRONTEND_COMMANDS,
@@ -1334,6 +1335,13 @@ class TauApp(App):
         session = getattr(self.current_backend, "agent_session", None)
         return getattr(session, "vocabulary", BUILTIN)
 
+    def _notify_unavailable_models(self, catalog: Optional[ModelCatalog]) -> None:
+        """Say which configured models the picker leaves out, and why (docs/MODEL-PICKER.md §2)."""
+        unavailable = unavailable_models(catalog)
+        if unavailable:
+            listed = "; ".join(f"{name}: {why}" for name, why in sorted(unavailable.items()))
+            self.notify(f"Unavailable models, not offered: {listed}", severity="warning")
+
     def _model_catalog(self) -> Optional[ModelCatalog]:
         """Where this head's model names come from, session or not (docs/MODEL-PICKER.md §2).
 
@@ -1617,6 +1625,8 @@ class TauApp(App):
                     f"domain {domain.name!r} returned two values with the same label; "
                     "the form would not be able to say which was chosen"
                 )
+            if domain.name == "model_name":
+                self._notify_unavailable_models(self._model_catalog())
             options[argument.name] = by_label
         return options
 
@@ -1714,6 +1724,8 @@ class TauApp(App):
                             f"domain {step.domain.name!r} returned two values with the same "
                             "label; the form would not be able to say which was chosen"
                         )
+                    if step.domain.name == "model_name":
+                        self._notify_unavailable_models(self._model_catalog())
                 spec = step_form_spec(step, title, options=list(labels) or None)
             except (ValueError, ServeError) as exc:
                 self.notify(f"/{step.flow}: {exc}", severity="error")

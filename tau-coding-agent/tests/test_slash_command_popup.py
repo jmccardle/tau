@@ -391,7 +391,8 @@ class TestTheArgumentVocabulary:
         docs/MODEL-PICKER.md §2: which models exist is a fact of config, so the
         popup offers them, and the refusal wording never reaches the screen.
         """
-        app = _app(make_app, config={"models": {"alpha": {}, "beta": {}}})
+        entry = {"backend": "openai", "model": "m"}
+        app = _app(make_app, config={"models": {"alpha": entry, "beta": entry}})
         async with app.run_test() as pilot:
             assert app.current_backend is None
             editor = app.query_one(chat_widgets.ChatInput)

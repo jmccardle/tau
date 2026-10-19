@@ -72,6 +72,7 @@ from tau_agent_core.flows import (
     flow_arguments,
     flow_form_spec,
     next_step,
+    unavailable_models,
 )
 from tau_agent_core.sdk import (
     ExtensionStartupError,
@@ -2251,6 +2252,10 @@ class ReplLoop:
                     f"domain {domain.name!r} returned two values with the same label; "
                     "the form would not be able to say which was chosen"
                 )
+            if domain.name == "model_name":
+                resolver = getattr(self._agent_session, "model_resolver", None)
+                for name, why in sorted(unavailable_models(resolver).items()):
+                    self._renderer.line("system", f"model {name} is unavailable: {why}")
             options[argument.name] = by_label
         return options
 

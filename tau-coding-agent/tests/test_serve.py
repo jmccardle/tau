@@ -372,10 +372,12 @@ async def test_the_attach_answer_carries_the_whole_vocabulary_models_and_load_er
         {
             "name": "fake",
             "model": {"id": "fake-model", "provider": "openai", "context_window": 128000},
+            "error": None,
         },
         {
             "name": "other",
             "model": {"id": "other-model", "provider": "openai", "context_window": 128000},
+            "error": None,
         },
     ]
     await client.close()
@@ -665,3 +667,20 @@ async def test_a_new_session_on_an_unregistered_provider_is_invalid_params(serve
         await client.request(p.NewSession(cwd=str(tmp_path), model="foo/bar"))
     assert served.daemon.hosts == {}
     await client.close()
+
+
+async def test_the_hello_lists_an_unbuildable_entry_with_its_error(
+    tmp_path, provider, extensions_off
+):
+    """One entry whose provider is not registered must not fail the hello for all."""
+    config = {**_CONFIG, "models": {**_CONFIG["models"], "ext": {"backend": "acme", "model": "m"}}}
+    server, served = await _serve(tmp_path, config)
+    client = await served.client()
+    rows = {row["name"]: row for row in client.hello["models"]}
+    assert rows["ext"]["model"] is None
+    assert "backend 'acme' is not a registered provider" in rows["ext"]["error"]
+    assert rows["fake"]["error"] is None and rows["fake"]["model"]["id"] == "fake-model"
+    await client.close()
+    server.close()
+    await server.wait_closed()
+    await served.daemon.shutdown()

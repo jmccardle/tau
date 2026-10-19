@@ -80,3 +80,20 @@ def test_every_bad_entry_is_named_in_one_config_error(tmp_path: Path, monkeypatc
     assert "models.b is not valid: temperature:" in message
     assert "models.c must be a JSON object" in message
     assert "later" not in message
+
+
+def test_the_model_picker_leaves_out_an_entry_that_does_not_build() -> None:
+    """Listed by get_models with its error, but never offered to select."""
+    from tau_agent_core.flows import enumerate_domain, unavailable_models
+    from tau_agent_core.projections import model_catalog
+    from tau_coding_agent.backends import make_model_resolver
+
+    resolver = make_model_resolver(
+        {"models": {"good": _GOOD, "ext": {"backend": "acme", "model": "m"}}}
+    )
+    found = enumerate_domain("model_name", models=resolver)
+    assert [value.value for value in found.values] == ["good"]
+    assert list(unavailable_models(resolver)) == ["ext"]
+    rows = {row["name"]: row for row in model_catalog(resolver)}
+    assert rows["ext"]["model"] is None and "'acme'" in rows["ext"]["error"]
+    assert rows["good"]["error"] is None

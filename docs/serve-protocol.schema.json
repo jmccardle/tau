@@ -4085,8 +4085,25 @@
     "ModelRecord": {
       "description": "One model the config defines, as `get_models` lists it.",
       "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "model": {
-          "$ref": "#/$defs/ModelSpec"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "name": {
           "type": "string"
@@ -4094,7 +4111,8 @@
       },
       "required": [
         "name",
-        "model"
+        "model",
+        "error"
       ],
       "type": "object"
     },

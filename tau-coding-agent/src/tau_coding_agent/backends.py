@@ -1301,6 +1301,20 @@ class ConfigModelResolver:
             raise KeyError(f"unknown model {name!r}; configured models: {known}")
         return build_model_from_config({**entry, "config_name": name})
 
+    def model_errors(self) -> dict[str, str]:
+        """Each configured name that does not build, with the builder's message.
+
+        Read by :func:`~tau_agent_core.flows.unavailable_models`, so a picker
+        leaves such a name out and a head can say why.
+        """
+        errors = {}
+        for name in self.model_names():
+            try:
+                self(name)
+            except ValueError as exc:
+                errors[name] = str(exc)
+        return errors
+
     def api_key(self, name: str) -> str | None:
         """The ``api_key`` config gives ``name``; ``None`` leaves it to the provider's env var.
 

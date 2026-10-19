@@ -99,6 +99,16 @@ class RemoteConnection:
             raise RuntimeError("not connected to the daemon yet, so its models are unknown")
         return [m["name"] for m in self._client.hello["models"]]
 
+    def model_errors(self) -> dict[str, str]:
+        """The daemon's models that do not build, from its hello's ``error`` fields.
+
+        Raises:
+            RuntimeError: no hello has been answered yet.
+        """
+        if self._client is None:
+            raise RuntimeError("not connected to the daemon yet, so its models are unknown")
+        return {m["name"]: m["error"] for m in self._client.hello["models"] if m.get("error")}
+
     @property
     def is_local(self) -> bool:
         """Whether the daemon is on this machine (a unix socket or a loopback host)."""

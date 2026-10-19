@@ -5539,3 +5539,22 @@ The ids to mark, always including ``entry_id``. A message with no tool calls and
 **Raises**
 
 - `KeyError` — No entry has that id.
+
+## unavailable_models
+<!-- agent: yes -->
+
+```python
+unavailable_models(catalog: Any) -> dict[str, str]
+```
+
+`tau_agent_core.flows.unavailable_models`
+
+The catalog's names that do not build, each with why; ``{}`` when it cannot say.
+
+A catalog declares this with an optional ``model_errors()`` method. The
+``model_name`` domain leaves these names out, so a picker never offers them,
+and a head shows them from here instead (docs/MODEL-PICKER.md §2).
+
+**Parameters**
+
+- `catalog: Any` — *(no description)*

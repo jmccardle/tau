@@ -1492,7 +1492,8 @@ One model the config defines, as `get_models` lists it.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes |  |
-| `model` | [ModelSpec](#modelspec) | yes |  |
+| `model` | [ModelSpec](#modelspec) \| null | yes |  |
+| `error` | string \| null | yes |  |
 
 ### ModelSpec
 

@@ -112,7 +112,11 @@ def watch_writes(log: SessionLog, listener: Callable[[str, dict[str, Any]], None
 def model_records(resolver: Any) -> list[p.ModelRecord]:
     """``resolver``'s models as the wire lists them, in ``Hello`` and ``Attach`` alike."""
     return [
-        p.ModelRecord(name=m["name"], model=records.ModelSpec(**m["model"]))
+        p.ModelRecord(
+            name=m["name"],
+            model=records.ModelSpec(**m["model"]) if m["model"] is not None else None,
+            error=m["error"],
+        )
         for m in model_catalog(resolver)
     ]
 

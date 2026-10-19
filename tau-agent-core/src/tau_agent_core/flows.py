@@ -60,6 +60,7 @@ __all__ = [
     "bind_command_args",
     "bind_text",
     "enumerate_domain",
+    "unavailable_models",
     "flow_arguments",
     "flow_form_spec",
     "next_step",
@@ -594,6 +595,18 @@ class ModelCatalog(Protocol):
         ...
 
 
+@agent_facing(topic="sessions")
+def unavailable_models(catalog: Any) -> dict[str, str]:
+    """The catalog's names that do not build, each with why; ``{}`` when it cannot say.
+
+    A catalog declares this with an optional ``model_errors()`` method. The
+    ``model_name`` domain leaves these names out, so a picker never offers them,
+    and a head shows them from here instead (docs/MODEL-PICKER.md §2).
+    """
+    errors = getattr(catalog, "model_errors", None)
+    return dict(errors()) if errors is not None else {}
+
+
 def _model_values(catalog: Any) -> list[DomainValue]:
     if catalog is None:
         raise ValueError(
@@ -607,7 +620,8 @@ def _model_values(catalog: Any) -> list[DomainValue]:
             f"the model catalog ({type(catalog).__name__}) does not declare "
             "model_names(), so the names it accepts cannot be listed"
         )
-    return [DomainValue(value=name, label=name) for name in names()]
+    unavailable = unavailable_models(catalog)
+    return [DomainValue(value=name, label=name) for name in names() if name not in unavailable]
 
 
 def _session_values(runtime: Any) -> list[DomainValue]:
