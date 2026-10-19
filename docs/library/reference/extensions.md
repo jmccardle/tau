@@ -179,6 +179,13 @@ empty-but-successful-looking answer.
 - `messages: list[dict[str, Any]]` — The sub-agent turn's messages; empty when ``ok`` is false.
 - `error: str | None` — Why it failed, or ``None`` when ``ok``.
 
+## BusDependencyError
+<!-- agent: yes -->
+
+`tau_agent_core.sdk.BusDependencyError`
+
+A bus was asked for (``--bus``, ``bus_available=True``) but nats-py is not installed.
+
 ## ExplicitExtensionError
 <!-- agent: yes -->
 
@@ -2452,6 +2459,25 @@ Read ``session``'s name (:func:`~tau_agent_core.session_log.session_name`).
 **Returns**
 
 The newest ``session_info`` name, or ``None`` if never named or the newest name is empty.
+
+## require_bus_dependency
+<!-- agent: yes -->
+
+```python
+require_bus_dependency() -> None
+```
+
+`tau_agent_core.sdk.require_bus_dependency`
+
+Refuse a bus-enabled run whose bus client library is missing (#56).
+
+Locates ``nats`` with :func:`importlib.util.find_spec`, without importing
+it. Every head calls this before any extension loads, so a missing extra is
+reported as itself rather than as some extension's ``No module named 'nats'``.
+
+**Raises**
+
+- `BusDependencyError` — ``nats`` is not importable; the message is :data:`BUS_DEPENDENCY_HINT`.
 
 ## resolve_explicit
 <!-- agent: yes -->
