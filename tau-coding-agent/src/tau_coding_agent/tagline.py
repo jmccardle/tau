@@ -51,6 +51,8 @@ TAGLINES: tuple[str, ...] = (
     "I think, therefore I raise",
     "There was no choice but to be pioneers.",
     "RTFM? I generated the FM",
+    "What did Ilya see? We'll never know",
+    "20 new models this month. Still a 401.",
 )
 
 FUN_DEFAULT = True
