@@ -104,8 +104,23 @@ def test_the_hint_names_env_vars_only_where_they_would_be_read():
     assert credential_hint("gemini", None) == (
         f'To send a key, set GEMINI_API_KEY or GOOGLE_API_KEY or "api_key" {config}'
     )
-    assert credential_hint("gemini", "http://proxy") == f'To send a key, set "api_key" {config}'
+    assert credential_hint("gemini", "http://proxy") == (
+        f'To send a key, set "api_key" {config} GEMINI_API_KEY or GOOGLE_API_KEY is read only '
+        "for https://generativelanguage.googleapis.com."
+    )
     assert credential_hint("local-llm", None) == f'To send a key, set "api_key" {config}'
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    ["https://api.anthropic.com", "https://api.anthropic.com//", "HTTPS://API.Anthropic.com/"],
+)
+def test_the_vendors_endpoint_matches_however_its_scheme_host_and_slashes_are_written(
+    monkeypatch, spelling
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+    assert resolve_request_key("anthropic", None, spelling) == "from-env"
+    assert resolve_request_key("anthropic", None, "https://api.anthropic.com/v1") is None
 
 
 def test_only_a_401_with_a_provider_carries_the_hint():

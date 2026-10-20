@@ -452,9 +452,10 @@ reads_env_for(base_url: str | None) -> bool
 
 Whether a request to ``base_url`` may take its key from ``api_key_env``.
 
-True only for this vendor's own registered endpoint, compared without a
-trailing slash, or for no ``base_url`` (which means that endpoint). A
-vendor with no registered endpoint never lends its variables.
+True only for this vendor's own registered endpoint, ignoring the case
+of scheme and host and any trailing slash, or for no ``base_url`` (which
+means that endpoint). A vendor with no registered endpoint never lends
+its variables.
 
 **Parameters**
 
@@ -803,7 +804,7 @@ Appended to an HTTP 401 (:class:`~tau_llm.errors.ProviderHttpError`).
 
 **Returns**
 
-One sentence naming the model's ``api_key`` in τ's config.json, and the vendor's environment variables when :func:`resolve_request_key` would read them for ``base_url``.
+A sentence naming the model's ``api_key`` in τ's config.json, and the vendor's environment variables when :func:`resolve_request_key` would read them for ``base_url``. When it would not only because ``base_url`` is not the vendor's endpoint, a second sentence names that endpoint.
 
 ## detect_compat
 <!-- agent: yes -->

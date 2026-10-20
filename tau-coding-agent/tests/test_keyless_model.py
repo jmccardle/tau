@@ -103,7 +103,7 @@ def test_print_mode_sends_without_a_key_and_reports_the_401_in_one_line(tmp_path
     assert line.startswith("tau: error: HTTP 401 from model 'claude-x'")
     assert line.endswith(
         'key required. To send a key, set "api_key" on the model\'s "models" entry in '
-        "τ's config.json."
+        "τ's config.json. ANTHROPIC_API_KEY is read only for https://api.anthropic.com."
     )
     [headers] = _Refuses401.seen
     assert "x-api-key" not in headers and "authorization" not in headers

@@ -82,8 +82,13 @@ HTTP 401 from model 'claude-x' at 'https://api.anthropic.com': x-api-key header 
 
 That is the real api.anthropic.com answer to the keyless request (ran).
 
-The hint names the environment variables only where §5 would read them. For an
-entry with its own endpoint, it names `"api_key"` alone.
+The hint offers the environment variables only where §5 would read them. For an
+entry with its own endpoint, it offers `"api_key"` and says which endpoint the
+variables are limited to:
+
+```
+… To send a key, set "api_key" on the model's "models" entry in τ's config.json. ANTHROPIC_API_KEY is read only for https://api.anthropic.com.
+```
 
 Only 401 gets the hint. A 403 means a key was sent and lacks permission.
 
@@ -119,8 +124,9 @@ only place τ resolves a key. The client sends what it returns, and
 1. A non-empty `api_key` (the entry's, or `options["api_key"]`) wins.
 2. Otherwise the vendor's `api_key_env` is read, but only when
    `ProviderSpec.reads_env_for(base_url)` holds. That requires the request's
-   endpoint to be the vendor's registered `base_url`, compared without a
-   trailing slash. No `base_url` means that endpoint.
+   endpoint to be the vendor's registered `base_url`. The comparison ignores
+   the case of the scheme and host and any trailing slashes, but not the path,
+   so `…/v1` is a different endpoint. No `base_url` means the registered one.
 3. A vendor with no registered endpoint never lends its variables.
 
 `OpenAICompletionsProvider` reads no environment variable.

@@ -58,6 +58,7 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator, Protocol
+from urllib.parse import urlsplit, urlunsplit
 from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
@@ -228,13 +229,14 @@ class ProviderSpec:
     def reads_env_for(self, base_url: str | None) -> bool:
         """Whether a request to ``base_url`` may take its key from ``api_key_env``.
 
-        True only for this vendor's own registered endpoint, compared without a
-        trailing slash, or for no ``base_url`` (which means that endpoint). A
-        vendor with no registered endpoint never lends its variables.
+        True only for this vendor's own registered endpoint, ignoring the case
+        of scheme and host and any trailing slash, or for no ``base_url`` (which
+        means that endpoint). A vendor with no registered endpoint never lends
+        its variables.
         """
         if self.base_url is None:
             return False
-        return base_url is None or base_url.rstrip("/") == self.base_url.rstrip("/")
+        return base_url is None or _endpoint(base_url) == _endpoint(self.base_url)
 
     def resolve_api_key(self) -> str | None:
         """Look up this vendor's credential in the environment.
@@ -433,15 +435,27 @@ def credential_hint(provider_id: str, base_url: str | None) -> str:
         base_url: The request's endpoint; None for the vendor's default.
 
     Returns:
-        One sentence naming the model's ``api_key`` in τ's config.json, and the
+        A sentence naming the model's ``api_key`` in τ's config.json, and the
         vendor's environment variables when :func:`resolve_request_key` would
-        read them for ``base_url``.
+        read them for ``base_url``. When it would not only because ``base_url``
+        is not the vendor's endpoint, a second sentence names that endpoint.
     """
     spec = _PROVIDER_SPECS.get(provider_id)
-    reads_env = spec is not None and spec.reads_env_for(base_url)
-    env = " or ".join(spec.api_key_env) if spec is not None and reads_env else ""
     config = '"api_key" on the model\'s "models" entry in τ\'s config.json'
-    return f"To send a key, set {env} or {config}." if env else f"To send a key, set {config}."
+    if spec is None or not spec.api_key_env or spec.base_url is None:
+        return f"To send a key, set {config}."
+    env = " or ".join(spec.api_key_env)
+    if spec.reads_env_for(base_url):
+        return f"To send a key, set {env} or {config}."
+    return f"To send a key, set {config}. {env} is read only for {spec.base_url}."
+
+
+def _endpoint(url: str) -> str:
+    """``url`` with its scheme and host lowercased and trailing slashes dropped."""
+    parts = urlsplit(url)
+    return urlunsplit(
+        (parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), parts.query, "")
+    )
 
 
 @agent_facing(topic="providers")
