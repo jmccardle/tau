@@ -159,11 +159,11 @@ async def test_the_tui_resumes_it_and_says_why_a_turn_will_be_refused(make_app):
 
 
 _BROKEN = [
-    (None, "models.local-llm-tun must be a JSON object; got None"),
-    ("x", "models.local-llm-tun must be a JSON object; got 'x'"),
+    (None, "models.local-llm-tun must be a JSON object; got null"),
+    ("x", 'models.local-llm-tun must be a JSON object; got "x"'),
     (
         {**_UNUSED, "compaction": {"reserve_tokens": "lots"}},
-        "'models.local-llm-tun.compaction.reserve_tokens' must be int; got 'lots'",
+        "'models.local-llm-tun.compaction.reserve_tokens' must be int; got \"lots\"",
     ),
 ]
 _BROKEN_IDS = ["null", "string", "bad-compaction"]
@@ -236,7 +236,7 @@ def test_repl_continue_on_a_malformed_recorded_entry_opens_and_says_why(tmp_path
     assert f"'local-llm-tun' is unavailable: {why}" in said
 
 
-@pytest.mark.parametrize(("recorded", "why"), _BROKEN[:1], ids=_BROKEN_IDS[:1])
+@pytest.mark.parametrize(("recorded", "why"), _BROKEN, ids=_BROKEN_IDS)
 async def test_the_tui_resumes_a_malformed_recorded_entry(make_app, recorded, why):
     app = make_app(
         config={

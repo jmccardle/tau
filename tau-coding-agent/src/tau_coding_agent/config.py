@@ -28,6 +28,14 @@ CONFIG_FILENAME = "config.json"
 DEFAULT_CONFIG_TEMPLATE = Path(__file__).parent / "tau_default_config.json"
 
 
+def json_value(value: Any) -> str:
+    """``value`` as the user wrote it in config.json (``null``, ``"x"``); ``repr`` if not JSON."""
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
 def default_config_path() -> Path:
     """τ's ``config.json``: ``<τ home>/config.json``, resolved now.
 
@@ -147,7 +155,7 @@ def parse_compaction_config(block: Any, where: str = "compaction") -> Compaction
             count that is not positive, or gives an empty ``summarizer``.
     """
     if not isinstance(block, dict):
-        raise ConfigError(f"'{where}' must be an object; got {type(block).__name__}")
+        raise ConfigError(f"'{where}' must be an object; got {json_value(block)}")
     for key, value in block.items():
         expected = COMPACTION_KEYS.get(key)
         if expected is None:
@@ -155,7 +163,9 @@ def parse_compaction_config(block: Any, where: str = "compaction") -> Compaction
                 f"unknown key '{where}.{key}'; known keys: {', '.join(COMPACTION_KEYS)}"
             )
         if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
-            raise ConfigError(f"'{where}.{key}' must be {expected.__name__}; got {value!r}")
+            raise ConfigError(
+                f"'{where}.{key}' must be {expected.__name__}; got {json_value(value)}"
+            )
         if isinstance(value, int) and not isinstance(value, bool) and value <= 0:
             raise ConfigError(f"'{where}.{key}' must be positive; got {value}")
     summarizer = block.get("summarizer")
@@ -223,6 +233,7 @@ def apply_compaction_config(
 
     Args:
         model_config: The config ``create_backend`` is about to receive; not mutated.
+            One carrying its own block must name its entry as ``config_name``.
         config: The loaded ``config.json``.
 
     Returns:
@@ -231,16 +242,21 @@ def apply_compaction_config(
     Raises:
         ConfigError: the block is malformed or ``summarizer`` names no
             configured model; an entry's block is named as ``models.<name>.compaction``.
+            Also a block on a ``model_config`` whose ``config_name`` is no
+            configured entry, which would otherwise be blamed on the top-level block.
     """
     models = config.get("models") or {}
     name = model_config.get("config_name")
     if "compaction" in model_config:
         block = model_config["compaction"]
-        if isinstance(name, str) and isinstance(models.get(name), Mapping):
-            entry = {**models[name], "compaction": block}
-            compaction_for({**config, "models": {**models, name: entry}}, name)
-        else:
-            compaction_for({**config, "compaction": block}, None)
+        if not (isinstance(name, str) and isinstance(models.get(name), Mapping)):
+            raise ConfigError(
+                f"a model config with its own 'compaction' block names no configured "
+                f"entry (config_name {json_value(name)}); its block can't be checked as "
+                "models.<name>.compaction"
+            )
+        entry = {**models[name], "compaction": block}
+        compaction_for({**config, "models": {**models, name: entry}}, name)
     elif "compaction" in config:
         block = config["compaction"]
         compaction_for(config, None)

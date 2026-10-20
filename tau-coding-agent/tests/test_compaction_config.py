@@ -207,8 +207,18 @@ def test_global_block_is_copied_without_mutating_the_entry():
 
 def test_a_model_entry_block_replaces_the_global_one_whole():
     config = _config(compaction={"reserve_tokens": 2048, "keep_recent_tokens": 100})
-    entry = {**config["models"]["main"], "compaction": {"auto": False}}
+    entry = {**config["models"]["main"], "compaction": {"auto": False}, "config_name": "main"}
     assert apply_compaction_config(entry, config)["compaction"] == {"auto": False}
+
+
+def test_an_entry_block_is_blamed_on_its_entry_never_the_top_level():
+    config = _config()
+    config["models"]["small"]["compaction"] = {"reserve_tokens": "lots"}
+    entry = {**config["models"]["small"], "config_name": "small"}
+    with pytest.raises(ConfigError, match=r"^'models\.small\.compaction\.reserve_tokens' must"):
+        apply_compaction_config(entry, config)
+    with pytest.raises(ConfigError, match="names no configured entry"):
+        apply_compaction_config(config["models"]["small"], config)
 
 
 def test_backend_config_carries_no_models_map_and_no_other_key():

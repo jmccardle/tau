@@ -34,6 +34,7 @@ from tau_coding_agent.config import (
     ModelConfigError,
     compaction_for,
     default_config_path,
+    json_value,
     parse_compaction_config,
 )
 from tau_agent_core.extension_locks import ExtensionRequest
@@ -1003,7 +1004,7 @@ def _validate_thinking_level_map(value: Any, entry: str) -> None:
         return
     if not isinstance(value, dict):
         raise ModelConfigError(
-            f"models.{entry}.thinking_level_map must be a JSON object; got {value!r}"
+            f"models.{entry}.thinking_level_map must be a JSON object; got {json_value(value)}"
         )
     for level, mapped in value.items():
         if not is_valid_thinking_level(level):
@@ -1018,7 +1019,7 @@ def _validate_thinking_level_map(value: Any, entry: str) -> None:
             raise ModelConfigError(
                 f"models.{entry}.thinking_level_map[{level!r}] must be a string "
                 f"(sent as reasoning_effort), a request-body object, or null; "
-                f"got {mapped!r}"
+                f"got {json_value(mapped)}"
             )
         for key, fragment_value in mapped.items():
             if isinstance(fragment_value, str) and _NUMERIC_STRING.match(fragment_value):
@@ -1050,14 +1051,14 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     if not isinstance(model_id, str) or not model_id:
         where = f"models.{config['config_name']}" if "config_name" in config else "model config"
         raise ModelConfigError(
-            f"{where} has no 'model' (the id sent to the server); got {model_id!r}. "
+            f"{where} has no 'model' (the id sent to the server); got {json_value(model_id)}. "
             "Set it to the id the endpoint serves."
         )
     entry = config.get("config_name", model_id)
     backend = config.get("backend")
     if not isinstance(backend, str) or not backend:
         raise ModelConfigError(
-            f"models.{entry} has no 'backend' (the provider); got {backend!r}. τ does not "
+            f"models.{entry} has no 'backend' (the provider); got {json_value(backend)}. τ does not "
             f"guess one. Registered providers: {', '.join(registered_providers())}."
         )
     backend_type = backend.lower()
@@ -1100,7 +1101,7 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     if reasoning_replay is not None and reasoning_replay not in ("all", "turn", "off"):
         problems.append(
             f"models.{entry}.reasoning_replay must be one of 'all', 'turn', 'off'; "
-            f"got {reasoning_replay!r}"
+            f"got {json_value(reasoning_replay)}"
         )
     if reasoning_replay == "off" and api == "anthropic-messages":
         problems.append(
@@ -1120,23 +1121,25 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     grammar_dialect = config.get("grammar")
     if grammar_dialect is not None and grammar_dialect not in ("llguidance", "gbnf"):
         problems.append(
-            f"models.{entry}.grammar must be 'llguidance' or 'gbnf'; got {grammar_dialect!r}"
+            f"models.{entry}.grammar must be 'llguidance' or 'gbnf'; got {json_value(grammar_dialect)}"
         )
     grammar_dialect = cast("Literal['llguidance', 'gbnf'] | None", grammar_dialect)
 
     prompt_cache = config.get("prompt_cache", True)
     if isinstance(prompt_cache, str):
         problems.append(
-            f"models.{entry}.prompt_cache is a boolean; got {prompt_cache!r}. The dialect "
+            f"models.{entry}.prompt_cache is a boolean; got {json_value(prompt_cache)}. The dialect "
             "moved to prompt_cache_dialect: 'anthropic', and 'off' is prompt_cache: false"
         )
     elif not isinstance(prompt_cache, bool):
-        problems.append(f"models.{entry}.prompt_cache must be a boolean; got {prompt_cache!r}")
+        problems.append(
+            f"models.{entry}.prompt_cache must be a boolean; got {json_value(prompt_cache)}"
+        )
 
     cache_dialect = config.get("prompt_cache_dialect")
     if cache_dialect is not None and cache_dialect != "anthropic":
         problems.append(
-            f"models.{entry}.prompt_cache_dialect must be 'anthropic'; got {cache_dialect!r}"
+            f"models.{entry}.prompt_cache_dialect must be 'anthropic'; got {json_value(cache_dialect)}"
         )
     cache_dialect = cast("Literal['anthropic'] | None", cache_dialect)
 
@@ -1147,18 +1150,22 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
 
     extra_body = config.get("extra_body") or {}
     if not isinstance(extra_body, dict):
-        problems.append(f"models.{entry}.extra_body must be a JSON object; got {extra_body!r}")
+        problems.append(
+            f"models.{entry}.extra_body must be a JSON object; got {json_value(extra_body)}"
+        )
 
     server_features = config.get("server_features") or []
     if not isinstance(server_features, list):
         problems.append(
-            f"models.{entry}.server_features must be a list of strings; got {server_features!r}"
+            f"models.{entry}.server_features must be a list of strings; got {json_value(server_features)}"
         )
 
     compat_config = config.get("compat")
     compat = None
     if compat_config is not None and not isinstance(compat_config, dict):
-        problems.append(f"models.{entry}.compat must be a JSON object; got {compat_config!r}")
+        problems.append(
+            f"models.{entry}.compat must be a JSON object; got {json_value(compat_config)}"
+        )
     elif compat_config:
         try:
             compat = Compat(**compat_config)
@@ -1172,11 +1179,13 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         or context_window <= 0
     ):
         problems.append(
-            f"models.{entry}.context_window must be a positive integer; got {context_window!r}"
+            f"models.{entry}.context_window must be a positive integer; got {json_value(context_window)}"
         )
     max_tokens = config.get("max_tokens", DEFAULT_MAX_TOKENS)
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
-        problems.append(f"models.{entry}.max_tokens must be a positive integer; got {max_tokens!r}")
+        problems.append(
+            f"models.{entry}.max_tokens must be a positive integer; got {json_value(max_tokens)}"
+        )
 
     if problems:
         raise ModelConfigError("; ".join(problems))
@@ -1260,7 +1269,7 @@ def build_config_entry(name: str, entry: Any, config: Mapping[str, Any]) -> Mode
             every problem is named, joined by ``; ``.
     """
     if not isinstance(entry, dict):
-        raise ModelConfigError(f"models.{name} must be a JSON object; got {entry!r}")
+        raise ModelConfigError(f"models.{name} must be a JSON object; got {json_value(entry)}")
     problems = []
     model = None
     try:

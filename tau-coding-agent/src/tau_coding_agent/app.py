@@ -601,10 +601,9 @@ class TauApp(App):
         :func:`~tau_coding_agent.backends.resolve_tool_names` over
         ``_apply_run_config``'s output — the exact call :class:`TauBackend` makes
         when it constructs them, so the pane cannot advertise a tool the next turn
-        will not have. An unknown ``default_model``
-        is reported as such rather than papered over: it is the same condition
-        :meth:`action_new_chat` refuses to start on, and the pane is where a user
-        can see it before typing.
+        will not have. An unknown ``default_model``, or an entry
+        ``recorded_model_problem`` says does not build, is reported as such rather
+        than papered over: the pane is where a user can see it before typing.
         """
         name = self._live_model_name() or self.config.get("default_model")
         if not name:
@@ -617,16 +616,17 @@ class TauApp(App):
                 store=self._store_name,
             )
         entry = self.config.get("models", {}).get(name)
-        if entry is None:
+        problem = None if entry is None else recorded_model_problem(self.config, name)
+        if entry is None or problem is not None:
             return transcript.SessionFacts(
                 tagline=self._tagline,
-                model=f"{name} — not in config.json",
+                model=f"{name} — {problem or 'not in config.json'}",
                 endpoint="unusable until this is fixed",
                 cwd=transcript._display_path(self._cwd),
                 tools="",
                 store=self._store_name,
             )
-        resolved = self._apply_run_config(entry)
+        resolved = self._apply_run_config({**entry, "config_name": name})
         return transcript.SessionFacts(
             tagline=self._tagline,
             model=str(resolved.get("model", name)),

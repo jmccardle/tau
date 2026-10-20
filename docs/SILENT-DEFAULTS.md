@@ -161,7 +161,8 @@ hello failed and the parent never got an answer.
 `ConfigError` (so every head's handler prints it as one `tau: error:` line,
 exit 2) and also a `ValueError` (so existing `except ValueError` callers keep
 working). Messages name the entry: `models.litellm-haiku.prompt_cache is a
-boolean; got 'anthropic'. The dialect moved to prompt_cache_dialect…`. A type
+boolean; got "anthropic". The dialect moved to prompt_cache_dialect…`; the
+offending value is shown as JSON, as written (`got null`, `got "x"`). A type
 pydantic rejects becomes `models.<entry> is not valid: field: message`; an
 entry that is not a JSON object is `models.<entry> must be a JSON object`.
 
@@ -202,7 +203,7 @@ in those heads, so it is reported once.
 
 An entry's own `compaction` block is part of the entry. A malformed one, or one
 whose `summarizer` names no configured model, is that entry's error
-(`'models.<entry>.compaction.reserve_tokens' must be int; got 'lots'`): fatal
+(`'models.<entry>.compaction.reserve_tokens' must be int; got "lots"`): fatal
 when the entry is selected, otherwise a
 startup warning, a `get_models`/hello/picker error, and a refused switch.
 `ConfigModelResolver` no longer raises at construction for it. The top-level

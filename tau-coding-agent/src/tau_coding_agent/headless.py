@@ -46,7 +46,12 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import Submission
 from tau_agent_core.truncation import truncation_from_messages, truncation_notice
 from tau_agent_core.tau_home import resolve_tau_home
-from tau_coding_agent.config import ConfigError, apply_compaction_config, default_config_path
+from tau_coding_agent.config import (
+    ConfigError,
+    apply_compaction_config,
+    default_config_path,
+    json_value,
+)
 from tau_coding_agent.store_factory import build_session_catalog
 
 from tau_llm.models import is_valid_thinking_level
@@ -119,7 +124,9 @@ def apply_resource_flags(
             if listed is None:
                 continue
             if not isinstance(listed, list) or not all(isinstance(p, str) for p in listed):
-                raise CLIError(f"{where} key {key!r} must be a list of paths, got {listed!r}")
+                raise CLIError(
+                    f"{where} key {key!r} must be a list of paths, got {json_value(listed)}"
+                )
             joined.extend(p for p in listed if p not in joined)
         if joined:
             model_config[key] = joined
@@ -337,7 +344,7 @@ def _entry_config(models: dict[str, Any], key: str) -> dict[str, Any]:
 
     entry = models[key]
     if not isinstance(entry, dict):
-        raise ModelConfigError(f"models.{key} must be a JSON object; got {entry!r}")
+        raise ModelConfigError(f"models.{key} must be a JSON object; got {json_value(entry)}")
     return {**entry, "config_name": key}
 
 

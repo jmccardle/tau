@@ -101,13 +101,14 @@ Every key is optional. An absent block means compaction is on with
 `ConfigError` naming the key. The table shows the top-level block, whose
 messages start with the config path; a model's own block reads
 `models.<name>.compaction` where these read `compaction`
-(`'models.small.compaction.reserve_tokens' must be int; got 'lots'`):
+(`'models.small.compaction.reserve_tokens' must be int; got "lots"`). An
+offending value is shown as JSON, as it was written (`null`, `"x"`, `true`):
 
 | Input | Message |
 |---|---|
-| a non-object block (`null` included) | `'compaction' must be an object; got NoneType` |
+| a non-object block (`null` included) | `'compaction' must be an object; got null` |
 | a key outside the four | `unknown key 'compaction.<k>'; known keys: auto, reserve_tokens, keep_recent_tokens, summarizer` |
-| a wrong type (`true` is not an int) | `'compaction.<k>' must be int; got True` |
+| a wrong type (`true` is not an int) | `'compaction.<k>' must be int; got true` |
 | a token count ≤ 0 | `'compaction.<k>' must be positive; got 0` |
 | `"summarizer": ""` | `'compaction.summarizer' must name a model; got an empty string` |
 | a summarizer not in `models` | `'compaction.summarizer' names unknown model 'x'; configured models: …` |

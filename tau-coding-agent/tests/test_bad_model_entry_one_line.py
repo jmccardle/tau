@@ -24,7 +24,7 @@ from tau_coding_agent.headless import check_model_entries
 
 _GOOD = {"backend": "openai", "model": "m", "base_url": "http://127.0.0.1:1/v1", "api_key": "x"}
 _MODELS = {"good": _GOOD, "old": {**_GOOD, "prompt_cache": "anthropic"}}
-_ERROR = "models.old.prompt_cache is a boolean; got 'anthropic'"
+_ERROR = 'models.old.prompt_cache is a boolean; got "anthropic"'
 _FULL_ERROR = (
     f"{_ERROR}. The dialect moved to prompt_cache_dialect: 'anthropic', "
     "and 'off' is prompt_cache: false"
@@ -199,7 +199,7 @@ def test_every_problem_in_every_bad_entry_is_named(
     assert "models.a.max_tokens must be a positive integer" in errors["a"]
     assert "models.a.grammar must be 'llguidance' or 'gbnf'" in errors["a"]
     assert "models.b is not valid: temperature:" in errors["b"]
-    assert errors["c"] == "models.c must be a JSON object; got 'not an object'"
+    assert errors["c"] == 'models.c must be a JSON object; got "not an object"'
     with pytest.raises(ModelConfigError) as excinfo:
         model_entry_errors({"models": ["not", "an", "object"]})
     assert isinstance(excinfo.value, ConfigError) and isinstance(excinfo.value, ValueError)
@@ -220,7 +220,7 @@ def test_the_model_picker_leaves_out_an_entry_that_does_not_build() -> None:
     rows = {row["name"]: row for row in model_catalog(resolver)}
     assert rows["ext"]["model"] is None and "'acme'" in rows["ext"]["error"]
     assert rows["old"]["model"] is None and _ERROR in rows["old"]["error"]
-    assert rows["c"]["error"] == "models.c must be a JSON object; got 'x'"
+    assert rows["c"]["error"] == 'models.c must be a JSON object; got "x"'
     assert rows["good"]["error"] is None
 
 
