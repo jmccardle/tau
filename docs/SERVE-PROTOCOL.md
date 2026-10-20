@@ -1136,6 +1136,7 @@ A failure as fields, beside the ``error`` string on ``agent_end`` and ``provider
 | `retry_after` | number \| null | no |  |
 | `headers` | object of string \| null | no |  |
 | `retryable` | boolean \| null | no |  |
+| `key_sent` | boolean \| null | no |  |
 
 ### Event
 

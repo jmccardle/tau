@@ -172,6 +172,14 @@ async def test_an_extension_reads_a_refusal_as_fields_on_agent_end():
         (_http_error(400), ErrorDetail(type="ProviderHttpError", status=400, retryable=False)),
         (_http_error(503), ErrorDetail(type="ProviderHttpError", status=503, retryable=True)),
         (
+            _http_error(401, provider_id="openai", key_sent=False),
+            ErrorDetail(type="ProviderHttpError", status=401, retryable=False, key_sent=False),
+        ),
+        (
+            _http_error(401, provider_id="openai", key_sent=True),
+            ErrorDetail(type="ProviderHttpError", status=401, retryable=False, key_sent=True),
+        ),
+        (
             ProviderConnectionError("refused", model_id="m", base_url="u"),
             ErrorDetail(type="ProviderConnectionError", retryable=True),
         ),
@@ -218,6 +226,7 @@ def test_the_wire_carries_the_error_detail_without_cookies():
         "retry_after": 2.0,
         "headers": {"anthropic-ratelimit-requests-remaining": "7"},
         "retryable": True,
+        "key_sent": None,
     }
 
 

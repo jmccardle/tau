@@ -2318,7 +2318,7 @@
       "type": "object"
     },
     "ErrorDetail": {
-      "description": "A failure as fields, beside the ``error`` string on ``agent_end`` and ``provider_retry``.\n\nSee docs/RESPONSE-HEADERS.md \u00a75.\n\nAttributes:\n    type: The exception's class name, e.g. ``\"ProviderHttpError\"``. Always set.\n    status: The HTTP status of a ``ProviderHttpError``, or the HTTP-like\n        code a ``ProviderStreamError``'s frame named; None otherwise.\n    retry_after: Seconds the server asked the client to wait, parsed from\n        ``Retry-After``; None when it sent none or this is not an HTTP refusal.\n    headers: The refusal's response headers, names lowercased; None when\n        none were captured, which includes every failure that is not an HTTP\n        refusal.\n    retryable: Whether ``tau_llm.retry.DEFAULT_RETRY_POLICY`` counts this\n        failure as transient: True for a retryable status or a connection\n        failure, False for any other HTTP refusal and for a\n        ``ProviderStreamError``, None for an exception \u03c4 makes no\n        transience judgement about. On ``agent_end`` a True means\n        \u03c4's own retries ran out, or the server asked for a longer wait than\n        \u03c4 will make inside a turn.",
+      "description": "A failure as fields, beside the ``error`` string on ``agent_end`` and ``provider_retry``.\n\nSee docs/RESPONSE-HEADERS.md \u00a75.\n\nAttributes:\n    type: The exception's class name, e.g. ``\"ProviderHttpError\"``. Always set.\n    status: The HTTP status of a ``ProviderHttpError``, or the HTTP-like\n        code a ``ProviderStreamError``'s frame named; None otherwise.\n    retry_after: Seconds the server asked the client to wait, parsed from\n        ``Retry-After``; None when it sent none or this is not an HTTP refusal.\n    headers: The refusal's response headers, names lowercased; None when\n        none were captured, which includes every failure that is not an HTTP\n        refusal.\n    retryable: Whether ``tau_llm.retry.DEFAULT_RETRY_POLICY`` counts this\n        failure as transient: True for a retryable status or a connection\n        failure, False for any other HTTP refusal and for a\n        ``ProviderStreamError``, None for an exception \u03c4 makes no\n        transience judgement about. On ``agent_end`` a True means\n        \u03c4's own retries ran out, or the server asked for a longer wait than\n        \u03c4 will make inside a turn.\n    key_sent: A ``ProviderHttpError``'s ``key_sent``: whether the request\n        carried a key, which tells \"no API key\" from \"API key refused\" on a\n        401; None when not an HTTP refusal or the provider did not say.",
       "properties": {
         "headers": {
           "anyOf": [
@@ -2327,6 +2327,17 @@
                 "type": "string"
               },
               "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "key_sent": {
+          "anyOf": [
+            {
+              "type": "boolean"
             },
             {
               "type": "null"
