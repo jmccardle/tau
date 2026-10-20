@@ -6,17 +6,17 @@ this file. Older entries cite pi as "the source of truth"; that stopped being th
 arrangement on 2026-09-03 (`CLAUDE.md`, "Parity with pi is not an objective") and
 those citations are provenance now.
 
-**State (2026-10-18): 0.13.0 shipped; 0.14.0 is next and has no code yet.**
-Tag `v0.13.0` → `7d83ec3`, cut again before upload after CI failed a TUI test
-on the first tag, `53ede1e` (`docs/RELEASING.md` "What 0.13.0 learned"). All five
-distributions are on PyPI and a clean-venv install reports `tau 0.13.0`, serve
-0.10, RPC 2.2. So tau-search's ask for 0.13.0 on PyPI (for its Docker build)
-is met. tau-code 0.7.0, which speaks serve 0.10, shipped the same day. Release
-matrix: 0 failed on 3.11–3.14 and 3.14t. `master` = `origin` = `github` =
-`d84e29b` before this commit. Every feature branch is merged into `master`
-(`git branch --no-merged master` lists only `architecture-overhaul`,
-`clean-history` and `github-oldmaster-0.9.0`). Nine worktrees remain under
-`.claude/worktrees/` (#16).
+**State (2026-10-20): 0.14.0 is this commit; 0.13.0 shipped 2026-10-18.**
+0.14.0 speaks serve 0.11 and RPC 3.0. Its last merge is `c54bc64` (#69, #75,
+#77: a request with no key is the endpoint's to refuse, and a vendor's
+environment key reaches only that vendor's endpoint, which is a breaking
+change; `docs/PROVIDER-CREDENTIALS.md`). The extension-packages work listed
+below (#35, #40, #42–#47, #52, #55–#58, #60 A, #62, #65) is all merged.
+Carried past 0.14.0: #73's duplicate retry notice, #76 (keys outside
+config.json, open design question), #78 (a truncated anthropic stream exits
+0 under `-p`). `github` held at `d84e29b` from 0.13.0 until this release.
+0.13.0's tag is `v0.13.0` → `7d83ec3` (`docs/RELEASING.md` "What 0.13.0
+learned").
 
 Issues on the `john/tau` forgejo repo are the tracker; this file names them and
 does not repeat them.

@@ -18,7 +18,7 @@ Public API (see docs/JMFTS-INTEGRATION-PLAN.md Sec3):
 Reference: docs/JMFTS-INTEGRATION-PLAN.md
 """
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 from tau_jmfts.catalog import JmftsSessionCatalog
 from tau_jmfts.client import (

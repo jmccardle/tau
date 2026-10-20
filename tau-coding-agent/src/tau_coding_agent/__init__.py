@@ -8,7 +8,7 @@ Public API:
 Reference: SUBPHASE-0.0.md, "AgentSession Interface" section.
 """
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 from tau_agent_core import (
     AgentSession,
