@@ -463,8 +463,10 @@ async def test_auto_false_stops_automatic_compaction_but_not_compact():
         (["--model", "openai/adhoc"], False),
         (["--model", "small"], True),
         (["--model", "big"], False),
+        (["--model", "small:high"], True),
+        (["--model", "big:high"], False),
     ],
-    ids=["ad-hoc", "entry-with-block", "entry-without-block"],
+    ids=["ad-hoc", "entry-with-block", "entry-without-block", "suffix-with", "suffix-without"],
 )
 def test_the_tui_model_override_carries_only_an_entrys_own_block(make_app, monkeypatch, argv, own):
     """The top-level block stays top-level; only an entry's own block rides on its override."""

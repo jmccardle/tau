@@ -521,7 +521,8 @@ def _launch_tui(args: CLIArgs, config: dict, model_warnings: Sequence[str] = ())
         name, model_config = resolve_model_config(config, args)
         existing = config.get("models", {}).get(name, {})
         override = {**existing, **model_config}
-        if "compaction" not in existing:
+        own_entry = config.get("models", {}).get(model_config.get("config_name")) or {}
+        if "compaction" not in own_entry:
             override.pop("compaction", None)
         overrides["models"] = {name: override}
         overrides["default_model"] = name
