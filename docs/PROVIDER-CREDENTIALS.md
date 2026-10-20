@@ -73,8 +73,10 @@ the server ignores, and it is no longer needed.
 
 ## 3. A 401 says what to set
 
-`ProviderHttpError` takes `provider_id`. On a 401 its `hint` is
-`tau_llm.providers.credential_hint(provider_id, base_url)`, appended to `str()`:
+`ProviderHttpError` takes `provider_id` and `key_sent`. On a 401 its `hint` is
+`tau_llm.providers.credential_hint(provider_id, base_url, key_sent=…)`,
+appended to `str()`. A caller that passes neither gets no hint. With no key
+sent:
 
 ```
 HTTP 401 from model 'claude-x' at 'https://api.anthropic.com': x-api-key header is required. To send a key, set ANTHROPIC_API_KEY or "api_key" on the model's "models" entry in τ's config.json.
@@ -88,6 +90,15 @@ variables are limited to:
 
 ```
 … To send a key, set "api_key" on the model's "models" entry in τ's config.json. ANTHROPIC_API_KEY is read only for https://api.anthropic.com.
+```
+
+With a key sent, "set ANTHROPIC_API_KEY" would be wrong advice whenever the
+entry's `api_key` was the key, because §5 rule 1 lets the entry win. Tectum's
+review of `0f3f81c` measured that hint on a deliberately bad entry key. The
+hint now names where the refused key came from, in §5's order:
+
+```
+… invalid x-api-key. The key sent was refused. It came from "api_key" on the model's "models" entry in τ's config.json when set, else from ANTHROPIC_API_KEY.
 ```
 
 Only 401 gets the hint. A 403 means a key was sent and lacks permission.

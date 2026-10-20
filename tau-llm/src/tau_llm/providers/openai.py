@@ -1803,6 +1803,7 @@ class OpenAICompletionsProvider(Provider):
             retry_after=retry_after_seconds(getattr(response, "headers", None)),
             headers=response_headers_of(response),
             provider_id=model.provider,
+            key_sent=bool(self.api_key),
         )
 
     def _apply_tool_call_schema(self, tc: dict, compat: ResolvedCompat, model: Model) -> dict:

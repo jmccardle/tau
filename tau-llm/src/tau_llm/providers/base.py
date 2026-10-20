@@ -425,29 +425,34 @@ def resolves_api_key(provider_id: str, api_key: str | None, base_url: str | None
 
 
 @agent_facing(topic="providers")
-def credential_hint(provider_id: str, base_url: str | None) -> str:
-    """What to set so a request to ``provider_id`` at ``base_url`` carries a key.
+def credential_hint(provider_id: str, base_url: str | None, *, key_sent: bool) -> str:
+    """What to set for a request to ``provider_id`` at ``base_url``, after a 401.
 
     Appended to an HTTP 401 (:class:`~tau_llm.errors.ProviderHttpError`).
 
     Args:
         provider_id: Vendor id, as in ``Model.provider``.
         base_url: The request's endpoint; None for the vendor's default.
+        key_sent: Whether the refused request carried a key.
 
     Returns:
-        A sentence naming the model's ``api_key`` in τ's config.json, and the
-        vendor's environment variables when :func:`resolve_request_key` would
-        read them for ``base_url``. When it would not only because ``base_url``
-        is not the vendor's endpoint, a second sentence names that endpoint.
+        With a key sent: where that key came from, in :func:`resolve_request_key`'s
+        order. Without one: the model's ``api_key`` in τ's config.json, plus the
+        vendor's environment variables where they would be read for ``base_url``,
+        or the endpoint they are read for when ``base_url`` is another.
     """
     spec = _PROVIDER_SPECS.get(provider_id)
     config = '"api_key" on the model\'s "models" entry in τ\'s config.json'
-    if spec is None or not spec.api_key_env or spec.base_url is None:
-        return f"To send a key, set {config}."
-    env = " or ".join(spec.api_key_env)
-    if spec.reads_env_for(base_url):
+    env = " or ".join(spec.api_key_env) if spec is not None and spec.base_url else ""
+    reads_env = bool(env) and spec is not None and spec.reads_env_for(base_url)
+    if key_sent:
+        source = f"{config} when set, else from {env}" if reads_env else config
+        return f"The key sent was refused. It came from {source}."
+    if reads_env:
         return f"To send a key, set {env} or {config}."
-    return f"To send a key, set {config}. {env} is read only for {spec.base_url}."
+    if env and spec is not None:
+        return f"To send a key, set {config}. {env} is read only for {spec.base_url}."
+    return f"To send a key, set {config}."
 
 
 def _endpoint(url: str) -> str:

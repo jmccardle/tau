@@ -441,9 +441,10 @@ class ModelRecord:
     reason instead of a spec, and cannot be selected.
 
     ``has_api_key`` is null with ``error``. Otherwise it is false when a request
-    would carry no key: the entry sets none and the provider's environment
-    variables are unset. An indication, not a refusal
-    (docs/PROVIDER-CREDENTIALS.md §4).
+    would carry no key: the entry sets none, and the vendor's environment
+    variables are unset or not read, because they are read only for the
+    vendor's own endpoint. An indication, not a refusal
+    (docs/PROVIDER-CREDENTIALS.md §4, §5).
     """
 
     name: str

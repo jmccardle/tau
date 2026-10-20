@@ -57,7 +57,7 @@ def test_two_wires_resolve_with_no_key_and_the_google_wire_refuses():
     assert _resolve_request(_model(), {}).api_key is None
     with pytest.raises(ValueError, match="No API key for provider 'gemini'") as excinfo:
         _resolve_request(_gemini_model(), {})
-    assert str(excinfo.value).endswith(credential_hint("gemini", "http://llm.test"))
+    assert str(excinfo.value).endswith(credential_hint("gemini", "http://llm.test", key_sent=False))
 
 
 def test_an_environment_key_reaches_only_the_vendors_own_endpoint(monkeypatch):
@@ -101,14 +101,30 @@ def test_resolve_request_key_reads_the_key_then_the_vendor_env_at_its_endpoint(m
 
 def test_the_hint_names_env_vars_only_where_they_would_be_read():
     config = "on the model's \"models\" entry in τ's config.json."
-    assert credential_hint("gemini", None) == (
+    assert credential_hint("gemini", None, key_sent=False) == (
         f'To send a key, set GEMINI_API_KEY or GOOGLE_API_KEY or "api_key" {config}'
     )
-    assert credential_hint("gemini", "http://proxy") == (
+    assert credential_hint("gemini", "http://proxy", key_sent=False) == (
         f'To send a key, set "api_key" {config} GEMINI_API_KEY or GOOGLE_API_KEY is read only '
         "for https://generativelanguage.googleapis.com."
     )
-    assert credential_hint("local-llm", None) == f'To send a key, set "api_key" {config}'
+    assert credential_hint("local-llm", None, key_sent=False) == (
+        f'To send a key, set "api_key" {config}'
+    )
+
+
+def test_a_refused_key_is_traced_to_where_it_came_from_not_to_a_setting_that_loses():
+    """Tectum's review: with an entry key sent, "set ANTHROPIC_API_KEY" cannot help (§5 rule 1)."""
+    entry = '"api_key" on the model\'s "models" entry in τ\'s config.json'
+    assert credential_hint("anthropic", None, key_sent=True) == (
+        f"The key sent was refused. It came from {entry} when set, else from ANTHROPIC_API_KEY."
+    )
+    assert credential_hint("anthropic", "http://proxy", key_sent=True) == (
+        f"The key sent was refused. It came from {entry}."
+    )
+    assert credential_hint("local-llm", None, key_sent=True) == (
+        f"The key sent was refused. It came from {entry}."
+    )
 
 
 @pytest.mark.parametrize(
@@ -123,21 +139,31 @@ def test_the_vendors_endpoint_matches_however_its_scheme_host_and_slashes_are_wr
     assert resolve_request_key("anthropic", None, "https://api.anthropic.com/v1") is None
 
 
-def test_only_a_401_with_a_provider_carries_the_hint():
-    def err(status: int, provider_id: str | None) -> ProviderHttpError:
+def test_only_a_401_naming_its_provider_and_key_carries_the_hint():
+    def err(
+        status: int, provider_id: str | None, key_sent: bool | None = False
+    ) -> ProviderHttpError:
         return ProviderHttpError(
-            status, message="nope.", body="", model_id="q", base_url="u", provider_id=provider_id
+            status,
+            message="nope.",
+            body="",
+            model_id="q",
+            base_url="u",
+            provider_id=provider_id,
+            key_sent=key_sent,
         )
 
-    hint = credential_hint("openai", "u")
+    hint = credential_hint("openai", "u", key_sent=False)
     assert str(err(401, "openai")) == "HTTP 401 from model 'q' at 'u': nope. " + hint
     assert err(401, "openai").hint == hint
-    for quiet in (err(403, "openai"), err(500, "openai"), err(401, None)):
+    assert err(401, "openai", True).hint == credential_hint("openai", "u", key_sent=True)
+    quiet_ones = (err(403, "openai"), err(500, "openai"), err(401, None), err(401, "openai", None))
+    for quiet in quiet_ones:
         assert quiet.hint == ""
         assert str(quiet) == f"HTTP {quiet.status_code} from model 'q' at 'u': nope."
 
 
-def test_an_openai_wire_401_names_openai_api_key(monkeypatch):
+def test_an_openai_wire_401_with_a_key_says_the_key_was_refused(monkeypatch):
     transport = httpx.MockTransport(
         lambda request: httpx.Response(401, json={"error": {"message": "Incorrect API key"}})
     )
@@ -158,7 +184,8 @@ def test_an_openai_wire_401_names_openai_api_key(monkeypatch):
 
     with pytest.raises(ProviderHttpError) as excinfo:
         asyncio.run(drive())
-    hint = credential_hint("openai", "http://llm.test/v1")
+    hint = credential_hint("openai", "http://llm.test/v1", key_sent=True)
+    assert hint.startswith("The key sent was refused.")
     assert str(excinfo.value).endswith("Incorrect API key. " + hint)
 
 
@@ -186,4 +213,6 @@ def test_an_anthropic_401_names_anthropic_api_key():
         asyncio.run(drive())
     assert excinfo.value.status_code == 401
     assert "ANTHROPIC_API_KEY" in excinfo.value.hint
-    assert str(excinfo.value).endswith("no key. " + credential_hint("anthropic", None))
+    assert str(excinfo.value).endswith(
+        "no key. " + credential_hint("anthropic", None, key_sent=False)
+    )

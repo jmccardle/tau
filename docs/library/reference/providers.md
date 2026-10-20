@@ -388,7 +388,7 @@ of these: the server may still be working on the request.
 <!-- agent: yes -->
 
 ```python
-class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str, retry_after: float | None = None, headers: dict[str, str] | None = None, provider_id: str | None = None)
+class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str, retry_after: float | None = None, headers: dict[str, str] | None = None, provider_id: str | None = None, key_sent: bool | None = None)
 ```
 
 `tau_llm.errors.ProviderHttpError`
@@ -410,14 +410,15 @@ followed by ``hint`` when there is one.
 - `retry_after: float | None = None` — Seconds the server asked the client to wait, from a ``retry-after-ms`` or ``retry-after`` header; None when it sent neither.
 - `headers: dict[str, str] | None = None` — The response headers, names lowercased, unparsed; None when the transport could not read them. Read the wait from ``retry_after``.
 - `provider_id: str | None = None` — The vendor id (``Model.provider``); names the hint on a 401.
+- `key_sent: bool | None = None` — Whether the request carried a key; None for unknown, which omits the hint.
 
 ### hint
 
 `tau_llm.errors.ProviderHttpError.hint`
 
-For a 401 from a provider the caller named, what to set so the
-request carries a key (``tau_llm.providers.credential_hint``);
-otherwise ``""``.
+For a 401 where the caller named the provider and whether a key
+was sent, what to set or where the refused key came from
+(``tau_llm.providers.credential_hint``); otherwise ``""``.
 
 ## ProviderSpec
 <!-- agent: yes -->
@@ -788,12 +789,12 @@ The fully accumulated AssistantMessage.
 <!-- agent: yes -->
 
 ```python
-credential_hint(provider_id: str, base_url: str | None) -> str
+credential_hint(provider_id: str, base_url: str | None, *, key_sent: bool) -> str
 ```
 
 `tau_llm.providers.base.credential_hint`
 
-What to set so a request to ``provider_id`` at ``base_url`` carries a key.
+What to set for a request to ``provider_id`` at ``base_url``, after a 401.
 
 Appended to an HTTP 401 (:class:`~tau_llm.errors.ProviderHttpError`).
 
@@ -801,10 +802,11 @@ Appended to an HTTP 401 (:class:`~tau_llm.errors.ProviderHttpError`).
 
 - `provider_id: str` — Vendor id, as in ``Model.provider``.
 - `base_url: str | None` — The request's endpoint; None for the vendor's default.
+- `key_sent: bool` — Whether the refused request carried a key.
 
 **Returns**
 
-A sentence naming the model's ``api_key`` in τ's config.json, and the vendor's environment variables when :func:`resolve_request_key` would read them for ``base_url``. When it would not only because ``base_url`` is not the vendor's endpoint, a second sentence names that endpoint.
+With a key sent: where that key came from, in :func:`resolve_request_key`'s order. Without one: the model's ``api_key`` in τ's config.json, plus the vendor's environment variables where they would be read for ``base_url``, or the endpoint they are read for when ``base_url`` is another.
 
 ## detect_compat
 <!-- agent: yes -->

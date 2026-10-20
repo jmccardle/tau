@@ -108,7 +108,7 @@ def _resolve_request(model: Any, options: dict[str, Any]) -> _ProviderRequest:
     if not api_key and not api_sends_without_key(api):
         raise ValueError(
             f"No API key for provider {provider_id!r}, and the {api!r} wire cannot send "
-            f"a request without one. {credential_hint(provider_id, base_url)}"
+            f"a request without one. {credential_hint(provider_id, base_url, key_sent=False)}"
         )
 
     return _ProviderRequest(

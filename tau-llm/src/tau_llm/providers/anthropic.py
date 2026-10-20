@@ -691,7 +691,11 @@ class AnthropicMessagesProvider(Provider):
                     yield ErrorEvent(message=str(stream_error), exception=stream_error)
                     return
                 http_error = http_error_from_anthropic(
-                    exc, model_id=model.id, base_url=self.base_url, provider_id=model.provider
+                    exc,
+                    model_id=model.id,
+                    base_url=self.base_url,
+                    provider_id=model.provider,
+                    key_sent=bool(self.api_key),
                 )
                 if http_error is not None:
                     raise http_error from exc
