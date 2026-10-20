@@ -572,14 +572,7 @@ class AnthropicMessagesProvider(Provider):
         """
         options = options or {}
 
-        api_key = self.api_key or options.get("api_key")
-        if not api_key:
-            raise ValueError(
-                f"No API key for provider: {model.provider}. "
-                "Set ANTHROPIC_API_KEY, pass api_key=..., or configure it in "
-                "τ's config.json."
-            )
-        self.api_key = api_key
+        self.api_key = self.api_key or options.get("api_key") or None
 
         if options.get("constraints") is not None and options["constraints"].has_constraint():
             raise ValueError(
@@ -598,6 +591,11 @@ class AnthropicMessagesProvider(Provider):
         }
         if system:
             request["system"] = system
+        if not self.api_key:
+            from anthropic import Omit
+
+            # The SDK refuses a request with no credential header unless both are omitted.
+            request["extra_headers"] = {"X-Api-Key": Omit(), "Authorization": Omit()}
         if tools:
             request["tools"] = self._convert_tools(tools)
         thinking_fields, reasoning_level = self._thinking_params(model, options)
@@ -693,7 +691,11 @@ class AnthropicMessagesProvider(Provider):
                     yield ErrorEvent(message=str(stream_error), exception=stream_error)
                     return
                 http_error = http_error_from_anthropic(
-                    exc, model_id=model.id, base_url=self.base_url
+                    exc,
+                    model_id=model.id,
+                    base_url=self.base_url,
+                    provider_id=model.provider,
+                    key_sent=bool(self.api_key),
                 )
                 if http_error is not None:
                     raise http_error from exc

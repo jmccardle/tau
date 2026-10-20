@@ -282,6 +282,14 @@ The refusal's response headers, names lowercased; None when
 none were captured, which includes every failure that is not an HTTP
 refusal.
 
+### key_sent
+
+`tau_agent_core.events.ErrorDetail.key_sent: bool | None`
+
+A ``ProviderHttpError``'s ``key_sent``: whether the request
+carried a key, which tells "no API key" from "API key refused" on a
+401; None when not an HTTP refusal or the provider did not say.
+
 ### of
 
 ```python

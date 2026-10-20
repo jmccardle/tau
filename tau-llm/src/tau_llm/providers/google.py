@@ -585,7 +585,13 @@ class GoogleGenerativeAIProvider(Provider):
                 return
 
             except Exception as exc:
-                http_error = http_error_from_google(exc, model_id=model.id, base_url=self.base_url)
+                http_error = http_error_from_google(
+                    exc,
+                    model_id=model.id,
+                    base_url=self.base_url,
+                    provider_id=model.provider,
+                    key_sent=bool(self.api_key),
+                )
                 if http_error is not None:
                     raise http_error from exc
                 message = (

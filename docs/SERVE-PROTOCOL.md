@@ -1136,6 +1136,7 @@ A failure as fields, beside the ``error`` string on ``agent_end`` and ``provider
 | `retry_after` | number \| null | no |  |
 | `headers` | object of string \| null | no |  |
 | `retryable` | boolean \| null | no |  |
+| `key_sent` | boolean \| null | no |  |
 
 ### Event
 
@@ -1508,6 +1509,7 @@ One model the config defines, as `get_models` lists it.
 | `name` | string | yes |  |
 | `model` | [ModelSpec](#modelspec) \| null | yes |  |
 | `error` | string \| null | yes |  |
+| `has_api_key` | boolean \| null | yes |  |
 
 ### ModelSpec
 

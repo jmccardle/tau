@@ -818,18 +818,16 @@ class OpenAICompletionsProvider(Provider):
         """Initialize the OpenAI provider.
 
         Args:
-            api_key: API key. If None, falls back to the OPENAI_API_KEY env var.
-                May remain None here; it is resolved and *required* at request
-                time in ``stream_chat``. Local servers that need no real auth
-                must still pass a truthy sentinel (e.g. ``"not-needed"``).
+            api_key: API key, as ``tau_llm.client`` resolved it. None sends no
+                ``Authorization`` header, and the endpoint decides
+                (docs/PROVIDER-CREDENTIALS.md §2). This class reads no
+                environment variable.
             base_url: Custom API base URL. Defaults to OpenAI production URL.
             request_timeout: Completion timeout. A number is seconds and keeps
                 the default connect timeout; an ``httpx.Timeout`` sets every
                 phase explicitly. None keeps ``DEFAULT_TIMEOUT_SECONDS``.
         """
-        import os
-
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.api_key = api_key or None
         self.base_url = base_url or self.DEFAULT_BASE_URL
         self.request_timeout: httpx.Timeout = self._resolve_timeout(request_timeout)
         self._client: httpx.AsyncClient | None = None
@@ -872,7 +870,7 @@ class OpenAICompletionsProvider(Provider):
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}),
                     "Content-Type": "application/json",
                 },
                 timeout=self.request_timeout,
@@ -1603,14 +1601,7 @@ class OpenAICompletionsProvider(Provider):
         if options is None:
             options = {}
 
-        api_key = self.api_key or options.get("api_key")
-        if not api_key:
-            raise ValueError(
-                f"No API key for provider: {model.provider}. "
-                "Set OPENAI_API_KEY, pass api_key=..., or configure it in "
-                'τ\'s config.json (use "not-needed" for a local server).'
-            )
-        self.api_key = api_key
+        self.api_key = self.api_key or options.get("api_key") or None
 
         # Convert τ messages to OpenAI format
         openai_messages = self._convert_messages_to_openai(
@@ -1811,6 +1802,8 @@ class OpenAICompletionsProvider(Provider):
             base_url=self.base_url,
             retry_after=retry_after_seconds(getattr(response, "headers", None)),
             headers=response_headers_of(response),
+            provider_id=model.provider,
+            key_sent=bool(self.api_key),
         )
 
     def _apply_tool_call_schema(self, tc: dict, compat: ResolvedCompat, model: Model) -> dict:

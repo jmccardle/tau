@@ -332,19 +332,29 @@ def test_a_model_that_contradicts_its_own_vendor_raises(acme, monkeypatch):
 
 
 def test_a_registered_vendor_with_no_credential_will_not_borrow_openais(acme, monkeypatch):
-    """The leak this guard exists for: ``OpenAICompletionsProvider`` falls back
-    to ``OPENAI_API_KEY`` when handed no key, so an Acme model with no
-    ``ACME_API_KEY`` would have posted OpenAI's secret to Acme's server. A
-    vendor that says where its credential lives and has none must raise."""
+    """The leak this guard exists for: ``OpenAICompletionsProvider`` once fell
+    back to ``OPENAI_API_KEY`` when handed no key, so an Acme model with no
+    ``ACME_API_KEY`` would have posted OpenAI's secret to Acme's server. It now
+    goes with no ``Authorization`` at all, and Acme decides (#75, #77)."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-secret")
     monkeypatch.delenv("ACME_API_KEY", raising=False)
 
-    with pytest.raises(ValueError) as excinfo:
-        _drive(_model(provider="acme", base_url="https://api.acme.example/v1"))
+    _drive(_model(provider="acme", base_url="https://api.acme.example/v1"))
 
-    assert "acme" in str(excinfo.value)
-    assert "ACME_API_KEY" in str(excinfo.value), "the error must say where to put the key"
-    assert _RecordingClient.instances == [], "not one byte of OpenAI's key left the process"
+    (client,) = _RecordingClient.instances
+    assert "Authorization" not in client.headers, "not one byte of OpenAI's key left"
+
+
+def test_a_vendor_key_never_reaches_an_endpoint_of_the_entrys_own(acme, monkeypatch):
+    """#75: ``ACME_API_KEY`` is Acme's, so a proxy at another URL does not get it."""
+    monkeypatch.setenv("ACME_API_KEY", "acme-secret")
+
+    _drive(_model(provider="acme", base_url="http://proxy.example/v1"))
+    _drive(_model(provider="acme", base_url="https://api.acme.example/v1/"))
+
+    proxy, acme_itself = _RecordingClient.instances
+    assert "Authorization" not in proxy.headers
+    assert acme_itself.headers["Authorization"] == "Bearer acme-secret"
 
 
 def test_an_explicit_key_in_the_options_beats_the_environment(acme, monkeypatch):

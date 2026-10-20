@@ -58,6 +58,7 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator, Protocol
+from urllib.parse import urlsplit, urlunsplit
 from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
@@ -206,9 +207,9 @@ class ProviderSpec:
             ``base_url`` of its own. None means the vendor has no fixed endpoint
             (a self-hosted server), and a model must then supply one.
         api_key_env: Environment variables searched, in order, for this vendor's
-            credential. Empty means "this vendor has no known credential
-            source"; a NON-empty tuple that resolves to nothing is a hard error
-            rather than a silent fall-through to another vendor's key.
+            credential, and only for a request to ``base_url``
+            (:meth:`reads_env_for`). An entry with its own endpoint never gets
+            them (docs/PROVIDER-CREDENTIALS.md §5).
     """
 
     id: str
@@ -225,6 +226,18 @@ class ProviderSpec:
         if not self.name:
             object.__setattr__(self, "name", self.id)
 
+    def reads_env_for(self, base_url: str | None) -> bool:
+        """Whether a request to ``base_url`` may take its key from ``api_key_env``.
+
+        True only for this vendor's own registered endpoint, ignoring the case
+        of scheme and host and any trailing slash, or for no ``base_url`` (which
+        means that endpoint). A vendor with no registered endpoint never lends
+        its variables.
+        """
+        if self.base_url is None:
+            return False
+        return base_url is None or _endpoint(base_url) == _endpoint(self.base_url)
+
     def resolve_api_key(self) -> str | None:
         """Look up this vendor's credential in the environment.
 
@@ -240,11 +253,14 @@ class ProviderSpec:
 
 
 _API_FACTORIES: dict[str, ApiFactory] = {}
+_SENDS_WITHOUT_KEY: set[str] = set()
 _PROVIDER_SPECS: dict[str, ProviderSpec] = {}
 
 
 @agent_facing(topic="providers")
-def register_api(api: str, factory: ApiFactory, *, replace: bool = False) -> None:
+def register_api(
+    api: str, factory: ApiFactory, *, replace: bool = False, sends_without_key: bool = False
+) -> None:
     """Register the factory that builds clients for one wire protocol.
 
     Args:
@@ -254,6 +270,10 @@ def register_api(api: str, factory: ApiFactory, *, replace: bool = False) -> Non
             second registration of the same id raises: two libraries silently
             fighting over which client serves a protocol is the kind of
             invisible mis-routing this whole module exists to prevent.
+        sends_without_key: The factory's provider sends a request when no key
+            resolves, and the endpoint's own refusal is the error
+            (docs/PROVIDER-CREDENTIALS.md §2). False: ``tau_llm.client``
+            refuses before any request.
 
     Raises:
         ValueError: On an empty id, or on a duplicate without ``replace=True``.
@@ -265,6 +285,20 @@ def register_api(api: str, factory: ApiFactory, *, replace: bool = False) -> Non
             f"api {api!r} is already registered; pass replace=True to override it deliberately"
         )
     _API_FACTORIES[api] = factory
+    if sends_without_key:
+        _SENDS_WITHOUT_KEY.add(api)
+    else:
+        _SENDS_WITHOUT_KEY.discard(api)
+
+
+@agent_facing(topic="providers")
+def api_sends_without_key(api: str) -> bool:
+    """Whether ``api``'s provider sends a request when no key resolves.
+
+    Args:
+        api: Wire-protocol id, as in ``Model.api``.
+    """
+    return api in _SENDS_WITHOUT_KEY
 
 
 @agent_facing(topic="providers")
@@ -282,6 +316,7 @@ def unregister_api(api: str) -> None:
     if api not in _API_FACTORIES:
         raise KeyError(f"no api registered as {api!r}")
     del _API_FACTORIES[api]
+    _SENDS_WITHOUT_KEY.discard(api)
 
 
 @agent_facing(topic="providers")
@@ -353,6 +388,79 @@ def unregister_provider(provider_id: str) -> None:
     if provider_id not in _PROVIDER_SPECS:
         raise KeyError(f"no provider registered as {provider_id!r}")
     del _PROVIDER_SPECS[provider_id]
+
+
+@agent_facing(topic="providers")
+def resolve_request_key(provider_id: str, api_key: str | None, base_url: str | None) -> str | None:
+    """The key a request to ``provider_id`` at ``base_url`` carries; None for none.
+
+    ``api_key`` when non-empty; else the vendor's ``api_key_env``, only when
+    ``base_url`` is the vendor's own endpoint (:meth:`ProviderSpec.reads_env_for`).
+    The one place τ resolves a key: ``tau_llm.client`` sends this, and
+    :func:`resolves_api_key` reports it.
+
+    Args:
+        provider_id: Vendor id, as in ``Model.provider``.
+        api_key: The key the caller passes; None or ``""`` for none.
+        base_url: The request's endpoint; None for the vendor's default.
+    """
+    if api_key:
+        return api_key
+    spec = _PROVIDER_SPECS.get(provider_id)
+    if spec is None or not spec.reads_env_for(base_url):
+        return None
+    return spec.resolve_api_key()
+
+
+@agent_facing(topic="providers")
+def resolves_api_key(provider_id: str, api_key: str | None, base_url: str | None) -> bool:
+    """Whether :func:`resolve_request_key` finds a key for this request.
+
+    Args:
+        provider_id: Vendor id, as in ``Model.provider``.
+        api_key: The key the caller passes; None or ``""`` for none.
+        base_url: The request's endpoint; None for the vendor's default.
+    """
+    return resolve_request_key(provider_id, api_key, base_url) is not None
+
+
+@agent_facing(topic="providers")
+def credential_hint(provider_id: str, base_url: str | None, *, key_sent: bool) -> str:
+    """What to set for a request to ``provider_id`` at ``base_url``, after a 401.
+
+    Appended to an HTTP 401 (:class:`~tau_llm.errors.ProviderHttpError`).
+
+    Args:
+        provider_id: Vendor id, as in ``Model.provider``.
+        base_url: The request's endpoint; None for the vendor's default.
+        key_sent: Whether the refused request carried a key.
+
+    Returns:
+        With a key sent: where that key came from, in :func:`resolve_request_key`'s
+        order. Without one: the model's ``api_key`` in τ's config.json, plus the
+        vendor's environment variables where they would be read for ``base_url``,
+        or the endpoint they are read for when ``base_url`` is another.
+    """
+    spec = _PROVIDER_SPECS.get(provider_id)
+    config = '"api_key" on the model\'s "models" entry in τ\'s config.json'
+    env = " or ".join(spec.api_key_env) if spec is not None and spec.base_url else ""
+    reads_env = bool(env) and spec is not None and spec.reads_env_for(base_url)
+    if key_sent:
+        source = f"{config} when set, else from {env}" if reads_env else config
+        return f"The key sent was refused. It came from {source}."
+    if reads_env:
+        return f"To send a key, set {env} or {config}."
+    if env and spec is not None:
+        return f"To send a key, set {config}. {env} is read only for {spec.base_url}."
+    return f"To send a key, set {config}."
+
+
+def _endpoint(url: str) -> str:
+    """``url`` with its scheme and host lowercased and trailing slashes dropped."""
+    parts = urlsplit(url)
+    return urlunsplit(
+        (parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), parts.query, "")
+    )
 
 
 @agent_facing(topic="providers")

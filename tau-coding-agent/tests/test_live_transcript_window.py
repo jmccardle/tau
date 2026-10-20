@@ -112,7 +112,7 @@ async def test_the_row_says_the_count_and_is_mounted_once(transcript):
         )
 
 
-async def test_nothing_is_evicted_while_the_reader_is_scrolled_up(transcript):
+async def test_nothing_is_evicted_while_the_reader_is_scrolled_up(transcript, settle_transcript):
     """docs/TUI-STEERING.md's whole point: reading while it writes. Removing the
     head moves every row under someone mid-sentence.
 
@@ -132,6 +132,7 @@ async def test_nothing_is_evicted_while_the_reader_is_scrolled_up(transcript):
             transcript.extend(_turn_messages(index))
             await _live_turn(display, pilot, index)
         trimmed = len(_content_children(display))
+        await settle_transcript(pilot, display)
 
         display.scroll_to(y=max(1, display.max_scroll_y - 5), animate=False, immediate=True)
         await pilot.pause()
@@ -155,7 +156,7 @@ async def test_nothing_is_evicted_while_the_reader_is_scrolled_up(transcript):
         assert len(users) == ChatDisplay.RENDER_CAP_TURNS
 
 
-async def test_a_second_turn_runs_the_trim_the_first_one_held(transcript):
+async def test_a_second_turn_runs_the_trim_the_first_one_held(transcript, settle_transcript):
     """A reader who scrolls up and never scrolls back had an unbounded transcript.
 
     ``watch_scroll_y`` was the only thing that cleared a deferred trim, and it
@@ -173,6 +174,7 @@ async def test_a_second_turn_runs_the_trim_the_first_one_held(transcript):
             transcript.extend(_turn_messages(index))
             await _live_turn(display, pilot, index)
         trimmed = len(_content_children(display))
+        await settle_transcript(pilot, display)
 
         display.scroll_to(y=max(1, display.max_scroll_y - 5), animate=False, immediate=True)
         await pilot.pause()

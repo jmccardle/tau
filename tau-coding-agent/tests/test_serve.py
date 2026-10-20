@@ -373,11 +373,13 @@ async def test_the_attach_answer_carries_the_whole_vocabulary_models_and_load_er
             "name": "fake",
             "model": {"id": "fake-model", "provider": "openai", "context_window": 128000},
             "error": None,
+            "has_api_key": True,
         },
         {
             "name": "other",
             "model": {"id": "other-model", "provider": "openai", "context_window": 128000},
             "error": None,
+            "has_api_key": True,
         },
     ]
     await client.close()

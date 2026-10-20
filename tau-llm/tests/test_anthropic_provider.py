@@ -1323,14 +1323,20 @@ class TestRequest:
 
 
 class TestRefusals:
-    def test_a_missing_api_key_raises_before_any_request(self):
-        provider = AnthropicMessagesProvider(api_key=None)
+    def test_no_api_key_sends_the_request_without_credential_headers(self):
+        """#69: the endpoint, not τ, decides that a key was required."""
+        from anthropic import Omit
 
-        async def drive():
-            return await provider.stream_chat(_model(), [{"role": "user", "content": "hi"}])
+        _, client = _run(
+            AnthropicMessagesProvider(api_key=None), _model(), [{"role": "user", "content": "hi"}]
+        )
+        headers = client.requests[0]["extra_headers"]
+        assert set(headers) == {"X-Api-Key", "Authorization"}
+        assert all(isinstance(v, Omit) for v in headers.values())
 
-        with pytest.raises(ValueError, match="No API key"):
-            asyncio.run(drive())
+    def test_a_key_sends_no_header_override(self):
+        _, client = _run(_provider(), _model(), [{"role": "user", "content": "hi"}])
+        assert "extra_headers" not in client.requests[0]
 
     def test_a_constrained_call_raises_rather_than_running_unconstrained(self):
         """S6 — the Messages API has no decode-constraint parameter, so a

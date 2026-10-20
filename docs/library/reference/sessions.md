@@ -5071,6 +5071,25 @@ text to give.
 
 The concatenated text, stripped, or ``None``. ``None`` covers both "no assistant message yet" and "the last one carried no text" (a pure tool-call turn); the two are deliberately not distinguished, and a caller that must tell them apart looks at ``messages`` itself.
 
+## models_without_key
+<!-- agent: yes -->
+
+```python
+models_without_key(catalog: Any) -> set[str]
+```
+
+`tau_agent_core.flows.models_without_key`
+
+The catalog's buildable names whose requests would carry no API key.
+
+A catalog declares this with an optional ``models_without_key()`` method;
+``set()`` when it has none. The ``model_name`` domain labels these names,
+and still offers them (docs/PROVIDER-CREDENTIALS.md §4).
+
+**Parameters**
+
+- `catalog: Any` — *(no description)*
+
 ## navigate
 <!-- agent: yes -->
 

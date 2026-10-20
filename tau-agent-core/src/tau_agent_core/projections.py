@@ -11,6 +11,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from tau_llm.providers import resolves_api_key
+
 from tau_agent_core.capabilities import Vocabulary
 from tau_agent_core.commands import FRONTEND_COMMANDS
 from tau_agent_core.flows import Ready, enumerate_domain, next_step
@@ -278,10 +280,11 @@ def resolver_error_message(exc: KeyError | ValueError) -> str:
 
 
 def model_catalog(resolver: Any) -> list[dict[str, Any]]:
-    """Every model name ``resolver`` accepts, each as ``{name, model, error}``.
+    """Every model name ``resolver`` accepts, each as ``{name, model, error, has_api_key}``.
 
     ``model`` (``{id, provider, context_window}``) is what resolving the name
-    builds, so it is what ``set_model`` on that name would install. A name that
+    builds, so it is what ``set_model`` on that name would install;
+    ``has_api_key`` reads the resolver's optional ``api_key(name)``. A name that
     does not build gets ``model: None`` and ``error``, the resolver's message, so
     one bad entry never hides the rest; ``error`` is ``None`` otherwise.
 
@@ -304,12 +307,20 @@ def model_catalog(resolver: Any) -> list[dict[str, Any]]:
             "as 'set_model has no valid argument' (backends.ConfigModelResolver is the "
             "resolver every shipped frontend binds)"
         )
+    key_for = getattr(resolver, "api_key", None)
     listed: list[dict[str, Any]] = []
     for name in model_names():
         try:
             model = resolver(name)
         except (KeyError, ValueError) as exc:
-            listed.append({"name": name, "model": None, "error": resolver_error_message(exc)})
+            listed.append(
+                {
+                    "name": name,
+                    "model": None,
+                    "error": resolver_error_message(exc),
+                    "has_api_key": None,
+                }
+            )
             continue
         listed.append(
             {
@@ -320,6 +331,9 @@ def model_catalog(resolver: Any) -> list[dict[str, Any]]:
                     "context_window": model.context_window,
                 },
                 "error": None,
+                "has_api_key": resolves_api_key(
+                    model.provider, key_for(name) if callable(key_for) else None, model.base_url
+                ),
             }
         )
     return listed

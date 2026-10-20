@@ -17,7 +17,12 @@ from uuid import uuid4
 from tau_llm.compat import Compat
 from tau_llm.models import EXTENDED_THINKING_LEVELS, is_valid_thinking_level
 from tau_llm.once import OnceSet
-from tau_llm.providers import get_provider_spec, registered_apis, registered_providers
+from tau_llm.providers import (
+    get_provider_spec,
+    registered_apis,
+    registered_providers,
+    resolves_api_key,
+)
 from tau_llm.types import Model
 from tau_agent_core.agent_session import (
     AgentSession,
@@ -1353,6 +1358,19 @@ class ConfigModelResolver:
             except ValueError as exc:
                 errors[name] = str(exc)
         return errors
+
+    def models_without_key(self) -> list[str]:
+        """Each configured name that builds and whose requests would carry no API key.
+
+        Read by :func:`~tau_agent_core.flows.models_without_key`.
+        """
+        broken = self.model_errors()
+        built = {name: self(name) for name in self.model_names() if name not in broken}
+        return [
+            name
+            for name, model in built.items()
+            if not resolves_api_key(model.provider, self.api_key(name), model.base_url)
+        ]
 
     def api_key(self, name: str) -> str | None:
         """The ``api_key`` config gives ``name``; ``None`` leaves it to the provider's env var.

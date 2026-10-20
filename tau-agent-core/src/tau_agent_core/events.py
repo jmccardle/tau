@@ -94,6 +94,9 @@ class ErrorDetail(BaseModel):
             transience judgement about. On ``agent_end`` a True means
             τ's own retries ran out, or the server asked for a longer wait than
             τ will make inside a turn.
+        key_sent: A ``ProviderHttpError``'s ``key_sent``: whether the request
+            carried a key, which tells "no API key" from "API key refused" on a
+            401; None when not an HTTP refusal or the provider did not say.
     """
 
     type: str
@@ -101,6 +104,7 @@ class ErrorDetail(BaseModel):
     retry_after: float | None = None
     headers: dict[str, str] | None = None
     retryable: bool | None = None
+    key_sent: bool | None = None
 
     @classmethod
     def of(cls, exc: BaseException) -> "ErrorDetail":
@@ -122,6 +126,7 @@ class ErrorDetail(BaseModel):
                 retry_after=exc.retry_after,
                 headers=exc.headers,
                 retryable=DEFAULT_RETRY_POLICY.retryable(exc),
+                key_sent=exc.key_sent,
             )
         if isinstance(exc, (ProviderConnectionError, ProviderStreamError)):
             return cls(
