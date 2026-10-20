@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 from tau_llm.models import EXTENDED_THINKING_LEVELS
+from tau_llm.errors import ProviderConnectionError, ProviderHttpError, ProviderStreamError
 from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
@@ -955,7 +956,11 @@ def main(argv: list[str] | None = None) -> int:
                 "palette's 'Resume session…')"
             )
         if args.print_mode:
-            return asyncio.run(run_print(args, load_config()))
+            try:
+                return asyncio.run(run_print(args, load_config()))
+            except (ProviderHttpError, ProviderConnectionError, ProviderStreamError) as exc:
+                print(f"tau: error: {exc}", file=sys.stderr)
+                return 1
         if args.messages:
             raise CLIError(
                 "messages were given without --print; add -p to run headlessly "

@@ -388,7 +388,7 @@ of these: the server may still be working on the request.
 <!-- agent: yes -->
 
 ```python
-class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str, retry_after: float | None = None, headers: dict[str, str] | None = None)
+class ProviderHttpError(status_code: int, *, message: str, body: str, model_id: str, base_url: str, retry_after: float | None = None, headers: dict[str, str] | None = None, provider_id: str | None = None)
 ```
 
 `tau_llm.errors.ProviderHttpError`
@@ -397,7 +397,8 @@ An endpoint answered a completion request with a non-2xx status.
 
 Every provider raises this for an HTTP refusal, and
 ``AssistantMessageEventStream.result()`` re-raises it with its type intact.
-``str()`` is ``"HTTP <status> from model <id> at <base_url>: <message>"``.
+``str()`` is ``"HTTP <status> from model <id> at <base_url>: <message>"``,
+followed by ``hint`` when there is one.
 
 **Constructor parameters**
 
@@ -408,6 +409,15 @@ Every provider raises this for an HTTP refusal, and
 - `base_url: str` — The endpoint the request went to.
 - `retry_after: float | None = None` — Seconds the server asked the client to wait, from a ``retry-after-ms`` or ``retry-after`` header; None when it sent neither.
 - `headers: dict[str, str] | None = None` — The response headers, names lowercased, unparsed; None when the transport could not read them. Read the wait from ``retry_after``.
+- `provider_id: str | None = None` — The vendor id (``Model.provider``); names the hint on a 401.
+
+### hint
+
+`tau_llm.errors.ProviderHttpError.hint`
+
+For a 401 from a provider the caller named, what to set so the
+request carries a key (``tau_llm.providers.credential_hint``);
+otherwise ``""``.
 
 ## ProviderSpec
 <!-- agent: yes -->
@@ -703,6 +713,21 @@ run's ``finally`` before the driving ``asyncio.run()`` returns. Calling
 it again (or with nothing pooled) is a no-op; a subsequent
 ``stream_simple`` call rebuilds providers on demand.
 
+## api_sends_without_key
+<!-- agent: yes -->
+
+```python
+api_sends_without_key(api: str) -> bool
+```
+
+`tau_llm.providers.base.api_sends_without_key`
+
+Whether ``api``'s provider sends a request when no key resolves.
+
+**Parameters**
+
+- `api: str` — Wire-protocol id, as in ``Model.api``.
+
 ## complete_simple
 <!-- agent: yes -->
 
@@ -739,6 +764,27 @@ The fully accumulated AssistantMessage.
 **Raises**
 
 - `Exception` — If the stream produced an ErrorEvent (propagated by ``AssistantMessageEventStream.result``). Fail-Early: no fabricated fallback message.
+
+## credential_hint
+<!-- agent: yes -->
+
+```python
+credential_hint(provider_id: str) -> str
+```
+
+`tau_llm.providers.base.credential_hint`
+
+What to set so a request to ``provider_id`` carries a key.
+
+Appended to an HTTP 401 (:class:`~tau_llm.errors.ProviderHttpError`).
+
+**Parameters**
+
+- `provider_id: str` — Vendor id, as in ``Model.provider``.
+
+**Returns**
+
+One sentence naming the vendor's environment variables, when it registered any, and the model's ``api_key`` in τ's config.json.
 
 ## detect_compat
 <!-- agent: yes -->
@@ -836,7 +882,7 @@ abort; the caller tells the two endings apart with ``signal.is_aborted()``.
 <!-- agent: yes -->
 
 ```python
-register_api(api: str, factory: ApiFactory, *, replace: bool = False) -> None
+register_api(api: str, factory: ApiFactory, *, replace: bool = False, sends_without_key: bool = False) -> None
 ```
 
 `tau_llm.providers.base.register_api`
@@ -848,6 +894,7 @@ Register the factory that builds clients for one wire protocol.
 - `api: str` — Wire-protocol id, matching ``Model.api`` (e.g. ``"openai-completions"``).
 - `factory: ApiFactory` — See :class:`ApiFactory`.
 - `replace: bool = False` — Required to overwrite an existing registration. Without it a second registration of the same id raises: two libraries silently fighting over which client serves a protocol is the kind of invisible mis-routing this whole module exists to prevent.
+- `sends_without_key: bool = False` — The factory's provider sends a request when no key resolves, and the endpoint's own refusal is the error (docs/PROVIDER-CREDENTIALS.md §2). False: ``tau_llm.client`` refuses before any request.
 
 **Raises**
 
@@ -925,6 +972,25 @@ than to a type default, so stating one quirk never silently resets another.
 **Returns**
 
 The merged compat; exactly the detected one when ``model.compat`` is ``None``.
+
+## resolves_api_key
+<!-- agent: yes -->
+
+```python
+resolves_api_key(provider_id: str, api_key: str | None) -> bool
+```
+
+`tau_llm.providers.base.resolves_api_key`
+
+Whether a request to ``provider_id`` with ``api_key`` would carry a key.
+
+The same resolution ``tau_llm.client`` applies: ``api_key`` when non-empty,
+else the vendor's ``api_key_env``.
+
+**Parameters**
+
+- `provider_id: str` — Vendor id, as in ``Model.provider``.
+- `api_key: str | None` — The key the caller passes; None or ``""`` for none.
 
 ## split_tool_result_content
 <!-- agent: yes -->

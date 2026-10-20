@@ -46,7 +46,8 @@ class ProviderHttpError(RuntimeError):
 
     Every provider raises this for an HTTP refusal, and
     ``AssistantMessageEventStream.result()`` re-raises it with its type intact.
-    ``str()`` is ``"HTTP <status> from model <id> at <base_url>: <message>"``.
+    ``str()`` is ``"HTTP <status> from model <id> at <base_url>: <message>"``,
+    followed by ``hint`` when there is one.
 
     Attributes:
         status_code: The HTTP status, e.g. 400 for an over-context prompt.
@@ -60,6 +61,9 @@ class ProviderHttpError(RuntimeError):
             ``retry-after-ms`` or ``retry-after`` header; None when it sent neither.
         headers: The response headers, names lowercased, unparsed; None when the
             transport could not read them. Read the wait from ``retry_after``.
+        hint: For a 401 from a provider the caller named, what to set so the
+            request carries a key (``tau_llm.providers.credential_hint``);
+            otherwise ``""``.
     """
 
     def __init__(
@@ -72,6 +76,7 @@ class ProviderHttpError(RuntimeError):
         base_url: str,
         retry_after: float | None = None,
         headers: dict[str, str] | None = None,
+        provider_id: str | None = None,
     ) -> None:
         """Record the refusal; ``body`` is bounded here, so pass it whole.
 
@@ -84,7 +89,10 @@ class ProviderHttpError(RuntimeError):
             retry_after: Seconds the server asked for, already parsed from its
                 header; None when it named none.
             headers: The response headers, names lowercased; None when not captured.
+            provider_id: The vendor id (``Model.provider``); names the hint on a 401.
         """
+        from tau_llm.providers.base import credential_hint
+
         self.status_code = status_code
         self.message = message
         self.body = truncate_error_text(body)
@@ -92,10 +100,12 @@ class ProviderHttpError(RuntimeError):
         self.base_url = base_url
         self.retry_after = retry_after
         self.headers = headers
-        super().__init__(
+        self.hint = credential_hint(provider_id) if status_code == 401 and provider_id else ""
+        text = (
             f"HTTP {status_code} from model {model_id!r} at {base_url!r}: "
             f"{message or '(empty response body)'}"
         )
+        super().__init__(f"{text.rstrip('.')}. {self.hint}" if self.hint else text)
 
 
 @agent_facing(topic="providers")
@@ -271,7 +281,7 @@ def _finite(value: Any) -> float | None:
 
 
 def http_error_from_anthropic(
-    exc: BaseException, *, model_id: str, base_url: str
+    exc: BaseException, *, model_id: str, base_url: str, provider_id: str | None = None
 ) -> ProviderHttpError | None:
     """Translate an ``anthropic.APIStatusError`` into a :class:`ProviderHttpError`.
 
@@ -282,6 +292,7 @@ def http_error_from_anthropic(
         exc: Any exception the SDK call raised.
         model_id: The requested model id.
         base_url: The endpoint the request went to.
+        provider_id: The vendor id, for the 401 hint.
 
     Returns:
         The translated error, or None when ``exc`` is not an ``APIStatusError``.
@@ -300,6 +311,7 @@ def http_error_from_anthropic(
         base_url=base_url,
         retry_after=retry_after_seconds(getattr(exc.response, "headers", None)),
         headers=response_headers_of(exc.response),
+        provider_id=provider_id,
     )
 
 
@@ -336,7 +348,7 @@ def stream_error_from_anthropic(
 
 
 def http_error_from_google(
-    exc: BaseException, *, model_id: str, base_url: str
+    exc: BaseException, *, model_id: str, base_url: str, provider_id: str | None = None
 ) -> ProviderHttpError | None:
     """Translate a ``google.genai.errors.APIError`` into a :class:`ProviderHttpError`.
 
@@ -344,6 +356,7 @@ def http_error_from_google(
         exc: Any exception the SDK call raised.
         model_id: The requested model id.
         base_url: The endpoint the request went to.
+        provider_id: The vendor id, for the 401 hint.
 
     Returns:
         The translated error, or None when ``exc`` is not an ``APIError`` or
@@ -360,6 +373,7 @@ def http_error_from_google(
         base_url=base_url,
         retry_after=retry_after_seconds(getattr(exc.response, "headers", None)),
         headers=response_headers_of(exc.response),
+        provider_id=provider_id,
     )
 
 

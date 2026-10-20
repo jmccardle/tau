@@ -29,7 +29,12 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from tau_llm.streaming import AssistantMessageEventStream
-from tau_llm.providers import Provider, get_api_factory, get_provider_spec
+from tau_llm.providers import (
+    Provider,
+    api_sends_without_key,
+    get_api_factory,
+    get_provider_spec,
+)
 from tau_llm.retry import resolve_retry_policy, retrying_stream
 from tau_llm.types import AssistantMessage
 from tau_llm.docs import agent_facing
@@ -98,7 +103,7 @@ def _resolve_request(model: Any, options: dict[str, Any]) -> _ProviderRequest:
         )
 
     api_key = options.get("api_key") or (spec.resolve_api_key() if spec else None)
-    if not api_key and spec is not None and spec.api_key_env:
+    if not api_key and spec is not None and spec.api_key_env and not api_sends_without_key(api):
         raise ValueError(
             f"No API key for provider {provider_id!r}. Set one of "
             f"{', '.join(spec.api_key_env)}, or pass api_key in the call options."

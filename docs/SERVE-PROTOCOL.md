@@ -1508,6 +1508,7 @@ One model the config defines, as `get_models` lists it.
 | `name` | string | yes |  |
 | `model` | [ModelSpec](#modelspec) \| null | yes |  |
 | `error` | string \| null | yes |  |
+| `has_api_key` | boolean \| null | yes |  |
 
 ### ModelSpec
 

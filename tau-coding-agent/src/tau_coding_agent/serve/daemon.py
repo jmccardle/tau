@@ -117,6 +117,7 @@ def model_records(resolver: Any) -> list[p.ModelRecord]:
             name=m["name"],
             model=records.ModelSpec(**m["model"]) if m["model"] is not None else None,
             error=m["error"],
+            has_api_key=m["has_api_key"],
         )
         for m in model_catalog(resolver)
     ]

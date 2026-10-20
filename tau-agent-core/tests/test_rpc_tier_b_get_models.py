@@ -81,6 +81,9 @@ class _Resolver:
     def model_names(self) -> list[str]:
         return sorted(self._models)
 
+    def api_key(self, name: str) -> str | None:
+        return "k" if name == "alpha" else None
+
     def __call__(self, name: str) -> Model:
         try:
             return self._models[name]
@@ -147,12 +150,15 @@ async def test_an_unexpected_param_is_refused(handler: RPCHandler) -> None:
 
 
 async def test_lists_every_configured_name_sorted_with_get_state_s_projection(
-    handler: RPCHandler,
+    handler: RPCHandler, monkeypatch
 ) -> None:
     """The whole result, asserted as one literal: names sorted, and each
     `model` the {id, provider, context_window} projection `get_state`
     publishes — read off the RESOLVED model, so per-entry differences
-    survive."""
+    survive. `has_api_key` reads the resolver's `api_key`, then the env."""
+    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
     response = await _call(handler)
 
     assert "error" not in response
@@ -161,16 +167,19 @@ async def test_lists_every_configured_name_sorted_with_get_state_s_projection(
             "name": "alpha",
             "model": {"id": "alpha-id", "provider": "openai", "context_window": 8192},
             "error": None,
+            "has_api_key": True,
         },
         {
             "name": "mid",
             "model": {"id": "mid-id", "provider": "gemini", "context_window": 100000},
             "error": None,
+            "has_api_key": True,
         },
         {
             "name": "zeta",
             "model": {"id": "zeta-id", "provider": "anthropic", "context_window": 200000},
             "error": None,
+            "has_api_key": False,
         },
     ]
 
@@ -186,7 +195,7 @@ async def test_the_listed_projection_has_exactly_get_state_s_fields(handler: RPC
     active_projection = state["result"]["model"]
     assert set(active_projection) == {"id", "provider", "context_window"}
     for entry in listed:
-        assert set(entry) == {"name", "model", "error"}
+        assert set(entry) == {"name", "model", "error", "has_api_key"}
         assert set(entry["model"]) == set(active_projection)
 
 
@@ -323,6 +332,7 @@ async def test_an_unbuildable_entry_is_listed_with_its_error(session, handler) -
         "name": "mid",
         "model": None,
         "error": "provider 'acme' is not registered",
+        "has_api_key": None,
     }
     good = [row for name, row in rows.items() if name != "mid"]
     assert good and all(row["error"] is None and row["model"] for row in good)

@@ -240,11 +240,14 @@ class ProviderSpec:
 
 
 _API_FACTORIES: dict[str, ApiFactory] = {}
+_SENDS_WITHOUT_KEY: set[str] = set()
 _PROVIDER_SPECS: dict[str, ProviderSpec] = {}
 
 
 @agent_facing(topic="providers")
-def register_api(api: str, factory: ApiFactory, *, replace: bool = False) -> None:
+def register_api(
+    api: str, factory: ApiFactory, *, replace: bool = False, sends_without_key: bool = False
+) -> None:
     """Register the factory that builds clients for one wire protocol.
 
     Args:
@@ -254,6 +257,10 @@ def register_api(api: str, factory: ApiFactory, *, replace: bool = False) -> Non
             second registration of the same id raises: two libraries silently
             fighting over which client serves a protocol is the kind of
             invisible mis-routing this whole module exists to prevent.
+        sends_without_key: The factory's provider sends a request when no key
+            resolves, and the endpoint's own refusal is the error
+            (docs/PROVIDER-CREDENTIALS.md §2). False: ``tau_llm.client``
+            refuses before any request.
 
     Raises:
         ValueError: On an empty id, or on a duplicate without ``replace=True``.
@@ -265,6 +272,20 @@ def register_api(api: str, factory: ApiFactory, *, replace: bool = False) -> Non
             f"api {api!r} is already registered; pass replace=True to override it deliberately"
         )
     _API_FACTORIES[api] = factory
+    if sends_without_key:
+        _SENDS_WITHOUT_KEY.add(api)
+    else:
+        _SENDS_WITHOUT_KEY.discard(api)
+
+
+@agent_facing(topic="providers")
+def api_sends_without_key(api: str) -> bool:
+    """Whether ``api``'s provider sends a request when no key resolves.
+
+    Args:
+        api: Wire-protocol id, as in ``Model.api``.
+    """
+    return api in _SENDS_WITHOUT_KEY
 
 
 @agent_facing(topic="providers")
@@ -282,6 +303,7 @@ def unregister_api(api: str) -> None:
     if api not in _API_FACTORIES:
         raise KeyError(f"no api registered as {api!r}")
     del _API_FACTORIES[api]
+    _SENDS_WITHOUT_KEY.discard(api)
 
 
 @agent_facing(topic="providers")
@@ -353,6 +375,42 @@ def unregister_provider(provider_id: str) -> None:
     if provider_id not in _PROVIDER_SPECS:
         raise KeyError(f"no provider registered as {provider_id!r}")
     del _PROVIDER_SPECS[provider_id]
+
+
+@agent_facing(topic="providers")
+def resolves_api_key(provider_id: str, api_key: str | None) -> bool:
+    """Whether a request to ``provider_id`` with ``api_key`` would carry a key.
+
+    The same resolution ``tau_llm.client`` applies: ``api_key`` when non-empty,
+    else the vendor's ``api_key_env``.
+
+    Args:
+        provider_id: Vendor id, as in ``Model.provider``.
+        api_key: The key the caller passes; None or ``""`` for none.
+    """
+    if api_key:
+        return True
+    spec = _PROVIDER_SPECS.get(provider_id)
+    return spec is not None and spec.resolve_api_key() is not None
+
+
+@agent_facing(topic="providers")
+def credential_hint(provider_id: str) -> str:
+    """What to set so a request to ``provider_id`` carries a key.
+
+    Appended to an HTTP 401 (:class:`~tau_llm.errors.ProviderHttpError`).
+
+    Args:
+        provider_id: Vendor id, as in ``Model.provider``.
+
+    Returns:
+        One sentence naming the vendor's environment variables, when it
+        registered any, and the model's ``api_key`` in τ's config.json.
+    """
+    spec = _PROVIDER_SPECS.get(provider_id)
+    env = " or ".join(spec.api_key_env) if spec is not None else ""
+    config = '"api_key" on the model\'s "models" entry in τ\'s config.json'
+    return f"To send a key, set {env} or {config}." if env else f"To send a key, set {config}."
 
 
 @agent_facing(topic="providers")

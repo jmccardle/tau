@@ -607,6 +607,18 @@ def unavailable_models(catalog: Any) -> dict[str, str]:
     return dict(errors()) if errors is not None else {}
 
 
+@agent_facing(topic="sessions")
+def models_without_key(catalog: Any) -> set[str]:
+    """The catalog's buildable names whose requests would carry no API key.
+
+    A catalog declares this with an optional ``models_without_key()`` method;
+    ``set()`` when it has none. The ``model_name`` domain labels these names,
+    and still offers them (docs/PROVIDER-CREDENTIALS.md §4).
+    """
+    without = getattr(catalog, "models_without_key", None)
+    return set(without()) if without is not None else set()
+
+
 def _model_values(catalog: Any) -> list[DomainValue]:
     if catalog is None:
         raise ValueError(
@@ -621,7 +633,12 @@ def _model_values(catalog: Any) -> list[DomainValue]:
             "model_names(), so the names it accepts cannot be listed"
         )
     unavailable = unavailable_models(catalog)
-    return [DomainValue(value=name, label=name) for name in names() if name not in unavailable]
+    keyless = models_without_key(catalog)
+    return [
+        DomainValue(value=name, label=f"{name} (no API key)" if name in keyless else name)
+        for name in names()
+        if name not in unavailable
+    ]
 
 
 def _session_values(runtime: Any) -> list[DomainValue]:

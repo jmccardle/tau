@@ -4160,6 +4160,16 @@
             }
           ]
         },
+        "has_api_key": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "model": {
           "anyOf": [
             {
@@ -4177,7 +4187,8 @@
       "required": [
         "name",
         "model",
-        "error"
+        "error",
+        "has_api_key"
       ],
       "type": "object"
     },

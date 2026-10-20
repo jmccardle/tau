@@ -1811,6 +1811,7 @@ class OpenAICompletionsProvider(Provider):
             base_url=self.base_url,
             retry_after=retry_after_seconds(getattr(response, "headers", None)),
             headers=response_headers_of(response),
+            provider_id=model.provider,
         )
 
     def _apply_tool_call_schema(self, tc: dict, compat: ResolvedCompat, model: Model) -> dict:
