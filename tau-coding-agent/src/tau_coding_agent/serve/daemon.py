@@ -113,7 +113,11 @@ def watch_writes(log: SessionLog, listener: Callable[[str, dict[str, Any]], None
 def model_records(resolver: Any) -> list[p.ModelRecord]:
     """``resolver``'s models as the wire lists them, in ``Hello`` and ``Attach`` alike."""
     return [
-        p.ModelRecord(name=m["name"], model=records.ModelSpec(**m["model"]))
+        p.ModelRecord(
+            name=m["name"],
+            model=records.ModelSpec(**m["model"]) if m["model"] is not None else None,
+            error=m["error"],
+        )
         for m in model_catalog(resolver)
     ]
 
@@ -341,7 +345,11 @@ class SessionHost:
         self.report_extension_load(result)
         await self.backend.emit_session_start("startup")
         await session.start()
-        self.daemon.log(f"{self.tag} loaded: {cwd} (model {session.get_model()['id']})")
+        unavailable = session.model_unavailable
+        model = session.get_model()["id"] if unavailable is None else session.model_name
+        self.daemon.log(f"{self.tag} loaded: {cwd} (model {model})")
+        if unavailable is not None:
+            self.daemon.log(f"{self.tag} {unavailable}")
         for entry in self.log.entries():
             if is_incomplete(entry):
                 self.daemon.log(f"{self.tag} {entry['type']} entry {entry['id']} left incomplete")
@@ -370,15 +378,21 @@ class SessionHost:
 
     def cursor_model(self, cursor: Cursor) -> str:
         """The config name of the model ``cursor``'s next turn calls, read with ``cursor`` acting."""
+        return self.cursor_model_state(cursor)[0]
+
+    def cursor_model_state(self, cursor: Cursor) -> tuple[str, str | None]:
+        """``cursor``'s model name and why it is unavailable (or ``None``), read with it acting."""
         token = TURN_CURSOR.set(cursor)
         try:
-            return str(self.agent_session.model_name)
+            session = self.agent_session
+            return str(session.model_name), session.model_unavailable
         finally:
             TURN_CURSOR.reset(token)
 
     def cursor_states(self) -> list[p.CursorState]:
         """Every live cursor, oldest first."""
         cursors = list(self.agent_session.cursors)
+        models = {c.id: self.cursor_model_state(c) for c in cursors}
         states = [
             p.CursorState(
                 cursor_id=c.id,
@@ -386,7 +400,8 @@ class SessionHost:
                 label=c.label,
                 owner_id=c.owner.id if c.owner is not None else None,
                 busy=c.busy,
-                model=self.cursor_model(c),
+                model=models[c.id][0],
+                model_error=models[c.id][1],
                 request=self._request_at(c.leaf),
             )
             for c in cursors
@@ -813,9 +828,14 @@ class Daemon:
             return host
 
     async def _host_for(self, log: ConversationSession, model: str | None) -> SessionHost:
-        """Build a backend for ``log`` from the daemon's config, the way ``tau -p --session`` does."""
+        """Build a backend for ``log`` from the daemon's config.
+
+        A recorded model that no longer resolves opens unavailable: the session
+        reads, and a turn is refused until ``set_model`` (docs/SILENT-DEFAULTS.md §10).
+        """
         from tau_coding_agent.backends import create_backend
         from tau_coding_agent.cli import CLIArgs
+        from tau_coding_agent.config import ConfigError
         from tau_coding_agent.headless import resolve_model_config
 
         cwd = str(log.header.get("cwd") or os.getcwd())
@@ -824,16 +844,23 @@ class Daemon:
                 dialect.NOT_FOUND, f"session cwd {cwd!r} does not exist on this machine"
             )
         prior = log.config
-        _, model_config = resolve_model_config(
-            self.config,
-            CLIArgs(model=model),
-            fallback_model=prior.get("model"),
-            prior_config=prior,
-        )
+        try:
+            _, model_config = resolve_model_config(
+                self.config,
+                CLIArgs(model=model),
+                fallback_model=prior.get("model"),
+                prior_config=prior,
+                open_unavailable=True,
+            )
+        except ConfigError as exc:
+            raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
         if self.config.get("system_prompt"):
             model_config["system_prompt"] = self.config["system_prompt"]
         model_config["cwd"] = cwd
-        backend: Any = create_backend(model_config)
+        try:
+            backend: Any = create_backend(model_config)
+        except ConfigError as exc:
+            raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
         backend.agent_session.set_model_resolver(self.model_resolver)
         host = SessionHost(self, log, backend)
         await host.start(cwd)
@@ -950,6 +977,7 @@ class Daemon:
     async def _new_session(self, request: p.NewSession) -> p.SessionOpened:
         from tau_coding_agent.backends import create_backend
         from tau_coding_agent.cli import CLIArgs
+        from tau_coding_agent.config import ConfigError
         from tau_coding_agent.headless import resolve_model_config
 
         cwd = os.path.abspath(os.path.expanduser(request.cwd))
@@ -957,11 +985,19 @@ class Daemon:
             raise RequestError(
                 dialect.NOT_FOUND, f"cwd {cwd!r} does not exist on the daemon's machine"
             )
-        model_name, model_config = resolve_model_config(self.config, CLIArgs(model=request.model))
+        try:
+            model_name, model_config = resolve_model_config(
+                self.config, CLIArgs(model=request.model)
+            )
+        except ConfigError as exc:
+            raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
         if self.config.get("system_prompt"):
             model_config["system_prompt"] = self.config["system_prompt"]
         model_config["cwd"] = cwd
-        system_prompt = create_backend(model_config).system_prompt or None
+        try:
+            system_prompt = create_backend(model_config).system_prompt or None
+        except ConfigError as exc:
+            raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
         log = self.catalog.create(
             cwd,
             model_name,

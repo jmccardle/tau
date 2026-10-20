@@ -160,11 +160,17 @@ async def test_lists_every_configured_name_sorted_with_get_state_s_projection(
         {
             "name": "alpha",
             "model": {"id": "alpha-id", "provider": "openai", "context_window": 8192},
+            "error": None,
         },
-        {"name": "mid", "model": {"id": "mid-id", "provider": "gemini", "context_window": 100000}},
+        {
+            "name": "mid",
+            "model": {"id": "mid-id", "provider": "gemini", "context_window": 100000},
+            "error": None,
+        },
         {
             "name": "zeta",
             "model": {"id": "zeta-id", "provider": "anthropic", "context_window": 200000},
+            "error": None,
         },
     ]
 
@@ -180,7 +186,7 @@ async def test_the_listed_projection_has_exactly_get_state_s_fields(handler: RPC
     active_projection = state["result"]["model"]
     assert set(active_projection) == {"id", "provider", "context_window"}
     for entry in listed:
-        assert set(entry) == {"name", "model"}
+        assert set(entry) == {"name", "model", "error"}
         assert set(entry["model"]) == set(active_projection)
 
 
@@ -296,42 +302,27 @@ async def test_a_resolver_that_cannot_enumerate_refuses(session, handler) -> Non
     assert commands._MODEL_CATALOG_ATTR in response["error"]["message"]
 
 
-async def test_an_unbuildable_entry_fails_the_verb_naming_it(session, handler) -> None:
-    """A config entry `build_model_from_config` refuses (its own ValueError —
-    e.g. an invalid `reasoning_replay`) fails this verb, naming that entry
-    and carrying the resolver's own words. Dropping it would hand a host a
-    list it would trust as complete."""
+async def test_an_unbuildable_entry_is_listed_with_its_error(session, handler) -> None:
+    """One entry that does not build (e.g. a provider no extension has registered)
+    must not fail the whole verb: the others are listed as usual, and it is listed
+    with `model: null` and the resolver's own words as `error`. Dropping it would
+    hand a host a list it would trust as complete."""
 
     class _OneBadEntry(_Resolver):
         def __call__(self, name: str) -> Model:
             if name == "mid":
-                raise ValueError("reasoning_replay must be one of 'all', 'turn', 'off'")
+                raise ValueError("provider 'acme' is not registered")
             return super().__call__(name)
 
     session.set_model_resolver(_OneBadEntry())
 
     response = await _call(handler)
 
-    assert "result" not in response
-    assert response["error"]["code"] == dialect.INTERNAL_ERROR
-    assert "'mid'" in response["error"]["message"]
-    assert "reasoning_replay must be one of" in response["error"]["message"]
-
-
-async def test_an_unbuildable_entry_is_not_reported_as_a_partial_list(session, handler) -> None:
-    """The refusal above replaces the answer; it does not accompany one.
-    Asserted separately because "raises AND returns the other two" is the
-    shape a well-meaning fix would take."""
-
-    class _OneBadEntry(_Resolver):
-        def __call__(self, name: str) -> Model:
-            if name == "alpha":
-                raise ValueError("nope")
-            return super().__call__(name)
-
-    session.set_model_resolver(_OneBadEntry())
-
-    response = await _call(handler)
-
-    assert "result" not in response
-    assert handler._output_queue.empty()
+    rows = {row["name"]: row for row in response["result"]["models"]}
+    assert rows["mid"] == {
+        "name": "mid",
+        "model": None,
+        "error": "provider 'acme' is not registered",
+    }
+    good = [row for name, row in rows.items() if name != "mid"]
+    assert good and all(row["error"] is None and row["model"] for row in good)

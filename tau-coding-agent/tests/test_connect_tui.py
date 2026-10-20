@@ -233,7 +233,8 @@ async def test_the_extensions_view_under_connect_lists_the_daemons_load_errors(
     daemon, tau_home, tmp_path
 ):
     served, address = daemon
-    extensions = tmp_path / "daemon-home" / ".tau" / "extensions"
+    # In process, the daemon and the TUI share one environment, so one τ home.
+    extensions = tau_home / "extensions"
     extensions.mkdir(parents=True)
     (extensions / "broken.py").write_text("raise RuntimeError('nope')\n")
     remote = RemoteConnection(address, cwd=str(tmp_path))

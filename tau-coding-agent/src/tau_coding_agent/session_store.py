@@ -40,7 +40,8 @@ from tau_agent_core.session_log import (
     session_name,
 )
 
-from tau_coding_agent.config import TAU_DIR, ConfigError
+from tau_agent_core.tau_home import resolve_tau_home
+from tau_coding_agent.config import ConfigError
 
 SESSIONS_DIRNAME = "sessions"
 # Header schema version (§5.3). Bumped only on a breaking on-disk change.
@@ -73,7 +74,7 @@ def _emit_session_event(event_type: str, session: "Session", **extra: Any) -> No
 
 def _sessions_base(base_dir: Path | None) -> Path:
     """The directory that holds the per-cwd subdirs (seam 1: ``base_dir`` slot)."""
-    return base_dir if base_dir is not None else TAU_DIR / SESSIONS_DIRNAME
+    return base_dir if base_dir is not None else resolve_tau_home() / SESSIONS_DIRNAME
 
 
 def session_dir_for_cwd(cwd: str, base_dir: Path | None = None) -> Path:

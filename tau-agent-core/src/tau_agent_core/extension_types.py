@@ -1069,9 +1069,10 @@ class ExtensionContext:
 
         Raises:
             RuntimeError: No session is bound, or the session has no model resolver.
+            KeyError: ``name`` is not a configured model.
+            ModelUnavailableError: ``name`` is configured and does not build;
+                the message says why.
             TypeError: The resolver returned something other than a ``Model``.
-            Exception: Whatever the resolver raises for an unknown ``name``,
-                unchanged.
         """
         model: dict[str, Any] = self._require_session().set_model(name)
         return model
@@ -1584,15 +1585,17 @@ class ExtensionContext:
             RuntimeError: No session is bound.
             ValueError: ``from_entry`` names no entry (checked before the model
                 call), or the summarizer returned nothing usable.
+            ModelUnavailableError: the session's model is unavailable.
         """
         from tau_agent_core.tree_ops import summarize_and_navigate
 
         session = self._require_session()
+        model, api_key = session.model_and_key(None)
         messages, summary_usage = await summarize_and_navigate(
             session.cursor,
             from_entry,
-            session._model,
-            api_key=session._api_key,
+            model,
+            api_key=api_key,
             custom_instructions=custom_instructions,
         )
         session.record_side_usage(summary_usage)

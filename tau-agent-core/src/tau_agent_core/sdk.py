@@ -94,18 +94,19 @@ _DEFAULT_MODELS: dict[str, Model] = {
 @agent_facing(topic="sdk")
 def resolve_model(
     model: str,
-    provider: str = "openai",
+    provider: str | None = None,
     base_url: str | None = None,
 ) -> Model:
     """Resolve a model string to a Model object.
 
-    A built-in id (``"gpt-4o"``) returns a copy of its default. Any other id gets
-    ``provider``'s registered wire protocol and endpoint, with ``base_url``
-    taking precedence over the endpoint.
+    A built-in id (``"gpt-4o"``) returns a copy of its default. Any other id needs
+    ``provider``, whose registered wire protocol and endpoint it gets, with
+    ``base_url`` taking precedence over the endpoint. There is no default
+    provider (docs/SILENT-DEFAULTS.md §7).
 
     Args:
         model: Model identifier (e.g., "gpt-4o").
-        provider: Registered vendor id (default: "openai").
+        provider: Registered vendor id; required unless ``model`` is built in.
         base_url: Optional custom API base URL.
 
     Returns:
@@ -114,12 +115,19 @@ def resolve_model(
         and speaks ``openai-completions`` when ``provider`` is unregistered.
 
     Raises:
-        ValueError: No ``base_url`` and ``provider`` is not registered with a
-            default endpoint (docs/EXTENSION-PROVIDERS.md §2).
+        ValueError: ``model`` is not built in and no ``provider`` is given; or no
+            ``base_url`` and ``provider`` is not registered with a default
+            endpoint (docs/EXTENSION-PROVIDERS.md §2).
     """
-    if model in _DEFAULT_MODELS:
+    if model in _DEFAULT_MODELS and provider in (None, _DEFAULT_MODELS[model].provider):
         default = _DEFAULT_MODELS[model]
         return default.model_copy(update={"base_url": base_url} if base_url else {})
+    if provider is None:
+        raise ValueError(
+            f"resolve_model({model!r}): name its provider (provider=...); τ does not "
+            f"guess one. Built-in ids that need none: {', '.join(sorted(_DEFAULT_MODELS))}. "
+            f"Registered providers: {', '.join(registered_providers())}."
+        )
     spec = get_provider_spec(provider)
     endpoint = base_url or (spec.base_url if spec else None)
     if not endpoint:
@@ -790,11 +798,15 @@ class ExtensionPlan:
             named with ``-e``.
         withheld: The sources found and not loaded, as records.
         grandfathered: Drop-ins authorized because no store existed (§5).
+        awaiting_grandfather: Drop-ins in ``load`` only because no store exists
+            yet and this plan wrote none (``write=False``); the first start
+            grandfathers them.
     """
 
     load: list[tuple[ExtensionSource, bool]]
     withheld: list[ExtensionRecord]
     grandfathered: list[str]
+    awaiting_grandfather: list[str] = field(default_factory=list)
 
 
 @agent_facing(topic="extensions")
@@ -850,6 +862,7 @@ def plan_extensions(
         claimed.setdefault(source.identifier, _target_key(source))
 
     grandfathered: list[str] = []
+    awaiting: list[str] = []
     if discover:
         directory = (
             Path(extensions_dir)
@@ -887,6 +900,8 @@ def plan_extensions(
                 continue
             if pending_grandfather and source.kind == "dropin":
                 verdict, previous = "authorized", None
+                if not write:
+                    awaiting.append(source.identifier)
             else:
                 answer = store.verdict(source)
                 verdict, previous = answer.verdict, answer.previous_version
@@ -911,7 +926,9 @@ def plan_extensions(
             continue
         seen_targets.add(key)
         load.append((source, True))
-    return ExtensionPlan(load=load, withheld=withheld, grandfathered=grandfathered)
+    return ExtensionPlan(
+        load=load, withheld=withheld, grandfathered=grandfathered, awaiting_grandfather=awaiting
+    )
 
 
 async def _load_extensions(
@@ -987,10 +1004,25 @@ async def _load_extensions(
     return result
 
 
+AWAITING_GRANDFATHER_REASON = (
+    "no authorization store yet: drop-ins present at τ's first 0.14 start are "
+    "authorized then (docs/EXTENSION-PACKAGES.md §5)"
+)
+"""The ``tau ext list`` reason for a drop-in authorized only by the coming first start."""
+
+
 def _record_for_source(
-    source: ExtensionSource, state: str, *, explicit: bool, reason: str | None = None
+    source: ExtensionSource,
+    state: str,
+    *,
+    explicit: bool,
+    reason: str | None = None,
+    authorization: str | None = None,
 ) -> ExtensionRecord:
-    """An :class:`ExtensionRecord` for a planned or loaded source."""
+    """An :class:`ExtensionRecord` for a planned or loaded source.
+
+    ``authorization`` overrides the ``explicit``/``authorized`` label.
+    """
     return ExtensionRecord(
         identifier=source.identifier,
         kind=source.kind,
@@ -1000,7 +1032,7 @@ def _record_for_source(
         distribution=source.distribution,
         version=source.version,
         entry_point=source.entry_point,
-        authorization="explicit" if explicit else "authorized",
+        authorization=authorization or ("explicit" if explicit else "authorized"),
     )
 
 
@@ -1072,9 +1104,10 @@ def extension_records(
 ) -> list[ExtensionRecord]:
     """The ``tau ext list`` rows with no session: what would load, and what would not.
 
-    Imports nothing and writes nothing; a missing authorization store lists the
-    drop-ins present as ``authorized``, because the first start grandfathers
-    them (docs/EXTENSION-PACKAGES.md §5).
+    Imports nothing and writes nothing. With no authorization store yet, the
+    drop-ins present are state ``authorized`` (they would load) but authorization
+    ``pending-grandfather``, with :data:`AWAITING_GRANDFATHER_REASON`: no record
+    exists until the first start writes one (docs/EXTENSION-PACKAGES.md §5).
 
     Args:
         explicit: ``-e`` values to include, as a start would.
@@ -1096,7 +1129,21 @@ def extension_records(
         store_path=store_path,
         write=False,
     )
-    rows = [_record_for_source(src, "authorized", explicit=exp) for src, exp in plan.load]
+    awaiting = set(plan.awaiting_grandfather)
+    rows = []
+    for src, exp in plan.load:
+        if not exp and src.kind == "dropin" and src.identifier in awaiting:
+            rows.append(
+                _record_for_source(
+                    src,
+                    "authorized",
+                    explicit=False,
+                    reason=AWAITING_GRANDFATHER_REASON,
+                    authorization="pending-grandfather",
+                )
+            )
+        else:
+            rows.append(_record_for_source(src, "authorized", explicit=exp))
     return rows + plan.withheld
 
 
@@ -2066,7 +2113,7 @@ def _build_system_prompt(
 @agent_facing(topic="sdk")
 def create_agent_session(
     model: str | Model = "gpt-4o",
-    provider: str = "openai",
+    provider: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
     tools: list[str] | None = None,
@@ -2114,7 +2161,8 @@ def create_agent_session(
 
     Args:
         model: Model identifier string or Model object (default: "gpt-4o").
-        provider: Provider name for model resolution (default: "openai").
+        provider: Provider name for model resolution; required for an id that
+            is not built in (:func:`resolve_model`).
         base_url: Optional custom API base URL.
         api_key: Optional API key.
         tools: List of BUILT-IN tool name strings (e.g., ["read", "bash"]),

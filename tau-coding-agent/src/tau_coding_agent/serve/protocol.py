@@ -399,7 +399,9 @@ class CursorState:
     Attributes:
         model: The config name of the model its next turn calls, as ``set_model``
             takes it and ``get_models`` lists it; not the model id, which two
-            names may share.
+            names may share. A recorded model that no longer resolves keeps its name.
+        model_error: Why a turn here would be refused for that model, naming the
+            fix; ``None`` when it resolves (``AgentSession.model_unavailable``).
         request: The extension request at its leaf, or ``None``.
     """
 
@@ -409,6 +411,7 @@ class CursorState:
     owner_id: str | None
     busy: bool
     model: str
+    model_error: str | None
     request: ExtensionRequest | None
 
 

@@ -46,6 +46,7 @@ EXPOSED: dict[str, str] = {
     "state": "get_state",
     "is_streaming": "get_state",
     "get_model": "get_state",
+    "model_unavailable": "get_state",
     "get_usage": "get_state",
     "get_extension_commands": "get_commands",
     "get_qualified_commands": "get_commands",

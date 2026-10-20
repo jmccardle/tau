@@ -751,12 +751,10 @@ detect_compat(provider: str, base_url: str) -> ResolvedCompat
 
 Infer wire quirks from the endpoint URL.
 
-Only the URL decides anything today. pi also matches on the provider NAME,
-and τ cannot: ``build_model_from_config`` defaults an entry with no
-``backend`` key to ``provider="openai"``, so in τ that string means "the
-operator did not say" far more often than it means OpenAI. Matching it would
-switch a local llama.cpp to a spelling llama.cpp rejects, which is the
-regression this whole module is arranged to avoid.
+Only the URL decides anything today. The provider NAME is not matched: τ
+configs label a local llama.cpp ``backend: "openai"`` as often as real
+OpenAI, and matching it would switch llama.cpp to a spelling it rejects,
+which is the regression this whole module is arranged to avoid.
 
 A proxy in front of real OpenAI therefore goes undetected. That is the
 correct trade: it is one explicit ``compat.max_tokens_field`` in the config,

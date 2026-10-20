@@ -13,6 +13,7 @@ from tau_agent_core.tau_home import (
     HOME_ENV,
     PORTABLE_BASE_ENV,
     TauHomeError,
+    pin_home_variables,
     resolve_tau_home,
 )
 
@@ -112,3 +113,36 @@ def test_project_layer_still_reads_under_tau_home(
     assert locations.project == (project / ".tau" / "prompts").resolve()
     contents = [f.content for f in load_project_context_files(cwd=project)]
     assert contents == ["from the home", "from the project"]
+
+
+def test_pin_makes_relative_home_variables_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    env = {HOME_ENV: "scratch", PORTABLE_BASE_ENV: "drive/tau", "OTHER": "rel"}
+    pin_home_variables(env)
+    assert env == {
+        HOME_ENV: str(tmp_path / "scratch"),
+        PORTABLE_BASE_ENV: str(tmp_path / "drive" / "tau"),
+        "OTHER": "rel",
+    }
+
+
+def test_pin_leaves_absolute_empty_and_unset_values_alone(tmp_path: Path) -> None:
+    env = {HOME_ENV: str(tmp_path), PORTABLE_BASE_ENV: ""}
+    pin_home_variables(env)
+    assert env == {HOME_ENV: str(tmp_path), PORTABLE_BASE_ENV: ""}
+
+
+def test_pin_resolves_like_resolve_tau_home_through_a_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``lnk/../h`` pins to the same directory ``resolve_tau_home`` would pick."""
+    (tmp_path / "real" / "inner").mkdir(parents=True)
+    (tmp_path / "real" / "h").mkdir()
+    (tmp_path / "lnk").symlink_to(tmp_path / "real" / "inner")
+    monkeypatch.chdir(tmp_path)
+    env = {HOME_ENV: "lnk/../h"}
+    expected = resolve_tau_home(env)
+    pin_home_variables(env)
+    assert env[HOME_ENV] == str(expected) == str(tmp_path / "real" / "h")

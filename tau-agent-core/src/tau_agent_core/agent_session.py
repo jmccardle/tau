@@ -128,6 +128,7 @@ from tau_agent_core.compaction import (
     try_compaction_limits,
 )
 from tau_agent_core.compaction_policy import CompactionPolicy, CompactionPolicyError
+from tau_agent_core.model_availability import ModelUnavailableError, UnavailableModel
 from tau_agent_core.compaction_utils import create_file_ops, extract_file_ops_from_message
 from tau_agent_core.prompt_cache import prompt_tokens
 from tau_agent_core.usage import add_usage, zero_usage
@@ -195,9 +196,11 @@ class SessionStats:
 
     Attributes:
         context: ``compaction.estimate_context_tokens`` over the active path.
-        context_window: The active model's window, from :meth:`AgentSession.get_model`.
+        context_window: The active model's window, from :meth:`AgentSession.get_model`;
+            ``None`` while that model is unavailable (:attr:`AgentSession.model_unavailable`).
         context_headroom: ``context_window - context.tokens``. Negative when the
-            path is already over budget — an honest number, never clamped.
+            path is already over budget — an honest number, never clamped; ``None``
+            with ``context_window``.
         compaction_settings: The settings in force, as a copy.
         last_compaction: The newest compaction entry, or ``None`` if this session
             has never compacted.
@@ -206,8 +209,8 @@ class SessionStats:
     """
 
     context: ContextUsageEstimate
-    context_window: int
-    context_headroom: int
+    context_window: int | None
+    context_headroom: int | None
     compaction_settings: CompactionSettings
     last_compaction: CompactionRecord | None
     usage: dict[str, Any] | None
@@ -536,7 +539,10 @@ class AgentSession:
     docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 
     Args:
-        model: The model the head cursor's turns call.
+        model: The model the head cursor's turns call, or the
+            :class:`~tau_agent_core.model_availability.UnavailableModel` a resumed
+            session recorded: the session opens and reads, and a turn is refused
+            until :meth:`set_model` names one that resolves.
         session_log: The tree to extend, from a new cursor at its
             :func:`~tau_agent_core.session_log.default_leaf`. Exactly one of
             ``session_log`` and ``cursor`` is required.
@@ -587,7 +593,7 @@ class AgentSession:
     def __init__(
         self,
         *,
-        model: Model,
+        model: Model | UnavailableModel,
         session_log: SessionLog | None = None,
         cursor: Cursor | None = None,
         system_prompt: str = "",
@@ -619,7 +625,7 @@ class AgentSession:
         self._cursor = cursor
         self._cursors: dict[str, Cursor] = {cursor.id: cursor}
         self._model = model
-        self._model_name: str | None = None
+        self._model_name: str | None = model.name if isinstance(model, UnavailableModel) else None
         self._cwd = os.path.abspath(cwd) if cwd is not None else os.getcwd()
         self._system_prompt = system_prompt
         self._prompt_templates = prompt_templates
@@ -679,7 +685,8 @@ class AgentSession:
         else:
             self._compaction_settings = compaction_settings or DEFAULT_COMPACTION_SETTINGS
         self._pending_summarizer: str | None = None
-        self._configure_compaction(model)
+        if not isinstance(model, UnavailableModel):
+            self._configure_compaction(model)
         self._policy_turns_used = 0
 
         self._token_counter: TextCounter = counter_for(model, fallback=True)
@@ -703,7 +710,8 @@ class AgentSession:
     def _frame_config(self) -> dict[str, Any]:
         """The config keys this session's frame sets (docs/CURSORS.md §5).
 
-        ``model_spec`` is the :meth:`get_model` projection; ``model`` the config
+        ``model_spec`` is the :meth:`get_model` projection, absent while that
+        model is unavailable so the recorded one stands; ``model`` the config
         name :meth:`set_model` resolved, present only once one is known, which
         is what ``--continue`` resumes on (docs/TURN-SETTINGS.md §6);
         ``system_prompt_digest`` a sha256 of the prompt, never the text;
@@ -715,15 +723,11 @@ class AgentSession:
         loaded_paths = [
             path for path in self._loaded_extensions if path not in self._disabled_paths
         ]
-        model = self._turn_model()
         name = self._turn_model_name()
+        spec = {} if self._turn_unavailable() is not None else {"model_spec": self.get_model()}
         return {
             **({} if name is None else {"model": name}),
-            "model_spec": {
-                "id": model.id,
-                "provider": model.provider,
-                "context_window": model.context_window,
-            },
+            **spec,
             "thinking": self._turn_reasoning(),
             "tools": [t.name for t in self._turn_tools()],
             "extensions": [_extension_factory_label(ext) for ext in self._extensions]
@@ -1020,9 +1024,22 @@ class AgentSession:
 
         A head that builds models from config names them by their config key,
         the name :meth:`set_model` takes; :meth:`get_model`'s id is not one,
-        because two names may resolve to one id.
+        because two names may resolve to one id. An unavailable recorded model
+        keeps its recorded name here.
         """
-        return self._turn_model().name
+        unavailable = self._turn_unavailable()
+        return unavailable.name if unavailable is not None else self._turn_model().name
+
+    @property
+    @agent_facing(topic="sessions")
+    def model_unavailable(self) -> str | None:
+        """Why the acting cursor's next turn would be refused for its model, else ``None``.
+
+        Set when a resumed session's recorded model no longer resolves; the text
+        names the model, the reason and the fix (docs/SILENT-DEFAULTS.md §10).
+        """
+        unavailable = self._turn_unavailable()
+        return None if unavailable is None else unavailable.message()
 
     def get_model(self) -> dict[str, Any]:
         """The acting cursor's model as a small, stable projection (S45).
@@ -1033,6 +1050,9 @@ class AgentSession:
         Returns:
             ``{"id", "provider", "context_window"}`` of the acting cursor's frame
             model, else the session's, read at call time.
+
+        Raises:
+            ModelUnavailableError: that model is unavailable (:attr:`model_unavailable`).
         """
         model = self._turn_model()
         return {
@@ -1053,7 +1073,9 @@ class AgentSession:
         session was constructed with.
 
         Args:
-            resolver: Maps a config model name to a ``Model``. An ``api_key(name)``
+            resolver: Maps a config model name to a ``Model``, raising ``KeyError``
+                for an unknown name and ``ModelUnavailableError`` for an entry
+                that does not build. An ``api_key(name)``
                 method supplies that model's key (:meth:`resolve_model`); a
                 ``compaction(name)`` method returning a
                 :class:`~tau_agent_core.compaction.CompactionConfig` supplies its
@@ -1067,7 +1089,8 @@ class AgentSession:
         previous = self._model_resolver
         self._model_resolver = resolver
         try:
-            self._configure_compaction(self._model)
+            if not isinstance(self._model, UnavailableModel):
+                self._configure_compaction(self._model)
         except Exception:
             self._model_resolver = previous
             raise
@@ -1305,9 +1328,10 @@ class AgentSession:
 
         Raises:
             RuntimeError: No resolver is bound.
+            KeyError: ``name`` is not a configured model.
+            ModelUnavailableError: ``name`` is configured and does not build; the
+                message says why.
             TypeError: The resolver returned something other than a ``Model``.
-            Exception: Whatever the resolver raises for an unknown ``name``,
-                unchanged.
             CompactionPolicyError: the new model's compaction refuses it; the
                 model does not change.
         """
@@ -1412,9 +1436,10 @@ class AgentSession:
         Raises:
             RuntimeError: a name was given and no resolver is bound.
             TypeError: the resolver returned something other than a ``Model``.
+            ModelUnavailableError: ``None`` was given and the session's model is unavailable.
         """
         if model is None:
-            return self._model, self._api_key
+            return self._session_model(), self._api_key
         if isinstance(model, str):
             return self.resolve_model(model)
         return model, self._api_key if model == self._model else None
@@ -1431,11 +1456,12 @@ class AgentSession:
 
         Raises:
             CompactionPolicyError: :meth:`require_compaction_resolver` is outstanding.
+            ModelUnavailableError: the session's own model would summarise and is unavailable.
         """
         self._require_compaction_ready()
         policy = self._compaction_policy
         if policy is None or policy.summarizer is None:
-            return self._model, self._api_key
+            return self._session_model(), self._api_key
         return self.resolve_model(policy.summarizer)
 
     def get_usage(self) -> dict[str, Any] | None:
@@ -1640,11 +1666,12 @@ class AgentSession:
             on a persisted and an unpersisted session.
         """
         estimate = self.context_estimate()
-        context_window = int(self.get_model()["context_window"])
+        unavailable = self._turn_unavailable() is not None
+        context_window = None if unavailable else int(self.get_model()["context_window"])
         return SessionStats(
             context=estimate,
             context_window=context_window,
-            context_headroom=context_window - estimate.tokens,
+            context_headroom=None if context_window is None else context_window - estimate.tokens,
             compaction_settings=self.compaction_settings,
             last_compaction=self.get_last_compaction(),
             usage=self.get_usage(),
@@ -2452,9 +2479,50 @@ class AgentSession:
         return {} if max_turns is None else {"max_turns": max_turns}
 
     def _turn_model(self) -> Model:
-        """The model the running turn calls: its cursor frame's, else the session's."""
+        """The model the running turn calls: its cursor frame's, else the session's.
+
+        Raises:
+            ModelUnavailableError: it is the session's, and that is unavailable.
+        """
         frame = self.acting_cursor.frame
-        return self._model if frame is None or frame.model is None else frame.model
+        if frame is not None and frame.model is not None:
+            model: Model = frame.model
+            return model
+        return self._session_model()
+
+    def _session_model(self) -> Model:
+        """The session's own model.
+
+        Raises:
+            ModelUnavailableError: the session's recorded model is unavailable.
+        """
+        if isinstance(self._model, UnavailableModel):
+            raise ModelUnavailableError(self._model.message())
+        return self._model
+
+    def _turn_unavailable(self) -> UnavailableModel | None:
+        """The unavailable model the acting cursor's next turn would call, else ``None``."""
+        frame = self.acting_cursor.frame
+        if frame is not None and frame.model is not None:
+            return None
+        return self._model if isinstance(self._model, UnavailableModel) else None
+
+    def _recover_unavailable_model(self) -> UnavailableModel | None:
+        """Re-resolve an unavailable recorded model by its own name; what is still unavailable.
+
+        An extension may have registered its provider since the session opened.
+        Only the same name is tried, never another model.
+        """
+        unavailable = self._turn_unavailable()
+        if unavailable is None or self._model_resolver is None:
+            return unavailable
+        try:
+            model, api_key = self.resolve_model(unavailable.name)
+            self._configure_compaction(model)
+        except (KeyError, ValueError, CompactionPolicyError):
+            return unavailable
+        self._model, self._api_key = model, api_key
+        return None
 
     def _turn_api_key(self) -> str | None:
         """The key :meth:`_turn_model` is called with: its frame's, else the session's."""
@@ -3499,6 +3567,13 @@ class AgentSession:
             self._turn_token_counter += 1
             cur.turn_token = self._turn_token_counter
             if self._submission_runs_a_turn(sub):
+                unavailable = self._recover_unavailable_model()
+                if unavailable is not None:
+                    return SubmissionResult(
+                        accepted=False,
+                        submission_id=sub.submission_id,
+                        rejection_reason=unavailable.message(),
+                    )
                 await self._record_config()
             cur.pre_turn_leaf = cur.leaf
 

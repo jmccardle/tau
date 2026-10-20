@@ -1420,8 +1420,9 @@ The new :meth:`get_model` projection.
 **Raises**
 
 - `RuntimeError` — No session is bound, or the session has no model resolver.
+- `KeyError` — ``name`` is not a configured model.
+- `ModelUnavailableError` — ``name`` is configured and does not build; the message says why.
 - `TypeError` — The resolver returned something other than a ``Model``.
-- `Exception` — Whatever the resolver raises for an unknown ``name``, unchanged.
 
 ### set_reasoning
 
@@ -1595,6 +1596,7 @@ The re-rendered active-path messages (``ConversationTree.context_for``).
 
 - `RuntimeError` — No session is bound.
 - `ValueError` — ``from_entry`` names no entry (checked before the model call), or the summarizer returned nothing usable.
+- `ModelUnavailableError` — the session's model is unavailable.
 
 ### ui
 
@@ -1670,7 +1672,7 @@ An extension that failed to load (pi types.ts:1590 errors[]).
 <!-- agent: yes -->
 
 ```python
-class ExtensionPlan(load: list[tuple[ExtensionSource, bool]], withheld: list[ExtensionRecord], grandfathered: list[str])
+class ExtensionPlan(load: list[tuple[ExtensionSource, bool]], withheld: list[ExtensionRecord], grandfathered: list[str], awaiting_grandfather: list[str] = list())
 ```
 
 `tau_agent_core.sdk.ExtensionPlan`
@@ -1682,6 +1684,7 @@ What a load will do with every source, decided before anything is imported.
 - `load: list[tuple[ExtensionSource, bool]]` — The sources to load, in load order, each with whether it was named with ``-e``.
 - `withheld: list[ExtensionRecord]` — The sources found and not loaded, as records.
 - `grandfathered: list[str]` — Drop-ins authorized because no store existed (§5).
+- `awaiting_grandfather: list[str] = list()` — Drop-ins in ``load`` only because no store exists yet and this plan wrote none (``write=False``); the first start grandfathers them.
 
 ## ExtensionRecord
 <!-- agent: yes -->
@@ -1700,11 +1703,11 @@ One row of ``tau ext list``: an extension and its state (§7).
 - `kind: SourceKind` — Where it came from.
 - `target: str` — Module name or path.
 - `state: ExtensionState` — :data:`ExtensionState`.
-- `reason: str | None = None` — Why it is not loaded (``failed``, ``unauthorized``, ``unusable``, ``collision``), else ``None``.
+- `reason: str | None = None` — Why it is not loaded (``failed``, ``unauthorized``, ``unusable``, ``collision``), or why a ``pending-grandfather`` one would; else ``None``.
 - `distribution: str | None = None` — The installing distribution, for a package.
 - `version: str | None = None` — Its version, for a package.
 - `entry_point: str | None = None` — The entry point's name, for a package.
-- `authorization: str | None = None` — ``explicit`` (named with ``-e``), ``authorized``, ``new`` or ``update``; ``None`` for an unusable source.
+- `authorization: str | None = None` — ``explicit`` (named with ``-e``), ``authorized``, ``pending-grandfather`` (a no-session listing before the first start has written the store), ``new`` or ``update``; ``None`` for an unusable source.
 - `previous_version: str | None = None` — For an ``update``, the version that was authorized.
 - `orphan_topics: tuple[str, ...] = tuple()` — Topics this extension subscribed to whose emitter is no loaded extension (#44).
 
@@ -2432,9 +2435,10 @@ extension_records(explicit: Sequence[str] = (), *, discover: bool = True, extens
 
 The ``tau ext list`` rows with no session: what would load, and what would not.
 
-Imports nothing and writes nothing; a missing authorization store lists the
-drop-ins present as ``authorized``, because the first start grandfathers
-them (docs/EXTENSION-PACKAGES.md §5).
+Imports nothing and writes nothing. With no authorization store yet, the
+drop-ins present are state ``authorized`` (they would load) but authorization
+``pending-grandfather``, with :data:`AWAITING_GRANDFATHER_REASON`: no record
+exists until the first start writes one (docs/EXTENSION-PACKAGES.md §5).
 
 **Parameters**
 

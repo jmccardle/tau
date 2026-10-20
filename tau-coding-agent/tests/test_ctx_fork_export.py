@@ -21,10 +21,9 @@ from tau_coding_agent.session_store import Session
 
 @pytest.fixture(autouse=True)
 def _isolate_tau_dir(tmp_path, monkeypatch):
-    """Redirect the default sessions base (``TAU_DIR``) so an export fork — which
-    calls ``Session.fork`` with the default ``base_dir`` — writes under tmp_path
-    instead of the real ``~/.tau``."""
-    monkeypatch.setattr("tau_coding_agent.session_store.TAU_DIR", tmp_path / "tau")
+    """Make tmp τ's home, so an export fork (default ``base_dir``) writes there."""
+    (tmp_path / "tau").mkdir()
+    monkeypatch.setenv("TAU_HOME", str(tmp_path / "tau"))
 
 
 def _model() -> Model:

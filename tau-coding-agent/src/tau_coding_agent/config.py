@@ -1,14 +1,9 @@
-"""τ configuration: the single reader/writer for ``~/.tau/config.json``.
+"""τ configuration: the single reader and writer of ``<τ home>/config.json``.
 
-Before this module there were **two** divergent readers — ``cli.load_config``
-(validating) and ``TauApp.load_config`` (non-validating, and it wrote a *third*,
-hardcoded default that disagreed with the packaged ``tau_default_config.json``
-template) — plus two definitions of ``TAU_DIR``. Any new config key had to be
-taught to both, and ``action_edit_system_prompt`` persisted the *runtime* config
-(CLI overrides merged in) back to disk, silently promoting a one-run ``--model``
-flag into the on-disk default.
-
-One reader, one writer, one ``TAU_DIR``, one default template.
+One reader, one writer, one default template; it replaced two divergent readers
+that disagreed on the first-run default. The home is resolved at each use, never
+at import, so a bad ``TAU_HOME`` cannot break ``import`` or ``--help``
+(docs/PORTABLE-HOME.md §8).
 
 Reference: docs/CONSTRAINED-GEN-AND-BRANCHING-PLAN.md §2 (``models.<name>.grammar``
 / ``extra_body``), docs/JMFTS-INTEGRATION-PLAN.md §3.1 (``session_store``) — both
@@ -25,13 +20,29 @@ from pathlib import Path
 from typing import Any
 
 from tau_agent_core.compaction import CompactionConfig, CompactionSettings
+from tau_agent_core.model_availability import ModelUnavailableError
 from tau_agent_core.tau_home import resolve_tau_home
 
-TAU_DIR = resolve_tau_home()
-
-CONFIG_PATH = TAU_DIR / "config.json"
+CONFIG_FILENAME = "config.json"
 
 DEFAULT_CONFIG_TEMPLATE = Path(__file__).parent / "tau_default_config.json"
+
+
+def json_value(value: Any) -> str:
+    """``value`` as the user wrote it in config.json (``null``, ``"x"``); ``repr`` if not JSON."""
+    try:
+        return json.dumps(value)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def default_config_path() -> Path:
+    """τ's ``config.json``: ``<τ home>/config.json``, resolved now.
+
+    Raises:
+        TauHomeError: The τ home variables name something unusable.
+    """
+    return resolve_tau_home() / CONFIG_FILENAME
 
 
 class ConfigError(Exception):
@@ -41,14 +52,22 @@ class ConfigError(Exception):
     """
 
 
+class ModelConfigError(ConfigError, ModelUnavailableError):
+    """A ``models.<name>`` entry τ cannot use as written; the message names the key and the fix.
+
+    A :class:`~tau_agent_core.model_availability.ModelUnavailableError`, so an
+    extension catches it by the core's name, and so also a ``ValueError``.
+    """
+
+
 def load_config(path: Path | None = None) -> dict[str, Any]:
-    """Load ``~/.tau/config.json``; ``{}`` when absent.
+    """Load τ's ``config.json`` (``<τ home>/config.json`` unless ``path``); ``{}`` when absent.
 
     Fail-Early: a config file that exists but is not a JSON object raises rather
     than being silently coerced to an empty config (which would look like "no
     models configured" and send the user hunting in the wrong place).
     """
-    config_path = path or CONFIG_PATH
+    config_path = path or default_config_path()
     if not config_path.exists():
         return {}
     try:
@@ -68,7 +87,7 @@ def save_config(config: dict[str, Any], path: Path | None = None) -> None:
     writing that back would persist a one-run ``--model``/``--system-prompt`` flag
     as the permanent default. Use :func:`update_config` for read-modify-write.
     """
-    config_path = path or CONFIG_PATH
+    config_path = path or default_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     tmp = config_path.with_name(f".{config_path.name}.tmp{os.getpid()}")
@@ -100,7 +119,7 @@ def bootstrap_config(path: Path | None = None) -> dict[str, Any]:
     Returns the loaded config either way. The template is the single source of
     the first-run default — the TUI no longer carries its own copy.
     """
-    config_path = path or CONFIG_PATH
+    config_path = path or default_config_path()
     if config_path.exists():
         return load_config(config_path)
     template: Any = json.loads(DEFAULT_CONFIG_TEMPLATE.read_text())
@@ -111,6 +130,8 @@ def bootstrap_config(path: Path | None = None) -> dict[str, Any]:
     return config
 
 
+_JSON_TYPE_NAMES = {bool: "a boolean", int: "an integer", str: "a string"}
+
 COMPACTION_KEYS: dict[str, type] = {
     "auto": bool,
     "reserve_tokens": int,
@@ -119,11 +140,12 @@ COMPACTION_KEYS: dict[str, type] = {
 }
 
 
-def parse_compaction_config(block: Any) -> CompactionConfig:
+def parse_compaction_config(block: Any, where: str = "compaction") -> CompactionConfig:
     """Validate a ``"compaction"`` block; ``{}`` is the all-defaults answer.
 
     Args:
         block: The block as loaded from JSON.
+        where: The block's path in config.json, which every message names.
 
     Returns:
         The block as settings plus an optional summarizer name
@@ -135,20 +157,22 @@ def parse_compaction_config(block: Any) -> CompactionConfig:
             count that is not positive, or gives an empty ``summarizer``.
     """
     if not isinstance(block, dict):
-        raise ConfigError(f"'compaction' must be an object; got {type(block).__name__}")
+        raise ConfigError(f"'{where}' must be an object; got {json_value(block)}")
     for key, value in block.items():
         expected = COMPACTION_KEYS.get(key)
         if expected is None:
             raise ConfigError(
-                f"unknown key 'compaction.{key}'; known keys: {', '.join(COMPACTION_KEYS)}"
+                f"unknown key '{where}.{key}'; known keys: {', '.join(COMPACTION_KEYS)}"
             )
         if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
-            raise ConfigError(f"'compaction.{key}' must be {expected.__name__}; got {value!r}")
+            raise ConfigError(
+                f"'{where}.{key}' must be {_JSON_TYPE_NAMES[expected]}; got {json_value(value)}"
+            )
         if isinstance(value, int) and not isinstance(value, bool) and value <= 0:
-            raise ConfigError(f"'compaction.{key}' must be positive; got {value}")
+            raise ConfigError(f"'{where}.{key}' must be positive; got {value}")
     summarizer = block.get("summarizer")
     if summarizer == "":
-        raise ConfigError("'compaction.summarizer' must name a model; got an empty string")
+        raise ConfigError(f"'{where}.summarizer' must name a model; got an empty string")
     overrides = {
         key: block[key] for key in ("auto", "reserve_tokens", "keep_recent_tokens") if key in block
     }
@@ -171,7 +195,8 @@ def compaction_for(config: Mapping[str, Any], name: str | None) -> CompactionCon
 
     Raises:
         ConfigError: the block in force is malformed, or its ``summarizer``
-            names no configured model.
+            names no configured model. A top-level block's message starts with
+            the config path; an entry's names ``models.<name>.compaction``.
     """
     models = config.get("models") or {}
     entry = models.get(name) if name is not None else None
@@ -182,29 +207,19 @@ def compaction_for(config: Mapping[str, Any], name: str | None) -> CompactionCon
     else:
         return CompactionConfig(settings=CompactionSettings())
     try:
-        parsed = parse_compaction_config(block)
+        parsed = parse_compaction_config(block, where)
     except ConfigError as exc:
         if where == "compaction":
-            raise
-        raise ConfigError(f"{where}: {exc}") from exc
+            raise ConfigError(f"{default_config_path()}: {exc}") from exc
+        raise
     if parsed.summarizer is not None and parsed.summarizer not in models:
         known = ", ".join(sorted(models)) or "(none configured)"
+        prefix = f"{default_config_path()}: " if where == "compaction" else ""
         raise ConfigError(
-            f"'{where}.summarizer' names unknown model {parsed.summarizer!r}; "
+            f"{prefix}'{where}.summarizer' names unknown model {parsed.summarizer!r}; "
             f"configured models: {known}"
         )
     return parsed
-
-
-def validate_compaction_config(config: Mapping[str, Any]) -> None:
-    """Parse the top-level ``"compaction"`` block and every model's own, so a bad one fails at startup.
-
-    Raises:
-        ConfigError: any block fails :func:`compaction_for`.
-    """
-    compaction_for(config, None)
-    for name in config.get("models") or {}:
-        compaction_for(config, name)
 
 
 def apply_compaction_config(
@@ -220,6 +235,7 @@ def apply_compaction_config(
 
     Args:
         model_config: The config ``create_backend`` is about to receive; not mutated.
+            One carrying its own block must name its entry as ``config_name``.
         config: The loaded ``config.json``.
 
     Returns:
@@ -227,13 +243,25 @@ def apply_compaction_config(
 
     Raises:
         ConfigError: the block is malformed or ``summarizer`` names no
-            configured model.
+            configured model; an entry's block is named as ``models.<name>.compaction``.
+            Also a block on a ``model_config`` whose ``config_name`` is no
+            configured entry, which would otherwise be blamed on the top-level block.
     """
+    models = config.get("models") or {}
+    name = model_config.get("config_name")
     if "compaction" in model_config:
         block = model_config["compaction"]
+        if not (isinstance(name, str) and isinstance(models.get(name), Mapping)):
+            raise ConfigError(
+                f"a model config with its own 'compaction' block names no configured "
+                f"entry (config_name {json_value(name)}); its block can't be checked as "
+                "models.<name>.compaction"
+            )
+        entry = {**models[name], "compaction": block}
+        compaction_for({**config, "models": {**models, name: entry}}, name)
     elif "compaction" in config:
         block = config["compaction"]
+        compaction_for(config, None)
     else:
         return model_config
-    compaction_for({**config, "compaction": block}, None)
     return {**model_config, "compaction": block}

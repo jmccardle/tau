@@ -2,7 +2,7 @@
 
 Parses arguments (argparse, pi-aligned flags), then either runs a headless
 ``--print`` turn (see :mod:`tau_coding_agent.headless`) or launches the TauApp
-TUI. Model/provider/tool flags override ``~/.tau/config.json`` per-invocation in
+TUI. Model/provider/tool flags override τ's ``config.json`` per-invocation in
 both paths.
 
 Flag set and pi citations live in docs/CLI-PLAN.md. Short-alias divergences from
@@ -19,31 +19,26 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, Sequence
 
 from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
 from tau_agent_core.sdk import BusDependencyError, require_bus_dependency
-from tau_agent_core.tau_home import TauHomeError
-
-try:
-    from tau_coding_agent.config import TAU_DIR, ConfigError, load_config
-    from tau_coding_agent.headless import (
-        CLIError,
-        parse_ext_config_overrides,
-        resolve_model_config,
-        resolve_no_tools,
-        run_print,
-    )
-except TauHomeError as _home_error:
-    # config.TAU_DIR resolves at import, so every head's bad-home refusal happens here.
-    print(f"tau: error: {_home_error}", file=sys.stderr)
-    raise SystemExit(2) from None
+from tau_agent_core.tau_home import TauHomeError, pin_home_variables, resolve_tau_home
+from tau_coding_agent.config import ConfigError, load_config
+from tau_coding_agent.headless import (
+    CLIError,
+    parse_ext_config_overrides,
+    check_model_entries,
+    resolve_model_config,
+    resolve_no_tools,
+    run_print,
+)
 from tau_coding_agent.tagline import FUN_DEFAULT
 
-__all__ = ["TAU_DIR", "load_config", "main"]
+__all__ = ["load_config", "main"]
 
 
 def _version() -> str:
@@ -159,8 +154,9 @@ def build_parser() -> argparse.ArgumentParser:
             "neither combines with --print.\n"
             "\n"
             "environment:\n"
-            "  TAU_HOME    τ's home (config, sessions, extensions, themes) in place\n"
-            "              of ~/.tau; it must exist. The project's ./.tau still applies.\n"
+            "  TAU_HOME    names <τ home>, which holds config.json, sessions,\n"
+            "              extensions and themes; default ~/.tau. It must exist.\n"
+            "              The project's ./.tau still applies on top.\n"
         ),
     )
     parser.add_argument("--version", "-v", action="version", version=f"tau {_version()}")
@@ -192,15 +188,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         "-m",
         default=None,
-        help="model name from ~/.tau/config.json, or provider/id shorthand",
+        help="model name from <τ home>/config.json, or provider/id shorthand",
     )
     parser.add_argument(
         "--theme",
         default=None,
         help=(
             "TUI colour theme for this run only, overriding the 'theme' key in "
-            "~/.tau/config.json (built in: mocha, latte, gruvbox, ansi; plus any "
-            "~/.tau/themes/<name>.json). Picking a theme from the command palette "
+            "<τ home>/config.json (built in: mocha, latte, gruvbox, ansi; plus any "
+            "<τ home>/themes/<name>.json). Picking a theme from the command palette "
             "still saves; this flag never does"
         ),
     )
@@ -280,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="stop the agent after N LLM calls in one run (default: no limit; "
-        'over ~/.tau/config.json "max_turns")',
+        'over <τ home>/config.json "max_turns")',
     )
     parser.add_argument(
         "--ext-config",
@@ -335,7 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-prompt-templates",
         dest="no_prompt_templates",
         action="store_true",
-        help="skip prompt template discovery (~/.tau/prompts, .tau/prompts); "
+        help="skip prompt template discovery (<τ home>/prompts, .tau/prompts); "
         "--prompt-template paths still load",
     )
     parser.add_argument(
@@ -350,7 +346,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-skills",
         dest="no_skills",
         action="store_true",
-        help="skip skill discovery (~/.tau/skills); --skill paths still load",
+        help="skip skill discovery (<τ home>/skills); --skill paths still load",
     )
     sess = parser.add_mutually_exclusive_group()
     sess.add_argument(
@@ -396,7 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--store",
         default=None,
         choices=["file", "jmfts"],
-        help="session store backend for this run, overriding ~/.tau/config.json "
+        help="session store backend for this run, overriding <τ home>/config.json "
         '"session_store.backend" (default: file)',
     )
     parser.add_argument(
@@ -419,7 +415,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="DIR",
         help="store sessions under DIR instead of the default location "
-        "(~/.tau/sessions for the TUI and --print; a private <tmp>/.tau-<uid>/sessions "
+        "(<τ home>/sessions for the TUI and --print; a private <tmp>/.tau-<uid>/sessions "
         "for --mode rpc, so an RPC host does not fill your session list). "
         "File store only — it has no meaning for --store jmfts",
     )
@@ -514,13 +510,21 @@ def parse_cli_args(argv: list[str] | None = None) -> CLIArgs:
     )
 
 
-def _launch_tui(args: CLIArgs, config: dict) -> int:
-    """Launch the TauApp TUI, applying model/system-prompt overrides."""
+def _launch_tui(args: CLIArgs, config: dict, model_warnings: Sequence[str] = ()) -> int:
+    """Launch the TauApp TUI, applying model/system-prompt overrides.
+
+    ``model_warnings`` are :func:`~tau_coding_agent.headless.check_model_entries`'
+    lines, which the TUI notifies on mount.
+    """
     overrides: dict = {}
     if args.model or args.provider or args.thinking:
         name, model_config = resolve_model_config(config, args)
         existing = config.get("models", {}).get(name, {})
-        overrides["models"] = {name: {**existing, **model_config}}
+        override = {**existing, **model_config}
+        own_entry = config.get("models", {}).get(model_config.get("config_name")) or {}
+        if "compaction" not in own_entry:
+            override.pop("compaction", None)
+        overrides["models"] = {name: override}
         overrides["default_model"] = name
     if args.system_prompt is not None:
         overrides["system_prompt"] = args.system_prompt
@@ -555,6 +559,7 @@ def _launch_tui(args: CLIArgs, config: dict) -> int:
         "ext_config": ext_config_overrides,
         "store": args.store,
         "session_dir": args.session_dir,
+        "model_warnings": list(model_warnings),
     }
 
     try:
@@ -770,11 +775,12 @@ def main(argv: list[str] | None = None) -> int:
     The word was never a valid bare ``tau`` argument: a message without ``-p``
     is refused below, so claiming it takes nothing from anyone.
     """
+    pin_home_variables()
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw[:1] == ["ext"]:
         from tau_coding_agent.ext_cli import run_ext
 
-        return run_ext(raw[1:])
+        return _one_line_errors(run_ext, raw[1:])
     if raw[:1] == ["serve"]:
         try:
             from tau_coding_agent.serve.cli import run_serve
@@ -787,13 +793,14 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        return run_serve(raw[1:])
+        return _one_line_errors(run_serve, raw[1:])
     args = parse_cli_args(argv)
 
     if args.verbose:
         print(f"τ-coding-agent args: {args}", file=sys.stderr)
 
     try:
+        resolve_tau_home()
         if args.export_html is not None:
             if (
                 args.print_mode
@@ -947,9 +954,8 @@ def main(argv: list[str] | None = None) -> int:
                 "TUI, resume a session with --resume (or /resume, or the command "
                 "palette's 'Resume session…')"
             )
-        config = load_config()
         if args.print_mode:
-            return asyncio.run(run_print(args, config))
+            return asyncio.run(run_print(args, load_config()))
         if args.messages:
             raise CLIError(
                 "messages were given without --print; add -p to run headlessly "
@@ -957,6 +963,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.mode == "json":
             raise CLIError("--mode json only applies to headless --print runs")
+        config = load_config()
         address = _remote_address(args, config)
         if address is not None:
             return _launch_remote_tui(args, address)
@@ -964,14 +971,28 @@ def main(argv: list[str] | None = None) -> int:
             raise CLIError("--cwd names a directory on a daemon's machine; it needs --connect")
         if args.bus:
             require_bus_dependency()
-        return _launch_tui(args, config)
+        model_warnings = check_model_entries(config, args.model or config.get("default_model"))
+        return _launch_tui(args, config, model_warnings)
     except (
         BusDependencyError,
         ConfigError,
         ResourceError,
         UnsupportedCommandError,
         ExplicitExtensionError,
+        TauHomeError,
     ) as exc:
+        print(f"tau: error: {exc}", file=sys.stderr)
+        return 2
+
+
+def _one_line_errors(run: Callable[[list[str]], int], argv: list[str]) -> int:
+    """Run a subcommand, turning a bad τ home or config into one ``tau: error:`` line, exit 2.
+
+    The subcommand parses first, so its ``--help`` works whatever the home is.
+    """
+    try:
+        return run(argv)
+    except (TauHomeError, ConfigError) as exc:
         print(f"tau: error: {exc}", file=sys.stderr)
         return 2
 

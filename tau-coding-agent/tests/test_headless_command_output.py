@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 
-import tau_coding_agent.session_store as store
 from tau_coding_agent.cli import CLIArgs
 from tau_coding_agent.headless import run_print
 
@@ -48,7 +47,7 @@ def _write_ext(tmp_path) -> str:
 
 async def test_text_mode_prints_command_output(monkeypatch, tmp_path, capsys):
     """``--mode text``: the handler's returned report is printed to stdout."""
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     ext = _write_ext(tmp_path)
 
     args = CLIArgs(
@@ -68,7 +67,7 @@ async def test_text_mode_prints_command_output(monkeypatch, tmp_path, capsys):
 
 async def test_json_mode_emits_command_output_record(monkeypatch, tmp_path, capsys):
     """``--mode json``: one ``command_output`` record; no model events, no header line."""
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     ext = _write_ext(tmp_path)
 
     args = CLIArgs(
@@ -93,7 +92,7 @@ async def test_command_run_does_not_persist_a_user_turn(monkeypatch, tmp_path, c
     command run carries only its system message (the report is chrome, never a
     path node), so a reload sees no fabricated user/command turn.
     """
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     ext = _write_ext(tmp_path)
 
     args = CLIArgs(
@@ -135,7 +134,7 @@ async def test_unknown_slash_prompt_is_not_a_command(monkeypatch, tmp_path):
     to the user changes (the text still goes to the model verbatim); what changes is
     that no handler dispatch is attempted for text that was never a command.
     """
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     ext = _write_ext(tmp_path)
 
     dispatched: list[tuple[str, bool]] = []
@@ -198,7 +197,7 @@ async def test_slash_resume_says_print_mode_cannot_perform_it(monkeypatch, tmp_p
 
     from tau_agent_core.commands import UnsupportedCommandError
 
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
 
     args = CLIArgs(messages=["/resume"], print_mode=True, mode="text", model="m")
     with pytest.raises(UnsupportedCommandError) as exc:
@@ -214,7 +213,7 @@ async def test_an_unresolvable_ext_name_is_refused_not_sent_to_the_model(monkeyp
     from tau_coding_agent.backends import TauBackend
     from tau_coding_agent.headless import CLIError
 
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     ext = _write_ext(tmp_path)
 
     async def _no_turn(*_args, **_kwargs):

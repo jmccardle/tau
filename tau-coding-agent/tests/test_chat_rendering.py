@@ -768,7 +768,7 @@ async def test_headless_saved_session_round_trips(tmp_path, monkeypatch):
     agree, which is what makes a headless run *resumable* from the TUI."""
     import tau_coding_agent.session_store as store
 
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
 
     session = store.Session.create("/proj", "local-llm", "openai", system_prompt="sys")
     cursor = Cursor.newest(session)

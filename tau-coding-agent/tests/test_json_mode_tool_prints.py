@@ -12,7 +12,6 @@ import json
 from typing import Any
 from unittest.mock import patch
 
-import tau_coding_agent.session_store as store
 from tau_llm.streaming import DoneEvent
 from tau_llm.types import AssistantMessage, TextContent, ToolCall, Usage
 from tau_coding_agent.cli import CLIArgs
@@ -76,7 +75,7 @@ def _fake(model: Any, context: Any, options: Any = None) -> _Stream:
 
 async def test_a_printing_tool_does_not_break_the_jsonl_stream(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path))
     ext = tmp_path / "noisy.py"
     ext.write_text(_NOISY)
     config = {

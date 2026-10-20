@@ -434,10 +434,16 @@ class ModelSpec:
 
 @dataclass
 class ModelRecord:
-    """One model the config defines, as ``get_models`` lists it."""
+    """One model the config defines, as ``get_models`` lists it.
+
+    Exactly one of ``model`` and ``error`` is set: an entry that does not build
+    (for example a provider no loaded extension has registered) carries the
+    reason instead of a spec, and cannot be selected.
+    """
 
     name: str
-    model: ModelSpec
+    model: ModelSpec | None
+    error: str | None
 
 
 @dataclass

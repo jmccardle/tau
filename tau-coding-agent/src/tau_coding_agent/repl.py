@@ -72,6 +72,7 @@ from tau_agent_core.flows import (
     flow_arguments,
     flow_form_spec,
     next_step,
+    unavailable_models,
 )
 from tau_agent_core.sdk import (
     ExtensionStartupError,
@@ -84,16 +85,19 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import MultitaskStrategy, Submission
 from tau_agent_core.tools.image_resize import DEFAULT_MAX_IMAGE_DIMENSION
 from tau_agent_core.truncation import truncation_from_messages, truncation_notice
+from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import ConfigError
 from tau_coding_agent.headless import (
-    TRUNCATION_ADVICE,
     CLIError,
     cache_dialect_advice,
     extension_command_names,
     parse_ext_config_overrides,
     resolve_extensions_config,
+    check_model_entries,
+    print_model_warnings,
     resolve_model_config,
     select_session,
+    truncation_advice,
 )
 from tau_coding_agent.repl_input import Candidate, LineReader, PromptToolkitReader
 from tau_coding_agent.repl_theme import (
@@ -1262,8 +1266,8 @@ async def _pick_session(
     if not rows:
         raise CLIError(
             "no saved sessions to resume in this directory (the session store this "
-            "run resolved — ~/.tau/sessions unless --session-dir/--store says "
-            "otherwise). Drop --resume to start a fresh one."
+            f"run resolved — {resolve_tau_home() / 'sessions'} unless "
+            "--session-dir/--store says otherwise). Drop --resume to start a fresh one."
         )
     for number, row in enumerate(rows, start=1):
         console.print(
@@ -1462,7 +1466,6 @@ async def run_repl(
         0 — the loop ends on EOF, an idle interrupt, or a shutdown request.
     """
     from tau_coding_agent.backends import DEFAULT_MAX_TOKENS, create_backend, make_model_resolver
-    from tau_coding_agent.config import TAU_DIR
 
     configured_steering_strategy(config)
     attachment_inline_limit(config)
@@ -1471,7 +1474,7 @@ async def run_repl(
     reader = (
         reader
         if reader is not None
-        else PromptToolkitReader(console, history_path=TAU_DIR / "repl_history")
+        else PromptToolkitReader(console, history_path=resolve_tau_home() / "repl_history")
     )
     catalog = (
         catalog
@@ -1502,11 +1505,15 @@ async def run_repl(
             "the resumed session already has a system prompt"
         )
 
+    resumed = prior is not None and not args.model and not args.provider
+    selected = args.model or (prior.model if prior is not None else config.get("default_model"))
+    print_model_warnings(check_model_entries(config, selected, fatal=not resumed))
     model_name, model_config = resolve_model_config(
         config,
         args,
         fallback_model=prior.model if prior is not None else None,
         prior_config=prior.config if prior is not None else None,
+        open_unavailable=True,
     )
     backend_name = model_config.get("backend", "")
     cwd = os.getcwd()
@@ -1547,7 +1554,9 @@ async def run_repl(
     if prior is not None:
         if args.name is not None:
             await _require(backend, "set_session_name")(args.name)
-        if model_name != prior.model or backend_name != prior.backend:
+        if "unavailable" not in model_config and (
+            model_name != prior.model or backend_name != prior.backend
+        ):
             await _require(backend, "record_model_change")(model_name)
 
     unsubscribe = subscribe_session_events(agent_session.route_session_event)
@@ -1598,6 +1607,8 @@ async def run_repl(
         await _require(backend, "emit_session_start")("startup")
         if prior is not None:
             loop.replay(agent_session.messages)
+        if agent_session.model_unavailable is not None:
+            renderer.line("error", agent_session.model_unavailable)
         await loop.run()
         return 0
     finally:
@@ -2258,6 +2269,10 @@ class ReplLoop:
                     f"domain {domain.name!r} returned two values with the same label; "
                     "the form would not be able to say which was chosen"
                 )
+            if domain.name == "model_name":
+                resolver = getattr(self._agent_session, "model_resolver", None)
+                for name, why in sorted(unavailable_models(resolver).items()):
+                    self._renderer.line("system", f"model {name} is unavailable: {why}")
             options[argument.name] = by_label
         return options
 
@@ -2546,7 +2561,7 @@ class ReplLoop:
         if notice is None:
             return
         self._renderer.line("error", notice)
-        self._renderer.line("system", TRUNCATION_ADVICE)
+        self._renderer.line("system", truncation_advice())
 
     def _report_fault(self, exc: Exception, subject: str = "turn") -> None:
         """Print an unexpected fault with its traceback; the loop continues.

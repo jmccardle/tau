@@ -1,32 +1,16 @@
 """Shared, hermetic fixtures for the ``tau-coding-agent`` TUI suite.
 
 Seventeen test modules used to hand-roll the same ``TauApp`` fixture, and they
-did not agree on how to sandbox it. Two of the idioms in circulation were
-outright no-ops:
+did not agree on how to sandbox it; several read the developer's real
+``~/.tau/config.json``, and on a machine whose config selects the ``jmfts``
+session store every session a test created was written into the running JMFTS
+server.
 
-* ``monkeypatch.setattr("tau_coding_agent.app.TAU_DIR", tmp_path)`` patches a
-  *from-import binding* that nothing reads — ``TauApp.load_config`` delegates to
-  ``config.bootstrap_config``, which resolves its own module-level name.
-* ``monkeypatch.setattr("tau_coding_agent.config.TAU_DIR", tmp_path)`` is no
-  better: ``config.CONFIG_PATH`` is computed at import time (``TAU_DIR /
-  "config.json"``), so rebinding ``TAU_DIR`` afterwards cannot move it.
-
-The net effect was that several modules read the developer's real
-``~/.tau/config.json``. On a machine whose config selects the ``jmfts`` session
-store that is not a cosmetic problem: ``TauApp.__init__`` resolves a catalog
-through ``build_session_catalog``, which performs a live health check and then
-writes every session the test creates into the running JMFTS server.
-
-There are exactly three moves that isolate a ``TauApp``. They now live in
-:mod:`tau_coding_agent.testing.sandbox` (the ``devshot`` screenshot tool needs the
-same isolation), and this docstring remains their explanation:
-
-1. ``config.CONFIG_PATH`` — the only name ``bootstrap_config`` actually reads.
-2. ``session_store.TAU_DIR`` — where the file store roots its ``sessions/`` dir.
-3. An **injected** ``session_catalog``. ``TauApp.__init__`` takes one and
-   documents that it "always wins over resolving one", so injecting it means the
-   config-driven ``build_session_catalog`` branch — and its network health check
-   — never runs at all. Sandboxing paths alone never achieved this.
+The moves that isolate a ``TauApp`` live in
+:mod:`tau_coding_agent.testing.sandbox`: ``$TAU_HOME`` names the temp dir (every
+home read resolves at use), and an **injected** ``session_catalog`` keeps the
+config-driven ``build_session_catalog`` branch, with its network health check,
+from running at all.
 
 ``make_app`` is a factory rather than a plain fixture because the call sites do
 vary in two real ways (whether they stub ``create_backend``, and what config the
@@ -43,6 +27,7 @@ import pytest
 from textual.app import App
 from textual.worker import WorkerCancelled
 
+from tau_agent_core.tau_home import HOME_ENV
 from tau_coding_agent.app import TauApp
 from tau_coding_agent.testing.sandbox import DEFAULT_CONFIG, build_tau_app, sandbox_tau_home
 
@@ -50,11 +35,15 @@ __all__ = ["DEFAULT_CONFIG"]
 
 
 @pytest.fixture
-def tau_home(tmp_path: Path) -> Iterator[Path]:
-    """Redirect every ``~/.tau`` read and write into ``tmp_path``.
+def tau_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Make ``tmp_path`` τ's home for the test.
+
+    ``TAU_HOME`` goes through ``monkeypatch`` as well, so a test that also sets it
+    there unwinds in order instead of restoring the sandbox's value after it.
 
     Returns the sandboxed home so a test can assert against what landed on disk.
     """
+    monkeypatch.setenv(HOME_ENV, str(tmp_path))
     with sandbox_tau_home(tmp_path) as home:
         yield home
 

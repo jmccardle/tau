@@ -16,7 +16,6 @@ from typing import Any, Callable
 import pytest
 from rich.console import Console
 
-import tau_coding_agent.session_store as store
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.capabilities import BUILTIN, Vocabulary
 from tau_agent_core.compaction import CompactionResult
@@ -59,6 +58,7 @@ class FakeAgentSession:
         extension_state: What the ``/extensions`` listing is built from.
         compactions: Every ``custom_instructions`` ``/compact`` was run with.
         cursor: The cursor the head bound, or ``None`` before the bind.
+        model_unavailable: Why a turn would be refused for its model; ``None`` here.
     """
 
     def __init__(self, events: list[str]) -> None:
@@ -72,6 +72,7 @@ class FakeAgentSession:
         self.warnings: list[Any] = []
         self.compactions: list[str | None] = []
         self.compaction_result: CompactionResult | None = None
+        self.model_unavailable: str | None = None
 
     @property
     def messages(self) -> list[dict[str, Any]]:
@@ -284,7 +285,7 @@ class ReplEnv:
             tmp_path: The session store's root, so no run touches ``~/.tau``.
         """
         self._monkeypatch = monkeypatch
-        monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+        monkeypatch.setenv("TAU_HOME", str(tmp_path))
         self.config: dict[str, Any] = dict(CONFIG)
         self.console = Console(record=True, width=100, force_terminal=False)
         self.reader = MemoryReader()

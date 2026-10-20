@@ -17,33 +17,40 @@ from tau_coding_agent.backends import build_model_from_config
 
 class TestGrammarDialect:
     def test_absent_means_no_grammar_support(self):
-        assert build_model_from_config({"model": "m"}).grammar_dialect is None
+        assert build_model_from_config({"backend": "openai", "model": "m"}).grammar_dialect is None
 
     @pytest.mark.parametrize("dialect", ["llguidance", "gbnf"])
     def test_valid_dialects_are_carried(self, dialect):
-        model = build_model_from_config({"model": "m", "grammar": dialect})
+        model = build_model_from_config({"backend": "openai", "model": "m", "grammar": dialect})
         assert model.grammar_dialect == dialect
 
     def test_unknown_dialect_raises(self):
         """A typo must not degrade to 'no grammar support' — that reads as working."""
         with pytest.raises(ValueError, match="must be 'llguidance' or 'gbnf'"):
-            build_model_from_config({"model": "m", "grammar": "llguidence"})
+            build_model_from_config({"backend": "openai", "model": "m", "grammar": "llguidence"})
 
 
 class TestPromptCache:
     """Two keys, two questions: whether to cache, and how this wire is asked."""
 
     def test_absent_asks_for_caching_and_declares_no_dialect(self):
-        model = build_model_from_config({"model": "m"})
+        model = build_model_from_config({"backend": "openai", "model": "m"})
         assert model.prompt_cache is True
         assert model.prompt_cache_dialect is None
 
     def test_the_dialect_is_carried(self):
-        model = build_model_from_config({"model": "m", "prompt_cache_dialect": "anthropic"})
+        model = build_model_from_config(
+            {"backend": "openai", "model": "m", "prompt_cache_dialect": "anthropic"}
+        )
         assert model.prompt_cache_dialect == "anthropic"
 
     def test_caching_is_turned_off_by_the_boolean(self):
-        assert build_model_from_config({"model": "m", "prompt_cache": False}).prompt_cache is False
+        assert (
+            build_model_from_config(
+                {"backend": "openai", "model": "m", "prompt_cache": False}
+            ).prompt_cache
+            is False
+        )
 
     @pytest.mark.parametrize("value", ["anthropic", "off", "true"])
     def test_the_old_one_key_spelling_names_its_replacement(self, value):
@@ -51,36 +58,40 @@ class TestPromptCache:
         ``"off"`` would coerce to False and ``"anthropic"`` to a truthy nothing,
         and either reads as working while the dialect goes unsent."""
         with pytest.raises(ValueError, match="prompt_cache_dialect"):
-            build_model_from_config({"model": "m", "prompt_cache": value})
+            build_model_from_config({"backend": "openai", "model": "m", "prompt_cache": value})
 
     def test_a_non_boolean_raises(self):
         with pytest.raises(ValueError, match="must be a boolean"):
-            build_model_from_config({"model": "m", "prompt_cache": 1})
+            build_model_from_config({"backend": "openai", "model": "m", "prompt_cache": 1})
 
     def test_an_unknown_dialect_raises(self):
         """A typo must not degrade to 'no caching' — that reads as working while
         billing full input on every request."""
         with pytest.raises(ValueError, match="must be 'anthropic'"):
-            build_model_from_config({"model": "m", "prompt_cache_dialect": "ephemeral"})
+            build_model_from_config(
+                {"backend": "openai", "model": "m", "prompt_cache_dialect": "ephemeral"}
+            )
 
 
 class TestExtraBody:
     def test_absent_is_empty(self):
-        assert build_model_from_config({"model": "m"}).extra_body == {}
+        assert build_model_from_config({"backend": "openai", "model": "m"}).extra_body == {}
 
     def test_carried_through(self):
         model = build_model_from_config(
-            {"model": "m", "extra_body": {"cache_prompt": True, "min_p": 0.05}}
+            {"backend": "openai", "model": "m", "extra_body": {"cache_prompt": True, "min_p": 0.05}}
         )
         assert model.extra_body == {"cache_prompt": True, "min_p": 0.05}
 
     def test_non_object_raises(self):
         with pytest.raises(ValueError, match="must be a JSON object"):
-            build_model_from_config({"model": "m", "extra_body": ["cache_prompt"]})
+            build_model_from_config(
+                {"backend": "openai", "model": "m", "extra_body": ["cache_prompt"]}
+            )
 
     def test_config_dict_is_copied_not_aliased(self):
         """Mutating a Model must not write back into the user's loaded config."""
-        config = {"model": "m", "extra_body": {"cache_prompt": True}}
+        config = {"backend": "openai", "model": "m", "extra_body": {"cache_prompt": True}}
         model = build_model_from_config(config)
         model.extra_body["min_p"] = 0.1
 
@@ -89,17 +100,19 @@ class TestExtraBody:
 
 class TestServerFeatures:
     def test_absent_is_empty(self):
-        assert build_model_from_config({"model": "m"}).server_features == []
+        assert build_model_from_config({"backend": "openai", "model": "m"}).server_features == []
 
     def test_carried_through(self):
         model = build_model_from_config(
-            {"model": "m", "server_features": ["jump_forward", "slot_fork"]}
+            {"backend": "openai", "model": "m", "server_features": ["jump_forward", "slot_fork"]}
         )
         assert model.server_features == ["jump_forward", "slot_fork"]
 
     def test_non_list_raises(self):
         with pytest.raises(ValueError, match="must be a list of strings"):
-            build_model_from_config({"model": "m", "server_features": "jump_forward"})
+            build_model_from_config(
+                {"backend": "openai", "model": "m", "server_features": "jump_forward"}
+            )
 
 
 def test_a_realistic_local_llm_entry():

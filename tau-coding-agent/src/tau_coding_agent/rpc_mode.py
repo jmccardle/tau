@@ -155,6 +155,8 @@ from tau_coding_agent.headless import (
     start_extensions,
     parse_ui_defaults,
     resolve_extensions_config,
+    check_model_entries,
+    print_model_warnings,
     resolve_model_config,
     resolve_ui_defaults,
 )
@@ -221,6 +223,7 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
     """
     transport._take_over_stdout()
     try:
+        print_model_warnings(check_model_entries(config, args.model or config.get("default_model")))
         model_name, model_config = resolve_model_config(config, args)
 
         base_system_prompt = (

@@ -460,8 +460,18 @@ _GET_STATE_RETURNS: dict[str, Any] = {
         },
         "is_streaming": {"type": "boolean", "description": "AgentSession.is_streaming."},
         "model": {
-            "type": "object",
-            "description": "AgentSession.get_model(): {id, provider, context_window}.",
+            "type": ["object", "null"],
+            "description": (
+                "AgentSession.get_model(): {id, provider, context_window}; null while "
+                "the session's recorded model is unavailable (model_error says why)."
+            ),
+        },
+        "model_error": {
+            "type": ["string", "null"],
+            "description": (
+                "AgentSession.model_unavailable: why a turn would be refused for its "
+                "model, naming the model and the fix; null when the model resolves."
+            ),
         },
         "usage": {
             "type": ["object", "null"],
@@ -492,6 +502,7 @@ _GET_STATE_RETURNS: dict[str, Any] = {
         "status",
         "is_streaming",
         "model",
+        "model_error",
         "usage",
         "message_count",
         "leaf",
@@ -828,14 +839,18 @@ _GET_SESSION_STATS_RETURNS: dict[str, Any] = {
             ),
         },
         "context_window": {
-            "type": "integer",
-            "description": "The active model's context_window (get_model()).",
+            "type": ["integer", "null"],
+            "description": (
+                "The active model's context_window (get_model()); null while that "
+                "model is unavailable (get_state's model_error says why)."
+            ),
         },
         "context_headroom": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "description": (
                 "context_window - context.tokens. Can be negative: an "
-                "honest over-budget number, never clamped to zero."
+                "honest over-budget number, never clamped to zero. Null with "
+                "context_window."
             ),
         },
         "compaction_settings": {
@@ -894,7 +909,7 @@ _LIST_SESSIONS_RETURNS: dict[str, Any] = {
                 "store's absolute .jsonl path, a JMFTS catalog's document "
                 "id): it is what names WHICH universe this listing is, since "
                 "--mode rpc's default session base is <tmp>/.tau-<uid>/sessions "
-                "and the TUI's is ~/.tau/sessions (D-6/H1b). `name` is what "
+                "and the TUI's is <τ home>/sessions (D-6/H1b). `name` is what "
                 "set_session_name set, null if never named; `title` is the "
                 "picker's bounded display label (SessionInfo.display_title) "
                 "and is the only place message TEXT appears here — "
@@ -1706,7 +1721,7 @@ CAPABILITIES: dict[str, Capability] = {
             "Replace an extension's config slice and reload it so the values take "
             "effect. Values are checked against the declared schema; an undeclared "
             "key raises. Applies for this session only — the core does not own "
-            "~/.tau/config.json, so persisting is head-local.",
+            "<τ home>/config.json, so persisting is head-local.",
             on_wire=True,
             arguments=None,
             returns=_EXTENSION_ACTION_RETURNS,

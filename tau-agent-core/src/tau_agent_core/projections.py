@@ -278,14 +278,15 @@ def resolver_error_message(exc: KeyError | ValueError) -> str:
 
 
 def model_catalog(resolver: Any) -> list[dict[str, Any]]:
-    """Every model name ``resolver`` accepts, each as ``{name, model: {id, provider, context_window}}``.
+    """Every model name ``resolver`` accepts, each as ``{name, model, error}``.
 
-    Each ``model`` is what resolving the name builds, so it is what ``set_model``
-    on that name would install.
+    ``model`` (``{id, provider, context_window}``) is what resolving the name
+    builds, so it is what ``set_model`` on that name would install. A name that
+    does not build gets ``model: None`` and ``error``, the resolver's message, so
+    one bad entry never hides the rest; ``error`` is ``None`` otherwise.
 
     Raises:
-        RuntimeError: no resolver, one that cannot list its names, or a name that
-            does not build.
+        RuntimeError: no resolver, or one that cannot list its names.
     """
     if resolver is None:
         raise RuntimeError(
@@ -308,9 +309,8 @@ def model_catalog(resolver: Any) -> list[dict[str, Any]]:
         try:
             model = resolver(name)
         except (KeyError, ValueError) as exc:
-            raise RuntimeError(
-                f"get_models: config model {name!r} does not build: {resolver_error_message(exc)}"
-            ) from exc
+            listed.append({"name": name, "model": None, "error": resolver_error_message(exc)})
+            continue
         listed.append(
             {
                 "name": name,
@@ -319,6 +319,7 @@ def model_catalog(resolver: Any) -> list[dict[str, Any]]:
                     "provider": model.provider,
                     "context_window": model.context_window,
                 },
+                "error": None,
             }
         )
     return listed

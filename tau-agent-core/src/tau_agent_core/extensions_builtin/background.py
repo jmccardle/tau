@@ -48,6 +48,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from tau_llm.abort import AbortSignal
+from tau_agent_core.tau_home import resolve_tau_home
 
 BACKGROUND_KEY = "background"
 
@@ -924,7 +925,7 @@ def register_backgrounding(
         raise ValueError(
             "register_backgrounding: no tools named. Set "
             '"extensions": {"background": {"tools": ["bash", ...]}} in '
-            "~/.tau/config.json, or pass names=/definitions=."
+            f"{resolve_tau_home() / 'config.json'}, or pass names=/definitions=."
         )
 
     def _notify(message: str, level: str) -> None:

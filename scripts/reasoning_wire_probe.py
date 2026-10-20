@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""What each thinking level changes on the wire, per provider: raw HTTP, no SDK, no τ.
+"""What each thinking level changes on the wire, per provider: raw HTTP, no SDK.
 
 Reference: docs/REASONING-WIRE.md §1, docs/probe-results/reasoning-wire-2026-10-17.md.
 
-Reads keys from ``~/.tau/config.json`` by model ENTRY name and never prints one.
+Reads keys from ``<τ home>/config.json`` by model ENTRY name and never prints one;
+the τ home is the only τ code it uses, and nothing τ builds reaches the wire.
 Prints one JSON line per arm: what was sent, status, reasoning tokens, visible
 reasoning characters, the stop reason and which reasoning fields came back.
 
@@ -19,18 +20,18 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 from typing import Any
 
 import httpx
+from tau_agent_core.tau_home import resolve_tau_home
 
 PROMPT = "Is 391 prime? Think it through, then answer in one line."
 
 
 def _entry(name: str) -> dict[str, Any]:
-    """The config entry ``name``, from the user's ``~/.tau/config.json``."""
-    with open(os.path.expanduser("~/.tau/config.json")) as fh:
+    """The config entry ``name``, from the user's ``<τ home>/config.json``."""
+    with open(resolve_tau_home() / "config.json") as fh:
         models: dict[str, Any] = json.load(fh)["models"]
     return dict(models[name])
 
@@ -202,7 +203,7 @@ def main() -> None:
     probes = {"anthropic": anthropic, "google": google, "google-replay": google_replay, "openai": openai}
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("probe", choices=sorted(probes))
-    parser.add_argument("--entry", required=True, help="a model entry name in ~/.tau/config.json")
+    parser.add_argument("--entry", required=True, help="a model entry name in <τ home>/config.json")
     parser.add_argument("--model", help="the wire model id; defaults to the entry's `model`")
     args = parser.parse_args()
     entry = _entry(args.entry)

@@ -94,9 +94,8 @@ def test_file_catalog_is_built_on_the_given_dir(tmp_path):
 def test_file_catalog_without_the_flag_keeps_the_default(monkeypatch, tmp_path):
     """``None`` means ``~/.tau/sessions`` — the TUI's and ``--print``'s default
     is NOT moved by this unit; only ``--mode rpc``'s is."""
-    import tau_coding_agent.session_store as store
-
-    monkeypatch.setattr(store, "TAU_DIR", tmp_path / ".tau")
+    (tmp_path / ".tau").mkdir()
+    monkeypatch.setenv("TAU_HOME", str(tmp_path / ".tau"))
     catalog = build_session_catalog({}, "file", None)
     catalog.create(str(tmp_path / "cwd"), "m", "openai")
     assert list((tmp_path / ".tau" / "sessions").rglob("*.jsonl"))

@@ -1,11 +1,10 @@
 """Build a ``TauApp`` whose every ``~/.tau`` read and write lands in a temp dir.
 
-``tests/conftest.py`` worked this out first, and its docstring is still the long
-explanation of *why* these three moves and no others. The short version:
+``tests/conftest.py`` worked this out first. The moves:
 
-1. ``config.CONFIG_PATH`` is the only name ``bootstrap_config`` actually reads.
-   ``TAU_DIR`` is not — ``CONFIG_PATH`` is computed from it at import time.
-2. ``session_store.TAU_DIR`` is where the file store roots its ``sessions/`` dir.
+1. ``$TAU_HOME`` names *root*. Every home read resolves at use, so config,
+   sessions, settings, extensions and themes all land there.
+2. The session-event listeners are emptied for the duration.
 3. An **injected** ``session_catalog`` beats resolving one, so the config-driven
    ``build_session_catalog`` branch — and its live network health check — never
    runs.
@@ -19,6 +18,7 @@ Reference: docs/textual-headless-testing.md
 
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -34,26 +34,30 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 @contextmanager
 def sandbox_tau_home(root: Path) -> Iterator[Path]:
-    """Redirect ``~/.tau`` reads and writes into *root* for the duration.
+    """Make *root* τ's home for the duration, by setting ``$TAU_HOME``.
 
-    Restores the original module attributes on exit, so this is safe to nest
-    inside a pytest fixture or to call repeatedly from a long-lived process.
+    Restores the previous value on exit, so this is safe to nest inside a pytest
+    fixture or to call repeatedly from a long-lived process. Child processes
+    started inside inherit the sandbox.
+
+    Args:
+        root: An existing directory.
     """
-    import tau_coding_agent.config as config
     import tau_coding_agent.session_store as store
+    from tau_agent_core.tau_home import HOME_ENV
 
-    saved_config_path = config.CONFIG_PATH
-    saved_tau_dir = store.TAU_DIR
+    saved_home = os.environ.get(HOME_ENV)
     saved_listeners = store._session_listeners
 
-    config.CONFIG_PATH = root / "config.json"
-    store.TAU_DIR = root
+    os.environ[HOME_ENV] = str(root)
     store._session_listeners = []
     try:
         yield root
     finally:
-        config.CONFIG_PATH = saved_config_path
-        store.TAU_DIR = saved_tau_dir
+        if saved_home is None:
+            os.environ.pop(HOME_ENV, None)
+        else:
+            os.environ[HOME_ENV] = saved_home
         store._session_listeners = saved_listeners
 
 

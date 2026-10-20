@@ -33,6 +33,7 @@ from tau_coding_agent.tagline import pick_tagline
 from tau_coding_agent.headless import (
     apply_resource_flags,
     extension_command_names,
+    recorded_model_problem,
     resolve_extensions_config,
 )
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
@@ -41,11 +42,12 @@ from tau_agent_core.cursor import Cursor
 from tau_agent_core.extension_warnings import ExtensionWarning, warnings_marker
 from tau_agent_core.session_log import config_at
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
+from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import (
-    TAU_DIR,
     ConfigError,
     apply_compaction_config,
     bootstrap_config,
+    default_config_path,
     update_config,
 )
 from tau_coding_agent.session_picker import SCOPE_ALL, SCOPE_CWD, SessionPickerModal
@@ -95,6 +97,7 @@ from tau_agent_core.flows import (
     flow_form_spec,
     next_step,
     step_form_spec,
+    unavailable_models,
 )
 from tau_agent_core.commands import (
     FRONTEND_COMMANDS,
@@ -269,6 +272,7 @@ class TauApp(App):
         self._ext_config_overrides: dict[str, dict[str, Any]] = dict(
             run_config.get("ext_config", {})
         )
+        self._model_warnings: list[str] = list(run_config.get("model_warnings", []))
         self.load_config()
         if cli_overrides:
             self._apply_cli_overrides(cli_overrides)
@@ -597,23 +601,33 @@ class TauApp(App):
         :func:`~tau_coding_agent.backends.resolve_tool_names` over
         ``_apply_run_config``'s output — the exact call :class:`TauBackend` makes
         when it constructs them, so the pane cannot advertise a tool the next turn
-        will not have. An unknown ``default_model``
-        is reported as such rather than papered over: it is the same condition
-        :meth:`action_new_chat` refuses to start on, and the pane is where a user
-        can see it before typing.
+        will not have. An unknown ``default_model``, or an entry
+        ``recorded_model_problem`` says does not build, is reported as such rather
+        than papered over: the pane is where a user can see it before typing.
         """
-        name = self._live_model_name() or self.config.get("default_model", "local-llm")
-        entry = self.config.get("models", {}).get(name)
-        if entry is None:
+        name = self._live_model_name() or self.config.get("default_model")
+        if not name:
             return transcript.SessionFacts(
                 tagline=self._tagline,
-                model=f"{name} — not in config.json",
+                model=f"none — set default_model in {default_config_path()} or pass --model",
                 endpoint="unusable until this is fixed",
                 cwd=transcript._display_path(self._cwd),
                 tools="",
                 store=self._store_name,
             )
-        resolved = self._apply_run_config(entry)
+        models = self.config.get("models", {})
+        entry = models.get(name)
+        problem = recorded_model_problem(self.config, name) if name in models else None
+        if name not in models or problem is not None:
+            return transcript.SessionFacts(
+                tagline=self._tagline,
+                model=f"{name} — {problem or 'not in config.json'}",
+                endpoint="unusable until this is fixed",
+                cwd=transcript._display_path(self._cwd),
+                tools="",
+                store=self._store_name,
+            )
+        resolved = self._apply_run_config({**entry, "config_name": name})
         return transcript.SessionFacts(
             tagline=self._tagline,
             model=str(resolved.get("model", name)),
@@ -668,6 +682,8 @@ class TauApp(App):
 
         for message in self._theme_errors:
             self.notify(message, title="Theme", severity="error", timeout=10)
+        for message in self._model_warnings:
+            self.notify(message, title="Config", severity="warning", timeout=10)
 
         if self._remote is not None:
             self._start_remote()
@@ -1355,6 +1371,13 @@ class TauApp(App):
         session = getattr(self.current_backend, "agent_session", None)
         return getattr(session, "vocabulary", BUILTIN)
 
+    def _notify_unavailable_models(self, catalog: Optional[ModelCatalog]) -> None:
+        """Say which configured models the picker leaves out, and why (docs/MODEL-PICKER.md §2)."""
+        unavailable = unavailable_models(catalog)
+        if unavailable:
+            listed = "; ".join(f"{name}: {why}" for name, why in sorted(unavailable.items()))
+            self.notify(f"Unavailable models, not offered: {listed}", severity="warning")
+
     def _model_catalog(self) -> Optional[ModelCatalog]:
         """Where this head's model names come from, session or not (docs/MODEL-PICKER.md §2).
 
@@ -1638,6 +1661,8 @@ class TauApp(App):
                     f"domain {domain.name!r} returned two values with the same label; "
                     "the form would not be able to say which was chosen"
                 )
+            if domain.name == "model_name":
+                self._notify_unavailable_models(self._model_catalog())
             options[argument.name] = by_label
         return options
 
@@ -1735,6 +1760,8 @@ class TauApp(App):
                             f"domain {step.domain.name!r} returned two values with the same "
                             "label; the form would not be able to say which was chosen"
                         )
+                    if step.domain.name == "model_name":
+                        self._notify_unavailable_models(self._model_catalog())
                 spec = step_form_spec(step, title, options=list(labels) or None)
             except (ValueError, ServeError) as exc:
                 self.notify(f"/{step.flow}: {exc}", severity="error")
@@ -2262,7 +2289,7 @@ class TauApp(App):
             "tenth of what it costs here.\n\n"
             f"If `{model}` reaches an Anthropic model through an OpenAI-compatible "
             "gateway (LiteLLM or similar), set `models.<name>.prompt_cache_dialect` "
-            'to `"anthropic"` in `~/.tau/config.json` — τ cannot tell from a base '
+            f'to `"anthropic"` in `{default_config_path()}` — τ cannot tell from a base '
             "URL which dialect an endpoint speaks, so it has to be declared.\n\n"
             "Said once per model per session. See `docs/PROMPT-CACHING.md`.",
             source="markdown",
@@ -2295,7 +2322,7 @@ class TauApp(App):
             "**The model stopped at its output cap, not at the end of an answer.**\n\n"
             f"{notice}\n\n"
             "Anything it was still writing is missing from the turn above. Raise "
-            "`max_tokens` for this model in `~/.tau/config.json`, or lower the "
+            f"`max_tokens` for this model in `{default_config_path()}`, or lower the "
             "reasoning budget so the answer fits under the cap.",
             source="markdown",
         )
@@ -2310,10 +2337,13 @@ class TauApp(App):
         or states a cap this build would refuse — reporting a cap that is not the
         one in force is worse than reporting that it is not known.
         """
-        entry = self.config.get("models", {}).get(self.config.get("default_model", ""))
+        name = self.config.get("default_model", "")
+        entry = self.config.get("models", {}).get(name)
         if not isinstance(entry, dict):
             return None
-        cap = self._apply_run_config(entry).get("max_tokens", DEFAULT_MAX_TOKENS)
+        cap = self._apply_run_config({**entry, "config_name": name}).get(
+            "max_tokens", DEFAULT_MAX_TOKENS
+        )
         if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
             return None
         return cap
@@ -2840,14 +2870,24 @@ class TauApp(App):
             Whether a session is now open.
         """
         if model is None:
-            model = self.config.get("default_model", "local-llm")
+            model = self.config.get("default_model")
+        if not model:
+            self.notify(
+                f"No model: set default_model in {default_config_path()}, or pass --model",
+                severity="error",
+            )
+            return False
 
         self.log(f"Starting new chat with model: {model}")
 
         model_config = self.config["models"].get(model)
-        if not model_config:
+        if model not in self.config["models"]:
             self.notify(f"Unknown model: {model}", severity="error")
             self.log(f"Available models: {list(self.config['models'].keys())}")
+            return False
+        problem = recorded_model_problem(self.config, model)
+        if problem is not None:
+            self.notify(f"Model {model!r} is unavailable: {problem}", severity="error")
             return False
 
         try:
@@ -2892,8 +2932,6 @@ class TauApp(App):
         if self._remote is not None:
             await self._remote_new_chat(model)
             return
-        if model is None:
-            model = self.config.get("default_model", "local-llm")
         if not await self._open_new_session(model):
             return
 
@@ -2901,7 +2939,7 @@ class TauApp(App):
         await display.clear_messages()
 
         self._refresh_subtitle()
-        self.notify(f"Started new chat with {model}")
+        self.notify(f"Started new chat with {model or self.config.get('default_model')}")
 
         self.query_one(ChatSidebar).refresh_chats()
 
@@ -3642,7 +3680,7 @@ class TauApp(App):
             lines.append(f"## {role}\n\n{content}\n")
 
         # Save to file
-        export_path = TAU_DIR / "exports"
+        export_path = resolve_tau_home() / "exports"
         export_path.mkdir(parents=True, exist_ok=True)
 
         filename = f"chat_{self.current_session.id}.md"
@@ -4085,7 +4123,9 @@ class TauApp(App):
         directly-addressable ref, an exact session id, or a unique id prefix. It
         is also what ``AgentSessionRuntime.switch_session`` uses three lines
         below, so the two resolutions in this method can no longer disagree
-        about what a ref is.
+        about what a ref is. A recorded model that no longer resolves opens
+        unavailable, said once as an error; ``/model`` repairs it
+        (docs/SILENT-DEFAULTS.md §10).
         """
         if self._remote is not None:
             try:
@@ -4097,19 +4137,22 @@ class TauApp(App):
         try:
             session = self.session_catalog.resolve_ref(message.chat_ref, cwd=os.getcwd())
 
-            # Get model config and create backend
             model_config = self.config["models"].get(session.model)
-            if not model_config:
-                self.notify(f"Model {session.model} not found in config", severity="error")
-                return
-
+            problem = recorded_model_problem(self.config, session.model)
+            if problem is None and model_config is None:
+                problem = f"the TUI resumes a config key, and {session.model!r} is not one"
             recorded = session.config
-            resumed = {**model_config, "config_name": session.model}
+            if problem is None:
+                resumed = {**model_config, "config_name": session.model}
+                backend_name = model_config["backend"]
+            else:
+                resumed = {"config_name": session.model, "unavailable": problem}
+                backend_name = session.backend
             if "thinking" in recorded:
                 resumed["thinking"] = recorded["thinking"]
             await self._replace_backend(create_backend(self._apply_run_config(resumed)), "resume")
             self._session_runtime = self._build_session_runtime(
-                self.current_backend, session.model, model_config["backend"]
+                self.current_backend, session.model, backend_name
             )
             if self._session_runtime is not None:
                 result = await self._session_runtime.switch_session(message.chat_ref)
@@ -4133,6 +4176,10 @@ class TauApp(App):
             # Update UI — model + the reloaded conversation's rollup.
             self._refresh_subtitle()
             self.notify(f"Loaded session: {session.display_title()}")
+            agent_session = getattr(self.current_backend, "agent_session", None)
+            unavailable = getattr(agent_session, "model_unavailable", None)
+            if isinstance(unavailable, str):
+                self.notify(unavailable, severity="error")
 
         except Exception as e:
             self.notify(f"Error loading session: {str(e)}", severity="error")

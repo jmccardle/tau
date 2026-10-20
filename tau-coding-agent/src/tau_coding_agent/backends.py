@@ -30,11 +30,15 @@ from tau_agent_core.commands import CommandCompletion
 from tau_agent_core.compaction import CompactionConfig
 from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_coding_agent.config import (
+    ConfigError,
+    ModelConfigError,
     compaction_for,
+    default_config_path,
+    json_value,
     parse_compaction_config,
-    validate_compaction_config,
 )
 from tau_agent_core.extension_locks import ExtensionRequest
+from tau_agent_core.model_availability import UnavailableModel
 from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.skills import load_skills
 from tau_agent_core.messages import CUSTOM_ROLE
@@ -971,7 +975,7 @@ def _warn_undeclared_reasoning(model_id: str) -> None:
     print(
         f"[τ] warning: a thinking level was requested for model {model_id!r}, which "
         "does not declare reasoning support, so no thinking level is being sent. Add "
-        f'"reasoning": true to the {model_id!r} entry in ~/.tau/config.json if the '
+        f'"reasoning": true to the {model_id!r} entry in {default_config_path()} if the '
         "endpoint supports it.",
         file=sys.stderr,
     )
@@ -980,7 +984,15 @@ def _warn_undeclared_reasoning(model_id: str) -> None:
 _NUMERIC_STRING = re.compile(r"^[+-]?\d+$")
 
 
-def _validate_thinking_level_map(value: Any, model_id: str) -> None:
+class ProviderNotRegisteredError(ModelConfigError):
+    """A model's provider has no registered endpoint and it gives no ``base_url``.
+
+    Possibly only *yet*: an extension may register the provider before the model
+    is selected, so startup validation defers it (docs/EXTENSION-PROVIDERS.md §2).
+    """
+
+
+def _validate_thinking_level_map(value: Any, entry: str) -> None:
     """Fail-Early on a ``thinking_level_map`` that cannot mean what it says.
 
     Pydantic already rejects a wrong TYPE at ``Model`` construction. This catches
@@ -991,28 +1003,28 @@ def _validate_thinking_level_map(value: Any, model_id: str) -> None:
     if value is None:
         return
     if not isinstance(value, dict):
-        raise ValueError(
-            f"models.{model_id}.thinking_level_map must be a JSON object; got {value!r}"
+        raise ModelConfigError(
+            f"models.{entry}.thinking_level_map must be a JSON object; got {json_value(value)}"
         )
     for level, mapped in value.items():
         if not is_valid_thinking_level(level):
             known = ", ".join(EXTENDED_THINKING_LEVELS)
-            raise ValueError(
-                f"models.{model_id}.thinking_level_map has key {level!r}, which is not "
+            raise ModelConfigError(
+                f"models.{entry}.thinking_level_map has key {level!r}, which is not "
                 f"a thinking level ({known}). A key that names no level maps nothing."
             )
         if mapped is None or isinstance(mapped, str):
             continue
         if not isinstance(mapped, dict):
-            raise ValueError(
-                f"models.{model_id}.thinking_level_map[{level!r}] must be a string "
+            raise ModelConfigError(
+                f"models.{entry}.thinking_level_map[{level!r}] must be a string "
                 f"(sent as reasoning_effort), a request-body object, or null; "
-                f"got {mapped!r}"
+                f"got {json_value(mapped)}"
             )
         for key, fragment_value in mapped.items():
             if isinstance(fragment_value, str) and _NUMERIC_STRING.match(fragment_value):
-                raise ValueError(
-                    f"models.{model_id}.thinking_level_map[{level!r}][{key!r}] is the "
+                raise ModelConfigError(
+                    f"models.{entry}.thinking_level_map[{level!r}][{key!r}] is the "
                     f"string {fragment_value!r}, not the number {fragment_value}. "
                     "A numeric field sent as a JSON string is accepted and silently "
                     "ignored by llama.cpp — the request succeeds and the setting "
@@ -1029,7 +1041,8 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     ``set_model`` takes; an ad-hoc ``--model`` id is named by its id.
 
     Raises:
-        ValueError: No ``model`` id (docs/SILENT-DEFAULTS.md §1); an unimplemented
+        ValueError: No ``model`` id (docs/SILENT-DEFAULTS.md §1); no ``backend``
+            (§7); an unimplemented
             ``api``; no ``base_url`` from either source — never OpenAI's endpoint,
             which would send this vendor's key there (docs/EXTENSION-PROVIDERS.md
             §2); or an invalid typed field.
@@ -1037,12 +1050,18 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     model_id = config.get("model")
     if not isinstance(model_id, str) or not model_id:
         where = f"models.{config['config_name']}" if "config_name" in config else "model config"
-        raise ValueError(
-            f"{where} has no 'model' (the id sent to the server); got {model_id!r}. "
+        raise ModelConfigError(
+            f"{where} has no 'model' (the id sent to the server); got {json_value(model_id)}. "
             "Set it to the id the endpoint serves."
         )
-    backend_type = config.get("backend", "openai").lower()
     entry = config.get("config_name", model_id)
+    backend = config.get("backend")
+    if not isinstance(backend, str) or not backend:
+        raise ModelConfigError(
+            f"models.{entry} has no 'backend' (the provider); got {json_value(backend)}. τ does not "
+            f"guess one. Registered providers: {', '.join(registered_providers())}."
+        )
+    backend_type = backend.lower()
 
     # Map provider name (TauApp's "backend" field) to tau-agent-core provider.
     provider_map = {"openai": "openai", "anthropic": "anthropic", "gemini": "gemini"}
@@ -1051,18 +1070,24 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     spec = get_provider_spec(provider)
     api = config.get("api") or (spec.api if spec else "openai-completions")
     if api not in registered_apis():
-        raise ValueError(
+        raise ModelConfigError(
             f"models.{entry}.api is {api!r}, which τ does not implement. "
             f"Registered wire protocols: {', '.join(sorted(registered_apis()))}."
         )
 
     base_url = config.get("base_url") or (spec.base_url if spec else None)
     if not base_url:
-        raise ValueError(
-            f"models.{entry}: backend {provider!r} is not a registered provider with a "
-            f"default endpoint, and the entry sets no base_url. Set base_url, or register "
-            f"the provider before this model is built (docs/EXTENSION-PROVIDERS.md §2). "
-            f"Registered providers: {', '.join(registered_providers())}."
+        registered = ", ".join(registered_providers())
+        if "config_name" in config:
+            raise ProviderNotRegisteredError(
+                f"models.{entry}: backend {provider!r} is not a registered provider "
+                f"(registered: {registered}); an extension that provides it must load "
+                "first, or set base_url on the entry (docs/EXTENSION-PROVIDERS.md §2)"
+            )
+        raise ProviderNotRegisteredError(
+            f"provider {provider!r} is not registered (registered: {registered}); an "
+            "extension that provides it must load first, or give a base_url "
+            "(docs/EXTENSION-PROVIDERS.md §2)"
         )
 
     thinking_level = config.get("thinking")
@@ -1071,13 +1096,15 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
     if reasoning_arg is not None and not model_reasoning:
         _warn_undeclared_reasoning(model_id)
 
+    problems: list[str] = []
     reasoning_replay = config.get("reasoning_replay")
     if reasoning_replay is not None and reasoning_replay not in ("all", "turn", "off"):
-        raise ValueError(
-            f"reasoning_replay must be one of 'all', 'turn', 'off'; got {reasoning_replay!r}"
+        problems.append(
+            f"models.{entry}.reasoning_replay must be one of 'all', 'turn', 'off'; "
+            f"got {json_value(reasoning_replay)}"
         )
     if reasoning_replay == "off" and api == "anthropic-messages":
-        raise ValueError(
+        problems.append(
             f"models.{entry}.reasoning_replay is 'off', which the Anthropic Messages API "
             "cannot honour. Use 'turn' to drop prior turns' thinking "
             "(docs/REASONING-WIRE.md §6)."
@@ -1086,50 +1113,64 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
 
     strict_reasoning_formats = config.get("strict_reasoning_formats", False)
     if not isinstance(strict_reasoning_formats, bool):
-        raise ValueError(
-            "models.<name>.strict_reasoning_formats must be a boolean; got "
+        problems.append(
+            f"models.{entry}.strict_reasoning_formats must be a boolean; got "
             f"{strict_reasoning_formats!r}"
         )
 
     grammar_dialect = config.get("grammar")
     if grammar_dialect is not None and grammar_dialect not in ("llguidance", "gbnf"):
-        raise ValueError(
-            f"models.<name>.grammar must be 'llguidance' or 'gbnf'; got {grammar_dialect!r}"
+        problems.append(
+            f"models.{entry}.grammar must be 'llguidance' or 'gbnf'; got {json_value(grammar_dialect)}"
         )
     grammar_dialect = cast("Literal['llguidance', 'gbnf'] | None", grammar_dialect)
 
     prompt_cache = config.get("prompt_cache", True)
     if isinstance(prompt_cache, str):
-        raise ValueError(
-            f"models.<name>.prompt_cache is a boolean; got {prompt_cache!r}. The dialect "
+        problems.append(
+            f"models.{entry}.prompt_cache is a boolean; got {json_value(prompt_cache)}. The dialect "
             "moved to prompt_cache_dialect: 'anthropic', and 'off' is prompt_cache: false"
         )
-    if not isinstance(prompt_cache, bool):
-        raise ValueError(f"models.<name>.prompt_cache must be a boolean; got {prompt_cache!r}")
+    elif not isinstance(prompt_cache, bool):
+        problems.append(
+            f"models.{entry}.prompt_cache must be a boolean; got {json_value(prompt_cache)}"
+        )
 
     cache_dialect = config.get("prompt_cache_dialect")
     if cache_dialect is not None and cache_dialect != "anthropic":
-        raise ValueError(
-            f"models.<name>.prompt_cache_dialect must be 'anthropic'; got {cache_dialect!r}"
+        problems.append(
+            f"models.{entry}.prompt_cache_dialect must be 'anthropic'; got {json_value(cache_dialect)}"
         )
     cache_dialect = cast("Literal['anthropic'] | None", cache_dialect)
 
-    _validate_thinking_level_map(config.get("thinking_level_map"), model_id)
+    try:
+        _validate_thinking_level_map(config.get("thinking_level_map"), entry)
+    except ModelConfigError as exc:
+        problems.append(str(exc))
 
     extra_body = config.get("extra_body") or {}
     if not isinstance(extra_body, dict):
-        raise ValueError(f"models.<name>.extra_body must be a JSON object; got {extra_body!r}")
+        problems.append(
+            f"models.{entry}.extra_body must be a JSON object; got {json_value(extra_body)}"
+        )
 
     server_features = config.get("server_features") or []
     if not isinstance(server_features, list):
-        raise ValueError(
-            f"models.<name>.server_features must be a list of strings; got {server_features!r}"
+        problems.append(
+            f"models.{entry}.server_features must be a list of strings; got {json_value(server_features)}"
         )
 
     compat_config = config.get("compat")
+    compat = None
     if compat_config is not None and not isinstance(compat_config, dict):
-        raise ValueError(f"models.<name>.compat must be a JSON object; got {compat_config!r}")
-    compat = Compat(**compat_config) if compat_config else None
+        problems.append(
+            f"models.{entry}.compat must be a JSON object; got {json_value(compat_config)}"
+        )
+    elif compat_config:
+        try:
+            compat = Compat(**compat_config)
+        except (TypeError, ValueError) as exc:
+            problems.append(f"models.{entry}.compat is not valid: {_one_line(exc)}")
 
     context_window = config.get("context_window", 128000)
     if (
@@ -1137,35 +1178,114 @@ def build_model_from_config(config: dict[str, Any]) -> Model:
         or not isinstance(context_window, int)
         or context_window <= 0
     ):
-        raise ValueError(
-            f"models.<name>.context_window must be a positive integer; got {context_window!r}"
+        problems.append(
+            f"models.{entry}.context_window must be a positive integer; got {json_value(context_window)}"
         )
     max_tokens = config.get("max_tokens", DEFAULT_MAX_TOKENS)
     if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
-        raise ValueError(f"models.<name>.max_tokens must be a positive integer; got {max_tokens!r}")
+        problems.append(
+            f"models.{entry}.max_tokens must be a positive integer; got {json_value(max_tokens)}"
+        )
 
-    return Model(
-        id=model_id,
-        name=str(config.get("config_name", model_id)),
-        api=api,
-        provider=provider,
-        base_url=base_url,
-        context_window=context_window,
-        max_tokens=max_tokens,
-        reasoning=model_reasoning,
-        thinking_level_map=config.get("thinking_level_map"),
-        reasoning_replay=reasoning_replay,
-        strict_reasoning_formats=strict_reasoning_formats,
-        grammar_dialect=grammar_dialect,
-        prompt_cache=prompt_cache,
-        prompt_cache_dialect=cache_dialect,
-        extra_body=dict(extra_body),
-        server_features=list(server_features),
-        stream=config.get("stream", True),
-        request_timeout=config.get("request_timeout"),
-        temperature=config.get("temperature"),
-        compat=compat,
-    )
+    if problems:
+        raise ModelConfigError("; ".join(problems))
+
+    try:
+        return Model(
+            id=model_id,
+            name=str(config.get("config_name", model_id)),
+            api=api,
+            provider=provider,
+            base_url=base_url,
+            context_window=context_window,
+            max_tokens=max_tokens,
+            reasoning=model_reasoning,
+            thinking_level_map=config.get("thinking_level_map"),
+            reasoning_replay=reasoning_replay,
+            strict_reasoning_formats=strict_reasoning_formats,
+            grammar_dialect=grammar_dialect,
+            prompt_cache=prompt_cache,
+            prompt_cache_dialect=cache_dialect,
+            extra_body=dict(extra_body),
+            server_features=list(server_features),
+            stream=config.get("stream", True),
+            request_timeout=config.get("request_timeout"),
+            temperature=config.get("temperature"),
+            compat=compat,
+        )
+    except ValueError as exc:
+        raise ModelConfigError(f"models.{entry} is not valid: {_one_line(exc)}") from exc
+
+
+def _one_line(exc: Exception) -> str:
+    """An error as one line; a pydantic one as ``field: message`` pairs joined by ``; ``."""
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        return "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in errors()
+        )
+    return str(exc).replace("\n", " ")
+
+
+def model_entry_errors(config: Mapping[str, Any]) -> dict[str, str]:
+    """Each ``models`` entry that does not build, with every problem it has (docs/SILENT-DEFAULTS.md §8).
+
+    An entry's own ``compaction`` block is part of it. An entry whose
+    ``backend`` is not registered yet, with no ``base_url``, is left out: an
+    extension may register that provider first.
+
+    Args:
+        config: The loaded config.
+
+    Returns:
+        ``{name: message}``, each message one line naming ``models.<name>``.
+
+    Raises:
+        ModelConfigError: ``models`` is not a JSON object.
+    """
+    models = config.get("models") or {}
+    if not isinstance(models, dict):
+        raise ModelConfigError(f'{default_config_path()} "models" must be a JSON object')
+    errors = {}
+    for name, entry in models.items():
+        try:
+            build_config_entry(name, entry, config)
+        except ProviderNotRegisteredError:
+            continue
+        except ModelConfigError as exc:
+            errors[name] = str(exc)
+    return errors
+
+
+def build_config_entry(name: str, entry: Any, config: Mapping[str, Any]) -> Model:
+    """Build config entry ``name`` and check its ``compaction`` block (docs/SILENT-DEFAULTS.md §8).
+
+    Every path that builds a configured name goes through this, so each gets the
+    same per-entry error.
+
+    Raises:
+        ProviderNotRegisteredError: Its provider is not registered; nothing else is checked.
+        ModelConfigError: It is not an object, or it or its block is malformed;
+            every problem is named, joined by ``; ``.
+    """
+    if not isinstance(entry, dict):
+        raise ModelConfigError(f"models.{name} must be a JSON object; got {json_value(entry)}")
+    problems = []
+    model = None
+    try:
+        model = build_model_from_config({**entry, "config_name": name})
+    except ProviderNotRegisteredError:
+        raise
+    except ModelConfigError as exc:
+        problems.append(str(exc))
+    if "compaction" in entry:
+        try:
+            compaction_for(config, name)
+        except ConfigError as exc:
+            problems.append(str(exc))
+    if problems or model is None:
+        raise ModelConfigError("; ".join(problems))
+    return model
 
 
 class ConfigModelResolver:
@@ -1191,7 +1311,7 @@ class ConfigModelResolver:
     """
 
     def __init__(self, config: Mapping[str, Any]) -> None:
-        validate_compaction_config(config)
+        compaction_for(config, None)
         self._config = dict(config)
         self._models = dict(config.get("models") or {})
 
@@ -1209,16 +1329,30 @@ class ConfigModelResolver:
     def __call__(self, name: str) -> Model:
         """Resolve ``name`` through :func:`build_model_from_config`.
 
-        Fail-Early: an unknown name raises ``KeyError`` (naming the known models)
-        rather than fabricating a model — the raise propagates out of
-        ``AgentSession.set_model`` unchanged, and the RPC ``set_model`` verb renders
-        it as ``INVALID_PARAMS``.
+        Raises:
+            KeyError: ``name`` is not configured; the message lists the configured names.
+            ModelConfigError: the entry does not build. It is a
+                :class:`~tau_agent_core.model_availability.ModelUnavailableError`,
+                the name ``set_model``'s contract gives it.
         """
-        entry = self._models.get(name)
-        if entry is None:
+        if name not in self._models:
             known = ", ".join(self.model_names()) or "(none configured)"
             raise KeyError(f"unknown model {name!r}; configured models: {known}")
-        return build_model_from_config({**entry, "config_name": name})
+        return build_config_entry(name, self._models[name], self._config)
+
+    def model_errors(self) -> dict[str, str]:
+        """Each configured name that does not build, with the builder's message.
+
+        Read by :func:`~tau_agent_core.flows.unavailable_models`, so a picker
+        leaves such a name out and a head can say why.
+        """
+        errors = {}
+        for name in self.model_names():
+            try:
+                self(name)
+            except ValueError as exc:
+                errors[name] = str(exc)
+        return errors
 
     def api_key(self, name: str) -> str | None:
         """The ``api_key`` config gives ``name``; ``None`` leaves it to the provider's env var.
@@ -1237,8 +1371,8 @@ class ConfigModelResolver:
         The model's own ``"compaction"`` block, else the top-level one, else the
         defaults; a name that is not a configured model (an ad-hoc ``provider/id``)
         gets the top-level block. ``AgentSession`` reads this whenever its model
-        changes (docs/PRICING-AND-COMPACTION-CONFIG.md §6). Every block was
-        validated at construction, so this does not raise for a configured config.
+        changes (docs/PRICING-AND-COMPACTION-CONFIG.md §6), after resolving
+        ``name`` has checked its block, so this does not raise for a name that resolved.
         """
         return compaction_for(self._config, name)
 
@@ -1254,7 +1388,8 @@ def make_model_resolver(config: Mapping[str, Any]) -> ConfigModelResolver:
     (docs/PRICING-AND-COMPACTION-CONFIG.md §6).
 
     Raises:
-        ConfigError: a ``"compaction"`` block in ``config`` is malformed.
+        ConfigError: The top-level ``"compaction"`` block is malformed. A model's
+            own block is that entry's build error instead (docs/SILENT-DEFAULTS.md §8).
     """
     return ConfigModelResolver(config)
 
@@ -1450,7 +1585,9 @@ class TauBackend(Backend):
     :func:`~tau_coding_agent.config.apply_compaction_config`), auto-compaction on
     unless it says otherwise. The head's ``set_model_resolver`` call is what
     configures compaction from then on, and a block naming a summarizer refuses
-    turns until it happens (docs/PRICING-AND-COMPACTION-CONFIG.md §6).
+    turns until it happens (docs/PRICING-AND-COMPACTION-CONFIG.md §6). A config
+    with ``unavailable`` (``headless.resolve_model_config``'s ``open_unavailable``)
+    opens on an :class:`~tau_agent_core.model_availability.UnavailableModel`.
 
     Attributes:
         comparisons: The open comparisons (:meth:`compare`), by id, until ended.
@@ -1459,10 +1596,15 @@ class TauBackend(Backend):
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
 
-        model = build_model_from_config(config)
+        model: Model | UnavailableModel
+        if "unavailable" in config:
+            model = UnavailableModel(config["config_name"], config["unavailable"])
+            self.model_name = model.name
+        else:
+            model = build_model_from_config(config)
+            self.model_name = model.id
         api_key = config.get("api_key")
 
-        self.model_name = model.id
         reasoning_arg = config.get("thinking") or None
 
         cwd = config.get("cwd")

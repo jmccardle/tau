@@ -88,7 +88,8 @@ def _summary_response(text: str):
 @pytest.fixture
 def isolate_tau_dir(tmp_path, monkeypatch):
     """Point the default sessions base at tmp so an export fork writes there."""
-    monkeypatch.setattr("tau_coding_agent.session_store.TAU_DIR", tmp_path / "tau")
+    (tmp_path / "tau").mkdir(exist_ok=True)
+    monkeypatch.setenv("TAU_HOME", str(tmp_path / "tau"))
     return tmp_path
 
 

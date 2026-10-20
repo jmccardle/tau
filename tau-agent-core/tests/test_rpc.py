@@ -96,6 +96,7 @@ def _session(**overrides: Any) -> MagicMock:
     session.is_aborted = False
     session.shutdown_requested = False
     session.get_model.return_value = {"id": "gpt-4o", "provider": "openai", "context_window": 8192}
+    session.model_unavailable = None
     session.get_usage.return_value = None
     session.messages = []
     session.session_log = MagicMock()
@@ -322,6 +323,7 @@ async def test_run_reads_a_request_writes_a_response_and_stops_at_eof(handler, m
                 "status": "idle",
                 "is_streaming": False,
                 "model": {"id": "gpt-4o", "provider": "openai", "context_window": 8192},
+                "model_error": None,
                 "usage": None,
                 "message_count": 0,
                 "leaf": "leaf-1",
@@ -963,6 +965,7 @@ async def test_get_state_aggregates_the_session(handler, session):
         "status": "running",
         "is_streaming": True,
         "model": {"id": "gpt-4o", "provider": "openai", "context_window": 8192},
+        "model_error": None,
         "usage": {"input_tokens": 3},
         "message_count": 2,
         "leaf": "leaf-1",

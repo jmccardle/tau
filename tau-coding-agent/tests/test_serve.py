@@ -372,10 +372,12 @@ async def test_the_attach_answer_carries_the_whole_vocabulary_models_and_load_er
         {
             "name": "fake",
             "model": {"id": "fake-model", "provider": "openai", "context_window": 128000},
+            "error": None,
         },
         {
             "name": "other",
             "model": {"id": "other-model", "provider": "openai", "context_window": 128000},
+            "error": None,
         },
     ]
     await client.close()
@@ -644,3 +646,137 @@ async def test_a_client_that_vanishes_without_a_close_frame_is_one_log_line(serv
     await _until(lambda: "dropped (no close frame)" in served.out.getvalue())
     assert "Traceback" not in served.out.getvalue()
     assert not served.daemon.clients
+
+
+async def test_a_new_session_on_an_unconfigured_bare_model_is_refused(served, tmp_path):
+    """No default provider (docs/SILENT-DEFAULTS.md §7): refused before a session exists."""
+    client = await served.client()
+    with pytest.raises(
+        ServeError, match=f"{dialect.INVALID_PARAMS}.*model 'nope' is not configured"
+    ):
+        await client.request(p.NewSession(cwd=str(tmp_path), model="nope"))
+    assert served.daemon.hosts == {}
+    await client.close()
+
+
+async def test_a_new_session_on_an_unregistered_provider_is_invalid_params(served, tmp_path):
+    client = await served.client()
+    with pytest.raises(
+        ServeError, match=f"{dialect.INVALID_PARAMS}.*provider 'foo' is not registered"
+    ):
+        await client.request(p.NewSession(cwd=str(tmp_path), model="foo/bar"))
+    assert served.daemon.hosts == {}
+    await client.close()
+
+
+async def test_the_hello_lists_an_unbuildable_entry_with_its_error(
+    tmp_path, provider, extensions_off
+):
+    """One entry whose provider is not registered must not fail the hello for all."""
+    config = {**_CONFIG, "models": {**_CONFIG["models"], "ext": {"backend": "acme", "model": "m"}}}
+    server, served = await _serve(tmp_path, config)
+    client = await served.client()
+    rows = {row["name"]: row for row in client.hello["models"]}
+    assert rows["ext"]["model"] is None
+    assert "backend 'acme' is not a registered provider" in rows["ext"]["error"]
+    assert rows["fake"]["error"] is None and rows["fake"]["model"]["id"] == "fake-model"
+    await client.close()
+    server.close()
+    await server.wait_closed()
+    await served.daemon.shutdown()
+
+
+async def test_a_session_whose_recorded_model_is_gone_opens_and_refuses_only_a_turn(
+    tmp_path, provider, extensions_off
+):
+    """tau-code's repro: the session ran 'local-llm-tun'; this config has only 'unused'.
+
+    Attach, reads and fork work and name the recorded model with why it is
+    unavailable; a prompt refuses before any request; set_model repairs it.
+    """
+    unused = {**_CONFIG["models"]["fake"], "model": "unused-model"}
+    config = {"models": {"unused": unused}}
+    catalog = FileSessionCatalog(tmp_path / "sessions")
+    log = catalog.create(str(tmp_path), "local-llm-tun", "openai")
+    server, served = await _serve(tmp_path, config)
+    client = await served.client()
+    try:
+        replica = await client.attach(log.id)
+        head = replica.head_cursor_id
+        state = replica.cursors[head]
+        assert state["model"] == "local-llm-tun"
+        assert "'local-llm-tun' is unavailable: it is not configured" in state["model_error"]
+        assert "configured: unused" in state["model_error"]
+
+        got = await _rpc(client, "get_state", log.id, head)
+        assert got["model"] is None and got["model_error"] == state["model_error"]
+        assert (await _rpc(client, "get_messages", log.id, head))["messages"] == []
+        stats = await _rpc(client, "get_session_stats", log.id, head)
+        assert stats["context_window"] is None and stats["context_headroom"] is None
+
+        forked = await client.request(p.Fork(session_id=log.id, cursor_id=head))
+        fork_replica = await client.attach(forked["session"]["session_id"])
+        assert fork_replica.cursors[fork_replica.head_cursor_id]["model"] == "local-llm-tun"
+
+        with patch("tau_agent_core.agent_loop.stream_simple") as never:
+            with pytest.raises(
+                ServeError,
+                match=f"{dialect.SUBMISSION_REJECTED}.*'local-llm-tun' is unavailable.*/model",
+            ):
+                await client.submit_and_wait(log.id, head, "hi", source="rpc", submitter="t")
+            never.assert_not_called()
+
+        await _rpc(client, "set_model", log.id, head, name="unused")
+        await _until(lambda: replica.cursors[head]["model"] == "unused")
+        assert replica.cursors[head]["model_error"] is None
+        result = await client.submit_and_wait(log.id, head, "hi", source="rpc", submitter="t")
+        assert result["accepted"] is True
+        await _until(lambda: replica.seq == served.daemon.hosts[log.id].seq)
+        texts = [
+            e["message"]["content"][0]["text"]
+            for e in replica.entries
+            if e.get("message", {}).get("role") == "assistant"
+        ]
+        assert texts == ["re: hi"]
+    finally:
+        await client.close()
+        server.close()
+        await server.wait_closed()
+        await served.daemon.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("recorded", "why"),
+    [
+        (None, "models.local-llm-tun must be a JSON object; got null"),
+        ("x", 'models.local-llm-tun must be a JSON object; got "x"'),
+        (
+            {**_CONFIG["models"]["fake"], "compaction": {"reserve_tokens": "lots"}},
+            "'models.local-llm-tun.compaction.reserve_tokens' must be an integer; got \"lots\"",
+        ),
+    ],
+    ids=["null", "string", "bad-compaction"],
+)
+async def test_a_recorded_entry_that_does_not_build_attaches_and_reads(
+    tmp_path, provider, extensions_off, recorded, why
+):
+    """A malformed recorded entry opens read-only (§10), never INTERNAL_ERROR or INVALID_PARAMS."""
+    config = {"models": {"fake": _CONFIG["models"]["fake"], "local-llm-tun": recorded}}
+    catalog = FileSessionCatalog(tmp_path / "sessions")
+    log = catalog.create(str(tmp_path), "local-llm-tun", "openai")
+    server, served = await _serve(tmp_path, config)
+    client = await served.client()
+    try:
+        replica = await client.attach(log.id)
+        head = replica.head_cursor_id
+        assert f"'local-llm-tun' is unavailable: {why}" in replica.cursors[head]["model_error"]
+        assert (await _rpc(client, "get_messages", log.id, head))["messages"] == []
+        with patch("tau_agent_core.agent_loop.stream_simple") as never:
+            with pytest.raises(ServeError, match=f"{dialect.SUBMISSION_REJECTED}.*unavailable"):
+                await client.submit_and_wait(log.id, head, "hi", source="rpc", submitter="t")
+            never.assert_not_called()
+    finally:
+        await client.close()
+        server.close()
+        await server.wait_closed()
+        await served.daemon.shutdown()

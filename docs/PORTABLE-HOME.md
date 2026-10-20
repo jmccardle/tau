@@ -102,9 +102,8 @@ launcher sets it on every run, with or without a `.tau` beside it.
   not replaced. τ never creates it.
 - `TAU_PORTABLE_BASE` keeps exactly the meaning §2 gives it.
 
-**Every head says it in one line.** `tau_coding_agent.config.TAU_DIR`
-resolves at import, so `tau_coding_agent.cli` catches `TauHomeError` around
-that import, prints `tau: error: <message>` and exits 2. That covers the TUI,
+**Every head says it in one line.** `tau_coding_agent.cli` prints
+`tau: error: <message>` and exits 2 (§8 has how, since 2026-10-19). That covers the TUI,
 `-p`, rpc, repl, `serve` and `ext`, for both `tau` and
 `python -m tau_coding_agent.cli`. A bad `TAU_PORTABLE_BASE` takes the same
 path; it used to print a traceback and exit 1.
@@ -146,3 +145,71 @@ resolves when the module is first imported.
 
 `HOME_ENV_VARS` lives beside `resolve_tau_home`. A third home variable is
 added there, in one place, and both guards pick it up.
+
+## 8. The home resolves at use, never at import (2026-10-19)
+
+**What was wrong.** `tau_coding_agent.config.TAU_DIR` and `CONFIG_PATH` were
+computed when the module was imported, and §6 made `cli.py` turn a
+`TauHomeError` there into `SystemExit(2)`. So with a bad `TAU_HOME`,
+`tau --help` (the text that documents `TAU_HOME`) and `tau --version` exited 2,
+and any program importing `tau_coding_agent.cli` to reach `build_parser` was
+killed by the import.
+
+**Now.** Neither constant exists. Every reader calls `resolve_tau_home()`
+when it needs the home, and nothing caches the answer, so a long-lived
+process (the serve daemon, an embedding program) sees a change to `TAU_HOME`
+or `HOME` at its next read: `config.default_config_path()`, the file session
+store's default base, the serve log, the REPL history, themes and exports.
+`cli.main` resolves once right after argument parsing, inside the handler
+that prints `tau: error:`. `tau ext` and `tau serve` run through the same
+handler, and they parse before they touch the home. So `--help` and
+`--version` work whatever the home is, and a real command still refuses a
+bad one in one line with exit 2.
+
+**For tests and embedders.** There is nothing left to monkeypatch. Set
+`TAU_HOME` to an existing directory; `testing.sandbox.sandbox_tau_home` does
+exactly that.
+
+## 9. A relative `TAU_HOME` is pinned for children (2026-10-19)
+
+**What was wrong.** `TAU_HOME=scratch tau` resolved `scratch` against the cwd,
+but left the variable relative. A child τ started from another directory (the
+bash tool, a delegate, `examples/20_delegate.py`) resolved a different home,
+or exited 2 because there was none.
+
+**Now.** `cli.main` calls `tau_home.pin_home_variables()` first. It rewrites a
+relative `TAU_HOME` or `TAU_PORTABLE_BASE` in `os.environ` as an absolute path,
+so every child inherits the home the head chose. It checks nothing and can't
+fail; a bad value is still refused at resolution, after `--help` has had its
+chance.
+
+**Why rewrite rather than refuse.** A relative path typed in a shell has one
+obvious meaning, the directory it was typed in. Refusing it would make the
+user restate something τ can work out, which is an error without a decision
+behind it.
+
+**Not covered.** A program that embeds `tau_agent_core` without going through
+`cli.main` gets no pinning: `resolve_tau_home` resolves a relative value
+against the cwd of each call. Such a program should call
+`pin_home_variables()` itself before it starts children or changes directory.
+
+## 10. Messages name the home in force (2026-10-19, #62)
+
+Errors and notices used to say `~/.tau/config.json` (or `~/.tau/sessions`)
+whatever the home was, so under `TAU_HOME` or a portable home they sent the
+user to the wrong file. Now:
+- **A runtime message in a head or in core** names the resolved file:
+  `config.default_config_path()` in `tau_coding_agent`,
+  `resolve_tau_home() / "config.json"` in `tau_agent_core`. Example:
+  `/srv/scratch/config.json "session_store" must be a JSON object`.
+- **Static text** (`--help`, RPC and serve capability descriptions, which are
+  built once) says `<τ home>/config.json`, and `--help`'s environment block
+  says what `<τ home>` is.
+- **`tau_llm` messages** say `τ's config.json`. `tau_llm` sits below
+  `tau_agent_core` and must not import it, so it cannot know the path.
+
+The ext_kit state and ledger directories, `examples/20_delegate.py`'s pricing
+config, and `scripts/reasoning_wire_probe.py` resolve the home the same way.
+`scripts/gemini_capability_probe.py` keeps `~/.tau/gemini-key`, because it
+promises to run without τ installed. The two `experiments/` runs that read
+`~/.tau/config.json` are records of runs already made, so they are left alone.

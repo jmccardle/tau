@@ -45,7 +45,13 @@ from tau_agent_core.prompt_cache import PromptCacheObserver, completions_from_me
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import Submission
 from tau_agent_core.truncation import truncation_from_messages, truncation_notice
-from tau_coding_agent.config import ConfigError, apply_compaction_config
+from tau_agent_core.tau_home import resolve_tau_home
+from tau_coding_agent.config import (
+    ConfigError,
+    apply_compaction_config,
+    default_config_path,
+    json_value,
+)
 from tau_coding_agent.store_factory import build_session_catalog
 
 from tau_llm.models import is_valid_thinking_level
@@ -118,7 +124,9 @@ def apply_resource_flags(
             if listed is None:
                 continue
             if not isinstance(listed, list) or not all(isinstance(p, str) for p in listed):
-                raise CLIError(f"{where} key {key!r} must be a list of paths, got {listed!r}")
+                raise CLIError(
+                    f"{where} key {key!r} must be a list of paths, got {json_value(listed)}"
+                )
             joined.extend(p for p in listed if p not in joined)
         if joined:
             model_config[key] = joined
@@ -126,11 +134,32 @@ def apply_resource_flags(
             model_config[switch] = True
 
 
+def unconfigured_model_message(name: str, models: dict[str, Any]) -> str:
+    """Why a bare model name that is not a configured key is refused, and what to write.
+
+    Args:
+        name: The name as given, without a ``:level`` suffix.
+        models: The config ``models`` map.
+
+    Returns:
+        One sentence naming the model, the configured keys and the ad-hoc form.
+    """
+    known = ", ".join(sorted(models)) or "none"
+    return (
+        f"model {name!r} is not configured in {default_config_path()} "
+        f"(configured: {known}). Use one of those, or name the provider for a "
+        f"model that is not configured: --model PROVIDER/{name}, "
+        f"or --provider PROVIDER --model {name}"
+    )
+
+
 def resolve_model_config(
     config: dict,
     args: "CLIArgs",
     fallback_model: str | None = None,
     prior_config: dict[str, Any] | None = None,
+    *,
+    open_unavailable: bool = False,
 ) -> tuple[str, dict]:
     """Resolve ``--model``/``--provider``/``--tools`` into a backend config dict.
 
@@ -140,10 +169,11 @@ def resolve_model_config(
     config entry also sets ``config_name``, the key it was found under; the
     compaction block rides in through :func:`apply_compaction_config`).
 
-    Resolution order, mirroring the TUI and pi's ``resolveCliModel``:
-      1. ``--model NAME`` matching a key in ``config["models"]`` → that entry.
-      2. ``provider/id`` shorthand → an ad-hoc entry (provider from the prefix).
-      3. a bare id → an ad-hoc entry (provider from ``--provider`` or ``openai``).
+    Resolution order:
+      1. A key in ``config["models"]``, with or without a ``:level`` suffix → that entry.
+      2. ``provider/id``, or a bare id with ``--provider`` → an ad-hoc entry.
+      3. Anything else is refused: there is no default provider
+         (docs/SILENT-DEFAULTS.md §7).
     A ``model:level`` thinking suffix (or the ``--thinking`` flag) sets the
     requested reasoning level on ``model_config["thinking"]``.
 
@@ -155,40 +185,71 @@ def resolve_model_config(
     records a thinking level and neither ``--thinking`` nor a ``:level`` suffix
     names one, the session resumes at it, a recorded ``None`` included: that is
     the provider default, not ``"off"`` (docs/REASONING-WIRE.md §4).
+
+    ``open_unavailable`` is for a head that opens a resumed session to read it as
+    well as to run it: a ``fallback_model`` that no longer resolves or builds,
+    with no ``--model``, comes back as ``{"config_name", "unavailable": why}``
+    instead of raising, and the backend opens the session on an
+    :class:`~tau_agent_core.model_availability.UnavailableModel`
+    (docs/SILENT-DEFAULTS.md §10). A ``--model`` is user input and always raises.
+
+    Raises:
+        CLIError: no model named, an unconfigured bare name, or a malformed flag.
+        ModelConfigError: a recorded model's entry does not build, unless
+            ``open_unavailable``.
     """
     models = config.get("models", {})
+    if open_unavailable and not args.model and not args.provider and fallback_model:
+        reason = recorded_model_problem(config, fallback_model)
+        if reason is not None:
+            unavailable: dict[str, Any] = {"config_name": fallback_model, "unavailable": reason}
+            if args.thinking is not None:
+                unavailable["thinking"] = args.thinking
+            elif prior_config is not None and "thinking" in prior_config:
+                unavailable["thinking"] = prior_config["thinking"]
+            return fallback_model, _apply_run_flags(unavailable, config, args)
     spec = args.model or fallback_model or config.get("default_model")
     if not spec:
         raise CLIError(
             "no model specified and no 'default_model' in config; "
-            "pass --model NAME or set default_model in ~/.tau/config.json"
+            f"pass --model NAME or set default_model in {default_config_path()}"
         )
 
     suffix_thinking: str | None = None
     if spec in models:
         # Exact config-key match wins (so a key may legitimately contain a colon).
-        model_config = {**models[spec], "config_name": spec}
+        model_config = _entry_config(models, spec)
     else:
         head, sep, tail = spec.rpartition(":")
         spec_id = spec
         if sep and is_valid_thinking_level(tail):
             suffix_thinking = tail
             spec_id = head
-        # Ad-hoc model not present in the config map.
-        if "/" in spec_id:
-            prov, _, mid = spec_id.partition("/")
+        if spec_id in models:
+            model_config = _entry_config(models, spec_id)
         else:
-            prov, mid = (args.provider or "openai"), spec_id
-        if not mid:
-            raise CLIError(f"invalid --model value: {spec!r}")
-        model_config = {"backend": prov, "model": mid}
+            if "/" in spec_id:
+                prov, _, mid = spec_id.partition("/")
+            elif args.provider:
+                prov, mid = args.provider, spec_id
+            else:
+                raise CLIError(unconfigured_model_message(spec_id, models))
+            if not prov or not mid:
+                raise CLIError(f"invalid --model value: {spec!r}")
+            model_config = {"backend": prov, "model": mid}
 
     thinking = args.thinking or suffix_thinking
     if thinking is None and prior_config is not None and "thinking" in prior_config:
         thinking = prior_config["thinking"]
     if thinking is not None:
         model_config["thinking"] = thinking
+    return spec, _apply_run_flags(model_config, config, args)
 
+
+def _apply_run_flags(
+    model_config: dict[str, Any], config: dict[str, Any], args: "CLIArgs"
+) -> dict[str, Any]:
+    """``model_config`` with every per-run flag and config-wide key applied, compaction last."""
     # Per-invocation overrides (CLI > config).
     if args.provider:
         model_config["backend"] = args.provider
@@ -240,7 +301,109 @@ def resolve_model_config(
     elif "max_turns" not in model_config and config.get("max_turns") is not None:
         model_config["max_turns"] = int(config["max_turns"])
 
-    return spec, apply_compaction_config(model_config, config)
+    return apply_compaction_config(model_config, config)
+
+
+def recorded_model_problem(config: dict[str, Any], name: str) -> str | None:
+    """Why a resumed session's recorded model ``name`` cannot be used now, else ``None``.
+
+    Args:
+        config: The loaded config.
+        name: The recorded config name; a ``:level`` suffix or ``provider/id``
+            resolves as ``resolve_model_config`` resolves it.
+
+    Returns:
+        The reason, phrased to follow "is unavailable: ", or ``None`` when it builds.
+    """
+    from tau_coding_agent.backends import build_config_entry, build_model_from_config
+    from tau_coding_agent.config import ModelConfigError
+
+    models = config.get("models", {})
+    key = _entry_key(models, name)
+    try:
+        if key in models:
+            build_config_entry(key, models[key], config)
+        elif "/" in key:
+            provider, _, model_id = key.partition("/")
+            build_model_from_config({"backend": provider, "model": model_id})
+        else:
+            known = ", ".join(sorted(models)) or "none"
+            return f"it is not configured in {default_config_path()} (configured: {known})"
+    except ModelConfigError as exc:
+        return str(exc).rstrip(".")
+    return None
+
+
+def _entry_config(models: dict[str, Any], key: str) -> dict[str, Any]:
+    """Config entry ``key`` as a backend config naming it.
+
+    Raises:
+        ModelConfigError: The entry is not a JSON object.
+    """
+    from tau_coding_agent.config import ModelConfigError
+
+    entry = models[key]
+    if not isinstance(entry, dict):
+        raise ModelConfigError(f"models.{key} must be a JSON object; got {json_value(entry)}")
+    return {**entry, "config_name": key}
+
+
+def _entry_key(models: dict[str, Any], name: str) -> str:
+    """The config key ``name`` selects: itself, or itself without a ``:level`` suffix."""
+    head, sep, tail = name.rpartition(":")
+    return head if name not in models and sep and is_valid_thinking_level(tail) else name
+
+
+def check_model_entries(
+    config: dict[str, Any], selected: str | None, *, fatal: bool = True
+) -> list[str]:
+    """Refuse the selected model entry if it does not build; a warning for each other bad one.
+
+    Only the entry a command will use stops it; any other bad entry, its own
+    ``compaction`` block included, is reported and stays unselectable. The
+    top-level ``compaction`` block applies to every model, so it always stops it
+    (docs/SILENT-DEFAULTS.md §8).
+
+    Args:
+        config: The loaded config.
+        selected: The model name the command will use (``--model``, a resumed
+            session's, or ``default_model``); ``None`` or an unconfigured name
+            selects no entry.
+        fatal: ``False`` when the head opens a bad selected entry itself
+            (docs/SILENT-DEFAULTS.md §10); it is then neither raised nor warned.
+
+    Returns:
+        One warning per other entry that does not build, without a prefix.
+
+    Raises:
+        ModelConfigError: The selected entry does not build, or ``models`` is
+            not a JSON object.
+        ConfigError: The top-level ``compaction`` block is malformed.
+    """
+    from tau_coding_agent.backends import model_entry_errors
+    from tau_coding_agent.config import ModelConfigError, compaction_for
+
+    compaction_for(config, None)
+    errors = model_entry_errors(config)
+    path = default_config_path()
+    key = _entry_key(config.get("models") or {}, selected) if selected else None
+    if key in errors:
+        error = errors.pop(key).rstrip(".")
+        if fatal:
+            raise ModelConfigError(
+                f"{path}: the selected model {key!r} does not build: {error}. "
+                f"Fix models.{key}, or select a model that builds"
+            )
+    return [
+        f"{path}: model {name!r} is unavailable and can't be selected: {error}"
+        for name, error in errors.items()
+    ]
+
+
+def print_model_warnings(warnings: list[str]) -> None:
+    """Write each of :func:`check_model_entries`' warnings to stderr as a ``tau: warning:`` line."""
+    for warning in warnings:
+        print(f"tau: warning: {warning}", file=sys.stderr)
 
 
 def _decode_ext_config_value(raw: str) -> Any:
@@ -312,13 +475,13 @@ def resolve_extensions_config(
     base = config.get("extensions", {})
     if not isinstance(base, dict):
         raise CLIError(
-            '~/.tau/config.json "extensions" must be a JSON object mapping '
+            f'{default_config_path()} "extensions" must be a JSON object mapping '
             "extension name -> config object"
         )
     merged: dict[str, dict[str, Any]] = {}
     for name, ext_conf in base.items():
         if not isinstance(ext_conf, dict):
-            raise CLIError(f'~/.tau/config.json "extensions.{name}" must be a JSON object')
+            raise CLIError(f'{default_config_path()} "extensions.{name}" must be a JSON object')
         merged[name] = dict(ext_conf)
     for name, kv in overrides.items():
         merged.setdefault(name, {}).update(kv)
@@ -425,7 +588,8 @@ def resolve_ui_defaults(config: dict, overrides: dict[str, str]) -> dict[str, st
     base = config.get("ui_defaults", {})
     if not isinstance(base, dict):
         raise CLIError(
-            '~/.tau/config.json "ui_defaults" must be a JSON object mapping dialog method -> answer'
+            f'{default_config_path()} "ui_defaults" must be a JSON object mapping '
+            "dialog method -> answer"
         )
     merged: dict[str, str] = {str(k): str(v) for k, v in base.items()}
     merged.update(overrides)
@@ -474,8 +638,8 @@ def select_session(args: "CLIArgs", catalog: SessionCatalog) -> ConversationSess
         if session is None:
             raise CLIError(
                 "no saved sessions to continue (this directory has no history in "
-                "the session store this run resolved — ~/.tau/sessions unless "
-                "--session-dir/--store says otherwise)"
+                f"the session store this run resolved — {resolve_tau_home() / 'sessions'} "
+                "unless --session-dir/--store says otherwise)"
             )
         return session
 
@@ -523,25 +687,25 @@ def _emit_command_output(mode: str, command: str, text: str | None) -> None:
         sys.stdout.flush()
 
 
-TRUNCATION_ADVICE = (
-    "Raise max_tokens for this model in ~/.tau/config.json, or lower the "
-    "reasoning budget so the answer fits under the cap. "
-    "See docs/TRUNCATED-TOOL-CALLS.md."
-)
-"""What to DO about a truncated answer, said in one sentence.
+def truncation_advice() -> str:
+    """What to DO about a completion cut at the output cap, in one sentence.
 
-Beside :func:`report_truncation` rather than inside it because a head that
-renders the notice itself — the REPL prints it in the scrollback, where print
-mode writes stderr — must give the same advice rather than a second wording of
-it (docs/REPL-HEAD.md §4).
-"""
+    Beside :func:`report_truncation` because a head that renders the notice itself
+    (the REPL's scrollback, print mode's stderr) must give the same advice
+    (docs/REPL-HEAD.md §4). It names the config file resolved now.
+    """
+    return (
+        f"Raise max_tokens for this model in {default_config_path()}, or lower the "
+        "reasoning budget so the answer fits under the cap. "
+        "See docs/TRUNCATED-TOOL-CALLS.md."
+    )
 
 
 def cache_dialect_advice(model_name: str) -> str:
     """What to DO about a prompt cache that read nothing, in one sentence.
 
     Extracted from :func:`report_cache_miss` for the reason
-    :data:`TRUNCATION_ADVICE` is: two heads, one sentence.
+    :func:`truncation_advice` is: two heads, one sentence.
 
     Args:
         model_name: The config model name, since the fix is a key under it.
@@ -552,7 +716,7 @@ def cache_dialect_advice(model_name: str) -> str:
     return (
         f"If '{model_name}' reaches an Anthropic model through an OpenAI-compatible "
         'gateway, set models.<name>.prompt_cache_dialect to "anthropic" in '
-        "~/.tau/config.json. See docs/PROMPT-CACHING.md."
+        f"{default_config_path()}. See docs/PROMPT-CACHING.md."
     )
 
 
@@ -611,7 +775,7 @@ def report_truncation(messages: list[dict[str, Any]], max_tokens: int | None) ->
     if notice is None:
         return None
     print(f"[τ] {notice}", file=sys.stderr)
-    print(f"[τ] {TRUNCATION_ADVICE}", file=sys.stderr)
+    print(f"[τ] {truncation_advice()}", file=sys.stderr)
     return notice
 
 
@@ -877,6 +1041,15 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
 
     # A resumed run keeps the session's model unless --model overrides it.
     fallback_model = prior.model if prior is not None else None
+    if fallback_model is not None and not args.model and not args.provider:
+        problem = recorded_model_problem(config, fallback_model)
+        if problem is not None:
+            raise CLIError(
+                f"the resumed session's model {fallback_model!r} is unavailable: {problem}. "
+                "Pass --model NAME to continue it on a configured model"
+            )
+    selected = args.model or fallback_model or config.get("default_model")
+    print_model_warnings(check_model_entries(config, selected))
     model_name, model_config = resolve_model_config(
         config,
         args,

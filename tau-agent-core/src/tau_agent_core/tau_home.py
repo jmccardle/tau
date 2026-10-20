@@ -6,7 +6,7 @@ Rationale: docs/PORTABLE-HOME.md.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 HOME_ENV = "TAU_HOME"
@@ -23,6 +23,23 @@ HOME_ENV_VARS = (HOME_ENV, PORTABLE_BASE_ENV)
 
 class TauHomeError(Exception):
     """``$TAU_HOME`` or ``$TAU_PORTABLE_BASE`` names something that is not a directory."""
+
+
+def pin_home_variables(environ: MutableMapping[str, str] | None = None) -> None:
+    """Rewrite a relative :data:`HOME_ENV_VARS` value as an absolute path, in place.
+
+    A child started from another directory (the bash tool, a delegate) then
+    resolves the same home. Nothing is checked here, so this cannot fail; an
+    unusable value still raises in :func:`resolve_tau_home`.
+
+    Args:
+        environ: The environment to rewrite; ``os.environ`` when omitted.
+    """
+    env = os.environ if environ is None else environ
+    for name in HOME_ENV_VARS:
+        value = env.get(name, "")
+        if value and not os.path.isabs(os.path.expanduser(value)):
+            env[name] = os.path.realpath(value)
 
 
 def resolve_tau_home(environ: Mapping[str, str] | None = None) -> Path:

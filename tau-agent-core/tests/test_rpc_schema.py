@@ -125,7 +125,7 @@ class TestTheProseStaysHandWritten:
         """`set_model`'s wire description names the config file; its label does not."""
         assert CAPABILITIES["set_model"].arguments[0].description == "Which configured model."
         wire = COMMAND_TABLE["set_model"].params_schema["properties"]["name"]["description"]
-        assert "~/.tau/config.json" in wire
+        assert "<τ home>/config.json" in wire
 
     def test_an_override_may_add_a_keyword_the_registry_has_no_field_for(self):
         schema = COMMAND_TABLE["complete_path"].params_schema

@@ -19,7 +19,7 @@ needs a model to answer, so this file stands up a real fake OpenAI-compatible
 HTTP server on loopback (stdlib ``http.server``, the exact pattern
 ``test_delegate.py`` already uses to drive a *different* τ subprocess
 honestly) and points the child's ``~/.tau/config.json`` at it via a temp
-``$HOME``. ``config.TAU_DIR = Path.home() / ".tau"`` is resolved fresh by the
+``$HOME``. The τ home is resolved by the
 *child process*, so redirecting its env's ``HOME`` is real isolation, not a
 monkeypatch that only fools the parent (MEMORY.md: monkeypatching a
 from-import binding in-process is how the TUI suite silently kept hitting a

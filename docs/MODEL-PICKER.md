@@ -96,6 +96,18 @@ Per head:
   models in the hello from protocol 0.10, at attach, and through
   `enumerate_domain` after that. It must follow the bump (§7).
 
+**An entry that does not build is listed, never offered (2026-10-19).** Any
+entry a command does not select may fail to build: a malformed one, which
+startup warns about, or one whose `backend` no loaded extension has registered
+yet (docs/SILENT-DEFAULTS.md §8). `projections.model_catalog` now builds per entry:
+RPC `get_models` and the serve hello's `models` list such an entry as
+`{name, model: null, error}` instead of failing the whole list, and every other
+entry carries `error: null`. A catalog may declare `model_errors()`
+(`ConfigModelResolver`, and `RemoteConnection` from the hello); the core's
+`flows.unavailable_models` reads it, the `model_name` domain leaves those names
+out, so no picker or completion can select one, and the TUI and REPL say which
+entries are unavailable and why when the picker opens.
+
 ## 3. A dialog whose body scrolls between pinned header and footer
 
 The shell gained `BODY_ID`. A `TauDialog` that sets it is composed as a docked

@@ -488,7 +488,7 @@ class TestTheSetting:
         from tau_coding_agent.session_store import FileSessionCatalog
         from tau_coding_agent import config as config_module
 
-        config_module.CONFIG_PATH.write_text(
+        config_module.default_config_path().write_text(
             json.dumps({"models": {}, "steering_strategy": "nope"})
         )
         with pytest.raises(ConfigError, match="steering_strategy"):

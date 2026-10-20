@@ -6,7 +6,7 @@ the scrollback here because a REPL's scrollback IS its transcript: ``tau -p``
 writes stderr only because its stdout is one.
 
 The advice sentence each notice ends with is now one string in ``headless.py``
-(:data:`TRUNCATION_ADVICE`, :func:`cache_dialect_advice`), so print mode and this
+(:func:`truncation_advice`, :func:`cache_dialect_advice`), so print mode and this
 head cannot drift into two wordings of the same fix.
 """
 
@@ -16,10 +16,10 @@ from typing import Any
 
 from tau_agent_core.submission import SubmissionResult
 from tau_coding_agent.headless import (
-    TRUNCATION_ADVICE,
     cache_dialect_advice,
     report_cache_miss,
     report_truncation,
+    truncation_advice,
 )
 
 from repl_fakes import FakeBackend, ReplEnv, env  # noqa: F401
@@ -60,7 +60,7 @@ async def test_a_completion_cut_at_the_cap_says_so_and_names_the_cap(env: ReplEn
     text = _unwrapped(env.text)
     assert "stopped at the output cap (stop_reason: length, max_tokens = 512)" in text
     assert "2" in text
-    assert _unwrapped(TRUNCATION_ADVICE) in text
+    assert _unwrapped(truncation_advice()) in text
 
 
 async def test_the_notice_is_printed_once_for_the_turn_that_earned_it(env: ReplEnv) -> None:
@@ -124,4 +124,4 @@ def test_print_mode_gives_the_same_advice_as_the_prompt_line(capsys: Any) -> Non
     assert report_truncation([_assistant("length")], 512) is not None
     assert report_cache_miss([], "local-llm") is None
     err = capsys.readouterr().err
-    assert TRUNCATION_ADVICE in _unwrapped(err)
+    assert truncation_advice() in _unwrapped(err)

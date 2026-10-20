@@ -142,7 +142,7 @@ class _Stream:
 class TestPrintMode:
     async def test_print_mode_persists_the_expanded_prompt(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(store, "TAU_DIR", tmp_path)
+        monkeypatch.setenv("TAU_HOME", str(tmp_path))
         _write(tmp_path / "p" / "review.md", "Review $ARGUMENTS carefully")
         config = {
             "models": {"local-llm": _model_config(tmp_path, tools=[])},
