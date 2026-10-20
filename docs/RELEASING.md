@@ -697,6 +697,7 @@ takes.
 | — | 0.11.0 and earlier carried none |
 | 0.12.0 | I think, therefore I raise |
 | 0.13.0 | There was no choice but to be pioneers. |
+| 0.14.0 | What did Ilya see? We'll never know |
 
 Create it as a **draft** while the publisher registration is still outstanding:
 
@@ -924,3 +925,56 @@ smoke install, and before telling a downstream that pins the version.
 `publish.yml`'s build job is still named "Build all four distributions", but it
 builds and uploads five, `ffwf_tau` included. The name went stale when the
 metapackage was added.
+
+## What 0.14.0 learned
+
+**The matrix's runtime was the network, not the tests.** Each of the four
+standard versions ran its tests in about 10.5 minutes (632–636 s), two
+containers at a time. 3.14t then sat at 0% CPU for about 40 minutes:
+`uv python install 3.14t` took `10m 24s` for a 34.8 MiB interpreter, and its
+`pip install` received 86.3 MB in its first 23 minutes. A host `curl` measured
+PyPI at 54,551 B/s for a wheel. Every container downloads the whole dependency
+set again, so a slow link costs five times over. A shared pip cache volume
+would make it cost once. Not yet tried.
+
+**A merge whose tree equals the gated sha needs no second suite.**
+`git diff 66f17a5 c54bc64` was empty, so the merge commit's tree was the one
+that had just passed 7492 tests. The suite tests a tree, and re-running it on
+the same tree measures nothing new. Read the empty diff rather than assuming
+it.
+
+**The bump was gated by the matrix, not by a local suite.** Between the merge
+and `b016dff`, only version strings, a tagline append and `ROADMAP.md` changed.
+`test_packaging.py`, `test_chat_placeholder.py`, the snapshots, the leakage test
+and the four hook checks ran locally. The matrix's 3.11 container is the full
+local suite on the artifact, so it served as the local gate as well.
+
+**Twice, a full suite was stopped for memory pressure, not failed.** Claude Code
+stops a background command when the machine runs critically low on memory.
+Both times, peer sessions were running their own live tests. Neither stop says
+anything about the code. Each left the sha ungated until the suite ran on a
+quiet machine. Do not run a release suite while peers test.
+
+**`/tmp` does not survive a reboot, and the suite script lived there.** It was
+rewritten under the session's job directory, along with its logs. Keep release
+tooling and its logs out of `/tmp`.
+
+**A relative `PYTHONPATH` breaks the tests that start a subprocess.**
+`test_rpc_get_tools_extensions.py` runs its child with `cwd=` a temporary
+directory. A relative `PYTHONPATH` resolved there imported the main checkout's
+editable install, and the test failed against the wrong tree. Use absolute
+paths to the worktree's five `src` directories.
+
+**Three more matrix numbers, for comparison next time.**
+- The container skips 14 more tests than the local run (172 against 158).
+  These are the NATS tests, as at 0.13.0.
+- 3.14t ran 7481 and skipped 171, against 7480 and 172 elsewhere. The one
+  difference is `test_free_threading_gil.py`.
+- CI run 39462823107 passed all five versions on the tag and uploaded all ten
+  artifacts. The first `pip download` poll got 2 of 5 distributions, and the
+  next, one minute later, got all 5.
+
+**CI annotations to act on before 0.15.0.** GitHub forces `actions/checkout@v4`,
+`actions/setup-python@v5` and `actions/upload-artifact@v4` from Node.js 20 onto
+Node.js 24. `ubuntu-latest` began migrating to Ubuntu 26 on 2026-10-19. The
+0.14.0 run passed under both changes.

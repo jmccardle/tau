@@ -6,8 +6,11 @@ this file. Older entries cite pi as "the source of truth"; that stopped being th
 arrangement on 2026-09-03 (`CLAUDE.md`, "Parity with pi is not an objective") and
 those citations are provenance now.
 
-**State (2026-10-20): 0.14.0 is this commit; 0.13.0 shipped 2026-10-18.**
-0.14.0 speaks serve 0.11 and RPC 3.0. Its last merge is `c54bc64` (#69, #75,
+**State (2026-10-20): 0.14.0 shipped.** Tag `v0.14.0` → `b016dff`. CI run
+39462823107 passed 3.11–3.14 and 3.14t and uploaded all ten artifacts, and
+`pip download` fetches all five distributions at 0.14.0. Release matrix: 0
+failed on all five versions. `master` = `origin` = `github` = `b016dff` before
+this commit. 0.14.0 speaks serve 0.11 and RPC 3.0. Its last merge is `c54bc64` (#69, #75,
 #77: a request with no key is the endpoint's to refuse, and a vendor's
 environment key reaches only that vendor's endpoint, which is a breaking
 change; `docs/PROVIDER-CREDENTIALS.md`). The extension-packages work listed
@@ -15,7 +18,7 @@ below (#35, #40, #42–#47, #52, #55–#58, #60 A, #62, #65) is all merged.
 Carried past 0.14.0: #73's duplicate retry notice, #76 (keys outside
 config.json, open design question), #78 (a truncated anthropic stream exits
 0 under `-p`). `github` held at `d84e29b` from 0.13.0 until this release.
-0.13.0's tag is `v0.13.0` → `7d83ec3` (`docs/RELEASING.md` "What 0.13.0
+0.15.0 plans to drop 3.11, add 3.15t and test 3.14 only as 3.14t. 0.13.0's tag is `v0.13.0` → `7d83ec3` (`docs/RELEASING.md` "What 0.13.0
 learned").
 
 Issues on the `john/tau` forgejo repo are the tracker; this file names them and
