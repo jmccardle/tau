@@ -203,7 +203,7 @@ in those heads, so it is reported once.
 
 An entry's own `compaction` block is part of the entry. A malformed one, or one
 whose `summarizer` names no configured model, is that entry's error
-(`'models.<entry>.compaction.reserve_tokens' must be int; got "lots"`): fatal
+(`'models.<entry>.compaction.reserve_tokens' must be an integer; got "lots"`): fatal
 when the entry is selected, otherwise a
 startup warning, a `get_models`/hello/picker error, and a refused switch.
 `ConfigModelResolver` no longer raises at construction for it. The top-level

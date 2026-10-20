@@ -163,7 +163,7 @@ _BROKEN = [
     ("x", 'models.local-llm-tun must be a JSON object; got "x"'),
     (
         {**_UNUSED, "compaction": {"reserve_tokens": "lots"}},
-        "'models.local-llm-tun.compaction.reserve_tokens' must be int; got \"lots\"",
+        "'models.local-llm-tun.compaction.reserve_tokens' must be an integer; got \"lots\"",
     ),
 ]
 _BROKEN_IDS = ["null", "string", "bad-compaction"]
@@ -252,4 +252,5 @@ async def test_the_tui_resumes_a_malformed_recorded_entry(make_app, recorded, wh
         app.post_message(ChatSelected(str(seeded.path)))
         await pilot.pause()
         assert app.current_session is not None and app.current_session.id == seeded.id
+        assert app._session_facts().model == f"local-llm-tun — {why}"
     assert any(f"'local-llm-tun' is unavailable: {why}" in note for note in notes), notes

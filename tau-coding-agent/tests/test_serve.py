@@ -752,7 +752,7 @@ async def test_a_session_whose_recorded_model_is_gone_opens_and_refuses_only_a_t
         ("x", 'models.local-llm-tun must be a JSON object; got "x"'),
         (
             {**_CONFIG["models"]["fake"], "compaction": {"reserve_tokens": "lots"}},
-            "'models.local-llm-tun.compaction.reserve_tokens' must be int; got \"lots\"",
+            "'models.local-llm-tun.compaction.reserve_tokens' must be an integer; got \"lots\"",
         ),
     ],
     ids=["null", "string", "bad-compaction"],

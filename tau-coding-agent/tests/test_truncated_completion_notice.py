@@ -169,3 +169,20 @@ async def test_an_unresolvable_model_entry_reports_the_cap_as_unknown(make_app):
         )
         await pilot.pause()
         assert "max_tokens = unknown" in _system_text(app)
+
+
+async def test_the_cap_reads_through_a_default_entry_with_its_own_compaction_block(make_app):
+    """An entry's own block is checked as that entry's (docs/SILENT-DEFAULTS.md §8), not refused."""
+    entry = {"backend": "openai", "model": "m", "api_key": "x", "max_tokens": 900}
+    app = _app(
+        make_app,
+        {"models": {"m": {**entry, "compaction": {"auto": False}}}, "default_model": "m"},
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._on_render_event(
+            {"kind": "completion_end", "output": 900, "context": 10, "stop_reason": "length"}
+        )
+        await pilot.pause()
+        assert "max_tokens = 900" in _system_text(app)
+        assert not [n for n in app._notifications if "compaction" in n.message]

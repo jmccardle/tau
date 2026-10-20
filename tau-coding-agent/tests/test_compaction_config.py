@@ -121,7 +121,9 @@ def test_unknown_key_raises_naming_it():
     ],
 )
 def test_wrong_type_raises_naming_the_key(key, value):
-    with pytest.raises(ConfigError, match=rf"compaction\.{key}"):
+    with pytest.raises(
+        ConfigError, match=rf"compaction\.{key}' must be (a boolean|an integer|a string); got "
+    ):
         parse_compaction_config({key: value})
 
 
@@ -453,3 +455,45 @@ async def test_auto_false_stops_automatic_compaction_but_not_compact():
     assert result is not None
     assert calls, "/compact runs although auto is off"
     assert {m.id for m in calls} == {"big-id"}, "and summarises through the summarizer"
+
+
+@pytest.mark.parametrize(
+    ("argv", "own"),
+    [
+        (["--model", "openai/adhoc"], False),
+        (["--model", "small"], True),
+        (["--model", "big"], False),
+    ],
+    ids=["ad-hoc", "entry-with-block", "entry-without-block"],
+)
+def test_the_tui_model_override_carries_only_an_entrys_own_block(make_app, monkeypatch, argv, own):
+    """The top-level block stays top-level; only an entry's own block rides on its override."""
+    from tau_coding_agent import cli
+
+    config = _config(compaction={"reserve_tokens": 2048})
+    config["models"]["small"]["compaction"] = {"auto": False}
+    seen: dict[str, Any] = {}
+
+    class _FakeApp:
+        def __init__(self, **kwargs: Any) -> None:
+            seen.update(kwargs)
+
+        def run(self) -> None:
+            pass
+
+    from tau_coding_agent import app as app_module
+
+    real = app_module.TauApp
+    monkeypatch.setattr(app_module, "TauApp", _FakeApp)
+    assert cli._launch_tui(cli.parse_cli_args(argv), config) == 0
+    monkeypatch.setattr(app_module, "TauApp", real)
+    overrides = seen["cli_overrides"]
+    name = overrides["default_model"]
+    assert ("compaction" in overrides["models"][name]) is own
+
+    app = make_app(config=config)
+    app._apply_cli_overrides(overrides)
+    entry = {**app.config["models"][name], "config_name": name}
+    expected = {"auto": False} if own else {"reserve_tokens": 2048}
+    assert app._apply_run_config(entry)["compaction"] == expected
+    assert app._configured_max_tokens() is not None

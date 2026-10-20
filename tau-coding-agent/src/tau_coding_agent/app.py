@@ -615,9 +615,10 @@ class TauApp(App):
                 tools="",
                 store=self._store_name,
             )
-        entry = self.config.get("models", {}).get(name)
-        problem = None if entry is None else recorded_model_problem(self.config, name)
-        if entry is None or problem is not None:
+        models = self.config.get("models", {})
+        entry = models.get(name)
+        problem = recorded_model_problem(self.config, name) if name in models else None
+        if name not in models or problem is not None:
             return transcript.SessionFacts(
                 tagline=self._tagline,
                 model=f"{name} — {problem or 'not in config.json'}",
@@ -2336,10 +2337,13 @@ class TauApp(App):
         or states a cap this build would refuse — reporting a cap that is not the
         one in force is worse than reporting that it is not known.
         """
-        entry = self.config.get("models", {}).get(self.config.get("default_model", ""))
+        name = self.config.get("default_model", "")
+        entry = self.config.get("models", {}).get(name)
         if not isinstance(entry, dict):
             return None
-        cap = self._apply_run_config(entry).get("max_tokens", DEFAULT_MAX_TOKENS)
+        cap = self._apply_run_config({**entry, "config_name": name}).get(
+            "max_tokens", DEFAULT_MAX_TOKENS
+        )
         if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
             return None
         return cap
@@ -2877,9 +2881,13 @@ class TauApp(App):
         self.log(f"Starting new chat with model: {model}")
 
         model_config = self.config["models"].get(model)
-        if not model_config:
+        if model not in self.config["models"]:
             self.notify(f"Unknown model: {model}", severity="error")
             self.log(f"Available models: {list(self.config['models'].keys())}")
+            return False
+        problem = recorded_model_problem(self.config, model)
+        if problem is not None:
+            self.notify(f"Model {model!r} is unavailable: {problem}", severity="error")
             return False
 
         try:

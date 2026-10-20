@@ -130,6 +130,8 @@ def bootstrap_config(path: Path | None = None) -> dict[str, Any]:
     return config
 
 
+_JSON_TYPE_NAMES = {bool: "a boolean", int: "an integer", str: "a string"}
+
 COMPACTION_KEYS: dict[str, type] = {
     "auto": bool,
     "reserve_tokens": int,
@@ -164,7 +166,7 @@ def parse_compaction_config(block: Any, where: str = "compaction") -> Compaction
             )
         if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
             raise ConfigError(
-                f"'{where}.{key}' must be {expected.__name__}; got {json_value(value)}"
+                f"'{where}.{key}' must be {_JSON_TYPE_NAMES[expected]}; got {json_value(value)}"
             )
         if isinstance(value, int) and not isinstance(value, bool) and value <= 0:
             raise ConfigError(f"'{where}.{key}' must be positive; got {value}")
