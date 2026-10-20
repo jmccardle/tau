@@ -100,7 +100,9 @@ class ProviderHttpError(RuntimeError):
         self.base_url = base_url
         self.retry_after = retry_after
         self.headers = headers
-        self.hint = credential_hint(provider_id) if status_code == 401 and provider_id else ""
+        self.hint = (
+            credential_hint(provider_id, base_url) if status_code == 401 and provider_id else ""
+        )
         text = (
             f"HTTP {status_code} from model {model_id!r} at {base_url!r}: "
             f"{message or '(empty response body)'}"

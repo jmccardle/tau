@@ -1,4 +1,4 @@
-"""A request with no key is the endpoint's to refuse; a 401 says what to set (docs/PROVIDER-CREDENTIALS.md)."""
+"""Which key a request carries, and what a 401 says to set (docs/PROVIDER-CREDENTIALS.md)."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from tau_llm.providers import (
     api_sends_without_key,
     credential_hint,
     register_api,
+    resolve_request_key,
     resolves_api_key,
     unregister_api,
 )
@@ -43,19 +44,29 @@ def _model(**overrides: Any) -> Model:
     return Model(**fields)
 
 
-def _anthropic_model() -> Model:
-    return _model(api="anthropic-messages", provider="anthropic", base_url="http://llm.test")
+def _anthropic_model(base_url: str = "http://llm.test") -> Model:
+    return _model(api="anthropic-messages", provider="anthropic", base_url=base_url)
 
 
-def test_the_anthropic_wire_resolves_with_no_key_and_the_openai_wire_still_refuses():
+def _gemini_model() -> Model:
+    return _model(api="google-generative-ai", provider="gemini", base_url="http://llm.test")
+
+
+def test_two_wires_resolve_with_no_key_and_the_google_wire_refuses():
     assert _resolve_request(_anthropic_model(), {}).api_key is None
-    with pytest.raises(ValueError, match="No API key for provider 'openai'"):
-        _resolve_request(_model(), {})
+    assert _resolve_request(_model(), {}).api_key is None
+    with pytest.raises(ValueError, match="No API key for provider 'gemini'") as excinfo:
+        _resolve_request(_gemini_model(), {})
+    assert str(excinfo.value).endswith(credential_hint("gemini", "http://llm.test"))
 
 
-def test_an_environment_key_still_wins_over_none(monkeypatch):
+def test_an_environment_key_reaches_only_the_vendors_own_endpoint(monkeypatch):
+    """#75: ANTHROPIC_API_KEY is api.anthropic.com's, not a proxy's."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
-    assert _resolve_request(_anthropic_model(), {}).api_key == "from-env"
+    assert _resolve_request(_anthropic_model(), {}).api_key is None
+    official = _anthropic_model("https://api.anthropic.com/")
+    assert _resolve_request(official, {}).api_key == "from-env"
+    assert _resolve_request(official, {"api_key": "explicit"}).api_key == "explicit"
 
 
 def test_registration_sets_and_clears_the_flag():
@@ -72,26 +83,29 @@ def test_registration_sets_and_clears_the_flag():
         unregister_api("test-keyless")
     assert not api_sends_without_key("test-keyless")
     assert api_sends_without_key("anthropic-messages")
-    assert not api_sends_without_key("openai-completions")
+    assert api_sends_without_key("openai-completions")
+    assert not api_sends_without_key("google-generative-ai")
 
 
-def test_resolves_api_key_reads_the_key_then_the_vendor_env(monkeypatch):
-    assert resolves_api_key("anthropic", "k")
-    assert not resolves_api_key("anthropic", None)
-    assert not resolves_api_key("anthropic", "")
-    assert not resolves_api_key("local-llm", None)
+def test_resolve_request_key_reads_the_key_then_the_vendor_env_at_its_endpoint(monkeypatch):
+    assert resolve_request_key("anthropic", "k", "http://proxy") == "k"
+    assert resolve_request_key("anthropic", "", None) is None
+    assert resolve_request_key("local-llm", None, None) is None
     monkeypatch.setenv("GOOGLE_API_KEY", "g")
-    assert resolves_api_key("gemini", None)
+    assert resolve_request_key("gemini", None, None) == "g"
+    assert resolve_request_key("gemini", None, "https://generativelanguage.googleapis.com") == "g"
+    assert resolve_request_key("gemini", None, "http://proxy") is None
+    assert resolves_api_key("gemini", None, None)
+    assert not resolves_api_key("gemini", None, "http://proxy")
 
 
-def test_the_hint_names_the_vendor_env_vars_and_the_config_key():
-    assert credential_hint("gemini") == (
-        'To send a key, set GEMINI_API_KEY or GOOGLE_API_KEY or "api_key" on the '
-        "model's \"models\" entry in τ's config.json."
+def test_the_hint_names_env_vars_only_where_they_would_be_read():
+    config = "on the model's \"models\" entry in τ's config.json."
+    assert credential_hint("gemini", None) == (
+        f'To send a key, set GEMINI_API_KEY or GOOGLE_API_KEY or "api_key" {config}'
     )
-    assert credential_hint("local-llm") == (
-        'To send a key, set "api_key" on the model\'s "models" entry in τ\'s config.json.'
-    )
+    assert credential_hint("gemini", "http://proxy") == f'To send a key, set "api_key" {config}'
+    assert credential_hint("local-llm", None) == f'To send a key, set "api_key" {config}'
 
 
 def test_only_a_401_with_a_provider_carries_the_hint():
@@ -100,10 +114,9 @@ def test_only_a_401_with_a_provider_carries_the_hint():
             status, message="nope.", body="", model_id="q", base_url="u", provider_id=provider_id
         )
 
-    assert str(err(401, "openai")) == (
-        "HTTP 401 from model 'q' at 'u': nope. " + credential_hint("openai")
-    )
-    assert err(401, "openai").hint == credential_hint("openai")
+    hint = credential_hint("openai", "u")
+    assert str(err(401, "openai")) == "HTTP 401 from model 'q' at 'u': nope. " + hint
+    assert err(401, "openai").hint == hint
     for quiet in (err(403, "openai"), err(500, "openai"), err(401, None)):
         assert quiet.hint == ""
         assert str(quiet) == f"HTTP {quiet.status_code} from model 'q' at 'u': nope."
@@ -130,7 +143,8 @@ def test_an_openai_wire_401_names_openai_api_key(monkeypatch):
 
     with pytest.raises(ProviderHttpError) as excinfo:
         asyncio.run(drive())
-    assert str(excinfo.value).endswith("Incorrect API key. " + credential_hint("openai"))
+    hint = credential_hint("openai", "http://llm.test/v1")
+    assert str(excinfo.value).endswith("Incorrect API key. " + hint)
 
 
 def test_an_anthropic_401_names_anthropic_api_key():
@@ -157,4 +171,4 @@ def test_an_anthropic_401_names_anthropic_api_key():
         asyncio.run(drive())
     assert excinfo.value.status_code == 401
     assert "ANTHROPIC_API_KEY" in excinfo.value.hint
-    assert str(excinfo.value).endswith("no key. " + credential_hint("anthropic"))
+    assert str(excinfo.value).endswith("no key. " + credential_hint("anthropic", None))

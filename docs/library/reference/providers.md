@@ -440,7 +440,25 @@ consumer for — see this module's docstring and ``Provider`` above.
 - `api: str` — The ONE wire protocol this vendor speaks. A model claiming a different ``api`` for this vendor is a configuration error, not a request to be attempted — see ``client._resolve_request``. A gateway that genuinely speaks two protocols registers two ids.
 - `name: str = ''` — Display name. Defaults to ``id``, as pi's ``createProvider`` does.
 - `base_url: str | None = None` — Default endpoint, used only when the ``Model`` carries no ``base_url`` of its own. None means the vendor has no fixed endpoint (a self-hosted server), and a model must then supply one.
-- `api_key_env: tuple[str, ...] = tuple()` — Environment variables searched, in order, for this vendor's credential. Empty means "this vendor has no known credential source"; a NON-empty tuple that resolves to nothing is a hard error rather than a silent fall-through to another vendor's key.
+- `api_key_env: tuple[str, ...] = tuple()` — Environment variables searched, in order, for this vendor's credential, and only for a request to ``base_url`` (:meth:`reads_env_for`). An entry with its own endpoint never gets them (docs/PROVIDER-CREDENTIALS.md §5).
+
+### reads_env_for
+
+```python
+reads_env_for(base_url: str | None) -> bool
+```
+
+`tau_llm.providers.base.ProviderSpec.reads_env_for`
+
+Whether a request to ``base_url`` may take its key from ``api_key_env``.
+
+True only for this vendor's own registered endpoint, compared without a
+trailing slash, or for no ``base_url`` (which means that endpoint). A
+vendor with no registered endpoint never lends its variables.
+
+**Parameters**
+
+- `base_url: str | None` — *(no description)*
 
 ### resolve_api_key
 
@@ -769,22 +787,23 @@ The fully accumulated AssistantMessage.
 <!-- agent: yes -->
 
 ```python
-credential_hint(provider_id: str) -> str
+credential_hint(provider_id: str, base_url: str | None) -> str
 ```
 
 `tau_llm.providers.base.credential_hint`
 
-What to set so a request to ``provider_id`` carries a key.
+What to set so a request to ``provider_id`` at ``base_url`` carries a key.
 
 Appended to an HTTP 401 (:class:`~tau_llm.errors.ProviderHttpError`).
 
 **Parameters**
 
 - `provider_id: str` — Vendor id, as in ``Model.provider``.
+- `base_url: str | None` — The request's endpoint; None for the vendor's default.
 
 **Returns**
 
-One sentence naming the vendor's environment variables, when it registered any, and the model's ``api_key`` in τ's config.json.
+One sentence naming the model's ``api_key`` in τ's config.json, and the vendor's environment variables when :func:`resolve_request_key` would read them for ``base_url``.
 
 ## detect_compat
 <!-- agent: yes -->
@@ -973,24 +992,44 @@ than to a type default, so stating one quirk never silently resets another.
 
 The merged compat; exactly the detected one when ``model.compat`` is ``None``.
 
-## resolves_api_key
+## resolve_request_key
 <!-- agent: yes -->
 
 ```python
-resolves_api_key(provider_id: str, api_key: str | None) -> bool
+resolve_request_key(provider_id: str, api_key: str | None, base_url: str | None) -> str | None
 ```
 
-`tau_llm.providers.base.resolves_api_key`
+`tau_llm.providers.base.resolve_request_key`
 
-Whether a request to ``provider_id`` with ``api_key`` would carry a key.
+The key a request to ``provider_id`` at ``base_url`` carries; None for none.
 
-The same resolution ``tau_llm.client`` applies: ``api_key`` when non-empty,
-else the vendor's ``api_key_env``.
+``api_key`` when non-empty; else the vendor's ``api_key_env``, only when
+``base_url`` is the vendor's own endpoint (:meth:`ProviderSpec.reads_env_for`).
+The one place τ resolves a key: ``tau_llm.client`` sends this, and
+:func:`resolves_api_key` reports it.
 
 **Parameters**
 
 - `provider_id: str` — Vendor id, as in ``Model.provider``.
 - `api_key: str | None` — The key the caller passes; None or ``""`` for none.
+- `base_url: str | None` — The request's endpoint; None for the vendor's default.
+
+## resolves_api_key
+<!-- agent: yes -->
+
+```python
+resolves_api_key(provider_id: str, api_key: str | None, base_url: str | None) -> bool
+```
+
+`tau_llm.providers.base.resolves_api_key`
+
+Whether :func:`resolve_request_key` finds a key for this request.
+
+**Parameters**
+
+- `provider_id: str` — Vendor id, as in ``Model.provider``.
+- `api_key: str | None` — The key the caller passes; None or ``""`` for none.
+- `base_url: str | None` — The request's endpoint; None for the vendor's default.
 
 ## split_tool_result_content
 <!-- agent: yes -->

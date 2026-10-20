@@ -1658,11 +1658,11 @@ class TestProviderConfiguration:
         provider = OpenAICompletionsProvider()
         assert provider.api_key is None
 
-    def test_provider_reads_api_key_from_env(self, monkeypatch):
-        """A real OPENAI_API_KEY env var is used when no explicit key is given."""
+    def test_provider_reads_no_environment_variable(self, monkeypatch):
+        """#75: the key is resolved once, in ``tau_llm.client``, per endpoint."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
         provider = OpenAICompletionsProvider()
-        assert provider.api_key == "sk-from-env"
+        assert provider.api_key is None
 
     def test_provider_custom_api_key(self):
         """Provider accepts custom API key."""
@@ -1823,19 +1823,12 @@ class TestApiKeyResolution:
     fabricated one. Replaces the old ``sk-fake-key-for-testing`` default that
     silently surfaced as a confusing upstream 401 (CODE-QUALITY #5)."""
 
-    def test_missing_api_key_raises_at_request_time(self, monkeypatch):
-        """stream_chat raises a clear error when no key is configured anywhere."""
+    def test_missing_api_key_sends_no_authorization_header(self, monkeypatch):
+        """#77: no key means no ``Authorization`` header, never a fabricated one."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        provider = OpenAICompletionsProvider()  # no key, no env
-        assert provider.api_key is None  # no fabricated fallback
-
-        with pytest.raises(ValueError, match="No API key for provider"):
-            asyncio.run(
-                provider.stream_chat(
-                    model=_make_model(),
-                    messages=[UserMessage(content=[TextContent(text="hi")], timestamp=0)],
-                )
-            )
+        provider = OpenAICompletionsProvider()
+        assert provider.api_key is None
+        assert "Authorization" not in provider._get_client().headers
 
     def test_api_key_from_options_satisfies_request(self, monkeypatch):
         """A key passed via options (not the constructor) is accepted and the

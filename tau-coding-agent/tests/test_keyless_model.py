@@ -26,6 +26,7 @@ def _config(base_url: str = "http://127.0.0.1:1") -> dict:
         "models": {
             "keyless": {"backend": "anthropic", "model": "claude-x", "base_url": base_url},
             "keyed": {"backend": "anthropic", "model": "claude-y", "api_key": "k"},
+            "official": {"backend": "anthropic", "model": "claude-z"},
             "broken": {"backend": "no-such-provider", "model": "z"},
         },
     }
@@ -39,14 +40,19 @@ def no_key_env(monkeypatch):
 
 def test_the_picker_offers_a_keyless_model_and_labels_it(no_key_env):
     resolver = make_model_resolver(_config())
-    assert resolver.models_without_key() == ["keyless"]
+    assert resolver.models_without_key() == ["keyless", "official"]
     labels = {v.value: v.label for v in enumerate_domain("model_name", models=resolver).values}
-    assert labels == {"keyed": "keyed", "keyless": "keyless (no API key)"}
+    assert labels == {
+        "keyed": "keyed",
+        "keyless": "keyless (no API key)",
+        "official": "official (no API key)",
+    }
 
 
-def test_an_environment_key_clears_the_label(no_key_env, monkeypatch):
+def test_an_environment_key_clears_the_label_only_at_the_vendors_endpoint(no_key_env, monkeypatch):
+    """#75: ANTHROPIC_API_KEY would reach api.anthropic.com, not the keyless entry's server."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
-    assert make_model_resolver(_config()).models_without_key() == []
+    assert make_model_resolver(_config()).models_without_key() == ["keyless"]
 
 
 class _Refuses401(BaseHTTPRequestHandler):
@@ -77,6 +83,7 @@ def test_print_mode_sends_without_a_key_and_reports_the_401_in_one_line(tmp_path
         )
         env = {k: v for k, v in os.environ.items() if k not in (*_KEY_VARS, "TAU_PORTABLE_BASE")}
         env["TAU_HOME"] = str(tmp_path)
+        env["ANTHROPIC_API_KEY"] = "must-not-reach-a-custom-endpoint"
         env["ANTHROPIC_AUTH_TOKEN"] = "must-not-be-sent"
         env["PYTHONPATH"] = os.pathsep.join(str(_REPO / t / "src") for t in _TREES)
         proc = subprocess.run(
@@ -95,8 +102,8 @@ def test_print_mode_sends_without_a_key_and_reports_the_401_in_one_line(tmp_path
     [line] = proc.stderr.strip().splitlines()
     assert line.startswith("tau: error: HTTP 401 from model 'claude-x'")
     assert line.endswith(
-        'key required. To send a key, set ANTHROPIC_API_KEY or "api_key" on the model\'s '
-        '"models" entry in τ\'s config.json.'
+        'key required. To send a key, set "api_key" on the model\'s "models" entry in '
+        "τ's config.json."
     )
     [headers] = _Refuses401.seen
     assert "x-api-key" not in headers and "authorization" not in headers

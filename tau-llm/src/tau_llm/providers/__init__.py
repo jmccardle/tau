@@ -54,6 +54,7 @@ from tau_llm.providers.base import (
     register_provider,
     registered_apis,
     registered_providers,
+    resolve_request_key,
     resolves_api_key,
     unregister_api,
     unregister_provider,
@@ -133,7 +134,7 @@ def _build_google_generative_ai(
     return provider
 
 
-register_api("openai-completions", _build_openai_completions)
+register_api("openai-completions", _build_openai_completions, sends_without_key=True)
 register_api("anthropic-messages", _build_anthropic_messages, sends_without_key=True)
 register_api("google-generative-ai", _build_google_generative_ai)
 
@@ -178,6 +179,7 @@ __all__ = [
     "register_provider",
     "registered_apis",
     "registered_providers",
+    "resolve_request_key",
     "resolves_api_key",
     "unregister_api",
     "unregister_provider",

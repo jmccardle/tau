@@ -332,7 +332,7 @@ def model_catalog(resolver: Any) -> list[dict[str, Any]]:
                 },
                 "error": None,
                 "has_api_key": resolves_api_key(
-                    model.provider, key_for(name) if callable(key_for) else None
+                    model.provider, key_for(name) if callable(key_for) else None, model.base_url
                 ),
             }
         )

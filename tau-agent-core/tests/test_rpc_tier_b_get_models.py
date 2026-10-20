@@ -44,12 +44,17 @@ from tau_agent_core.session_log import InMemorySessionLog
 from tau_llm.types import Model
 
 
-def _model(name: str, provider: str = "openai", context_window: int = 8192) -> Model:
+def _model(
+    name: str,
+    provider: str = "openai",
+    context_window: int = 8192,
+    base_url: str = "http://127.0.0.1:1/v1",
+) -> Model:
     return Model(
         id=f"{name}-id",
         provider=provider,
         api="openai-completions",
-        base_url="http://127.0.0.1:1/v1",
+        base_url=base_url,
         name=name,
         context_window=context_window,
         max_tokens=256,
@@ -59,7 +64,7 @@ def _model(name: str, provider: str = "openai", context_window: int = 8192) -> M
 _MODELS: dict[str, Model] = {
     "zeta": _model("zeta", "anthropic", 200000),
     "alpha": _model("alpha", "openai", 8192),
-    "mid": _model("mid", "gemini", 100000),
+    "mid": _model("mid", "gemini", 100000, "https://generativelanguage.googleapis.com"),
 }
 
 
@@ -155,10 +160,12 @@ async def test_lists_every_configured_name_sorted_with_get_state_s_projection(
     """The whole result, asserted as one literal: names sorted, and each
     `model` the {id, provider, context_window} projection `get_state`
     publishes — read off the RESOLVED model, so per-entry differences
-    survive. `has_api_key` reads the resolver's `api_key`, then the env."""
-    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+    survive. `has_api_key` reads the resolver's `api_key`, then the vendor's env
+    at the vendor's own endpoint only: zeta's proxy does not get ANTHROPIC_API_KEY."""
+    for var in ("OPENAI_API_KEY", "GOOGLE_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "a")
     response = await _call(handler)
 
     assert "error" not in response

@@ -1365,10 +1365,11 @@ class ConfigModelResolver:
         Read by :func:`~tau_agent_core.flows.models_without_key`.
         """
         broken = self.model_errors()
+        built = {name: self(name) for name in self.model_names() if name not in broken}
         return [
             name
-            for name in self.model_names()
-            if name not in broken and not resolves_api_key(self(name).provider, self.api_key(name))
+            for name, model in built.items()
+            if not resolves_api_key(model.provider, self.api_key(name), model.base_url)
         ]
 
     def api_key(self, name: str) -> str | None:
