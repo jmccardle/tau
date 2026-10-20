@@ -410,7 +410,7 @@ followed by ``hint`` when there is one.
 - `retry_after: float | None = None` — Seconds the server asked the client to wait, from a ``retry-after-ms`` or ``retry-after`` header; None when it sent neither.
 - `headers: dict[str, str] | None = None` — The response headers, names lowercased, unparsed; None when the transport could not read them. Read the wait from ``retry_after``.
 - `provider_id: str | None = None` — The vendor id (``Model.provider``); names the hint on a 401.
-- `key_sent: bool | None = None` — Whether the request carried a key; None for unknown, which omits the hint.
+- `key_sent: bool | None = None` — Whether the request carried a key; None when the raiser did not say. Tells "no API key" from "API key refused" on a 401.
 
 ### hint
 

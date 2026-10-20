@@ -61,6 +61,8 @@ class ProviderHttpError(RuntimeError):
             ``retry-after-ms`` or ``retry-after`` header; None when it sent neither.
         headers: The response headers, names lowercased, unparsed; None when the
             transport could not read them. Read the wait from ``retry_after``.
+        key_sent: Whether the request carried a key; None when the raiser did
+            not say. Tells "no API key" from "API key refused" on a 401.
         hint: For a 401 where the caller named the provider and whether a key
             was sent, what to set or where the refused key came from
             (``tau_llm.providers.credential_hint``); otherwise ``""``.
@@ -103,6 +105,7 @@ class ProviderHttpError(RuntimeError):
         self.base_url = base_url
         self.retry_after = retry_after
         self.headers = headers
+        self.key_sent = key_sent
         self.hint = (
             credential_hint(provider_id, base_url, key_sent=key_sent)
             if status_code == 401 and provider_id and key_sent is not None

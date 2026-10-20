@@ -157,6 +157,7 @@ def test_only_a_401_naming_its_provider_and_key_carries_the_hint():
     assert str(err(401, "openai")) == "HTTP 401 from model 'q' at 'u': nope. " + hint
     assert err(401, "openai").hint == hint
     assert err(401, "openai", True).hint == credential_hint("openai", "u", key_sent=True)
+    assert err(401, "openai", None).key_sent is None
     quiet_ones = (err(403, "openai"), err(500, "openai"), err(401, None), err(401, "openai", None))
     for quiet in quiet_ones:
         assert quiet.hint == ""
@@ -186,6 +187,7 @@ def test_an_openai_wire_401_with_a_key_says_the_key_was_refused(monkeypatch):
         asyncio.run(drive())
     hint = credential_hint("openai", "http://llm.test/v1", key_sent=True)
     assert hint.startswith("The key sent was refused.")
+    assert excinfo.value.key_sent is True
     assert str(excinfo.value).endswith("Incorrect API key. " + hint)
 
 
@@ -212,6 +214,7 @@ def test_an_anthropic_401_names_anthropic_api_key():
     with pytest.raises(ProviderHttpError) as excinfo:
         asyncio.run(drive())
     assert excinfo.value.status_code == 401
+    assert excinfo.value.key_sent is False
     assert "ANTHROPIC_API_KEY" in excinfo.value.hint
     assert str(excinfo.value).endswith(
         "no key. " + credential_hint("anthropic", None, key_sent=False)
