@@ -698,6 +698,7 @@ takes.
 | 0.12.0 | I think, therefore I raise |
 | 0.13.0 | There was no choice but to be pioneers. |
 | 0.14.0 | What did Ilya see? We'll never know |
+| 0.14.1 | 20 new models this month. Still a 401. (stock, from 0.14.0) |
 
 Create it as a **draft** while the publisher registration is still outstanding:
 
@@ -978,3 +979,39 @@ paths to the worktree's five `src` directories.
 `actions/setup-python@v5` and `actions/upload-artifact@v4` from Node.js 20 onto
 Node.js 24. `ubuntu-latest` began migrating to Ubuntu 26 on 2026-10-19. The
 0.14.0 run passed under both changes.
+
+## What 0.14.1 learned
+
+**A shared pip cache volume halved the matrix.** Every container mounts
+`tau-pip-cache` at `/root/.cache`, which also holds uv's interpreter cache. Run
+one container at a time, the five versions took 57 minutes, 08:17 to 09:14.
+0.14.0 ran two at a time without the cache and took about 100. The
+tests alone ran 566–673 s per version, so downloads are now a small share.
+
+**Two containers at a time was stopped for memory pressure; one at a time was
+not.** The first 0.14.1 matrix ran 3.11 and 3.12 together and was stopped about
+8 minutes in. Stopping the script does not stop `docker run`: both containers
+kept running with nobody reading their output, until `docker kill`. After any
+stop, run `docker ps` and kill what the matrix left.
+
+**The matrix can run while the votes are collected.** `release/0.14.1` was the
+fix branch merged onto master, with a tree identical to the voted sha, plus the
+bump. If the votes land on that sha, the matrix has gated what ships. A review
+that moves the sha restarts both the votes and the matrix. That happened once
+here, for two nits.
+
+**Publishing creates the tag on GitHub only.** origin had no `v0.12.0`,
+`v0.13.0` or `v0.14.0` until tau-router noticed. After publishing, push the same
+lightweight ref to origin by full sha:
+`git push origin <sha>:refs/tags/vX.Y.Z`. `v0.14.0` was backfilled this way;
+`v0.12.0` and `v0.13.0` are still missing there.
+
+**A suite run in a worktree writes two sessions into the real `~/.tau`.** That
+is #70, and it held even with `TAU_HOME` unset by the runner. Seven
+`-claude-worktrees-` directories had built up under `~/.tau/sessions/` by
+2026-10-21. A reviewer noticed them by their timestamps.
+
+**CI run 39606439971 passed all five versions on the tag and uploaded all ten
+artifacts.** The PyPI JSON API listed all ten files at once, while
+`pip download` still found none. The first `pip download` poll after that got
+all five distributions.
