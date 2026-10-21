@@ -18,7 +18,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
-    "ffwf-tau-agent-core==0.14.0",
+    "ffwf-tau-agent-core==0.14.1",
     "httpx>=0.27",
 ]
 

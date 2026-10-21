@@ -18,7 +18,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Fight Fire with Fire Robotics, LLC" }]
 dependencies = [
-    "ffwf-tau-agent-core==0.14.0",
+    "ffwf-tau-agent-core==0.14.1",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +40,7 @@ tui = [
 # extra is only a convenience spelling for it. store_factory.py imports it lazily
 # and converts a missing package into a StoreError that names this extra, so
 # `--store jmfts` without it fails with an instruction rather than a traceback.
-jmfts = ["ffwf-tau-jmfts==0.14.0"]
+jmfts = ["ffwf-tau-jmfts==0.14.1"]
 # The REPL head (`tau --mode repl`, docs/REPL-HEAD.md). rich RENDERS and
 # prompt_toolkit READS; repl.py imports rich at module scope and repl_input.py
 # imports prompt_toolkit lazily, so a τ without this extra reaches cli.py's
@@ -55,7 +55,7 @@ repl = [
 # instruction naming this extra.
 serve = ["websockets>=14"]
 dev = [
-    "ffwf-tau-coding-agent[tui,jmfts,repl,serve]==0.14.0",
+    "ffwf-tau-coding-agent[tui,jmfts,repl,serve]==0.14.1",
     "pytest",
     "pytest-asyncio",
     "ruff",
