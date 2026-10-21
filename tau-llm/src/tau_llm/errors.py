@@ -232,6 +232,23 @@ _HTTPX_CONNECTION_ERRORS = (
 )
 
 
+def _causes(exc: BaseException) -> list[BaseException]:
+    """``exc``'s cause chain, outermost first, as a traceback would print it; ``exc`` excluded."""
+    chain: list[BaseException] = []
+    link = exc
+    while True:
+        nxt = link.__cause__ or (None if link.__suppress_context__ else link.__context__)
+        if nxt is None or nxt in chain:
+            return chain
+        chain.append(nxt)
+        link = nxt
+
+
+def describe_causes(exc: BaseException) -> str:
+    """`` <- Type: text`` for each exception in ``exc``'s cause chain; ``""`` when it has none."""
+    return "".join(f" <- {type(cause).__name__}: {cause}" for cause in _causes(exc))
+
+
 def connection_error_from(
     exc: BaseException, *, message: str, model_id: str, base_url: str
 ) -> ProviderConnectionError | None:
@@ -239,7 +256,10 @@ def connection_error_from(
 
     The caller must only ask while nothing has been yielded. ``anthropic``'s
     ``APIConnectionError`` is looked up, not imported, as in
-    :func:`http_error_from_anthropic`; its ``APITimeoutError`` subclass is excluded.
+    :func:`http_error_from_anthropic`; its ``APITimeoutError`` subclass is excluded,
+    and so is one whose cause chain holds no httpx or OS error, because the SDK
+    wraps any exception from the send, a failed import included
+    (docs/PROVIDER-RETRY.md §3).
     """
     sdk = sys.modules.get("anthropic")
     is_sdk_connection = (
@@ -247,7 +267,11 @@ def connection_error_from(
         and isinstance(exc, sdk.APIConnectionError)
         and not isinstance(exc, sdk.APITimeoutError)
     )
-    if not (is_sdk_connection or isinstance(exc, _HTTPX_CONNECTION_ERRORS)):
+    if is_sdk_connection:
+        causes = _causes(exc)
+        if causes and not any(isinstance(c, (httpx.TransportError, OSError)) for c in causes):
+            return None
+    elif not isinstance(exc, _HTTPX_CONNECTION_ERRORS):
         return None
     return ProviderConnectionError(message, model_id=model_id, base_url=base_url)
 

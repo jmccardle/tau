@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 from tau_llm.abort import iterate_until_aborted
 from tau_llm.errors import (
     connection_error_from,
+    describe_causes,
     http_error_from_anthropic,
     response_headers_of,
     stream_error_from_anthropic,
@@ -701,7 +702,7 @@ class AnthropicMessagesProvider(Provider):
                     raise http_error from exc
                 message = (
                     f"Streaming error from model {model.id!r} at "
-                    f"{self.base_url!r}: {type(exc).__name__}: {exc}"
+                    f"{self.base_url!r}: {type(exc).__name__}: {exc}{describe_causes(exc)}"
                 )
                 if not started:
                     connection_error = connection_error_from(

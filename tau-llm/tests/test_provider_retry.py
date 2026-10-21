@@ -26,7 +26,7 @@ from tau_llm import (
     complete_simple,
     stream_simple,
 )
-from tau_llm.errors import connection_error_from, retry_after_seconds
+from tau_llm.errors import connection_error_from, describe_causes, retry_after_seconds
 from tau_llm.retry import DEFAULT_RETRY_POLICY, NO_RETRY, resolve_retry_policy
 from tau_llm.streaming import DoneEvent, ErrorEvent, TextDeltaEvent
 from tau_llm.types import Model
@@ -374,6 +374,39 @@ def test_an_anthropic_connection_error_is_recognised_but_its_timeout_is_not(monk
     assert connection_error_from(APIConnectionError("down"), **kwargs) is not None
     assert connection_error_from(APITimeoutError("slow"), **kwargs) is None
     assert connection_error_from(ValueError("x"), **kwargs) is None
+
+
+def _raised_from(outer: BaseException, cause: BaseException) -> BaseException:
+    try:
+        raise outer from cause
+    except BaseException as exc:
+        return exc
+
+
+def test_an_anthropic_connection_error_caused_by_an_import_is_not_retried(monkeypatch):
+    """The SDK wraps any send failure; a stale user-site import is not a dropped link."""
+
+    class APIConnectionError(Exception):
+        pass
+
+    class APITimeoutError(APIConnectionError):
+        pass
+
+    sdk = types.SimpleNamespace(
+        APIConnectionError=APIConnectionError, APITimeoutError=APITimeoutError
+    )
+    monkeypatch.setitem(sys.modules, "anthropic", sdk)
+    kwargs = {"message": "m", "model_id": "m", "base_url": "u"}
+    imported = _raised_from(ImportError("cannot import name 'sentinel'"), KeyError("asyncio"))
+    wrapped = _raised_from(APIConnectionError("Connection error."), imported)
+    dropped = _raised_from(APIConnectionError("Connection error."), httpx.ConnectError("refused"))
+
+    assert connection_error_from(wrapped, **kwargs) is None
+    assert connection_error_from(dropped, **kwargs) is not None
+    assert describe_causes(wrapped) == (
+        " <- ImportError: cannot import name 'sentinel' <- KeyError: 'asyncio'"
+    )
+    assert describe_causes(ValueError("x")) == ""
 
 
 def test_the_anthropic_sdk_client_is_built_with_its_own_retries_off(monkeypatch):
