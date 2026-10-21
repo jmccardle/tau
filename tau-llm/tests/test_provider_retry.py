@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import sys
 import types
 from email.utils import format_datetime
@@ -407,6 +408,44 @@ def test_an_anthropic_connection_error_caused_by_an_import_is_not_retried(monkey
         " <- ImportError: cannot import name 'sentinel' <- KeyError: 'asyncio'"
     )
     assert describe_causes(ValueError("x")) == ""
+
+
+def _refused_url() -> str:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    return f"http://127.0.0.1:{port}"
+
+
+async def _real_sdk_failure(send: Any = None) -> BaseException:
+    anthropic = pytest.importorskip("anthropic")
+    client = anthropic.AsyncAnthropic(api_key="k", base_url=_refused_url(), max_retries=0)
+    if send is not None:
+        client._client.send = send
+    try:
+        await client.messages.create(
+            model="m", max_tokens=1, messages=[{"role": "user", "content": "x"}]
+        )
+    except anthropic.APIConnectionError as exc:
+        return exc
+    raise AssertionError("a refused port answered")
+
+
+async def test_the_real_sdk_refused_connection_is_a_connection_error():
+    """anthropic>=1.0 wraps an ``httpx2`` error, not an ``httpx`` one; it must still retry."""
+    exc = await _real_sdk_failure()
+    kwargs = {"message": "m", "model_id": "m", "base_url": "u"}
+    assert connection_error_from(exc, **kwargs) is not None
+
+
+async def test_the_real_sdk_import_failure_is_not_a_connection_error():
+    async def send(*args: Any, **kwargs: Any) -> Any:
+        raise ImportError("cannot import name 'sentinel'")
+
+    exc = await _real_sdk_failure(send)
+    kwargs = {"message": "m", "model_id": "m", "base_url": "u"}
+    assert connection_error_from(exc, **kwargs) is None
+    assert "<- ImportError: cannot import name 'sentinel'" in describe_causes(exc)
 
 
 def test_the_anthropic_sdk_client_is_built_with_its_own_retries_off(monkeypatch):

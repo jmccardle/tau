@@ -257,9 +257,10 @@ def connection_error_from(
     The caller must only ask while nothing has been yielded. ``anthropic``'s
     ``APIConnectionError`` is looked up, not imported, as in
     :func:`http_error_from_anthropic`; its ``APITimeoutError`` subclass is excluded,
-    and so is one whose cause chain holds no httpx or OS error, because the SDK
+    and so is one whose cause chain holds no transport or OS error, because the SDK
     wraps any exception from the send, a failed import included
-    (docs/PROVIDER-RETRY.md §3).
+    (docs/PROVIDER-RETRY.md §3). anthropic>=1.0 sends over ``httpx2``, whose
+    ``TransportError`` is looked up the same way.
     """
     sdk = sys.modules.get("anthropic")
     is_sdk_connection = (
@@ -268,8 +269,12 @@ def connection_error_from(
         and not isinstance(exc, sdk.APITimeoutError)
     )
     if is_sdk_connection:
+        transport: tuple[type[BaseException], ...] = (httpx.TransportError, OSError)
+        httpx2 = sys.modules.get("httpx2")
+        if httpx2 is not None:
+            transport += (httpx2.TransportError,)
         causes = _causes(exc)
-        if causes and not any(isinstance(c, (httpx.TransportError, OSError)) for c in causes):
+        if causes and not any(isinstance(c, transport) for c in causes):
             return None
     elif not isinstance(exc, _HTTPX_CONNECTION_ERRORS):
         return None
