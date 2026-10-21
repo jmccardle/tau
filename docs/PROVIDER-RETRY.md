@@ -83,6 +83,21 @@ prints the same one now. `connection_error_from` recognises `httpx.ConnectError`
 `anthropic.APIConnectionError` less its `APITimeoutError` subclass. The SDK class
 is looked up in `sys.modules`, as `PROVIDER-HTTP-ERRORS.md` §5 does for status errors.
 
+**An SDK connection error is a connection error only when its cause chain says
+so** (2026-10-21, 0.14.1). The SDK raises `APIConnectionError("Connection
+error.")` for any exception from the send, not just a transport failure. A
+daemon that lost `-I` imported a stale `typing_extensions` from the user site,
+and the `ImportError` arrived as "Connection error." and was retried as one.
+`connection_error_from` now declines an `APIConnectionError` whose chain has
+causes but no `httpx.TransportError`, `httpx2.TransportError` or `OSError`.
+anthropic>=1.0 sends over `httpx2`, so a refused port arrives as
+`httpx2.ConnectError`; the first cut of this rule omitted it and declined every
+real connection failure, which only a test driving the real SDK at a refused
+port showed (`test_the_real_sdk_refused_connection_is_a_connection_error`). The anthropic provider's
+message names the whole chain (`describe_causes`), so the failure is a
+`ProviderStreamError` that reads `… APIConnectionError: Connection error. <-
+ImportError: cannot import name 'sentinel' …`.
+
 **The request is identical on every attempt.** Each attempt calls
 `provider.stream_chat` with the same `model`, `messages`, `tools` and `options`
 objects, which build the same body. Nothing is re-derived and nothing is dropped,
