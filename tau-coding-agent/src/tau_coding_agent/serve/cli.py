@@ -217,8 +217,8 @@ def start_background(
 ) -> int:
     """Start ``tau serve`` detached unless a daemon already answers at ``address``.
 
-    The child is this interpreter running the same command without ``-d``, in
-    its own session (its own process group on Windows), with stdout and stderr
+    The child is this interpreter, with this process's interpreter flags (``-I``
+    among them), running the same command without ``-d``, in its own session (its own process group on Windows), with stdout and stderr
     appended to ``~/.tau/serve.log``. This returns once the child answers a hello
     with its own pid. If it exits first, its log tail is printed and this fails.
 
@@ -246,7 +246,14 @@ def start_background(
     start = log_path.stat().st_size if log_path.exists() else 0
     with log_path.open("a", encoding="utf-8") as log:
         child = subprocess.Popen(
-            [sys.executable, "-m", "tau_coding_agent.cli", "serve", *argv],
+            [
+                sys.executable,
+                *subprocess._args_from_interpreter_flags(),  # type: ignore[attr-defined]
+                "-m",
+                "tau_coding_agent.cli",
+                "serve",
+                *argv,
+            ],
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,

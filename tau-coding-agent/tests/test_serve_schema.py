@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, get_args, get_type_hints
 from unittest.mock import MagicMock, patch
@@ -640,6 +642,29 @@ async def test_dash_d_that_loses_the_bind_reports_the_winner(daemon, capsys):
     printed = json.loads(capsys.readouterr().out)
     assert printed["started"] is False and printed["pid"] == os.getpid()
     assert (resolve_tau_home() / serve_cli.LOG_FILE).is_relative_to(os.environ["HOME"])
+
+
+async def test_dash_d_child_keeps_the_interpreter_flags(capsys):
+    """A bundled runtime started with ``-I`` must not lose it in the detached daemon."""
+    exited = MagicMock()
+    exited.poll.return_value = 1
+    argv = ["-d", "--listen", "127.0.0.1:0"]
+    with (
+        patch.object(serve_cli, "hello_probe", return_value=None),
+        patch.object(serve_cli, "_await_other_daemon", return_value=None),
+        patch.object(serve_cli.subprocess, "_args_from_interpreter_flags", return_value=["-I"]),
+        patch.object(serve_cli.subprocess, "Popen", return_value=exited) as popen,
+    ):
+        await asyncio.to_thread(serve_cli.run_serve, argv)
+
+    assert popen.call_args.args[0][:4] == [sys.executable, "-I", "-m", "tau_coding_agent.cli"]
+
+
+def test_the_stdlib_reports_isolated_mode_as_a_flag():
+    """``_args_from_interpreter_flags`` is private; this pins what ``start_background`` relies on."""
+    code = "import subprocess; print(subprocess._args_from_interpreter_flags())"
+    out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True)
+    assert out.stdout.strip() == "['-I']"
 
 
 def test_web_root_flag_overrides_the_config_and_a_file_is_refused(tmp_path, capsys, monkeypatch):
