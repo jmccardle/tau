@@ -245,8 +245,13 @@ def _causes(exc: BaseException) -> list[BaseException]:
 
 
 def describe_causes(exc: BaseException) -> str:
-    """`` <- Type: text`` for each exception in ``exc``'s cause chain; ``""`` when it has none."""
-    return "".join(f" <- {type(cause).__name__}: {cause}" for cause in _causes(exc))
+    """`` <- Type: text`` for each exception in ``exc``'s cause chain; ``""`` when it has none.
+
+    A link that reads the same as the one before it is dropped: httpx2 wraps
+    httpcore2's ``ConnectError`` in its own, with the same text.
+    """
+    links = [f" <- {type(cause).__name__}: {cause}" for cause in _causes(exc)]
+    return "".join(link for i, link in enumerate(links) if i == 0 or link != links[i - 1])
 
 
 def connection_error_from(

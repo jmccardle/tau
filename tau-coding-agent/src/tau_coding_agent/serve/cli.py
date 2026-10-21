@@ -218,8 +218,9 @@ def start_background(
     """Start ``tau serve`` detached unless a daemon already answers at ``address``.
 
     The child is this interpreter, with this process's interpreter flags (``-I``
-    among them), running the same command without ``-d``, in its own session (its own process group on Windows), with stdout and stderr
-    appended to ``~/.tau/serve.log``. This returns once the child answers a hello
+    among them), running the same command without ``-d``, in its own session
+    (its own process group on Windows), with stdout and stderr appended to
+    ``~/.tau/serve.log``. This returns once the child answers a hello
     with its own pid. If it exits first, its log tail is printed and this fails.
 
     Args:

@@ -436,6 +436,8 @@ async def test_the_real_sdk_refused_connection_is_a_connection_error():
     exc = await _real_sdk_failure()
     kwargs = {"message": "m", "model_id": "m", "base_url": "u"}
     assert connection_error_from(exc, **kwargs) is not None
+    links = describe_causes(exc).split(" <- ")[1:]
+    assert links and all(a != b for a, b in zip(links, links[1:]))
 
 
 async def test_the_real_sdk_import_failure_is_not_a_connection_error():
