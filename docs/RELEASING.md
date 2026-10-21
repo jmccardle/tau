@@ -1003,8 +1003,8 @@ here, for two nits.
 **Publishing creates the tag on GitHub only.** origin had no `v0.12.0`,
 `v0.13.0` or `v0.14.0` until tau-router noticed. After publishing, push the same
 lightweight ref to origin by full sha:
-`git push origin <sha>:refs/tags/vX.Y.Z`. `v0.14.0` was backfilled this way;
-`v0.12.0` and `v0.13.0` are still missing there.
+`git push origin <sha>:refs/tags/vX.Y.Z`. `v0.12.0`, `v0.13.0` and `v0.14.0`
+were backfilled this way, each at the commit GitHub's tag names.
 
 **A suite run in a worktree writes two sessions into the real `~/.tau`.** That
 is #70, and it held even with `TAU_HOME` unset by the runner. Seven
