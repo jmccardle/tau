@@ -185,12 +185,10 @@ with `parent_tool_call_id` refuses `api.suspend`, and its hits are carried, like
 any non-site hit, to the outer call's result `entry_written`.
 
 **Built (M1c).** The `tool_call` event already carried `parent_tool_call_id`
-for a nested call, so a handler can tell one apart with no change. Until #94 is
-fixed, code mode's script calls go through `DirectToolInvoker`
-(`codemode/invoker.py`), which bypasses the hook pipeline entirely, so they fire
-no `tool_call` and are neither stepped nor gated; once #94 routes them through
-`ctx.execute_tool`, they fire `tool_call` with `parent_tool_call_id` and are
-refused as suspension sites.
+for a nested call, so a handler can tell one apart with no change. Since #94,
+code mode's script calls go through `ctx.execute_tool` (`PipelineToolInvoker` in
+`codemode/invoker.py`), so they fire `tool_call` with `parent_tool_call_id` and
+are refused as suspension sites.
 
 **`entry_written` is a new awaited hook.** It receives `{kind, entry_id, message,
 blocks}` after the store write returns. It cannot change the entry. It is the
@@ -272,8 +270,8 @@ acts for it (`policies.runs_on_behalf_of`: a Bounded policy's task does; a task
 the handler spawned does not, even while the hook still runs), a hook outside
 the four sites, or a `tool_call` with `parent_tool_call_id`. `EventBus.emit`
 and every non-`ext:` channel clear the mark for their handlers. A tool body is
-never a site either, so code mode's nested calls, which bypass the hooks until
-#94, are refused there cleanly. The command-handler site (`ctx.ui.form`'s case)
+never a site either, so code mode's nested calls (hooked since #94) are
+refused there cleanly. The command-handler site (`ctx.ui.form`'s case)
 arrives with the form rebuild in M1f; until then a command handler holds no
 mark. `mark_suspension_raised` now refuses a mark from another task; nothing
 calls it until milestone 2's deferred responder raises `TurnSuspended`.

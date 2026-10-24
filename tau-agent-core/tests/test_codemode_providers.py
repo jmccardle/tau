@@ -11,8 +11,9 @@ from typing import Any
 import pytest
 
 from tau_agent_core.codemode.cpython import CPythonProvider
-from tau_agent_core.codemode.invoker import DirectToolInvoker
+from tau_agent_core.codemode.invoker import PipelineToolInvoker
 from tau_agent_core.codemode.protocol import RunLimits, SandboxProvider
+from tau_agent_core.tool_pipeline import NestedToolResult, run_nested_call
 from tau_agent_core.tools.base import AgentTool, ToolDefinition, ToolError
 
 try:
@@ -97,8 +98,34 @@ async def session_provider(request: pytest.FixtureRequest) -> AsyncIterator[Sand
     await p.close()
 
 
-def _invoker(**kw: Any) -> DirectToolInvoker:
-    return DirectToolInvoker(TOOLS, **kw)
+async def _no_emit(event: Any) -> None:
+    return None
+
+
+def _executor(tools: list[AgentTool]) -> Any:
+    """``ctx.execute_tool`` minus the session: the real nested-call pipeline, no hooks."""
+    by_name = {t.name: t for t in tools}
+
+    async def execute(name: str, args: dict[str, Any]) -> NestedToolResult:
+        return await run_nested_call(
+            tools=by_name,
+            dispatcher=None,
+            emit=_no_emit,
+            signal=None,
+            name=name,
+            args=args,
+            parent_tool_call_id="codemode",
+        )
+
+    return execute
+
+
+def _invoker_over(tools: list[AgentTool], **kw: Any) -> PipelineToolInvoker:
+    return PipelineToolInvoker(tools, _executor(tools), **kw)
+
+
+def _invoker(**kw: Any) -> PipelineToolInvoker:
+    return _invoker_over(TOOLS, **kw)
 
 
 async def _run(p: SandboxProvider, code: str, limits: RunLimits = LIMITS, **kw: Any) -> Any:
@@ -126,7 +153,7 @@ async def test_gather_runs_calls_concurrently(provider: SandboxProvider) -> None
 
     slow = _tool("slow", timed, {"seconds": {"type": "number"}}, ["seconds"])
     code = "import asyncio\nr = await asyncio.gather(tools.slow(seconds=0.3), tools.slow(seconds=0.3))\nprint(r)"
-    r = await _run(provider, code, tools=DirectToolInvoker([slow]))
+    r = await _run(provider, code, tools=_invoker_over([slow]))
     assert r.ok, r.error
     assert "slept 0.3" in r.output
     assert len(r.calls) == 2 and len(spans) == 2
@@ -162,7 +189,7 @@ async def test_codemode_is_not_callable_from_a_script(provider: SandboxProvider)
 async def test_bad_arguments_fail_validation(provider: SandboxProvider) -> None:
     r = await _run(provider, "await tools.add(a='x', b=1)")
     assert r.error_kind == "script"
-    assert "Invalid arguments" in (r.error or "")
+    assert "Field 'a': expected integer, got str" in (r.error or "")
 
 
 async def test_timeout_kills_the_run(provider: SandboxProvider) -> None:
@@ -260,11 +287,13 @@ async def test_turn_lifetime_resets_at_turn_end(name: str) -> None:
 
     mode = CodeMode(CodeModeConfig.from_mapping({"provider": name, "lifetime": "turn"}))
     try:
-        r1 = await mode.run("kept = 7", TOOLS, cursor_id="c", call_id="1", signal=None, cwd=None)
-        r2 = await mode.run("kept", TOOLS, cursor_id="c", call_id="2", signal=None, cwd=None)
+        r1 = await mode.run(
+            "kept = 7", TOOLS, _executor(TOOLS), cursor_id="c", signal=None, cwd=None
+        )
+        r2 = await mode.run("kept", TOOLS, _executor(TOOLS), cursor_id="c", signal=None, cwd=None)
         assert not r1["is_error"] and "[value] 7" in r2["content"][0]["text"]
         await mode.end_turn("c")
-        r3 = await mode.run("kept", TOOLS, cursor_id="c", call_id="3", signal=None, cwd=None)
+        r3 = await mode.run("kept", TOOLS, _executor(TOOLS), cursor_id="c", signal=None, cwd=None)
         assert r3["is_error"] and "NameError" in r3["content"][0]["text"]
     finally:
         await mode.close()
@@ -316,7 +345,7 @@ ODD = [
 def test_the_prompt_keeps_a_non_identifier_parameter_and_names_the_stubbed_tool() -> None:
     from tau_agent_core.codemode.prompt import render_python_stubs, render_type_check_stubs
 
-    stubs = DirectToolInvoker(ODD).stubs()
+    stubs = _invoker_over(ODD).stubs()
     text = render_python_stubs(stubs)
     assert "async def my_tool(**kwargs: Unpack[my_tool_arguments]) -> str:" in text
     assert '\'my_tool_arguments\', {"from": int, "my-arg": NotRequired[str]}' in text
@@ -335,14 +364,14 @@ async def test_a_script_calls_a_non_identifier_tool_by_the_name_its_stub_shows(
         'print(await tools.my_tool(**{"from": 2, "my-arg": "x"}))\n'
         "print(await tools.from_(a=1, b=2))"
     )
-    r = await _run(provider, code, tools=DirectToolInvoker(ODD))
+    r = await _run(provider, code, tools=_invoker_over(ODD))
     assert r.ok, r.error
     assert r.output == "2->x\n3\n"
     assert [c.name for c in r.calls] == ["my-tool", "from"]
 
 
 def test_discovery_answers_with_the_stub_name_and_takes_either() -> None:
-    invoker = DirectToolInvoker(ODD)
+    invoker = _invoker_over(ODD)
     assert [h["name"] for h in invoker.search("my tool")][:1] == ["my_tool"]
     assert invoker.describe("my_tool") == invoker.describe("my-tool")
     assert "Unpack[my_tool_arguments]" in invoker.describe("my_tool")
@@ -351,7 +380,7 @@ def test_discovery_answers_with_the_stub_name_and_takes_either() -> None:
 def test_two_tools_sharing_a_stub_name_raise_rather_than_shadow() -> None:
     twin = _tool("my_tool", _add, {}, [])
     with pytest.raises(ValueError, match="'my-tool', 'my_tool' all stub as 'my_tool'"):
-        DirectToolInvoker([*ODD, twin])
+        _invoker_over([*ODD, twin])
 
 
 @pytest.mark.skipif(not HAVE_MONTY, reason="no pydantic-monty")
@@ -362,7 +391,7 @@ async def test_monty_type_checks_a_non_identifier_parameter() -> None:
     await p.start()
     try:
         code = 'args: "my_tool_arguments" = {"from": 2}\nprint(await tools.my_tool(**args))'
-        ok = await _run(p, code, tools=DirectToolInvoker(ODD))
+        ok = await _run(p, code, tools=_invoker_over(ODD))
         assert ok.ok, ok.error
         assert ok.output == "2->None\n"
     finally:
@@ -380,9 +409,7 @@ def test_a_digit_leading_tool_stubs_with_a_letter_prefix_that_clashes_loudly() -
 
 async def test_both_runtimes_call_a_digit_leading_tool(provider: SandboxProvider) -> None:
     digit = _tool("1add", _add, {"a": {"type": "integer"}, "b": {"type": "integer"}}, ["a", "b"])
-    r = await _run(
-        provider, "print(await tools.t_1add(a=1, b=2))", tools=DirectToolInvoker([digit])
-    )
+    r = await _run(provider, "print(await tools.t_1add(a=1, b=2))", tools=_invoker_over([digit]))
     assert r.ok, r.error
     assert r.output == "3\n" and [c.name for c in r.calls] == ["1add"]
 
@@ -395,7 +422,7 @@ async def test_monty_refuses_a_tool_it_cannot_reach_and_cpython_calls_it() -> No
     runner = _make("cpython")
     await runner.start()
     try:
-        cpython = await _run(runner, code, tools=DirectToolInvoker(hidden))
+        cpython = await _run(runner, code, tools=_invoker_over(hidden))
     finally:
         await runner.close()
     assert cpython.ok and cpython.output == "3\n", cpython.error
@@ -412,7 +439,7 @@ async def test_monty_refuses_a_tool_it_cannot_reach_and_cpython_calls_it() -> No
         await monty.start()
         try:
             with pytest.raises(ValueError, match="cannot call '_add'"):
-                await _run(monty, code, tools=DirectToolInvoker(hidden))
+                await _run(monty, code, tools=_invoker_over(hidden))
         finally:
             await monty.close()
 
@@ -433,7 +460,7 @@ BAD_REF = _tool("bad-ref", _add, {"k": {"$ref": "#/$defs/Missing"}}, [])
 
 async def test_a_script_naming_an_excluded_tool_gets_its_reason_not_unknown_tool() -> None:
     refusal = "tool 'bad-ref' is unavailable in code mode: $ref '#/$defs/Missing' does not resolve"
-    invoker = DirectToolInvoker(
+    invoker = _invoker_over(
         [TOOLS[0], BAD_REF], exclude=("codemode", "bad-ref"), unavailable={"bad-ref": refusal}
     )
     assert [s.name for s in invoker.stubs()] == ["add"]

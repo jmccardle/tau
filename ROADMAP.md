@@ -755,9 +755,10 @@ removals since 08-28: `--append-system-prompt`, `--bus`, `--continue`,
   - **Open:**
     - ~~tau-code still speaks serve 0.8~~ — closed 2026-10-18: tau 0.13.0
       (serve 0.10) and tau-code 0.7.0 shipped together.
-    - The sandbox providers still call tools through `DirectToolInvoker`, which
-      skips the hooks: no `tool_call` veto and no events. Moving them to
-      `ctx.execute_tool` is the next integration step.
+    - ~~The sandbox providers still call tools through `DirectToolInvoker`,
+      which skips the hooks~~ — closed 2026-10-24 (#94): script calls go through
+      `ctx.execute_tool` (`PipelineToolInvoker`), so hooks and
+      `tool_execution_*` events cover them.
     - The `session` lifetime is a hidden channel: its heap is keyed by cursor,
       not by tree position. Either drop it on navigate and fork, or back it with
       the stateful-sandbox entries. That experiment met tree-as-truth by loading

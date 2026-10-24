@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from tau_agent_core.codemode.invoker import DirectToolInvoker
+from tau_agent_core.codemode.invoker import ExecuteTool, PipelineToolInvoker
 from tau_agent_core.codemode.prompt import (
     merge_templates,
     render_prompt,
@@ -205,6 +205,15 @@ def format_result(result: RunResult, limits: RunLimits) -> tuple[str, str | None
     )
 
 
+async def _no_execute(name: str, args: dict[str, Any]) -> Any:
+    """Stand-in ``execute`` for an invoker built only to read its stubs.
+
+    Raises:
+        RuntimeError: always; a stub-only invoker must never run a tool.
+    """
+    raise RuntimeError(f"stub-only invoker was asked to run {name!r}")
+
+
 class CodeMode:
     """One session's code mode: provider, prompt and tool.
 
@@ -247,7 +256,7 @@ class CodeMode:
             and ``{real name: notice}`` for the failures.
         """
         configured = (TOOL_NAME, *self.config.exclude)
-        candidates = DirectToolInvoker(tools, exclude=configured).stubs()
+        candidates = PipelineToolInvoker(tools, _no_execute, exclude=configured).stubs()
         failures = stub_failures(candidates, self.language)
         notices = {name: unavailable_notice(name, r) for name, r in failures.items()}
         for name, notice in notices.items():
@@ -267,7 +276,7 @@ class CodeMode:
         """
         if self._section is None:
             exclude, _ = self.excluded(tools)
-            stubs = DirectToolInvoker(tools, exclude=exclude).stubs()
+            stubs = PipelineToolInvoker(tools, _no_execute, exclude=exclude).stubs()
             check = getattr(self._probe, "check_stubs", None)
             if check is not None:
                 check(stubs)
@@ -288,24 +297,23 @@ class CodeMode:
         self,
         code: str,
         tools: list[Any],
+        execute: ExecuteTool,
         *,
         cursor_id: str,
-        call_id: str,
         signal: Any,
         cwd: str | None,
     ) -> dict[str, Any]:
-        """Run ``code`` and return the tool-result dict."""
+        """Run ``code``, sending each tool call through ``execute``; return the tool-result dict."""
         if self.provider is None:
             self.provider = make_provider(self.config, cwd=cwd)
         exclude, unavailable = self.excluded(tools)
-        invoker = DirectToolInvoker(
+        invoker = PipelineToolInvoker(
             tools,
+            execute,
             exclude=exclude,
             unavailable=unavailable,
             language=self.language,
             max_calls=self.config.limits.max_calls,
-            signal=signal,
-            parent_call_id=call_id,
         )
         try:
             await self.provider.start()
@@ -351,12 +359,22 @@ def _session_of(ctx: Any) -> Any:
     return ctx._require_session()
 
 
+def _script_tools(session: Any) -> list[Any]:
+    """The turn's declared tools that ``ctx.execute_tool`` will also run.
+
+    A declared ``model-only`` tool is dropped: a stub for it would only ever fail.
+    """
+    reachable = {t.name for t in session._callable_tools()}
+    return [t for t in session._turn_tools() if t.name in reachable]
+
+
 def register(api: Any, config: Mapping[str, Any] | None = None) -> None:
     """Register the ``codemode`` tool and its prompt section.
 
-    Reaches two private seams, both named in the experiment record: the session's
-    ``_turn_tools()`` for the tool list, and appending to the system prompt from
-    ``before_agent_start`` because extension tools never reach ``{{tools}}``.
+    Reaches private seams named in the experiment record: the session's
+    ``_turn_tools()`` and ``_callable_tools()`` for the tool list, and appending
+    to the system prompt from ``before_agent_start`` because extension tools
+    never reach ``{{tools}}``. Script calls run through ``ctx.execute_tool``.
 
     Args:
         api: The extension API.
@@ -371,9 +389,9 @@ def register(api: Any, config: Mapping[str, Any] | None = None) -> None:
         try:
             result = await mode.run(
                 params["code"],
-                session._turn_tools(),
+                _script_tools(session),
+                ctx.execute_tool,
                 cursor_id=session.acting_cursor.id,
-                call_id=tool_call_id,
                 signal=signal,
                 cwd=ctx.cwd,
             )
@@ -392,7 +410,7 @@ def register(api: Any, config: Mapping[str, Any] | None = None) -> None:
             ctx.ui.notify(notice, "warning")
 
     async def before_agent_start(event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
-        section = mode.section(_session_of(ctx)._turn_tools())
+        section = mode.section(_script_tools(_session_of(ctx)))
         deliver(ctx)
         current = event.get("system_prompt") or ""
         if section.strip() in current:

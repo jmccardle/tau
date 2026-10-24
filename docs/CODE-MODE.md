@@ -1,6 +1,6 @@
 # Code mode: the model writes a script, the tools run inside it
 
-Research record (2026-10-05), nothing built. This is a candidate centrepiece for
+Research record (2026-10-05); §6.3 notes what is built since. This is a candidate centrepiece for
 0.13.0, not yet its committed target. It defines "code mode" as a range of
 features, prices each one against τ as it is, and names the seams it would need.
 
@@ -220,7 +220,14 @@ script that stops at a permission request and resumes from the tree.
   2026-10-19 (#55): a tool whose schema cannot be stubbed (a `$ref` that does
   not resolve, or is not local) is left out of `tools`, and every head shows
   "tool X is unavailable in code mode: <reason>"; the other tools are
-  unaffected.
+  unaffected. Built 2026-10-24 (#94): every `tools.<name>(...)` call runs
+  through `ctx.execute_tool` (`PipelineToolInvoker`), so a `tool_call` veto
+  blocks it, a `tool_result` rewrite reaches the script, and
+  `tool_execution_*` events fire with `parent_tool_call_id` set to the
+  `codemode` call. A veto, a validation failure and a tool error all raise in
+  the script with the text a model-issued call would get. A tool that asks to
+  stop the turn (`ToolHalt`) also raises in the script; the turn does not stop.
+  A declared `model-only` tool gets no stub, because `ctx.execute_tool` refuses it.
 - `search_tools(query, limit=8, namespace=None)`, `describe_tool(name)`,
   `describe_namespace(name)` — discovery inside the runtime (level 4).
 - `print` and `return` — the only output that reaches the model, with a cap and

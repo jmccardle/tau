@@ -1,6 +1,6 @@
 """Benchmark the code-mode sandbox providers. Prints a Markdown table.
 
-    venv/bin/python experiments/sandbox-providers/bench.py [--repeat 50]
+venv/bin/python experiments/sandbox-providers/bench.py [--repeat 50]
 """
 
 from __future__ import annotations
@@ -12,9 +12,10 @@ import time
 from typing import Any
 
 from tau_agent_core.codemode.cpython import CPythonProvider
-from tau_agent_core.codemode.invoker import DirectToolInvoker
+from tau_agent_core.codemode.invoker import PipelineToolInvoker
 from tau_agent_core.codemode.monty import MontyProvider
 from tau_agent_core.codemode.protocol import RunLimits
+from tau_agent_core.tool_pipeline import NestedToolResult, run_nested_call
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
 
 
@@ -31,6 +32,25 @@ NOOP = AgentTool(
         execute=_noop,
     )
 )
+
+
+async def _no_emit(event: Any) -> None:
+    return None
+
+
+async def _execute(name: str, args: dict[str, Any]) -> NestedToolResult:
+    """The nested-call pipeline with no hooks and no session."""
+    return await run_nested_call(
+        tools={"noop": NOOP},
+        dispatcher=None,
+        emit=_no_emit,
+        signal=None,
+        name=name,
+        args=args,
+        parent_tool_call_id="bench",
+    )
+
+
 LIMITS = RunLimits(timeout_s=60, max_calls=5000)
 SEQ = "for i in range(1000):\n    await tools.noop(i=i)"
 GATHER = "import asyncio\nr = await asyncio.gather(*[tools.noop(i=i) for i in range(1000)])\nlen(r)"
@@ -41,7 +61,7 @@ def _make(name: str, lifetime: str, **kw: Any) -> Any:
 
 
 async def _time(p: Any, code: str, scope: str = "s") -> float:
-    tools = DirectToolInvoker([NOOP], max_calls=5000)
+    tools = PipelineToolInvoker([NOOP], _execute, max_calls=5000)
     t = time.perf_counter()
     r = await p.run(code, tools=tools, limits=LIMITS, scope=scope)
     elapsed = (time.perf_counter() - t) * 1000
@@ -79,7 +99,9 @@ async def bench(name: str, repeat: int) -> dict[str, float]:
     out["run with 1 tool call, session (ms, median)"] = one
     seq = [await _time(p, SEQ) for _ in range(5)]
     out["1000 sequential tool calls (ms, median of 5)"] = statistics.median(seq)
-    out["per sequential call (µs)"] = (statistics.median(seq) - statistics.median(session)) * 1000 / 1000
+    out["per sequential call (µs)"] = (
+        (statistics.median(seq) - statistics.median(session)) * 1000 / 1000
+    )
     gat = [await _time(p, GATHER) for _ in range(5)]
     out["1000 calls via gather (ms, median of 5)"] = statistics.median(gat)
     await p.close()
@@ -87,8 +109,8 @@ async def bench(name: str, repeat: int) -> dict[str, float]:
 
 
 async def invoker_only(repeat: int = 20000) -> float:
-    """µs per DirectToolInvoker.invoke with no sandbox at all."""
-    tools = DirectToolInvoker([NOOP], max_calls=repeat + 1)
+    """µs per PipelineToolInvoker.invoke with no sandbox at all."""
+    tools = PipelineToolInvoker([NOOP], _execute, max_calls=repeat + 1)
     t = time.perf_counter()
     for i in range(repeat):
         await tools.invoke("noop", {"i": i})
