@@ -265,17 +265,18 @@ and each could swallow or rewrite it (independent review, round 2, N6). So:
   batch must either be shown unreachable from a suspension, or handle
   `TurnSuspended` explicitly; there are seven, including `compare.py:137`,
   `codemode/scoped.py:130`, `agent_session.py:3881` and `tau_llm/abort.py:115`
-  (final review, M1-1). The rule cannot rot when a new catch lands.
+  (final review, M1-1). The rule cannot rot when a new catch lands. There are
+  11 `except BaseException` catches today (tau-search, round 5), including
+  `agent_session.py:1535`, `codemode/extension.py:380`, `_cpython_child.py:155`,
+  `extension_auth.py:259`, `background.py:373`, `serve/remote.py:148` and
+  `session_store.py:629`.
 - **Core detects a swallowed unwind at runtime.** Code outside the five trees is
   not linted: tau-router, tau-debugger, any third-party extension. An
   extension's own `except BaseException` in a bus handler would swallow
   `TurnSuspended`, and under `-p` the turn would then run tools the human never
   stepped through. So `api.suspend` marks the dispatch when it raises. If that
   dispatch returns normally anyway, core raises a loud error naming the
-  extension that swallowed it, and the turn ends in error. There are 11 such catches today (tau-search, round 5),
-  including `agent_session.py:1535`, `codemode/extension.py:380`,
-  `_cpython_child.py:155`, `extension_auth.py:259`, `background.py:373`,
-  `serve/remote.py:148` and `session_store.py:629`.
+  extension that swallowed it, and the turn ends in error.
 - **`except Exception` sites need nothing,** and `asyncio.gather` in the
   parallel batch is not reached, because results' `entry_written` runs after
   the batch (§3.2).
@@ -633,16 +634,30 @@ rests on the Future. Across processes it rests on a lock:
   opening the session for writing is refused with that reason. On some network
   filesystems `flock` *succeeds* and excludes nothing: NFS mounted `nolock` or
   `local_lock=flock`, SMB, sshfs, and sync folders. So the session directory's
-  filesystem type is checked with `statfs`, and those types are refused unless
-  the config explicitly opts in (`sessions.allow_unlocked_fs`). Nothing is
-  skipped silently. The platform matrix states which platforms and filesystems
-  the lock covers (final review, M2-4).
+  filesystem type is checked with `statfs` (final review, M2-4). The refusal is
+  scoped to what depends on exclusion, because the lock is now held on every
+  session and a single-process user on such a mount was correct before and
+  stays correct (tau-search, round 6):
+  - **Opening a session for writing works**, and raises a session warning:
+    "cross-process exclusion unavailable on <fstype>; a second writer is not
+    detected".
+  - **The operations whose correctness rests on the lock are refused,** naming
+    the filesystem and the opt-in: claiming an orphaned suspension, `-p
+    --answer`, and arming stepping under a deferred responder.
+  - `sessions.allow_unlocked_fs` means "trust `flock` here anyway", for someone
+    who knows their mount does lock.
+  - Nothing is skipped silently. The platform matrix states which platforms and
+    filesystems the lock covers.
 - **A session that `tau serve` hosts.** The daemon holds the lock while it hosts
   the session, so a `-p --answer` against it is refused and names the daemon's
   socket: answer through serve. The daemon stays the single writer.
 - **JMFTS store.** It offers no cross-process lock, and John ruled out schema
-  changes. So in v1 a JMFTS-backed session takes a host-local sidecar,
-  `$TAU_HOME/locks/jmfts-<session id>.lock`, which covers one host only. And
+  changes. So in v1 a JMFTS-backed session takes a host-local sidecar in a runtime
+  directory, `$XDG_RUNTIME_DIR/tau/locks/jmfts-<session id>.lock`, falling back
+  to `/tmp/.tau-<uid>/locks/`. It covers one host only. A runtime directory is
+  cleared at logout or reboot, so a fresh JMFTS session per Tectum reset does
+  not grow a directory without limit (tectum-arecibo, round 6). The lock
+  matters only for a process's lifetime, so persistence buys nothing. And
   `-p --answer` on a JMFTS-backed session is **refused** with that reason,
   because a deferred responder is exactly the cross-process case the host-local
   lock cannot vouch for. A live suspension in serve or the TUI is answered
@@ -1139,7 +1154,9 @@ Every head must produce the same tree: the same entries, the same finalized
 - `turn_resume` raises, or a `gating` handler there times out: aborted results
   and a `turn_error` are written, and prompts work afterwards;
 - a session directory on an NFS `nolock` or sshfs mount: opening it for writing
-  is refused unless `sessions.allow_unlocked_fs` is set;
+  works and raises the exclusion warning; claiming an orphaned suspension,
+  `-p --answer`, and arming stepping under `-p` are refused, naming the
+  filesystem, unless `sessions.allow_unlocked_fs` is set;
 - `-p --answer` on a JMFTS-backed session: refused, naming the reason;
 - after `new_session` in a warm process on the file store, a second process can
   open the previous session for writing;
@@ -1283,4 +1300,6 @@ as milestone 2 (§7).
 | final review M2-3: a `Failed` `turn_resume` | §3.7.3 stops with aborted results and a `turn_error` |
 | final review M2-4: network filesystems; JMFTS single writer | §3.7.3 `statfs` refusal with opt-in; JMFTS host-local sidecar, `-p --answer` refused |
 | round 6, tau-search: the lint must allow cleanup-then-reraise | §3.2.2 bare `raise` is compliant |
+| round 6, tau-search: the `statfs` refusal manufactures a failure for users who never step | §3.7.3 writing works with a warning; only exclusion-dependent operations are refused |
+| round 6, tectum: the JMFTS sidecar under `$TAU_HOME` grows without limit | §3.7.3 runtime directory |
 | independent round 2 minors | resume as a submission; forms under `-p` take the headless policy; pending hits combined (§5.2); effective-argument check; `store_history` off refused (§3.9); the session lock held while hosting; `-p` without `--answer` exits 3 |
