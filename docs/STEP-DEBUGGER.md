@@ -301,10 +301,16 @@ one cursor, for example from two producers' `ext:` handlers in one dispatch.
 **Built (M1e).** The broker queues per cursor. A queued suspension is
 announced with `queued: true` and announced again, `queued: false`, when it
 reaches the front; it cannot be answered until then (`answer_suspension`
-refuses it, naming the open one). Each waiter races the turn's abort signal, so
-an abort, an `abort` answer to the open one included, resolves every queued one
-as `abort` with reason `aborted`, and a queued one whose turn was aborted
-before its promotion closes without opening. In practice two suspensions meet
+refuses it with `data.reason: queued`). Each waiter races the turn's abort
+signal, so an abort, an `abort` answer to the open one included, resolves every
+queued one as `abort` with `close_reason: aborted`, and a queued one whose turn
+was aborted before its promotion closes without opening. An `abort` answer
+aborts the suspended cursor and the cursors it owns, never an unrelated
+background fork. An answer that arrives once the turn is aborted, even in the
+same tick and before the waiter wakes, loses to the abort (`accepted: false`,
+`reason: aborted`), so the side entry never records an answer to an aborted
+turn; an answer that arrived first stands. The broker remembers the last 256
+closed resolutions for late answers and nothing else past a suspension's close. In practice two suspensions meet
 on one cursor only through tasks acting for one dispatch, since a dispatch's
 handlers run one at a time; the broker's tests drive the queue directly.
 
@@ -412,46 +418,54 @@ paused from the first line of the call, spec validation included, to its
 return. "The calling dispatch's policies" refuse nothing: §4.3 permits a
 suspension under any policy, so the check is the pause. A waiter whose task is
 cancelled finalizes its side entry as `abandoned` with an `abort` resolution
-before the cancellation leaves, and session shutdown resolves every open
-suspension as `abort` with reason `cursor_closed` and waits for each to close.
+before the cancellation leaves, and `AgentSession.close_suspensions()` resolves
+every open suspension as `abort` with `close_reason: cursor_closed` and waits
+for each to close. Session shutdown calls it, and so does an RPC host's stdin
+EOF (§3.6).
 
 ### 3.4 Snapshot and events
 
-- **Events:** `suspension_open` and `suspension_closed` are `AgentEvent` types,
-  so they reach every head: in-process to the TUI and the REPL, as records under
-  `--mode json`, on the RPC event stream, and over serve.
-- **Snapshot:** serve's `Attached` gains `suspensions: [SuspensionState]`, read
-  by the `--connect` client and by Tau Code. RPC gains `get_pending_suspensions`.
-- **Side entries on the wire.** Serve announces a side entry as an entry with
-  `side: true`, and replicas apply `is_side_entry` (§3.7.2). Otherwise serve's
-  `entry_open` (`daemon.py:102`) would leave every replica holding an incomplete
-  entry that looks like a branch.
-- **Closed with a reason.** `suspension_closed` carries `reason`: `answered`,
-  `aborted`, `cursor_closed` or `abandoned`, so a head's list can say why an item
-  vanished (tau-code-arecibo).
-- **The read-only state is live.** `read_only` and the lock holder are in the
-  attach snapshot and in `cursors` state, and a `lock_changed` event is sent when
-  the lock changes hands, so a banner clears without a reattach
-  (tau-code-arecibo).
-- **`get_tree` and entries carry `side` and the parent link,** so a side entry
-  hangs off its parent without becoming a child row (tau-code-arecibo).
-- **The protocol change is additive,** but it needs a lockstep τ and tau-code
-  release, because `hello` refuses a different `PROTOCOL_VERSION`.
+- **Events:** `suspension_open`, `suspension_closed` and `lock_changed` are
+  `AgentEvent` types, so they reach every head: in-process to the TUI and the
+  REPL, as records under `--mode json`, on the RPC event stream, and over serve
+  as `agent_event`. `suspension_open` carries `suspension`, a
+  `SuspensionState`; it is sent again with `queued: false` when a queued one
+  reaches the front of its cursor's queue.
+- **Closed with a reason.** `suspension_closed` carries `suspension`,
+  `resolution` (a `Resolution`) and `close_reason`: `answered`, `aborted`,
+  `cursor_closed` or `abandoned`, so a head's list can say why an item vanished
+  (tau-code-arecibo). `close_reason` is its own field; `reason` stays the side
+  completion's trigger.
+- **Snapshot:** serve's `Attached` carries `suspensions: [SuspensionState]`,
+  every cursor's, read by the `--connect` client and by Tau Code. RPC's
+  `get_pending_suspensions` lists the same by default (scope `session`); scope
+  `tree` narrows to a cursor and the cursors it owns, `cursor` to that cursor.
+- **Side entries on the wire.** Serve's entry events (`entry_open`,
+  `entry_final`) carry `side: true` for a side entry, and replicas apply
+  `is_side_entry` (§3.7.2), so no replica holds an incomplete entry that looks
+  like a branch. `get_tree` draws no side entry as a row: each node carries a
+  `side[]` list of marks (`SideMark`: id, kind, status, preview) for the side
+  entries hanging off it, and the answer carries a top-level `side[]` for
+  session marks with no parent (tau-code-arecibo).
+- **The read-only state is live.** `read_only` and `lock_holder` are on
+  serve's `Attached` and RPC's `get_state`, per session, not per cursor;
+  `lock_holder` is `{pid, host, head, started, detail}`. A `lock_changed` event
+  (`read_only`, `lock_holder`) is sent when the head tree's read-only state or
+  holder changes, so a banner clears without a reattach (tau-code-arecibo).
+- **The protocol change is additive.** A new event type is additive too, and
+  a client must ignore an event type it does not know (RPC-PROTOCOL.md). Serve
+  still needs a lockstep τ and tau-code release, because `hello` refuses a
+  different `PROTOCOL_VERSION`.
 
-**Built (M1e).** `suspension_open`, `suspension_closed` and `lock_changed`
-are `AgentEvent` types with the fields `suspension` (the state:
-`records.SuspensionState`), `resolution`, `read_only` and `lock_holder`;
-`suspension_closed` reuses `reason`, widened to the four close reasons. RPC
-forwards a suspension event whichever cursor raised it, since the host is the
-process's responder. Serve's `Attached` gains `suspensions`, and its client
-`Replica` keeps them current. RPC gains `get_pending_suspensions` (scope
-`cursor`, `tree` or `session`). `lock_changed` is emitted when the head tree's
-read-only state or holder changes after the first look; `read_only` stays on
-`Attached` and `get_state`, per session as M1b left it, not per cursor. `side`
-on `get_tree` rows and on serve's entry events was already built in M1a. A
-finalized suspension entry is typed on the wire (`records.SuspensionEntry`).
-RPC is 3.1 and serve 0.12; both changes are additive, and serve's `hello`
-refuses a mismatch as before.
+**Built (M1e).** As the bullets say; the record types are
+`records.SuspensionState`, `Resolution` and `LockHolderRecord`, pydantic
+models that the event schema and serve's schema share, and a finalized side
+entry is typed as `records.SuspensionEntry`, with `close_reason` beside
+`resolution`. RPC forwards a suspension event whichever cursor raised it,
+since the host is the process's responder, which is why the default scope is
+`session`. `side` on `get_tree` and on serve's entry events was built in M1a.
+Serve's client `Replica` keeps `suspensions` current. RPC is 3.1 and serve
+0.12.
 
 ### 3.5 The answer verb, per head
 
@@ -467,8 +481,9 @@ refuses a mismatch as before.
 **Built (M1e), over the wires only.** `answer_suspension` is an RPC verb
 and runs under serve at any cursor, naming the suspension; RPC records
 `answered_by: {client: "rpc"}`, serve `{client_id, client}` from the
-connection's `hello`. A second answer gets `accepted: false`, `already
-resolved`. The TUI modal, the REPL's field-by-field answer and the `--connect`
+connection's `hello`. A second answer gets `accepted: false`, `reason:
+already_resolved`; a refused one is `INVALID_PARAMS` with `data.reason` one of
+`unknown_id`, `queued`, `undeclared_action` or `invalid_value`. The TUI modal, the REPL's field-by-field answer and the `--connect`
 migration move to **M1f** with the rest of the rendering; `-p --answer` is
 milestone 2.
 
@@ -539,7 +554,12 @@ line is held, in order, until that request finishes. A plain `prompt` is
 acknowledged at admission and its turn runs on, so the reader is not waiting
 on its suspensions at all; the lane matters for a request that awaits a turn,
 such as a command that submits one. Serve dispatches each request in its own
-task already and needs no lane.
+task already and needs no lane. **EOF never waits behind a parked request:**
+the reader signals it at once, the handler withdraws its responder and closes
+every suspension as `cursor_closed`, the waiting request finishes, and τ exits 0
+and releases the session's lock. With no suspension parked EOF behaves as it did
+before the lane (measured against 3b53759: idle, a turn in flight, a background
+fork).
 
 ### 3.7 Durability and resume: one mechanism
 
@@ -1297,8 +1317,12 @@ today's rule. A suspension's state carries `parent_cursor_id`, `depth` and
 `spawned_from`, and `get_pending_suspensions {scope: "tree"}` lists a cursor's
 and its owned cursors'. `BranchResult` gains `end_reason`, and on an abort
 `aborted_by` (`suspension` when a person answered `abort` at one of its
-suspensions, `parent` when its owner was aborted, else `signal`) with the
-resolution's `answered_by`. A non-fork child, `spawn(at=None)`, is a fresh root
+suspensions, `shutdown` when one was closed by shutdown or an RPC host's EOF,
+`parent` when its owner was aborted, else `signal`) with the resolution's
+`answered_by`. An aborted child is `ok=False`, its `error` naming the
+`aborted_by`, so a planner that checks only `ok`, and the model reading the
+tool result, never take truncated output for success. `api.suspend_refusal()`
+gives the reason `can_suspend()` reads false for. A non-fork child, `spawn(at=None)`, is a fresh root
 cursor in the same session, as §3.12.6 found; a test pins its suspension. Not
 in core, by this record's own placement: `step_children` is the debugger's
 arming (§3.12.1, §5.5), so `off`/`start`/`inherit` are tau-debugger's; and
