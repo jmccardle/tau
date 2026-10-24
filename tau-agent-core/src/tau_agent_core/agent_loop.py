@@ -44,8 +44,9 @@ from tau_agent_core.agent_loop_types import (
     TurnSettings,
     TurnSettingsSource,
 )
+from tau_agent_core.continuation import LoopPosition, positioned
 from tau_agent_core.entry_annotations import AnnotationError
-from tau_agent_core.policies import HandlerPolicyError, acting_for
+from tau_agent_core.policies import HandlerPolicyError, acting_for, describe
 from tau_agent_core.events import AgentEndReason, AgentEvent, ErrorDetail
 from tau_agent_core.provider_retry import provider_retry_event
 from tau_agent_core.suspension import TurnSuspended
@@ -208,6 +209,9 @@ class AgentLoop:
         input_failure: An ``annotate`` failure, or a policed ``entry_written``
             handler's failure, on an input written before the run; the run
             raises it after ``agent_start``, before any request.
+        position: The turn's :class:`~tau_agent_core.continuation.LoopPosition`,
+            which the loop keeps current and publishes while it runs, so a
+            suspension can record its continuation; ``None`` makes a fresh one.
 
     Attributes:
         config: The configuration passed in.
@@ -227,6 +231,7 @@ class AgentLoop:
         call_gate: Callable[[str], str | None] | None = None,
         turn_settings: TurnSettingsSource | None = None,
         input_failure: TurnFailure | None = None,
+        position: LoopPosition | None = None,
     ) -> None:
         self.config = config
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
@@ -245,6 +250,9 @@ class AgentLoop:
         self._recorded: dict[int, dict[str, Any]] = {}
         self._request_max_tokens: int | None = None
         self._turn_failure: TurnFailure | None = input_failure
+        self._position = position if position is not None else LoopPosition()
+        if input_failure is not None:
+            self._position.pending_abort = describe(input_failure)
 
     @staticmethod
     async def _noop_emit(event: AgentEvent) -> None:
@@ -274,6 +282,24 @@ class AgentLoop:
         return self._hook_dispatcher is not None and self._hook_dispatcher.has_handlers(event)
 
     async def run(
+        self,
+        prompts: list[Any],
+        context: list[Any] | None = None,
+    ) -> list[Any]:
+        """Run the full agent loop for one or more prompts, its position published (:meth:`_run`).
+
+        Args:
+            prompts: As for :meth:`_run`.
+            context: As for :meth:`_run`.
+
+        Returns:
+            As for :meth:`_run`.
+        """
+        self._position.loop = "run"
+        with positioned(self._position):
+            return await self._run(prompts, context)
+
+    async def _run(
         self,
         prompts: list[Any],
         context: list[Any] | None = None,
@@ -321,6 +347,8 @@ class AgentLoop:
                     )
                 )
 
+                self._position.turn_index = turn_index
+                self._position.then = "sample"
                 await self._deliver_steer(messages, final_messages)
 
                 self._raise_turn_failure()
@@ -347,6 +375,7 @@ class AgentLoop:
                         [self._serialize_message(assistant)],
                         messages,
                         final_messages,
+                        continues=bool(self._steer_queue),
                     )
                     turn_index += 1
                     if self._steer_queue:
@@ -375,6 +404,7 @@ class AgentLoop:
                     batch = await self._refuse_cut_off_calls(assistant, tool_calls)
                 else:
                     batch = await self._execute_tool_calls(assistant, tool_calls)
+                self._position.then = "turn_end"
                 await self._close_group()
 
                 for msg in batch.messages:
@@ -411,6 +441,9 @@ class AgentLoop:
                     ],
                     messages,
                     final_messages,
+                    continues=self._continues_after(
+                        tool_calls, batch, cut_off, prev_batch, repeat_count
+                    ),
                 )
 
                 if cut_off:
@@ -431,6 +464,8 @@ class AgentLoop:
                 else:
                     repeat_count = 1
                 prev_batch = signature
+                self._position.prev_batch = prev_batch
+                self._position.repeat_count = repeat_count
                 if (
                     self.config.repeat_tool_call_limit is not None
                     and repeat_count >= self.config.repeat_tool_call_limit
@@ -481,6 +516,22 @@ class AgentLoop:
         self,
         context: list[Any] | None = None,
     ) -> list[Any]:
+        """Run another agent turn without adding new messages, its position published.
+
+        Args:
+            context: As for :meth:`_run_continue`.
+
+        Returns:
+            As for :meth:`_run_continue`.
+        """
+        self._position.loop = "run_continue"
+        with positioned(self._position):
+            return await self._run_continue(context)
+
+    async def _run_continue(
+        self,
+        context: list[Any] | None = None,
+    ) -> list[Any]:
         """Run another agent turn without adding new messages.
 
         Similar to run() but does not add new prompts.
@@ -516,6 +567,8 @@ class AgentLoop:
                     )
                 )
 
+                self._position.turn_index = turn_index
+                self._position.then = "sample"
                 await self._deliver_steer(messages, final_messages)
 
                 self._raise_turn_failure()
@@ -541,6 +594,7 @@ class AgentLoop:
                         [self._serialize_message(assistant)],
                         messages,
                         final_messages,
+                        continues=bool(self._steer_queue),
                     )
                     turn_index += 1
                     if self._steer_queue:
@@ -568,6 +622,7 @@ class AgentLoop:
                     batch = await self._refuse_cut_off_calls(assistant, tool_calls)
                 else:
                     batch = await self._execute_tool_calls(assistant, tool_calls)
+                self._position.then = "turn_end"
                 await self._close_group()
 
                 for msg in batch.messages:
@@ -604,6 +659,9 @@ class AgentLoop:
                     ],
                     messages,
                     final_messages,
+                    continues=self._continues_after(
+                        tool_calls, batch, cut_off, prev_batch, repeat_count
+                    ),
                 )
 
                 if cut_off:
@@ -625,6 +683,8 @@ class AgentLoop:
                 else:
                     repeat_count = 1
                 prev_batch = signature
+                self._position.prev_batch = prev_batch
+                self._position.repeat_count = repeat_count
                 if (
                     self.config.repeat_tool_call_limit is not None
                     and repeat_count >= self.config.repeat_tool_call_limit
@@ -834,6 +894,7 @@ class AgentLoop:
         """
         if self._turn_failure is None:
             self._turn_failure = err
+            self._position.pending_abort = describe(err)
 
     def _raise_turn_failure(self) -> None:
         """End the turn on a noted failure, once its entry is written.
@@ -864,6 +925,7 @@ class AgentLoop:
             self._recorded = {}
             batch = await self._aborted_batch(tool_calls, prior=[])
             final_messages.extend(batch.messages)
+            self._position.then = "raise"
             await self._close_group()
         raise failure
 
@@ -892,6 +954,8 @@ class AgentLoop:
         turn_messages: list[Any],
         messages: list[Any],
         final_messages: list[Any],
+        *,
+        continues: bool,
     ) -> None:
         """Fire the mutating ``turn_end`` hook and weave returned messages durably (S43).
 
@@ -903,6 +967,9 @@ class AgentLoop:
         ``customMessage`` tree node). Append-only: it never rewrites the
         assistant/tool nodes produced this turn.
 
+        ``continues`` is whether the loop samples again after this turn, which
+        a suspension records as what follows (docs/STEP-DEBUGGER.md §3.7.3).
+
         Raises:
             AnnotationError: an ``annotate`` failure on a node it wrote, or one
                 noted earlier, so nothing after this turn (compaction, the next
@@ -911,18 +978,47 @@ class AgentLoop:
         dispatcher = self._hook_dispatcher
         if dispatcher is None or not dispatcher.has_handlers("turn_end"):
             return
-        injected = await dispatcher.emit_turn_end(
-            turn_index=turn_index,
-            usage=usage,
-            messages=turn_messages,
-        )
+        self._position.then = "sample" if continues else "end_prompt"
+        self._position.returned = []
+        try:
+            injected = await dispatcher.emit_turn_end(
+                turn_index=turn_index,
+                usage=usage,
+                messages=turn_messages,
+            )
+        finally:
+            self._position.returned = None
         for raw in injected:
             node = self._turn_end_custom_node(raw)
             messages.append(node)
             final_messages.append(node)
             await self._write(node)
+        self._position.then = "sample" if continues else "break"
         await self._close_group()
         self._raise_turn_failure()
+
+    def _continues_after(
+        self,
+        tool_calls: list[ToolCall],
+        batch: ToolBatchResult,
+        cut_off: bool,
+        prev_batch: tuple[str, bool] | None,
+        repeat_count: int,
+    ) -> bool:
+        """Whether the loop samples again after a tool turn, judged before its ``turn_end``.
+
+        The same tests the loop applies after ``turn_end``: a cut-off turn
+        continues only for a queued steer; ``terminate`` stops; so does the
+        repeat-call limit, counted as the loop will count this batch.
+        """
+        if cut_off:
+            return bool(self._steer_queue)
+        if batch.terminate:
+            return False
+        signature = self._batch_signature(tool_calls, batch)
+        count = repeat_count + 1 if prev_batch == signature and signature[1] else 1
+        limit = self.config.repeat_tool_call_limit
+        return limit is None or count < limit
 
     @staticmethod
     def _turn_end_custom_node(message: dict[str, Any]) -> dict[str, Any]:
@@ -1126,6 +1222,9 @@ class AgentLoop:
                             await self._writer.finalize(handle, final_msg)
                         except AnnotationError as err:
                             self._note_turn_failure(err)
+                    final_calls = final_msg.get_tool_calls()
+                    self._position.start_batch([tc.id for tc in final_calls])
+                    self._position.then = "tools" if final_calls else "break"
                     await self._close_group()
                     await self._emit(
                         AgentEvent(
@@ -1224,6 +1323,7 @@ class AgentLoop:
             batch = await self._aborted_batch(tool_calls, prior=[], text=UNRUN_TOOL_RESULT)
             recorded.extend(batch.messages)
         setattr(failure, STREAM_RECORDED_ATTR, recorded)
+        self._position.then = "raise"
         await self._close_group()
 
     async def _execute_tool_calls(
@@ -1460,9 +1560,12 @@ class AgentLoop:
                 )
             )
 
+            self._position.then = "tools"
             prepared = await self._prepare_tool_call(tc)
+            self._note_prepared(tc, prepared)
             if isinstance(prepared, (BlockedCall, ErrorCall)):
                 all_results.append(await self._answer_refused(prepared))
+                self._position.then = "tools" if self._position.calls else "turn_end"
                 await self._close_group()
                 continue
 
@@ -1490,6 +1593,7 @@ class AgentLoop:
             )
 
             await self._record(result)
+            self._position.then = "tools" if self._position.calls else "turn_end"
             await self._close_group()
             all_results.append(result)
             if result.terminate:
@@ -1513,7 +1617,9 @@ class AgentLoop:
         """
         prepared_calls: list[PreparedToolCall | BlockedCall | ErrorCall] = []
         for tc in tool_calls:
+            self._position.then = "tools"
             prepared_calls.append(await self._prepare_tool_call(tc))
+            self._note_prepared(tc, prepared_calls[-1])
             if self._abort_signal is not None and self._abort_signal.is_aborted():
                 return await self._abort_prepared(tool_calls, prepared_calls)
 
@@ -1614,6 +1720,7 @@ class AgentLoop:
                     )
                 )
         await _flush_prefix()
+        self._position.then = "turn_end"
         await self._close_group()
 
         terminated = any(getattr(r, "terminate", False) for r in all_results)
@@ -1682,7 +1789,20 @@ class AgentLoop:
             }
         ).model_dump()
         self._recorded[id(result)] = message
+        if result.tool_call_id:
+            self._position.answered(result.tool_call_id)
         await self._write(message)
+
+    def _note_prepared(
+        self, tool_call: ToolCall, prepared: PreparedToolCall | BlockedCall | ErrorCall
+    ) -> None:
+        """Record in the position that ``tool_call``'s ``tool_call`` hooks have all run."""
+        if isinstance(prepared, PreparedToolCall):
+            self._position.prepared(tool_call.id, prepared.arguments)
+        elif isinstance(prepared, BlockedCall):
+            self._position.prepared(tool_call.id, blocked=prepared.error)
+        else:
+            self._position.prepared(tool_call.id, blocked=str(prepared.result().content))
 
     async def _prepare_tool_call(
         self, tool_call: ToolCall

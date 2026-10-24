@@ -421,7 +421,10 @@ async def test_a_tool_call_suspension_records_the_call_and_its_effective_args() 
         await asyncio.wait_for(session.prompt("go"), timeout=2)
     [entry] = _suspensions(session)
     assert entry["call"] == {"id": "c-one", "effective_args": {"patched": True}}
-    assert entry["continuation"] == {"phase": "dispatch:tool_call", "handler": 1}
+    assert (entry["continuation"]["phase"], entry["continuation"]["handler"]) == (
+        "dispatch:tool_call",
+        1,
+    )
     assert ran == ["one"]
 
 

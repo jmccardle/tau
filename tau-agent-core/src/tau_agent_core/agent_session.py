@@ -95,6 +95,7 @@ from tau_agent_core.session_lock import (
     release_later,
     write_lock_of,
 )
+from tau_agent_core.continuation import LoopPosition, current_position, positioned, set_then
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.entry_annotations import AnnotationError
 from tau_agent_core.policies import (
@@ -494,7 +495,12 @@ class _CursorWriter:
                 group are not dispatched.
         """
         group, self._group = self._group, []
-        for kind, entry_id, message in group:
+        position = current_position()
+        if position is not None:
+            position.group = [entry_id for _, entry_id, _ in group]
+        for index, (kind, entry_id, message) in enumerate(group):
+            if position is not None:
+                position.index = index
             await self._written(kind, entry_id, message)
 
     async def open(self, message: dict[str, Any]) -> str | None:
@@ -4442,15 +4448,17 @@ class AgentSession:
         user = [] if user_msg is None else [user_msg]
         prompts = [*seed, *pre_user_messages, *user, *queued, *post_user_messages]
         input_failure: TurnFailure | None = None
-        for message in prompts:
+        position = LoopPosition(loop="run", then="sample")
+        with positioned(position):
+            for message in prompts:
+                try:
+                    await writer.append(message)
+                except AnnotationError as err:
+                    input_failure = input_failure or err
             try:
-                await writer.append(message)
-            except AnnotationError as err:
+                await writer.close_group()
+            except HandlerPolicyError as err:
                 input_failure = input_failure or err
-        try:
-            await writer.close_group()
-        except HandlerPolicyError as err:
-            input_failure = input_failure or err
         loop = AgentLoop(
             config=config,
             emit=self._emit_stamped,
@@ -4463,6 +4471,7 @@ class AgentSession:
             writer=writer,
             call_gate=self._model_call_refusal,
             input_failure=input_failure,
+            position=position,
         )
         self.acting_cursor.turn_writer = writer
 
@@ -4581,7 +4590,7 @@ class AgentSession:
         """
         with contextlib.suppress(AnnotationError):
             await writer.append(turn_error_message(exc))
-        with contextlib.suppress(HandlerPolicyError):
+        with contextlib.suppress(HandlerPolicyError), positioned(LoopPosition(then="raise")):
             await writer.close_group()
 
     async def _run_user_turn_end(self, turn_messages: list[dict[str, Any]]) -> None:
@@ -4613,10 +4622,20 @@ class AgentSession:
         if not hooks.has_handlers("user_turn_end"):
             return
         loop_turns = sum(1 for m in turn_messages if m.get("role") == "assistant")
-        injected = await hooks.emit_user_turn_end(
-            loop_turns=loop_turns,
-            messages=list(turn_messages),
-        )
+        position = LoopPosition(then="end_prompt", returned=[])
+        with positioned(position):
+            injected = await hooks.emit_user_turn_end(
+                loop_turns=loop_turns,
+                messages=list(turn_messages),
+            )
+            position.returned = None
+            set_then("nothing")
+            await self._run_user_turn_end_nodes(injected, turn_messages)
+
+    async def _run_user_turn_end_nodes(
+        self, injected: list[Any], turn_messages: list[dict[str, Any]]
+    ) -> None:
+        """Write the nodes ``user_turn_end`` returned, then dispatch their ``entry_written``."""
         failure: AnnotationError | None = None
         written: list[tuple[str, dict[str, Any]]] = []
         for raw in injected:
@@ -4628,7 +4647,12 @@ class AgentSession:
             written.append((entry_id, node))
             turn_messages.append(node)
             failure = failure or err
-        for entry_id, node in written:
+        position = current_position()
+        if position is not None:
+            position.group = [entry_id for entry_id, _ in written]
+        for index, (entry_id, node) in enumerate(written):
+            if position is not None:
+                position.index = index
             await self._entry_written("custom", entry_id, node)
         if failure is not None:
             raise failure
@@ -5578,8 +5602,39 @@ class AgentSession:
             )
 
     def _continuation(self, mark: Any) -> dict[str, Any]:
-        """Where the loop stands at a suspension, for milestone 2's resume (§3.7.3)."""
-        return {"phase": f"dispatch:{mark.hook}", "handler": mark.handler}
+        """Where the turn stands at a suspension, for milestone 2's resume (§3.7.3).
+
+        Raises:
+            RuntimeError: no loop position is published, so the continuation
+                cannot be stated; every suspension site runs under one.
+        """
+        position = current_position()
+        if position is None:
+            raise RuntimeError(
+                f"api.suspend at {mark.hook!r}: no loop position is published, so the "
+                "suspension's continuation cannot be recorded"
+            )
+        return position.snapshot(f"dispatch:{mark.hook}", mark.handler, self._tool_call_gates())
+
+    def _tool_call_gates(self) -> list[list[Any]]:
+        """The loaded ``tool_call`` handlers as ``[extension, version]``, in load order (§3.7.3 ``gates``).
+
+        ``version`` is a package's distribution version, else the file's content
+        hash, else ``None`` for an inline factory.
+        """
+        gates: list[list[Any]] = []
+        for bucket in self._hooks()._extensions:
+            if not bucket.handlers.get("tool_call"):
+                continue
+            loaded = self._loaded_extensions.get(bucket.path)
+            version: str | None = None
+            if loaded is not None:
+                source = loaded.source
+                version = (source.version if source is not None else None) or (
+                    loaded.content_hash or None
+                )
+            gates.append([bucket.name, version])
+        return gates
 
     @agent_facing(topic="sessions", since="0.15.0")
     def answer_suspension(

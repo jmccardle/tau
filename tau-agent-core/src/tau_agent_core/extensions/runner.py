@@ -29,6 +29,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
+from tau_agent_core.continuation import current_position
 from tau_agent_core.entry_annotations import AnnotationError, entry_blocks, json_value
 from tau_agent_core.policies import (
     Failed,
@@ -121,6 +122,13 @@ MESSAGE_POSITIONS = (MESSAGE_POSITION_BEFORE_USER, MESSAGE_POSITION_AFTER_USER)
 
 FIRING_UNIT_AGENT_LOOP_TURN = "agent_loop_turn"
 FIRING_UNIT_USER_TURN = "user_turn"
+
+
+def _note_returned(message: Any) -> None:
+    """Record a ``turn_end``/``user_turn_end`` return on the turn's position, for a suspension's continuation."""
+    position = current_position()
+    if position is not None and position.returned is not None:
+        position.returned.append(message)
 
 
 class ExtensionRunner:
@@ -766,6 +774,7 @@ class ExtensionRunner:
                     continue
                 if result.get("message") is not None:
                     injected.append(result["message"])
+                    _note_returned(result["message"])
         return injected
 
     async def emit_user_turn_end(
@@ -840,6 +849,7 @@ class ExtensionRunner:
                     continue
                 if result.get("message") is not None:
                     injected.append(result["message"])
+                    _note_returned(result["message"])
         return injected
 
     async def emit_entry_written(self, kind: str, entry_id: str, message: dict[str, Any]) -> None:
