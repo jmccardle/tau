@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 181,797 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 182,300 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -1883,7 +1883,7 @@ what rides on top of this on every response):
       ]
     },
     "nodes": {
-      "description": "Every entry in the log, in the order a browser draws them \u2014 preorder over the parent/child tree, roots in load order, children oldest first. FLAT, with `parent_id` carrying the shape: a nested projection of a long linear conversation is one nesting level per message, which is a serializer's recursion limit rather than a tree anyone wanted. Nothing is filtered out \u2014 which rows a browser declines to draw (a `navigate` with one child) is the reader's rule, not the log's.",
+      "description": "Every path entry in the log, in the order a browser draws them \u2014 preorder over the parent/child tree, roots in load order, children oldest first. FLAT, with `parent_id` carrying the shape: a nested projection of a long linear conversation is one nesting level per message, which is a serializer's recursion limit rather than a tree anyone wanted. A side entry is not a node: it rides in its parent's `side`. Nothing else is filtered out \u2014 which rows a browser declines to draw (a `navigate` with one child) is the reader's rule, not the log's.",
       "items": {
         "properties": {
           "copyable": {
@@ -1942,6 +1942,37 @@ what rides on top of this on every response):
               "null"
             ]
           },
+          "side": {
+            "description": "The side entries parented here, oldest first: a suspension, drawn as a mark on this row, never as a child or a branch (docs/STEP-DEBUGGER.md \u00a73.7.2).",
+            "items": {
+              "properties": {
+                "entry_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "preview": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "incomplete",
+                    "final"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "entry_id",
+                "kind",
+                "status",
+                "preview"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "timestamp": {
             "description": "Epoch milliseconds, or null when no clock applies (docs/MESSAGE-TIMESTAMPS.md). This is the key children are sorted by, so re-sorting on it reproduces `nodes`.",
             "type": [
@@ -1978,7 +2009,8 @@ what rides on top of this on every response):
           "tool_call_ids",
           "tool_call_id",
           "copyable",
-          "estimated_tokens"
+          "estimated_tokens",
+          "side"
         ],
         "type": "object"
       },

@@ -608,7 +608,8 @@ def render_session_html(
 
     Every entry appears once. The path to ``leaf`` is the main thread; at each
     fork the other children fold in place as ``<details>`` branches, each laid out
-    by the same rule with its newest-written child continuing. Images are inline
+    by the same rule with its newest-written child continuing. A side entry is
+    drawn right after its parent and is never a branch or a tip. Images are inline
     ``data:`` URIs, there is no script, and a Content-Security-Policy forbids
     every fetch. Message text is preformatted, not rendered Markdown.
 
@@ -684,6 +685,9 @@ def render_session_html(
         rendered = _entry_html(tree.entry(item.id), item, config, is_leaf)
         if rendered:
             body.append(rendered)
+        for mark in item.side:
+            mark_node = TreeNode(mark.entry_id, item.id, mark.kind, None, mark.preview, False)
+            body.append(_entry_html(tree.entry(mark.entry_id), mark_node, config, False))
         schedule(*split(item.children, is_leaf))
 
     tips = sum(1 for node in preorder if not node.children)

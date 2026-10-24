@@ -23,9 +23,11 @@ from tau_agent_core.session_log import (
     CONFIG_ENTRY_TYPE,
     CONFIG_KEYS,
     INCOMPLETE,
+    SIDE_KINDS,
     SessionLog,
     default_leaf,
     is_incomplete,
+    is_side_entry,
 )
 
 __all__ = ["Cursor", "TURN_CURSOR", "TurnFrame"]
@@ -66,7 +68,9 @@ class TurnFrame:
 
 
 def _require_entry(log: SessionLog, entry_id: str | None, what: str) -> bool:
-    """Raise unless ``entry_id`` is ``None`` (before the root) or names an entry of ``log``.
+    """Raise unless ``entry_id`` is ``None`` (before the root) or names a path entry of ``log``.
+
+    A side entry is refused: nothing is ever parented on one (docs/STEP-DEBUGGER.md §3.7.2).
 
     Returns:
         Whether the entry is incomplete; ``False`` for ``None``.
@@ -75,6 +79,8 @@ def _require_entry(log: SessionLog, entry_id: str | None, what: str) -> bool:
         return False
     for entry in log.entries():
         if str(entry["id"]) == entry_id:
+            if is_side_entry(entry):
+                raise ValueError(f"{what} {entry_id!r} is a side entry, never on a path")
             return is_incomplete(entry)
     raise ValueError(f"{what} {entry_id!r} not found")
 
@@ -148,7 +154,7 @@ class Cursor:
             label: What the cursor was opened to do, for display.
 
         Raises:
-            ValueError: ``leaf`` names no entry of ``log``.
+            ValueError: ``leaf`` names no entry of ``log``, or a side entry.
         """
         self._leaf_incomplete = _require_entry(log, leaf, "cursor leaf")
         self.id = uuid.uuid4().hex[:8]
@@ -242,7 +248,7 @@ class Cursor:
             target: The entry to sit on; ``None`` is before the root.
 
         Raises:
-            ValueError: ``target`` names no entry.
+            ValueError: ``target`` names no entry, or a side entry.
         """
         self._leaf_incomplete = _require_entry(self.log, target, "move target")
         self._leaf = target
@@ -316,6 +322,42 @@ class Cursor:
         del self._open[entry_id]
         self._leaf = entry_id
         self._leaf_incomplete = False
+
+    async def open_side(self, kind: str, **payload: Any) -> str:
+        """Write an incomplete side entry under the leaf, moving nothing (docs/STEP-DEBUGGER.md §3.7.1).
+
+        Args:
+            kind: A side kind (:data:`~tau_agent_core.session_log.SIDE_KINDS`).
+            payload: The entry's fields so far; ``status`` is set to incomplete.
+
+        Returns:
+            The side entry's id, to pass to :meth:`finalize_side`.
+
+        Raises:
+            ValueError: ``kind`` is not a side kind, or the leaf is an incomplete entry.
+        """
+        if kind not in SIDE_KINDS:
+            raise ValueError(
+                f"open_side: {kind!r} is not a side kind ({', '.join(sorted(SIDE_KINDS))})"
+            )
+        self._refuse_incomplete_leaf()
+        return await self.log.append_at(self._leaf, kind, {**payload, "status": INCOMPLETE})
+
+    async def finalize_side(self, entry_id: str, **payload: Any) -> None:
+        """Complete a side entry :meth:`open_side` wrote, moving nothing.
+
+        Args:
+            entry_id: The id :meth:`open_side` returned.
+            payload: The entry's whole final payload; it replaces the incomplete one.
+
+        Raises:
+            ValueError: ``entry_id`` names no side entry or a finished one, or
+                ``payload`` sets a ``status`` (``SessionLog.finalize``).
+        """
+        entry = next((e for e in self.log.entries() if str(e["id"]) == entry_id), None)
+        if entry is None or not is_side_entry(entry):
+            raise ValueError(f"finalize_side: {entry_id!r} names no side entry")
+        await self.log.finalize(entry_id, payload)
 
     def _refuse_incomplete_leaf(self) -> None:
         """Raise when the leaf is an interrupted entry, which a cursor never extends."""

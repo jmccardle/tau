@@ -719,10 +719,14 @@ class EntryEventData:
         cursor_id: The cursor whose turn or request wrote it; an ``entry_final``
             names the cursor that opened the entry. Null for a write no cursor
             made. A client joins ``agent_event`` to the entries a turn writes by it.
+        side: Whether ``entry`` is a side entry (``session_log.is_side_entry``):
+            a mark on its parent, never a branch, a tip or a leaf
+            (docs/STEP-DEBUGGER.md §3.4).
     """
 
     entry: Annotated[dict[str, Any], Shape(Entry)]
     cursor_id: str | None = None
+    side: bool = False
 
 
 @dataclass

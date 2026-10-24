@@ -45,7 +45,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from tau_agent_core.compaction import estimate_tokens
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, read_request
-from tau_agent_core.session_log import is_incomplete
+from tau_agent_core.session_log import is_incomplete, is_side_entry
 from tau_llm.docs import agent_facing
 
 MessageIdScope = Literal["in_session", "ancestors_of_leaf", "descendants_of_leaf"]
@@ -385,6 +385,24 @@ def _tools_phrase(tools: list[str]) -> str:
     return f"{len(tools)} {noun}: {shown}{suffix}"
 
 
+@agent_facing(topic="sessions", since="0.15.0")
+@dataclass(frozen=True)
+class SideMark:
+    """A side entry, drawn as a mark on its parent rather than as a child (docs/STEP-DEBUGGER.md §3.7.2).
+
+    Attributes:
+        entry_id: The side entry's id.
+        kind: Its ``type``, a member of ``session_log.SIDE_KINDS``.
+        status: ``"incomplete"`` while open, ``"final"`` once finalized.
+        preview: Its first line of text, as a row's preview.
+    """
+
+    entry_id: str
+    kind: str
+    status: Literal["incomplete", "final"]
+    preview: str
+
+
 @agent_facing(topic="sessions")
 @dataclass
 class TreeNode:
@@ -400,7 +418,9 @@ class TreeNode:
         preview: The entry's first line of text, ``[interrupted]``-prefixed when
             the entry is incomplete.
         is_leaf: Whether this entry is the tree's leaf.
-        children: The nodes parented here, oldest first by timestamp.
+        children: The nodes parented here, oldest first by timestamp; never a
+            side entry.
+        side: The side entries parented here, oldest first.
     """
 
     id: str
@@ -410,6 +430,7 @@ class TreeNode:
     preview: str
     is_leaf: bool
     children: list[TreeNode] = field(default_factory=list)
+    side: list[SideMark] = field(default_factory=list)
 
 
 @agent_facing(topic="sessions")
@@ -457,6 +478,7 @@ class BrowseNode:
             or 0 for an entry carrying none. An ESTIMATE — a 4-chars-per-token
             heuristic — and the only token figure available for an arbitrary set of
             entries, so a caller showing a total says "estimate" beside it.
+        side: The side entries parented here; a side entry gets no row of its own.
     """
 
     entry_id: str
@@ -473,6 +495,7 @@ class BrowseNode:
     tool_call_id: str | None
     copyable: bool
     estimated_tokens: int
+    side: tuple[SideMark, ...] = ()
 
 
 @agent_facing(topic="sessions")
@@ -520,8 +543,10 @@ class ConversationTree:
         self._entries = entries  # append-only, load order
         self._by_id: dict[str, dict[str, Any]] = {e["id"]: e for e in entries}
         self._children: dict[str | None, list[str]] = {}
+        self._side: dict[str | None, list[str]] = {}
         for e in entries:
-            self._children.setdefault(e.get("parentId"), []).append(e["id"])
+            index = self._side if is_side_entry(e) else self._children
+            index.setdefault(e.get("parentId"), []).append(e["id"])
         self._leaf = leaf  # None = pre-root
 
     @property
@@ -556,9 +581,12 @@ class ConversationTree:
             target_id: The proposed fork point; ``None`` (before the root) is
                 trivially safe.
 
+        A side entry is no fork point, and neither is an entry with an open side
+        child, which both cursors could resume (docs/STEP-DEBUGGER.md §3.7.2).
+
         Returns:
-            A human-readable rejection naming the outstanding calls, or ``None``
-            if ``target_id`` is a safe fork point.
+            A human-readable rejection naming the outstanding calls or the side
+            entry, or ``None`` if ``target_id`` is a safe fork point.
 
         Raises:
             ValueError: ``target_id`` names no entry, as the
@@ -568,6 +596,15 @@ class ConversationTree:
             return None
         if target_id not in self._by_id:
             raise ValueError(f"fork point {target_id!r} not found")
+        if is_side_entry(self._by_id[target_id]):
+            return f"fork point {target_id!r} is a side entry, which nothing continues from"
+        for side_id in self._side.get(target_id, []):
+            side = self._by_id[side_id]
+            if is_incomplete(side):
+                return (
+                    f"fork point {target_id!r} has an open {side.get('type')} side entry "
+                    f"{side_id!r}; resolve it before forking here"
+                )
 
         pending: dict[str, str] = {}  # tool_call_id -> tool name, for the message
         for entry in self.path(target_id):
@@ -735,12 +772,48 @@ class ConversationTree:
 
         Returns:
             The child ids sorted by timestamp, the same order :meth:`tree` puts them
-            in. An unknown id has no children, which is the same answer as a leaf —
-            this is a graph reader, not a validator (see :meth:`contains`).
+            in; never a side entry (:meth:`side_of`). An unknown id has no
+            children, which is the same answer as a leaf — this is a graph
+            reader, not a validator (see :meth:`contains`).
         """
         children = list(self._children.get(entry_id, []))
         children.sort(key=lambda child: self._by_id[child].get("timestamp", 0))
         return children
+
+    def side_of(self, entry_id: str | None) -> list[str]:
+        """The side entries parented at ``entry_id``, oldest first; :meth:`children_of` omits them.
+
+        Args:
+            entry_id: The parent id.
+
+        Returns:
+            The side entry ids sorted by timestamp; empty for an unknown id.
+        """
+        side = list(self._side.get(entry_id, []))
+        side.sort(key=lambda child: self._by_id[child].get("timestamp", 0))
+        return side
+
+    def side_marks(self, entry_id: str | None) -> list[SideMark]:
+        """:meth:`side_of` as :class:`SideMark` records, the shape a head draws.
+
+        Args:
+            entry_id: The parent id.
+
+        Returns:
+            One mark per side entry, oldest first.
+        """
+        marks: list[SideMark] = []
+        for side_id in self.side_of(entry_id):
+            entry = self._by_id[side_id]
+            marks.append(
+                SideMark(
+                    entry_id=side_id,
+                    kind=str(entry.get("type", "")),
+                    status="incomplete" if is_incomplete(entry) else "final",
+                    preview=self._preview_of(entry),
+                )
+            )
+        return marks
 
     def descendants_of(self, entry_id: str | None) -> list[str]:
         """Every id in the subtree below ``entry_id``, parents before children.
@@ -796,7 +869,8 @@ class ConversationTree:
         ``attachments.complete_attachment`` already follows for paths).
 
         Args:
-            scope: Which entries are candidates. ``"in_session"`` is every entry;
+            scope: Which entries are candidates. ``"in_session"`` is every
+                entry but a side entry;
                 ``"ancestors_of_leaf"`` is the parent chain from the root to
                 ``leaf`` inclusive; ``"descendants_of_leaf"`` is the subtree
                 below it, excluding ``leaf`` itself.
@@ -817,7 +891,7 @@ class ConversationTree:
                 an empty list, which reads as "nothing matched".
         """
         if scope == "in_session":
-            candidates = [e["id"] for e in self._entries]
+            candidates = [e["id"] for e in self._entries if not is_side_entry(e)]
         else:
             anchor = self._leaf if leaf is None else leaf
             if anchor is None or anchor not in self._by_id:
@@ -860,13 +934,17 @@ class ConversationTree:
         A well-formed session has one root (first entry with ``parentId is None``);
         orphaned entries (broken parent chain) are also returned as roots. Each
         node's children are sorted by timestamp (oldest first); ``is_leaf`` marks
-        this tree's leaf.
+        this tree's leaf. A side entry is no node: it is a :class:`SideMark` in
+        its parent's ``side``, unless that parent is missing.
 
         Returns:
             The root nodes, in load order.
         """
         nodes: dict[str, TreeNode] = {}
-        for entry in self._entries:
+        drawn = [
+            e for e in self._entries if not (is_side_entry(e) and e.get("parentId") in self._by_id)
+        ]
+        for entry in drawn:
             nodes[entry["id"]] = TreeNode(
                 id=entry["id"],
                 parent_id=entry.get("parentId"),
@@ -874,10 +952,11 @@ class ConversationTree:
                 role=self._role_of(entry),
                 preview=self._preview_of(entry),
                 is_leaf=entry["id"] == self._leaf,
+                side=self.side_marks(entry["id"]),
             )
 
         roots: list[TreeNode] = []
-        for entry in self._entries:
+        for entry in drawn:
             node = nodes[entry["id"]]
             parent_id = entry.get("parentId")
             if parent_id is None or parent_id == entry["id"]:
@@ -898,7 +977,7 @@ class ConversationTree:
         return roots
 
     def browse(self) -> tuple[BrowseNode, ...]:
-        """Every entry as a :class:`BrowseNode`, in the order a browser draws them.
+        """Every path entry as a :class:`BrowseNode`, in the order a browser draws them.
 
         Preorder over :meth:`tree` — roots in load order, children oldest first —
         which is the same walk ``tree_surgery`` orders a selection by, so a caller
@@ -910,9 +989,9 @@ class ConversationTree:
         rather than a tree anybody wanted.
 
         Returns:
-            One node per entry, including the kinds a browser then declines to draw
-            (a ``navigate`` with one child). Which rows are hidden is the reader's
-            rule, not the log's, so nothing is filtered out here.
+            One node per :meth:`tree` node, including the kinds a browser then
+            declines to draw (a ``navigate`` with one child). A side entry is no
+            node: it rides in its parent's ``side``.
         """
         order: list[TreeNode] = []
         stack: list[TreeNode] = list(reversed(self.tree()))
@@ -955,6 +1034,7 @@ class ConversationTree:
             tool_call_id=str(answered) if answered is not None else None,
             copyable=node.kind in COPYABLE_KINDS,
             estimated_tokens=estimate_tokens(message) if message else 0,
+            side=tuple(node.side),
         )
 
     def _timestamp_key(self, node: TreeNode) -> Any:

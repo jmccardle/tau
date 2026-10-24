@@ -964,10 +964,14 @@ class SessionTreeModal(TauDialog[Optional[TreeIntent]]):
 
     @staticmethod
     def _label(node: TreeNode) -> str:
+        """A row's text: role or kind, preview, a mark per side entry, the cursor marker."""
         tag = node.role or node.kind
         text = node.preview or f"({node.kind})"
         marker = "  ◀ current" if node.is_leaf else ""
-        return f"{tag}: {text}{marker}"
+        side = "".join(
+            f"  ⏸ {m.kind}" + (" (open)" if m.status == "incomplete" else "") for m in node.side
+        )
+        return f"{tag}: {text}{side}{marker}"
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         """A click SELECTS; it does not commit (TREE-BROWSER-AS-EDITOR.md §5.1).

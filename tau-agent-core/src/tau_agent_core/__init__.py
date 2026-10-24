@@ -48,8 +48,15 @@ from tau_agent_core.tools.base import (
     ToolHalt,
 )
 from tau_agent_core.agent_session import AgentSession, ExtensionCommandResult
-from tau_agent_core.conversation_tree import ConversationTree, TreeNode
-from tau_agent_core.session_log import InMemorySessionLog, SessionLog, config_entry_at
+from tau_agent_core.conversation_tree import ConversationTree, SideMark, TreeNode
+from tau_agent_core.session_log import (
+    InMemorySessionLog,
+    OpenSideEntryError,
+    SessionLog,
+    config_entry_at,
+    entries_for_fork,
+    is_side_entry,
+)
 from tau_agent_core.session_manager import SessionManager
 from tau_agent_core.compaction import (
     DEFAULT_COMPACTION_SETTINGS,
@@ -107,9 +114,13 @@ __all__ = [
     "ExtensionCommandResult",
     "ConversationTree",
     "TreeNode",
+    "SideMark",
     "SessionLog",
     "InMemorySessionLog",
     "config_entry_at",
+    "is_side_entry",
+    "entries_for_fork",
+    "OpenSideEntryError",
     "SessionManager",
     "AgentEvent",
     "EventBus",

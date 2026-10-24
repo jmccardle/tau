@@ -2121,6 +2121,10 @@
         "entry": {
           "$ref": "#/$defs/Entry",
           "description": "The entry as the log now holds it."
+        },
+        "side": {
+          "description": "Whether `entry` is a side entry (`session_log.is_side_entry`): a mark on its parent, never a branch, a tip or a leaf (docs/STEP-DEBUGGER.md \u00a73.4).",
+          "type": "boolean"
         }
       },
       "required": [
@@ -3633,7 +3637,7 @@
           ]
         },
         "nodes": {
-          "description": "Every entry in the log, in the order a browser draws them \u2014 preorder over the parent/child tree, roots in load order, children oldest first. FLAT, with `parent_id` carrying the shape: a nested projection of a long linear conversation is one nesting level per message, which is a serializer's recursion limit rather than a tree anyone wanted. Nothing is filtered out \u2014 which rows a browser declines to draw (a `navigate` with one child) is the reader's rule, not the log's.",
+          "description": "Every path entry in the log, in the order a browser draws them \u2014 preorder over the parent/child tree, roots in load order, children oldest first. FLAT, with `parent_id` carrying the shape: a nested projection of a long linear conversation is one nesting level per message, which is a serializer's recursion limit rather than a tree anyone wanted. A side entry is not a node: it rides in its parent's `side`. Nothing else is filtered out \u2014 which rows a browser declines to draw (a `navigate` with one child) is the reader's rule, not the log's.",
           "items": {
             "properties": {
               "copyable": {
@@ -3692,6 +3696,37 @@
                   "null"
                 ]
               },
+              "side": {
+                "description": "The side entries parented here, oldest first: a suspension, drawn as a mark on this row, never as a child or a branch (docs/STEP-DEBUGGER.md \u00a73.7.2).",
+                "items": {
+                  "properties": {
+                    "entry_id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "preview": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "enum": [
+                        "incomplete",
+                        "final"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "entry_id",
+                    "kind",
+                    "status",
+                    "preview"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
               "timestamp": {
                 "description": "Epoch milliseconds, or null when no clock applies (docs/MESSAGE-TIMESTAMPS.md). This is the key children are sorted by, so re-sorting on it reproduces `nodes`.",
                 "type": [
@@ -3728,7 +3763,8 @@
               "tool_call_ids",
               "tool_call_id",
               "copyable",
-              "estimated_tokens"
+              "estimated_tokens",
+              "side"
             ],
             "type": "object"
           },

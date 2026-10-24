@@ -107,6 +107,91 @@ def is_incomplete(entry: dict[str, Any]) -> bool:
     return entry.get("status") == INCOMPLETE
 
 
+SIDE_KINDS: frozenset[str] = frozenset({"suspension"})
+"""Entry kinds written beside a cursor's leaf rather than on its path (docs/STEP-DEBUGGER.md §3.7.1).
+
+Read only through :func:`is_side_entry`, so a new kind costs one line here.
+"""
+
+
+@agent_facing(topic="sessions", since="0.15.0")
+def is_side_entry(entry: dict[str, Any]) -> bool:
+    """Whether ``entry`` hangs beside its parent rather than continuing from it.
+
+    A side entry is never an ancestor of a later entry, so it is no branch, no
+    tip and no leaf. Every walker that counts or follows children asks this
+    (docs/STEP-DEBUGGER.md §3.7.2).
+
+    Args:
+        entry: A log entry.
+
+    Returns:
+        True when its ``type`` is in :data:`SIDE_KINDS`.
+    """
+    return entry.get("type") in SIDE_KINDS
+
+
+@agent_facing(topic="sessions", since="0.15.0")
+class OpenSideEntryError(ValueError):
+    """A fork was asked for at a point with an open side entry, which both copies could resume.
+
+    Attributes:
+        entry_id: The open side entry.
+        kind: Its ``type``.
+    """
+
+    def __init__(self, at: str | None, entry_id: str, kind: str) -> None:
+        """Name the fork point and the open side entry under it.
+
+        Args:
+            at: The fork point.
+            entry_id: The open side entry.
+            kind: Its ``type``.
+        """
+        super().__init__(
+            f"fork point {at!r} has an open {kind} side entry {entry_id!r}; "
+            "resolve it before forking here"
+        )
+        self.entry_id = entry_id
+        self.kind = kind
+
+
+@agent_facing(topic="sessions", since="0.15.0")
+def entries_for_fork(entries: list[dict[str, Any]], at: str | None) -> list[dict[str, Any]]:
+    """What a fork copies: the path to ``at`` and each path entry's finalized side children.
+
+    An open side entry is never copied (docs/STEP-DEBUGGER.md §3.7.2). Every
+    store's ``fork`` reads its copy set from here.
+
+    Args:
+        entries: The source log's entries in append order.
+        at: The fork point; ``None`` copies every entry, and the point checked
+            for an open side child is then :func:`default_leaf`.
+
+    Returns:
+        The entries to copy, in append order; the dicts are ``entries``' own.
+
+    Raises:
+        ValueError: ``at`` names no entry.
+        OpenSideEntryError: the fork point has an open side child.
+    """
+    point = at if at is not None else default_leaf(entries)
+    if at is not None and not any(str(e.get("id")) == at for e in entries):
+        raise ValueError(f"fork point {at!r} not found")
+    for entry in entries:
+        if is_side_entry(entry) and is_incomplete(entry) and entry.get("parentId") == point:
+            raise OpenSideEntryError(point, str(entry["id"]), str(entry["type"]))
+    if at is None:
+        return [e for e in entries if not (is_side_entry(e) and is_incomplete(e))]
+    on_path = {str(e["id"]) for e in _ancestry(entries, at)}
+    return [
+        e
+        for e in entries
+        if str(e.get("id")) in on_path
+        or (is_side_entry(e) and not is_incomplete(e) and e.get("parentId") in on_path)
+    ]
+
+
 def finalized_entry(
     entry: dict[str, Any], payload: dict[str, Any], now: Callable[[], str]
 ) -> dict[str, Any]:
@@ -155,7 +240,8 @@ def default_leaf(entries: list[dict[str, Any]]) -> str | None:
     Skipped: an incomplete entry, so a session interrupted mid-message reopens at
     the entry before it and the interrupted branch stays beside the retry
     (docs/TAU-SERVE.md §4.3); a legacy ``navigate``, which names a different
-    position (docs/CURSORS.md §1.1, §4); and a namespaced kind (``system:kind``),
+    position (docs/CURSORS.md §1.1, §4); a side entry (:func:`is_side_entry`),
+    which no cursor continues from; and a namespaced kind (``system:kind``),
     which a store synthesizes for a document another system put in the tree — the
     JMFTS store's ``jmfts:document``. τ's own entry kinds are bare words.
 
@@ -167,7 +253,12 @@ def default_leaf(entries: list[dict[str, Any]]) -> str | None:
     """
     for entry in reversed(entries):
         kind = str(entry.get("type", ""))
-        if kind != "navigate" and ":" not in kind and not is_incomplete(entry):
+        if (
+            kind != "navigate"
+            and ":" not in kind
+            and not is_incomplete(entry)
+            and not is_side_entry(entry)
+        ):
             return str(entry["id"])
     return None
 

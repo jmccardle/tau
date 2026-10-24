@@ -1078,12 +1078,13 @@ _GET_TREE_RETURNS: dict[str, Any] = {
         "nodes": {
             "type": "array",
             "description": (
-                "Every entry in the log, in the order a browser draws them — "
+                "Every path entry in the log, in the order a browser draws them — "
                 "preorder over the parent/child tree, roots in load order, children "
                 "oldest first. FLAT, with `parent_id` carrying the shape: a nested "
                 "projection of a long linear conversation is one nesting level per "
                 "message, which is a serializer's recursion limit rather than a tree "
-                "anyone wanted. Nothing is filtered out — which rows a browser "
+                "anyone wanted. A side entry is not a node: it rides in its parent's "
+                "`side`. Nothing else is filtered out — which rows a browser "
                 "declines to draw (a `navigate` with one child) is the reader's rule, "
                 "not the log's."
             ),
@@ -1209,6 +1210,24 @@ _GET_TREE_RETURNS: dict[str, Any] = {
                             "as the TUI's browser does."
                         ),
                     },
+                    "side": {
+                        "type": "array",
+                        "description": (
+                            "The side entries parented here, oldest first: a "
+                            "suspension, drawn as a mark on this row, never as a child "
+                            "or a branch (docs/STEP-DEBUGGER.md §3.7.2)."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "entry_id": {"type": "string"},
+                                "kind": {"type": "string"},
+                                "status": {"type": "string", "enum": ["incomplete", "final"]},
+                                "preview": {"type": "string"},
+                            },
+                            "required": ["entry_id", "kind", "status", "preview"],
+                        },
+                    },
                 },
                 "required": [
                     "entry_id",
@@ -1225,6 +1244,7 @@ _GET_TREE_RETURNS: dict[str, Any] = {
                     "tool_call_id",
                     "copyable",
                     "estimated_tokens",
+                    "side",
                 ],
             },
         },

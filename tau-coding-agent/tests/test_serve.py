@@ -523,6 +523,41 @@ async def test_fork_copies_the_path_to_a_cursor_and_leaves_the_source(served, tm
     await client.close()
 
 
+async def test_a_side_entry_is_announced_as_side_and_marks_its_parent(served, tmp_path):
+    frames: list[dict[str, Any]] = []
+    client = await served.client(
+        on_event=lambda e: frames.append(e) if e["kind"].startswith("entry_") else None
+    )
+    session_id, replica = await _session_with_a_turn(client, tmp_path)
+    head = replica.head_cursor_id
+    host = served.daemon.hosts[session_id]
+    cursor = host.cursor(head)
+    leaf = cursor.leaf
+    assert frames and not any(f["data"]["side"] for f in frames), "path entries are not side"
+
+    side = await cursor.open_side("suspension", site="turn_end")
+    await _until(lambda: replica.seq == host.seq)
+
+    opened = frames[-1]
+    assert opened["kind"] == "entry_open" and opened["data"]["side"] is True
+    assert opened["data"]["entry"]["id"] == side
+    tree = await _rpc(client, "get_tree", session_id, head)
+    assert side not in {n["entry_id"] for n in tree["nodes"]}
+    assert tree["count"] == len(replica.entries) - 1
+    marked = next(n for n in tree["nodes"] if n["entry_id"] == leaf)
+    assert [(m["entry_id"], m["status"]) for m in marked["side"]] == [(side, "incomplete")]
+    with pytest.raises(ServeError, match=f"{dialect.TURN_STILL_RUNNING}.*{side}"):
+        await client.request(p.Fork(session_id=session_id, cursor_id=head))
+
+    await cursor.finalize_side(side, site="turn_end", resolution={"action": "step"})
+    await _until(lambda: replica.seq == host.seq)
+    assert frames[-1]["kind"] == "entry_final" and frames[-1]["data"]["side"] is True
+    forked = await client.request(p.Fork(session_id=session_id, cursor_id=head))
+    copy = await client.attach(forked["session"]["session_id"])
+    assert side in {e["id"] for e in copy.entries}
+    await client.close()
+
+
 async def test_a_fork_command_answers_ready_for_the_client_to_perform(served, tmp_path):
     client = await served.client()
     session_id, replica = await _session_with_a_turn(client, tmp_path)

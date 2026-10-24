@@ -37,6 +37,7 @@ from tau_agent_core.session_log import (
     CONFIG_ENTRY_TYPE,
     config_at,
     default_leaf,
+    entries_for_fork,
     session_name,
     event_iso,
     finalized_entry,
@@ -499,7 +500,9 @@ class JmftsSessionLog:
         title, content, structured_content unchanged) so the fork's tree looks
         exactly like the source's, foreign nodes included. ``source`` is untouched.
         With ``at``, only the documents on the path to that entry are copied, so the
-        fork continues from it (docs/CURSORS.md §4).
+        fork continues from it (docs/CURSORS.md §4). Either way the copy set is
+        ``session_log.entries_for_fork``: finalized side entries ride along, an open
+        one is dropped, and an open one at the fork point refuses the fork.
 
         **Cross-references are remapped, not just ``parent_id``.** An entry id IS a
         JMFTS doc id here, so the fork's fresh documents get fresh ids -- and three
@@ -522,6 +525,8 @@ class JmftsSessionLog:
         A deferred ``source`` that has written nothing is written first: a fork is
         the first real activity on it, and the copy is read from the server.
         """
+        source_entries = source._snapshot()
+        kept = {e["id"] for e in entries_for_fork(source_entries, at)}
         with source._append_lock:
             if source._held:
                 source._write_held_locked()
@@ -542,13 +547,11 @@ class JmftsSessionLog:
         subtree = client.get_subtree(source._root_doc_id, max_depth=None)
         descendants = sorted(subtree["descendants"], key=lambda d: d["id"])
         if at is not None:
-            from tau_agent_core.conversation_tree import ConversationTree
-
-            source_entries = source._snapshot()
-            if at not in {e["id"] for e in source_entries}:
-                raise ValueError(f"fork point {at!r} not found")
-            on_path = {source._doc_id(e["id"]) for e in ConversationTree(source_entries, at).path()}
+            on_path = {source._doc_id(entry_id) for entry_id in kept}
             descendants = [d for d in descendants if d["id"] in on_path]
+        else:
+            dropped = {source._doc_id(e["id"]) for e in source_entries if e["id"] not in kept}
+            descendants = [d for d in descendants if d["id"] not in dropped]
         old_to_new: dict[int, int] = {}
         for doc in descendants:
             old_parent = doc["parent_id"]
