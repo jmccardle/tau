@@ -2060,6 +2060,37 @@ a checkbox is the ``boolean`` domain.
 - `required: bool = True` — Whether the flow can run without it. An optional argument is offered as a step and may be skipped.
 - `scope: MessageIdScope | None = None` — For the ``message_id`` domain, which entries are candidates — one of ``ConversationTree.complete_message_id``'s scopes. ``None`` everywhere else.
 
+## Block
+<!-- agent: yes -->
+
+`tau_agent_core.entry_annotations.Block` · since 0.15.0
+
+One text block of a message entry, as :func:`entry_blocks` derives it.
+
+### block
+
+`tau_agent_core.entry_annotations.Block.block: int | str` · since 0.15.0
+
+The index into ``message.content``, or ``"details"``.
+
+### content_hash
+
+`tau_agent_core.entry_annotations.Block.content_hash: str` · since 0.15.0
+
+SHA-256 hex of ``text``'s UTF-8 bytes.
+
+### kind
+
+`tau_agent_core.entry_annotations.Block.kind: BlockKind` · since 0.15.0
+
+What the text is (docs/ENTRY-ANNOTATIONS.md §6).
+
+### text
+
+`tau_agent_core.entry_annotations.Block.text: str` · since 0.15.0
+
+The text offsets index, in code points.
+
 ## BranchPlan
 <!-- agent: yes -->
 
@@ -4871,6 +4902,35 @@ The messages those entries contribute, in order. Entry kinds that carry no messa
 **Raises**
 
 - `IncompleteEntryError` — an entry was opened and never finalized. An interrupted message is invalid input to every provider, and making up its ending is what docs/TAU-SERVE.md §4.4 removed.
+
+## entry_blocks
+<!-- agent: yes -->
+
+```python
+entry_blocks(kind: str, message: dict[str, Any]) -> list[Block]
+```
+
+`tau_agent_core.entry_annotations.entry_blocks` · since 0.15.0
+
+The text blocks of a message entry, in content order, then ``details``.
+
+A ``str`` content is one text block at index 0. An image yields nothing.
+A tool call is ``json.dumps(arguments, ensure_ascii=False)`` in its stored
+key order, and a non-``None`` ``details`` is rendered the same way as
+block ``"details"`` (docs/ENTRY-ANNOTATIONS.md §6).
+
+**Parameters**
+
+- `kind: str` — ``"user"``, ``"assistant"``, ``"toolResult"`` or ``"custom"``.
+- `message: dict[str, Any]` — The message dict as it is stored.
+
+**Returns**
+
+class:`Block` per text, thinking or tool-call block, and ``details``.
+
+**Raises**
+
+- `ValueError` — ``kind`` is not an entry kind, or a content block has a type this kind of message does not carry.
 
 ## enumerate_domain
 <!-- agent: yes -->

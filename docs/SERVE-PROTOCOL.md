@@ -960,6 +960,7 @@ An extension's message, which reaches the model unless `visibleToModel` is false
 | `type` | `"customMessage"` | yes |  |
 | `customType` | string | yes |  |
 | `message` | [CustomRoleMessage](#customrolemessage) | yes |  |
+| `ext` | object | no |  |
 
 ### CustomMessagePayload
 
@@ -1475,6 +1476,7 @@ A message on the conversation path.
 | `copiedFrom` | string | no |  |
 | `type` | `"message"` | yes |  |
 | `message` | [Message](#message) | yes |  |
+| `ext` | object | no |  |
 
 ### MessageMatch
 

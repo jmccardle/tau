@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, call_gate: Callable[[str], str | None] | None = None, turn_settings: TurnSettingsSource | None = None)
+class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, call_gate: Callable[[str], str | None] | None = None, turn_settings: TurnSettingsSource | None = None, input_failure: AnnotationError | None = None)
 ```
 
 `tau_agent_core.agent_loop.AgentLoop`
@@ -28,6 +28,7 @@ Events follow docs/SUBPHASE-0.0.md, "5. Agent Events".
 - `writer: TurnWriter | None = None` — Where each message is written as it exists; ``None`` writes nothing and the loop only returns what it produced.
 - `call_gate: Callable[[str], str | None] | None = None` — Given a model-issued call's tool name, the reason to refuse it, or ``None`` to let it run; how a masked tool stays declared, so the ``tools`` block and the prompt cache hold. ``None`` gates nothing.
 - `turn_settings: TurnSettingsSource | None = None` — Awaited before every request for its model, key, reasoning and temperature, so a switch made between two requests reaches the second (docs/TURN-SETTINGS.md §2). ``None`` sends every request with ``model`` and ``config``'s values.
+- `input_failure: AnnotationError | None = None` — An ``annotate`` failure on an input written before the run; the run raises it after ``agent_start``, before any request.
 
 ### add_tool
 
@@ -343,6 +344,10 @@ Write a message that is finished when it exists: a tool result, a steer, a node.
 
 - `message: Any` — The finished message, a dict or a pydantic message model.
 
+**Raises**
+
+- `AnnotationError` — after the write, when an ``annotate`` handler failed.
+
 ### finalize
 
 ```python
@@ -357,6 +362,10 @@ Complete the message :meth:`open` started.
 
 - `handle: Any` — What :meth:`open` returned for this message.
 - `message: Any` — The finished assistant message.
+
+**Raises**
+
+- `AnnotationError` — after the write, when an ``annotate`` handler failed.
 
 ### open
 

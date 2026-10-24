@@ -104,11 +104,27 @@ def create_custom_message(
     :func:`convert_to_llm` DROPS it, so the model never sees it. Stored so the
     distinction survives a reload; an older node without the key reads back as
     ``True`` (its historical behaviour), never fabricated.
+
+    Raises:
+        ValueError: ``content`` is not a str or a list of text and image blocks,
+            so a node fails here whether or not an ``annotate`` hook would have
+            read it (docs/ENTRY-ANNOTATIONS.md §6).
     """
+    blocks = _content_to_blocks(content)
+    for index, block in enumerate(blocks):
+        kind = block.get("type") if isinstance(block, dict) else None
+        if kind == "text" and isinstance(block.get("text"), str):
+            continue
+        if kind == "image":
+            continue
+        raise ValueError(
+            f"custom message {custom_type!r} content[{index}] is not a text or image "
+            f"block: {block!r}"
+        )
     message: dict[str, Any] = {
         "role": CUSTOM_ROLE,
         "customType": custom_type,
-        "content": _content_to_blocks(content),
+        "content": blocks,
         "display": display,
         "visibleToModel": visible_to_model,
     }
