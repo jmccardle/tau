@@ -6,9 +6,9 @@
 >
 > Design of record: `docs/TAU-SERVE.md` §5–§7.
 
-- **Protocol version:** `0.11`
+- **Protocol version:** `0.12`
 - **Default port:** `8256`
-- **Counts:** 52 requests (37 of them RPC verbs), 10 event kinds, 208 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 54 requests (39 of them RPC verbs), 10 event kinds, 219 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
@@ -34,6 +34,7 @@ The first request on every connection; nothing else is served before it.
 | `protocol` | string | yes | The client's `PROTOCOL_VERSION`; a different one is refused. |
 | `client` | string | yes | What the client is, for the daemon's log (`tui`, `tail`, `web`). |
 | `token` | string \| null | no | The shared secret, required only when the daemon's config sets `serve.token`. A client reads it from `TAUD_TOKEN`. |
+| `suspensions` | boolean | no | Whether this connection renders `suspension_open` and answers with `answer_suspension` (docs/STEP-DEBUGGER.md §3.8). A suspension waits for such a client; while none is attached the session carries a warning saying so. |
 
 **Answered with:** [HelloResult](#helloresult).
 
@@ -227,7 +228,7 @@ Each takes RPC's params as documented in `docs/RPC-PROTOCOL.md`, plus `session_i
 
 ### `submit`
 
-RPC `submit` (docs/RPC-PROTOCOL.md) at one cursor. Answered at admission, as over stdio, and its turn ends with a `submission_end` channel event. `multitask_strategy: "fork"` is accepted. A command answers success with `dispatched`, the arm it resolved to, where stdio refuses a step or a ready flow: the daemon performs a ready flow itself, except `fork` and `switch_session`, which come back for the client.
+RPC `submit` (docs/RPC-PROTOCOL.md) at one cursor. Answered at admission, as over stdio, and its turn ends with a `submission_end` channel event. `multitask_strategy: "fork"` is accepted. A command answers success with `dispatched`, the arm it resolved to, where stdio refuses a step or a ready flow: the daemon performs a ready flow itself, except `fork` and `switch_session`, which come back for the client. A frontend submitting for a person sends `interactive`; a program driving a sub-agent cursor sends `agent`, or a reopen may land in its branch.
 
 **Answered with:** [SubmitResult](#submitresult).
 
@@ -368,6 +369,18 @@ RPC `get_pending_request` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs 
 RPC `answer_request` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.
 
 **Answered with:** [AnswerRequestResult](#answerrequestresult).
+
+### `get_pending_suspensions`
+
+RPC `get_pending_suspensions` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.
+
+**Answered with:** [GetPendingSuspensionsResult](#getpendingsuspensionsresult).
+
+### `answer_suspension`
+
+RPC `answer_suspension` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.
+
+**Answered with:** [AnswerSuspensionResult](#answersuspensionresult).
 
 ### `list_managed_extensions`
 
@@ -581,6 +594,23 @@ A `agent_event` event.
 | `output` | string \| `null` | yes | What the dispatched command produced, or null. |
 | `leaf` | string \| `null` | yes | cursor.leaf after the response was appended (E5 rule 1). The append is what RELEASES the lock — appending moves the cursor and a lock is read at the cursor — so this value is the evidence the session is answerable again. |
 
+### AnswerSuspensionResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `accepted` | boolean | yes | True when this answer resolved the suspension. False when it was already resolved, which is not an error: `resolution` is then the answer that won, so two racing clients converge. |
+| `reason` | string \| `null` | yes | `already resolved` when `accepted` is false; null otherwise. |
+| `resolution` | [Resolution](#resolution) | yes | {id, action, values, answered_by, at_ms}: what the suspending code receives. `answered_by` names this host's client. |
+
+### AnsweredBy
+
+Who answered a suspension: RPC's `{client: "rpc"}`, or a serve connection.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `client` | string | yes |  |
+| `client_id` | string | no |  |
+
 ### Argument
 
 One argument a flow needs before it can run.
@@ -650,6 +680,7 @@ The answer to `Attach`.
 | `requests` | list of [RequestEventData](#requesteventdata) | yes | The extension forms open now, which an `Answer` closes. |
 | `read_only` | boolean | yes | Another process holds the session's write lock, so this daemon refuses every prompt and write on it. |
 | `lock_holder` | [LockHolderRecord](#lockholderrecord) \| null | yes | That process, when `read_only` names one. |
+| `suspensions` | list of [SuspensionState](#suspensionstate) | yes | The suspensions open or queued now on every cursor, each the state `suspension_open` carries (docs/STEP-DEBUGGER.md §3.4), so a client that attaches mid-suspension can answer it. |
 
 ### AttachmentCompletion
 
@@ -1163,6 +1194,15 @@ An `event` notification: no `id`, and no answer.
 | `method` | `"event"` | yes |  |
 | `params` | [Event](#event) | yes |  |
 
+### Evidence
+
+One piece of plain-text evidence a suspension shows.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes |  |
+| `text` | string | yes |  |
+
 ### ExtensionInfo
 
 One loaded extension and what it registered, as `get_extension_state` lists it.
@@ -1343,6 +1383,12 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `request` | [ExtensionRequest](#extensionrequest) \| null | yes | The extension request AT THE CURSOR, or null when there is none. The cursor only, never an ancestry walk: the thing a user is looking at and the thing that refused their submission are one entry. {entry_id, extension, extension_name, sentence, label, lock, ask, release} — `label` is τ's own framing of the four states over `lock` and `ask`, `sentence` is the extension's own line, `ask` is a validated `ui.form` spec ({title, fields, actions}) or null, and `release` names a command that clears the lock (advisory: commands are exempt from a lock by placement, not by name). A host renders all four states; three of them draw something and the fourth is this verb answering null. |
+
+### GetPendingSuspensionsResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `suspensions` | list of [SuspensionState](#suspensionstate) | yes | The suspensions in scope, oldest first, each the same state suspension_open carries. A suspension open or queued now (docs/STEP-DEBUGGER.md §3.4): {id, session_id, cursor_id, parent_cursor_id, depth, spawned_from, spec, site, extension, target_id, call, entry_id, queued, opened_at_ms}. `spec` is {title, body, fields, actions, evidence, targetId}; `actions` are {label} and `fields` are a form's; `queued` is true while another suspension on its cursor is open ahead of it, and only the open one can be answered. |
 
 ### GetSessionNameResult
 
@@ -1747,6 +1793,18 @@ An extension form open now: the `request` event's data, and one of `Attached`'s 
 | `request_id` | string | yes | What `Answer` names. |
 | `spec` | [FormSpec](#formspec) | yes |  |
 
+### Resolution
+
+How a suspension was resolved: what `api.suspend` returned (docs/STEP-DEBUGGER.md §3.3).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string \| null | yes |  |
+| `action` | string | yes |  |
+| `values` | object | yes |  |
+| `answered_by` | [AnsweredBy](#answeredby) \| null | yes |  |
+| `at_ms` | integer | yes |  |
+
 ### Response
 
 The one answer to a request: a `result` or an `error`, never both.
@@ -1998,6 +2056,23 @@ What a session answers beyond its tree, which a head reads without a round trip.
 | `load_errors` | list of list of string | yes | `[path, error]` per extension file that failed to load. |
 | `warnings` | list of [ExtensionWarning](#extensionwarning) | yes | The session's current extension warnings (#60); a `ui` event with op `warnings` carries each change. |
 
+### SuspensionAction
+
+A suspension's button: its label is the answer's `action`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes |  |
+
+### SuspensionCall
+
+The call a `tool_call` suspension is about, with its arguments after earlier handlers.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string \| null | yes |  |
+| `effective_args` | object \| null | yes |  |
+
 ### SuspensionEntry
 
 A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUGGER.md §3.7).
@@ -2011,6 +2086,49 @@ A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUG
 | `copiedFrom` | string | no |  |
 | `source` | `"agent"` | no |  |
 | `type` | `"suspension"` | yes |  |
+| `spec` | [SuspensionSpec](#suspensionspec) | yes |  |
+| `site` | string | yes |  |
+| `extension` | string | yes |  |
+| `targetId` | string \| null | yes |  |
+| `call` | [SuspensionCall](#suspensioncall) \| null | yes |  |
+| `entryId` | string \| null | yes |  |
+| `continuation` | object | yes |  |
+| `resolution` | [Resolution](#resolution) | yes |  |
+| `reason` | `"answered"` \| `"aborted"` \| `"cursor_closed"` \| `"abandoned"` | yes |  |
+
+### SuspensionSpec
+
+What a suspension shows, normalized (`suspensions.validate_suspension_spec`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `title` | string | yes |  |
+| `body` | [PanelBody](#panelbody) \| null | yes |  |
+| `fields` | list of [FormField](#formfield) | yes |  |
+| `actions` | list of [SuspensionAction](#suspensionaction) | yes |  |
+| `evidence` | list of [Evidence](#evidence) | yes |  |
+| `targetId` | string \| null | yes |  |
+
+### SuspensionState
+
+A suspension open or queued now, as `suspension_open` and the snapshots carry it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | What `answer_suspension` names; also its side entry's id. |
+| `session_id` | string | yes |  |
+| `cursor_id` | string | yes |  |
+| `parent_cursor_id` | string \| null | yes | Its cursor's owner, or `None` for a root cursor. |
+| `depth` | integer | yes | The length of its cursor's owner chain. |
+| `spawned_from` | string \| null | yes | The entry a child cursor was opened at, or `None`. |
+| `spec` | [SuspensionSpec](#suspensionspec) | yes |  |
+| `site` | string | yes | The hook it was raised from. |
+| `extension` | string | yes |  |
+| `target_id` | string \| null | yes | The entry it is about, from its spec, or `None`. |
+| `call` | [SuspensionCall](#suspensioncall) \| null | yes | At a `tool_call` site, the call; else `None`. |
+| `entry_id` | string \| null | yes | At an `entry_written` site, the entry; else `None`. |
+| `queued` | boolean | yes | Whether another suspension on its cursor is open ahead of it. |
+| `opened_at_ms` | integer | yes |  |
 
 ### SystemMessage
 

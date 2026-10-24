@@ -35,14 +35,17 @@ def _section(rendered: str, heading: str) -> str:
 def _acknowledgement_verbs() -> set[str]:
     """Every verb whose response only ACKNOWLEDGES, derived from the table.
 
-    `accepted` in a result schema is what that means on this wire — it is
-    `submit`/`prompt`'s `{accepted, submission_id, …}` and `compact`'s
-    `{accepted, compaction_id}`, and nothing that answers once has it.
+    `accepted` beside the id of the work that completes later is what that
+    means on this wire — `submit`/`prompt`'s `{accepted, submission_id, …}` and
+    `compact`'s `{accepted, compaction_id}`. `answer_suspension` answers once:
+    its `accepted` says whether this answer won, beside the resolution itself.
     """
     return {
         name
         for name, entry in COMMAND_TABLE.items()
-        if entry.result_schema is not None and "accepted" in entry.result_schema["properties"]
+        if entry.result_schema is not None
+        and "accepted" in entry.result_schema["properties"]
+        and ({"submission_id", "compaction_id"} & set(entry.result_schema["properties"]))
     }
 
 

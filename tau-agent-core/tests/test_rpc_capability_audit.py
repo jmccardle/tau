@@ -89,6 +89,8 @@ EXPOSED: dict[str, str] = {
     "extension_records": "list_extensions",
     "get_extension_config": "get_extension_config",
     "set_extension_config": "set_extension_config",
+    "answer_suspension": "answer_suspension",
+    "pending_suspensions": "get_pending_suspensions",
 }
 
 NOT_EXPOSED: dict[str, str] = {
@@ -107,14 +109,6 @@ NOT_EXPOSED: dict[str, str] = {
     "suspend_refusal": (
         "Read by an extension at its input hook to refuse an unsteppable turn; the host "
         "sees the refusal that results as SUBMISSION_REJECTED."
-    ),
-    "answer_suspension": (
-        "Goes on the wire with the RPC control lane (STEP-DEBUGGER §3.6), which a host "
-        "needs to send an answer while its own request waits on the suspension."
-    ),
-    "pending_suspensions": (
-        "Goes on the wire with answer_suspension and the control lane, as "
-        "get_pending_suspensions; until then a host has no way to answer what it lists."
     ),
     "set_extension_warning": (
         "A warning is written by the extension or loader that knows the problem (#60); a "

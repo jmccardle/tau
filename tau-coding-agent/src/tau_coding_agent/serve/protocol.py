@@ -44,6 +44,7 @@ from tau_agent_core.rpc.records import (
     ExtensionRequest,
     FormSpec,
     LockHolderRecord,
+    SuspensionState,
     ModelRecord,
     PanelSpec,
     SessionScope,
@@ -52,7 +53,7 @@ from tau_agent_core.rpc.records import (
 from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.submission import MultitaskStrategy, SubmissionSource
 
-PROTOCOL_VERSION = "0.11"
+PROTOCOL_VERSION = "0.12"
 """``MAJOR.MINOR``. Below 1.0 any bump may break a client, and the hello refuses a mismatch."""
 
 DEFAULT_PORT = 8256
@@ -80,11 +81,16 @@ class Hello:
         client: What the client is, for the daemon's log (``tui``, ``tail``, ``web``).
         token: The shared secret, required only when the daemon's config sets
             ``serve.token``. A client reads it from ``TAUD_TOKEN``.
+        suspensions: Whether this connection renders ``suspension_open`` and
+            answers with ``answer_suspension`` (docs/STEP-DEBUGGER.md §3.8). A
+            suspension waits for such a client; while none is attached the
+            session carries a warning saying so.
     """
 
     protocol: str
     client: str
     token: str | None = None
+    suspensions: bool = False
     type: Literal["hello"] = "hello"
 
 
@@ -331,6 +337,8 @@ RPC_RUN: tuple[str, ...] = (
     "get_entry",
     "get_pending_request",
     "answer_request",
+    "get_pending_suspensions",
+    "answer_suspension",
     "list_managed_extensions",
     "get_extension_state",
     "list_extensions",
@@ -349,6 +357,9 @@ RPC_RUN: tuple[str, ...] = (
 
 ``compact``'s outcome is the ``compaction_end`` event, as it is RPC's notification;
 ``abort`` reaches the cursor's turn, the cursors it owns, and its compaction.
+``answer_suspension`` records the answering connection as ``answered_by``
+(``client_id``, and ``client`` from its ``hello``); it names a suspension, not a
+cursor, so any attached client answers any cursor's.
 """
 
 RPC_OWN: dict[str, str] = {
@@ -357,7 +368,9 @@ RPC_OWN: dict[str, str] = {
         '`submission_end` channel event. `multitask_strategy: "fork"` is accepted. '
         "A command answers success with `dispatched`, the arm it resolved to, where "
         "stdio refuses a step or a ready flow: the daemon performs a ready flow "
-        "itself, except `fork` and `switch_session`, which come back for the client."
+        "itself, except `fork` and `switch_session`, which come back for the client. "
+        "A frontend submitting for a person sends `interactive`; a program driving a "
+        "sub-agent cursor sends `agent`, or a reopen may land in its branch."
     ),
     "prompt": "`submit` with RPC's provenance defaults.",
 }
@@ -552,6 +565,9 @@ class Attached:
         read_only: Another process holds the session's write lock, so this
             daemon refuses every prompt and write on it.
         lock_holder: That process, when ``read_only`` names one.
+        suspensions: The suspensions open or queued now on every cursor, each
+            the state ``suspension_open`` carries (docs/STEP-DEBUGGER.md §3.4),
+            so a client that attaches mid-suspension can answer it.
     """
 
     session_id: str
@@ -566,6 +582,7 @@ class Attached:
     requests: list[RequestEventData]
     read_only: bool
     lock_holder: LockHolderRecord | None
+    suspensions: list[SuspensionState]
 
 
 @dataclass

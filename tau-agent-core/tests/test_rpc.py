@@ -486,8 +486,13 @@ def test_the_table_has_exactly_the_2a_2c_phase3_and_tier_b_verbs():
     without which an RPC host could be refused by a lock it had no verb to
     release — plus 0.13.0's `set_reasoning` (docs/REASONING-WIRE.md §10) — plus
     0.14.0's `list_extensions`, the `tau ext list` rows (docs/EXTENSION-PACKAGES.md
-    §7) — no more, no less."""
+    §7) — plus 0.15.0's suspension trio, `get_pending_suspensions`,
+    `answer_suspension` and `declare_capabilities` (docs/STEP-DEBUGGER.md §3.5)
+    — no more, no less."""
     assert set(commands.COMMAND_TABLE) == {
+        "get_pending_suspensions",
+        "answer_suspension",
+        "declare_capabilities",
         "list_extensions",
         "get_extension_config",
         "set_extension_config",

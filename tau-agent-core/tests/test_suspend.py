@@ -768,3 +768,37 @@ async def test_a_cancelled_waiter_closes_its_suspension_as_abandoned() -> None:
     assert [(k, e.get("reason")) for k, e in events][-1] == ("suspension_closed", "abandoned")
     [entry] = [e for e in cursor.entries() if e.get("type") == "suspension"]
     assert entry["reason"] == "abandoned" and not is_incomplete(entry)
+
+
+# ── lock_changed (§3.4) ──────────────────────────────────────────────────────
+
+
+async def test_a_change_of_lock_holder_is_a_lock_changed_event() -> None:
+    from tau_agent_core.session_lock import LockHolder, WriteAccess
+
+    holder = LockHolder(pid=42, host="box", head="tui", started="2026-10-24T09:00:00Z")
+
+    class _Held:
+        def __init__(self) -> None:
+            self.read_only = False
+
+        def access(self) -> WriteAccess:
+            if not self.read_only:
+                return WriteAccess(read_only=False, holder=None, reason=None)
+            return WriteAccess(read_only=True, holder=holder, reason="held by pid 42")
+
+        def release(self) -> None:
+            pass
+
+    session = _session()
+    seen: list[AgentEvent] = []
+    session.subscribe(lambda e: seen.append(e) if e.type == "lock_changed" else None)
+    held = _Held()
+    session._write_locks[id(session.cursor.log)] = (session.cursor.log, held)  # type: ignore[assignment]
+    session._show_write_access()
+    held.read_only = True
+    session._show_write_access()
+    session._show_write_access()
+    await asyncio.sleep(0)
+    assert [(e.read_only, e.lock_holder) for e in seen] == [(True, holder.to_dict())]
+    session._write_locks.clear()

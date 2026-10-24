@@ -16,9 +16,9 @@
 
 ## Version negotiation
 
-- **Protocol version:** `3.0`
+- **Protocol version:** `3.1`
 - **Dialect:** `jsonrpc-2.0`
-- **Counts:** 42 live verbs, 7 declined verbs, 18 event types, 66 type definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 45 live verbs, 7 declined verbs, 18 event types, 73 type definitions. Cite this line; never copy the numbers into hand-written prose.
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
 
@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 186,650 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 195,473 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -1282,6 +1282,69 @@ what rides on top of this on every response):
 }
 ```
 
+#### `answer_suspension`
+
+*Since 0.15.0.* AgentSession.answer_suspension, projected (docs/STEP-DEBUGGER.md §3.3). Takes no turn lock: the turn waiting on the suspension holds it, and this is what lets it go on. The first valid answer wins; a later one gets `accepted: false`, `already resolved`, and the winning resolution, which is not an error. In the control lane (§3.6), so a host can answer a suspension its own request in flight is waiting on. INVALID_PARAMS, with nothing recorded, for an unknown id, a suspension still queued behind another, an undeclared action, or values its fields reject. No leaf: the answer moves no cursor, and the turn's own events report what it writes next.
+
+**Params schema:**
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "description": "One of the suspension's action labels; `abort` also aborts its turn.",
+      "type": "string"
+    },
+    "suspension_id": {
+      "description": "The suspension's `id`, from suspension_open or get_pending_suspensions. Any cursor's: an answer names a suspension, never a cursor.",
+      "type": "string"
+    },
+    "values": {
+      "additionalProperties": {},
+      "description": "Every declared field's value, keyed by field name; omitted is {}. Checked as answer_request checks them, before anything is recorded.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "suspension_id",
+    "action"
+  ],
+  "type": "object"
+}
+```
+
+**Result schema** (see [Response envelope](#response-envelope) for
+what rides on top of this on every response):
+
+```json
+{
+  "properties": {
+    "accepted": {
+      "description": "True when this answer resolved the suspension. False when it was already resolved, which is not an error: `resolution` is then the answer that won, so two racing clients converge.",
+      "type": "boolean"
+    },
+    "reason": {
+      "description": "`already resolved` when `accepted` is false; null otherwise.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "resolution": {
+      "$ref": "#/$defs/Resolution",
+      "description": "{id, action, values, answered_by, at_ms}: what the suspending code receives. `answered_by` names this host's client."
+    }
+  },
+  "required": [
+    "accepted",
+    "reason",
+    "resolution"
+  ],
+  "type": "object"
+}
+```
+
 #### `commit_branch`
 
 *Since 0.9.8.* tau_agent_core.tree_ops.commit_branch, projected. Builds a branch out of a set of marked entries and continues on it (docs/TREE-BROWSER-AS-EDITOR.md §6). The copies are minted with append_at, which does NOT move the cursor, and the cursor moves onto the last minted entry afterwards — so the commit is atomic from the cursor's point of view and a mint that fails partway leaves orphans hanging off the attach point rather than a half-moved conversation. Refuses, all INVALID_PARAMS and all before the first append: an empty selection, an unknown id, an entry no branch can carry, or a selection composing a path that is not turn-complete. D-1: guarded by turn_safety_guard, so this refuses with TURN_STILL_RUNNING rather than re-shaping the path an in-flight turn is being run against. D-7 rule 1: a verb that APPENDS refuses an unpersisted session (SESSION_NOT_PERSISTED) before anything is touched — a tree edit that dies with the process leaves a host holding a conversation it can never load again. E5 rule 1: the completion carries the resulting `leaf`. Refuses: every caller error tau_agent_core.tree_ops raises — an unknown id above all — comes back as INVALID_PARAMS, checked before the first append, so a refusal leaves the log byte-identical. WHERE the entries land and for how long is set_model's own note: a --mode rpc child defaults to a private <tmp>/.tau-<uid>/sessions, so durability is bounded by machine uptime unless the host passed --session-dir DIR.
@@ -1399,6 +1462,46 @@ what rides on top of this on every response):
   "required": [
     "matches",
     "total"
+  ],
+  "type": "object"
+}
+```
+
+#### `declare_capabilities`
+
+*Since 0.15.0.* RPC has no handshake, so a host says what it can do here (docs/STEP-DEBUGGER.md §3.8). With `suspensions: true` the host is the session's live responder: a suspension raised in a turn whose submission allowed user input waits for its answer. A host that never declares it gets NoResponderError from every api.suspend, which is right for a channel nobody sits on: a wait would hang the turn until the host's own timeout. Idempotent; appends nothing.
+
+**Params schema:**
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "suspensions": {
+      "description": "True: this host renders suspension_open and answers with answer_suspension, so it is a live responder (\u00a73.8). False withdraws it.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "suspensions"
+  ],
+  "type": "object"
+}
+```
+
+**Result schema** (see [Response envelope](#response-envelope) for
+what rides on top of this on every response):
+
+```json
+{
+  "properties": {
+    "suspensions": {
+      "description": "Whether this host is now registered as the session's live suspension responder: true means api.suspend may raise a suspension for it to answer, false that api.suspend raises NoResponderError.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "suspensions"
   ],
   "type": "object"
 }
@@ -1863,6 +1966,52 @@ what rides on top of this on every response):
   },
   "required": [
     "request"
+  ],
+  "type": "object"
+}
+```
+
+#### `get_pending_suspensions`
+
+*Since 0.15.0.* AgentSession.pending_suspensions, projected (docs/STEP-DEBUGGER.md §3.4). The snapshot a host reads after it starts, beside the suspension_open and suspension_closed events that keep it current. An empty list is the ordinary answer. Read-only, and in the control lane: while a request in flight waits on a suspension raised under it, this is served without waiting for that request (§3.6).
+
+**Params schema:**
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "scope": {
+      "description": "`cursor` (the default): the suspensions at this host's cursor. `tree`: those at the cursor and at every cursor it owns, a sub-agent's included, each with its `parent_cursor_id` and `depth`. `session`: every cursor's.",
+      "enum": [
+        "cursor",
+        "tree",
+        "session"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [],
+  "type": "object"
+}
+```
+
+**Result schema** (see [Response envelope](#response-envelope) for
+what rides on top of this on every response):
+
+```json
+{
+  "properties": {
+    "suspensions": {
+      "description": "The suspensions in scope, oldest first, each the same state suspension_open carries. A suspension open or queued now (docs/STEP-DEBUGGER.md \u00a73.4): {id, session_id, cursor_id, parent_cursor_id, depth, spawned_from, spec, site, extension, target_id, call, entry_id, queued, opened_at_ms}. `spec` is {title, body, fields, actions, evidence, targetId}; `actions` are {label} and `fields` are a form's; `queued` is true while another suspension on its cursor is open ahead of it, and only the open one can be answered.",
+      "items": {
+        "$ref": "#/$defs/SuspensionState"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "suspensions"
   ],
   "type": "object"
 }
@@ -2541,7 +2690,7 @@ what rides on top of this on every response):
 
 #### `submit`
 
-*Since 2A.* The provenance differentiator (REMOTE-CONTROL.md §3 Tier C): the full quad (source/submitter/submission_id/correlation) is required on the wire, and every AgentEvent the resulting turn emits is stamped with it. Dual completion (C3): this response only acknowledges admission.
+*Since 2A.* The provenance differentiator (REMOTE-CONTROL.md §3 Tier C): the full quad (source/submitter/submission_id/correlation) is required on the wire, and every AgentEvent the resulting turn emits is stamped with it. Dual completion (C3): this response only acknowledges admission. A frontend submitting for a person sends `interactive`; a program driving a sub-agent cursor sends `agent`, or a reopen may land in its branch (an entry an `agent` turn writes on a child cursor is passed over when the session reopens, docs/STEP-DEBUGGER.md §3.12.6).
 
 **Params schema:**
 
@@ -2833,6 +2982,15 @@ Every `type: "event"` notification carries a `WireEvent` payload (generated from
 
 Every record the schemas above reference, from `get_capabilities`' `$defs`. A client must ignore a field it does not know.
 
+### AnsweredBy
+
+Who answered a suspension: RPC's `{client: "rpc"}`, or a serve connection.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `client` | string | yes |  |
+| `client_id` | string | no |  |
+
 ### Argument
 
 One argument a flow needs before it can run.
@@ -3114,6 +3272,15 @@ A splice anchor with no summary: the path before `firstKeptId` leaves the contex
 One session-log entry, told apart by `type`; an unfinished one carries `status: "incomplete"`. Apply by `id`, last write wins (docs/TAU-SERVE.md §4.1).
 
 One of: [MessageEntry](#messageentry), [CustomMessageEntry](#custommessageentry), [CustomEntryEntry](#customentryentry), [CompactionEntry](#compactionentry), [ElideEntry](#elideentry), [BranchSummaryEntry](#branchsummaryentry), [SessionInfoEntry](#sessioninfoentry), [NavigateEntry](#navigateentry), [ModelChangeEntry](#modelchangeentry), [ThinkingChangeEntry](#thinkingchangeentry), [SuspensionEntry](#suspensionentry), [ForeignEntry](#foreignentry), [IncompleteEntry](#incompleteentry).
+
+### Evidence
+
+One piece of plain-text evidence a suspension shows.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes |  |
+| `text` | string | yes |  |
 
 ### ExtensionInfo
 
@@ -3430,6 +3597,18 @@ A flow with every required argument bound: the mutation, and what to call it wit
 | `mutation` | string | yes | The capability to perform — the flow's, always. Which mutation runs is a property of which flow was named, never of what was bound. |
 | `arguments` | object | yes | What to perform it with, keyed by the mutation's own parameter names, so a caller can splat it. |
 
+### Resolution
+
+How a suspension was resolved: what `api.suspend` returned (docs/STEP-DEBUGGER.md §3.3).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string \| null | yes |  |
+| `action` | string | yes |  |
+| `values` | object | yes |  |
+| `answered_by` | [AnsweredBy](#answeredby) \| null | yes |  |
+| `at_ms` | integer | yes |  |
+
 ### SessionInfoEntry
 
 The session's display name from here on; the model never sees it.
@@ -3492,6 +3671,23 @@ A compaction or branch summary as the context renders it: a user message with no
 | `content` | list of [TextContent](#textcontent) | yes |  |
 | `timestamp` | absent | no |  |
 
+### SuspensionAction
+
+A suspension's button: its label is the answer's `action`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `label` | string | yes |  |
+
+### SuspensionCall
+
+The call a `tool_call` suspension is about, with its arguments after earlier handlers.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string \| null | yes |  |
+| `effective_args` | object \| null | yes |  |
+
 ### SuspensionEntry
 
 A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUGGER.md §3.7).
@@ -3505,6 +3701,49 @@ A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUG
 | `copiedFrom` | string | no |  |
 | `source` | `"agent"` | no |  |
 | `type` | `"suspension"` | yes |  |
+| `spec` | [SuspensionSpec](#suspensionspec) | yes |  |
+| `site` | string | yes |  |
+| `extension` | string | yes |  |
+| `targetId` | string \| null | yes |  |
+| `call` | [SuspensionCall](#suspensioncall) \| null | yes |  |
+| `entryId` | string \| null | yes |  |
+| `continuation` | object | yes |  |
+| `resolution` | [Resolution](#resolution) | yes |  |
+| `reason` | `"answered"` \| `"aborted"` \| `"cursor_closed"` \| `"abandoned"` | yes |  |
+
+### SuspensionSpec
+
+What a suspension shows, normalized (`suspensions.validate_suspension_spec`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `title` | string | yes |  |
+| `body` | [PanelBody](#panelbody) \| null | yes |  |
+| `fields` | list of [FormField](#formfield) | yes |  |
+| `actions` | list of [SuspensionAction](#suspensionaction) | yes |  |
+| `evidence` | list of [Evidence](#evidence) | yes |  |
+| `targetId` | string \| null | yes |  |
+
+### SuspensionState
+
+A suspension open or queued now, as `suspension_open` and the snapshots carry it.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes | What `answer_suspension` names; also its side entry's id. |
+| `session_id` | string | yes |  |
+| `cursor_id` | string | yes |  |
+| `parent_cursor_id` | string \| null | yes | Its cursor's owner, or `None` for a root cursor. |
+| `depth` | integer | yes | The length of its cursor's owner chain. |
+| `spawned_from` | string \| null | yes | The entry a child cursor was opened at, or `None`. |
+| `spec` | [SuspensionSpec](#suspensionspec) | yes |  |
+| `site` | string | yes | The hook it was raised from. |
+| `extension` | string | yes |  |
+| `target_id` | string \| null | yes | The entry it is about, from its spec, or `None`. |
+| `call` | [SuspensionCall](#suspensioncall) \| null | yes | At a `tool_call` site, the call; else `None`. |
+| `entry_id` | string \| null | yes | At an `entry_written` site, the entry; else `None`. |
+| `queued` | boolean | yes | Whether another suspension on its cursor is open ahead of it. |
+| `opened_at_ms` | integer | yes |  |
 
 ### SystemMessage
 

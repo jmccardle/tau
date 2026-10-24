@@ -108,6 +108,54 @@ class Ask(TypedDict):
     actions: list[AskAction]
 
 
+class SuspensionAction(TypedDict):
+    """A suspension's button: its label is the answer's ``action``."""
+
+    label: str
+
+
+class Evidence(TypedDict):
+    """One piece of plain-text evidence a suspension shows."""
+
+    label: str
+    text: str
+
+
+class SuspensionSpec(TypedDict):
+    """What a suspension shows, normalized (``suspensions.validate_suspension_spec``)."""
+
+    title: str
+    body: PanelBody | None
+    fields: list[FormField]
+    actions: list[SuspensionAction]
+    evidence: list[Evidence]
+    targetId: str | None
+
+
+class SuspensionCall(TypedDict):
+    """The call a ``tool_call`` suspension is about, with its arguments after earlier handlers."""
+
+    id: str | None
+    effective_args: dict[str, Any] | None
+
+
+class AnsweredBy(TypedDict):
+    """Who answered a suspension: RPC's ``{client: "rpc"}``, or a serve connection."""
+
+    client: str
+    client_id: NotRequired[str]
+
+
+class Resolution(TypedDict):
+    """How a suspension was resolved: what ``api.suspend`` returned (docs/STEP-DEBUGGER.md §3.3)."""
+
+    id: str | None
+    action: str
+    values: dict[str, Any]
+    answered_by: AnsweredBy | None
+    at_ms: int
+
+
 class SystemMessage(TypedDict):
     """The system prompt, which a session stores as its first message entry."""
 
@@ -284,10 +332,27 @@ class ThinkingChangeEntry(_EntryBase):
 class SuspensionEntry(_EntryBase):
     """A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUGGER.md §3.7).
 
-    Its remaining fields are §3.7.1's; an open one is an :class:`IncompleteEntry`.
+    An open one is an :class:`IncompleteEntry`. A finalized one holds §3.7.1's
+    fields and how it closed.
+
+    Attributes:
+        site: The hook it was raised from.
+        extension: The extension that raised it.
+        entryId: At an ``entry_written`` site, the entry; else ``None``.
+        continuation: Where the turn stood, for a resume (§3.7.3).
+        reason: Why it closed.
     """
 
     type: Literal["suspension"]
+    spec: SuspensionSpec
+    site: str
+    extension: str
+    targetId: str | None
+    call: SuspensionCall | None
+    entryId: str | None
+    continuation: dict[str, Any]
+    resolution: Resolution
+    reason: Literal["answered", "aborted", "cursor_closed", "abandoned"]
 
 
 class ForeignEntry(_EntryBase):
@@ -429,6 +494,40 @@ class ExtensionRequest:
     lock: bool
     ask: Annotated[dict[str, Any], Shape(Ask)] | None
     release: str | None
+
+
+@dataclass
+class SuspensionState:
+    """A suspension open or queued now, as ``suspension_open`` and the snapshots carry it.
+
+    docs/STEP-DEBUGGER.md §3.4. ``AgentSession.pending_suspensions`` builds it.
+
+    Attributes:
+        id: What ``answer_suspension`` names; also its side entry's id.
+        parent_cursor_id: Its cursor's owner, or ``None`` for a root cursor.
+        depth: The length of its cursor's owner chain.
+        spawned_from: The entry a child cursor was opened at, or ``None``.
+        site: The hook it was raised from.
+        target_id: The entry it is about, from its spec, or ``None``.
+        call: At a ``tool_call`` site, the call; else ``None``.
+        entry_id: At an ``entry_written`` site, the entry; else ``None``.
+        queued: Whether another suspension on its cursor is open ahead of it.
+    """
+
+    id: str
+    session_id: str
+    cursor_id: str
+    parent_cursor_id: str | None
+    depth: int
+    spawned_from: str | None
+    spec: SuspensionSpec
+    site: str
+    extension: str
+    target_id: str | None
+    call: SuspensionCall | None
+    entry_id: str | None
+    queued: bool
+    opened_at_ms: int
 
 
 @dataclass
@@ -708,6 +807,8 @@ RESULT_TYPES: dict[str, dict[str, Any]] = {
     "complete_message_id": {"matches": list[MessageMatch]},
     "get_entry": {"entry": Annotated[dict[str, Any], Shape(Entry)]},
     "get_pending_request": {"request": ExtensionRequest | None},
+    "get_pending_suspensions": {"suspensions": list[SuspensionState]},
+    "answer_suspension": {"resolution": Resolution},
     "list_managed_extensions": {"extensions": list[ManagedExtension]},
     "get_extension_state": {
         "extensions": list[ExtensionInfo],
@@ -742,6 +843,7 @@ PARAM_TYPES: dict[str, dict[str, Any]] = {
     "commit_branch": {"ids": list[str]},
     "next_step": {"bound": dict[str, Any]},
     "answer_request": {"values": dict[str, Any]},
+    "answer_suspension": {"values": dict[str, Any]},
     "set_extension_config": {"values": dict[str, Any]},
 }
 """The same, for params. A map keyed by argument or field name holds whatever that one takes."""

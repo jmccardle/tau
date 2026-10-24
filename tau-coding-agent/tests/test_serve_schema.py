@@ -55,6 +55,18 @@ def register(api):
     async def note(args, ctx):
         await api.send_message({"customType": "note", "content": "a note"})
 
+    async def on_written(event, ctx):
+        if event["kind"] == "user" and "PAUSE" in str(event["message"]["content"]):
+            await api.suspend(
+                {
+                    "title": "Pause",
+                    "evidence": [{"label": "why", "text": "asked"}],
+                    "fields": [{"name": "note", "kind": "text"}],
+                    "actions": [{"label": "step"}],
+                }
+            )
+
+    api.on("entry_written", on_written)
     api.register_command("arm", {"description": "arm a lock", "handler": arm})
     api.register_command("note", {"description": "append a note", "handler": note})
     api.register_command("gate-release", {"description": "release", "handler": release})
@@ -88,7 +100,9 @@ class Recorder:
     async def open(cls, address: Any) -> Recorder:
         """Connect and say hello."""
         recorder = cls(await connect(address.url, max_size=None))
-        await recorder.request(p.Hello(protocol=p.PROTOCOL_VERSION, client="schema"))
+        await recorder.request(
+            p.Hello(protocol=p.PROTOCOL_VERSION, client="schema", suspensions=True)
+        )
         return recorder
 
     async def _read(self) -> None:
@@ -295,6 +309,32 @@ async def test_every_frame_a_session_produces_validates_against_the_schema(daemo
         request_id=locked.entry_id,
         action="Use it",
         values={"voice": "alto"},
+    )
+    await client.rpc(
+        "submit",
+        sid,
+        head,
+        text="PAUSE",
+        source="interactive",
+        submitter="schema",
+        submission_id="sub-pause",
+        allow_user_input=True,
+    )
+    await _until(lambda: bool(host.agent_session.pending_suspensions(scope="session")))
+    [paused] = (await client.rpc("get_pending_suspensions", sid, head, scope="tree"))["suspensions"]
+    await client.rpc(
+        "answer_suspension",
+        sid,
+        head,
+        suspension_id=paused["id"],
+        action="step",
+        values={"note": "fine"},
+    )
+    await _until(
+        lambda: any(
+            s["submission"]["submission_id"] == "sub-pause"
+            for s in client.channel("submission_end")
+        )
     )
     asking = asyncio.create_task(
         host.ui.form({"title": "t", "fields": [{"name": "n", "kind": "text"}]})

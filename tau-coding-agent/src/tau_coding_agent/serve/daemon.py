@@ -22,7 +22,7 @@ from websockets.exceptions import ConnectionClosedError
 
 from tau_agent_core.cursor import TURN_CURSOR, Cursor
 from tau_agent_core.extension_locks import request_at
-from tau_agent_core.extension_warnings import ExtensionWarning
+from tau_agent_core.extension_warnings import TAU_SOURCE, ExtensionWarning
 from tau_agent_core.extension_types import form_headless_value, validate_form_spec
 from tau_agent_core.flows import Performed, Ready, View
 from tau_agent_core.projections import (
@@ -64,6 +64,10 @@ SWITCHING = ("fork", "switch_session")
 The daemon cannot move a client, so the client performs them: ``fork`` by
 :class:`~protocol.Fork` then ``attach``, ``switch_session`` by ``attach``.
 """
+
+
+SUSPENSION_WAITING_KEY = "suspension:waiting"
+"""τ's warning key while a suspension waits and no attached client renders suspensions."""
 
 
 class RequestError(Exception):
@@ -181,6 +185,7 @@ class RpcContext:
         self._runtime = self.runtime
         self._output_queue = _Outbox(host, client)
         self._host = host
+        self._client = client
         self._state = state
 
     @property
@@ -215,6 +220,11 @@ class RpcContext:
         """Hold ``task`` on the host until it finishes."""
         self._host.track(task)
 
+    @property
+    def answered_by(self) -> dict[str, Any]:
+        """Who an ``answer_suspension`` from this connection is recorded as."""
+        return {"client_id": self._client.id, "client": self._client.name}
+
 
 class Client:
     """One WebSocket connection: an ordered outbound queue and the sessions it watches."""
@@ -223,6 +233,7 @@ class Client:
         self.ws = ws
         self.id = f"c{number}"
         self.name = "?"
+        self.suspensions = False
         self.attached: set[str] = set()
         self.queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=QUEUE_BOUND)
         self.dropped = False
@@ -344,6 +355,7 @@ class SessionHost:
         session.subscribe_channel("cursor_open", self._on_cursor_open)
         session.subscribe_channel("cursor_close", self._on_cursor_close)
         session.set_ui_delegate(self.ui)
+        session.add_suspension_responder("serve")
         session.subscribe_extension_warnings(self._on_warnings)
         result = await self.backend.load_extensions(
             None, discover=True, extensions_config=self.daemon.extensions_config
@@ -482,10 +494,15 @@ class SessionHost:
             requests=self.ui.open_forms(),
             read_only=access.read_only,
             lock_holder=None if holder is None else records.LockHolderRecord(**holder.to_dict()),
+            suspensions=[
+                records.SuspensionState(**p.json_safe(state))
+                for state in self.agent_session.pending_suspensions(scope="session")
+            ],
         )
         self.clients.add(client)
         client.attached.add(self.session_id)
         self.daemon.log(f"{self.tag} client {client.id} ({client.name}) attached")
+        self.warn_if_unanswerable()
         return attached
 
     def surface(self) -> p.Surface:
@@ -531,6 +548,27 @@ class SessionHost:
             self.clients.discard(client)
             client.attached.discard(self.session_id)
             self.daemon.log(f"{self.tag} client {client.id} detached")
+            self.warn_if_unanswerable()
+
+    def warn_if_unanswerable(self) -> None:
+        """Warn while a suspension waits and no attached client renders suspensions (§3.8).
+
+        A suspension under serve waits rather than defaulting; the warning, on
+        the session's warnings, says why the turn is not moving.
+        """
+        session = self.agent_session
+        pending = session.pending_suspensions(scope="session")
+        capable = any(c.suspensions for c in self.clients)
+        if pending and not capable:
+            ids = ", ".join(s["id"] for s in pending)
+            session.set_extension_warning(
+                TAU_SOURCE,
+                SUSPENSION_WAITING_KEY,
+                f"suspension {ids} is waiting for a client that renders suspensions "
+                "(hello with suspensions: true)",
+            )
+        else:
+            session.clear_extension_warning(TAU_SOURCE, SUSPENSION_WAITING_KEY)
 
     def _on_write(self, kind: str, entry: dict[str, Any]) -> None:
         cursor = TURN_CURSOR.get()
@@ -547,6 +585,13 @@ class SessionHost:
     def _on_agent_event(self, event: Any) -> None:
         for data in self.wire.project(event):
             self.publish("agent_event", data)
+        if event.type in ("suspension_open", "suspension_closed"):
+            self.warn_if_unanswerable()
+            suspension = event.suspension or {}
+            self.daemon.log(
+                f"{self.tag} cursor {event.cursor_id} {event.type} {suspension.get('id')}"
+                + (f" ({event.reason})" if event.reason else "")
+            )
         if event.type == "tool_execution_start" and event.tool_call_id:
             self._tool_started[event.tool_call_id] = time.monotonic()
         elif event.type == "tool_execution_end" and event.tool_call_id:
@@ -750,6 +795,7 @@ class Daemon:
             self.log(f"client {client.id} ({hello.client}) refused: bad token")
             return False
         client.name = hello.client
+        client.suspensions = hello.suspensions
         self.clients.add(client)
         self.log(f"client {client.id} ({client.name}) connected")
         hello_result = p.HelloResult(

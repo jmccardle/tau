@@ -65,6 +65,18 @@ NOT_REACHABLE: dict[str, str] = {
         "dispatch for it would re-open the finding the flow projection closed. "
         "Machine-reachable today via the RPC verb of the same name."
     ),
+    "answer_suspension": (
+        "Not yet: the TUI's suspension modal lands in slice M1f "
+        "(docs/STEP-DEBUGGER.md §3.5), and until then the TUI registers no "
+        "suspension responder, so api.suspend raises NoResponderError there and "
+        "nothing waits for an answer it cannot give. Machine-reachable today over "
+        "RPC and serve."
+    ),
+    "declare_capabilities": (
+        "A wire handshake, not a person's act: RPC has no hello, so a host declares "
+        "what it renders here. The TUI is in-process and registers as a responder "
+        "itself, which it does once it renders suspensions (slice M1f)."
+    ),
 }
 
 
