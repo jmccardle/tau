@@ -320,6 +320,15 @@ lint land then, because the bus path is in-process.
   `side: true`, and replicas apply `is_side_entry` (§3.7.2). Otherwise serve's
   `entry_open` (`daemon.py:102`) would leave every replica holding an incomplete
   entry that looks like a branch.
+- **Closed with a reason.** `suspension_closed` carries `reason`: `answered`,
+  `aborted`, `cursor_closed` or `abandoned`, so a head's list can say why an item
+  vanished (tau-code-arecibo).
+- **The read-only state is live.** `read_only` and the lock holder are in the
+  attach snapshot and in `cursors` state, and a `lock_changed` event is sent when
+  the lock changes hands, so a banner clears without a reattach
+  (tau-code-arecibo).
+- **`get_tree` and entries carry `side` and the parent link,** so a side entry
+  hangs off its parent without becoming a child row (tau-code-arecibo).
 - **The protocol change is additive,** but it needs a lockstep τ and tau-code
   release, because `hello` refuses a different `PROTOCOL_VERSION`.
 
@@ -877,6 +886,12 @@ inherited**:
   child of a turn a human submitted in the TUI, the REPL, or a serve client with
   `allow_user_input` can suspend. A child of a timer- or bus-submitted root
   cannot, and is refused at spawn while `step_children` is on.
+- **Only a live responder is inherited.** A child's suspension always holds its
+  parent's unwritten tool result, because the parent's tool is awaiting the
+  child. That is the shape the nested-call rule forbids across a process
+  boundary (§3.2). So under `-p`, whose responder is deferred, `step_children`
+  on is refused at the §3.9 `input` check, naming serve or the TUI as the route,
+  like the JMFTS `-p` case (tau-search, round 7).
 - The inheritance applies to `api.suspend` only. A child's `ctx.ui.form` keeps
   today's rule, so a sub-agent cannot start asking for command arguments.
 - It is not a capability an extension passes at spawn. The owner chain already
@@ -885,6 +900,16 @@ inherited**:
 - A child's suspension is answerable from any attached client of the session,
   not only from the parent's cursor. `answer_suspension` names the suspension
   id, never a cursor.
+
+#### 3.12.3a A child suspension does not survive a restart
+
+A child's suspension holds its parent's tool coroutine, which no continuation
+can rebuild (§3.12.3). So after a crash or restart, an orphaned **child**
+suspension is not resumable. Answering it, or loading the session, closes it as
+`abandoned`. The child's pending calls get aborted results, and so does the
+parent's spawning call, so the tree is valid and the pending-prompt refusal
+lifts. Child stepping is for a live tree under serve or the TUI, and nothing in
+it claims to survive a restart it cannot (tau-search, round 7).
 
 #### 3.12.4 Seeing the whole tree
 
@@ -899,10 +924,10 @@ inherited**:
   session. Selecting a child's suspension focuses that cursor's branch in the
   client, and answering it needs no cursor change. Tau Code gets a "pending in
   tree" list and cursor focus (tau-code-arecibo is told).
-- **Separate-session children** are deferred with delegates (§3.12.2). When they
-  come, the parent→child link is written in the child session's header
-  (`spawnedBy {session, cursor, entry}`), so a client can enumerate the tree
-  from session metadata, the same way a fork names its source.
+- **Separate-session children** are designed in §3.12.6. Their parent→child
+  link is written in the child session's header (`spawnedBy {session, cursor,
+  entry}`), so a client can enumerate the tree from session metadata, the same
+  way a fork names its source.
 
 #### 3.12.5 Interactions
 
@@ -916,9 +941,59 @@ inherited**:
   so the child's suspension pauses it like any enclosing deadline (§4.3).
 - **Abort.** `abort` on a child cursor aborts that child's turn only: its
   suspensions resolve as `abort`, and the parent's tool receives the child's
-  aborted result as usual. `abort` on a parent aborts the parent and every cursor
+  aborted result as usual.
+- **The spawn result says why the child ended.** It carries `end_reason`, as
+  `agent_end` does, and on an abort `aborted_by: "suspension" | "signal" |
+  "parent"`, plus the resolution's `answered_by` for a suspension. **The contract
+  for any delegating extension:** a child aborted at a suspension was stopped by
+  a human, so it is never retried or escalated automatically. tau-router's
+  planner, which retries a failed child one rung up (`planner.py:139-151`),
+  treats `aborted_by: "suspension"` as final (tau-router, round 7). `abort` on a parent aborts the parent and every cursor
   it owns, as `AgentSession.abort` already does (it trips owned cursors). So
   aborting the root aborts the tree, and no separate tree verb is needed.
+
+#### 3.12.6 Child sessions: separate conversations in the same process
+
+John framed it: agents that are not forks are essentially separate
+conversations. A delegate fleet (`examples/20_delegate.py`,
+`51_delegate_fleet.py`) runs each child as a `tau -p` subprocess, which §3.12.2
+refuses while `step_children` is on. The way to step a fleet as a tree is to run
+each child as a **new session in the same process**, not a subprocess. τ has no
+such API today: `ctx.fork` copies a session into a new file or moves the head
+cursor (`extension_types.py:1637`), and the runtime's `new_session` swaps the
+current session out (`agent_session_runtime.py:273`). So:
+
+- **`api.spawn_session(prompt, *, model, tools, seed, label) -> ChildSession`**
+  (new). It creates a new session whose header carries `spawnedBy {session,
+  cursor, entry}`, runs one prompt in it, and returns a handle whose result
+  carries the same `end_reason` / `aborted_by` as §3.12.5.
+- **The head hosts it.** Core defines a `SessionHost` protocol with one method:
+  create and run a child session. Serve's daemon implements it by creating
+  another `SessionHost` entry, so every attached client sees the child session
+  in `list_sessions` with its `spawnedBy`, and can attach to it. The TUI and the
+  REPL implement it with a second in-process `AgentSession` from the same backend
+  factory. `-p` and RPC have no host, so `spawn_session` raises there, and a
+  delegate keeps its subprocess path, refused under `step_children` as before.
+- **The responder is inherited across sessions** by the same root rule
+  (§3.12.3): the child session's root is the parent session's root turn. A child
+  session's suspension is answerable from any client attached to the child
+  session.
+- **The tree view spans sessions.** `get_pending_suspensions {scope: "tree"}`
+  follows `spawnedBy` links as well as cursor owners, and each item carries its
+  `session_id`. `suspension_open` for a child session is also sent to clients
+  attached to the root session, so one head sees the whole fleet.
+- **Abort cascades across sessions.** A child session is owned by the spawning
+  cursor, exactly as a child cursor is, so aborting the root aborts the fleet.
+- **A restart abandons a pending child session's suspension,** as in §3.12.3a.
+- **Extensions load per child session,** as they do per session under serve
+  today. A heavy extension shares its state through the process resource
+  registry (DECIDER-BACKEND.md).
+
+Effort: about 3–4 days in τ, covering `spawn_session`, the `SessionHost`
+protocol and its serve and in-process implementations, the `spawnedBy` header
+and catalog listing, the cross-session tree and abort, and tests. It is its own
+slice, **M1h**, built after M1e because it reuses M1e's protocol. The delegate
+examples then gain a `spawn_session` mode. Separate *processes* stay refused.
 
 ## 4. Handler policies (#83): an open mechanism
 
@@ -1284,6 +1359,17 @@ Every head must produce the same tree: the same entries, the same finalized
   the alternatives;
 - a child's `ctx.ui.form` with `step_children` on: still takes the headless
   policy;
+- kill the daemon while a child cursor is suspended, and reload: the child
+  suspension is `abandoned`, the child's pending calls and the parent's spawning
+  call get aborted results, and prompts work;
+- `step_children` on under `-p`: refused at `input`, naming serve or the TUI;
+- a human aborts a child at a suspension: the spawn result has `aborted_by:
+  "suspension"`, and tau-router's planner does not retry it;
+- `spawn_session` under serve with `step_children: start`: the child session
+  appears in `list_sessions` with `spawnedBy`, its suspension appears in the
+  root session's tree view, a client attached to the root answers it, and
+  aborting the root aborts it;
+- `spawn_session` under `-p` or RPC: raises, naming the missing host;
 - after `new_session` in a warm process on the file store, a second process can
   open the previous session for writing;
 - a code-mode program calls `web_search` with stepping in `every` mode: no
@@ -1329,6 +1415,8 @@ type and its site table (§3.2.2); forks copying only finalized side entries and
 refusing an open one (§3.7.2); and the session lock held while hosting, on a
 sidecar, with one descriptor per process (§3.7.3).
 
+*Slice M1h, child sessions (about 3–4 days, after M1e):* `api.spawn_session`, the `SessionHost` protocol with serve and in-process hosts, the `spawnedBy` header, the cross-session tree view and abort (§3.12.6).
+
 *Milestone 2, across processes (about 3 days):*
 
 - resume from the tree by the recorded continuation (§3.7.3): re-dispatch in
@@ -1350,10 +1438,9 @@ matrix (about 1.5 days) closes v1.
   and commands are refused mid-turn (`app.py:1055-1065`, `repl.py:1811-1817`,
   `remote.py:1005-1030`).
 - **per-client roles and display names over networked serve** (§3.11).
-- **stepping separate-process delegates and separate-session children**
-  (§3.12.2): refused while `step_children` is on, until the deferred route and
-  the `spawnedBy` header link exist. In-process child cursors are steppable in
-  v1.
+- **stepping separate-process delegates** (§3.12.2): refused while
+  `step_children` is on. In-process child cursors are steppable in v1, and child
+  sessions in the same process are steppable after slice M1h (§3.12.6).
 - **`-p --answer` on JMFTS-backed sessions** (§3.7.3): refused until a
   cross-host lock exists, or John lifts it.
 - **breaking on notify events** (compaction, retries, deltas): suspending there
@@ -1433,4 +1520,8 @@ as milestone 2 (§7).
 | coordinator confirmation pass: a prepared call is never re-vetted when gates change | §3.7.3 `gates`, refusal and `--redispatch` |
 | coordinator confirmation pass: a swallowed unwind leaves the side entry open; `returned` on abort; the JMFTS `-p` dead end; per-child warnings | §3.2.2 finalize `abandoned`; §3.7.3 dropped on abort; JMFTS refused up front; §3.9 once per session |
 | John, child agents: an option to step them from their start, tree-wide | §3.12 `step_children`, root-responder inheritance, the tree scope, cross-cursor rules; §3.9 |
+| round 7, tau-search: a child suspension holds the parent's unwritten result; `-p` roots | §3.12.3 live responders only; §3.12.3a abandoned on restart |
+| round 7, tau-router: a human abort on a child must not be retried | §3.12.5 `end_reason` / `aborted_by` and the delegating-extension contract |
+| coordinator: separate conversations, not only branches | §3.12.6 `spawn_session`, `SessionHost`, `spawnedBy`, slice M1h |
+| tau-code-arecibo: protocol asks | §3.4 `suspension_closed` reason, live read-only state, `side` on tree entries |
 | independent round 2 minors | resume as a submission; forms under `-p` take the headless policy; pending hits combined (§5.2); effective-argument check; `store_history` off refused (§3.9); the session lock held while hosting; `-p` without `--answer` exits 3 |
