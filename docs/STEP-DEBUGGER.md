@@ -791,14 +791,13 @@ check happens before admission:
 - Its config can choose `unsteppable: run` instead. The turn then runs
   unstepped, with a session warning saying so. That is an explicit choice, not
   a silent skip.
-- **Only top-level turns are steppable in v1.** A child cursor's turn, one
-  whose submission source is `"agent"` (`spawn_branch`, a delegate), is
-  submitted with `allow_user_input=False` (`agent_session.py:3744-3750`). Under
-  the rule above, every spawn would then be refused. So the debugger runs child
-  cursors unstepped by default, with one session warning per session, not per
-  child, so memory_reflex's lanes cannot flood it. Stepping
-  children is deferred (§7). This default is flagged to John (final review,
-  M1-4).
+- **Child turns run unstepped by default; `step_children` steps them (§3.12).**
+  A child cursor's turn, one whose submission source is `"agent"`
+  (`spawn_branch`, `AgentSession.spawn`), is submitted with
+  `allow_user_input=False` (`agent_session.py:3744-3750`). With
+  `step_children: off`, the default, the debugger runs it unstepped, with one
+  session warning per session, not per child, so memory_reflex's lanes cannot
+  flood it. It is never refused for being a child.
 - **`store_history` off is unsteppable too.** With nothing persisted,
   `entry_written` never fires, and stepping would silently stop. So an armed
   debugger refuses such a turn at `input` in the same way.
@@ -833,6 +832,93 @@ Any client that passed `hello` may answer, the same rule as every other write
 verb today. Per-client roles are not added: τ's threat model is scrappy, and
 tokens and locks are opt-in. The resolution records `client_id` and the
 `hello.client` label, so verdicts can be attributed to a connection.
+
+### 3.12 Stepping child agents
+
+John will stress-test `tau serve` and its frontends by hopping between cursors
+to approve and annotate a whole agent tree (ruling, 2026-10-24). So child
+agents can be stepped from their start.
+
+#### 3.12.1 The option
+
+`step_children` is part of the arming, stored in the debugger's config fold
+(§5.5), so a fork and a restart keep it:
+
+| value | a child turn |
+|---|---|
+| `off` (default) | runs unstepped, with one warning per session |
+| `start` | suspends at the child's first stepping point, then follows the parent's mode |
+| `inherit` | gets the parent's break set and mode from its first entry |
+
+#### 3.12.2 Which children
+
+- **An in-process child cursor** (`spawn_branch`, `AgentSession.spawn`, any
+  cursor whose `owner` is another cursor, `cursor.py:107`) is a branch of the
+  same session tree, run by the same process. It is steppable.
+- **A fork** is a new session whose header names its source. It is not a child
+  turn: it is stepped like any session, by its own arming, which the config fold
+  copies with the path.
+- **A separate-process delegate** (`examples/20_delegate.py` spawns `tau -p`
+  children) has no live responder of its own. In v1, with `step_children` on,
+  spawning one is **refused** with a clear error naming the alternatives: an
+  in-process `spawn_branch`, or `step_children: off`. It never runs silently
+  unstepped while stepping children is on. Routing a delegate's suspensions
+  through the `-p` deferred route, with the parent's tool waiting on the child's
+  exit 3, is deferred (§7).
+
+#### 3.12.3 How a child gets a responder
+
+A child turn submits with `allow_user_input=False`, so under §3.8 it has no live
+responder of its own. With `step_children` on, the **root turn's responder is
+inherited**:
+
+- The suspension responder rule for a turn whose source is `"agent"` reads the
+  permission of its **root turn**: the top-level turn of the owner chain. A
+  child of a turn a human submitted in the TUI, the REPL, or a serve client with
+  `allow_user_input` can suspend. A child of a timer- or bus-submitted root
+  cannot, and is refused at spawn while `step_children` is on.
+- The inheritance applies to `api.suspend` only. A child's `ctx.ui.form` keeps
+  today's rule, so a sub-agent cannot start asking for command arguments.
+- It is not a capability an extension passes at spawn. The owner chain already
+  records the root, and the debugger decides whether to suspend, so spawning
+  extensions need no change.
+- A child's suspension is answerable from any attached client of the session,
+  not only from the parent's cursor. `answer_suspension` names the suspension
+  id, never a cursor.
+
+#### 3.12.4 Seeing the whole tree
+
+- **`get_pending_suspensions {scope: "tree"}`** returns every open suspension
+  under a root cursor, each with `session_id`, `cursor_id`, `parent_cursor_id`,
+  `depth` (the owner-chain length) and the entry the child was spawned from.
+  `scope: "cursor"` keeps today's behaviour.
+- **`suspension_open` carries the same linkage,** so a head can show "pending
+  in tree" without polling. Serve already sends it to every client attached to
+  the session, and every in-process child cursor is in that session.
+- **Hopping is a view, not a move.** A replica already holds every entry of the
+  session. Selecting a child's suspension focuses that cursor's branch in the
+  client, and answering it needs no cursor change. Tau Code gets a "pending in
+  tree" list and cursor focus (tau-code-arecibo is told).
+- **Separate-session children** are deferred with delegates (§3.12.2). When they
+  come, the parent→child link is written in the child session's header
+  (`spawnedBy {session, cursor, entry}`), so a client can enumerate the tree
+  from session metadata, the same way a fork names its source.
+
+#### 3.12.5 Interactions
+
+- **Several suspensions at once across cursors are allowed.** FIFO holds per
+  cursor (§3.2.1). Cursors are independent: answering one never resolves
+  another, and heads list them all in the tree view.
+- **The parent waits on its child.** A parent's tool that spawned the child,
+  for example a delegate tool awaiting `spawn_branch`, stays awaited while the
+  child is suspended. Tool execution has no policy clock. A spawn inside a
+  policed hook carries that hook's deadline into the child's dispatch context,
+  so the child's suspension pauses it like any enclosing deadline (§4.3).
+- **Abort.** `abort` on a child cursor aborts that child's turn only: its
+  suspensions resolve as `abort`, and the parent's tool receives the child's
+  aborted result as usual. `abort` on a parent aborts the parent and every cursor
+  it owns, as `AgentSession.abort` already does (it trips owned cursors). So
+  aborting the root aborts the tree, and no separate tree verb is needed.
 
 ## 4. Handler policies (#83): an open mechanism
 
@@ -999,7 +1085,8 @@ The break set is edited in the suspension's own fields (a multiselect), and with
 The debugger's effective config at a point in the tree is a fold over the path:
 
 - each `tau_debugger.config` customEntry on the path, written by the arming
-  command between turns;
+  command between turns. It holds the mode, the break set and `step_children`
+  (§3.12);
 - then each resolution of a `tau_debugger` suspension hanging off an entry on
   the path, read through `is_side_entry` children. A choice made at a
   suspension, such as "continue" or an edit to the break set, applies from that
@@ -1181,7 +1268,22 @@ Every head must produce the same tree: the same entries, the same finalized
   aborted results, and prompts work afterwards;
 - `abort` at a `turn_end` suspension with stored `returned` messages: they are
   not appended;
-- three `spawn_branch` lanes while stepping is armed: one warning;
+- three `spawn_branch` lanes while stepping is armed with `step_children: off`:
+  one warning;
+- `step_children: start` under serve: a child's first stepping point suspends;
+  a client other than the one driving the parent answers it by id; the parent's
+  awaiting tool resumes with the child's result;
+- `step_children: inherit`: the child breaks on the parent's break set;
+- `get_pending_suspensions {scope: "tree"}` with suspensions open on the root
+  and two children at depths 1 and 2: all three are listed, with linkage;
+- `abort` on a child resolves only its suspensions; `abort` on the root
+  resolves the whole tree's;
+- `step_children` on, with a timer-submitted root: a spawn is refused, naming
+  the missing responder;
+- `step_children` on and a separate-process delegate: refused at spawn, naming
+  the alternatives;
+- a child's `ctx.ui.form` with `step_children` on: still takes the headless
+  policy;
 - after `new_session` in a warm process on the file store, a second process can
   open the previous session for writing;
 - a code-mode program calls `web_search` with stepping in `every` mode: no
@@ -1248,8 +1350,10 @@ matrix (about 1.5 days) closes v1.
   and commands are refused mid-turn (`app.py:1055-1065`, `repl.py:1811-1817`,
   `remote.py:1005-1030`).
 - **per-client roles and display names over networked serve** (§3.11).
-- **stepping child cursors** (`spawn_branch`, delegates): they run unstepped
-  with a warning in v1 (§3.9).
+- **stepping separate-process delegates and separate-session children**
+  (§3.12.2): refused while `step_children` is on, until the deferred route and
+  the `spawnedBy` header link exist. In-process child cursors are steppable in
+  v1.
 - **`-p --answer` on JMFTS-backed sessions** (§3.7.3): refused until a
   cross-host lock exists, or John lifts it.
 - **breaking on notify events** (compaction, retries, deltas): suspending there
@@ -1328,4 +1432,5 @@ as milestone 2 (§7).
 | round 6, tectum: the JMFTS sidecar under `$TAU_HOME` grows without limit | §3.7.3 runtime directory |
 | coordinator confirmation pass: a prepared call is never re-vetted when gates change | §3.7.3 `gates`, refusal and `--redispatch` |
 | coordinator confirmation pass: a swallowed unwind leaves the side entry open; `returned` on abort; the JMFTS `-p` dead end; per-child warnings | §3.2.2 finalize `abandoned`; §3.7.3 dropped on abort; JMFTS refused up front; §3.9 once per session |
+| John, child agents: an option to step them from their start, tree-wide | §3.12 `step_children`, root-responder inheritance, the tree scope, cross-cursor rules; §3.9 |
 | independent round 2 minors | resume as a submission; forms under `-p` take the headless policy; pending hits combined (§5.2); effective-argument check; `store_history` off refused (§3.9); the session lock held while hosting; `-p` without `--answer` exits 3 |
