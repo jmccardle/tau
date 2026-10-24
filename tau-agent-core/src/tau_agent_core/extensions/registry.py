@@ -25,6 +25,8 @@ Contract:
         def register_shortcut(self, key: str, shortcut: dict) -> None: ...
         def get_shortcut(self, key: str) -> dict | None: ...
         def get_shortcuts(self) -> dict[str, dict]: ...
+        def register_policy(self, name: str, policy: HandlerPolicy) -> None: ...
+        def get_policy(self, name: str) -> HandlerPolicy: ...
 
 Note: ``append_entry`` is NO LONGER a registry method. Durable extension state is
 persisted onto the session tree as a ``customEntry`` node via
@@ -35,6 +37,7 @@ persisted onto the session tree as a ``customEntry`` node via
 from __future__ import annotations
 
 from tau_agent_core.capabilities import FlowDeclaration
+from tau_agent_core.policies import BUILTIN_POLICIES, HandlerPolicy, check_policy
 from tau_agent_core.tools.base import ExtensionToolDefinition
 
 
@@ -77,6 +80,7 @@ class ExtensionRegistry:
         self._active_tools: set[str] | None = None  # None = all active
         self._flows: dict[str, FlowDeclaration] = {}  # QUALIFIED name -> what it takes
         self._flows_revision = 0
+        self._policies: dict[str, HandlerPolicy] = dict(BUILTIN_POLICIES)
 
     def register_tool(self, definition: dict | ExtensionToolDefinition) -> None:
         """Register a tool definition. A duplicate name **raises** (H3).
@@ -370,3 +374,50 @@ class ExtensionRegistry:
     def get_shortcuts(self) -> dict[str, dict]:
         """Get all registered shortcuts (chord-tail key -> shortcut def)."""
         return dict(self._shortcuts)
+
+    def register_policy(self, name: str, policy: HandlerPolicy) -> None:
+        """Register a handler policy under ``name`` (docs/STEP-DEBUGGER.md §4).
+
+        Args:
+            name: What ``api.on(..., policy=name)`` names.
+            policy: Anything with an async ``run(call, site)``.
+
+        Raises:
+            ValueError: ``name`` is blank or already registered, a built-in included.
+            TypeError: ``policy`` has no callable ``run``.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("register_policy: a policy name must be a non-empty string")
+        if name in self._policies:
+            raise ValueError(
+                f"register_policy: a policy named {name!r} is already registered; "
+                f"registered: {sorted(self._policies)}"
+            )
+        self._policies[name] = check_policy(policy)
+
+    def unregister_policy(self, name: str) -> None:
+        """Remove a registered policy; a handler that already resolved it keeps it. Idempotent.
+
+        Args:
+            name: The policy's name. A built-in is never removed.
+        """
+        if name not in BUILTIN_POLICIES:
+            self._policies.pop(name, None)
+
+    def get_policy(self, name: str) -> HandlerPolicy:
+        """The policy registered under ``name``.
+
+        Raises:
+            ValueError: none is (Fail Early: an unknown name is refused when the
+                handler is registered, not when it first runs).
+        """
+        policy = self._policies.get(name)
+        if policy is None:
+            raise ValueError(
+                f"no handler policy named {name!r}; registered: {sorted(self._policies)}"
+            )
+        return policy
+
+    def policy_names(self) -> list[str]:
+        """Every registered policy name, sorted."""
+        return sorted(self._policies)

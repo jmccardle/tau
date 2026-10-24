@@ -97,9 +97,10 @@ from tau_agent_core.session_lock import (
 )
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.entry_annotations import AnnotationError
+from tau_agent_core.policies import HandlerPolicyError
 from tau_agent_core.seed import check_seed, normalise_seed
 from tau_agent_core.suspension import TurnSuspended
-from tau_agent_core.agent_loop import AgentLoop
+from tau_agent_core.agent_loop import AgentLoop, TurnFailure
 from tau_agent_core.agent_loop_types import AgentLoopConfig, TurnSettings
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
 from tau_agent_core.commands import (
@@ -473,7 +474,12 @@ class _CursorWriter:
         self.messages: list[dict[str, Any]] = []
 
     async def close_group(self) -> None:
-        """Dispatch ``entry_written`` for each entry written since the last call, in order."""
+        """Dispatch ``entry_written`` for each entry written since the last call, in order.
+
+        Raises:
+            HandlerPolicyError: a policed handler failed; later entries of the
+                group are not dispatched.
+        """
         group, self._group = self._group, []
         for kind, entry_id, message in group:
             await self._written(kind, entry_id, message)
@@ -769,6 +775,7 @@ class AgentSession:
         self._extension_api = self._make_extension_api()
         self._extension_runner = ExtensionRunner(context=self._extension_api.context)
         self._extension_runner.on_error(self._surface_extension_error)
+        self._extension_runner.set_warning_sink(self.set_extension_warning)
         self._quiet_runner = ExtensionRunner(context=self._extension_api.context)
         self._events.on_error(self._surface_notify_error)
         self._events.on("message_end", self._record_completion_usage)
@@ -2491,6 +2498,8 @@ class AgentSession:
             self._registry.unregister_command(name)
         for key in bucket.shortcuts:
             self._registry.unregister_shortcut(key)
+        for name in bucket.policies:
+            self._registry.unregister_policy(name)
         self._warnings.clear_source(bucket.name)
 
     async def disable_extension(self, path: str) -> ExtensionActionResult:
@@ -4397,13 +4406,16 @@ class AgentSession:
             await self._record_config()
         user = [] if user_msg is None else [user_msg]
         prompts = [*seed, *pre_user_messages, *user, *queued, *post_user_messages]
-        input_failure: AnnotationError | None = None
+        input_failure: TurnFailure | None = None
         for message in prompts:
             try:
                 await writer.append(message)
             except AnnotationError as err:
                 input_failure = input_failure or err
-        await writer.close_group()
+        try:
+            await writer.close_group()
+        except HandlerPolicyError as err:
+            input_failure = input_failure or err
         loop = AgentLoop(
             config=config,
             emit=self._emit_stamped,
@@ -4528,12 +4540,14 @@ class AgentSession:
         """Write the ``turn_error`` node that ends a turn that raised.
 
         The turn already ends on ``exc``, so an ``annotate`` failure on this
-        node stays on its entry and does not end the turn a second time
+        node stays on its entry, and a policed ``entry_written`` failure stays
+        surfaced, and neither ends the turn a second time
         (docs/ENTRY-ANNOTATIONS.md §4.3).
         """
         with contextlib.suppress(AnnotationError):
             await writer.append(turn_error_message(exc))
-        await writer.close_group()
+        with contextlib.suppress(HandlerPolicyError):
+            await writer.close_group()
 
     async def _run_user_turn_end(self, turn_messages: list[dict[str, Any]]) -> None:
         """Fire the ``user_turn_end`` hook once, at the user-turn boundary (§16.5).

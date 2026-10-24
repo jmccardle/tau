@@ -246,6 +246,42 @@ Whether a discovered source may load, and what kind of change it is if not.
 - `verdict: Verdict` — ``authorized``, ``new`` or ``update``.
 - `previous_version: str | None = None` — For an ``update``, the version that was authorized.
 
+## Bounded
+<!-- agent: yes -->
+
+```python
+class Bounded(timeout_s: float, on_timeout: FailureMode, on_error: FailureMode)
+```
+
+`tau_agent_core.policies.Bounded` · since 0.15.0
+
+Run the handler under a :class:`PausableDeadline`; a timeout or an error becomes ``on_*``.
+
+**Constructor parameters**
+
+- `timeout_s: float` — The deadline in seconds.
+- `on_timeout: FailureMode` — ``"fail"`` gives :class:`Failed`, ``"proceed"`` :class:`Proceeded`.
+- `on_error: FailureMode` — The same, for an exception the handler raised.
+
+### run
+
+```python
+async run(call: Callable[[], Awaitable[Any]], site: PolicySite) -> Outcome
+```
+
+`tau_agent_core.policies.Bounded.run` · since 0.15.0
+
+Run ``call`` under ``site.deadline(timeout_s)``.
+
+**Parameters**
+
+- `call: Callable[[], Awaitable[Any]]` — The bound handler.
+- `site: PolicySite` — Where it runs.
+
+**Returns**
+
+class:`Returned`, or ``on_timeout``'s or ``on_error``'s outcome.
+
 ## BranchResult
 <!-- agent: yes -->
 
@@ -277,6 +313,21 @@ empty-but-successful-looking answer.
 `tau_agent_core.sdk.BusDependencyError`
 
 A bus was asked for (``--bus``, ``bus_available=True``) but nats-py is not installed.
+
+## DeadlineExpired
+<!-- agent: yes -->
+
+```python
+class DeadlineExpired(deadline: PausableDeadline)
+```
+
+`tau_agent_core.policies.DeadlineExpired` · since 0.15.0
+
+:meth:`PausableDeadline.run`'s call ran past its deadline and was cancelled.
+
+**Constructor parameters**
+
+- `deadline: PausableDeadline` — The deadline that expired.
 
 ## ExplicitExtensionError
 <!-- agent: yes -->
@@ -372,7 +423,8 @@ every ``api.on("ext:<name>:<topic>", handler)``; ``<name>`` is always this
 extension's own. Never written to the tree, so never model-visible and
 gone on restart — durable state uses :meth:`append_entry` or
 :meth:`send_message`. Handlers run while this is awaited; one that raises
-is surfaced through the bus's on_error path (S44), not here.
+is surfaced through the bus's on_error path (S44), not here, unless it
+runs under a policy whose outcome is ``Failed``.
 
 **Parameters**
 
@@ -383,6 +435,7 @@ is surfaced through the bus's on_error path (S44), not here.
 
 - `ValueError` — ``topic`` is empty or whitespace.
 - `RuntimeError` — No runner bucket is bound, so there is no name to namespace under.
+- `HandlerPolicyError` — a policed subscriber's outcome was ``Failed``.
 
 ### extension_name
 
@@ -454,7 +507,7 @@ The newest name, or ``None`` if never set or the newest name is empty.
 ### on
 
 ```python
-on(event: str, handler: Callable) -> Callable[[], None]
+on(event: str, handler: Callable, *, policy: str | None = None) -> Callable[[], None]
 ```
 
 `tau_agent_core.extension_types.ExtensionAPI.on`
@@ -478,10 +531,17 @@ drain and auto-compaction. Either handler may return ``{message}`` for a
 durable append. The notify-grade ``turn_end`` ``AgentEvent`` still reaches
 ``api.on("all", …)``.
 
+``policy`` names a handler policy (:meth:`register_policy`; built-ins
+``gating``, ``advisory``, ``human``), which decides how the handler runs
+and what its failure becomes (docs/STEP-DEBUGGER.md §4, experimental).
+It is accepted on a runner-routed hook and on an ``ext:`` channel. With
+no policy the handler runs exactly as it always has.
+
 **Parameters**
 
 - `event: str` — Event type (e.g., 'agent_start', 'tool_call', 'all').
 - `handler: Callable` — Callable that receives the event (an ``AgentEvent`` for notify events; a ``(event_dict, ctx)`` pair for hook events).
+- `policy: str | None = None` — A registered policy name, or ``None``.
 
 **Returns**
 
@@ -489,8 +549,8 @@ An unsubscribe function.
 
 **Raises**
 
-- `RuntimeError` — the retired ``context`` hook (E5 §3.2 / S30), or a runner-routed hook on an api with no runner bucket (``hook_handlers is None``), where it could never fire.
-- `ValueError` — a second ``annotate`` handler from this extension.
+- `RuntimeError` — the retired ``context`` hook (E5 §3.2 / S30), or a runner-routed hook, or a policed handler, on an api with no runner bucket (``hook_handlers is None``).
+- `ValueError` — a second ``annotate`` handler from this extension, an unknown ``policy``, or a ``policy`` on a notify event.
 
 ### register_command
 
@@ -553,6 +613,31 @@ meth:`register_command` returns — ``None`` when ``/name`` is this flow, else t
 
 - `ValueError` — ``name`` or ``description`` is empty; ``handler`` is not callable; ``name`` is already a built-in flow or view; ``domain`` does not match what ``argument`` names; a domain with an enumerator has no ``values`` callable; or an ``argument`` came with ``values`` but no ``domain``.
 - `RuntimeError` — No runner bucket is bound (:attr:`extension_name`).
+
+### register_policy
+
+```python
+register_policy(name: str, policy: HandlerPolicy) -> None
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.register_policy`
+
+Register a handler policy for ``api.on(..., policy=name)``, session-wide (§4).
+
+Experimental: below 1.0 names and defaults may change. ``gating``,
+``advisory`` and ``human`` are built in. A policy is removed with the
+extension that registered it (disable or reload); a handler that already
+named it keeps it.
+
+**Parameters**
+
+- `name: str` — The name handlers register under.
+- `policy: HandlerPolicy` — Anything with ``async run(call, site) -> Outcome``; see :class:`~tau_agent_core.policies.HandlerPolicy`.
+
+**Raises**
+
+- `ValueError` — a blank name, or one already registered.
+- `TypeError` — ``policy`` has no callable ``run``.
 
 ### register_shortcut
 
@@ -2098,6 +2183,84 @@ The line every head shows for this warning.
 
 ``"<source>: <message>"``.
 
+## Failed
+<!-- agent: yes -->
+
+```python
+class Failed(error: Exception)
+```
+
+`tau_agent_core.policies.Failed` · since 0.15.0
+
+The handler failed, and the failure means what failure means at the site.
+
+``tool_call`` blocks the call; ``annotate`` records the error and aborts the
+turn; every other site raises :class:`HandlerPolicyError`, which ends the turn
+(or, on an ``ext:`` channel, raises into the emitter's ``api.emit``).
+
+**Constructor parameters**
+
+- `error: Exception` — Why: the handler's exception, or :class:`DeadlineExpired`.
+
+## HandlerPolicy
+<!-- agent: yes -->
+
+`tau_agent_core.policies.HandlerPolicy` · since 0.15.0
+
+How a handler is run and what its failure becomes. Experimental (§4.1).
+
+A policy that retries, falls back to another decider, or proceeds and
+records is a new class; core needs no change. ``run`` must let a
+``BaseException`` that is not ``asyncio.CancelledError`` from its own
+deadline leave unchanged: a suspension unwinds through it.
+
+### run
+
+```python
+async run(call: Callable[[], Awaitable[Any]], site: PolicySite) -> Outcome
+```
+
+`tau_agent_core.policies.HandlerPolicy.run` · since 0.15.0
+
+Run ``call`` (the handler, bound to its event) once or more, and say how it went.
+
+**Parameters**
+
+- `call: Callable[[], Awaitable[Any]]` — Calls the handler and awaits it.
+- `site: PolicySite` — Where it runs; the source of deadlines and warnings.
+
+**Returns**
+
+The outcome the site interprets.
+
+## HandlerPolicyError
+<!-- agent: yes -->
+
+```python
+class HandlerPolicyError(extension: str, event: str, policy: str, error: Exception)
+```
+
+`tau_agent_core.policies.HandlerPolicyError` · since 0.15.0
+
+A policed handler's ``Failed`` outcome, raised where the site does not isolate it.
+
+Raised out of ``turn_end``, ``tool_result``, ``entry_written`` and the other
+isolating hooks, which ends the turn with it, and into the emitter's
+``await api.emit(...)`` for an ``ext:`` channel handler.
+
+**Constructor parameters**
+
+- `extension: str` — The extension whose handler failed.
+- `event: str` — The hook or ``ext:`` channel being dispatched.
+- `policy: str` — The policy's registered name.
+- `error: Exception` — *(no description)*
+
+### detail
+
+`tau_agent_core.policies.HandlerPolicyError.detail` · since 0.15.0
+
+``"<ExceptionType>: <message>"`` of the underlying failure.
+
 ## HeadlessDialogError
 <!-- agent: yes -->
 
@@ -2169,6 +2332,187 @@ The hash and bus fields are H7/H8's addition (SIM_SPEC_v2 §16.6/§16.10).
 - `source: ExtensionSource | None = None` — Where it came from (docs/EXTENSION-PACKAGES.md §2); ``None`` for a record built outside the loader, read as a file path.
 - `explicit: bool = False` — Whether it was named with ``-e``, which authorizes it (§5).
 
+## PausableDeadline
+<!-- agent: yes -->
+
+```python
+class PausableDeadline(seconds: float)
+```
+
+`tau_agent_core.policies.PausableDeadline` · since 0.15.0
+
+A time budget for one call, run in its own task and cancelled when the budget is spent.
+
+:meth:`run` starts the clock; :meth:`pause` and :meth:`resume` stop and
+restart it, and nest. A deadline resumed with no time left fires at once.
+An enclosing deadline caps this one: when it expires, its cancellation
+reaches this deadline's task, and the enclosing policy's timeout applies.
+
+**Constructor parameters**
+
+- `seconds: float` — The budget; positive and finite.
+
+### expired
+
+`tau_agent_core.policies.PausableDeadline.expired` · since 0.15.0
+
+Whether it fired and cancelled its call.
+
+### pause
+
+```python
+pause() -> None
+```
+
+`tau_agent_core.policies.PausableDeadline.pause` · since 0.15.0
+
+Stop the clock; nested pauses need as many :meth:`resume` calls.
+
+### paused
+
+`tau_agent_core.policies.PausableDeadline.paused: bool` · since 0.15.0
+
+Whether at least one :meth:`pause` is outstanding.
+
+### remaining
+
+```python
+remaining() -> float
+```
+
+`tau_agent_core.policies.PausableDeadline.remaining` · since 0.15.0
+
+Seconds left before this call is cancelled, capped by every enclosing deadline.
+
+**Returns**
+
+The smallest time left among this deadline and its enclosing ones; zero or less once spent.
+
+### resume
+
+```python
+resume() -> None
+```
+
+`tau_agent_core.policies.PausableDeadline.resume` · since 0.15.0
+
+Undo one :meth:`pause`; the last one restarts the clock, firing at once if none is left.
+
+**Raises**
+
+- `RuntimeError` — there is no outstanding pause.
+
+### run
+
+```python
+async run(call: Callable[[], Awaitable[Any]]) -> Any
+```
+
+`tau_agent_core.policies.PausableDeadline.run` · since 0.15.0
+
+Run ``call`` in its own task under this deadline and return its value.
+
+The task copies the current context, with this deadline appended to
+the :func:`enclosing_deadlines` of the code that calls this. Any exception, ``BaseException`` included,
+leaves unchanged; only this deadline's own cancellation becomes
+:class:`DeadlineExpired`.
+
+**Parameters**
+
+- `call: Callable[[], Awaitable[Any]]` — Called once, in the new task.
+
+**Returns**
+
+What ``call`` returned.
+
+**Raises**
+
+- `DeadlineExpired` — the deadline fired first.
+- `RuntimeError` — this deadline already ran a call.
+
+## PolicySite
+<!-- agent: yes -->
+
+```python
+class PolicySite(hook: str, extension: str, warn: Callable[[str], None])
+```
+
+`tau_agent_core.policies.PolicySite` · since 0.15.0
+
+Where a policed handler is being run, handed to :meth:`HandlerPolicy.run`.
+
+**Constructor parameters**
+
+- `hook: str` — The hook name, or the ``ext:`` channel.
+- `extension: str` — The extension whose handler this is.
+- `warn: Callable[[str], None]` — Sets this handler's session warning; one line.
+
+### deadline
+
+```python
+deadline(seconds: float) -> PausableDeadline
+```
+
+`tau_agent_core.policies.PolicySite.deadline` · since 0.15.0
+
+A new deadline under every enclosing one.
+
+**Parameters**
+
+- `seconds: float` — The budget; positive and finite.
+
+**Returns**
+
+The deadline, whose :meth:`PausableDeadline.run` runs the call.
+
+### warn
+
+```python
+warn(text: str) -> None
+```
+
+`tau_agent_core.policies.PolicySite.warn` · since 0.15.0
+
+Set the session warning ``policy:<hook>`` from this extension, replacing any earlier one.
+
+**Parameters**
+
+- `text: str` — What to say; whitespace, newlines included, collapses to one line.
+
+## Proceeded
+<!-- agent: yes -->
+
+```python
+class Proceeded(record: str)
+```
+
+`tau_agent_core.policies.Proceeded` · since 0.15.0
+
+The handler failed, and work continues as if it had returned nothing.
+
+``record`` is kept where the site has a place for it: at ``annotate`` as
+``ext[<extension>] = {"error": record, "proceeded": true}``, elsewhere as a
+session warning keyed ``policy:<hook>``.
+
+**Constructor parameters**
+
+- `record: str` — One line saying what failed.
+
+## Returned
+<!-- agent: yes -->
+
+```python
+class Returned(value: Any)
+```
+
+`tau_agent_core.policies.Returned` · since 0.15.0
+
+The handler finished; the site uses ``value`` as the handler's return.
+
+**Constructor parameters**
+
+- `value: Any` — What the handler returned.
+
 ## ToolDescription
 <!-- agent: yes -->
 
@@ -2219,6 +2563,40 @@ This tool as a Python stub.
 **Returns**
 
 func:`~tau_agent_core.tool_schema.render_stub` over this tool's name, description, parameters and output schema.
+
+## Unbounded
+<!-- agent: yes -->
+
+```python
+class Unbounded(on_error: FailureMode = 'fail')
+```
+
+`tau_agent_core.policies.Unbounded` · since 0.15.0
+
+Run the handler with no deadline, in the dispatch's own task; an error becomes ``on_error``.
+
+**Constructor parameters**
+
+- `on_error: FailureMode = 'fail'` — ``"fail"`` gives :class:`Failed`, ``"proceed"`` :class:`Proceeded`.
+
+### run
+
+```python
+async run(call: Callable[[], Awaitable[Any]], site: PolicySite) -> Outcome
+```
+
+`tau_agent_core.policies.Unbounded.run` · since 0.15.0
+
+Await ``call``.
+
+**Parameters**
+
+- `call: Callable[[], Awaitable[Any]]` — The bound handler.
+- `site: PolicySite` — Where it runs; unused.
+
+**Returns**
+
+class:`Returned`, or ``on_error``'s outcome.
 
 ## apply_session_name
 <!-- agent: yes -->
@@ -2407,6 +2785,24 @@ The identifier enabled.
 
 - `ValueError` — ``token`` names no disabled extension, or is ambiguous.
 - `AuthorizationStoreError` — The store cannot be read.
+
+## enclosing_deadlines
+<!-- agent: yes -->
+
+```python
+enclosing_deadlines() -> tuple[PausableDeadline, ...]
+```
+
+`tau_agent_core.policies.enclosing_deadlines` · since 0.15.0
+
+Every policy deadline the current code runs under, outermost first.
+
+A policed handler's task carries its own deadline and every deadline of the
+dispatches it is nested in, through ``contextvars``.
+
+**Returns**
+
+The deadlines; empty outside any bounded handler.
 
 ## ext_channel
 <!-- agent: yes -->
@@ -2739,6 +3135,20 @@ A notice, never an error: a subscriber may wait for an optional extension
 **Returns**
 
 One line per orphaned topic.
+
+## pause_enclosing_deadlines
+<!-- agent: yes -->
+
+```python
+pause_enclosing_deadlines() -> Iterator[tuple[PausableDeadline, ...]]
+```
+
+`tau_agent_core.policies.pause_enclosing_deadlines` · since 0.15.0
+
+Pause every enclosing deadline for the body, then resume them (§4.3).
+
+``api.suspend`` (M1e) wraps its whole wait in this, queue time included, so
+a timeout measures a handler's own work and never a human's reading time.
 
 ## plan_extensions
 <!-- agent: yes -->

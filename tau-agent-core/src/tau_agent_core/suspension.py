@@ -70,14 +70,25 @@ class SuspensionSwallowedError(BaseException):
 
 @dataclass
 class _DispatchMark:
-    """One hook handler's dispatch: who, if anyone, raised a suspension inside it."""
+    """One hook handler's dispatch: who, if anyone, raised a suspension inside it.
+
+    ``closed`` is set once the handler's dispatch returns, so a task the handler
+    spawned, whose context still holds the mark, can tell it has nothing to
+    unwind to.
+    """
 
     raised_by: str | None = None
+    closed: bool = False
 
 
 _DISPATCH_MARK: contextvars.ContextVar[_DispatchMark | None] = contextvars.ContextVar(
     "tau_dispatch_mark", default=None
 )
+
+
+def current_dispatch_mark() -> _DispatchMark | None:
+    """The mark of the hook dispatch this context runs in, closed or not; ``None`` outside one."""
+    return _DISPATCH_MARK.get()
 
 
 @contextmanager
@@ -92,6 +103,7 @@ def dispatch_mark() -> Iterator[_DispatchMark]:
     try:
         yield mark
     finally:
+        mark.closed = True
         _DISPATCH_MARK.reset(token)
 
 
@@ -104,9 +116,10 @@ def mark_suspension_raised(raised_by: str) -> None:
         raised_by: Who is suspending, named in the error if the unwind is swallowed.
 
     Raises:
-        RuntimeError: no hook dispatch is open, so there is nothing to unwind to.
+        RuntimeError: no hook dispatch is open, or the one this context holds has
+            returned, so there is nothing to unwind to.
     """
     mark = _DISPATCH_MARK.get()
-    if mark is None:
+    if mark is None or mark.closed:
         raise RuntimeError("mark_suspension_raised: no hook dispatch is open")
     mark.raised_by = raised_by

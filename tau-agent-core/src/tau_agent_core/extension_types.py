@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import fnmatch
+import inspect
 import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
@@ -29,6 +30,15 @@ from tau_agent_core.commands import (
 from tau_agent_core.compaction import estimate_context_tokens
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_data
 from tau_agent_core.extension_warnings import TAU_SOURCE
+from tau_agent_core.policies import (
+    Failed,
+    HandlerPolicy,
+    HandlerPolicyError,
+    PolicedHandler,
+    PolicySite,
+    Proceeded,
+    check_outcome,
+)
 from tau_agent_core.tool_catalog import ExtensionInfo, ToolDescription, match_tools
 from tau_agent_core.tool_output import suspend_capture
 from tau_agent_core.tool_pipeline import NestedToolResult
@@ -1854,7 +1864,7 @@ class ExtensionAPI:
         self._config: dict[str, Any] = dict(config or {})
         self._context._session = session
 
-    def on(self, event: str, handler: Callable) -> Callable[[], None]:
+    def on(self, event: str, handler: Callable, *, policy: str | None = None) -> Callable[[], None]:
         """Subscribe to an event, routed by kind (S24).
 
         See docs/extensions.md, "Hook and event vocabulary".
@@ -1874,19 +1884,27 @@ class ExtensionAPI:
         durable append. The notify-grade ``turn_end`` ``AgentEvent`` still reaches
         ``api.on("all", …)``.
 
+        ``policy`` names a handler policy (:meth:`register_policy`; built-ins
+        ``gating``, ``advisory``, ``human``), which decides how the handler runs
+        and what its failure becomes (docs/STEP-DEBUGGER.md §4, experimental).
+        It is accepted on a runner-routed hook and on an ``ext:`` channel. With
+        no policy the handler runs exactly as it always has.
+
         Args:
             event: Event type (e.g., 'agent_start', 'tool_call', 'all').
             handler: Callable that receives the event (an ``AgentEvent`` for notify
                 events; a ``(event_dict, ctx)`` pair for hook events).
+            policy: A registered policy name, or ``None``.
 
         Returns:
             An unsubscribe function.
 
         Raises:
             RuntimeError: the retired ``context`` hook (E5 §3.2 / S30), or a
-                runner-routed hook on an api with no runner bucket
-                (``hook_handlers is None``), where it could never fire.
-            ValueError: a second ``annotate`` handler from this extension.
+                runner-routed hook, or a policed handler, on an api with no
+                runner bucket (``hook_handlers is None``).
+            ValueError: a second ``annotate`` handler from this extension, an
+                unknown ``policy``, or a ``policy`` on a notify event.
         """
         from tau_agent_core.extensions.runner import ExtensionRunner
 
@@ -1901,7 +1919,13 @@ class ExtensionAPI:
                 "api.on('before_agent_start', …)."
             )
 
-        if event in ExtensionRunner.HOOK_EVENTS or event in ExtensionRunner.LIFECYCLE_EVENTS:
+        is_hook = event in ExtensionRunner.HOOK_EVENTS or event in ExtensionRunner.LIFECYCLE_EVENTS
+        if policy is not None and not (is_hook or event.startswith(EXT_CHANNEL_PREFIX)):
+            raise ValueError(
+                f"api.on({event!r}, policy={policy!r}): a policy applies to a mutating or "
+                "lifecycle hook or an ext: channel; a notify event has no outcome to police"
+            )
+        if is_hook:
             if self._hook_handlers is None:
                 raise RuntimeError(
                     f"api.on({event!r}): this ExtensionAPI is not bound to an "
@@ -1910,18 +1934,23 @@ class ExtensionAPI:
                     "(each factory is handed a bucket-bound api)."
                 )
             hook_bucket = self._hook_handlers
-            hook_bucket.on(event, handler)
+            stored: Callable | PolicedHandler = handler
+            if policy is not None:
+                stored = PolicedHandler(handler, self._registry.get_policy(policy), policy)
+            hook_bucket.on(event, stored)
 
             def unsubscribe_hook() -> None:
                 handlers = hook_bucket.handlers.get(event)
                 if handlers is not None:
                     try:
-                        handlers.remove(handler)
+                        handlers.remove(stored)
                     except ValueError:
                         pass
 
             return unsubscribe_hook
 
+        if policy is not None:
+            handler = self._policed_channel_handler(event, handler, policy)
         unsubscribe = self._event_bus.on(event, handler)
         if not event.startswith(EXT_CHANNEL_PREFIX) or self._hook_handlers is None:
             return unsubscribe
@@ -1934,6 +1963,66 @@ class ExtensionAPI:
                 topic_bucket.subscriptions.remove(event)
 
         return unsubscribe_topic
+
+    def _policed_channel_handler(self, channel: str, handler: Callable, policy: str) -> Callable:
+        """Wrap an ``ext:`` channel handler so it runs through ``policy`` (§4.1).
+
+        ``Returned`` hands back the value; ``Proceeded`` returns ``None`` and sets
+        this extension's session warning ``policy:<channel>``; ``Failed`` raises
+        :class:`~tau_agent_core.policies.HandlerPolicyError` into the emitter's
+        ``await api.emit(...)``, and the channel's later handlers do not run.
+
+        Raises:
+            RuntimeError: no runner bucket, so no extension name to warn under.
+            ValueError: an unknown ``policy``.
+        """
+        resolved = self._registry.get_policy(policy)
+        name = self._emitting_extension_name(f"api.on({channel!r}, policy={policy!r})")
+
+        def warn(text: str) -> None:
+            if self._session is None:
+                self._event_bus._surface_handler_error(RuntimeError(f"warning: {text}"), channel)
+                return
+            self._session.set_extension_warning(name, f"policy:{channel}", text)
+
+        async def policed(*args: Any, **kwargs: Any) -> Any:
+            async def call() -> Any:
+                result = handler(*args, **kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+                return result
+
+            site = PolicySite(channel, name, warn)
+            outcome = check_outcome(await resolved.run(call, site), policy)
+            if isinstance(outcome, Failed):
+                raise HandlerPolicyError(name, channel, policy, outcome.error)
+            if isinstance(outcome, Proceeded):
+                site.warn(f"{channel} handler proceeded: {outcome.record}")
+                return None
+            return outcome.value
+
+        return policed
+
+    def register_policy(self, name: str, policy: HandlerPolicy) -> None:
+        """Register a handler policy for ``api.on(..., policy=name)``, session-wide (§4).
+
+        Experimental: below 1.0 names and defaults may change. ``gating``,
+        ``advisory`` and ``human`` are built in. A policy is removed with the
+        extension that registered it (disable or reload); a handler that already
+        named it keeps it.
+
+        Args:
+            name: The name handlers register under.
+            policy: Anything with ``async run(call, site) -> Outcome``; see
+                :class:`~tau_agent_core.policies.HandlerPolicy`.
+
+        Raises:
+            ValueError: a blank name, or one already registered.
+            TypeError: ``policy`` has no callable ``run``.
+        """
+        self._registry.register_policy(name, policy)
+        if self._hook_handlers is not None:
+            self._hook_handlers.policies.append(name)
 
     def _emitting_extension_name(self, op: str = "api.emit") -> str:
         """This api's own extension name, the identity :meth:`emit` and :meth:`submit` act under.
@@ -2126,7 +2215,8 @@ class ExtensionAPI:
         extension's own. Never written to the tree, so never model-visible and
         gone on restart — durable state uses :meth:`append_entry` or
         :meth:`send_message`. Handlers run while this is awaited; one that raises
-        is surfaced through the bus's on_error path (S44), not here.
+        is surfaced through the bus's on_error path (S44), not here, unless it
+        runs under a policy whose outcome is ``Failed``.
 
         Args:
             topic: The topic, the last segment of the channel name.
@@ -2136,6 +2226,7 @@ class ExtensionAPI:
             ValueError: ``topic`` is empty or whitespace.
             RuntimeError: No runner bucket is bound, so there is no name to
                 namespace under.
+            HandlerPolicyError: a policed subscriber's outcome was ``Failed``.
         """
         if not isinstance(topic, str) or not topic.strip():
             raise ValueError("api.emit: topic must be a non-empty string")

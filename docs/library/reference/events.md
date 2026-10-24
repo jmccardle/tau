@@ -399,11 +399,19 @@ async emit_channel(channel: str, *args: Any, **kwargs: Any) -> None
 
 Emit to all handlers on a specific channel.
 
+A handler that raises is surfaced and the rest still run, except for a
+:class:`~tau_agent_core.policies.HandlerPolicyError` (a policed ``ext:``
+handler's ``Failed``), which propagates to the emitter at once.
+
 **Parameters**
 
 - `channel: str` — Channel name.
 - `*args: Any` — Positional arguments passed to each handler.
 - `**kwargs: Any` — Keyword arguments passed to each handler.
+
+**Raises**
+
+- `HandlerPolicyError` — a policed handler failed.
 
 ### has_listeners
 

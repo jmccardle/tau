@@ -33,6 +33,7 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
 
+from tau_agent_core.policies import HandlerPolicyError
 from tau_agent_core.submission import SubmissionSource
 from tau_llm.docs import agent_facing
 from tau_llm.errors import ProviderConnectionError, ProviderHttpError, ProviderStreamError
@@ -485,15 +486,24 @@ class EventBus:
     async def emit_channel(self, channel: str, *args: Any, **kwargs: Any) -> None:
         """Emit to all handlers on a specific channel.
 
+        A handler that raises is surfaced and the rest still run, except for a
+        :class:`~tau_agent_core.policies.HandlerPolicyError` (a policed ``ext:``
+        handler's ``Failed``), which propagates to the emitter at once.
+
         Args:
             channel: Channel name.
             args: Positional arguments passed to each handler.
             kwargs: Keyword arguments passed to each handler.
+
+        Raises:
+            HandlerPolicyError: a policed handler failed.
         """
         for handler in list(self._listeners.get(channel, [])):
             try:
                 result = handler(*args, **kwargs)
                 if asyncio.iscoroutine(result):
                     await result
+            except HandlerPolicyError:
+                raise
             except Exception as err:  # noqa: BLE001 — surfaced (S44), not swallowed
                 self._surface_handler_error(err, channel)

@@ -30,12 +30,23 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 from tau_agent_core.entry_annotations import AnnotationError, entry_blocks, json_value
+from tau_agent_core.policies import (
+    Failed,
+    HandlerPolicyError,
+    PolicedHandler,
+    PolicySite,
+    Proceeded,
+    check_outcome,
+)
 from tau_agent_core.suspension import SuspensionSwallowedError, TurnSuspended, dispatch_mark
 
 if TYPE_CHECKING:
     from tau_agent_core.extension_types import ExtensionContext
 
 HookHandler = Callable[..., Any]
+
+WarningSink = Callable[[str, str, str], None]
+"""Sets a session warning: ``(source, key, message)``, as ``AgentSession.set_extension_warning``."""
 
 
 @dataclass
@@ -66,15 +77,18 @@ class ExtensionHandlers:
     name/key), with no per-extension attribution, so this bucket is the one place
     that records *which* extension registered *what* — exactly what the
     ``/extensions`` surface reads (E5 §5 / S34; shortcuts E10 §6 / S69). Recorded in
-    registration order.
+    registration order. ``policies`` are the handler policy names it registered
+    (``api.register_policy``). A handler registered with a policy is held as a
+    :class:`~tau_agent_core.policies.PolicedHandler`.
     """
 
     path: str
-    handlers: dict[str, list[HookHandler]] = field(default_factory=dict)
+    handlers: dict[str, list[HookHandler | PolicedHandler]] = field(default_factory=dict)
     tools: list[str] = field(default_factory=list)
     commands: list[str] = field(default_factory=list)
     shortcuts: list[str] = field(default_factory=list)
     subscriptions: list[str] = field(default_factory=list)
+    policies: list[str] = field(default_factory=list)
 
     @property
     def name(self) -> str:
@@ -83,7 +97,7 @@ class ExtensionHandlers:
 
         return extension_identifier(self.path)
 
-    def on(self, event: str, handler: HookHandler) -> None:
+    def on(self, event: str, handler: HookHandler | PolicedHandler) -> None:
         """Register ``handler`` for ``event`` (appended in registration order).
 
         Raises:
@@ -182,6 +196,12 @@ class ExtensionRunner:
     lifecycle moments: ``session_start`` after extensions load; ``session_shutdown``
     on TUI quit, headless completion, and SIGINT/SIGTERM.
 
+    A handler registered with a policy (docs/STEP-DEBUGGER.md §4) runs through
+    it. Its ``Failed`` outcome raises
+    :class:`~tau_agent_core.policies.HandlerPolicyError`: ``tool_call`` blocks on
+    it and ``annotate`` records it, as for any raise; every site that isolates
+    handler errors surfaces it and re-raises it instead, which ends the turn.
+
     ``has_handlers(event)`` gives call-sites the zero-extension fast path
     (pi ``agent-session.ts:405-411``): when it returns ``False`` the caller skips
     the dispatch entirely and the emit methods themselves also short-circuit to the
@@ -223,6 +243,7 @@ class ExtensionRunner:
             context = _Ctx()
         self._context: ExtensionContext = context
         self._error_listeners: list[ErrorListener] = []
+        self._warning_sink: WarningSink | None = None
 
     def register_extension(self, path: str) -> ExtensionHandlers:
         """Append a new extension handler-group and return it for registration.
@@ -267,6 +288,16 @@ class ExtensionRunner:
         """Bind the live :class:`ExtensionContext` handed to hook handlers."""
         self._context = context
 
+    def set_warning_sink(self, sink: WarningSink) -> None:
+        """Bind where a policed handler's warnings go; the session binds its warnings store.
+
+        Unbound, a warning is surfaced through :meth:`on_error` instead.
+
+        Args:
+            sink: Called with ``(source, key, message)``.
+        """
+        self._warning_sink = sink
+
     def on_error(self, listener: ErrorListener) -> Callable[[], None]:
         """Register a listener for hook-handler errors. Returns an unsubscribe."""
         self._error_listeners.append(listener)
@@ -291,33 +322,93 @@ class ExtensionRunner:
 
         Notifies every registered listener. With no listener bound the error is
         written to stderr rather than swallowed — pi routes it to a listener the
-        app installs; τ additionally refuses the silent-drop path.
+        app installs; τ additionally refuses the silent-drop path. A listener
+        that raises falls back to stderr, as the notify bus's does, so the report
+        cannot replace the dispatch's own outcome.
         """
         if self._error_listeners:
-            for listener in self._error_listeners:
-                listener(error)
+            for listener in list(self._error_listeners):
+                try:
+                    listener(error)
+                except Exception as listener_err:  # noqa: BLE001 — reporter must not crash dispatch
+                    print(
+                        f"[τ] extension error listener failed on {error.event!r}: {listener_err}",
+                        file=sys.stderr,
+                    )
         else:
             print(
                 f"[τ] extension error in {error.extension_path} ({error.event}): {error.error}",
                 file=sys.stderr,
             )
 
+    def _warn(self, ext: ExtensionHandlers, hook: str, text: str) -> None:
+        """Set ``ext``'s session warning ``policy:<hook>``, or surface it when no sink is bound."""
+        if self._warning_sink is None:
+            self._emit_error(ExtensionError(ext.path, hook, f"warning: {text}"))
+            return
+        self._warning_sink(ext.name, f"policy:{hook}", text)
+
+    async def _invoke(self, handler: HookHandler, event: dict[str, Any]) -> Any:
+        """Call ``handler(event, ctx)`` and await it if it is async."""
+        result = handler(event, self._context)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    async def _call_policed(
+        self, ext: ExtensionHandlers, hook: str, policed: PolicedHandler, event: dict[str, Any]
+    ) -> Any:
+        """Run a policed handler through its policy and interpret the outcome (§4.1).
+
+        ``Returned`` gives the value. ``Proceeded`` gives ``None`` and a session
+        warning, except at ``annotate``, where it gives the
+        ``{"error", "proceeded": True}`` value stored on the entry. ``Failed``
+        raises.
+
+        Raises:
+            HandlerPolicyError: the outcome was ``Failed``.
+            TypeError: the policy returned something that is not an outcome.
+        """
+        site = PolicySite(hook, ext.name, lambda text: self._warn(ext, hook, text))
+        outcome = check_outcome(
+            await policed.policy.run(lambda: self._invoke(policed.handler, event), site),
+            policed.name,
+        )
+        if isinstance(outcome, Failed):
+            raise HandlerPolicyError(ext.name, hook, policed.name, outcome.error)
+        if isinstance(outcome, Proceeded):
+            if hook == "annotate":
+                return {"error": outcome.record, "proceeded": True}
+            site.warn(f"{hook} handler proceeded: {outcome.record}")
+            return None
+        return outcome.value
+
     async def _call(
-        self, ext: ExtensionHandlers, hook: str, handler: HookHandler, event: dict[str, Any]
+        self,
+        ext: ExtensionHandlers,
+        hook: str,
+        handler: HookHandler | PolicedHandler,
+        event: dict[str, Any],
     ) -> Any:
         """Invoke ``handler(event, ctx)``, awaiting an async handler, under a dispatch mark.
+
+        A :class:`~tau_agent_core.policies.PolicedHandler` runs through its
+        policy (:meth:`_call_policed`); the mark closes only once the policy has
+        returned, so after the handler's task has.
 
         Raises:
             SuspensionSwallowedError: a suspension was raised inside the handler
                 (:func:`~tau_agent_core.suspension.mark_suspension_raised`) and the
                 handler returned or raised something else (docs/STEP-DEBUGGER.md
                 §3.2.2).
+            HandlerPolicyError: a policed handler's outcome was ``Failed``.
         """
         with dispatch_mark() as mark:
             try:
-                result = handler(event, self._context)
-                if inspect.isawaitable(result):
-                    result = await result
+                if isinstance(handler, PolicedHandler):
+                    result = await self._call_policed(ext, hook, handler, event)
+                else:
+                    result = await self._invoke(handler, event)
             except TurnSuspended:
                 raise
             except Exception as err:
@@ -330,6 +421,9 @@ class ExtensionRunner:
 
     async def emit_tool_call(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """Dispatch ``tool_call``; first ``block: true`` short-circuits.
+
+        A policed handler's ``Failed`` raises :class:`HandlerPolicyError`, which
+        the call-site turns into a block like any raise.
 
         pi ``runner.ts:862-883``. Handlers may mutate ``event["input"]`` in place
         (later handlers see the mutation — no re-validation). The threaded result
@@ -374,6 +468,9 @@ class ExtensionRunner:
             for handler in handlers:
                 try:
                     handler_result = await self._call(ext, "tool_result", handler, current)
+                except HandlerPolicyError as err:
+                    self._emit_error(ExtensionError(ext.path, "tool_result", str(err)))
+                    raise
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "tool_result", str(err)))
                     continue
@@ -451,6 +548,9 @@ class ExtensionRunner:
                 }
                 try:
                     result = await self._call(ext, "before_agent_start", handler, event)
+                except HandlerPolicyError as err:
+                    self._emit_error(ExtensionError(ext.path, "before_agent_start", str(err)))
+                    raise
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "before_agent_start", str(err)))
                     continue
@@ -551,6 +651,9 @@ class ExtensionRunner:
                 }
                 try:
                     result = await self._call(ext, "input", handler, event)
+                except HandlerPolicyError as err:
+                    self._emit_error(ExtensionError(ext.path, "input", str(err)))
+                    raise
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "input", str(err)))
                     continue
@@ -641,6 +744,9 @@ class ExtensionRunner:
                 }
                 try:
                     result = await self._call(ext, "turn_end", handler, event)
+                except HandlerPolicyError as err:
+                    self._emit_error(ExtensionError(ext.path, "turn_end", str(err)))
+                    raise
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "turn_end", str(err)))
                     continue
@@ -712,6 +818,9 @@ class ExtensionRunner:
                 }
                 try:
                     result = await self._call(ext, "user_turn_end", handler, event)
+                except HandlerPolicyError as err:
+                    self._emit_error(ExtensionError(ext.path, "user_turn_end", str(err)))
+                    raise
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "user_turn_end", str(err)))
                     continue
@@ -767,6 +876,9 @@ class ExtensionRunner:
             for handler in ext.handlers["entry_written"]:
                 try:
                     await self._call(ext, "entry_written", handler, copy.deepcopy(base))
+                except HandlerPolicyError as err:
+                    self._emit_error(ExtensionError(ext.path, "entry_written", str(err)))
+                    raise
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "entry_written", str(err)))
 
@@ -815,7 +927,11 @@ class ExtensionRunner:
                     continue
                 ext_values[ext.name] = json_value(value)
             except Exception as err:  # noqa: BLE001 — recorded on the entry, then raised
-                detail = f"{type(err).__name__}: {err}"
+                detail = (
+                    err.detail
+                    if isinstance(err, HandlerPolicyError)
+                    else f"{type(err).__name__}: {err}"
+                )
                 ext_values[ext.name] = {"error": detail}
                 self._emit_error(ExtensionError(ext.path, "annotate", detail))
                 if failure is None:
@@ -859,6 +975,9 @@ class ExtensionRunner:
                 event = {"type": "session_before_switch", "reason": reason, "target": target}
                 try:
                     result = await self._call(ext, "session_before_switch", handler, event)
+                except HandlerPolicyError as err:
+                    self._emit_error(ExtensionError(ext.path, "session_before_switch", str(err)))
+                    raise
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "session_before_switch", str(err)))
                     continue
@@ -914,6 +1033,9 @@ class ExtensionRunner:
         for handler in handlers:
             try:
                 await self._call(ext, event_name, handler, event)
+            except HandlerPolicyError as err:
+                self._emit_error(ExtensionError(ext.path, event_name, str(err)))
+                raise
             except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                 self._emit_error(ExtensionError(ext.path, event_name, str(err)))
 

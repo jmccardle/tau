@@ -45,6 +45,7 @@ from tau_agent_core.agent_loop_types import (
     TurnSettingsSource,
 )
 from tau_agent_core.entry_annotations import AnnotationError
+from tau_agent_core.policies import HandlerPolicyError
 from tau_agent_core.events import AgentEndReason, AgentEvent, ErrorDetail
 from tau_agent_core.provider_retry import provider_retry_event
 from tau_agent_core.suspension import TurnSuspended
@@ -66,6 +67,9 @@ from tau_llm.docs import agent_facing
 
 if TYPE_CHECKING:
     from tau_agent_core.extensions.runner import ExtensionRunner
+
+TurnFailure = AnnotationError | HandlerPolicyError
+"""A failure the loop notes once its entry is written and ends the turn on at the next checkpoint."""
 
 MidTurnCompactor = Callable[[list[Any], list[Any]], Awaitable[list[Any] | None]]
 """Called at every agent-loop turn boundary; may replace the loop's context.
@@ -125,6 +129,10 @@ class TurnWriter(Protocol):
         """End a write group: dispatch ``entry_written`` for each entry written since the last call.
 
         docs/STEP-DEBUGGER.md §3.2. The loop calls it after a group's last write.
+
+        Raises:
+            HandlerPolicyError: a policed ``entry_written`` handler failed; the
+                group's later entries are not dispatched.
         """
         ...
 
@@ -197,8 +205,9 @@ class AgentLoop:
             reasoning and temperature, so a switch made between two requests
             reaches the second (docs/TURN-SETTINGS.md §2). ``None`` sends every
             request with ``model`` and ``config``'s values.
-        input_failure: An ``annotate`` failure on an input written before the
-            run; the run raises it after ``agent_start``, before any request.
+        input_failure: An ``annotate`` failure, or a policed ``entry_written``
+            handler's failure, on an input written before the run; the run
+            raises it after ``agent_start``, before any request.
 
     Attributes:
         config: The configuration passed in.
@@ -217,7 +226,7 @@ class AgentLoop:
         writer: TurnWriter | None = None,
         call_gate: Callable[[str], str | None] | None = None,
         turn_settings: TurnSettingsSource | None = None,
-        input_failure: AnnotationError | None = None,
+        input_failure: TurnFailure | None = None,
     ) -> None:
         self.config = config
         self._emit = emit or (lambda e: asyncio.create_task(self._noop_emit(e)))
@@ -235,7 +244,7 @@ class AgentLoop:
         self._turn_settings = turn_settings
         self._recorded: dict[int, dict[str, Any]] = {}
         self._request_max_tokens: int | None = None
-        self._annotation_failure: AnnotationError | None = input_failure
+        self._turn_failure: TurnFailure | None = input_failure
 
     @staticmethod
     async def _noop_emit(event: AgentEvent) -> None:
@@ -314,13 +323,13 @@ class AgentLoop:
 
                 await self._deliver_steer(messages, final_messages)
 
-                self._raise_annotation_failure()
+                self._raise_turn_failure()
                 assistant = await self._stream_response(messages)
                 final_messages.append(assistant)
                 messages.append(assistant)
 
                 tool_calls = assistant.get_tool_calls()
-                await self._abort_on_annotation_failure(tool_calls, final_messages)
+                await self._abort_on_turn_failure(tool_calls, final_messages)
 
                 if not tool_calls:
                     # Text-only response — turn ends
@@ -371,7 +380,7 @@ class AgentLoop:
                 for msg in batch.messages:
                     messages.append(msg)
                     final_messages.append(msg)
-                self._raise_annotation_failure()
+                self._raise_turn_failure()
 
                 # Emit turn_end with tool results
                 tool_result_dicts = []
@@ -434,7 +443,7 @@ class AgentLoop:
 
             else:
                 end_reason = "max_turns"
-            self._raise_annotation_failure()
+            self._raise_turn_failure()
 
         except TurnSuspended:
             await self._emit_agent_end(final_messages, end_reason="suspended")
@@ -509,13 +518,13 @@ class AgentLoop:
 
                 await self._deliver_steer(messages, final_messages)
 
-                self._raise_annotation_failure()
+                self._raise_turn_failure()
                 assistant = await self._stream_response(messages)
                 final_messages.append(assistant)
                 messages.append(assistant)
 
                 tool_calls = assistant.get_tool_calls()
-                await self._abort_on_annotation_failure(tool_calls, final_messages)
+                await self._abort_on_turn_failure(tool_calls, final_messages)
                 if not tool_calls:
                     await self._emit(
                         AgentEvent(
@@ -564,7 +573,7 @@ class AgentLoop:
                 for msg in batch.messages:
                     messages.append(msg)
                     final_messages.append(msg)
-                self._raise_annotation_failure()
+                self._raise_turn_failure()
 
                 tool_result_dicts = []
                 for tr in batch.tool_results:
@@ -629,7 +638,7 @@ class AgentLoop:
             else:
                 # See run(): falling out of the `while` condition means `max_turns`.
                 end_reason = "max_turns"
-            self._raise_annotation_failure()
+            self._raise_turn_failure()
 
         except TurnSuspended:
             await self._emit_agent_end(final_messages, end_reason="suspended")
@@ -796,38 +805,47 @@ class AgentLoop:
         """Hand a finished message to the writer, if there is one.
 
         An ``annotate`` failure is noted, not raised: the entry is written, and
-        the turn ends on it at the next checkpoint (:meth:`_raise_annotation_failure`).
+        the turn ends on it at the next checkpoint (:meth:`_raise_turn_failure`).
         """
         if self._writer is not None:
             try:
                 await self._writer.append(message)
             except AnnotationError as err:
-                self._note_annotation_failure(err)
+                self._note_turn_failure(err)
 
     async def _close_group(self) -> None:
-        """End the current write group (:meth:`TurnWriter.close_group`), if there is a writer."""
-        if self._writer is not None:
-            await self._writer.close_group()
+        """End the current write group (:meth:`TurnWriter.close_group`), if there is a writer.
 
-    def _note_annotation_failure(self, err: AnnotationError) -> None:
-        """Keep the first ``annotate`` failure; a later one is already on its entry.
+        A policed ``entry_written`` handler's failure is noted, like an
+        ``annotate`` failure: its entries are written, and the turn ends at the
+        next checkpoint (docs/STEP-DEBUGGER.md §4.1).
+        """
+        if self._writer is not None:
+            try:
+                await self._writer.close_group()
+            except HandlerPolicyError as err:
+                self._note_turn_failure(err)
+
+    def _note_turn_failure(self, err: TurnFailure) -> None:
+        """Keep the first turn-ending failure; a later one is already on its entry or surfaced.
 
         Only the first ends the turn, so a failure on a result written while the
         turn is aborting does not abort it again (docs/ENTRY-ANNOTATIONS.md §4.3).
         """
-        if self._annotation_failure is None:
-            self._annotation_failure = err
+        if self._turn_failure is None:
+            self._turn_failure = err
 
-    def _raise_annotation_failure(self) -> None:
-        """End the turn on a noted ``annotate`` failure, once its entry is written.
+    def _raise_turn_failure(self) -> None:
+        """End the turn on a noted failure, once its entry is written.
 
         Raises:
-            AnnotationError: one was noted.
+            AnnotationError: an ``annotate`` failure was noted.
+            HandlerPolicyError: a policed handler's failure was noted.
         """
-        if self._annotation_failure is not None:
-            raise self._annotation_failure
+        if self._turn_failure is not None:
+            raise self._turn_failure
 
-    async def _abort_on_annotation_failure(
+    async def _abort_on_turn_failure(
         self, tool_calls: list[ToolCall], final_messages: list[Any]
     ) -> None:
         """End the turn on a noted failure, answering the assistant's calls first.
@@ -836,9 +854,10 @@ class AgentLoop:
         unanswered in the tree (docs/ENTRY-ANNOTATIONS.md §4.3).
 
         Raises:
-            AnnotationError: one was noted.
+            AnnotationError: an ``annotate`` failure was noted.
+            HandlerPolicyError: a policed handler's failure was noted.
         """
-        failure = self._annotation_failure
+        failure = self._turn_failure
         if failure is None:
             return
         if tool_calls:
@@ -903,7 +922,7 @@ class AgentLoop:
             final_messages.append(node)
             await self._write(node)
         await self._close_group()
-        self._raise_annotation_failure()
+        self._raise_turn_failure()
 
     @staticmethod
     def _turn_end_custom_node(message: dict[str, Any]) -> dict[str, Any]:
@@ -1106,7 +1125,7 @@ class AgentLoop:
                         try:
                             await self._writer.finalize(handle, final_msg)
                         except AnnotationError as err:
-                            self._note_annotation_failure(err)
+                            self._note_turn_failure(err)
                     await self._close_group()
                     await self._emit(
                         AgentEvent(
@@ -1183,7 +1202,7 @@ class AgentLoop:
             try:
                 await self._writer.finalize(handle, message)
             except AnnotationError as err:
-                self._note_annotation_failure(err)
+                self._note_turn_failure(err)
         blocks = [c.model_dump() if hasattr(c, "model_dump") else c for c in message.content]
         await self._emit(
             AgentEvent(
@@ -1428,7 +1447,7 @@ class AgentLoop:
             if terminated:
                 break
             aborted = self._abort_signal is not None and self._abort_signal.is_aborted()
-            if aborted or self._annotation_failure is not None:
+            if aborted or self._turn_failure is not None:
                 return await self._aborted_batch(tool_calls, prior=all_results)
 
             await self._emit(
@@ -1452,7 +1471,11 @@ class AgentLoop:
                 return await self._aborted_batch(tool_calls, prior=all_results)
 
             result = await self._execute_tool(prepared)
-            result = await self._apply_after_hooks(result, prepared.arguments)
+            try:
+                result = await self._apply_after_hooks(result, prepared.arguments)
+            except HandlerPolicyError as err:
+                self._note_turn_failure(err)
+                result = AgentToolResult.from_exception(result.tool_name, err, result.tool_call_id)
 
             await self._emit(
                 AgentEvent(
@@ -1529,6 +1552,8 @@ class AgentLoop:
                     result = await self._execute_tool(pc)
                     result = await self._apply_after_hooks(result, pc.arguments)
                 except Exception as exc:
+                    if isinstance(exc, HandlerPolicyError):
+                        self._note_turn_failure(exc)
                     finished[index] = _raised(pc, exc)
                     await _flush_prefix()
                     raise

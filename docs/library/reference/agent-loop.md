@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, call_gate: Callable[[str], str | None] | None = None, turn_settings: TurnSettingsSource | None = None, input_failure: AnnotationError | None = None)
+class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, call_gate: Callable[[str], str | None] | None = None, turn_settings: TurnSettingsSource | None = None, input_failure: TurnFailure | None = None)
 ```
 
 `tau_agent_core.agent_loop.AgentLoop`
@@ -28,7 +28,7 @@ Events follow docs/SUBPHASE-0.0.md, "5. Agent Events".
 - `writer: TurnWriter | None = None` — Where each message is written as it exists; ``None`` writes nothing and the loop only returns what it produced.
 - `call_gate: Callable[[str], str | None] | None = None` — Given a model-issued call's tool name, the reason to refuse it, or ``None`` to let it run; how a masked tool stays declared, so the ``tools`` block and the prompt cache hold. ``None`` gates nothing.
 - `turn_settings: TurnSettingsSource | None = None` — Awaited before every request for its model, key, reasoning and temperature, so a switch made between two requests reaches the second (docs/TURN-SETTINGS.md §2). ``None`` sends every request with ``model`` and ``config``'s values.
-- `input_failure: AnnotationError | None = None` — An ``annotate`` failure on an input written before the run; the run raises it after ``agent_start``, before any request.
+- `input_failure: TurnFailure | None = None` — An ``annotate`` failure, or a policed ``entry_written`` handler's failure, on an input written before the run; the run raises it after ``agent_start``, before any request.
 
 ### add_tool
 
@@ -410,6 +410,10 @@ async close_group() -> None
 End a write group: dispatch ``entry_written`` for each entry written since the last call.
 
 docs/STEP-DEBUGGER.md §3.2. The loop calls it after a group's last write.
+
+**Raises**
+
+- `HandlerPolicyError` — a policed ``entry_written`` handler failed; the group's later entries are not dispatched.
 
 ### finalize
 

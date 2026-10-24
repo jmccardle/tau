@@ -211,7 +211,13 @@ per-entry stepping point, and it replaces stepping at `annotate`.
   derived (a `details` value that is not JSON, #91) is already written, so its
   dispatch is skipped and the failure is surfaced through `on_error` for each
   extension with a handler; nothing but an `AnnotationError` leaves
-  `close_group`, so the batch's later calls are still answered.
+  `close_group`, so the batch's later calls are still answered. Two
+  `BaseException`s are meant to leave it too: `TurnSuspended` and
+  `SuspensionSwallowedError` (§3.2.2), the unwinds a suspension takes. Since M1d
+  so does a policed handler's `HandlerPolicyError` (§4), which the loop notes
+  and ends the turn on. An `on_error` listener that raised used to escape
+  `close_group` as well; M1d guards it, as the notify bus already guarded its
+  own, and a raising listener now falls back to stderr.
 - A break that a producer detects at a non-permitted site is carried to the
   next permitted one. Examples: tau-router's model change at `input`, or a
   condition read in `tool_result`. `api.can_suspend_here()` tells the handler
@@ -1241,6 +1247,55 @@ never a human's reading time and never the queue.
 The alternative was to refuse `api.suspend` under any enclosing timeout
 (tau-router, round 1). That forbids a `gating` decider from ever producing a
 break, and decider questions are §5.3's main external producer.
+
+**Built (M1d).** The types live in `tau_agent_core/policies.py`; the registry is
+the session's `ExtensionRegistry`, and the tests are
+`tau-agent-core/tests/test_handler_policies.py`. Divergences and choices the
+spec left open:
+
+- **`Failed` at every isolating hook ends the turn.** §4.1 names `turn_end`,
+  `tool_result` and `entry_written`. The rule as built is general: wherever a
+  site isolates handler errors today (also `input`, `before_agent_start`,
+  `user_turn_end`, `session_before_switch` and the two lifecycle hooks), a
+  `Failed` is surfaced through `on_error` and `HandlerPolicyError` is raised out
+  of the dispatch. `tool_call` blocks on it and `annotate` records it, as for
+  any raise.
+- **The loop ends the turn the way it does for an `annotate` failure.** Its
+  noted failure is now `AnnotationError | HandlerPolicyError`
+  (`agent_loop.TurnFailure`). A failed `entry_written` is noted in
+  `_close_group`, so its entries stay written, and the turn ends at the next
+  checkpoint with the batch's unanswered calls answered `ABORTED_TOOL_RESULT`. A
+  failed `tool_result` is noted, and its call's result is written as an error
+  result, not the tool's unpatched output, because a `tool_result` handler may
+  be a redactor. The prompt batch hands it to the loop as `input_failure`.
+  `user_turn_end` and an idle `send_message` raise from their call.
+- **A nested call's `tool_result`** (`ctx.execute_tool`) raises into the
+  calling tool, which fails like any tool that raises. There is no loop
+  checkpoint to note it at.
+- **`Failed` on an `ext:` channel** stops the emit: later subscribers on the
+  channel do not run.
+- **Warnings.** `Proceeded`, and `PolicySite.warn`, set the extension's warning
+  keyed `policy:<hook>`, or `policy:ext:<owner>:<topic>`, with one line
+  `"<hook> handler proceeded: <record>"`. A runner with no session sink surfaces
+  it through `on_error`.
+- **`Unbounded` runs inline**, in the dispatch's task, since it has no deadline
+  to enforce; only `Bounded` spawns the per-handler task.
+- **Capping is by cancellation.** An inner deadline keeps its own budget. When
+  an outer one expires, its watchdog cancels the outer task, the cancellation
+  reaches the inner task, the inner `run` re-raises `CancelledError`, and the
+  outer policy's timeout outcome applies. `PausableDeadline.remaining()`
+  reports the capped value.
+- **Pausing for M1e.** `pause_enclosing_deadlines()` pauses every deadline in
+  `enclosing_deadlines()`, a context variable each bounded task extends, and
+  resumes them on exit; pauses nest. Nothing calls it yet.
+- **The dispatch mark gains `closed`.** It is set when the handler's dispatch
+  returns, after the policed task has finished, and `mark_suspension_raised`
+  refuses a closed mark. A task the handler spawned therefore cannot later
+  claim the dispatch.
+- **Registration.** An unknown policy name raises at `api.on`, and so does a
+  policy on a notify event. Registering a taken name, a built-in included,
+  raises. An extension's policies are removed when it is disabled or reloaded.
+  A handler that already resolved a policy keeps it.
 
 ## 5. The debugger extension (`tau-debugger`)
 
