@@ -11,8 +11,11 @@ Rationale: docs/PORTABLE-HOME.md §7.
 
 ``HOME`` itself is left alone: tests that exercise home resolution, and the
 packages' ``_hermetic_extensions_dir`` fixtures (which compare ``Path.home()``
-to the real one), depend on it. Instead the session fails if a test creates a file in
-the real ``~/.tau`` (#70).
+to the real one), depend on it. Instead the session fails if a test changes the
+real ``~/.tau`` (#70): any new file, and any modified or removed file outside the
+places a live τ writes (:func:`home_tau_changes`). It cannot attribute a new
+file to a test, so a live τ creating one during the run (a first ``ext-state``
+file, an export) also trips it; rerun after it finishes.
 """
 
 from __future__ import annotations
@@ -44,9 +47,13 @@ def snapshot_home_tau(home: Path) -> dict[str, tuple[int, int]]:
     root = home / ".tau"
     seen: dict[str, tuple[int, int]] = {}
     for path in root.rglob("*"):
-        if path.is_file() and not path.is_symlink():
+        try:
+            if not path.is_file() or path.is_symlink():
+                continue
             stat = path.stat()
-            seen[str(path.relative_to(home))] = (stat.st_mtime_ns, stat.st_size)
+        except FileNotFoundError:
+            continue
+        seen[str(path.relative_to(home))] = (stat.st_mtime_ns, stat.st_size)
     return seen
 
 
@@ -64,17 +71,27 @@ def _names_inside(directory: str, roots: Iterable[Path]) -> bool:
     return False
 
 
+_LIVE_TOP_LEVEL = frozenset({"serve.log", "repl_history"})
+"""Top-level files a live τ appends to while the suite runs."""
+
+_LIVE_TREES = frozenset({"sessions", "ext-state", "chats", "exports"})
+"""Directories a live τ writes in; a modification there is not a test's."""
+
+
 def home_tau_changes(
     before: dict[str, tuple[int, int]],
     after: dict[str, tuple[int, int]],
     roots: Iterable[Path],
 ) -> list[str]:
-    """List the new files a test plausibly put under ``.tau``.
+    """List the changes a test plausibly made under ``.tau``.
 
-    Modifications and removals are ignored, since a live ``tau serve`` appends to
-    its log and session files. A new file counts when it sits directly under
-    ``.tau``, or under ``.tau/sessions/<dir>`` where ``<dir>`` encodes a cwd
-    inside one of *roots* (the pytest rootdir and the temp directories).
+    A live ``tau serve`` writes beside the suite, so three things are ignored: a
+    dotfile (staging such as ``.ext-auth-*`` or ``.*.partial``); a new file under
+    ``sessions/<dir>`` whose ``<dir>`` encodes a cwd outside *roots*; and a
+    modification or removal of a :data:`_LIVE_TOP_LEVEL` file or anything under
+    :data:`_LIVE_TREES`. Every other new, modified or removed file counts, so
+    ``config.json``, the authorization store, keys and ``extensions/`` are
+    protected.
 
     Args:
         before: A :func:`snapshot_home_tau` result.
@@ -82,17 +99,28 @@ def home_tau_changes(
         roots: Directories a test's cwd could be inside.
 
     Returns:
-        Sorted lines, each ``new <path>``.
+        Sorted lines, each ``new|modified|removed <path>``.
     """
     roots = list(roots)
     found = []
-    for rel in after.keys() - before.keys():
+    for rel in sorted(after.keys() | before.keys()):
         parts = Path(rel).parts
-        direct = len(parts) == 2
-        session = len(parts) >= 4 and parts[1] == "sessions" and _names_inside(parts[2], roots)
-        if direct or session:
+        if parts[-1].startswith("."):
+            continue
+        tree = parts[1] if len(parts) > 2 else None
+        if rel not in before:
+            if tree == "sessions" and not (len(parts) >= 4 and _names_inside(parts[2], roots)):
+                continue
             found.append(f"new {rel}")
-    return sorted(found)
+            continue
+        live = tree in _LIVE_TREES or (tree is None and parts[1] in _LIVE_TOP_LEVEL)
+        if live:
+            continue
+        if rel not in after:
+            found.append(f"removed {rel}")
+        elif after[rel] != before[rel]:
+            found.append(f"modified {rel}")
+    return found
 
 
 def _is_worker(config: pytest.Config) -> bool:

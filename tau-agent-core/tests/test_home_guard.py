@@ -1,6 +1,7 @@
-"""#70: the root conftest fails a session whose tests create a file in the real ``~/.tau``.
+"""#70: the root conftest fails a session whose tests change the real ``~/.tau``.
 
-Only new files count: a live ``tau serve`` appends to what it already has.
+A live ``tau serve`` writes beside the suite, so its log, session trees and
+extension state may change; everything else may not.
 """
 
 from __future__ import annotations
@@ -78,7 +79,7 @@ def test_a_new_file_directly_under_dot_tau_fails(tmp_path):
     assert "new .tau/serve.log" in result.stdout
 
 
-def test_a_pre_existing_file_being_modified_passes(tmp_path):
+def test_a_live_writers_log_being_modified_passes(tmp_path):
     body = (
         "from pathlib import Path\n"
         "def test_w():\n"
@@ -91,4 +92,49 @@ def test_a_pre_existing_file_being_modified_passes(tmp_path):
 
 def test_a_clean_session_passes(tmp_path):
     result = _run(tmp_path, "def test_ok():\n    pass\n")
+    assert result.returncode == 0, result.stdout
+
+
+def _touch(rel: str, mode: str = "a") -> str:
+    return (
+        "from pathlib import Path\n"
+        "def test_w():\n"
+        f"    p = Path.home() / {rel!r}\n"
+        "    p.parent.mkdir(parents=True, exist_ok=True)\n"
+        f"    with open(p, {mode!r}) as f:\n"
+        "        f.write('more')\n"
+    )
+
+
+def test_a_new_file_in_ext_state_fails(tmp_path):
+    result = _run(tmp_path, _touch(".tau/ext-state/x.jsonl"))
+    assert result.returncode == 1
+    assert "new .tau/ext-state/x.jsonl" in result.stdout
+
+
+def test_a_modified_config_json_fails(tmp_path):
+    result = _run(tmp_path, _touch(".tau/config.json"), existing={".tau/config.json": "{}"})
+    assert result.returncode == 1
+    assert "modified .tau/config.json" in result.stdout
+
+
+def test_a_removed_authorization_store_fails(tmp_path):
+    body = (
+        "from pathlib import Path\n"
+        "def test_w():\n"
+        "    (Path.home() / '.tau' / 'extension-authorizations.json').unlink()\n"
+    )
+    result = _run(tmp_path, body, existing={".tau/extension-authorizations.json": "{}"})
+    assert result.returncode == 1
+    assert "removed .tau/extension-authorizations.json" in result.stdout
+
+
+def test_a_live_session_file_being_modified_passes(tmp_path):
+    rel = ".tau/sessions/--home-john-proj--/s.jsonl"
+    result = _run(tmp_path, _touch(rel), existing={rel: "x"})
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_new_dotfile_staging_file_passes(tmp_path):
+    result = _run(tmp_path, _touch(".tau/.ext-auth-123.json", "w"))
     assert result.returncode == 0, result.stdout
