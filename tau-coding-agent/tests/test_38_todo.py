@@ -291,3 +291,25 @@ async def test_debug_hit_for_clear_and_none_for_list_or_refusal(tmp_path):
     )
     assert [h["condition"] for h in hits] == ["todo_changed"]
     assert set(hits[0]) == {"condition", "evidence"}
+
+
+async def test_loaded_by_the_public_loader_it_emits_on_38_todo_channel(tmp_path):
+    session = AgentSession(session_log=_session(tmp_path), model=_model(), extensions=[])
+    await session.load_extensions([str(_PATH)], discover=False)
+    hits: list[Any] = []
+    conditions: list[Any] = []
+    probe = session._bind_extension_api("probe")
+    probe.on("ext:38_todo:debug_hit", hits.append)
+    probe.on("ext:38_todo:debug_conditions", conditions.append)
+    execute = session._registry._tools["todo"].execute
+    out = await execute("call", {"action": "add", "text": "a"}, None, None, None)
+    result = AgentToolResult(
+        tool_call_id="call", tool_name="todo", content=out["content"], details=out["details"]
+    )
+    await apply_tool_result_hooks(session._extension_runner, result, {"action": "add", "text": "a"})
+    assert [h["condition"] for h in hits] == ["todo_created"]
+
+    await session._bind_extension_api("tau_debugger").emit("need_conditions", {})
+    assert len(conditions) == 1
+    assert [c["name"] for c in conditions[0]] == ["todo_created", "todo_completed", "todo_changed"]
+    assert all(set(c) == {"name", "describe"} and c["describe"] for c in conditions[0])

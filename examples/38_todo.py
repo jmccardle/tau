@@ -79,7 +79,9 @@ list of ``{label, text}``.
 | ``todo_completed`` | ``toggle`` that marks a todo done |
 | ``todo_changed`` | ``toggle`` that reopens one, and ``clear`` |
 
-A refused call (an ``error`` in its details) and a ``list`` emit nothing.
+A refused call (an ``error`` in its details) and a ``list`` emit nothing. The
+debugger asks for the conditions on ``ext:tau_debugger:need_conditions`` and
+this extension answers on ``ext:38_todo:debug_conditions`` with ``[{name, describe}]``.
 """
 
 from __future__ import annotations
@@ -152,6 +154,14 @@ def _debug_hit(details: dict[str, Any], call_input: dict[str, Any]) -> dict[str,
 
 def _find(todos: list[dict[str, Any]], todo_id: int) -> dict[str, Any]:
     return next(t for t in todos if t["id"] == todo_id)
+
+
+#: The conditions announced on ``debug_conditions``: ``(name, describe)``.
+DEBUG_CONDITIONS = (
+    ("todo_created", "a todo was added"),
+    ("todo_completed", "a todo was marked done"),
+    ("todo_changed", "a todo was reopened, or the list was cleared"),
+)
 
 
 def _format_list(todos: list[dict[str, Any]]) -> str:
@@ -307,6 +317,14 @@ def todo_extension(api: Any) -> None:
         return None
 
     api.on("tool_result", on_tool_result)
+
+    async def on_need_conditions(payload: Any) -> None:
+        """Answer the debugger's pull (docs/STEP-DEBUGGER.md §5.2)."""
+        await api.emit(
+            "debug_conditions", [{"name": n, "describe": d} for n, d in DEBUG_CONDITIONS]
+        )
+
+    api.on("ext:tau_debugger:need_conditions", on_need_conditions)
 
     api.register_command(
         "todos",
