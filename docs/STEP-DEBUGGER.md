@@ -1532,7 +1532,7 @@ at the deadline, even at the cost of worker threads (2026-10-24).
   - **`read`** runs on the thread, before and after abandonment. These
     thread-safe reads change nothing: `ctx.cwd`, `ctx.ui`,
     `ctx.shutdown_requested`, `ui.interactive`, `api.extension_name`,
-    `api.config` (the extension's own copied slice), `api.ui` and `api.context`.
+    `api.config` (the extension's own deep-copied slice, #99), `api.ui` and `api.context`.
     `ui` and `context` hand back objects whose own members are guarded.
   - **`any`** runs on the thread until the handler is abandoned, then raises
     `RuntimeError`. These are thread-safe but act on the session:

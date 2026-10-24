@@ -14,6 +14,7 @@ Constraint: Extensions must not import τ-agent-core internals.
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import fnmatch
 import functools
 import sys
@@ -1885,8 +1886,9 @@ class ExtensionAPI:
             hook_handlers: This extension's own runner bucket. ``None`` gives the
                 api no identity: hook registration, :meth:`emit`, :meth:`submit`
                 and command registration then raise.
-            config: This extension's config slice (:attr:`config`); copied, and
-                ``None`` reads as ``{}``.
+            config: This extension's config slice (:attr:`config`); deep-copied, so a
+                handler mutating a nested value never reaches the session's
+                config, and ``None`` reads as ``{}``.
         """
         # Lazy initialization for backward compatibility
         if registry is None:
@@ -1905,7 +1907,7 @@ class ExtensionAPI:
         self._context = context
         self._session = session
         self._hook_handlers = hook_handlers
-        self._config: dict[str, Any] = dict(config or {})
+        self._config: dict[str, Any] = copy.deepcopy(config or {})
         self._context._session = session
 
     def on(self, event: str, handler: Callable, *, policy: str | None = None) -> Callable[[], None]:

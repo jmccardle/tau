@@ -122,6 +122,19 @@ class TestTheReadASettingsScreenIsBuiltFrom:
         with pytest.raises(ValueError, match="no loaded extension"):
             session.get_extension_config("nope")
 
+    async def test_mutating_a_nested_api_config_value_leaves_the_session_config(self, tmp_path):
+        ext = _write(
+            tmp_path / "paths.py",
+            "def register(api):\n    api.config['paths'].append('added')\n",
+        )
+        session = _make_session()
+
+        await session.load_extensions(
+            [str(ext)], discover=False, extensions_config={"paths": {"paths": ["a"]}}
+        )
+
+        assert session.get_extension_config("paths")["values"] == {"paths": ["a"]}
+
 
 class TestTheWrite:
     async def test_values_reach_the_extension_after_the_reload(self, tmp_path):
