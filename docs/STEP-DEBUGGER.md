@@ -513,7 +513,10 @@ rests on the Future. Across processes it rests on a lock:
 - **One lock per session, held while a process hosts it.** A process that opens
   a file-store session for writing takes an exclusive `fcntl.flock`, without
   blocking, and holds it until it closes the session. That covers every hosting
-  head: the TUI, the REPL, RPC, `-p` and serve. A second process may still open
+  head: the TUI, the REPL, RPC, `-p` and serve. A session swap in a warm process
+  (`new_session`, `switch_session`, a runtime swap) closes the old session, and
+  so releases its lock. Without that, each Tectum reset (`new_session`,
+  `tau_node.py:712`) would leak one held descriptor (tectum-arecibo, round 5). A second process may still open
   the session read-only, and every submit or answer from it is refused, naming
   the holder.
   - So a TUI holding a session that a `-p --answer` tries to resume refuses the
@@ -1017,6 +1020,8 @@ Every head must produce the same tree: the same entries, the same finalized
   it;
 - armed stepping with `store_history` off: refused at `input`;
 - two hits for one site: one suspension, listing both;
+- after `new_session` in a warm process on the file store, a second process can
+  open the previous session for writing;
 - suspend under `-p`, exhaust the router's budget, then resume: tau-router steps
   down or refuses at `turn_resume`, before the first resumed request;
 - a form from a panel button between turns: no turn lock, no `abort` action; a
@@ -1132,4 +1137,5 @@ as milestone 2 (§7).
 | independent round 2, N8: a fork copies open suspensions | §3.7.2 finalized only; refuse a fork at an open one |
 | independent round 2, N9: state the tree cannot rebuild | §3.7.3 `turn_index` and `repeat` in the continuation |
 | round 5, tau-router: a resume can spend on a rung the router would refuse | §3.7.3 `turn_resume` is an awaited mutating hook before the first resumed request |
+| round 5, tectum: a session swap must release the old session's lock | §3.7.3 |
 | independent round 2 minors | resume as a submission; forms under `-p` take the headless policy; pending hits combined (§5.2); effective-argument check; `store_history` off refused (§3.9); the session lock held while hosting; `-p` without `--answer` exits 3 |
