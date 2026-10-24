@@ -423,7 +423,7 @@ ZoneTree > .tree--kind-structural { color: $tau-text-quiet; text-style: italic; 
     color: $warning;
 }
 
-#read-only-banner {
+ReadOnlyBanner {
     height: auto;
     width: 100%;
     padding: 0 1;
