@@ -272,11 +272,20 @@ Mutating RPC verbs and session swaps fail after their existing 5 s wait with
 **RPC's serial reader gets a control lane.** `rpc/transport.py:263` awaits each
 line before reading the next. So a command handler waiting in a form, or any
 request that awaits a suspension, would block the host's own
-`answer_suspension`. That is a deadlock. The reader therefore dispatches four
-verbs without waiting on the request in flight: `answer_suspension`, `abort`,
-`get_pending_suspensions` and `get_state`. Everything else stays serial, so hosts
-that rely on in-order handling, Tectum included, see no change. Responses carry
-their request id, as they already do.
+`answer_suspension`. That is a deadlock.
+
+The lane opens **only while a request in flight is waiting on an open
+suspension**. While it is open, the reader dispatches four verbs without
+waiting: `answer_suspension`, `abort`, `get_pending_suspensions` and
+`get_state`. At every other moment the reader is strictly serial, exactly as
+today. So no ordering a host relies on can change. Tectum's cases are the
+reason (tectum-arecibo, round 3):
+
+- A steer `prompt` written before an `abort` still takes effect before the
+  abort.
+- A `get_state` written after a `prompt` still sees `is_streaming`.
+
+Responses carry their request id, as they already do.
 
 **One core fix comes with this.** Today the tool runs even if the signal tripped
 during a `tool_call` hook. In sequential mode the loop checks the signal at
@@ -362,6 +371,24 @@ determine:
 | mutating `turn_end` | the turn's last entry | dispatch `turn_end` again in full, with `event["resumed"]`, then sample or end |
 | `user_turn_end` | the prompt's last entry | dispatch `user_turn_end` again, then `agent_end` |
 | a command handler (form) | — | **not resumable across processes.** A pending form whose process died is closed with `action: "abandoned"` and a session warning. The user runs the command again. A command is a flow in a coroutine, and its state is not in the tree |
+
+**A re-dispatch replays the answer; it never asks twice.** A resume re-runs
+the hooks of the site that suspended, and those hooks may emit the same hit
+again. Take tau-router, which emits `debug_hit` from `turn_end` after a model
+change. The debugger's `ext:` handler cannot see `event["resumed"]`. Without a
+rule it would open a second suspension for the same change, and under `-p`
+that is an exit-3 loop (tau-router, round 3). So core makes the replay
+idempotent:
+
+- The resume puts the resumed suspension's `{id, site, extension, resolution}`
+  into the dispatch context, which `ext:` handlers inherit like the §3.2 token.
+- During that re-dispatch, the first `api.suspend` from the same extension at
+  the same site returns the stored resolution. It opens no new suspension and
+  writes no new entry.
+- Any later `api.suspend` in the same dispatch opens a new suspension as usual,
+  because it is a genuinely new break.
+- `api.resumed()` exposes the same record to any handler that wants to know.
+  No producer or debugger has to remember anything to be correct.
 
 **Why `turn_end` and `user_turn_end` dispatch again in full.** Messages returned
 by `turn_end` handlers are appended only after every handler returns. So after a
@@ -729,6 +756,13 @@ Every head must produce the same tree: the same entries, the same finalized
 - an RPC host that never declared the capability: `NoResponderError`;
 - an RPC host suspended inside a command's form: its `answer_suspension` is read
   and answered (control lane), with no deadlock;
+- RPC with no suspension open: a steer `prompt` and an `abort` written back to
+  back start no turn after `agent_end`. A `get_state` written right after a
+  `prompt` shows `is_streaming`. The lane stays closed;
+- a producer-relayed hit at `turn_end` and at `tool_call`, then a crash or a
+  `-p` exit 3, then a resume: the re-dispatch emits the hit again, and the
+  debugger's `api.suspend` returns the stored resolution. No second suspension
+  is opened, and `-p` does not exit 3 again for it;
 - a mode change at a suspension, then a fork from the prefix: the fork keeps the
   mode;
 - a form from a panel button between turns: no turn lock, no `abort` action; a
@@ -743,7 +777,7 @@ matrix runs in the container matrix with the rest of the suite.
 
 *Milestone 1, in-process (about 5 days in τ):*
 
-- `api.suspend` and the alias `ctx.suspend`, `can_suspend`, `can_suspend_here`,
+- `api.suspend` and the alias `ctx.suspend`, `can_suspend`, `can_suspend_here`, `api.resumed`,
   the dispatch token, per-cursor FIFO, events, `Attached.suspensions`,
   `answer_suspension`, `get_pending_suspensions`, `declare_capabilities`, and
   the RPC control lane;
@@ -816,3 +850,5 @@ as milestone 2 (§7).
 | John: `-p` must step, as stop and resume | §3.8, §3.7.3, §7 milestone 2 |
 | independent nits: REPL Ctrl+C; prompt-cache TTL | §3.5; §3.7.3 |
 | design change in this revision: no suspension may hold an unwritten entry, so `input`, `tool_result` and `annotate` are no longer sites, and `entry_written` is added | §3.2 |
+| round 3, tau-router: a relayed hit replays on resume and suspends twice | §3.7.3 idempotent replay, `api.resumed()` |
+| round 3, tectum: the control lane could reorder `abort` and `get_state` against a steer | §3.6 the lane opens only while a suspension is open |
