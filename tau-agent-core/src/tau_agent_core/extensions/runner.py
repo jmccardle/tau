@@ -738,18 +738,30 @@ class ExtensionRunner:
             entry_id: The written entry's id.
             message: The message dict as written.
 
-        Raises:
-            ValueError: the entry's blocks cannot be derived (:func:`entry_blocks`).
+        When the entry's blocks cannot be derived (:func:`entry_blocks` raises,
+        e.g. a ``details`` value that is not JSON), the entry is already
+        written, so its dispatch is skipped and the failure is surfaced via
+        :meth:`on_error` for every extension with a handler; the turn goes on.
         """
         writing = [ext for ext in self._extensions if ext.handlers.get("entry_written")]
         if not writing:
+            return
+        try:
+            blocks = entry_blocks(kind, message)
+        except Exception as err:  # noqa: BLE001 — surfaced, not dropped
+            detail = (
+                f"entry {entry_id} ({kind}): its blocks could not be derived, so "
+                f"entry_written was not dispatched for it: {type(err).__name__}: {err}"
+            )
+            for ext in writing:
+                self._emit_error(ExtensionError(ext.path, "entry_written", detail))
             return
         base = {
             "type": "entry_written",
             "kind": kind,
             "entry_id": entry_id,
             "message": message,
-            "blocks": entry_blocks(kind, message),
+            "blocks": blocks,
         }
         for ext in writing:
             for handler in ext.handlers["entry_written"]:

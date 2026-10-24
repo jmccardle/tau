@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from typing import Any
 from unittest.mock import patch
 
@@ -411,3 +412,53 @@ async def test_a_handler_error_is_surfaced_and_dispatch_continues() -> None:
     assert [m["role"] for m in messages] == ["user", "assistant"]
     assert after == ["user", "assistant"]
     assert [(e.event, e.error) for e in errors] == [("entry_written", "entry_written boom")] * 2
+
+
+async def test_underivable_blocks_skip_the_dispatch_and_the_batch_completes() -> None:
+    """Only an ``entry_written`` observer loaded, and a result whose details are not JSON (#91)."""
+    errors: list[Any] = []
+    seen: list[str] = []
+
+    async def _execute(**kw: Any) -> dict[str, Any]:
+        return {
+            "content": [{"type": "text", "text": "dated"}],
+            "details": {"when": datetime(2026, 10, 24)},
+        }
+
+    dated = AgentTool(
+        definition=ToolDefinition(
+            name="dated",
+            label="dated",
+            description="dated",
+            parameters={"type": "object", "properties": {}, "required": []},
+            execute=_execute,
+        )
+    )
+
+    def observer(api: Any) -> None:
+        api.on("entry_written", lambda e, ctx: seen.append(e["kind"]))
+
+    session = _session(observer, tools=[dated, _tool("plain")], tool_execution_mode="sequential")
+    session._extension_runner.on_error(errors.append)
+    calls = _assistant(
+        [
+            ToolCall(id="c1", name="dated", arguments={}),
+            ToolCall(id="c2", name="plain", arguments={}),
+        ],
+        stop_reason="toolUse",
+    )
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple", side_effect=_script(calls, _text("done"))
+    ):
+        messages = await session.prompt("go")
+
+    results = [m for m in messages if m["role"] == "toolResult"]
+    assert [(r["tool_call_id"], r["content"][0]["text"]) for r in results] == [
+        ("c1", "dated"),
+        ("c2", "plain ok"),
+    ]
+    assert messages[-1]["role"] == "assistant"
+    assert seen == ["user", "assistant", "toolResult", "assistant"]
+    (error,) = errors
+    assert error.event == "entry_written"
+    assert "could not be derived" in error.error and "TypeError" in error.error

@@ -207,8 +207,11 @@ per-entry stepping point, and it replaces stepping at `annotate`.
   results of an aborted, cut-off or annotation-failed batch are one group with
   the batch, and `api.send_message` and a raising turn's `turn_error` node are
   groups of one. A handler error is surfaced through `on_error` and the next
-  handler runs, the convention `turn_end` uses; an entry whose blocks cannot be
-  derived raises, since `annotate` would already have failed on it.
+  handler runs, the convention `turn_end` uses. An entry whose blocks cannot be
+  derived (a `details` value that is not JSON, #91) is already written, so its
+  dispatch is skipped and the failure is surfaced through `on_error` for each
+  extension with a handler; nothing but an `AnnotationError` leaves
+  `close_group`, so the batch's later calls are still answered.
 - A break that a producer detects at a non-permitted site is carried to the
   next permitted one. Examples: tau-router's model change at `input`, or a
   condition read in `tool_result`. `api.can_suspend_here()` tells the handler
@@ -867,6 +870,11 @@ check happens before admission:
   nothing either. Every head already shows `rejection_reason` for a refused
   submission (the TUI's notice, the REPL's error line, `-p`'s error, RPC and
   serve's `SUBMISSION_REJECTED`), so none changed.
+  A `refuse` does not roll back what `input` handlers earlier in load order
+  did: an earlier `ctx.set_model` stays in memory and is recorded at the next
+  turn, while earlier prompt rewrites are discarded with the refused turn.
+  Because the config entry is now recorded after the pipeline, an `input` hook
+  that reads config from the tree sees the previous turn's config.
 - The debugger returns it when stepping is armed at the cursor and
   `api.can_suspend()` is false. The reason names the alternatives: attach a
   client under serve, declare the capability, or set `allow_user_input`.
