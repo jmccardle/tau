@@ -2598,6 +2598,25 @@ Await ``call``.
 
 class:`Returned`, or ``on_error``'s outcome.
 
+## acting_for
+<!-- agent: yes -->
+
+```python
+acting_for(awaiter: asyncio.Task[Any] | None) -> Iterator[None]
+```
+
+`tau_agent_core.policies.acting_for` · since 0.15.0
+
+Count the current task as ``awaiter``'s for :func:`runs_on_behalf_of` while the body runs.
+
+For a child task its awaiter waits on, such as a parallel tool batch's
+``gather`` children, so a hook running in one is still seen as the turn's
+(#96). ``None`` links nothing.
+
+**Parameters**
+
+- `awaiter: asyncio.Task[Any] | None` — The task awaiting the current one.
+
 ## apply_session_name
 <!-- agent: yes -->
 

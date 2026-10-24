@@ -45,7 +45,7 @@ from tau_agent_core.agent_loop_types import (
     TurnSettingsSource,
 )
 from tau_agent_core.entry_annotations import AnnotationError
-from tau_agent_core.policies import HandlerPolicyError
+from tau_agent_core.policies import HandlerPolicyError, acting_for
 from tau_agent_core.events import AgentEndReason, AgentEvent, ErrorDetail
 from tau_agent_core.provider_retry import provider_retry_event
 from tau_agent_core.suspension import TurnSuspended
@@ -1542,7 +1542,15 @@ class AgentLoop:
                 pc.id if isinstance(pc, PreparedToolCall) else pc.call.id,
             )
 
+        turn_task = asyncio.current_task()
+
         async def _run_tool(index: int, pc: Any) -> AgentToolResult:
+            """Run one call in its ``gather`` child, which counts as the turn's task (#96)."""
+            with acting_for(turn_task):
+                return await _run_tool_for_turn(index, pc)
+
+        async def _run_tool_for_turn(index: int, pc: Any) -> AgentToolResult:
+            """Execute ``pc`` and its ``tool_result`` hooks, then flush the finished prefix."""
             if isinstance(pc, ErrorCall):
                 result = pc.result()
             elif isinstance(pc, BlockedCall):

@@ -190,6 +190,29 @@ def runs_on_behalf_of(task: asyncio.Task[Any]) -> bool:
 
 
 @agent_facing(topic="extensions", since="0.15.0")
+@contextmanager
+def acting_for(awaiter: asyncio.Task[Any] | None) -> Iterator[None]:
+    """Count the current task as ``awaiter``'s for :func:`runs_on_behalf_of` while the body runs.
+
+    For a child task its awaiter waits on, such as a parallel tool batch's
+    ``gather`` children, so a hook running in one is still seen as the turn's
+    (#96). ``None`` links nothing.
+
+    Args:
+        awaiter: The task awaiting the current one.
+    """
+    current = asyncio.current_task()
+    if awaiter is None or current is None or current is awaiter:
+        yield
+        return
+    _AWAITED_BY[current] = awaiter
+    try:
+        yield
+    finally:
+        _AWAITED_BY.pop(current, None)
+
+
+@agent_facing(topic="extensions", since="0.15.0")
 def enclosing_deadlines() -> tuple[PausableDeadline, ...]:
     """Every policy deadline the current code runs under, outermost first.
 
