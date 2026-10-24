@@ -1845,7 +1845,7 @@ class ExtensionAPI:
 
         The mutating hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call``,
         ``tool_result``, ``before_agent_start``, ``input``, ``turn_end``,
-        ``user_turn_end``) and the lifecycle hooks (``LIFECYCLE_EVENTS``:
+        ``user_turn_end``, ``session_before_switch``, ``annotate``) and the lifecycle hooks (``LIFECYCLE_EVENTS``:
         ``session_start``, ``session_shutdown``) go to this extension's runner
         bucket, where handler errors are surfaced. Everything else — notify
         events, ``"all"``, and ``ext:<name>:<topic>`` channels from :meth:`emit` —
@@ -1869,6 +1869,7 @@ class ExtensionAPI:
             RuntimeError: the retired ``context`` hook (E5 §3.2 / S30), or a
                 runner-routed hook on an api with no runner bucket
                 (``hook_handlers is None``), where it could never fire.
+            ValueError: a second ``annotate`` handler from this extension.
         """
         from tau_agent_core.extensions.runner import ExtensionRunner
 

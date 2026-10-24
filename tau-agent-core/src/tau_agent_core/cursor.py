@@ -290,11 +290,15 @@ class Cursor:
         self._open[entry_id] = self._leaf
         return entry_id
 
-    async def finalize(self, entry_id: str, **payload: Any) -> None:
+    async def finalize(
+        self, entry_id: str, *, ext: dict[str, Any] | None = None, **payload: Any
+    ) -> None:
         """Complete the entry :meth:`open` wrote, and move onto it.
 
         Args:
             entry_id: The id :meth:`open` returned.
+            ext: Extension annotations, written beside ``message`` when non-empty
+                (docs/ENTRY-ANNOTATIONS.md §2).
             payload: The entry's whole final payload; it replaces the incomplete one.
 
         Raises:
@@ -308,7 +312,7 @@ class Cursor:
                 f"finalize: entry {entry_id!r} hangs from {self._open[entry_id]!r}, not "
                 f"this cursor's leaf {self._leaf!r}"
             )
-        await self.log.finalize(entry_id, payload)
+        await self.log.finalize(entry_id, {**payload, **({"ext": ext} if ext else {})})
         del self._open[entry_id]
         self._leaf = entry_id
         self._leaf_incomplete = False
@@ -321,28 +325,35 @@ class Cursor:
                 "one before appending"
             )
 
-    async def append_message(self, message: dict[str, Any]) -> str:
+    async def append_message(
+        self, message: dict[str, Any], *, ext: dict[str, Any] | None = None
+    ) -> str:
         """Append a ``message`` entry.
 
         Args:
             message: The message dict, stored under ``message``.
+            ext: Extension annotations, written beside ``message`` when non-empty.
 
         Returns:
             The new entry's id.
         """
-        return await self.append("message", message=message)
+        return await self.append("message", message=message, **({"ext": ext} if ext else {}))
 
-    async def append_custom_message(self, message: dict[str, Any], custom_type: str) -> str:
+    async def append_custom_message(
+        self, message: dict[str, Any], custom_type: str, *, ext: dict[str, Any] | None = None
+    ) -> str:
         """Append a ``customMessage``: extension content that does reach the model.
 
         Args:
             message: The message dict the model receives.
             custom_type: The extension's type tag, stored as ``customType``.
+            ext: Extension annotations, written beside ``message`` when non-empty.
 
         Returns:
             The new entry's id.
         """
-        return await self.append("customMessage", customType=custom_type, message=message)
+        extra = {"ext": ext} if ext else {}
+        return await self.append("customMessage", customType=custom_type, message=message, **extra)
 
     async def append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
         """Append a ``customEntry``: durable data the model never sees.

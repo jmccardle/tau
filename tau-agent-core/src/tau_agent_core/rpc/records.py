@@ -176,18 +176,27 @@ class _EntryBase(TypedDict):
 
 
 class MessageEntry(_EntryBase):
-    """A message on the conversation path."""
+    """A message on the conversation path.
+
+    ``ext`` maps an extension's name to what its ``annotate`` hook returned; the
+    model never sees it (docs/ENTRY-ANNOTATIONS.md §2).
+    """
 
     type: Literal["message"]
     message: Message
+    ext: NotRequired[dict[str, Any]]
 
 
 class CustomMessageEntry(_EntryBase):
-    """An extension's message, which reaches the model unless ``visibleToModel`` is false."""
+    """An extension's message, which reaches the model unless ``visibleToModel`` is false.
+
+    ``ext`` is as on :class:`MessageEntry`.
+    """
 
     type: Literal["customMessage"]
     customType: str
     message: CustomRoleMessage
+    ext: NotRequired[dict[str, Any]]
 
 
 class CustomEntryEntry(_EntryBase):

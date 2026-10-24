@@ -23,11 +23,12 @@ import logging
 import os
 import uuid
 from collections.abc import Sequence
+import contextlib
 from contextlib import asynccontextmanager
 from datetime import datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Literal, cast
+from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Literal, cast
 from uuid import uuid4
 
 from tau_llm.abort import AbortSignal
@@ -82,6 +83,7 @@ from tau_agent_core.session_log import (
 )
 from tau_agent_core.cursor import TURN_CURSOR, Cursor, EnqueuedWait, TurnFrame
 from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.entry_annotations import AnnotationError
 from tau_agent_core.seed import check_seed, normalise_seed
 from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig, TurnSettings
@@ -422,20 +424,31 @@ def _newest_compaction_ms(entries: list[dict[str, Any]]) -> int:
     return newest
 
 
+_Annotator = Callable[
+    [str, dict[str, Any]], Awaitable[tuple[dict[str, Any] | None, AnnotationError | None]]
+]
+
+
 class _CursorWriter:
     """The :class:`~tau_agent_core.agent_loop.TurnWriter` one turn writes through.
 
     Every message reaches the log when it exists, not when the turn ends
     (docs/TAU-SERVE.md §4.2), so a crash keeps everything finished before it.
 
+    Each written message is annotated first (:meth:`AgentSession._annotation`);
+    a failed handler's entry is still written, then :class:`AnnotationError` is
+    raised (docs/ENTRY-ANNOTATIONS.md §4.3).
+
     Attributes:
         messages: This turn's new messages in order: ``prompt()``'s return.
-        persist: ``store_history``. ``False`` still collects, and writes nothing.
+        persist: ``store_history``. ``False`` still collects, and writes and
+            annotates nothing.
     """
 
-    def __init__(self, cursor: Cursor, persist: bool) -> None:
+    def __init__(self, cursor: Cursor, persist: bool, annotate: _Annotator) -> None:
         self._cursor = cursor
         self.persist = persist
+        self._annotate = annotate
         self.messages: list[dict[str, Any]] = []
 
     async def open(self, message: dict[str, Any]) -> str | None:
@@ -445,11 +458,15 @@ class _CursorWriter:
 
     async def finalize(self, handle: str | None, message: Any) -> None:
         message_dict = message.model_dump() if hasattr(message, "model_dump") else message
+        failure: AnnotationError | None = None
         if self.persist:
             if handle is None:
                 raise RuntimeError("finalize: no entry was opened for this message")
-            await self._cursor.finalize(handle, message=message_dict)
+            ext, failure = await self._annotate("assistant", message_dict)
+            await self._cursor.finalize(handle, message=message_dict, ext=ext)
         self.messages.append(message_dict)
+        if failure is not None:
+            raise failure
 
     async def append(self, message: Any) -> None:
         """Write a finished message; a ``custom`` role node becomes a ``customMessage``.
@@ -457,8 +474,10 @@ class _CursorWriter:
         Raises:
             ValueError: a ``custom`` node has no ``customType``; the extension-origin
                 identity is not made up. Checked whether or not it is written.
+            AnnotationError: after the write, when an ``annotate`` handler failed.
         """
         message_dict = message.model_dump() if hasattr(message, "model_dump") else message
+        failure: AnnotationError | None = None
         if message_dict.get("role") == CUSTOM_ROLE:
             custom_type = message_dict.get("customType")
             if not custom_type:
@@ -467,10 +486,14 @@ class _CursorWriter:
                     "is required (Fail-Early)"
                 )
             if self.persist:
-                await self._cursor.append_custom_message(message_dict, str(custom_type))
+                ext, failure = await self._annotate("custom", message_dict)
+                await self._cursor.append_custom_message(message_dict, str(custom_type), ext=ext)
         elif self.persist:
-            await self._cursor.append_message(message_dict)
+            ext, failure = await self._annotate(str(message_dict.get("role")), message_dict)
+            await self._cursor.append_message(message_dict, ext=ext)
         self.messages.append(message_dict)
+        if failure is not None:
+            raise failure
 
 
 class _SideCompletionWatch:
@@ -4166,7 +4189,19 @@ class AgentSession:
             **self._turn_cap(),
         )
 
-        writer = _CursorWriter(self.acting_cursor, persist)
+        writer = _CursorWriter(self.acting_cursor, persist, self._annotation)
+
+        # The inputs are written before the loop runs, so a crash mid-turn keeps the prompt.
+        if persist:
+            await self._record_config()
+        user = [] if user_msg is None else [user_msg]
+        prompts = [*seed, *pre_user_messages, *user, *queued, *post_user_messages]
+        input_failure: AnnotationError | None = None
+        for message in prompts:
+            try:
+                await writer.append(message)
+            except AnnotationError as err:
+                input_failure = input_failure or err
         loop = AgentLoop(
             config=config,
             emit=self._emit_stamped,
@@ -4178,15 +4213,8 @@ class AgentSession:
             mid_turn_compactor=self._compact_mid_turn,
             writer=writer,
             call_gate=self._model_call_refusal,
+            input_failure=input_failure,
         )
-
-        # The inputs are written before the loop runs, so a crash mid-turn keeps the prompt.
-        if persist:
-            await self._record_config()
-        user = [] if user_msg is None else [user_msg]
-        prompts = [*seed, *pre_user_messages, *user, *queued, *post_user_messages]
-        for message in prompts:
-            await writer.append(message)
         self.acting_cursor.turn_writer = writer
 
         # Cleared BEFORE loop.run, because loop.run is what emits agent_end.
@@ -4194,7 +4222,7 @@ class AgentSession:
         try:
             await loop.run(prompts=prompts, context=context_messages)
         except Exception as exc:
-            await writer.append(turn_error_message(exc))
+            await self._append_turn_error(writer, exc)
             raise
         finally:
             self.acting_cursor.turn_writer = None
@@ -4256,6 +4284,39 @@ class AgentSession:
         else:
             await self._events.emit(event.model_copy(update={"cursor_id": cursor.id}))
 
+    async def _annotation(
+        self, kind: str, message: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, AnnotationError | None]:
+        """Run every ``annotate`` handler on a message about to be written.
+
+        The one place annotation happens; each message write calls it just
+        before its store call (docs/ENTRY-ANNOTATIONS.md §3.1).
+
+        Args:
+            kind: ``"user"``, ``"assistant"``, ``"toolResult"`` or ``"custom"``.
+            message: The message dict about to be written.
+
+        Returns:
+            The ``ext`` to write, or ``None`` when no handler returned a value,
+            and the first failure, which the caller raises after the write.
+        """
+        hooks = self._hooks()
+        if not hooks.has_handlers("annotate"):
+            return None, None
+        ext, failure = await hooks.emit_annotate(kind, message)
+        return (ext or None), failure
+
+    @staticmethod
+    async def _append_turn_error(writer: _CursorWriter, exc: BaseException) -> None:
+        """Write the ``turn_error`` node that ends a turn that raised.
+
+        The turn already ends on ``exc``, so an ``annotate`` failure on this
+        node stays on its entry and does not end the turn a second time
+        (docs/ENTRY-ANNOTATIONS.md §4.3).
+        """
+        with contextlib.suppress(AnnotationError):
+            await writer.append(turn_error_message(exc))
+
     async def _run_user_turn_end(self, turn_messages: list[dict[str, Any]]) -> None:
         """Fire the ``user_turn_end`` hook once, at the user-turn boundary (§16.5).
 
@@ -4289,12 +4350,17 @@ class AgentSession:
             loop_turns=loop_turns,
             messages=list(turn_messages),
         )
+        failure: AnnotationError | None = None
         for raw in injected:
             node = self._custom_message_node(raw, hook="user_turn_end")
+            ext, err = await self._annotation("custom", node)
             await self.acting_cursor.append_custom_message(
-                node, custom_type=str(node["customType"])
+                node, custom_type=str(node["customType"]), ext=ext
             )
             turn_messages.append(node)
+            failure = failure or err
+        if failure is not None:
+            raise failure
 
     async def continue_conversation(self) -> list[dict[str, Any]]:
         """Run another agent turn without adding new messages.
@@ -4349,7 +4415,7 @@ class AgentSession:
                 **self._turn_cap(),
             )
 
-            writer = _CursorWriter(cur, persist=True)
+            writer = _CursorWriter(cur, persist=True, annotate=self._annotation)
             loop = AgentLoop(
                 config=config,
                 emit=self._emit_stamped,
@@ -4364,7 +4430,7 @@ class AgentSession:
             try:
                 await loop.run_continue(context=context_messages)
             except Exception as exc:
-                await writer.append(turn_error_message(exc))
+                await self._append_turn_error(writer, exc)
                 raise
             return writer.messages
 
@@ -4952,10 +5018,13 @@ class AgentSession:
             timestamp=self._timestamp(),
         )
         await self._record_config()
+        ext, failure = await self._annotation("custom", node)
         entry_id = await self.acting_cursor.append_custom_message(
-            node, custom_type=str(message["customType"])
+            node, custom_type=str(message["customType"]), ext=ext
         )
         self._announce_append("custom_message", entry_id=entry_id, message=node)
+        if failure is not None:
+            raise failure
         return entry_id
 
     def _announce_append(self, channel: str, **payload: Any) -> None:

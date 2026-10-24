@@ -23,10 +23,13 @@ pi's nested ``for ext … for handler …`` walk (``runner.ts:740-768``).
 
 from __future__ import annotations
 
+import copy
 import inspect
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
+
+from tau_agent_core.entry_annotations import AnnotationError, entry_blocks, json_value
 
 if TYPE_CHECKING:
     from tau_agent_core.extension_types import ExtensionContext
@@ -80,7 +83,18 @@ class ExtensionHandlers:
         return extension_identifier(self.path)
 
     def on(self, event: str, handler: HookHandler) -> None:
-        """Register ``handler`` for ``event`` (appended in registration order)."""
+        """Register ``handler`` for ``event`` (appended in registration order).
+
+        Raises:
+            ValueError: a second ``annotate`` handler, since its return is stored
+                under this extension's one name (docs/ENTRY-ANNOTATIONS.md §3.2).
+        """
+        if event == "annotate" and self.handlers.get(event):
+            raise ValueError(
+                f"extension {self.name!r} registered a second 'annotate' handler; an "
+                "extension has at most one, because its return is stored at "
+                f"ext[{self.name!r}] on the entry"
+            )
         self.handlers.setdefault(event, []).append(handler)
 
 
@@ -143,6 +157,10 @@ class ExtensionRunner:
                                a ``reason`` on the same event. See
                                :meth:`emit_session_before_switch`.
 
+    - ``annotate``           — return JSON to store at ``ext[<extension name>]``
+                               on the message entry about to be written; see
+                               :meth:`emit_annotate`.
+
     (A fourth hook, ``context`` — per-call replace of the message list — existed
     through E2 but was ELIMINATED in E5 §3.2 / S30. Under the durable-hook
     invariant the model's input is exactly the system prompt + the linear active
@@ -175,6 +193,7 @@ class ExtensionRunner:
         "turn_end",
         "user_turn_end",
         "session_before_switch",
+        "annotate",
     )
 
     LIFECYCLE_EVENTS = ("session_start", "session_shutdown")
@@ -657,6 +676,47 @@ class ExtensionRunner:
                 if result.get("message") is not None:
                     injected.append(result["message"])
         return injected
+
+    async def emit_annotate(
+        self, kind: str, message: dict[str, Any]
+    ) -> tuple[dict[str, Any], AnnotationError | None]:
+        """Dispatch ``annotate`` for one message entry (docs/ENTRY-ANNOTATIONS.md §3.2).
+
+        Each handler gets its own ``{"kind", "message", "blocks"}`` deep copy, so
+        it cannot change the entry or what a later handler sees. A ``None``
+        return adds no key. A raise or a value that is not JSON records
+        ``{"error": "<Type>: <message>"}`` under that extension, is surfaced via
+        :meth:`on_error`, and the rest still run.
+
+        Args:
+            kind: ``"user"``, ``"assistant"``, ``"toolResult"`` or ``"custom"``.
+            message: The message dict about to be written.
+
+        Returns:
+            The ``ext`` dict (empty when nothing returned a value) and the first
+            failure, or ``None``.
+        """
+        ext_values: dict[str, Any] = {}
+        failure: AnnotationError | None = None
+        base: dict[str, Any] | None = None
+        for ext in self._extensions:
+            handlers = ext.handlers.get("annotate")
+            if not handlers:
+                continue
+            if base is None:
+                base = {"kind": kind, "message": message, "blocks": entry_blocks(kind, message)}
+            try:
+                value = await self._call(handlers[0], copy.deepcopy(base))
+                if value is None:
+                    continue
+                ext_values[ext.name] = json_value(value)
+            except Exception as err:  # noqa: BLE001 — recorded on the entry, then raised
+                detail = f"{type(err).__name__}: {err}"
+                ext_values[ext.name] = {"error": detail}
+                self._emit_error(ExtensionError(ext.path, "annotate", detail))
+                if failure is None:
+                    failure = AnnotationError(ext.name, detail)
+        return ext_values, failure
 
     async def emit_session_before_switch(self, reason: str, target: str | None = None) -> bool:
         """Dispatch ``session_before_switch``; the first ``{"cancel": True}`` wins.

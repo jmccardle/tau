@@ -73,6 +73,7 @@ def test_context_is_not_a_hook_event() -> None:
         "turn_end",
         "user_turn_end",
         "session_before_switch",
+        "annotate",
     )
 
 

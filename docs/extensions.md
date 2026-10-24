@@ -88,7 +88,10 @@ value is applied) — `tool_call` (veto/patch args before execution),
 `tool_result` (modify content/details/terminate after execution),
 `before_agent_start` (contribute to the system prompt), `input` (transform
 the user prompt pre-node), `turn_end`, `user_turn_end`,
-`session_before_switch` (veto a session new/fork/switch operation).
+`session_before_switch` (veto a session new/fork/switch operation),
+`annotate` (return JSON stored on the entry about to be written as
+`ext[<extension name>]`, never sent to the model; at most one handler per
+extension; see `docs/ENTRY-ANNOTATIONS.md`).
 
 **Lifecycle hooks** — `session_start`, `session_shutdown` (each carries a
 `reason`, e.g. `"reload"`).
