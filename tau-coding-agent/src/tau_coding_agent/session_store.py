@@ -278,6 +278,7 @@ class Session:
         self._unwritten = False
         self._allow_unlocked_fs = allow_unlocked_fs
         self._write_lock: SessionWriteLock | None = None
+        self._disk_mark: tuple[int, int] | None = None
 
     @property
     def path(self) -> Path | None:
@@ -297,8 +298,48 @@ class Session:
                 sidecar_for(self._path),
                 ready=lambda: not self._unwritten,
                 allow_unlocked_fs=self._allow_unlocked_fs,
+                on_acquire=self._refresh_from_disk,
             )
         return self._write_lock
+
+    def _mark_disk(self) -> None:
+        """Remember the file as this object just wrote it: inode and size.
+
+        Only after this object's own write, which nobody else interleaves
+        while it holds the lock; a read records what it read instead
+        (:func:`_read_session_file`).
+        """
+        if self.path is None:
+            return
+        st = os.stat(self.path)
+        self._disk_mark = (st.st_ino, st.st_size)
+
+    def _refresh_from_disk(self) -> bool:
+        """Re-read the file if another writer changed it since this object last saw it.
+
+        Called when the write lock is taken, so a session loaded while another
+        process held it never becomes the writer on a copy missing that
+        process's last entries (docs/STEP-DEBUGGER.md §3.7.3).
+
+        The file is append-only and a rewrite replaces its inode, so inode and
+        size say whether anything was added.
+
+        Returns:
+            Whether the entries were reloaded.
+
+        Raises:
+            ValueError: the file no longer parses (a torn last line).
+        """
+        if self.path is None or self._disk_mark is None:
+            return False
+        st = os.stat(self.path)
+        if (st.st_ino, st.st_size) == self._disk_mark:
+            return False
+        _header, entries, mark = _read_session_file(self.path)
+        self._entries = normalize_loaded_entries(keep_last_per_id(entries))
+        self._ids = {e["id"] for e in self._entries if "id" in e}
+        self._disk_mark = mark
+        return True
 
     def _guard_write(self) -> None:
         """Raise ``SessionReadOnlyError`` while another process holds this session."""
@@ -462,30 +503,17 @@ class Session:
     def load(cls, path: Path, *, allow_unlocked_fs: bool = False) -> "Session":
         """Stream a ``.jsonl`` file and reconstruct the session.
 
-        Loading takes no lock; a host retains :attr:`write_lock` when it writes.
+        Loading takes no lock; a host retains :attr:`write_lock` when it writes,
+        and taking it re-reads the file if another writer changed it meanwhile.
         """
-        header: dict[str, Any] | None = None
-        entries: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                obj = json.loads(line)
-                if header is None:
-                    if obj.get("type") != "session":
-                        raise ValueError(f"{path}: first line is not a session header")
-                    header = obj
-                else:
-                    entries.append(obj)
-        if header is None:
-            raise ValueError(f"{path}: empty session file (no header)")
+        header, entries, mark = _read_session_file(path)
         session = cls(
             path,
             header,
             normalize_loaded_entries(keep_last_per_id(entries)),
             allow_unlocked_fs=allow_unlocked_fs,
         )
+        session._disk_mark = mark
         _emit_session_event(SESSION_START, session)
         return session
 
@@ -637,6 +665,7 @@ class Session:
             return
         with self.path.open("x", encoding="utf-8") as handle:
             handle.write(json.dumps(self._header) + "\n")
+        self._mark_disk()
 
     def _persist_entry(self, entry: dict[str, Any]) -> None:
         if self._unwritten:
@@ -646,6 +675,7 @@ class Session:
             return
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
+        self._mark_disk()
 
     def _write_held(self) -> None:
         """Create a deferred session's file: the header, then every entry held, the new one last.
@@ -673,8 +703,46 @@ class Session:
             Path(staging).unlink(missing_ok=True)
             raise
         self._unwritten = False
+        self._mark_disk()
         if self._write_lock is not None:
             self._write_lock.attach()
+
+
+def _read_session_file(
+    path: Path,
+) -> tuple[dict[str, Any], list[dict[str, Any]], tuple[int, int]]:
+    """A ``.jsonl`` file's header, raw entry lines, and the mark of what was read.
+
+    The mark is the open file's inode and the number of bytes actually read,
+    so an append landing after the read shows as a change (docs/STEP-DEBUGGER.md
+    §3.7.3), never as part of what this read saw. Lines split on ``\n`` alone:
+    U+2028, U+2029 and NEL are legal unescaped inside a JSON string.
+
+    Raises:
+        ValueError: the file is empty, its first line is not a session header,
+            or a line is not a JSON object.
+    """
+    header: dict[str, Any] | None = None
+    entries: list[dict[str, Any]] = []
+    with path.open("rb") as handle:
+        ino = os.fstat(handle.fileno()).st_ino
+        data = handle.read()
+    for number, raw in enumerate(data.split(b"\n"), start=1):
+        line = raw.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        if not isinstance(obj, dict):
+            raise ValueError(f"{path}: line {number} is not a JSON object")
+        if header is None:
+            if obj.get("type") != "session":
+                raise ValueError(f"{path}: first line is not a session header")
+            header = obj
+        else:
+            entries.append(obj)
+    if header is None:
+        raise ValueError(f"{path}: empty session file (no header)")
+    return header, entries, (ino, len(data))
 
 
 def read_session_info(path: Path) -> SessionInfo | None:

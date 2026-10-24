@@ -301,6 +301,29 @@ Unique tool call ID (from model response)
 
 Name of the tool to execute
 
+## SuspensionSwallowedError
+<!-- agent: yes -->
+
+```python
+class SuspensionSwallowedError(extension: str, event: str, raised_by: str)
+```
+
+`tau_agent_core.suspension.SuspensionSwallowedError`
+
+A hook handler returned, or raised something else, after a suspension unwound in it.
+
+Raised by the runner in place of the handler's outcome, so the turn ends in
+error instead of running tools nobody stepped through (§3.2.2). A
+``BaseException`` for the reason :class:`TurnSuspended` is one: the hook
+error convention, which reports an ``Exception`` and moves on to the next
+handler, must not absorb it.
+
+**Constructor parameters**
+
+- `extension: str` — The extension whose handler the unwind did not leave.
+- `event: str` — The hook being dispatched.
+- `raised_by: str` — Who raised the suspension, as :func:`mark_suspension_raised` recorded it.
+
 ## TurnSettings
 <!-- agent: yes -->
 
@@ -318,6 +341,34 @@ What one request is sent with, read immediately before it (docs/TURN-SETTINGS.md
 - `api_key: str | None = None` — The key it is called with; ``None`` for the provider's default.
 - `reasoning: str | None = None` — The requested thinking level, or ``None`` to send none.
 - `temperature: float | None = None` — The sampling temperature, or ``None`` to send none.
+
+## TurnSuspended
+<!-- agent: yes -->
+
+```python
+class TurnSuspended(*args: Any)
+```
+
+`tau_agent_core.suspension.TurnSuspended`
+
+Unwinds a turn parked at a suspension, out to the agent loop (§3.2.2).
+
+A ``BaseException``, so no ``except Exception`` catches it. Every catch
+that can see one lets it leave unchanged; the lint in
+``tau-agent-core/tests/test_turn_suspended_lint.py`` enforces that over the
+five ``src`` trees. The loop maps it to ``agent_end`` with
+``end_reason: "suspended"`` and writes nothing else.
+
+**Constructor parameters**
+
+- `*args: Any` — The usual exception arguments.
+
+### messages
+
+`tau_agent_core.suspension.TurnSuspended.messages: list[dict[str, Any]]`
+
+The turn's messages written before it unwound, filled in by
+the session on the way out; what ``submit_threadsafe`` reports.
 
 ## TurnWriter
 <!-- agent: yes -->
@@ -347,6 +398,18 @@ Write a message that is finished when it exists: a tool result, a steer, a node.
 **Raises**
 
 - `AnnotationError` — after the write, when an ``annotate`` handler failed.
+
+### close_group
+
+```python
+async close_group() -> None
+```
+
+`tau_agent_core.agent_loop.TurnWriter.close_group`
+
+End a write group: dispatch ``entry_written`` for each entry written since the last call.
+
+docs/STEP-DEBUGGER.md §3.2. The loop calls it after a group's last write.
 
 ### finalize
 

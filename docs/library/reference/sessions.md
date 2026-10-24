@@ -1947,6 +1947,7 @@ on its public surface, and it spends tokens that something has to bank.
 **Raises**
 
 - `ValueError` — The summarizer returned nothing usable. Raised by ``session_manager.summarize_branch``, never fabricated into an empty summary here.
+- `SessionReadOnlyError` — the tree is read-only; no summarizer is called.
 
 ### summarizer
 
@@ -4087,6 +4088,8 @@ class SessionManager(cwd: str | None = None, sessions_dir: str | None = None)
 File-level session management: JSONL persistence of one active session's tree.
 
 Holds a position (the active entry) that appends parent to by default.
+It writes JSONL without the session write lock (``session_lock``), so a
+second writer through it is not detected (docs/STEP-DEBUGGER.md §3.7.3).
 
 **Constructor parameters**
 
@@ -4479,7 +4482,7 @@ which covers messages appended since that completion.
 <!-- agent: yes -->
 
 ```python
-class SessionWriteLock(sidecar: Path | Callable[[], Path], *, ready: Callable[[], bool] = lambda: True, allow_unlocked_fs: bool = False, probe_directory: Path | None = None)
+class SessionWriteLock(sidecar: Path | Callable[[], Path], *, ready: Callable[[], bool] = lambda: True, allow_unlocked_fs: bool = False, probe_directory: Path | None = None, on_acquire: Callable[[], bool] | None = None)
 ```
 
 `tau_agent_core.session_lock.SessionWriteLock`
@@ -4501,6 +4504,7 @@ session it never hosted gets the pre-lock behaviour.
 - `ready: Callable[[], bool] = lambda: True` — Whether the sidecar may be created now; a deferred session answers ``False`` until its first write and then calls :meth:`attach`.
 - `allow_unlocked_fs: bool = False` — ``sessions.allow_unlocked_fs``: trust ``flock`` on a lock-blind filesystem, without the warning.
 - `probe_directory: Path | None = None` — Where to read the filesystem type; the sidecar's directory by default.
+- `on_acquire: Callable[[], bool] | None = None` — Called once the lock is held; the store re-reads what another writer appended since it loaded, returning whether it did.
 
 ### access
 
@@ -4511,6 +4515,9 @@ access() -> WriteAccess
 `tau_agent_core.session_lock.SessionWriteLock.access`
 
 This process's write access to the session now, without re-checking the sidecar.
+
+Runs releases a collected host queued (:func:`release_later`) first,
+so a long-lived process frees them at its next banner or admission.
 
 **Returns**
 
@@ -4537,7 +4544,8 @@ check() -> WriteAccess
 Re-check the held lock against the sidecar on disk (turn admission).
 
 A sidecar unlinked or replaced since it was locked is re-taken on the
-path; if another process got the new file first, this object turns
+path, and the store re-reads what another writer may have appended in
+between; if another process got the new file first, this object turns
 read-only, naming it.
 
 **Returns**
@@ -4587,6 +4595,20 @@ Open for writing once more; the first call takes the lock or records the holder.
 `tau_agent_core.session_lock.SessionWriteLock.retained: bool`
 
 Whether any host holds this session open for writing.
+
+### take_refreshed
+
+```python
+take_refreshed() -> bool
+```
+
+`tau_agent_core.session_lock.SessionWriteLock.take_refreshed`
+
+Whether the store reloaded entries when the lock was taken; resets the flag.
+
+**Returns**
+
+True once after a reload, so a host can move cursors off the stale leaf.
 
 ## SideMark
 <!-- agent: yes -->
@@ -6016,6 +6038,7 @@ A pair: the re-rendered context (``ConversationTree.context_for``) and the summa
 **Raises**
 
 - `ValueError` — ``target_id`` names no entry (checked first, before the model call — ``subtree_text`` answers ``""`` for an unknown id, so without this the operation would spend a completion summarizing nothing and append the result), or the summarizer returned nothing usable — the second raised by ``session_manager.summarize_branch``, not fabricated into an empty summary here.
+- `SessionReadOnlyError` — another process holds the tree; checked before the model call, so a read-only replica spends nothing.
 
 ## summarize_branch
 <!-- agent: yes -->

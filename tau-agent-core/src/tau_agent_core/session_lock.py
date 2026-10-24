@@ -31,11 +31,14 @@ from __future__ import annotations
 import errno
 import fcntl
 import json
+import logging
 import os
 import socket
 import stat
 import sys
 import threading
+from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -186,10 +189,50 @@ class _Entry:
         self.key = key
         self.count = 1
         self.lost: LockHolder | None = None
+        self.merged_into: _Entry | None = None
+
+
+def _live(entry: _Entry) -> _Entry:
+    """The entry ``entry`` was folded into, following every fold; ``entry`` itself if none."""
+    while entry.merged_into is not None:
+        entry = entry.merged_into
+    return entry
 
 
 _REGISTRY: dict[tuple[int, int], _Entry] = {}
 _GUARD = threading.RLock()
+_PENDING: deque[SessionWriteLock] = deque()
+_draining = False
+
+
+def release_later(locks: Iterable[SessionWriteLock]) -> None:
+    """Queue one release of each lock, run at the start of the next acquire or release.
+
+    For a garbage-collector finalizer: it may fire inside :func:`_acquire`
+    under the re-entrant guard, where releasing at once could close the
+    descriptor that call just looked up.
+
+    Args:
+        locks: Each is released once, later.
+    """
+    _PENDING.extend(locks)
+
+
+def _drain_pending() -> None:
+    """Run queued releases; the caller holds ``_GUARD`` and has not touched an entry yet."""
+    global _draining
+    if _draining:
+        return
+    _draining = True
+    try:
+        while _PENDING:
+            lock = _PENDING.popleft()
+            try:
+                lock.release()
+            except Exception:
+                logging.getLogger(__name__).exception("queued release of %s failed", lock.sidecar)
+    finally:
+        _draining = False
 
 
 def held_descriptor_count() -> int:
@@ -259,6 +302,7 @@ def _flock(fd: int, path: Path) -> bool:
 def _acquire(path: Path) -> _Entry | LockHolder:
     """A counted reference to ``path``'s lock, or the holder when another process has it."""
     with _GUARD:
+        _drain_pending()
         fd = _open_sidecar(path)
         try:
             st = os.fstat(fd)
@@ -287,6 +331,8 @@ def _acquire(path: Path) -> _Entry | LockHolder:
 def _release(entry: _Entry) -> None:
     """Drop one reference; at zero close the descriptor, which releases the lock."""
     with _GUARD:
+        _drain_pending()
+        entry = _live(entry)
         entry.count -= 1
         if entry.count > 0:
             return
@@ -298,12 +344,17 @@ def _release(entry: _Entry) -> None:
 def _verify(entry: _Entry) -> LockHolder | None:
     """Re-check that ``entry`` still locks the file at its path; re-take it if replaced.
 
+    A replaced file this process already holds through another entry (a
+    second session object retained after the delete) gets this entry's count
+    folded in, and this entry's descriptor on the unlinked inode is closed.
+
     Returns:
         ``None`` when this process holds the lock on the file now at the path;
         the other holder when the sidecar was replaced and another process took
         the new one.
     """
     with _GUARD:
+        entry = _live(entry)
         if entry.lost is not None:
             return entry.lost
         try:
@@ -315,9 +366,17 @@ def _verify(entry: _Entry) -> LockHolder | None:
         fd = _open_sidecar(entry.path)
         st = os.fstat(fd)
         key = (st.st_dev, st.st_ino)
-        if key in _REGISTRY:
+        other = _REGISTRY.get(key)
+        if other is not None:
             os.close(fd)
-        elif _flock(fd, entry.path):
+            other.count += entry.count
+            if _REGISTRY.get(entry.key) is entry:
+                del _REGISTRY[entry.key]
+            os.close(entry.fd)
+            entry.count = 0
+            entry.merged_into = other
+            return None
+        if _flock(fd, entry.path):
             _write_holder(fd)
             os.close(entry.fd)
             entry.fd = fd
@@ -326,10 +385,23 @@ def _verify(entry: _Entry) -> LockHolder | None:
             entry.lost = _read_holder(fd)
             os.close(fd)
             return entry.lost
-        if _REGISTRY.get(entry.key) is entry and key != entry.key:
+        if _REGISTRY.get(entry.key) is entry:
             del _REGISTRY[entry.key]
         entry.key = key
         return None
+
+
+def _reread_holder(path: Path, known: LockHolder) -> LockHolder:
+    """The holder the sidecar names now, or ``known`` when it names none (mid-write, or gone)."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    except OSError:
+        return known
+    try:
+        fresh = _read_holder(fd)
+    finally:
+        os.close(fd)
+    return fresh if fresh.pid is not None else known
 
 
 def _unescape_mount(field: str) -> str:
@@ -373,12 +445,16 @@ def mount_of(directory: Path) -> tuple[str, set[str]] | None:
     return None if best is None else (best[1], best[2])
 
 
-_LOCK_BLIND_TYPES = frozenset({"cifs", "smb3", "smbfs", "sshfs", "fuse.sshfs", "fuse.rclone"})
+_LOCK_BLIND_TYPES = frozenset(
+    {"cifs", "smb3", "smbfs", "sshfs", "fuse", "9p", "virtiofs", "vboxsf"}
+)
 
 
 def lock_blind_filesystem(directory: Path) -> str | None:
     """Name the filesystem under ``directory`` if ``flock`` there excludes nothing.
 
+    Any FUSE filesystem (``fuse``, ``fuse.*``), 9p, virtiofs and vboxsf count
+    as blind: each hands ``flock`` to a daemon or host that need not honour it.
     Sync folders (Dropbox, Syncthing) sit on a local filesystem and cannot be
     told apart here; the record's platform matrix says so.
 
@@ -391,13 +467,37 @@ def lock_blind_filesystem(directory: Path) -> str | None:
     if mount is None:
         return f"an unprobed filesystem ({sys.platform})"
     fstype, options = mount
-    if fstype in _LOCK_BLIND_TYPES:
+    if fstype in _LOCK_BLIND_TYPES or fstype.startswith("fuse."):
         return fstype
     if fstype in ("nfs", "nfs4"):
         for option in ("nolock", "local_lock=flock", "local_lock=all"):
             if option in options:
                 return f"{fstype} ({option})"
     return None
+
+
+_NETWORK_TYPES = ("nfs", "cifs", "smb", "9p", "sshfs", "fuse.sshfs", "fuse.rclone")
+
+
+def blind_filesystem_warning(blind: str) -> str:
+    """The session warning for a filesystem :func:`lock_blind_filesystem` named.
+
+    A network filesystem gets the strong wording. A local FUSE or host-shared
+    one (encfs, mergerfs, virtiofs) locks on this host, so the wording says
+    only that other hosts or mounts may go undetected.
+
+    Args:
+        blind: What :func:`lock_blind_filesystem` returned.
+
+    Returns:
+        One line for the warnings store.
+    """
+    if blind.split(" ")[0].startswith(_NETWORK_TYPES):
+        return f"cross-process exclusion unavailable on {blind}; a second writer is not detected"
+    return (
+        f"cross-process locking on {blind} may not reach other hosts or mounts; "
+        "a writer elsewhere may not be detected"
+    )
 
 
 @agent_facing(topic="sessions")
@@ -421,6 +521,7 @@ class SessionWriteLock:
         ready: Callable[[], bool] = lambda: True,
         allow_unlocked_fs: bool = False,
         probe_directory: Path | None = None,
+        on_acquire: Callable[[], bool] | None = None,
     ) -> None:
         """Bind to a sidecar path.
 
@@ -433,11 +534,16 @@ class SessionWriteLock:
                 on a lock-blind filesystem, without the warning.
             probe_directory: Where to read the filesystem type; the sidecar's
                 directory by default.
+            on_acquire: Called once the lock is held; the store re-reads what
+                another writer appended since it loaded, returning whether it did.
         """
         self._sidecar = sidecar
         self._ready = ready
         self._allow_unlocked_fs = allow_unlocked_fs
         self._probe_directory = probe_directory
+        self._on_acquire = on_acquire
+        self._refreshed = False
+        self._seen_key: tuple[int, int] | None = None
         self._retains = 0
         self._entry: _Entry | None = None
         self._holder: LockHolder | None = None
@@ -458,7 +564,14 @@ class SessionWriteLock:
         """Open for writing once more; the first call takes the lock or records the holder."""
         self._retains += 1
         if self._retains == 1:
-            self._take()
+            try:
+                self._take()
+            except BaseException:
+                self._retains -= 1
+                if self._entry is not None:
+                    _release(self._entry)
+                self._entry = None
+                raise
 
     def release(self) -> None:
         """Drop one retain; the last drops this object's registry reference.
@@ -488,9 +601,7 @@ class SessionWriteLock:
         if self._allow_unlocked_fs:
             return None
         blind = lock_blind_filesystem(self._probe_directory or sidecar.parent)
-        if blind is None:
-            return None
-        return f"cross-process exclusion unavailable on {blind}; a second writer is not detected"
+        return None if blind is None else blind_filesystem_warning(blind)
 
     def _take(self) -> None:
         """Take a registry reference, or record the holder or the refusal."""
@@ -505,16 +616,52 @@ class SessionWriteLock:
             return
         if isinstance(got, LockHolder):
             self._holder = got
-        else:
-            self._entry = got
+            return
+        self._entry = got
+        self._seen_key = got.key
+        self._refresh()
+
+    def _refresh(self) -> None:
+        """Have the store re-read what another writer appended; read-only, released, if it cannot."""
+        if self._on_acquire is None:
+            return
+        try:
+            if self._on_acquire():
+                self._refreshed = True
+        except Exception as exc:
+            self._refusal = (
+                f"session opened read-only: it could not be re-read after taking its lock: {exc}"
+            )
+            if self._entry is not None:
+                _release(self._entry)
+            self._entry = None
+
+    def take_refreshed(self) -> bool:
+        """Whether the store reloaded entries when the lock was taken; resets the flag.
+
+        Returns:
+            True once after a reload, so a host can move cursors off the stale leaf.
+        """
+        refreshed, self._refreshed = self._refreshed, False
+        return refreshed
 
     def access(self) -> WriteAccess:
         """This process's write access to the session now, without re-checking the sidecar.
 
+        Runs releases a collected host queued (:func:`release_later`) first,
+        so a long-lived process frees them at its next banner or admission.
+
         Returns:
             Writable, or read-only with the reason and holder.
         """
-        holder = self._holder or (self._entry.lost if self._entry is not None else None)
+        with _GUARD:
+            _drain_pending()
+        if self._holder is not None:
+            self._holder = _reread_holder(self.sidecar, self._holder)
+        entry = _live(self._entry) if self._entry is not None else None
+        if entry is not None and entry.lost is not None:
+            entry.lost = _reread_holder(entry.path, entry.lost)
+        holder = self._holder or (entry.lost if entry is not None else None)
         if holder is not None:
             reason = (
                 f"session is open read-only: {holder.describe()} holds it for writing "
@@ -522,14 +669,17 @@ class SessionWriteLock:
             )
             return WriteAccess(read_only=True, holder=holder, reason=reason, warning=self._warning)
         if self._refusal is not None:
-            return WriteAccess(read_only=True, holder=None, reason=self._refusal)
+            return WriteAccess(
+                read_only=True, holder=None, reason=self._refusal, warning=self._warning
+            )
         return WriteAccess(read_only=False, holder=None, reason=None, warning=self._warning)
 
     def check(self) -> WriteAccess:
         """Re-check the held lock against the sidecar on disk (turn admission).
 
         A sidecar unlinked or replaced since it was locked is re-taken on the
-        path; if another process got the new file first, this object turns
+        path, and the store re-reads what another writer may have appended in
+        between; if another process got the new file first, this object turns
         read-only, naming it.
 
         Returns:
@@ -540,6 +690,11 @@ class SessionWriteLock:
                 _verify(self._entry)
             except OSError as exc:
                 self._refusal = f"session lock lost: {exc.strerror or exc}"
+                return self.access()
+            live = _live(self._entry)
+            if live.lost is None and live.key != self._seen_key:
+                self._seen_key = live.key
+                self._refresh()
         return self.access()
 
     def guard(self) -> None:

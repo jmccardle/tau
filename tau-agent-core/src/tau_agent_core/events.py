@@ -47,6 +47,7 @@ AgentEndReason = Literal[
     "max_turns",
     "repeat_tool_calls",
     "error",
+    "suspended",
 ]
 
 SideCompletionPurpose = Literal["compaction", "branch_summary"]
@@ -184,8 +185,9 @@ class AgentEvent(BaseModel):
             the message in the session log never carries them.
         end_reason: How an ``agent_end`` closed, as one of ``"done"``,
             ``"terminate"``, ``"aborted"``, ``"max_turns"``,
-            ``"repeat_tool_calls"`` or ``"error"``. ``None`` on every other event
-            type. This distinguishes a loop that finished from one that was cut
+            ``"repeat_tool_calls"``, ``"error"`` or ``"suspended"`` (the turn
+            unwound at a suspension, docs/STEP-DEBUGGER.md §3.2.2). ``None`` on
+            every other event type. This distinguishes a loop that finished from one that was cut
             short: before it, a run stopped by ``max_turns`` emitted the same
             ``agent_end`` as one where the model simply had nothing more to say,
             so a caller could not tell a truncated answer from a complete one.

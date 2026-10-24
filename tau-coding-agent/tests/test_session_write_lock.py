@@ -295,11 +295,15 @@ async def test_a_deferred_session_takes_its_lock_with_its_first_write(catalog):
     await host.emit_session_shutdown()
 
 
-async def test_a_lock_blind_filesystem_raises_a_session_warning_unless_allowed(tmp_path, monkeypatch):
+async def test_a_lock_blind_filesystem_raises_a_session_warning_unless_allowed(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(session_lock, "lock_blind_filesystem", lambda _d: "cifs")
     host = _host(FileSessionCatalog(tmp_path / "a").create(os.getcwd(), "m", "openai"))
     messages = [w.message for w in host.extension_warnings()]
-    assert "cross-process exclusion unavailable on cifs; a second writer is not detected" in messages
+    assert (
+        "cross-process exclusion unavailable on cifs; a second writer is not detected" in messages
+    )
     assert not host.write_access.read_only
     await host.emit_session_shutdown()
     assert host.extension_warnings() == []
@@ -366,3 +370,213 @@ async def test_the_tui_shows_a_read_only_banner_naming_the_holder(make_app, monk
             assert banner.display is False
         finally:
             holder.stop()
+
+
+WRITE_AND_EXIT = textwrap.dedent(
+    """
+    import asyncio, sys
+    from tau_llm.types import Model
+    from tau_agent_core import session_lock
+    from tau_agent_core.agent_session import AgentSession
+    from tau_coding_agent.session_store import Session
+    session_lock.lock_blind_filesystem = lambda _d: None
+    model = Model(id="m", provider="openai", api="openai-completions",
+                  base_url="http://127.0.0.1:1/v1", name="m", context_window=8192, max_tokens=256)
+    async def go():
+        host = AgentSession(session_log=Session.load(__import__("pathlib").Path(sys.argv[1])),
+                            model=model, tools=[])
+        await host.cursor.append_message({"role": "user", "content": "A's last words"})
+        await host.emit_session_shutdown()
+    asyncio.run(go())
+    """
+)
+
+
+async def test_a_session_loaded_before_the_holder_wrote_and_exited_reloads_on_taking_the_lock(
+    catalog,
+):
+    session = _new(catalog)
+    stale = catalog.load(str(session.path))
+    subprocess.run([sys.executable, "-c", WRITE_AND_EXIT, str(session.path)], check=True)
+    host = _host(stale)
+    assert not host.write_access.read_only
+    assert "A's last words" in repr(host.messages), "the writer's last turn is in view"
+    await host.cursor.append_message({"role": "user", "content": "B follows"})
+    reread = Session.load(Path(str(session.path)))
+    texts = [m.get("content") for m in reread.messages]
+    assert texts[-2:] == ["A's last words", "B follows"], "B continued from A's leaf"
+    await host.emit_session_shutdown()
+
+
+async def _seeded(catalog: FileSessionCatalog) -> Session:
+    session = _new(catalog)
+    host = _host(session)
+    for i in range(4):
+        await host.cursor.append_message({"role": "user", "content": f"question {i} " * 40})
+        await host.cursor.append_message(
+            {"role": "assistant", "content": [{"type": "text", "text": f"answer {i} " * 40}]}
+        )
+    await host.emit_session_shutdown()
+    return session
+
+
+async def test_a_read_only_replica_compacts_and_summarizes_without_a_model_call(catalog):
+    session = await _seeded(catalog)
+    holder = Holder(session)
+    calls: list[str] = []
+
+    async def counted(*_a: Any, **_k: Any) -> Any:
+        calls.append("model")
+        raise AssertionError("a read-only replica reached the model")
+
+    try:
+        host = _host(catalog.load(str(session.path)))
+        assert host.write_access.read_only
+        target = host.cursor.tree().path()[2]["id"]
+        with (
+            patch("tau_agent_core.compaction.complete_simple", side_effect=counted),
+            patch("tau_agent_core.session_manager.summarize_branch", side_effect=counted),
+        ):
+            with pytest.raises(SessionReadOnlyError, match=str(holder.proc.pid)):
+                await host.compact()
+            with pytest.raises(SessionReadOnlyError, match=str(holder.proc.pid)):
+                await host._perform_compaction("auto")
+            with pytest.raises(SessionReadOnlyError, match=str(holder.proc.pid)):
+                await host.summarize_and_navigate(target)
+        assert calls == []
+        await host.emit_session_shutdown()
+    finally:
+        holder.stop()
+
+
+async def test_a_constructor_that_raises_releases_the_lock(catalog):
+    session = _new(catalog)
+
+    def broken(_api: Any) -> None:
+        raise RuntimeError("factory failed")
+
+    with pytest.raises(RuntimeError, match="factory failed"):
+        AgentSession(session_log=session, model=_model(), tools=[], extensions=[broken])
+    assert can_lock(session)
+
+
+async def test_a_host_dropped_without_shutdown_releases_the_lock_when_collected(catalog):
+    import gc
+
+    session = _new(catalog)
+    host = _host(session)
+    assert not can_lock(session)
+    del host
+    gc.collect()
+    other = _new(catalog)
+    assert other.write_lock is not None
+    other.write_lock.retain()
+    assert can_lock(session), "the next acquire ran the collected host's queued release"
+    other.write_lock.release()
+
+
+async def test_an_append_between_the_read_and_the_mark_is_not_mistaken_for_seen(
+    catalog, monkeypatch
+):
+    import json
+
+    import tau_coding_agent.session_store as store
+
+    session = _new(catalog)
+    original = store._read_session_file
+
+    def read_then_holder_appends(path: Path) -> Any:
+        out = original(path)
+        line = {
+            "type": "message",
+            "id": "aaaa0001",
+            "parentId": out[1][-1]["id"],
+            "timestamp": "2026-10-24T00:00:00.000Z",
+            "message": {"role": "user", "content": "A's last words"},
+        }
+        with open(path, "a") as handle:
+            handle.write(json.dumps(line) + "\n")
+        return out
+
+    monkeypatch.setattr(store, "_read_session_file", read_then_holder_appends)
+    stale = catalog.load(str(session.path))
+    monkeypatch.setattr(store, "_read_session_file", original)
+    host = _host(stale)
+    assert not host.write_access.read_only
+    assert "A's last words" in repr(host.messages)
+    await host.emit_session_shutdown()
+
+
+RETAKE_WRITER = WRITE_AND_EXIT.replace("A's last words", "B wrote this")
+
+
+async def test_a_retaken_sidecar_re_reads_what_another_writer_appended_meanwhile(catalog):
+    session = _new(catalog)
+    host = _host(session)
+    assert session.write_lock is not None
+    session.write_lock.sidecar.unlink()
+    subprocess.run([sys.executable, "-c", RETAKE_WRITER, str(session.path)], check=True)
+    assert host._write_refusal(host.cursor) is None
+    assert "B wrote this" in repr(host.messages)
+    assert host.cursor.leaf == host.cursor.tree().path()[-1]["id"]
+    await host.emit_session_shutdown()
+
+
+async def test_a_torn_last_line_opens_read_only_and_releases_the_descriptor(catalog):
+    session = _new(catalog)
+    stale = catalog.load(str(session.path))
+    with open(str(session.path), "a") as handle:
+        handle.write('{"type": "message", "id": "torn')
+    before = held_descriptor_count()
+    host = _host(stale)
+    access = host.write_access
+    assert access.read_only and "could not be re-read" in (access.reason or "")
+    assert held_descriptor_count() == before, "the lock was let go"
+    assert can_lock(stale)
+    with pytest.raises(SessionReadOnlyError):
+        await host.cursor.append_message({"role": "user", "content": "x"})
+    await host.emit_session_shutdown()
+    assert stale.write_lock is not None and not stale.write_lock.retained
+
+
+def test_unescaped_line_separators_inside_a_json_string_load(catalog):
+    session = _new(catalog)
+    text = "before between\u0085after end"
+    line = (
+        '{"type": "message", "id": "u2028001", "parentId": "%s", '
+        '"timestamp": "2026-10-24T00:00:00.000Z", '
+        '"message": {"role": "user", "content": "%s"}}\n'
+    ) % (session.entries()[-1]["id"], text)
+    with open(str(session.path), "ab") as handle:
+        handle.write(line.encode("utf-8"))
+    loaded = catalog.load(str(session.path))
+    assert loaded.messages[-1]["content"] == text
+
+
+@pytest.mark.parametrize("bad", ["null", "[1]", '"bare"'])
+async def test_a_wrong_shape_line_after_the_load_opens_read_only_and_lets_go(catalog, bad):
+    session = _new(catalog)
+    stale = catalog.load(str(session.path))
+    with open(str(session.path), "a") as handle:
+        handle.write(bad + "\n")
+    before = held_descriptor_count()
+    host = _host(stale)
+    access = host.write_access
+    assert access.read_only and "not a JSON object" in (access.reason or "")
+    assert held_descriptor_count() == before
+    assert can_lock(stale)
+    await host.emit_session_shutdown()
+
+
+async def test_a_dropped_hosts_lock_is_freed_by_the_next_access_check(catalog):
+    import gc
+
+    session = _new(catalog)
+    host = _host(session)
+    other = _host(_new(catalog))
+    del host
+    gc.collect()
+    assert not can_lock(session), "queued, not yet run"
+    other.write_access
+    assert can_lock(session)
+    await other.emit_session_shutdown()
