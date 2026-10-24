@@ -1317,30 +1317,80 @@ class AgentLoop:
         for tc in tool_calls:
             if tc.id in answered:
                 continue
-            reason = text if isinstance(text, str) else text(tc)
-            await self._emit(
-                AgentEvent(
-                    type="tool_execution_start",
-                    timestamp=int(time.time() * 1000),
-                    tool_call_id=tc.id,
-                    tool_name=tc.name,
-                    args=tc.arguments if isinstance(tc.arguments, dict) else {},
-                )
+            await self._emit_execution_start(tc)
+            results.append(
+                await self._answer_unrun(tc, text if isinstance(text, str) else text(tc))
             )
+        return self._build_batch_result(results)
+
+    async def _emit_execution_start(self, tc: ToolCall) -> None:
+        """Emit ``tool_execution_start`` for ``tc``."""
+        await self._emit(
+            AgentEvent(
+                type="tool_execution_start",
+                timestamp=int(time.time() * 1000),
+                tool_call_id=tc.id,
+                tool_name=tc.name,
+                args=tc.arguments if isinstance(tc.arguments, dict) else {},
+            )
+        )
+
+    async def _answer_unrun(self, tc: ToolCall, reason: str) -> AgentToolResult:
+        """Answer a call that will not run with an error ``reason``: its end event, then its write."""
+        await self._emit(
+            AgentEvent(
+                type="tool_execution_end",
+                timestamp=int(time.time() * 1000),
+                tool_call_id=tc.id,
+                tool_name=tc.name,
+                result=reason,
+                is_error=True,
+            )
+        )
+        result = AgentToolResult.from_error(tc.name, reason, tc.id)
+        await self._record(result)
+        return result
+
+    async def _answer_refused(self, prepared: BlockedCall | ErrorCall) -> AgentToolResult:
+        """Answer a call its preparation refused, keeping why: veto record, end event, write.
+
+        Shared by both executors and by the parallel abort path, so a call
+        blocked in the dispatch that trips the abort keeps its block reason.
+        """
+        if isinstance(prepared, BlockedCall):
+            blocked_by = prepared.blocked_by_extension
+            if blocked_by is not None:
+                self._emit_veto_record(prepared.call.name, prepared.error, blocked_by)
             await self._emit(
                 AgentEvent(
                     type="tool_execution_end",
                     timestamp=int(time.time() * 1000),
-                    tool_call_id=tc.id,
-                    tool_name=tc.name,
-                    result=reason,
+                    tool_call_id=prepared.call.id,
+                    tool_name=prepared.call.name,
+                    result=prepared.error,
+                    is_error=True,
+                    blocked=blocked_by is not None,
+                    blocked_by=blocked_by,
+                )
+            )
+            result = AgentToolResult.from_error(
+                prepared.call.name, prepared.error, prepared.call.id
+            )
+        else:
+            result = prepared.result()
+            await self._emit(
+                AgentEvent(
+                    type="tool_execution_end",
+                    timestamp=int(time.time() * 1000),
+                    tool_call_id=result.tool_call_id,
+                    tool_name=result.tool_name,
+                    result=result.content,
+                    details=result.details,
                     is_error=True,
                 )
             )
-            aborted = AgentToolResult.from_error(tc.name, reason, tc.id)
-            await self._record(aborted)
-            results.append(aborted)
-        return self._build_batch_result(results)
+        await self._record(result)
+        return result
 
     def _emit_veto_record(self, tool_name: str, reason: str, extension: str | None) -> None:
         """Emit the JSON-stream veto record for an extension-blocked call (S50).
@@ -1392,63 +1442,13 @@ class AgentLoop:
             )
 
             prepared = await self._prepare_tool_call(tc)
-            if isinstance(prepared, BlockedCall):
-                blocked_by = prepared.blocked_by_extension
-                if blocked_by is not None:
-                    self._emit_veto_record(prepared.call.name, prepared.error, blocked_by)
-                await self._emit(
-                    AgentEvent(
-                        type="tool_execution_end",
-                        timestamp=int(time.time() * 1000),
-                        tool_call_id=prepared.call.id,
-                        tool_name=prepared.call.name,
-                        result=prepared.error,
-                        is_error=True,
-                        blocked=blocked_by is not None,
-                        blocked_by=blocked_by,
-                    )
-                )
-                blocked = AgentToolResult.from_error(
-                    prepared.call.name,
-                    prepared.error,
-                    prepared.call.id,
-                )
-                await self._record(blocked)
+            if isinstance(prepared, (BlockedCall, ErrorCall)):
+                all_results.append(await self._answer_refused(prepared))
                 await self._close_group()
-                all_results.append(blocked)
-                continue
-            elif isinstance(prepared, ErrorCall):
-                errored = prepared.result()
-                await self._emit(
-                    AgentEvent(
-                        type="tool_execution_end",
-                        timestamp=int(time.time() * 1000),
-                        tool_call_id=errored.tool_call_id,
-                        tool_name=errored.tool_name,
-                        result=errored.content,
-                        details=errored.details,
-                        is_error=True,
-                    )
-                )
-                await self._record(errored)
-                await self._close_group()
-                all_results.append(errored)
                 continue
 
             if self._abort_signal is not None and self._abort_signal.is_aborted():
-                await self._emit(
-                    AgentEvent(
-                        type="tool_execution_end",
-                        timestamp=int(time.time() * 1000),
-                        tool_call_id=tc.id,
-                        tool_name=tc.name,
-                        result=ABORTED_TOOL_RESULT,
-                        is_error=True,
-                    )
-                )
-                aborted_call = AgentToolResult.from_error(tc.name, ABORTED_TOOL_RESULT, tc.id)
-                await self._record(aborted_call)
-                all_results.append(aborted_call)
+                all_results.append(await self._answer_unrun(tc, ABORTED_TOOL_RESULT))
                 return await self._aborted_batch(tool_calls, prior=all_results)
 
             result = await self._execute_tool(prepared)
@@ -1488,23 +1488,14 @@ class AgentLoop:
         Returns:
             ToolBatchResult with tool result messages.
         """
-        prepared_calls = []
+        prepared_calls: list[PreparedToolCall | BlockedCall | ErrorCall] = []
         for tc in tool_calls:
-            prepared = await self._prepare_tool_call(tc)
+            prepared_calls.append(await self._prepare_tool_call(tc))
             if self._abort_signal is not None and self._abort_signal.is_aborted():
-                return await self._aborted_batch(tool_calls, prior=[])
-            prepared_calls.append(prepared)
+                return await self._abort_prepared(tool_calls, prepared_calls)
 
         for tc in tool_calls:
-            await self._emit(
-                AgentEvent(
-                    type="tool_execution_start",
-                    timestamp=int(time.time() * 1000),
-                    tool_call_id=tc.id,
-                    tool_name=tc.name,
-                    args=tc.arguments if isinstance(tc.arguments, dict) else {},
-                )
-            )
+            await self._emit_execution_start(tc)
 
         finished: list[AgentToolResult | None] = [None] * len(prepared_calls)
         flushed = 0
@@ -1594,6 +1585,26 @@ class AgentLoop:
 
         terminated = any(getattr(r, "terminate", False) for r in all_results)
         return self._build_batch_result(all_results, terminate=terminated)
+
+    async def _abort_prepared(
+        self,
+        tool_calls: list[ToolCall],
+        prepared_calls: list[PreparedToolCall | BlockedCall | ErrorCall],
+    ) -> ToolBatchResult:
+        """Answer a parallel batch whose abort tripped in a ``tool_call`` dispatch; run nothing.
+
+        Each call prepared so far keeps its block or error reason; one that would
+        have run, and every call not yet prepared, gets ``ABORTED_TOOL_RESULT``
+        (docs/STEP-DEBUGGER.md §3.6).
+        """
+        prior: list[AgentToolResult] = []
+        for tc, prepared in zip(tool_calls, prepared_calls):
+            await self._emit_execution_start(tc)
+            if isinstance(prepared, (BlockedCall, ErrorCall)):
+                prior.append(await self._answer_refused(prepared))
+            else:
+                prior.append(await self._answer_unrun(tc, ABORTED_TOOL_RESULT))
+        return await self._aborted_batch(tool_calls, prior=prior)
 
     def _build_batch_result(
         self,

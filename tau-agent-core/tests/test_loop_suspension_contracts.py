@@ -164,6 +164,126 @@ async def test_an_abort_tripped_in_a_tool_call_hook_runs_no_tool(mode: str) -> N
     ]
 
 
+_BRAKE = "not run: this is call 3 of probe with the same arguments. Your turn is over."
+
+
+def _braking(holder: dict[str, AgentSession], block: set[str], trip_on: str):
+    """A ``tool_call`` hook blocking ``block`` with a reason, and tripping the abort on ``trip_on``."""
+
+    def ext(api: Any) -> None:
+        def on_call(event: dict[str, Any], ctx: Any) -> dict[str, Any] | None:
+            if event["tool_name"] == trip_on:
+                holder["s"].cursor.abort_signal.abort(reason="extension")
+            if event["tool_name"] in block:
+                return {"block": True, "reason": _BRAKE}
+            return None
+
+        api.on("tool_call", on_call)
+
+    return ext
+
+
+def _result_texts(session: AgentSession) -> list[tuple[str, str]]:
+    return [
+        (r["message"]["tool_call_id"], r["message"]["content"][0]["text"])
+        for r in _entries_of(session, "toolResult")
+    ]
+
+
+@pytest.mark.parametrize("mode", ["sequential", "parallel"])
+async def test_a_call_blocked_in_the_dispatch_that_trips_the_abort_keeps_its_reason(
+    mode: str,
+) -> None:
+    ran: list[str] = []
+    holder: dict[str, AgentSession] = {}
+    session = _session(
+        _braking(holder, block={"first"}, trip_on="first"),
+        tools=[_counting_tool("first", ran), _counting_tool("second", ran)],
+        tool_execution_mode=mode,
+    )
+    holder["s"] = session
+    events: list[Any] = []
+    session.subscribe(events.append)
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=_script(_named_calls("first", "second")),
+    ):
+        await session.prompt("go")
+
+    assert ran == []
+    assert _result_texts(session) == [("c-first", _BRAKE), ("c-second", ABORTED_TOOL_RESULT)]
+    ends = [
+        (e.tool_call_id, e.result, e.blocked, e.blocked_by)
+        for e in events
+        if e.type == "tool_execution_end"
+    ]
+    brake = session._extension_runner._extensions[0].path
+    assert ends == [
+        ("c-first", _BRAKE, True, brake),
+        ("c-second", ABORTED_TOOL_RESULT, False, None),
+    ]
+
+
+@pytest.mark.parametrize("mode", ["sequential", "parallel"])
+async def test_an_earlier_blocked_call_keeps_its_reason_when_a_later_hook_trips_the_abort(
+    mode: str,
+) -> None:
+    ran: list[str] = []
+    holder: dict[str, AgentSession] = {}
+    session = _session(
+        _braking(holder, block={"first"}, trip_on="second"),
+        tools=[
+            _counting_tool("first", ran),
+            _counting_tool("second", ran),
+            _counting_tool("third", ran),
+        ],
+        tool_execution_mode=mode,
+    )
+    holder["s"] = session
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=_script(_named_calls("first", "second", "third")),
+    ):
+        await session.prompt("go")
+
+    assert ran == []
+    assert _result_texts(session) == [
+        ("c-first", _BRAKE),
+        ("c-second", ABORTED_TOOL_RESULT),
+        ("c-third", ABORTED_TOOL_RESULT),
+    ]
+
+
+async def test_the_block_reason_reaches_the_next_turns_request_in_parallel_mode() -> None:
+    ran: list[str] = []
+    holder: dict[str, AgentSession] = {}
+    requests: list[list[Any]] = []
+    finals = [_named_calls("probe", "other"), _text("understood")]
+
+    async def recording(model, context, options=None):
+        requests.append(list(context.get("messages", [])))
+        return _Stream([DoneEvent(final=finals.pop(0), usage=Usage())])
+
+    session = _session(
+        _braking(holder, block={"probe"}, trip_on="probe"),
+        tools=[_counting_tool("probe", ran), _counting_tool("other", ran)],
+        tool_execution_mode="parallel",
+    )
+    holder["s"] = session
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=recording):
+        await session.prompt("go")
+        await session.prompt("what happened?")
+
+    assert ran == []
+    assert len(requests) == 2
+    sent = [
+        (m["tool_call_id"], m["content"][0]["text"])
+        for m in (msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in requests[1])
+        if m.get("role") == "toolResult"
+    ]
+    assert sent == [("c-probe", _BRAKE), ("c-other", ABORTED_TOOL_RESULT)]
+
+
 # ── TurnSuspended reaches the loop (§3.2.2) ──────────────────────────────────
 
 

@@ -434,7 +434,9 @@ routes to `_aborted_batch`.
 **Built (M1c).** Sequentially, the call whose hook tripped the signal gets its
 aborted result and `tool_execution_end`, then `_aborted_batch` answers the rest.
 In parallel, the prepare loop checks after each call's hooks, so a later call's
-`tool_call` hooks do not run either.
+`tool_call` hooks do not run either. Either way, a call already blocked or
+errored, including one blocked by the dispatch that tripped the abort, keeps
+its reason; only calls that would have run get `ABORTED_TOOL_RESULT`.
 
 **Abort writes nothing new beyond the aborted results.** Every permitted site has
 its entries already written (§3.2). An abort at `tool_call` gives that call and
