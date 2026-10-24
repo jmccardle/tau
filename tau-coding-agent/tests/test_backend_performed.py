@@ -85,15 +85,14 @@ def test_an_explicit_off_is_not_collapsed_into_none() -> None:
 async def test_set_model_reports_the_model_it_switched_to(backend: TauBackend, monkeypatch) -> None:
     """And RECORDS it at the session's cursor: a runtime-only switch resumes on the old model."""
     switched = {"id": "gpt-4o", "provider": "openai", "context_window": 128000}
-    monkeypatch.setattr(backend.agent_session, "set_model", lambda name: switched)
+    monkeypatch.setattr(backend.agent_session, "set_model", lambda name, *, source: switched)
     performed = _check(await backend.set_model("fast"), "set_model")
     assert performed.data["model"] == switched
     cursor = backend.agent_session.cursor
     recorded = cursor.tree().entry(cursor.leaf)
-    assert (recorded["customType"], recorded["data"]) == (
-        "config",
-        {"model": "fast", "backend": "openai"},
-    )
+    assert recorded["customType"] == "config"
+    assert (recorded["data"]["model"], recorded["data"]["backend"]) == ("fast", "openai")
+    assert {"model_source", "thinking_source"} <= set(recorded["data"])
 
 
 async def test_a_switch_that_fails_records_nothing(backend: TauBackend) -> None:

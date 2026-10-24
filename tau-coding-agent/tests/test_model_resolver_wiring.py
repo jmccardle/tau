@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 
 from tau_agent_core.rpc import commands
+from tau_agent_core.setting_sources import as_extension
 
 from tau_llm.types import Model
 
@@ -139,7 +140,7 @@ def test_backend_session_switches_model_by_name():
     session.set_model_resolver(make_model_resolver({"models": _models()}))
 
     assert session.get_model()["id"] == "qwen"
-    result = session._extension_api.context.set_model("cloud")
+    result = as_extension("tester", session._extension_api.context.set_model)("cloud")
     assert result["id"] == "gpt-4o"
     assert session.get_model()["id"] == "gpt-4o"
     # The Model actually swapped on the loop-facing field (next-turn effect).

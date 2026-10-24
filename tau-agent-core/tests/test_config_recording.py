@@ -144,12 +144,13 @@ class TestAChangeIsRecordedWhereItTakesEffect:
         )
         await session.start()
 
-        session.set_model("model-b")
+        session.set_model("model-b", source="command")
         assert _effective(session)["model_spec"]["id"] == "model-a", "nothing written yet"
 
         entries = await _config_entries(session)
         assert len(entries) == 2
-        assert set(entries[1]["data"]) == {"model", "model_spec"}
+        assert set(entries[1]["data"]) == {"model", "model_spec", "model_source"}
+        assert entries[1]["data"]["model_source"] == "command"
         assert _effective(session)["model_spec"]["id"] == "model-b"
         assert _effective(session)["model"] == "model-b"
 
@@ -184,7 +185,7 @@ class TestAChangeIsRecordedWhereItTakesEffect:
         )
         await session.start()
         before_switch = session.cursor.leaf
-        session.set_model("model-b")
+        session.set_model("model-b", source="command")
         await session.start()
 
         session.cursor.move(before_switch)

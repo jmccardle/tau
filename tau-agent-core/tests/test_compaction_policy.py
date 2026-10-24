@@ -239,14 +239,11 @@ class TestPolicyDeclarationIsAdmissibleOrRefused:
     def test_only_disabled_switches_compaction_off(self):
         assert CompactionPolicy.disabled(max_turns=3).compaction_settings.auto is False
         assert (
-            CompactionPolicy.turn_cap(
-                max_turns=3, max_tokens_per_turn=9
-            ).compaction_settings.auto
+            CompactionPolicy.turn_cap(max_turns=3, max_tokens_per_turn=9).compaction_settings.auto
             is True
         )
         assert (
-            CompactionPolicy.local_summarizer(summarizer="board").compaction_settings.auto
-            is True
+            CompactionPolicy.local_summarizer(summarizer="board").compaction_settings.auto is True
         )
 
 
@@ -324,7 +321,7 @@ class TestTurnCapBudgetArithmetic:
         )
         session.set_model_resolver(lambda name: small)
         with pytest.raises(CompactionPolicyError, match="budget does not close"):
-            session.set_model("small")
+            session.set_model("small", source="command")
         assert session._model is big, "the invalid switch must not take effect"
 
 
@@ -520,9 +517,7 @@ class TestLocalSummarizerPolicy:
     def test_a_summariser_that_cannot_hold_the_window_is_refused(self):
         policy = CompactionPolicy.local_summarizer(summarizer="tiny")
         with pytest.raises(CompactionPolicyError, match="cannot ingest"):
-            policy.bind_to(
-                _model(context_window=128_000), _model("tiny", context_window=32_000)
-            )
+            policy.bind_to(_model(context_window=128_000), _model("tiny", context_window=32_000))
 
     def test_the_window_check_runs_on_the_resolved_model_at_construction(self):
         tiny = _board_resolver(_model("tiny", context_window=32_000))
@@ -579,7 +574,7 @@ class TestLocalSummarizerPolicy:
         other = _model("other")
         session = _session()
         session.set_model_resolver(lambda name: other)
-        session.set_model("other")
+        session.set_model("other", source="command")
         assert session.summarizer()[0] is other
 
 

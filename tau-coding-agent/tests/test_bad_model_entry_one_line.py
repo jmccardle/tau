@@ -247,20 +247,21 @@ def test_commands_that_use_no_model_are_not_blocked_or_warned(
 def test_switching_to_a_bad_entry_mid_run_is_refused_with_its_error(name: str) -> None:
     """ctx.set_model's contract error is tau_agent_core's, so no extension imports a head."""
     from tau_agent_core import ModelUnavailableError
+    from tau_agent_core.setting_sources import as_extension
     from tau_coding_agent.backends import create_backend, make_model_resolver
 
     config = {"models": {**_MODELS, "ext": {"backend": "acme", "model": "m"}}}
     backend = create_backend({**_GOOD, "config_name": "good"})
     session = backend.agent_session
     session.set_model_resolver(make_model_resolver(config))
-    ctx = session._extension_api.context
+    ctx_set_model = as_extension("tester", session._extension_api.context.set_model)
     expected = _ERROR if name == "old" else "backend 'acme' is not a registered"
     with pytest.raises(ModelUnavailableError, match=expected):
-        ctx.set_model(name)
+        ctx_set_model(name)
     with pytest.raises(ModelUnavailableError, match=expected):
-        session.set_model(name)
+        session.set_model(name, source="command")
     with pytest.raises(KeyError, match="unknown model 'nope'"):
-        ctx.set_model("nope")
+        ctx_set_model("nope")
     assert session.model_name == "good"
 
 

@@ -131,7 +131,7 @@ async def test_a_model_swap_reads_as_a_model_swap():
         model_resolver=lambda name: _model(name),
     )
     await session.start()
-    session.set_model("model-b")
+    session.set_model("model-b", source="command")
     await session.start()
     previews = _previews(session.cursor, "config")
     assert previews[0].startswith("config: model model-a")
@@ -256,7 +256,7 @@ async def test_the_preview_changes_nothing_about_the_fold():
         model_resolver=lambda name: _model(name),
     )
     await session.start()
-    session.set_model("model-b")
+    session.set_model("model-b", source="command")
     await session.start()
     await session.cursor.append_message({"role": "user", "content": "hi"})
     assert [m["content"] for m in session.messages] == ["hi"]
