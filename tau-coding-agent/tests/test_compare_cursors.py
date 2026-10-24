@@ -97,7 +97,9 @@ async def test_two_models_from_one_leaf_run_at_once_into_one_file(tmp_path: Path
     cursors = []
     for model_id in ("model-a", "model-b"):
         cursor = await session.open_cursor(fork_point, owner=session.cursor, label=model_id)
-        cursor.frame = TurnFrame(tools=(), model=_model(model_id), hooks=True)
+        cursor.frame = TurnFrame(
+            tools=(), model=_model(model_id), model_source="spawn", hooks=True
+        )
         cursors.append(cursor)
 
     provider = _Gated()

@@ -76,6 +76,15 @@ from tau_agent_core.extensions.runner import (
     ExtensionRunner,
 )
 from tau_agent_core.session import SessionState
+from tau_agent_core.setting_sources import (
+    SETTINGS,
+    SOURCE_KEYS,
+    Setting,
+    SettingSource,
+    as_extension,
+    check_setting,
+    check_source,
+)
 from tau_agent_core.session_log import (
     AGENT_SOURCE,
     SessionLog,
@@ -125,6 +134,7 @@ from tau_agent_core.commands import (
     expand_prompt_command,
     prompt_command_completions,
     resolve_command,
+    split_qualified_command,
 )
 from tau_agent_core.extension_sources import (
     ExtensionRecord,
@@ -342,6 +352,24 @@ _UNSET: Any = object()
 
 _REQUEST_KEYS: frozenset[str] = frozenset({"model", "model_spec", "thinking"})
 """The frame keys a request reads, so the only ones recorded between two requests."""
+
+
+def _check_setter_source(source: str) -> None:
+    """Raise unless ``source`` is one a setter call may name.
+
+    Raises:
+        ValueError: it is outside the vocabulary, or ``resume``: a setter call
+            is a change, never a restore.
+    """
+    if check_source(source) == "resume":
+        raise ValueError("'resume' names a restored value; a setter call is a change")
+
+
+_VALUE_KEYS: dict[Setting, tuple[str, ...]] = {
+    "model": ("model", "model_spec"),
+    "thinking": ("thinking",),
+}
+"""The frame keys that hold each source-recording setting's value."""
 
 
 def _leading_system_prompt(messages: list[Any]) -> str | None:
@@ -649,6 +677,10 @@ class AgentSession:
         reasoning: Requested thinking level for every turn and compaction;
             ``None`` sends no reasoning control, which is not ``"off"``
             (docs/REASONING-WIRE.md §4).
+        model_source: Where ``model`` came from (docs/TURN-SETTINGS.md §8);
+            ``None`` is ``cli``, the constructor argument given explicitly.
+        reasoning_source: Where ``reasoning`` came from; ``None`` is ``cli``
+            when ``reasoning`` was given and ``default`` when it was not.
         compaction_settings: Settings when no ``compaction_policy`` is given;
             ``None`` means the defaults.
         compaction_policy: A declared policy that supplies its own settings and
@@ -694,6 +726,8 @@ class AgentSession:
         extensions: list[Callable] | None = None,
         api_key: str | None = None,
         reasoning: str | None = None,
+        model_source: SettingSource | None = None,
+        reasoning_source: SettingSource | None = None,
         compaction_settings: CompactionSettings | None = None,
         compaction_policy: CompactionPolicy | None = None,
         extensions_config: dict[str, dict[str, Any]] | None = None,
@@ -765,6 +799,11 @@ class AgentSession:
         self._delivery_tasks: dict[str, asyncio.Task[Any]] = {}
         self._api_key = api_key
         self._reasoning = reasoning
+        self._model_source = model_source or SettingSource("cli")
+        self._reasoning_source = reasoning_source or SettingSource(
+            "default" if reasoning is None else "cli"
+        )
+        self._setting_changes: dict[str | None, dict[Setting, Any]] = {}
         if compaction_policy is not None and compaction_settings is not None:
             raise ValueError(
                 "pass compaction_policy OR compaction_settings, not both: the policy "
@@ -840,16 +879,21 @@ class AgentSession:
             "system_prompt_digest": _system_prompt_digest(self._turn_system_prompt()),
         }
 
-    async def _record_config(self, keys: frozenset[str] | None = None) -> None:
+    async def _record_config(
+        self, keys: frozenset[str] | None = None, extra: dict[str, Any] | None = None
+    ) -> None:
         """Write the frame keys that differ from the walk at the turn's cursor.
 
         Called before a turn's first append and before each later request, so the
         entry sits ahead of what it governs: config takes effect where it is
         recorded (docs/CURSORS.md §5). Writes nothing when the path already says
-        the same.
+        the same. A model or thinking value is written with its source, and a
+        setter's change of either dispatches ``turn_setting_changed``
+        (docs/TURN-SETTINGS.md §8).
 
         Args:
             keys: Only these frame keys; ``None`` is all of them.
+            extra: Keys written whether or not they differ (:meth:`record_settings`).
         """
         cursor = self.acting_cursor
         recorded = config_at(cursor.entries(), cursor.leaf)
@@ -858,8 +902,62 @@ class AgentSession:
             for k, v in self._frame_config().items()
             if (keys is None or k in keys) and recorded.get(k, _UNSET) != v
         }
+        changed.update(extra or {})
+        considered = [s for s in SETTINGS if keys is None or keys & set(_VALUE_KEYS[s])]
+        for setting in considered:
+            current = self._turn_setting_source(setting)
+            key = SOURCE_KEYS[setting]
+            if any(k in changed for k in _VALUE_KEYS[setting]) or (
+                not current.restored and recorded.get(key) != current.source
+            ):
+                changed[key] = current.source
         if changed:
             await cursor.append_config(**changed)
+        await self._announce_setting_changes(cursor, considered, changed)
+
+    async def _announce_setting_changes(
+        self, cursor: Cursor, considered: list[Setting], written: dict[str, Any]
+    ) -> None:
+        """Dispatch ``turn_setting_changed`` for each setter change this record wrote.
+
+        Only a setter call is a change: the setting a session was built with,
+        restored or not, is never announced. A pending change is consumed when its
+        setting is considered, written or not, so a later write never reports a
+        stale ``old``.
+        """
+        pending = self._setting_changes.get(None if cursor is self._cursor else cursor.id)
+        if not pending:
+            return
+        for setting in considered:
+            if setting not in pending:
+                continue
+            old = pending.pop(setting)
+            if SOURCE_KEYS[setting] not in written:
+                continue
+            hooks = self._hooks()
+            if hooks.has_handlers("turn_setting_changed"):
+                await hooks.emit_turn_setting_changed(
+                    {
+                        "cursor_id": cursor.id,
+                        "setting": setting,
+                        "old": old,
+                        "new": self._setting_value(setting),
+                        "source": written[SOURCE_KEYS[setting]],
+                    }
+                )
+
+    async def record_settings(self, **extra: Any) -> None:
+        """Record the acting cursor's model and thinking now, rather than at its next request.
+
+        For a head that persists a switch at once, so ``--continue`` resumes on
+        it even if no turn runs. Writes what the next request would, sources
+        and ``turn_setting_changed`` included, plus ``extra``.
+
+        Args:
+            **extra: Config keys written as given, e.g. ``backend``, or the
+                ``model`` name a head resumed on.
+        """
+        await self._record_config(_REQUEST_KEYS, extra)
 
     async def _request_settings(self, persist: bool) -> TurnSettings:
         """The acting cursor's settings for its next request, recorded first if they changed.
@@ -1534,7 +1632,7 @@ class AgentSession:
 
         await apply_session_name(self, name)
 
-    def set_model(self, name: str) -> dict[str, Any]:
+    def set_model(self, name: str, *, source: str) -> dict[str, Any]:
         """Switch the acting cursor's model by NAME, effective on its next request.
 
         At the head cursor this is the session's model; at any other cursor that
@@ -1544,11 +1642,13 @@ class AgentSession:
         resolver supplies it (:meth:`set_model_resolver`). Called between two
         requests of a running loop — a ``turn_end`` hook — the next request already
         uses it, never one in flight. Nothing is written here: the next request
-        records the change ahead of itself (docs/TURN-SETTINGS.md §2-3).
+        records the change and ``source`` ahead of itself, and dispatches
+        ``turn_setting_changed`` (docs/TURN-SETTINGS.md §2-3, §8).
 
         Args:
             name: A config model name, resolved through :meth:`set_model_resolver`'s
                 resolver.
+            source: Who asked, from the setting-source vocabulary; never ``resume``.
 
         Returns:
             The new :meth:`get_model` projection.
@@ -1561,7 +1661,9 @@ class AgentSession:
             TypeError: The resolver returned something other than a ``Model``.
             CompactionPolicyError: the new model's compaction refuses it; the
                 model does not change.
+            ValueError: ``source`` is not a setter's source.
         """
+        _check_setter_source(source)
         if self._model_resolver is None:
             raise RuntimeError(
                 f"set_model({name!r}): no model resolver is bound to this AgentSession. "
@@ -1570,18 +1672,26 @@ class AgentSession:
             )
         model, api_key = self.resolve_model(name)
         cursor = self.acting_cursor
+        old = self._setting_value("model")
+        old_source = self._turn_setting_source("model").source
         if cursor is not self._cursor:
             cursor.frame = replace(
-                self._frame_or_default(cursor), model=model, api_key=api_key, model_name=name
+                self._frame_or_default(cursor),
+                model=model,
+                api_key=api_key,
+                model_name=name,
+                model_source=source,
             )
-            return self.get_model()
-        self._configure_compaction(model)
-        self._model = model
-        self._model_name = name
-        self._api_key = api_key
+        else:
+            self._configure_compaction(model)
+            self._model = model
+            self._model_name = name
+            self._api_key = api_key
+            self._model_source = SettingSource(source)
+        self._note_setting_change(cursor, "model", old, old_source)
         return self.get_model()
 
-    def set_reasoning(self, level: str) -> str:
+    def set_reasoning(self, level: str, *, source: str) -> str:
         """Set the acting cursor's requested thinking level, effective on its next request.
 
         Placed and recorded as :meth:`set_model` is: the head's level is the
@@ -1593,24 +1703,95 @@ class AgentSession:
         Args:
             level: One of ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``,
                 ``"high"``, ``"xhigh"``.
+            source: Who asked, as for :meth:`set_model`.
 
         Returns:
             ``level``.
 
         Raises:
-            ValueError: ``level`` is not one of those.
+            ValueError: ``level`` is not one of those, or ``source`` is not a
+                setter's source.
         """
+        _check_setter_source(source)
         if level not in EXTENDED_THINKING_LEVELS:
             raise ValueError(
                 f"set_reasoning({level!r}): not a thinking level; "
                 f"expected one of {', '.join(EXTENDED_THINKING_LEVELS)}"
             )
         cursor = self.acting_cursor
+        old = self._setting_value("thinking")
+        old_source = self._turn_setting_source("thinking").source
         if cursor is not self._cursor:
-            cursor.frame = replace(self._frame_or_default(cursor), reasoning=level)
+            cursor.frame = replace(
+                self._frame_or_default(cursor), reasoning=level, reasoning_source=source
+            )
         else:
             self._reasoning = level
+            self._reasoning_source = SettingSource(source)
+        self._note_setting_change(cursor, "thinking", old, old_source)
         return level
+
+    @agent_facing(topic="sessions")
+    def get_setting_source(self, setting: str) -> SettingSource:
+        """Where the acting cursor's model or thinking level came from (docs/TURN-SETTINGS.md §8).
+
+        Args:
+            setting: ``"model"`` or ``"thinking"``.
+
+        Raises:
+            ValueError: ``setting`` is not one of those.
+        """
+        return self._turn_setting_source(check_setting(setting))
+
+    def _turn_setting_source(self, setting: Setting) -> SettingSource:
+        """The source of :meth:`_setting_value`: its cursor frame's, else the session's.
+
+        Raises:
+            ValueError: the frame sets the value and names no source.
+        """
+        frame = self.acting_cursor.frame
+        if setting == "model":
+            if frame is None or frame.model is None:
+                return self._model_source
+            framed, field = frame.model_source, "model_source"
+        else:
+            if frame is None or frame.reasoning is None:
+                return self._reasoning_source
+            framed, field = frame.reasoning_source, "reasoning_source"
+        if framed is None:
+            raise ValueError(
+                f"cursor {self.acting_cursor.id}'s TurnFrame sets its {setting} with no "
+                f"source; set {field} beside it"
+            )
+        return SettingSource(framed)
+
+    def _setting_value(self, setting: Setting) -> Any:
+        """The acting cursor's model name or thinking level, as ``turn_setting_changed`` carries it.
+
+        The model is named by its config name, else by its own ``Model.name``.
+        """
+        if setting == "thinking":
+            return self._turn_reasoning()
+        name = self._turn_model_name()
+        if name is not None:
+            return name
+        frame = self.acting_cursor.frame
+        model = frame.model if frame is not None and frame.model is not None else self._model
+        return model.name
+
+    def _note_setting_change(
+        self, cursor: Cursor, setting: Setting, old: Any, old_source: str
+    ) -> None:
+        """Hold ``old`` until the next record of ``setting`` at ``cursor`` announces it.
+
+        A call that changed neither the value nor the source is no change and
+        holds nothing (docs/TURN-SETTINGS.md §8.4).
+        """
+        now = (self._setting_value(setting), self._turn_setting_source(setting).source)
+        if now == (old, old_source):
+            return
+        key = None if cursor is self._cursor else cursor.id
+        self._setting_changes.setdefault(key, {}).setdefault(setting, old)
 
     def _frame_or_default(self, cursor: Cursor) -> TurnFrame:
         """``cursor``'s frame, or one that changes nothing (every tool, hooks on)."""
@@ -4008,6 +4189,7 @@ class AgentSession:
             model=resolved,
             api_key=key,
             model_name=model if isinstance(model, str) else None,
+            model_source=None if resolved is None else "spawn",
             system_prompt=system_prompt,
             max_turns=max_turns,
             hooks=hooks,
@@ -5272,7 +5454,8 @@ class AgentSession:
         ctx = self._extension_api.context
         resolved: list[AgentTool] = []
         for name, defn in self._registry.get_active_tools().items():
-            ext_execute = defn.execute
+            owner = self._extension_runner.owner_of_tool(name)
+            ext_execute = defn.execute if owner is None else as_extension(owner, defn.execute)
 
             def _make_adapter(ext_execute: Callable = ext_execute) -> Callable:
                 async def _adapter(
@@ -6197,6 +6380,9 @@ class AgentSession:
                 f"extension command {name!r} has no callable 'handler'; it was "
                 "registered but cannot run (register_command requires a handler)."
             )
+        owner = split_qualified_command(self._registry.get_bindings().get(name, name))
+        if owner is not None:
+            handler = as_extension(owner[0], handler)
         result = handler(args, self._extension_api.context)
         if inspect.isawaitable(result):
             result = await result

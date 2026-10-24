@@ -2539,7 +2539,7 @@ async def _handle_set_reasoning(
 ) -> dict[str, Any]:
     session = handler.session
     async with turn_safety_guard(session):
-        level = session.set_reasoning(str(params["level"]))
+        level = session.set_reasoning(str(params["level"]), source="rpc")
         leaf = session.acting_cursor.leaf
     return {"level": level, "leaf": leaf}
 
@@ -2632,12 +2632,12 @@ async def _handle_set_model(
     async with turn_safety_guard(session):
         require_durable_session(session, verb="set_model")
         try:
-            model = session.set_model(name)
+            model = session.set_model(name, source="rpc")
         except (KeyError, ValueError) as exc:
             raise RPCError(
                 INVALID_PARAMS, _resolver_error_message(exc), data={"name": name}
             ) from exc
-        await session.acting_cursor.append_config(model=name, backend=model["provider"])
+        await session.record_settings(model=name, backend=model["provider"])
         return {"model": model, "leaf": session.acting_cursor.leaf}
 
 

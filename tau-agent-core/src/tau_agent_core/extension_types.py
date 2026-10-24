@@ -45,6 +45,7 @@ from tau_agent_core.policies import (
     police_thread_affinity,
     request_replies,
 )
+from tau_agent_core.setting_sources import SettingSource, acting_extension_source, as_extension
 from tau_agent_core.tool_catalog import ExtensionInfo, ToolDescription, match_tools
 from tau_agent_core.tool_output import suspend_capture
 from tau_agent_core.tool_pipeline import NestedToolResult
@@ -1090,8 +1091,10 @@ class ExtensionContext:
     def set_model(self, name: str) -> dict[str, Any]:
         """Switch the acting cursor's model by NAME, effective on its next request.
 
-        Delegates to :meth:`AgentSession.set_model`. From a ``turn_end`` hook the
-        running loop's next request already uses it.
+        Delegates to :meth:`AgentSession.set_model` with source
+        ``extension:<name>``, the extension whose hook, command or tool is
+        running. From a ``turn_end`` hook the running loop's next request
+        already uses it.
 
         Args:
             name: The config model name to resolve and switch to.
@@ -1100,20 +1103,24 @@ class ExtensionContext:
             The new :meth:`get_model` projection.
 
         Raises:
-            RuntimeError: No session is bound, or the session has no model resolver.
+            RuntimeError: No session is bound, the session has no model resolver,
+                or no extension's code is running to attribute the change to.
             KeyError: ``name`` is not a configured model.
             ModelUnavailableError: ``name`` is configured and does not build;
                 the message says why.
             TypeError: The resolver returned something other than a ``Model``.
         """
-        model: dict[str, Any] = self._require_session().set_model(name)
+        session = self._require_session()
+        model: dict[str, Any] = session.set_model(
+            name, source=acting_extension_source("ctx.set_model")
+        )
         return model
 
     def set_reasoning(self, level: str) -> str:
         """Set the acting cursor's thinking level, effective on its next request.
 
-        Delegates to :meth:`AgentSession.set_reasoning`, placed and recorded as
-        :meth:`set_model` is.
+        Delegates to :meth:`AgentSession.set_reasoning`, attributed, placed and
+        recorded as :meth:`set_model` is.
 
         Args:
             level: ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``, ``"high"``
@@ -1123,11 +1130,34 @@ class ExtensionContext:
             ``level``.
 
         Raises:
-            RuntimeError: No session is bound.
+            RuntimeError: No session is bound, or no extension's code is running.
             ValueError: ``level`` is not a thinking level.
         """
-        result: str = self._require_session().set_reasoning(level)
+        session = self._require_session()
+        result: str = session.set_reasoning(
+            level, source=acting_extension_source("ctx.set_reasoning")
+        )
         return result
+
+    def get_setting_source(self, setting: str) -> SettingSource:
+        """Where the acting cursor's model or thinking level came from.
+
+        Delegates to :meth:`AgentSession.get_setting_source`; readable from
+        ``session_start``, ``input`` and anywhere else a ctx is
+        (docs/TURN-SETTINGS.md §8).
+
+        Args:
+            setting: ``"model"`` or ``"thinking"``.
+
+        Returns:
+            Its ``source`` and whether a resume ``restored`` it.
+
+        Raises:
+            RuntimeError: No session is bound.
+            ValueError: ``setting`` is not one of those.
+        """
+        found: SettingSource = self._require_session().get_setting_source(setting)
+        return found
 
     def get_usage(self) -> dict[str, Any] | None:
         """Read the most recent completion's token usage (S45, anchor G14).
@@ -1916,11 +1946,12 @@ class ExtensionAPI:
         The mutating hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call``,
         ``tool_result``, ``before_agent_start``, ``input``, ``turn_end``,
         ``user_turn_end``, ``session_before_switch``, ``annotate``,
-        ``entry_written``) and the lifecycle hooks (``LIFECYCLE_EVENTS``:
+        ``entry_written``, ``turn_setting_changed``) and the lifecycle hooks (``LIFECYCLE_EVENTS``:
         ``session_start``, ``session_shutdown``) go to this extension's runner
         bucket, where handler errors are surfaced. Everything else — notify
         events, ``"all"``, and ``ext:<name>:<topic>`` channels from :meth:`emit` —
-        goes to the notify ``EventBus``.
+        goes to the notify ``EventBus``. Either way the handler runs as this
+        extension, so a ``ctx.set_model`` in it is attributed to it.
 
         ``turn_end`` fires once per agent-loop turn (per completion);
         ``user_turn_end`` fires once per utterance, after the loop, the followUp
@@ -1993,12 +2024,16 @@ class ExtensionAPI:
 
             return unsubscribe_hook
 
+        dispatch = handler
+        if policy is not None:
+            dispatch = self._policed_channel_handler(event, handler, policy)
+        if self._hook_handlers is not None:
+            dispatch = as_extension(self._hook_handlers.name, dispatch)
         if event.startswith(EXT_CHANNEL_PREFIX):
-            dispatch = handler
-            if policy is not None:
-                dispatch = self._policed_channel_handler(event, handler, policy)
             owner = None if self._hook_handlers is None else self._hook_handlers.name
             handler = ChannelSubscriber(handler, owner, dispatch)
+        else:
+            handler = dispatch
         unsubscribe = self._event_bus.on(event, handler)
         if not event.startswith(EXT_CHANNEL_PREFIX) or self._hook_handlers is None:
             return unsubscribe

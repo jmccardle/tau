@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentSession(*, model: Model | UnavailableModel, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS, tool_allowlist: Sequence[str] | None = None, tool_denylist: Sequence[str] = ())
+class AgentSession(*, model: Model | UnavailableModel, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, model_source: SettingSource | None = None, reasoning_source: SettingSource | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS, tool_allowlist: Sequence[str] | None = None, tool_denylist: Sequence[str] = ())
 ```
 
 `tau_agent_core.agent_session.AgentSession`
@@ -30,6 +30,8 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 - `extensions: list[Callable] | None = None` — Inline extension factories, each called at construction with an api bound to its own runner bucket.
 - `api_key: str | None = None` — The key ``model`` is called with; ``None`` passes no key.
 - `reasoning: str | None = None` — Requested thinking level for every turn and compaction; ``None`` sends no reasoning control, which is not ``"off"`` (docs/REASONING-WIRE.md §4).
+- `model_source: SettingSource | None = None` — Where ``model`` came from (docs/TURN-SETTINGS.md §8); ``None`` is ``cli``, the constructor argument given explicitly.
+- `reasoning_source: SettingSource | None = None` — Where ``reasoning`` came from; ``None`` is ``cli`` when ``reasoning`` was given and ``default`` when it was not.
 - `compaction_settings: CompactionSettings | None = None` — Settings when no ``compaction_policy`` is given; ``None`` means the defaults.
 - `compaction_policy: CompactionPolicy | None = None` — A declared policy that supplies its own settings and summarizer. Mutually exclusive with ``compaction_settings``. One naming a summarizer needs ``model_resolver``, or construction raises.
 - `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by file stem; each extension's ``api.config`` is its slice.
@@ -832,6 +834,24 @@ question get the same answer, computed once.
 
 class:`SessionStats`. Nothing here mutates, and it answers the same on a persisted and an unpersisted session.
 
+### get_setting_source
+
+```python
+get_setting_source(setting: str) -> SettingSource
+```
+
+`tau_agent_core.agent_session.AgentSession.get_setting_source`
+
+Where the acting cursor's model or thinking level came from (docs/TURN-SETTINGS.md §8).
+
+**Parameters**
+
+- `setting: str` — ``"model"`` or ``"thinking"``.
+
+**Raises**
+
+- `ValueError` — ``setting`` is not one of those.
+
 ### get_usage
 
 ```python
@@ -1210,6 +1230,24 @@ List of messages produced by the agent loop (this turn's new messages only — s
 
 - `UnsupportedCommandError` — ``text`` resolves to a command, or to a refused ``/ext:`` name. See above — this method has nowhere to put the outcome, so it refuses before anything runs instead of swallowing it.
 
+### record_settings
+
+```python
+async record_settings(**extra: Any) -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.record_settings`
+
+Record the acting cursor's model and thinking now, rather than at its next request.
+
+For a head that persists a switch at once, so ``--continue`` resumes on
+it even if no turn runs. Writes what the next request would, sources
+and ``turn_setting_changed`` included, plus ``extra``.
+
+**Parameters**
+
+- `**extra: Any` — *(no description)*
+
 ### record_side_usage
 
 ```python
@@ -1585,7 +1623,7 @@ to the session tree.
 ### set_model
 
 ```python
-set_model(name: str) -> dict[str, Any]
+set_model(name: str, *, source: str) -> dict[str, Any]
 ```
 
 `tau_agent_core.agent_session.AgentSession.set_model`
@@ -1599,11 +1637,13 @@ gets one that changes nothing else). The key switches with the model, by
 resolver supplies it (:meth:`set_model_resolver`). Called between two
 requests of a running loop — a ``turn_end`` hook — the next request already
 uses it, never one in flight. Nothing is written here: the next request
-records the change ahead of itself (docs/TURN-SETTINGS.md §2-3).
+records the change and ``source`` ahead of itself, and dispatches
+``turn_setting_changed`` (docs/TURN-SETTINGS.md §2-3, §8).
 
 **Parameters**
 
 - `name: str` — A config model name, resolved through :meth:`set_model_resolver`'s resolver.
+- `source: str` — Who asked, from the setting-source vocabulary; never ``resume``.
 
 **Returns**
 
@@ -1616,6 +1656,7 @@ The new :meth:`get_model` projection.
 - `ModelUnavailableError` — ``name`` is configured and does not build; the message says why.
 - `TypeError` — The resolver returned something other than a ``Model``.
 - `CompactionPolicyError` — the new model's compaction refuses it; the model does not change.
+- `ValueError` — ``source`` is not a setter's source.
 
 ### set_model_resolver
 
@@ -1646,7 +1687,7 @@ session was constructed with.
 ### set_reasoning
 
 ```python
-set_reasoning(level: str) -> str
+set_reasoning(level: str, *, source: str) -> str
 ```
 
 `tau_agent_core.agent_session.AgentSession.set_reasoning`
@@ -1662,6 +1703,7 @@ what the model supports and reports the one it sent as
 **Parameters**
 
 - `level: str` — One of ``"off"``, ``"minimal"``, ``"low"``, ``"medium"``, ``"high"``, ``"xhigh"``.
+- `source: str` — Who asked, as for :meth:`set_model`.
 
 **Returns**
 
@@ -1669,7 +1711,7 @@ what the model supports and reports the one it sent as
 
 **Raises**
 
-- `ValueError` — ``level`` is not one of those.
+- `ValueError` — ``level`` is not one of those, or ``source`` is not a setter's source.
 
 ### set_session_name
 
@@ -4755,6 +4797,22 @@ Whether the store reloaded entries when the lock was taken; resets the flag.
 
 True once after a reload, so a host can move cursors off the stale leaf.
 
+## SettingSource
+<!-- agent: yes -->
+
+```python
+class SettingSource(source: str, restored: bool = False)
+```
+
+`tau_agent_core.setting_sources.SettingSource`
+
+Where the model or thinking level in force came from.
+
+**Constructor parameters**
+
+- `source: str` — A :data:`SETTING_SOURCES` value or ``extension:<name>``.
+- `restored: bool = False` — Whether a resume restored the value from the tree. ``source`` is then the one recorded with it, and ``resume`` when the entry predates sources.
+
 ## SideMark
 <!-- agent: yes -->
 
@@ -4884,7 +4942,7 @@ A node in the browsable session tree (pi ``SessionTreeNode``).
 <!-- agent: yes -->
 
 ```python
-class TurnFrame(tools: tuple[str, ...], model: Any = None, api_key: str | None = None, model_name: str | None = None, reasoning: str | None = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = False)
+class TurnFrame(tools: tuple[str, ...], model: Any = None, api_key: str | None = None, model_name: str | None = None, reasoning: str | None = None, model_source: str | None = None, reasoning_source: str | None = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = False)
 ```
 
 `tau_agent_core.cursor.TurnFrame`
@@ -4902,6 +4960,8 @@ config the first time the cursor's turn appends.
 - `api_key: str | None = None` — ``model``'s key, ``None`` for the provider's environment variable. Ignored when ``model`` is ``None``. Never recorded.
 - `model_name: str | None = None` — The config name ``model`` was resolved from, recorded as the ``model`` config key; ``None`` when ``model`` was handed in directly.
 - `reasoning: str | None = None` — The thinking level to request, or ``None`` for the session's.
+- `model_source: str | None = None` — Where ``model`` came from; required with ``model`` (docs/TURN-SETTINGS.md §8).
+- `reasoning_source: str | None = None` — Where ``reasoning`` came from; required with ``reasoning``.
 - `system_prompt: str | None = None` — The prompt to run under, or ``None`` for the session's.
 - `max_turns: int | None = None` — The loop's turn ceiling for this cursor; ``None`` is no ceiling.
 - `hooks: bool = False` — Whether extension hooks run on this cursor's turns. Off by default: a sub-agent stays as constrained as its spawner asked.
@@ -5938,6 +5998,30 @@ The banner a head shows while its session is a read-only replica.
 **Returns**
 
 ``"READ-ONLY — <reason naming the holder>"``, or ``None`` when writable.
+
+## restored_source
+<!-- agent: yes -->
+
+```python
+restored_source(recorded: Mapping[str, Any], setting: str) -> SettingSource
+```
+
+`tau_agent_core.setting_sources.restored_source`
+
+The source of a value a resume restores from ``recorded``.
+
+**Parameters**
+
+- `recorded: Mapping[str, Any]` — The folded config at the resumed position (``config_at``).
+- `setting: str` — ``"model"`` or ``"thinking"``.
+
+**Returns**
+
+The recorded source with ``restored=True``; ``resume`` when none was recorded.
+
+**Raises**
+
+- `ValueError` — ``setting`` is not a turn setting, or the recorded source is not in the vocabulary.
 
 ## selection_order
 <!-- agent: yes -->

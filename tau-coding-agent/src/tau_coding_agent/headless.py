@@ -46,6 +46,7 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import Submission
 from tau_agent_core.truncation import truncation_from_messages, truncation_notice
 from tau_agent_core.session_lock import set_head_label
+from tau_agent_core.setting_sources import SettingSource, restored_source
 from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import (
     ConfigError,
@@ -194,6 +195,9 @@ def resolve_model_config(
     :class:`~tau_agent_core.model_availability.UnavailableModel`
     (docs/SILENT-DEFAULTS.md §10). A ``--model`` is user input and always raises.
 
+    ``model_config["model_source"]`` and ``["thinking_source"]`` say where each
+    came from (:func:`setting_sources_for`).
+
     Raises:
         CLIError: no model named, an unconfigured bare name, or a malformed flag.
         ModelConfigError: a recorded model's entry does not build, unless
@@ -208,6 +212,7 @@ def resolve_model_config(
                 unavailable["thinking"] = args.thinking
             elif prior_config is not None and "thinking" in prior_config:
                 unavailable["thinking"] = prior_config["thinking"]
+            unavailable.update(setting_sources_for(args, fallback_model, prior_config, False))
             return fallback_model, _apply_run_flags(unavailable, config, args)
     spec = args.model or fallback_model or config.get("default_model")
     if not spec:
@@ -244,7 +249,50 @@ def resolve_model_config(
         thinking = prior_config["thinking"]
     if thinking is not None:
         model_config["thinking"] = thinking
+    model_config.update(
+        setting_sources_for(args, fallback_model, prior_config, suffix_thinking is not None)
+    )
     return spec, _apply_run_flags(model_config, config, args)
+
+
+def setting_sources_for(
+    args: "CLIArgs",
+    fallback_model: str | None,
+    prior_config: dict[str, Any] | None,
+    suffixed: bool,
+) -> dict[str, SettingSource]:
+    """Where :func:`resolve_model_config`'s model and thinking level came from.
+
+    Decided by which flags were given, never by comparing values, so ``-m X``
+    is ``cli`` even when ``X`` is ``default_model`` (docs/TURN-SETTINGS.md §8).
+
+    Args:
+        args: The parsed flags.
+        fallback_model: A resumed session's model, or ``None``.
+        prior_config: A resumed session's folded config, or ``None``.
+        suffixed: Whether the model spec carried a ``:level`` suffix.
+
+    Returns:
+        ``{"model_source", "thinking_source"}``: ``cli`` for a flag; for a
+        resumed value, the source recorded with it (``restored=True``); else
+        ``default``. A suffix takes the source of the spec it was on.
+    """
+    recorded = prior_config or {}
+    if args.model:
+        model = SettingSource("cli")
+    elif fallback_model:
+        model = restored_source(recorded, "model")
+    else:
+        model = SettingSource("default")
+    if args.thinking:
+        thinking = SettingSource("cli")
+    elif suffixed:
+        thinking = model
+    elif prior_config is not None and "thinking" in prior_config:
+        thinking = restored_source(recorded, "thinking")
+    else:
+        thinking = SettingSource("default")
+    return {"model_source": model, "thinking_source": thinking}
 
 
 def _apply_run_flags(

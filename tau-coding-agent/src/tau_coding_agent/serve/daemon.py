@@ -37,6 +37,7 @@ from tau_agent_core.rpc import dialect, records
 from tau_agent_core.rpc.wire_events import WireEventProjector
 from tau_agent_core.sdk import LoadExtensionsResult, load_failure_notice, withheld_notices
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
+from tau_agent_core.setting_sources import SettingSource
 from tau_agent_core.session_log import (
     OpenSideEntryError,
     SessionLog,
@@ -861,8 +862,13 @@ class Daemon:
         asyncio.get_running_loop().create_task(stop_after_answer())
         return ANSWERED
 
-    async def load(self, ref: str) -> SessionHost:
+    async def load(
+        self, ref: str, *, sources: dict[str, SettingSource] | None = None
+    ) -> SessionHost:
         """The host for session ``ref`` (an id or unambiguous prefix), loading it if needed.
+
+        ``sources`` replaces the restored model and thinking sources of a host
+        built here, for a session this daemon has just created (docs/TURN-SETTINGS.md §8).
 
         Raises:
             RequestError: no session matches ``ref``.
@@ -879,11 +885,16 @@ class Daemon:
         async with lock:
             if log.id in self.hosts:
                 return self.hosts[log.id]
-            host = await self._host_for(log, model=None)
+            host = await self._host_for(log, model=None, sources=sources)
             self.hosts[log.id] = host
             return host
 
-    async def _host_for(self, log: ConversationSession, model: str | None) -> SessionHost:
+    async def _host_for(
+        self,
+        log: ConversationSession,
+        model: str | None,
+        sources: dict[str, SettingSource] | None = None,
+    ) -> SessionHost:
         """Build a backend for ``log`` from the daemon's config.
 
         A recorded model that no longer resolves opens unavailable: the session
@@ -910,6 +921,7 @@ class Daemon:
             )
         except ConfigError as exc:
             raise RequestError(dialect.INVALID_PARAMS, str(exc)) from exc
+        model_config.update(sources or {})
         if self.config.get("system_prompt"):
             model_config["system_prompt"] = self.config["system_prompt"]
         model_config["cwd"] = cwd
@@ -1062,7 +1074,11 @@ class Daemon:
             name=request.name,
         )
         self.log(f"session {log.id[:8]} created in {cwd}")
-        return self._opened(await self.load(log.id))
+        sources = {
+            "model_source": SettingSource("default" if request.model is None else "rpc"),
+            "thinking_source": SettingSource("default"),
+        }
+        return self._opened(await self.load(log.id, sources=sources))
 
     async def _submit(
         self,

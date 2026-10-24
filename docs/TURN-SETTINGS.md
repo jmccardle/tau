@@ -226,3 +226,117 @@ is redundant.
   handed `Model` objects; their paths inherit the head's `model` name as before.
 - **Dropping queued `nextTurn` messages on a user abort.** They belong to the next
   submission, which the user starts, not to the one that was stopped.
+
+## 8. A change records its source and tells extensions (built 2026-10-24, #25)
+
+Before this, `set_model` wrote nothing, the entry the next request wrote carried
+no source, and no extension heard about it. tau-router guessed at a hand-picked
+`/model` by comparing `ctx.get_model()` with the last model it had set itself, so
+a resume, or another extension's `ctx.set_model`, was misattributed. Its pin
+rule needs the opposite: `-m` and `/model` pin, `default_model` never does,
+including `-m X` where X is also the default.
+
+### 8.1 The vocabulary
+
+One string vocabulary for both settings, `tau_agent_core.setting_sources`:
+
+| Source | Means | Comes from |
+|---|---|---|
+| `default` | config, or the built-in default | no `-m`/`--thinking`; `create_agent_session()` with no `model`; a TUI new chat on `default_model` |
+| `cli` | a flag, or the SDK constructor argument | `-m`/`--model`, `--thinking`, a `:level` suffix on `-m`; `AgentSession(model=…)` |
+| `command` | a head command | `/model`, `/thinking` in the TUI and the REPL (`TauBackend.set_model` / `set_reasoning`) |
+| `rpc` | an RPC or serve verb | `set_model`, `set_reasoning`; `tau serve`'s `new_session` with a `model` |
+| `extension:<name>` | `ctx.set_model` / `ctx.set_reasoning` | the extension whose hook, command or tool is running |
+| `resume` | restored, origin not recorded | a resume from an entry written before #25 |
+| `spawn` | the model a cursor was opened with | `spawn(model=…)`, and each `compare` column |
+
+`spawn` is the one value added to the brief's list: a sub-agent's or comparison
+column's model is set when its cursor opens, by no setter. There is no `unknown`.
+
+Whether a flag counts is decided by whether it was given, never by comparing
+values, so `-m X` is `cli` when X is `default_model`
+(`headless.setting_sources_for`, which every head's `resolve_model_config` call
+goes through).
+
+The setters take a required keyword: `AgentSession.set_model(name, *, source)`
+and `set_reasoning(level, *, source)`. A setter refuses `resume`, because a
+setter call is a change. `ctx.set_model` names its extension from
+`ACTING_EXTENSION`, a context variable the runner sets around every hook handler,
+the extension api sets around its notify handlers, and the session sets around
+an extension command or tool. Called anywhere else (a thread with no context,
+module load), it raises `RuntimeError` rather than guess.
+
+The constructor keeps defaults, because `AgentSession(model=…)` is the
+argument given explicitly: `model_source=None` is `cli`, and
+`reasoning_source=None` is `cli` when `reasoning` is given and `default` when it
+is not. `TauBackend` passes `config["model_source"]` / `["thinking_source"]`
+through. `create_agent_session(model=None)` now means `"gpt-4o"` with source
+`default`. It previously defaulted to the string, which made the two cases
+indistinguishable.
+
+### 8.2 What is recorded
+
+`model_source` and `thinking_source` are config keys. A value write carries its
+source in the same entry. A source change with an unchanged value is written on
+its own, so `/model X` while on X still pins after a resume. A restored value
+never writes its source again.
+
+`AgentSession.record_settings(**extra)` writes the request keys now, with
+`extra` beside them. `TauBackend.record_model_change` and the RPC `set_model`
+verb write through it instead of `append_config`, so the immediate entry a
+`--continue` reads carries the source.
+
+### 8.3 Reading it
+
+`ctx.get_setting_source("model" | "thinking")`, backed by
+`AgentSession.get_setting_source`, returns a `SettingSource(source, restored)`
+for the acting cursor. It is readable at `session_start`, at `input`, and
+wherever a ctx exists. A frame that sets its own model or level carries its own
+source on `TurnFrame.model_source` / `reasoning_source`, required beside the
+value.
+
+**On resume the recorded source survives** (tau-router's follow-up request): a
+resumed `/model` pick reads `SettingSource("command", restored=True)`, not
+`resume`. `restored_source(recorded, setting)` reads it off the resumed config.
+An entry with no source gives `SettingSource("resume", restored=True)`. A flag
+given on resume replaces only its own setting (`-m Y` gives `cli`, and the
+thinking level stays restored). The heads that resume are `-p`, the REPL, the
+TUI's session picker and `tau serve` loading a session. A serve fork restores
+the source's record too. A session `tau serve` has just created takes the
+`new_session` sources rather than reading as restored.
+
+### 8.4 The event
+
+`turn_setting_changed`, runner-routed, with `{type, cursor_id, setting, old,
+new, source}`. `old` and `new` are config names for the model, or `Model.name`
+when the session knows no config name, and levels for thinking.
+
+It is **notify-only**. It fires once the change is in the tree, so a veto
+would have to un-write an entry, and the setter has already returned to its
+caller. An extension that wants a different model calls `ctx.set_model`, and
+that is a change of its own. The return value is ignored, and a raising handler
+is surfaced and does not stop the next one, as with `entry_written`. It respects
+a frame's `hooks=False`. Runner events are not mirrored on the RPC wire, so the
+event list and the protocol docs are unchanged.
+
+When it fires:
+- Only a setter call is a change. The setting a session was built with is never
+  announced, nor is a value restored on resume, even on its first record. An
+  extension reads that setting with `ctx.get_setting_source` at
+  `session_start`.
+- It fires when the setter's change is recorded: at the next request, or at
+  once through `record_settings` (`/model`, the RPC verb). Several calls before
+  one record report the first `old` and the final value. A call that changed
+  neither value nor source writes nothing and fires nothing.
+- A non-head cursor without a frame records the session's change on its own
+  path. The event fires on the head's record, where the change was made.
+
+**Alternative rejected:** making it an `AgentEvent` on the notify bus. That
+would reach RPC and `--mode json` for free, but `AgentEvent.source` is already
+the submission's origin. A second meaning on the same field, or a renamed one,
+costs more than a runner event's lack of wire presence, which no consumer has
+asked for.
+
+**Not done:** a TUI attached to `tau serve` (`--connect`) sends `/model` as the
+RPC verb, so it records `rpc`, not `command`.
+

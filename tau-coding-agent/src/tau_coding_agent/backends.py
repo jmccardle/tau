@@ -1616,6 +1616,10 @@ class TauBackend(Backend):
     turns until it happens (docs/PRICING-AND-COMPACTION-CONFIG.md §6). A config
     with ``unavailable`` (``headless.resolve_model_config``'s ``open_unavailable``)
     opens on an :class:`~tau_agent_core.model_availability.UnavailableModel`.
+    ``config["model_source"]`` / ``config["thinking_source"]`` are the
+    :class:`~tau_agent_core.setting_sources.SettingSource` of each, as
+    :func:`~tau_coding_agent.headless.resolve_model_config` derives them;
+    absent, the session's constructor defaults apply (docs/TURN-SETTINGS.md §8).
 
     Attributes:
         comparisons: The open comparisons (:meth:`compare`), by id, until ended.
@@ -1687,6 +1691,8 @@ class TauBackend(Backend):
             tools=tools,
             api_key=api_key,
             reasoning=reasoning_arg,
+            model_source=config.get("model_source"),
+            reasoning_source=config.get("thinking_source"),
             compaction_settings=compaction.settings,
             bus_available=bool(config.get("bus_available", False)),
             no_tools=no_tools,
@@ -1961,9 +1967,10 @@ class TauBackend(Backend):
     async def set_model(self, name: str) -> Performed:
         """Switch the active model by config NAME, effective on the next turn.
 
-        Delegates to :meth:`AgentSession.set_model`, which raises on a name the
-        resolver does not know, then records the switch (:meth:`record_model_change`)
-        so the next ``--continue`` resumes on it.
+        The ``/model`` command's path in the TUI and the REPL, so the source is
+        ``command``. Delegates to :meth:`AgentSession.set_model`, which raises on a
+        name the resolver does not know, then records the switch
+        (:meth:`record_model_change`) so the next ``--continue`` resumes on it.
 
         Args:
             name: The config model name, as ``--model NAME`` spells it.
@@ -1972,7 +1979,7 @@ class TauBackend(Backend):
             A :class:`~tau_agent_core.flows.Performed` whose ``data`` is
             ``{model, leaf}``, as ``set_model``'s ``returns`` declares.
         """
-        model = self.agent_session.set_model(name)
+        model = self.agent_session.set_model(name, source="command")
         await self.record_model_change(name)
         return self.agent_session.performed("set_model", {"model": model})
 
@@ -1984,12 +1991,13 @@ class TauBackend(Backend):
         backend was already built from that model's config (docs/REPL-HEAD.md §3
         step 9).
 
+        Writes through :meth:`AgentSession.record_settings`, so the entry carries
+        the model's source and a pending switch is announced.
+
         Args:
             name: The config model name.
         """
-        await self.agent_session.acting_cursor.append_config(
-            model=name, backend=self.config.get("backend", "")
-        )
+        await self.agent_session.record_settings(model=name, backend=self.config.get("backend", ""))
 
     async def compare(self, models: list[str], text: str, at: str | None = None) -> Performed:
         """Send ``text`` to each of ``models`` on its own cursor (docs/TAU-SERVE.md §8).
@@ -2080,8 +2088,9 @@ class TauBackend(Backend):
     def set_reasoning(self, level: str) -> Performed:
         """Set the requested reasoning level for the live session's next request.
 
-        Delegates to :meth:`AgentSession.set_reasoning`, the one path every head
-        shares (docs/REASONING-WIRE.md §10). Nothing is appended here.
+        The ``/thinking`` command's path, so the source is ``command``. Delegates
+        to :meth:`AgentSession.set_reasoning`, the one path every head shares
+        (docs/REASONING-WIRE.md §10). Nothing is appended here.
 
         Args:
             level: A thinking level, ``"off"`` through ``"xhigh"``.
@@ -2093,7 +2102,7 @@ class TauBackend(Backend):
         Raises:
             ValueError: ``level`` is not a thinking level.
         """
-        requested = self.agent_session.set_reasoning(level)
+        requested = self.agent_session.set_reasoning(level, source="command")
         return self.agent_session.performed("set_reasoning", {"level": requested})
 
     async def compact(self, custom_instructions: str | None = None) -> Any:
