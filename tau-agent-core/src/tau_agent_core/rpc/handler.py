@@ -177,6 +177,7 @@ class RPCHandler:
         self._lane_suspensions: dict[str, object] = {}
         self._lane_changed = asyncio.Event()
         self._remove_responder: Callable[[], None] | None = None
+        self._input_ended = asyncio.Event()
         self._session.subscribe(self._forward_event)
 
     @property
@@ -473,6 +474,17 @@ class RPCHandler:
             return
         self._lane_changed.set()
         self._lane_changed.clear()
+
+    async def _end_of_input(self) -> None:
+        """Withdraw this host as a responder and close every suspension as ``cursor_closed`` (§3.6).
+
+        Called at stdin EOF. A host that never declared ``suspensions`` has
+        nothing waiting on it, and this does nothing.
+        """
+        if self._remove_responder is None:
+            return
+        self.declare_suspensions(False)
+        await self._session.close_suspensions()
 
     @property
     def answered_by(self) -> dict[str, Any]:

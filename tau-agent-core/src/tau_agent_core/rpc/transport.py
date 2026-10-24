@@ -207,12 +207,29 @@ async def _read_stdin(self: "RPCHandler") -> None:
     """
     queue: asyncio.Queue[QueuedLine] = asyncio.Queue()
     pump = asyncio.ensure_future(_pump_stdin(self, queue))
+    ending = asyncio.ensure_future(_on_input_end(self))
     try:
         await _dispatch_lines(self, queue)
     finally:
         pump.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await pump
+        if not self._input_ended.is_set():
+            ending.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await ending
+
+
+async def _on_input_end(self: "RPCHandler") -> None:
+    """At stdin EOF, at once rather than queued behind parked work, let the host's suspensions go.
+
+    A host that closed its input can answer nothing, so a request waiting on a
+    suspension would hold the session, and its write lock, forever. Its
+    responder is withdrawn and every suspension closed as ``cursor_closed``;
+    with none open this does nothing, so EOF behaves as it always did.
+    """
+    await self._input_ended.wait()
+    await self._end_of_input()
 
 
 QueuedLine: TypeAlias = "str | Callable[[], Awaitable[None]] | None"
@@ -241,6 +258,7 @@ async def _pump_stdin(self: "RPCHandler", queue: "asyncio.Queue[QueuedLine]") ->
     transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
     pending = bytearray()
     discarding = False
+    eof = False
     try:
         while True:
             read_task = asyncio.ensure_future(reader.read(_READ_CHUNK_BYTES))
@@ -313,6 +331,8 @@ async def _pump_stdin(self: "RPCHandler", queue: "asyncio.Queue[QueuedLine]") ->
     finally:
         transport.close()
         queue.put_nowait(None)
+        if eof:
+            self._input_ended.set()
 
 
 def _control_verb(line: str) -> bool:
