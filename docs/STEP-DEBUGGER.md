@@ -387,8 +387,16 @@ rests on the Future. Across processes it rests on the store:
 
 - **File store.** The answering process takes an exclusive lock on the session
   file (`fcntl.flock`), then re-reads the log. If the side entry is still
-  incomplete, it finalizes it and releases the lock; that process owns the
-  resume. Otherwise it gets `already resolved`, exactly as in-process. Today
+  incomplete, it finalizes it and owns the resume, and it **holds the lock until
+  the resumed turn ends**. Otherwise it gets `already resolved`, exactly as
+  in-process. Releasing the lock at the finalize would lift the prompt refusal
+  while the resumed batch still runs, and another process could then append a
+  prompt over calls in flight (tau-search, round 4).
+- **Every file-store writer takes the same lock per turn.** A TUI, REPL, RPC or
+  `-p` process tries the lock without blocking when it admits a turn, and holds
+  it until the turn ends. If another process holds it, the submit is refused,
+  naming the holder. This is the single-writer rule serve already follows,
+  applied across processes. It costs one `flock` call per turn. Today
   nothing locks the file store across processes (`session_store.py`,
   `session_log.py` and `headless.py` have no `flock`, `fcntl` or `O_EXCL`).
   `finalized_entry`'s refusal (`session_log.py:118`) sees only lines already
@@ -415,7 +423,12 @@ idempotent:
   into the dispatch context, which `ext:` handlers inherit like the §3.2 token.
 - During that re-dispatch, the first `api.suspend` from the same extension at
   the same site returns the stored resolution. It opens no new suspension and
-  writes no new entry.
+  writes no new entry. At a `tool_call` site the match also includes the call:
+  the key is `(extension, site, call)`, with the `tool_call_id` the side entry
+  stores (§3.7.1). Otherwise a parallel resume, which re-dispatches calls
+  *1…k−1* before call *k*, would hand call *k*'s answer to call 1 (tau-router,
+  round 4). Calls *1…k−1* suspend normally if they hit. Other sites keep
+  `(extension, site)`.
 - Any later `api.suspend` in the same dispatch opens a new suspension as usual,
   because it is a genuinely new break.
 - `api.resumed()` exposes the same record to any handler that wants to know.
@@ -785,6 +798,11 @@ Every head must produce the same tree: the same entries, the same finalized
 - two `tau -p --session X --answer …` processes race on one orphaned
   suspension: one claims it and resumes, the other gets `already resolved`, and
   every pending tool runs exactly once;
+- a TUI submits while a `-p --answer` resume is mid-batch: refused by the lock,
+  not interleaved;
+- a parallel batch where call *k* suspended, then a resume with the debugger in
+  `every` mode: call 1 suspends with a new suspension, and only call *k*
+  receives the stored resolution;
 - `-p --answer` against a session that `tau serve` hosts: the claim fails and
   names the daemon;
 - `-p` exits 3 at each site; `--answer` resumes it; `-p` without `--answer`
@@ -897,3 +915,5 @@ as milestone 2 (§7).
 | round 3, tau-search: a parallel `tool_call` resume misses calls prepared only in memory | §3.7.3 resume from the first call with no result |
 | round 3, tau-search: nothing stops a new prompt over a pending suspension | §3.7.3 refused on every head until answered |
 | round 3, tau-search: two processes can both claim an orphaned suspension | §3.7.3 atomic claim: `flock` and a re-read; serve holds the lock; JMFTS resumes only through a single writer |
+| round 4, tau-router: a parallel resume could hand call *k*'s answer to call 1 | §3.7.3 replay key `(extension, site, call)` at `tool_call` |
+| round 4, tau-search: releasing the claim lock at finalize opens a window for another writer | §3.7.3 lock held to the end of the resumed turn; every file-store writer takes it per turn |
