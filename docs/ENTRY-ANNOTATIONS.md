@@ -57,14 +57,17 @@ dots as a path.
   The prompt-cache invariant holds for the same reason, because no byte of `ext`
   is in any request.
 - **Not inside `message`.** The message is validated through pydantic models such
-  as `ToolResultMessage` (`agent_loop.py:1572`), and its bytes are the model's
+  as `ToolResultMessage` (`agent_loop.py:1578`), and its bytes are the model's
   input. Mixing extension data into it would put both of those at risk.
 - **Not in `details`.** `details` belongs to the tool that ran. An entry is
   annotated by extensions that are not that tool, and assistant and user messages
   have no `details`.
 
 The value must be JSON: a dict, list, str, int, float, bool or null, nested. A
-handler that returns anything else has failed (§4.3).
+handler that returns anything else has failed (§4.3). That includes a tuple,
+which `json.dumps` would write as a list: the value must already be what a
+reload returns, so a list, not a tuple. Dict keys must be str, and a float must
+be finite.
 
 ## 3. When it is written: the `annotate` hook
 
@@ -81,8 +84,8 @@ Model-visible entries reach the log at four call sites in `agent_session.py`
 | `send_message`, the exposure notice (`:2700`) | `_append_custom_message` (`:4973`), when idle | `acting_cursor.append_custom_message`, bypassing the writer |
 
 A tool result reaches `_CursorWriter.append` through `_record`
-(`agent_loop.py:1561`), after the `tool_result` hook has run
-(`agent_loop.py:1405` precedes `:1419`).
+(`agent_loop.py:1567`), after the `tool_result` hook has run
+(`agent_loop.py:1411` precedes `:1425`).
 
 The annotation logic lives in **one** `AgentSession` method, `_annotation`. It
 runs every `annotate` handler through `ExtensionRunner.emit_annotate`. All four
@@ -105,13 +108,17 @@ labels and navigation records. Compaction and `branch_summary` entries are model
 input, but their text is a summary τ generated, not a message a turn produced.
 None of the others is model input. None of them has blocks (§6).
 
-An assistant message finalized after a stream error (`agent_loop.py:1153`) is
+An assistant message finalized after a stream error (`agent_loop.py:1159`) is
 annotated the same way. Its `stop_reason` is in the message the handler receives.
 The incomplete line that `open()` writes carries no `ext`.
 
 When `store_history` is off (`_CursorWriter.persist` is `False`), nothing is
 written, and `annotate` is not called. A result with nowhere to go is not
 computed.
+
+A branch spawned with `spawn(hooks=False)`, the default, dispatches through the
+quiet runner (`AgentSession._hooks`), which has no registrations. So its entries
+are never annotated, the same as every other hook on that branch.
 
 ### 3.2 The contract
 
@@ -169,7 +176,12 @@ incomplete (`session_log.py:118`). No API that edits a finished entry is added.
 
 A handler can raise, or return a value that is not JSON. Either way, the entry
 **is still written**, with the failure recorded in place of the annotation, and
-the turn is then aborted:
+the turn is then aborted. *Built note:* the blocks can fail too, before any
+handler runs: `entry_blocks` raises on a content block of a type the message
+does not carry, or on `arguments` or `details` that `json.dumps` cannot render
+(a `datetime` a `tool_result` hook put in `details`, say). Then no handler runs,
+every annotating extension records that error, and `AnnotationError.extension`
+is `None`. The entry is written and the turn ends the same way.
 
 1. The entry is written as usual, with `ext[<extension name>] =
    {"error": "<ExceptionType>: <message>"}`. Other extensions' annotations on the
@@ -183,14 +195,14 @@ Writing the entry keeps the tree valid. Withholding it would wedge the session:
   assistant entry. An unwritten result leaves the path ending on an unanswered
   call, and the provider rejects the next request on resume. The abort records
   `ABORTED_TOOL_RESULT` for each call in the batch that has no result yet,
-  through the existing `_aborted_batch` (`agent_loop.py:1254`). A sequential
+  through the existing `_aborted_batch` (`agent_loop.py:1260`). A sequential
   batch runs no further tool; a parallel batch's calls are already running, so
   each writes its own result.
 - **An assistant message:** without its finalize, the entry would stay
   `incomplete`. `entries_to_messages` raises `IncompleteEntryError` at it
   (`conversation_tree.py:187`), so the session could not continue from there.
   Its tool calls never run. Each gets a result through `_aborted_batch`, the
-  path a failed stream takes with `UNRUN_TOOL_RESULT` (`agent_loop.py:1174`).
+  path a failed stream takes with `UNRUN_TOOL_RESULT` (`agent_loop.py:1180`).
   *Built note:* the text written is `ABORTED_TOOL_RESULT`, not
   `UNRUN_TOOL_RESULT`, whose words ("the response stream failed") would tell the
   model something false here.

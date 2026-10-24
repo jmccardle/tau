@@ -5,6 +5,7 @@ docs/ENTRY-ANNOTATIONS.md §4.2.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import patch
 
@@ -105,3 +106,34 @@ async def test_copy_of_drops_ext(tmp_path) -> None:
     assert kind == "message"
     assert "ext" not in payload
     assert payload["copiedFrom"] == entry["id"]
+
+
+async def test_no_annotator_writes_the_same_bytes_shape(tmp_path) -> None:
+    """With no annotation the file holds no ``ext``, line for line as without the hook."""
+
+    def silent(api):
+        api.on("annotate", lambda event, ctx: None)
+
+    files = []
+    for extensions in ([], [silent]):
+        store = Session.create("/tmp", "gpt-4o", "openai", base_dir=tmp_path / str(len(files)))
+        session = AgentSession(session_log=store, model=_model(), extensions=extensions)
+        with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_fake):
+            await session.prompt("go")
+        files.append(store.path.read_text(encoding="utf-8"))
+
+    assert '"ext"' not in files[0] and '"ext"' not in files[1]
+
+    def messages(text: str) -> list[dict[str, Any]]:
+        out = []
+        for line in text.splitlines():
+            entry = json.loads(line)
+            if entry.get("type") not in ("message", "customMessage"):
+                continue
+            entry.pop("id"), entry.pop("parentId"), entry.pop("timestamp")
+            entry["message"].pop("timestamp", None)
+            out.append(entry)
+        return out
+
+    assert messages(files[0]) == messages(files[1])
+    assert len(messages(files[0])) == 3  # user, the open line, the finalized assistant

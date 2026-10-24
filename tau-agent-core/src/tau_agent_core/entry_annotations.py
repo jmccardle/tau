@@ -102,25 +102,34 @@ def entry_blocks(kind: str, message: dict[str, Any]) -> list[Block]:
 
 @agent_facing(topic="extensions", since="0.15.0")
 class AnnotationError(RuntimeError):
-    """An ``annotate`` handler raised or returned a value that is not JSON.
+    """An ``annotate`` handler failed, or the entry's blocks could not be derived.
 
+    A handler fails by raising or by returning a value that is not JSON.
     Raised after the entry is written with ``ext[<extension>] = {"error": …}``,
     and the turn ends on it (docs/ENTRY-ANNOTATIONS.md §4.3).
 
     Attributes:
-        extension: The failing extension's name, the ``ext`` key.
+        extension: The failing extension's name, the ``ext`` key; ``None`` when
+            :func:`entry_blocks` raised, which every annotating extension records.
         error: ``"<ExceptionType>: <message>"``, as recorded on the entry.
     """
 
-    def __init__(self, extension: str, error: str) -> None:
-        """Name the failing extension and its recorded error."""
-        super().__init__(f"extension {extension!r} annotate hook failed: {error}")
+    def __init__(self, extension: str | None, error: str) -> None:
+        """Name the failing extension (or none) and its recorded error."""
+        if extension is None:
+            text = f"the entry's blocks could not be derived for annotate: {error}"
+        else:
+            text = f"extension {extension!r} annotate hook failed: {error}"
+        super().__init__(text)
         self.extension = extension
         self.error = error
 
 
 def json_value(value: Any, where: str = "$") -> Any:
     """A fresh copy of ``value`` when it is JSON, for storing on an entry.
+
+    A tuple is refused although ``json.dumps`` would write it as a list: the
+    value must already be what a reload returns, so a list, not a tuple.
 
     Args:
         value: What a handler returned.
@@ -130,7 +139,8 @@ def json_value(value: Any, where: str = "$") -> Any:
         ``value`` rebuilt from dicts, lists, str, int, finite float, bool and None.
 
     Raises:
-        TypeError: something in ``value`` is not one of those, or a key is not a str.
+        TypeError: something in ``value`` is not one of those (a tuple included),
+            or a key is not a str.
         ValueError: a float is NaN or infinite.
     """
     if value is None or isinstance(value, (str, bool, int)):

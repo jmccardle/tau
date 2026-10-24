@@ -686,7 +686,10 @@ class ExtensionRunner:
         it cannot change the entry or what a later handler sees. A ``None``
         return adds no key. A raise or a value that is not JSON records
         ``{"error": "<Type>: <message>"}`` under that extension, is surfaced via
-        :meth:`on_error`, and the rest still run.
+        :meth:`on_error`, and the rest still run. When the blocks themselves
+        cannot be derived (:func:`entry_blocks` raises), no handler runs and
+        every annotating extension records that error, so the entry is still
+        written and the turn still ends on it (§4.3).
 
         Args:
             kind: ``"user"``, ``"assistant"``, ``"toolResult"`` or ``"custom"``.
@@ -696,17 +699,23 @@ class ExtensionRunner:
             The ``ext`` dict (empty when nothing returned a value) and the first
             failure, or ``None``.
         """
+        annotating = [ext for ext in self._extensions if ext.handlers.get("annotate")]
+        if not annotating:
+            return {}, None
+        try:
+            base = {"kind": kind, "message": message, "blocks": entry_blocks(kind, message)}
+        except Exception as err:  # noqa: BLE001 — recorded on the entry, then raised
+            detail = f"{type(err).__name__}: {err}"
+            for ext in annotating:
+                self._emit_error(ExtensionError(ext.path, "annotate", detail))
+            return {ext.name: {"error": detail} for ext in annotating}, AnnotationError(
+                None, detail
+            )
         ext_values: dict[str, Any] = {}
         failure: AnnotationError | None = None
-        base: dict[str, Any] | None = None
-        for ext in self._extensions:
-            handlers = ext.handlers.get("annotate")
-            if not handlers:
-                continue
-            if base is None:
-                base = {"kind": kind, "message": message, "blocks": entry_blocks(kind, message)}
+        for ext in annotating:
             try:
-                value = await self._call(handlers[0], copy.deepcopy(base))
+                value = await self._call(ext.handlers["annotate"][0], copy.deepcopy(base))
                 if value is None:
                     continue
                 ext_values[ext.name] = json_value(value)

@@ -6,19 +6,20 @@
 <!-- agent: yes -->
 
 ```python
-class AnnotationError(extension: str, error: str)
+class AnnotationError(extension: str | None, error: str)
 ```
 
 `tau_agent_core.entry_annotations.AnnotationError` · since 0.15.0
 
-An ``annotate`` handler raised or returned a value that is not JSON.
+An ``annotate`` handler failed, or the entry's blocks could not be derived.
 
+A handler fails by raising or by returning a value that is not JSON.
 Raised after the entry is written with ``ext[<extension>] = {"error": …}``,
 and the turn ends on it (docs/ENTRY-ANNOTATIONS.md §4.3).
 
 **Constructor parameters**
 
-- `extension: str` — The failing extension's name, the ``ext`` key.
+- `extension: str | None` — The failing extension's name, the ``ext`` key; ``None`` when :func:`entry_blocks` raised, which every annotating extension records.
 - `error: str` — ``"<ExceptionType>: <message>"``, as recorded on the entry.
 
 ## AuthorizationStore

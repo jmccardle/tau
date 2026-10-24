@@ -860,6 +860,11 @@ class AgentLoop:
         :class:`~tau_agent_core.agent_session.AgentSession` persists it as a
         ``customMessage`` tree node). Append-only: it never rewrites the
         assistant/tool nodes produced this turn.
+
+        Raises:
+            AnnotationError: an ``annotate`` failure on a node it wrote, or one
+                noted earlier, so nothing after this turn (compaction, the next
+                ``turn_start``, a steer) runs first.
         """
         dispatcher = self._hook_dispatcher
         if dispatcher is None or not dispatcher.has_handlers("turn_end"):
@@ -874,6 +879,7 @@ class AgentLoop:
             messages.append(node)
             final_messages.append(node)
             await self._write(node)
+        self._raise_annotation_failure()
 
     @staticmethod
     def _turn_end_custom_node(message: dict[str, Any]) -> dict[str, Any]:
