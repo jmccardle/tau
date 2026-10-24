@@ -94,6 +94,14 @@ EXPOSED: dict[str, str] = {
 }
 
 NOT_EXPOSED: dict[str, str] = {
+    "get_setting_source": (
+        "An extension-edge read (ctx.get_setting_source). A host reads the same "
+        "sources from the config entries get_entries returns (TURN-SETTINGS.md §8)."
+    ),
+    "record_settings": (
+        "Head plumbing: the set_model verb calls it itself, and a host has no "
+        "reason to record a setting it did not change."
+    ),
     "add_suspension_responder": (
         "A head registers itself as a responder in-process; a host does it with "
         "declare_capabilities, whose effect this is, not by naming a responder."
