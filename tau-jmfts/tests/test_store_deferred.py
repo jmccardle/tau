@@ -171,3 +171,21 @@ async def test_a_fork_copies_finalized_side_entries_and_refuses_an_open_one():
         assert all("status" not in e for e in fork.entries() if e["type"] == "suspension")
         assert fork.entries()[-1]["type"] == "suspension"
         assert default_leaf(fork.entries()) == fork.entries()[-3]["id"]
+
+
+async def test_a_fork_reads_the_mirror_and_the_subtree_with_no_append_between():
+    """An append or finalize landing between the two reads could copy an open side entry."""
+    client = _Client()
+    log = _deferred(client)
+    cursor = Cursor.newest(log)
+    await cursor.append_message({"role": "user", "content": "hi"})
+    reads: list[bool] = []
+    get_subtree = client.get_subtree
+
+    def watched(root_id: int, max_depth: Any = None) -> dict[str, Any]:
+        reads.append(log._append_lock.locked())
+        return get_subtree(root_id, max_depth)
+
+    client.get_subtree = watched  # type: ignore[method-assign]
+    JmftsSessionCatalog(client).fork(log, ".")  # type: ignore[arg-type]
+    assert reads[0] is True, "the source's subtree is read under its append lock"
