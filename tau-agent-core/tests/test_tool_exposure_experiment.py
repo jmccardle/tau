@@ -170,7 +170,7 @@ async def test_bash_returns_a_structured_value_that_fits_its_declared_schema(tmp
     assert value["exit_code"] == 3
     assert value["stdout"] == "hi\n"
     assert value["stderr"] == "err\n"
-    assert out["content"][0]["text"] == value["output"]
+    assert out["content"][0]["text"] == value["output"].rstrip("\n") + "\n\nCommand exited with code 3"
     assert out["is_error"] is True
     schema = _resolve_tools(["bash"])[0].output_schema
     assert schema is not None and set(schema["properties"]) == set(BashResult.__annotations__)

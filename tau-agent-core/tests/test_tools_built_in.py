@@ -554,6 +554,32 @@ class TestBashTool:
         tool = BashTool(cwd=str(tmp_path))
         result = await tool.execute("tc1", {"command": "exit 1"}, None, None)
         assert result["details"]["exit_code"] == 1
+        assert result["is_error"] is True
+        assert result["content"][0]["text"] == "Command exited with code 1"
+
+    async def test_a_nonzero_exit_with_empty_stderr_is_an_error(self, tmp_path):
+        """#88: a nonzero exit is an error even when nothing reached stderr."""
+        tool = BashTool(cwd=str(tmp_path))
+        result = await tool.execute("tc1", {"command": "echo report; false"}, None, None)
+        assert result["is_error"] is True
+        assert result["details"]["exit_code"] == 1
+        assert result["content"][0]["text"] == "report\n\nCommand exited with code 1"
+
+    async def test_a_nonzero_exit_with_stderr_ends_with_its_code(self, tmp_path):
+        """The model reads the exit code after the output, stderr included."""
+        tool = BashTool(cwd=str(tmp_path))
+        result = await tool.execute("tc1", {"command": "echo bad >&2; exit 3"}, None, None)
+        assert result["is_error"] is True
+        text = result["content"][0]["text"]
+        assert "bad" in text
+        assert text.endswith("\n\nCommand exited with code 3")
+
+    async def test_a_zero_exit_carries_no_code_line(self, tmp_path):
+        """A success adds nothing to the output the model reads."""
+        tool = BashTool(cwd=str(tmp_path))
+        result = await tool.execute("tc1", {"command": "echo fine"}, None, None)
+        assert result["is_error"] is False
+        assert "exited with code" not in result["content"][0]["text"]
 
     async def test_bash_command_not_found(self, tmp_path):
         """Bash tool handles command not found."""

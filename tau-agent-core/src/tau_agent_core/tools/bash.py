@@ -21,7 +21,8 @@ class BashResult(TypedDict):
     """What the bash tool returns to a nested caller.
 
     Attributes:
-        output: The combined text the model reads: stdout, then ``stderr:`` and stderr.
+        output: Stdout, then ``stderr:`` and stderr. The model reads this, plus an
+            exit-code line when ``exit_code`` is nonzero.
         stdout: Standard output, cut to 10000 characters when ``truncated``.
         stderr: Standard error, likewise; a timeout notice leads it.
         exit_code: The shell's exit status; ``None`` when aborted.
@@ -130,6 +131,9 @@ class BashTool:
     ) -> dict:
         """Execute the bash tool: :meth:`run`, rendered as the model reads it.
 
+        Any nonzero exit is an error, whatever stderr holds, and its code ends the
+        text the model reads and is in ``details["exit_code"]`` (#88).
+
         Args:
             tool_call_id: Unique identifier for the tool call
             args: Tool arguments dict with 'command', optional 'timeout'
@@ -158,10 +162,11 @@ class BashTool:
         exit_code = value["exit_code"]
         if value["aborted"]:
             text, is_error = "Command was aborted", False
-        elif exit_code != 0 and value["stderr"].strip():
-            text, is_error = value["output"] or "Command failed", True
         elif exit_code != 0:
-            text, is_error = value["output"] or f"Command exited with code {exit_code}", False
+            trailer = f"Command exited with code {exit_code}"
+            output = value["output"].rstrip("\n")
+            text = f"{output}\n\n{trailer}" if output else trailer
+            is_error = True
         else:
             text, is_error = value["output"], False
         result_dict = AgentToolResult(
