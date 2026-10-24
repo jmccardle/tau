@@ -135,6 +135,19 @@ class TestTheReadASettingsScreenIsBuiltFrom:
 
         assert session.get_extension_config("paths")["values"] == {"paths": ["a"]}
 
+    async def test_mutating_a_nested_value_in_the_returned_values_leaves_the_session_config(
+        self, tmp_path
+    ):
+        ext = _write(tmp_path / "budget.py", _SCHEMA_EXT)
+        session = _make_session()
+        await session.load_extensions(
+            [str(ext)], discover=False, extensions_config={"budget": {"tags": ["a"]}}
+        )
+
+        session.get_extension_config("budget")["values"]["tags"].append("added")
+
+        assert session.get_extension_config("budget")["values"] == {"tags": ["a"]}
+
 
 class TestTheWrite:
     async def test_values_reach_the_extension_after_the_reload(self, tmp_path):

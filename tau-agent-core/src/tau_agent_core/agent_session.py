@@ -2414,8 +2414,8 @@ class AgentSession:
         The read a settings screen is built from. ``schema`` is the extension's
         ``CONFIG_SCHEMA``, normalized at load into ``{title, fields}`` — the same
         shape ``ui.form`` takes, so a head that can render a form can render this
-        with no new widget. ``values`` is the live slice ``api.config`` returns
-        for the extension, keyed by file stem.
+        with no new widget. ``values`` is a deep copy of the slice ``api.config`` is built from for
+        the extension, keyed by file stem; mutating it leaves the session alone.
 
         Args:
             path: A managed path or a unique file stem.
@@ -2435,7 +2435,7 @@ class AgentSession:
         return {
             "path": target,
             "schema": loaded.config_schema,
-            "values": dict(self._extensions_config.get(extension_identifier(target), {})),
+            "values": copy.deepcopy(self._extensions_config.get(extension_identifier(target), {})),
         }
 
     async def set_extension_config(
