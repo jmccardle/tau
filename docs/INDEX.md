@@ -1,6 +1,6 @@
 # docs/ index
 
-96 design records live at the top level of `docs/`. Each opens with its status
+97 design records live at the top level of `docs/`. Each opens with its status
 in the first three lines, so what a file claims to describe is checkable before
 reading it. `.claude/skills/feature-doc` is how one is written and how a line
 below is added.
@@ -103,6 +103,7 @@ Findings, which means writing the finding rather than lengthening the clause.
 **Extensions as written:** `extensions.md` (the canonical `ExtensionAPI` surface) ·
 `EXTENSIONS-WALKTHROUGH.md` · `EXTENSIONS-LIVE-PROCEDURES.md` (exact commands per demo) ·
 `NATS-BUS-EXTENSION.md` ·
+`EXT-REQUEST.md` (`api.request`: one reply per `ext:` subscriber under the emitter's deadline, concurrent; `api.subscriber_count`; built 2026-10-24, #98) ·
 `ENTRY-ANNOTATIONS.md` (an `annotate` hook writes extension JSON as `ext` on the entry in its one write; the full matrix goes to JMFTS child documents; built 2026-10-24, the tau-jmfts `at=` child copy is #84).
 
 **Research and unbuilt** — each states its own status header, and several are stale:

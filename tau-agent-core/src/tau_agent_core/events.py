@@ -296,6 +296,33 @@ class AgentEvent(BaseModel):
     dropped: list[str] | None = None
 
 
+class ChannelSubscriber:
+    """An ``ext:`` channel subscription made through an extension's api (#98).
+
+    The bus calls it, which runs ``dispatch``: the handler itself, or its
+    policy wrapper. ``api.request`` reads ``handler`` and ``extension`` instead,
+    so it runs the bare handler under the requester's terms and names who
+    answered.
+
+    Attributes:
+        handler: The callable the extension subscribed.
+        extension: The subscribing extension's name; ``None`` for an api bound
+            to no extension.
+        dispatch: What :meth:`EventBus.emit_channel` runs.
+    """
+
+    def __init__(
+        self, handler: Callable[..., Any], extension: str | None, dispatch: Callable[..., Any]
+    ) -> None:
+        self.handler = handler
+        self.extension = extension
+        self.dispatch = dispatch
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Run :attr:`dispatch`, as an emit does."""
+        return self.dispatch(*args, **kwargs)
+
+
 @agent_facing(topic="events")
 class EventBus:
     """Central event bus for τ-agent-core.
@@ -453,6 +480,17 @@ class EventBus:
             True if at least one handler is registered on ``channel``.
         """
         return bool(self._listeners.get(channel))
+
+    def subscribers(self, channel: str) -> tuple[Callable[..., Any], ...]:
+        """A snapshot of ``channel``'s handlers, in subscription order.
+
+        Args:
+            channel: Channel name; ``"all"`` subscribers are not included.
+
+        Returns:
+            The handlers; an api's ``ext:`` subscription is a :class:`ChannelSubscriber`.
+        """
+        return tuple(self._listeners.get(channel, ()))
 
     async def emit(self, event: AgentEvent) -> None:
         """Emit an event to all matching handlers.

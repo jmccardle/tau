@@ -177,6 +177,8 @@ api.submit_threadsafe(...)
 
 # Inter-extension pub/sub
 await api.emit(topic: str, payload: Any) -> None    # ext:<name>:<topic> channels
+await api.request(topic, payload, *, timeout_s) -> list[RequestReply]  # one reply per subscriber, docs/EXT-REQUEST.md
+api.subscriber_count(topic: str) -> int
 
 # Per-extension config — replaces the deleted register_flag/get_flag
 api.config -> dict[str, Any]     # from ~/.tau/config.json "extensions.<name>", or --ext-config

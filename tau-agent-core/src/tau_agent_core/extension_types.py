@@ -29,6 +29,7 @@ from tau_agent_core.commands import (
 )
 from tau_agent_core.compaction import estimate_context_tokens
 from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_data
+from tau_agent_core.events import ChannelSubscriber
 from tau_agent_core.extension_warnings import TAU_SOURCE
 from tau_agent_core.policies import (
     Failed,
@@ -38,9 +39,11 @@ from tau_agent_core.policies import (
     PolicedHandler,
     PolicySite,
     Proceeded,
+    RequestReply,
     ThreadAffinity,
     check_outcome,
     police_thread_affinity,
+    request_replies,
 )
 from tau_agent_core.tool_catalog import ExtensionInfo, ToolDescription, match_tools
 from tau_agent_core.tool_output import suspend_capture
@@ -1952,8 +1955,12 @@ class ExtensionAPI:
 
             return unsubscribe_hook
 
-        if policy is not None:
-            handler = self._policed_channel_handler(event, handler, policy)
+        if event.startswith(EXT_CHANNEL_PREFIX):
+            dispatch = handler
+            if policy is not None:
+                dispatch = self._policed_channel_handler(event, handler, policy)
+            owner = None if self._hook_handlers is None else self._hook_handlers.name
+            handler = ChannelSubscriber(handler, owner, dispatch)
         unsubscribe = self._event_bus.on(event, handler)
         if not event.startswith(EXT_CHANNEL_PREFIX) or self._hook_handlers is None:
             return unsubscribe
@@ -1981,12 +1988,7 @@ class ExtensionAPI:
         """
         resolved = self._registry.get_policy(policy)
         name = self._emitting_extension_name(f"api.on({channel!r}, policy={policy!r})")
-
-        def warn(text: str) -> None:
-            if self._session is None:
-                self._event_bus._surface_handler_error(RuntimeError(f"warning: {text}"), channel)
-                return
-            self._session.set_extension_warning(name, f"policy:{channel}", text)
+        warn = self._channel_warning(name, channel)
 
         async def policed(*args: Any, **kwargs: Any) -> Any:
             site = PolicySite(channel, name, warn)
@@ -2001,6 +2003,21 @@ class ExtensionAPI:
             return outcome.value
 
         return policed
+
+    def _channel_warning(self, name: str | None, channel: str) -> Callable[[str], None]:
+        """Where a channel subscriber's policy warning goes: ``name``'s ``policy:<channel>``.
+
+        With no session, or no extension name, it is surfaced through the bus's
+        error path instead.
+        """
+
+        def warn(text: str) -> None:
+            if self._session is None or name is None:
+                self._event_bus._surface_handler_error(RuntimeError(f"warning: {text}"), channel)
+                return
+            self._session.set_extension_warning(name, f"policy:{channel}", text)
+
+        return warn
 
     def register_policy(self, name: str, policy: HandlerPolicy) -> None:
         """Register a handler policy for ``api.on(..., policy=name)``, session-wide (§4).
@@ -2227,10 +2244,69 @@ class ExtensionAPI:
                 namespace under.
             HandlerPolicyError: a policed subscriber's outcome was ``Failed``.
         """
+        await self._event_bus.emit_channel(self._own_channel("api.emit", topic), payload)
+
+    async def request(self, topic: str, payload: Any, *, timeout_s: float) -> list[RequestReply]:
+        """Ask every subscriber of ``ext:<name>:<topic>`` and collect each answer (docs/EXT-REQUEST.md).
+
+        The requester's terms replace each subscriber's own policy for this
+        call: every subscriber runs under a ``timeout_s`` deadline, and a timeout
+        or an error is :class:`~tau_agent_core.policies.Failed`. A subscriber
+        registered under ``advisory`` cannot turn that into ``Proceeded``.
+
+        Subscribers run concurrently, each deadline starting at once, so the
+        whole call takes at most ``timeout_s`` of their own time. A suspension
+        inside a subscriber pauses its clock (docs/STEP-DEBUGGER.md §4.3), and an
+        enclosing deadline caps all of them. A sync subscriber runs on a worker
+        thread and is abandoned at the deadline (#97). ``payload`` is passed
+        as-is to each, as by :meth:`emit`.
+
+        Args:
+            topic: The topic, the last segment of the channel name.
+            payload: Delivered to each subscriber.
+            timeout_s: Each subscriber's budget in seconds; positive and finite.
+
+        Returns:
+            One :class:`~tau_agent_core.policies.RequestReply` per subscriber, in
+            subscription order; ``[]`` with none, which the caller judges.
+
+        Raises:
+            ValueError: an empty ``topic`` or a bad ``timeout_s``.
+            RuntimeError: no runner bucket is bound, so there is no channel name.
+            TurnSuspended: a subscriber suspended; the others are cancelled.
+        """
+        channel = self._own_channel("api.request", topic)
+        calls: list[tuple[str | None, HandlerCall]] = []
+        for sub in self._event_bus.subscribers(channel):
+            owner = sub.extension if isinstance(sub, ChannelSubscriber) else None
+            handler = sub.handler if isinstance(sub, ChannelSubscriber) else sub
+            warn = self._channel_warning(owner, channel)
+            calls.append((owner, HandlerCall(handler, (payload,), hook=channel, warn=warn)))
+        return await request_replies(calls, timeout_s)
+
+    def subscriber_count(self, topic: str) -> int:
+        """How many handlers are subscribed to this extension's ``ext:<name>:<topic>``.
+
+        Subscriptions are made at load, so this is already complete in
+        ``session_start``.
+
+        Args:
+            topic: The topic, the last segment of the channel name.
+
+        Returns:
+            The number of subscribers :meth:`emit` and :meth:`request` would reach.
+
+        Raises:
+            ValueError: ``topic`` is empty or whitespace.
+            RuntimeError: no runner bucket is bound.
+        """
+        return len(self._event_bus.subscribers(self._own_channel("api.subscriber_count", topic)))
+
+    def _own_channel(self, op: str, topic: str) -> str:
+        """``ext:<this extension>:<topic>``, refusing a blank topic."""
         if not isinstance(topic, str) or not topic.strip():
-            raise ValueError("api.emit: topic must be a non-empty string")
-        channel = ext_channel(self._emitting_extension_name(), topic)
-        await self._event_bus.emit_channel(channel, payload)
+            raise ValueError(f"{op}: topic must be a non-empty string")
+        return ext_channel(self._emitting_extension_name(op), topic)
 
     def register_tool(self, definition: dict | ExtensionToolDefinition) -> None:
         """Register a tool callable by the LLM.
@@ -2903,7 +2979,9 @@ _API_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
     "register_shortcut": "loop",
     "get_session_name": "loop",
     "send_user_message": "loop",
+    "subscriber_count": "loop",
     "submit": "refuse",
+    "request": "refuse",
     "emit": "refuse",
     "run_command": "refuse",
     "append_entry": "refuse",

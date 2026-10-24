@@ -837,3 +837,92 @@ def police_thread_affinity(cls: type, table: Mapping[str, ThreadAffinity]) -> No
         else:
             setattr(cls, name, _guarded(label, member, kind))
     setattr(cls, "__tau_thread_affinity__", dict(table))
+
+
+RequestStatus = Literal["returned", "expired", "raised"]
+"""How one subscriber answered an ``api.request``."""
+
+
+@agent_facing(topic="extensions", since="0.15.0")
+@dataclass(frozen=True)
+class RequestReply:
+    """One subscriber's answer to ``api.request`` (docs/EXT-REQUEST.md).
+
+    Attributes:
+        extension: The subscriber's extension; ``None`` when it subscribed
+            through an api bound to no extension.
+        outcome: :class:`Returned` with the handler's return value, or
+            :class:`Failed` with its exception or :class:`DeadlineExpired`.
+        status: ``"returned"``; ``"expired"`` when the request's deadline
+            fired; ``"raised"`` when the handler raised, a ``DeadlineExpired``
+            of its own included.
+        abandoned: The deadline expired on a sync handler whose worker thread
+            was still running, and left it behind (#97).
+    """
+
+    extension: str | None
+    outcome: Returned | Failed
+    status: RequestStatus
+    abandoned: bool = False
+
+
+async def _reply(extension: str | None, call: HandlerCall, timeout_s: float) -> RequestReply:
+    """Run one subscriber under its own deadline and say how it answered."""
+    deadline = PausableDeadline(timeout_s)
+    try:
+        value = await deadline.run(call)
+    except DeadlineExpired as err:
+        if err.deadline is deadline:
+            return RequestReply(extension, Failed(err), "expired", call.abandoned)
+        return RequestReply(extension, Failed(err), "raised")
+    except Exception as err:
+        return RequestReply(extension, Failed(err), "raised")
+    return RequestReply(extension, Returned(value), "returned")
+
+
+async def request_replies(
+    calls: Sequence[tuple[str | None, HandlerCall]], timeout_s: float
+) -> list[RequestReply]:
+    """Run every call concurrently, each under its own ``timeout_s`` deadline (docs/EXT-REQUEST.md).
+
+    All deadlines start together, so the whole request takes at most
+    ``timeout_s`` of the subscribers' own time; a suspension pauses it (§4.3)
+    and an enclosing deadline caps it. Each subscriber task counts as awaited
+    by the caller, for :func:`runs_on_behalf_of`.
+
+    A ``BaseException`` from any subscriber, ``TurnSuspended`` included, and
+    the caller's own cancellation cancel the rest, wait for them, and leave
+    unchanged. A sync subscriber still running is abandoned (#97).
+
+    Args:
+        calls: ``(extension, call)`` per subscriber, in subscription order.
+        timeout_s: Each subscriber's budget; positive and finite.
+
+    Returns:
+        One reply per call, in order.
+
+    Raises:
+        ValueError: ``timeout_s`` is not a positive, finite number.
+    """
+    _check_seconds("timeout_s", timeout_s)
+    if not calls:
+        return []
+    loop = asyncio.get_running_loop()
+    awaiter = asyncio.current_task()
+    tasks = [loop.create_task(_reply(extension, call, timeout_s)) for extension, call in calls]
+    if awaiter is not None:
+        for task in tasks:
+            _AWAITED_BY[task] = awaiter
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.wait(tasks)
+        for task in tasks:
+            if not task.cancelled():
+                task.exception()
+        raise
+    finally:
+        for task in tasks:
+            _AWAITED_BY.pop(task, None)

@@ -690,6 +690,44 @@ loop's tools next turn.
 - `ValueError` — if a required key is missing.
 - `TypeError` — if ``parameters`` is not a dict or ``execute`` is not callable.
 
+### request
+
+```python
+async request(topic: str, payload: Any, *, timeout_s: float) -> list[RequestReply]
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.request`
+
+Ask every subscriber of ``ext:<name>:<topic>`` and collect each answer (docs/EXT-REQUEST.md).
+
+The requester's terms replace each subscriber's own policy for this
+call: every subscriber runs under a ``timeout_s`` deadline, and a timeout
+or an error is :class:`~tau_agent_core.policies.Failed`. A subscriber
+registered under ``advisory`` cannot turn that into ``Proceeded``.
+
+Subscribers run concurrently, each deadline starting at once, so the
+whole call takes at most ``timeout_s`` of their own time. A suspension
+inside a subscriber pauses its clock (docs/STEP-DEBUGGER.md §4.3), and an
+enclosing deadline caps all of them. A sync subscriber runs on a worker
+thread and is abandoned at the deadline (#97). ``payload`` is passed
+as-is to each, as by :meth:`emit`.
+
+**Parameters**
+
+- `topic: str` — The topic, the last segment of the channel name.
+- `payload: Any` — Delivered to each subscriber.
+- `timeout_s: float` — Each subscriber's budget in seconds; positive and finite.
+
+**Returns**
+
+class:`~tau_agent_core.policies.RequestReply` per subscriber, in subscription order; ``[]`` with none, which the caller judges.
+
+**Raises**
+
+- `ValueError` — an empty ``topic`` or a bad ``timeout_s``.
+- `RuntimeError` — no runner bucket is bound, so there is no channel name.
+- `TurnSuspended` — a subscriber suspended; the others are cancelled.
+
 ### request_user_action
 
 ```python
@@ -930,6 +968,32 @@ class:`concurrent.futures.Future` resolving to the class:`~tau_agent_core.submis
 
 - `RuntimeError` — No runner bucket or no ``AgentSession`` is bound; the session is not bound to a running loop yet; or this is called from the session's own loop, where blocking on the future deadlocks.
 - `ValueError` — ``correlation`` carries a non-JSON value.
+
+### subscriber_count
+
+```python
+subscriber_count(topic: str) -> int
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.subscriber_count`
+
+How many handlers are subscribed to this extension's ``ext:<name>:<topic>``.
+
+Subscriptions are made at load, so this is already complete in
+``session_start``.
+
+**Parameters**
+
+- `topic: str` — The topic, the last segment of the channel name.
+
+**Returns**
+
+The number of subscribers :meth:`emit` and :meth:`request` would reach.
+
+**Raises**
+
+- `ValueError` — ``topic`` is empty or whitespace.
+- `RuntimeError` — no runner bucket is bound.
 
 ### ui
 
@@ -2561,6 +2625,24 @@ session warning keyed ``policy:<hook>``.
 **Constructor parameters**
 
 - `record: str` — One line saying what failed.
+
+## RequestReply
+<!-- agent: yes -->
+
+```python
+class RequestReply(extension: str | None, outcome: Returned | Failed, status: RequestStatus, abandoned: bool = False)
+```
+
+`tau_agent_core.policies.RequestReply` · since 0.15.0
+
+One subscriber's answer to ``api.request`` (docs/EXT-REQUEST.md).
+
+**Constructor parameters**
+
+- `extension: str | None` — The subscriber's extension; ``None`` when it subscribed through an api bound to no extension.
+- `outcome: Returned | Failed` — :class:`Returned` with the handler's return value, or :class:`Failed` with its exception or :class:`DeadlineExpired`.
+- `status: RequestStatus` — ``"returned"``; ``"expired"`` when the request's deadline fired; ``"raised"`` when the handler raised, a ``DeadlineExpired`` of its own included.
+- `abandoned: bool = False` — The deadline expired on a sync handler whose worker thread was still running, and left it behind (#97).
 
 ## Returned
 <!-- agent: yes -->
