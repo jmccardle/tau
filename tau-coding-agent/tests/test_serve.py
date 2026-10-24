@@ -365,6 +365,46 @@ async def test_an_extension_under_serve_reads_its_config_json_slice(
         await served.daemon.shutdown()
 
 
+async def test_a_failure_after_admission_ends_on_agent_end_and_submission_end(
+    tmp_path, provider, extensions_off
+):
+    extensions = tmp_path / "home" / ".tau" / "extensions"
+    extensions.mkdir(parents=True)
+    (extensions / "badhook.py").write_text(
+        "def register(api):\n"
+        "    api.on('before_agent_start', lambda e, c: "
+        "{'message': {'customType': 'bad_msg', 'content': [{'type': 'nope'}]}})\n"
+    )
+    seen: list[dict[str, Any]] = []
+    server, served = await _serve(tmp_path)
+    try:
+        client = await served.client(on_event=seen.append)
+        session_id = (await client.request(p.NewSession(cwd=str(tmp_path))))["session"][
+            "session_id"
+        ]
+        replica = await client.attach(session_id)
+        result = await asyncio.wait_for(
+            client.submit_and_wait(
+                session_id, replica.head_cursor_id, "hi", source="rpc", submitter="test"
+            ),
+            timeout=5,
+        )
+        assert result["accepted"] is True
+        ends = [
+            e["data"]
+            for e in seen
+            if e["kind"] == "agent_event" and e["data"]["type"] == "agent_end"
+        ]
+        assert [e["end_reason"] for e in ends] == ["error"]
+        assert "is not a text or image block" in ends[0]["error"]
+        names = [e["data"]["name"] for e in seen if e["kind"] == "channel"]
+        assert names[-1] == "submission_end"
+    finally:
+        server.close()
+        await server.wait_closed()
+        await served.daemon.shutdown()
+
+
 def test_a_malformed_extensions_block_stops_the_daemon_at_construction(tmp_path):
     with pytest.raises(CLIError, match='"extensions" must be a JSON object'):
         Daemon({**_CONFIG, "extensions": []}, FileSessionCatalog(tmp_path / "sessions"))

@@ -174,6 +174,41 @@ def completed_messages(exc: BaseException) -> list[Any]:
     return list(getattr(exc, COMPLETED_MESSAGES_ATTR, []))
 
 
+def build_agent_end(
+    final_messages: list[Any],
+    error: BaseException | None = None,
+    end_reason: AgentEndReason | None = None,
+) -> AgentEvent:
+    """The ``agent_end`` event for a turn that produced ``final_messages``.
+
+    Used by the loop, and by the session for a turn that failed before a loop existed.
+
+    Args:
+        final_messages: What the turn produced before it closed.
+        error: The exception that ended the turn, if one did.
+        end_reason: How a non-raising turn stopped. Ignored when ``error`` is set:
+            that case is ``"error"`` by definition, and taking the caller's word
+            for it would let the two fields disagree.
+
+    Returns:
+        The event, with ``error`` and ``error_detail`` set exactly when ``error`` is.
+    """
+    detail = str(error) if error is not None else ""
+    return AgentEvent(
+        type="agent_end",
+        timestamp=int(time.time() * 1000),
+        messages=[m.model_dump() if hasattr(m, "model_dump") else m for m in final_messages],
+        is_error=error is not None,
+        error=(
+            None
+            if error is None
+            else (f"{type(error).__name__}: {detail}" if detail else type(error).__name__)
+        ),
+        error_detail=None if error is None else ErrorDetail.of(error),
+        end_reason=("error" if error is not None else end_reason),
+    )
+
+
 @agent_facing(topic="agent-loop")
 class AgentLoop:
     """The core agent loop: drives conversations, executes tools, emits events.
@@ -794,24 +829,7 @@ class AgentLoop:
                 set — that case is ``"error"`` by definition, and taking the
                 caller's word for it would let the two fields disagree.
         """
-        detail = str(error) if error is not None else ""
-        await self._emit(
-            AgentEvent(
-                type="agent_end",
-                timestamp=int(time.time() * 1000),
-                messages=[
-                    m.model_dump() if hasattr(m, "model_dump") else m for m in final_messages
-                ],
-                is_error=error is not None,
-                error=(
-                    None
-                    if error is None
-                    else (f"{type(error).__name__}: {detail}" if detail else type(error).__name__)
-                ),
-                error_detail=None if error is None else ErrorDetail.of(error),
-                end_reason=("error" if error is not None else end_reason),
-            )
-        )
+        await self._emit(build_agent_end(final_messages, error, end_reason))
 
     async def _deliver_steer(self, messages: list[Any], final_messages: list[Any]) -> int:
         """Weave every queued steering message into the context. Returns how many.
