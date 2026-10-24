@@ -206,7 +206,9 @@ class AgentEvent(BaseModel):
             so a caller could not tell a truncated answer from a complete one.
         cursor_id: The :class:`~tau_agent_core.cursor.Cursor` whose turn emitted
             this event. Several cursors run turns on one session at once, so a
-            renderer routes by it (docs/CURSORS.md §6). ``None`` outside a turn.
+            renderer routes by it (docs/CURSORS.md §6). Every ``agent_start`` and
+            ``agent_end`` carries it; one a manual ``compact()`` brackets, outside any
+            turn, names the head cursor.
         submission_id: The ``Submission`` that drove this turn, if any — Jupyter's
             ``parent_header``. ``None`` for a turn not driven through ``submit()``
             (e.g. ``continue_conversation()``, which predates the Submission
