@@ -115,6 +115,19 @@ class SuspensionScreen(modals._FieldForm[None]):
         self._queue: list[dict[str, Any]] = []
         self._suspension_closed = False
         self._sent = False
+        self._queue_list = Static(
+            "", id="suspension-queue", classes="suspension-queue", markup=False
+        )
+        self._action_buttons = [
+            _SuspensionActionButton(action["label"], index)
+            for index, action in enumerate(self._spec["actions"])
+        ]
+        self._abort_button: Button | None = None
+        if not any(a["label"] == ABORT_LABEL for a in self._spec["actions"]):
+            self._abort_button = Button("Abort turn", variant="error", id="suspension-abort-turn")
+        self._queued_notice = Static(
+            "", id="suspension-queued", classes="suspension-queued", markup=False
+        )
         super().__init__(self._spec["title"])
 
     @property
@@ -149,16 +162,15 @@ class SuspensionScreen(modals._FieldForm[None]):
             yield from self._compose_field(index, field)
 
     def compose_footer(self) -> ComposeResult:
-        yield Static("", id="suspension-queued", classes="suspension-queued", markup=False)
-        yield Static("", id="suspension-queue", classes="suspension-queue", markup=False)
+        yield self._queued_notice
+        yield self._queue_list
         yield Static(
             "Esc does not dismiss: choose an action", classes="tau-dialog-hint", markup=False
         )
         with Horizontal(id="suspension-buttons", classes="tau-dialog-buttons suspension-buttons"):
-            for index, action in enumerate(self._spec["actions"]):
-                yield _SuspensionActionButton(action["label"], index)
-            if not any(a["label"] == ABORT_LABEL for a in self._spec["actions"]):
-                yield Button("Abort turn", variant="error", id="suspension-abort-turn")
+            yield from self._action_buttons
+            if self._abort_button is not None:
+                yield self._abort_button
 
     def on_mount(self) -> None:
         self._show_state()
@@ -172,19 +184,22 @@ class SuspensionScreen(modals._FieldForm[None]):
         """
         self.state = state
         self._queue = queue
-        if self.is_mounted:
-            self._show_state()
+        self._show_state()
 
     def _show_state(self) -> None:
-        """Enable or disable the buttons and redraw the queued notice and the queue list."""
-        queued = self.query_one("#suspension-queued", Static)
+        """Enable or disable the buttons and redraw the queued notice and the queue list.
+
+        Works through the widgets built in ``__init__``, never a query: Textual can
+        deliver this screen's ``Mount`` before its nested footer is mounted.
+        """
+        queued = self._queued_notice
         queued.display = bool(self.state["queued"])
         queued.update(
             f"Queued behind another suspension on cursor {self.state['cursor_id']}: "
             "not answerable until it reaches the front"
         )
         others = self._queue
-        listing = self.query_one("#suspension-queue", Static)
+        listing = self._queue_list
         listing.display = bool(others)
         listing.update(
             "Also pending:\n"
@@ -194,10 +209,10 @@ class SuspensionScreen(modals._FieldForm[None]):
                 for s in others
             )
         )
-        for button in self.query(_SuspensionActionButton):
+        for button in self._action_buttons:
             button.disabled = not self.answerable
-        for abort in self.query("#suspension-abort-turn").results(Button):
-            abort.disabled = self._suspension_closed
+        if self._abort_button is not None:
+            self._abort_button.disabled = self._suspension_closed
 
     def close(self) -> None:
         """The suspension closed: dismiss now if on top, else as soon as this screen is."""
@@ -205,7 +220,7 @@ class SuspensionScreen(modals._FieldForm[None]):
         if self.is_current:
             # Not awaited, and not via call_later: invoke awaits the pop on this screen's pump.
             self.dismiss(None)
-        elif self.is_mounted:
+        else:
             self._show_state()
 
     def on_screen_resume(self) -> None:
@@ -217,7 +232,7 @@ class SuspensionScreen(modals._FieldForm[None]):
 
     def action_submit(self) -> None:
         """Press the one declared action; with several, focus the first instead."""
-        buttons = list(self.query(_SuspensionActionButton))
+        buttons = self._action_buttons
         if len(buttons) != 1:
             buttons[0].focus()
             return

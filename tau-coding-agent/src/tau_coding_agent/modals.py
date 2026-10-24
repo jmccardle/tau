@@ -315,8 +315,11 @@ class _FieldForm(TauDialog[_T]):
             )
 
     def on_mount(self) -> None:
-        if not self._fields:
-            return
+        if self._fields:
+            # Textual can deliver Mount before the nested body is mounted: focus after a refresh.
+            self.call_after_refresh(self._focus_first_field)
+
+    def _focus_first_field(self) -> None:
         first = self.query_one(f"#{self._field_widget_id(0)}")
         (first.focus_target() if isinstance(first, ChoiceField) else first).focus()
 
