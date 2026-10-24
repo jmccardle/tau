@@ -102,7 +102,8 @@ Findings, which means writing the finding rather than lengthening the clause.
 
 **Extensions as written:** `extensions.md` (the canonical `ExtensionAPI` surface) ·
 `EXTENSIONS-WALKTHROUGH.md` · `EXTENSIONS-LIVE-PROCEDURES.md` (exact commands per demo) ·
-`NATS-BUS-EXTENSION.md`.
+`NATS-BUS-EXTENSION.md` ·
+`ENTRY-ANNOTATIONS.md` (an `annotate` hook writes extension JSON as `ext` on the entry in its one write; the full matrix goes to JMFTS child documents; built 2026-10-24, the tau-jmfts `at=` child copy is #84).
 
 **Research and unbuilt** — each states its own status header, and several are stale:
 `TAU-SERVE.md` (the 0.12.0 plan: durable writes, `tau serve`, `--connect`, cursor compare; M0–M5 built, M6's rename built) ·
@@ -111,7 +112,6 @@ Findings, which means writing the finding rather than lengthening the clause.
 `CONSTRAINED-GEN-AND-BRANCHING-PLAN.md` · `JMFTS-INTEGRATION-PLAN.md` ·
 `RESEARCH-INTEGRATION-EVALUATION.md` · `ALPHA-SELECTOR-SPEC.md` ·
 `TRUST-GATE.md` (Tier 8; research record 2026-10-12, nothing built — six open questions) ·
-`ENTRY-ANNOTATIONS.md` (an `annotate` hook writes extension JSON as `ext` on the entry in its one write; the full matrix goes to JMFTS child documents; design record 2026-10-24, nothing built) ·
 `M2-RESULTS.md` · `M3-DESIGN.md` · `WORKSTREAM-CROSSWALK.md` (the status index across the four vocabularies).
 
 **Upstream llama.cpp:** `UPSTREAM-LLAMACPP-SILENT-OVERRIDES.md` (two reproduced silent constraint overrides) ·
