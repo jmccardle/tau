@@ -622,6 +622,10 @@ class TestBashTool:
         result = await tool.execute("tc1", {"command": "sleep 5", "timeout": 100}, None, None)
         assert result["details"]["exit_code"] != 0
         assert result["details"]["truncated"] is True
+        assert result["is_error"] is True
+        text = result["content"][0]["text"]
+        assert "exited with code" not in text
+        assert text.endswith(f"Command killed by signal {-result['details']['exit_code']} after timing out")
 
     async def test_bash_long_output(self, tmp_path):
         """Bash tool handles commands with long output."""
