@@ -3217,10 +3217,16 @@ GET_TREE_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_tree")
 async def _handle_get_tree(
     handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
 ) -> dict[str, Any]:
-    from tau_agent_core.projections import browse_rows
+    from tau_agent_core.projections import browse_rows, side_rows
 
-    nodes = browse_rows(handler.session.acting_cursor.tree())
-    return {"nodes": nodes, "leaf": handler.session.acting_cursor.leaf, "count": len(nodes)}
+    tree = handler.session.acting_cursor.tree()
+    nodes = browse_rows(tree)
+    return {
+        "nodes": nodes,
+        "side": side_rows(tree.side_marks(None)),
+        "leaf": handler.session.acting_cursor.leaf,
+        "count": len(nodes),
+    }
 
 
 ### end tier-c:get_tree

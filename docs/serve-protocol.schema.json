@@ -2141,7 +2141,7 @@
           "description": "The entry as the log now holds it."
         },
         "side": {
-          "description": "Whether `entry` is a side entry (`session_log.is_side_entry`): a mark on its parent, never a branch, a tip or a leaf (docs/STEP-DEBUGGER.md \u00a73.4).",
+          "description": "Whether `entry` is a side entry (`session_log.is_side_entry`): a mark on its parent, never a branch, a tip or a leaf (docs/STEP-DEBUGGER.md \u00a73.7.2).",
           "type": "boolean"
         }
       },
@@ -3728,6 +3728,7 @@
                       "type": "string"
                     },
                     "preview": {
+                      "description": "The kind and (open) or (closed).",
                       "type": "string"
                     },
                     "status": {
@@ -3790,10 +3791,43 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "side": {
+          "description": "Session-level side entries: ones opened before the first entry, so with no parent to mark. Never a root row (docs/STEP-DEBUGGER.md \u00a73.7.2).",
+          "items": {
+            "properties": {
+              "entry_id": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "preview": {
+                "description": "The kind and (open) or (closed).",
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "incomplete",
+                  "final"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "entry_id",
+              "kind",
+              "status",
+              "preview"
+            ],
+            "type": "object"
+          },
+          "type": "array"
         }
       },
       "required": [
         "nodes",
+        "side",
         "leaf",
         "count"
       ],

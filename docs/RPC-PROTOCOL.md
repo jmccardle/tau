@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 183,059 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 183,579 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -1953,6 +1953,7 @@ what rides on top of this on every response):
                   "type": "string"
                 },
                 "preview": {
+                  "description": "The kind and (open) or (closed).",
                   "type": "string"
                 },
                 "status": {
@@ -2015,10 +2016,43 @@ what rides on top of this on every response):
         "type": "object"
       },
       "type": "array"
+    },
+    "side": {
+      "description": "Session-level side entries: ones opened before the first entry, so with no parent to mark. Never a root row (docs/STEP-DEBUGGER.md \u00a73.7.2).",
+      "items": {
+        "properties": {
+          "entry_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "preview": {
+            "description": "The kind and (open) or (closed).",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "incomplete",
+              "final"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry_id",
+          "kind",
+          "status",
+          "preview"
+        ],
+        "type": "object"
+      },
+      "type": "array"
     }
   },
   "required": [
     "nodes",
+    "side",
     "leaf",
     "count"
   ],

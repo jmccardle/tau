@@ -1088,7 +1088,7 @@ An `entry_open`, `entry_final` or `entry_append`: one log write.
 |---|---|---|---|
 | `entry` | [Entry](#entry) | yes | The entry as the log now holds it. |
 | `cursor_id` | string \| null | no | The cursor whose turn or request wrote it; an `entry_final` names the cursor that opened the entry. Null for a write no cursor made. A client joins `agent_event` to the entries a turn writes by it. |
-| `side` | boolean | no | Whether `entry` is a side entry (`session_log.is_side_entry`): a mark on its parent, never a branch, a tip or a leaf (docs/STEP-DEBUGGER.md §3.4). |
+| `side` | boolean | no | Whether `entry` is a side entry (`session_log.is_side_entry`): a mark on its parent, never a branch, a tip or a leaf (docs/STEP-DEBUGGER.md §3.7.2). |
 
 ### EntryFinalEvent
 
@@ -1386,6 +1386,7 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 | `nodes` | list of object | yes | Every path entry in the log, in the order a browser draws them — preorder over the parent/child tree, roots in load order, children oldest first. FLAT, with `parent_id` carrying the shape: a nested projection of a long linear conversation is one nesting level per message, which is a serializer's recursion limit rather than a tree anyone wanted. A side entry is not a node: it rides in its parent's `side`. Nothing else is filtered out — which rows a browser declines to draw (a `navigate` with one child) is the reader's rule, not the log's. |
 | `leaf` | string \| `null` | yes | cursor.leaf at the moment of the read, duplicated out of `nodes` so a host finds it without scanning. Null on a session whose cursor names no entry, which is also the one case in which no node carries is_leaf: true. |
 | `count` | integer | yes | len(nodes). Present so a host can check it read a whole tree rather than a truncated one: this read is UNBOUNDED by design — the shape IS the answer and a bounded shape is a different tree — which is why it is a pull and is never pushed (G3). |
+| `side` | list of object | yes | Session-level side entries: ones opened before the first entry, so with no parent to mark. Never a root row (docs/STEP-DEBUGGER.md §3.7.2). |
 
 ### HelloResult
 

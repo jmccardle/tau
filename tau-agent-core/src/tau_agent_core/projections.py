@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from tau_llm.providers import resolves_api_key
@@ -18,7 +19,7 @@ from tau_agent_core.commands import FRONTEND_COMMANDS
 from tau_agent_core.flows import Ready, enumerate_domain, next_step
 
 if TYPE_CHECKING:
-    from tau_agent_core.conversation_tree import ConversationTree, MessageIdScope
+    from tau_agent_core.conversation_tree import ConversationTree, MessageIdScope, SideMark
     from tau_agent_core.extension_sources import ExtensionRecord
     from tau_agent_core.sdk import LoadExtensionsResult
 
@@ -33,6 +34,7 @@ __all__ = [
     "path_completion",
     "request_payload",
     "resolver_error_message",
+    "side_rows",
     "tool_result_for_user",
 ]
 
@@ -229,6 +231,14 @@ def path_completion(text: str, offset: int, cwd: Path) -> dict[str, Any]:
     }
 
 
+def side_rows(marks: Sequence[SideMark]) -> list[dict[str, Any]]:
+    """Side marks as the flat dicts ``get_tree`` sends, on a row or at the session level."""
+    return [
+        {"entry_id": m.entry_id, "kind": m.kind, "status": m.status, "preview": m.preview}
+        for m in marks
+    ]
+
+
 def browse_rows(tree: ConversationTree) -> list[dict[str, Any]]:
     """:meth:`ConversationTree.browse`, one flat dict per node, ``is_leaf`` marking the leaf."""
     return [
@@ -247,15 +257,7 @@ def browse_rows(tree: ConversationTree) -> list[dict[str, Any]]:
             "tool_call_id": node.tool_call_id,
             "copyable": node.copyable,
             "estimated_tokens": node.estimated_tokens,
-            "side": [
-                {
-                    "entry_id": mark.entry_id,
-                    "kind": mark.kind,
-                    "status": mark.status,
-                    "preview": mark.preview,
-                }
-                for mark in node.side
-            ],
+            "side": side_rows(node.side),
         }
         for node in tree.browse()
     ]

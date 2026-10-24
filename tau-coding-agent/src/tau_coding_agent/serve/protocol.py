@@ -721,7 +721,7 @@ class EntryEventData:
             made. A client joins ``agent_event`` to the entries a turn writes by it.
         side: Whether ``entry`` is a side entry (``session_log.is_side_entry``):
             a mark on its parent, never a branch, a tip or a leaf
-            (docs/STEP-DEBUGGER.md §3.4).
+            (docs/STEP-DEBUGGER.md §3.7.2).
     """
 
     entry: Annotated[dict[str, Any], Shape(Entry)]

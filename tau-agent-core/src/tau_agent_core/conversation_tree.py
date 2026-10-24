@@ -394,7 +394,7 @@ class SideMark:
         entry_id: The side entry's id.
         kind: Its ``type``, a member of ``session_log.SIDE_KINDS``.
         status: ``"incomplete"`` while open, ``"final"`` once finalized.
-        preview: Its first line of text, as a row's preview.
+        preview: Its label: the kind and ``(open)`` or ``(closed)``.
     """
 
     entry_id: str
@@ -797,7 +797,8 @@ class ConversationTree:
         """:meth:`side_of` as :class:`SideMark` records, the shape a head draws.
 
         Args:
-            entry_id: The parent id.
+            entry_id: The parent id; ``None`` gives the session-level marks, side
+                entries opened before the first entry, which are never roots.
 
         Returns:
             One mark per side entry, oldest first.
@@ -810,7 +811,8 @@ class ConversationTree:
                     entry_id=side_id,
                     kind=str(entry.get("type", "")),
                     status="incomplete" if is_incomplete(entry) else "final",
-                    preview=self._preview_of(entry),
+                    preview=f"{entry.get('type', '')} "
+                    + ("(open)" if is_incomplete(entry) else "(closed)"),
                 )
             )
         return marks
@@ -935,14 +937,19 @@ class ConversationTree:
         orphaned entries (broken parent chain) are also returned as roots. Each
         node's children are sorted by timestamp (oldest first); ``is_leaf`` marks
         this tree's leaf. A side entry is no node: it is a :class:`SideMark` in
-        its parent's ``side``, unless that parent is missing.
+        its parent's ``side``, or in ``side_marks(None)`` when it has no parent.
+        Only a side entry naming a parent that is missing is drawn, as an orphan.
 
         Returns:
             The root nodes, in load order.
         """
         nodes: dict[str, TreeNode] = {}
         drawn = [
-            e for e in self._entries if not (is_side_entry(e) and e.get("parentId") in self._by_id)
+            e
+            for e in self._entries
+            if not (
+                is_side_entry(e) and (e.get("parentId") is None or e.get("parentId") in self._by_id)
+            )
         ]
         for entry in drawn:
             nodes[entry["id"]] = TreeNode(

@@ -1072,6 +1072,18 @@ _COMPLETE_MESSAGE_ID_RETURNS: dict[str, Any] = {
     "required": ["matches", "total"],
 }
 
+_SIDE_MARK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entry_id": {"type": "string"},
+        "kind": {"type": "string"},
+        "status": {"type": "string", "enum": ["incomplete", "final"]},
+        "preview": {"type": "string", "description": "The kind and (open) or (closed)."},
+    },
+    "required": ["entry_id", "kind", "status", "preview"],
+}
+"""One side entry as ``get_tree`` sends it (``projections.side_rows``)."""
+
 _GET_TREE_RETURNS: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1217,16 +1229,7 @@ _GET_TREE_RETURNS: dict[str, Any] = {
                             "suspension, drawn as a mark on this row, never as a child "
                             "or a branch (docs/STEP-DEBUGGER.md §3.7.2)."
                         ),
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "entry_id": {"type": "string"},
-                                "kind": {"type": "string"},
-                                "status": {"type": "string", "enum": ["incomplete", "final"]},
-                                "preview": {"type": "string"},
-                            },
-                            "required": ["entry_id", "kind", "status", "preview"],
-                        },
+                        "items": _SIDE_MARK_SCHEMA,
                     },
                 },
                 "required": [
@@ -1266,8 +1269,16 @@ _GET_TREE_RETURNS: dict[str, Any] = {
                 "is a pull and is never pushed (G3)."
             ),
         },
+        "side": {
+            "type": "array",
+            "description": (
+                "Session-level side entries: ones opened before the first entry, so "
+                "with no parent to mark. Never a root row (docs/STEP-DEBUGGER.md §3.7.2)."
+            ),
+            "items": _SIDE_MARK_SCHEMA,
+        },
     },
-    "required": ["nodes", "leaf", "count"],
+    "required": ["nodes", "side", "leaf", "count"],
 }
 
 _GET_PENDING_REQUEST_RETURNS: dict[str, Any] = {

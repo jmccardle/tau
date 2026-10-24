@@ -968,9 +968,7 @@ class SessionTreeModal(TauDialog[Optional[TreeIntent]]):
         tag = node.role or node.kind
         text = node.preview or f"({node.kind})"
         marker = "  ◀ current" if node.is_leaf else ""
-        side = "".join(
-            f"  ⏸ {m.kind}" + (" (open)" if m.status == "incomplete" else "") for m in node.side
-        )
+        side = "".join(f"  ⏸ {m.preview}" for m in node.side)
         return f"{tag}: {text}{side}{marker}"
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:

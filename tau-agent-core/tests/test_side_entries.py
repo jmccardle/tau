@@ -132,7 +132,12 @@ async def test_get_tree_rows_carry_the_mark_on_the_parent():
     assert [r["entry_id"] for r in rows] == [user, reply]
     assert rows[0]["side"] == []
     assert rows[1]["side"] == [
-        {"entry_id": side, "kind": "suspension", "status": "incomplete", "preview": "[interrupted]"}
+        {
+            "entry_id": side,
+            "kind": "suspension",
+            "status": "incomplete",
+            "preview": "suspension (open)",
+        }
     ]
 
 
@@ -229,3 +234,21 @@ async def test_ctx_leaf_id_is_the_acting_cursors_leaf():
     entry = await session.cursor.append_message(_msg("user", "x"))
     await session.cursor.open_side("suspension")
     assert ctx.leaf_id() == entry
+
+
+async def test_a_side_entry_before_the_first_entry_is_a_session_mark_not_a_root():
+    log = InMemorySessionLog()
+    cursor = Cursor(log, None)
+    side = await cursor.open_side("suspension", site="command")
+    first = await cursor.append_message(_msg("user", "hello"))
+    tree = ConversationTree(log.entries(), first)
+
+    assert [n.id for n in tree.tree()] == [first]
+    assert [n.entry_id for n in tree.browse()] == [first]
+    assert [(m.entry_id, m.preview) for m in tree.side_marks(None)] == [(side, "suspension (open)")]
+    assert default_leaf(log.entries()) == first
+    page = render_session_html(log.entries())
+    assert "2 in 1 branch" in page and f'id="e-{side}"' in page
+    await cursor.finalize_side(side, resolution={"action": "step"})
+    marks = ConversationTree(log.entries(), first).side_marks(None)
+    assert [m.preview for m in marks] == ["suspension (closed)"]
