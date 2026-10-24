@@ -32,7 +32,7 @@ This guide helps you migrate from Parley (TypeScript/Node.js) to τ (Python).
 
 | Area | Parley (TypeScript) | τ (Python) |
 |------|---------------------|------------|
-| Language | TypeScript / Node.js | Python 3.11+ |
+| Language | TypeScript / Node.js | Python 3.12+ |
 | TUI | Built-in TUI | Textual-based TUI |
 | AI Provider | 14+ providers (OpenAI, Anthropic, Google, etc.) | OpenAI only (MVP) |
 | Streaming | `streamChat()` generator | `stream_simple()` async generator |

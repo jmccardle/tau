@@ -12,7 +12,7 @@ name = "ffwf-tau"
 # module is cheaper than an exception to the rule that caught that.
 dynamic = ["version"]
 description = "τ: the guessable name. The `tau` command with its TUI, all three wire protocols, and image support."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 # Held against publish.yml's "t" matrix entry by tests/test_packaging.py.
 classifiers = ["Programming Language :: Python :: Free Threading :: 3 - Stable"]
 readme = "README.md"

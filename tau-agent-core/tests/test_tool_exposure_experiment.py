@@ -14,14 +14,13 @@ import dataclasses
 import json
 import re
 import sys
-from typing import Any, Callable
+from typing import Any, Callable, TypedDict
 from unittest.mock import patch
 
 import pydantic
 import pytest
 from pydantic import TypeAdapter
 from tau_llm.streaming import DoneEvent
-from typing_extensions import TypedDict
 from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
 from tau_agent_core.agent_session import AgentSession
@@ -268,22 +267,6 @@ def test_tool_from_function_refuses_what_it_cannot_describe():
         tool_from_function(unannotated, description="d")
     with pytest.raises(TypeError, match="return annotation is required"):
         tool_from_function(no_return, description="d")
-
-
-def test_a_typing_typeddict_is_refused_on_3_11_with_the_reason():
-    import typing
-
-    class Plain(typing.TypedDict):
-        a: int
-
-    def fn() -> None: ...
-
-    fn.__annotations__ = {"return": Plain}
-    if sys.version_info >= (3, 12):
-        assert output_schema_of(fn) is not None
-    else:
-        with pytest.raises(TypeError, match="typing_extensions"):
-            output_schema_of(fn)
 
 
 def test_grep_renders_as_a_python_stub_that_executes():
@@ -788,7 +771,7 @@ def test_a_stub_with_non_identifier_names_is_valid_python_that_keeps_them():
         },
     )
     namespace: dict[str, Any] = {}
-    exec("from typing_extensions import NotRequired, TypedDict, Unpack\n" + stub, namespace)
+    exec("from typing import NotRequired, TypedDict, Unpack\n" + stub, namespace)
     args = namespace["copy_arguments"]
     assert args.__required_keys__ == {"from"} and args.__optional_keys__ == {"my-arg"}
     assert namespace["CopyResult"].__required_keys__ == {"class", "ok"}

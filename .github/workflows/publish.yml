@@ -74,35 +74,28 @@ jobs:
       # Fail the whole release the moment any interpreter fails. Do not weaken.
       fail-fast: true
       matrix:
-        # Every version here has had the whole suite run on it. 3.11 is the
-        # floor the four pyprojects declare (`requires-python = ">=3.11"`), and
+        # Every version here has had the whole suite run on it. 3.12 is the
+        # floor the five pyprojects declare (`requires-python = ">=3.12"`), and
         # a test holds this list against that floor so the promise and the
         # evidence cannot drift apart.
         #
-        # 3.12, 3.13 and 3.14 were measured for 0.9.3, in clean
-        # `python:<v>-bookworm` containers, installing the four packages exactly
-        # as the step below does. All four runs came back identical: 4137
-        # passed, 149 skipped, 6 deselected. Three tests failed in ALL FOUR,
-        # including the 3.11 control, which is what identifies them as artifacts
-        # of running in a container rather than as version breakage -- two
-        # process-group kill tests that need real PID semantics, and one that
-        # reads `git ls-files` and so needs a work tree. Neither condition holds
-        # on a GitHub runner. There is no version-specific failure anywhere.
+        # 0.15.0 dropped 3.11 and plain 3.14 (#85). The list stays contiguous
+        # by minor version: `>=3.12` promises 3.13 as loudly as it promises
+        # 3.12, so leaving a hole would ship an untested claim. 3.14 and 3.15
+        # are tested only as free-threaded builds, because those are what the
+        # standalone distributions ship on.
         #
-        # The list is contiguous on purpose: `>=3.11` promises 3.12 as loudly as
-        # it promises 3.11, so leaving a hole would ship an untested claim.
+        # The `t` entries are the only ones where test_free_threading_gil.py
+        # runs rather than skips: it fails if importing tau or its
+        # dependencies turns the GIL back on. 3.15t was blocked until
+        # pydantic-core published cp315t wheels; 2.50.1 has them, so the
+        # install compiles nothing and needs no Rust toolchain. Until the
+        # 0.15.0 matrix (docs/RELEASING.md §2) runs, 3.15t is the one entry
+        # here that has not yet had the whole suite run on it.
         #
-        # 3.14 additionally warns that `asyncio.iscoroutinefunction` goes away
-        # in 3.16. It is a warning, in a test file, not in any shipped tree.
-        #
-        # 3.14t is the free-threaded build the standalone distributions ship
-        # on, and the only entry where test_free_threading_gil.py runs rather
-        # than skips: it fails if importing tau or its dependencies turns the
-        # GIL back on. Measured 2026-10-05, same counts as 3.14
-        # (experiments/freethreading/RESULTS.md). 3.15t is not here yet: the
-        # newest stable pydantic pins a pydantic-core with no cp315t wheel, so
-        # it would compile from source and CI has no Rust toolchain.
-        python-version: ["3.11", "3.12", "3.13", "3.14", "3.14t"]
+        # 3.14 warns that `asyncio.iscoroutinefunction` goes away in 3.16. It
+        # is a warning, in a test file, not in any shipped tree.
+        python-version: ["3.12", "3.13", "3.14t", "3.15t"]
     steps:
       - uses: actions/checkout@v4
 
@@ -152,7 +145,7 @@ jobs:
         with:
           # Build on the verified interpreter. The wheels are pure-Python and
           # py3-none-any, so one build serves every supported version.
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install build tooling
         shell: bash

@@ -61,7 +61,7 @@ not get it.
 | `examples/` | 40 runnable extension and SDK examples; the numbered ones build on each other |
 | `scripts/` | Repo tooling: doc builds, coverage and leakage gates, probes |
 | `experiments/` | `backend-probe`, `m2`, `m3` — research runs, exempt from the scans |
-| `docker/` | The release matrix's per-Python-version images |
+| `docker/` | `tau-entrypoint.sh`, the root `Dockerfile`'s entrypoint. The release matrix uses stock `python:<v>-bookworm` images, not files here (`docs/RELEASING.md` §2) |
 | `venv/` | The in-repo virtualenv every gate requires by absolute path |
 | `pyproject.toml` (root) | pytest, mypy and ruff config for the whole repo — not a package |
 | `bump-version.sh`, `package.sh` | Release mechanics; `docs/RELEASING.md` owns their use |

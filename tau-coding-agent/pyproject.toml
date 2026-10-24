@@ -5,7 +5,7 @@ name = "ffwf-tau-coding-agent"
 # never disagree -- they are the same line. Bump that line to cut a release.
 dynamic = ["version"]
 description = "τ-coding-agent: Interactive TUI (Textual) + CLI"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 # Held against publish.yml's "t" matrix entry by tests/test_packaging.py.
 classifiers = ["Programming Language :: Python :: Free Threading :: 3 - Stable"]
 readme = "README.md"

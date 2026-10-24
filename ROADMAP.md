@@ -18,7 +18,7 @@ below (#35, #40, #42–#47, #52, #55–#58, #60 A, #62, #65) is all merged.
 Carried past 0.14.0: #73's duplicate retry notice, #76 (keys outside
 config.json, open design question), #78 (a truncated anthropic stream exits
 0 under `-p`). `github` held at `d84e29b` from 0.13.0 until this release.
-0.15.0 plans to drop 3.11, add 3.15t and test 3.14 only as 3.14t.
+0.15.0 drops 3.11 and plain 3.14 and adds 3.15t (#85); its matrix is 3.15t's first whole-suite run.
 The next release's notes owe one visible change from step-debugger M1b
 (`docs/STEP-DEBUGGER.md` §3.7.3): a process hosting a session holds its write
 lock, so two TUIs on one session become one writer and one read-only replica

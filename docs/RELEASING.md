@@ -139,18 +139,22 @@ address is the measurement.
 
 #### Run the matrix BEFORE the tag push, not after
 
-The local gate is 3.11 only, and `publish.yml` tests 3.11, 3.12, 3.13, 3.14 and
-3.14t (free-threaded) with `fail-fast: true`. So the first time a release learns about the other
-three is the tag push — and a tag push is the one step that cannot be taken
-back. 0.9.3 was tagged, went red on 3.13, and had to be recut.
+The local gate runs on one interpreter, the in-repo venv's, and `publish.yml`
+tests 3.12, 3.13, 3.14t and 3.15t (the last two free-threaded) with
+`fail-fast: true`. So the first time a release learns about the other three is
+the tag push — and a tag push is the one step that cannot be taken back. 0.9.3
+was tagged, went red on 3.13, and had to be recut.
 
-Run all four locally first:
+Run all four locally first, one container at a time (see "What 0.14.1 learned").
+Every container mounts the `tau-pip-cache` volume, so the dependency set and
+uv's interpreters download once:
 
 ```bash
 git archive master -o /tmp/src.tar
-for v in 3.11 3.12 3.13 3.14; do
+for v in 3.12 3.13; do
   echo "=== python $v ==="
-  docker run --rm -v /tmp/src.tar:/src.tar:ro python:$v-bookworm bash -c '
+  docker run --rm -v tau-pip-cache:/root/.cache -v /tmp/src.tar:/src.tar:ro \
+    python:$v-bookworm bash -c '
     mkdir /work && tar -xf /src.tar -C /work && cd /work &&
     pip install -q -e ./tau-llm -e "./tau-agent-core[dev]" \
                    -e "./tau-coding-agent[dev]" -e ./tau-jmfts &&
@@ -158,25 +162,28 @@ for v in 3.11 3.12 3.13 3.14; do
     python -m pytest -q -rf --tb=line' | tail -40
 done
 
-# 3.14t: there is no official python:3.14t image, so uv fetches the
+# 3.14t and 3.15t: there is no official python:<v>t image, so uv fetches the
 # free-threaded interpreter inside the 3.14 one. --seed gives the venv the same
 # pip the loop above uses, so both install the same set the same way.
-echo "=== python 3.14t ==="
-docker run --rm -v /tmp/src.tar:/src.tar:ro python:3.14-bookworm bash -c '
-  pip install -q uv && uv python install 3.14t && uv venv -q --seed -p 3.14t /ft &&
-  . /ft/bin/activate && python -c "import sys; assert not sys._is_gil_enabled()" &&
-  mkdir /work && tar -xf /src.tar -C /work && cd /work &&
-  pip install -q -e ./tau-llm -e "./tau-agent-core[dev]" \
-                 -e "./tau-coding-agent[dev]" -e ./tau-jmfts &&
-  pip install -q -e ./tau-meta &&
-  python -m pytest -q -rf --tb=line' | tail -40
+for v in 3.14t 3.15t; do
+  echo "=== python $v ==="
+  docker run --rm -v tau-pip-cache:/root/.cache -v /tmp/src.tar:/src.tar:ro \
+    -e V="$v" python:3.14-bookworm bash -c '
+    pip install -q uv && uv python install "$V" && uv venv -q --seed -p "$V" /ft &&
+    . /ft/bin/activate && python -c "import sys; assert not sys._is_gil_enabled()" &&
+    mkdir /work && tar -xf /src.tar -C /work && cd /work &&
+    pip install -q -e ./tau-llm -e "./tau-agent-core[dev]" \
+                   -e "./tau-coding-agent[dev]" -e ./tau-jmfts &&
+    pip install -q -e ./tau-meta &&
+    python -m pytest -q -rf --tb=line' | tail -40
+done
 ```
 
-**A version is clean at zero failures.** All five must agree, and they must
+**A version is clean at zero failures.** All four must agree, and they must
 agree on `0 failed`. Anything else is a real difference and blocks the tag.
-3.14t also runs one test the others skip, `test_free_threading_gil.py`, so its
-passed count is one higher and its skip count one lower; that is the only
-difference allowed.
+3.14t and 3.15t also run one test that 3.12 and 3.13 skip,
+`test_free_threading_gil.py`, so their passed count is one higher and their skip
+count one lower; that is the only difference allowed.
 
 **Three details of that command are load-bearing. 0.9.7 paid for two of them
 and 0.10.0 for the third.**

@@ -27,7 +27,7 @@ all. The dependency arrow points `tau-jmfts → tau-agent-core`, never
 pip install ffwf-tau-jmfts
 ```
 
-Python 3.11 or newer. Pulls in `ffwf-tau-agent-core`. If you are installing it
+Python 3.12 or newer. Pulls in `ffwf-tau-agent-core`. If you are installing it
 for use with the `tau` command, `pip install 'ffwf-tau-coding-agent[jmfts]'` is
 the same thing spelled as an extra.
 

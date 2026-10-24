@@ -15,8 +15,6 @@ Three tools, each showing one seam from experiments/tool-exposure/RESULTS.md:
   annotated function: its parameters come from the signature and its output
   schema from the return annotation.
 
-On Python 3.11, pydantic only reads a ``TypedDict`` from ``typing_extensions``.
-
 ## Usage
 
 ```python
@@ -35,9 +33,7 @@ or ``tau -e examples/62_tool_exposure.py``.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Any
-
-from typing_extensions import TypedDict
+from typing import Any, TypedDict
 
 from tau_agent_core.tool_dispatch import call_tool_definition, tool_search_definition
 from tau_agent_core.tool_schema import tool_from_function

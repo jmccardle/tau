@@ -17,7 +17,7 @@ pip install 'ffwf-tau-coding-agent[tui]'     # add the interactive TUI
 pip install ffwf-tau                         # the same thing, under the guessable name
 ```
 
-Python 3.11 or newer. Pulls in `ffwf-tau-agent-core`, and through it
+Python 3.12 or newer. Pulls in `ffwf-tau-agent-core`, and through it
 `ffwf-tau-llm`. Note the `ffwf-` prefix: `tau`, `tau-llm`, and `tau-ai` on PyPI
 are unrelated projects.
 
