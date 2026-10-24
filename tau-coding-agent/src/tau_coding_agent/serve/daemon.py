@@ -346,7 +346,7 @@ class SessionHost:
         session.set_ui_delegate(self.ui)
         session.subscribe_extension_warnings(self._on_warnings)
         result = await self.backend.load_extensions(
-            None, discover=True, extensions_config=self.daemon.config.get("extensions_config")
+            None, discover=True, extensions_config=self.daemon.extensions_config
         )
         self.report_extension_load(result)
         await self.backend.emit_session_start("startup")
@@ -640,10 +640,12 @@ class Daemon:
         out: TextIO | None = None,
     ) -> None:
         from tau_coding_agent.backends import make_model_resolver
+        from tau_coding_agent.headless import resolve_extensions_config
 
         self.config = config
         self.catalog = catalog
         self.model_resolver = make_model_resolver(config)
+        self.extensions_config = resolve_extensions_config(config, {})
         serve_config = config.get("serve") or {}
         token = serve_config.get("token")
         self.token: str | None = str(token) if token else None
