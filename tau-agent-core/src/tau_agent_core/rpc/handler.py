@@ -174,6 +174,10 @@ class RPCHandler:
         self.compaction_in_flight: str | None = None
         self._compaction_aborter: "Callable[[], None] | None" = None
         self._wire = wire_events.WireEventProjector()
+        self._lane_suspensions: dict[str, object] = {}
+        self._lane_changed = asyncio.Event()
+        self._remove_responder: Callable[[], None] | None = None
+        self._input_ended = asyncio.Event()
         self._session.subscribe(self._forward_event)
 
     @property
@@ -396,7 +400,8 @@ class RPCHandler:
         cursor's turn emits on the same bus with a different `cursor_id`
         (docs/CURSORS.md §6); an RPC client drives one position, and interleaving
         another cursor's deltas into its stream would garble the transcript it
-        renders. That also keeps the handler's `PromptCacheObserver`, fed only
+        renders. Suspension events are the exception: the host is the process's
+        responder, so a child cursor's suspension reaches it too (§3.12.3). That also keeps the handler's `PromptCacheObserver`, fed only
         here, to one conversation's completions. The observer answers only on
         `agent_end`, where the answer becomes `WireEvent.cache_notice`.
 
@@ -432,7 +437,10 @@ class RPCHandler:
         while the item waits in the queue. `_cursor` is popped off (never
         serialized) before the item reaches `json.dumps`.
         """
-        if event.cursor_id is not None and event.cursor_id != self._session.cursor.id:
+        suspension_event = event.type in ("suspension_open", "suspension_closed")
+        if suspension_event:
+            self._track_lane(event)
+        elif event.cursor_id is not None and event.cursor_id != self._session.cursor.id:
             return
         for params in self._wire.project(event):
             item: dict[str, Any] = {
@@ -446,6 +454,72 @@ class RPCHandler:
             if credited:
                 item["_credited"] = True
             self._output_queue.put_nowait(item)
+
+    def _track_lane(self, event: "AgentEvent") -> None:
+        """Note which in-flight request, if any, a suspension was raised under (§3.6).
+
+        The bus calls this in the suspending task's context, so
+        ``transport.IN_FLIGHT_REQUEST`` names the request it descends from.
+        """
+        suspension = event.suspension or {}
+        suspension_id = suspension.get("id")
+        if not isinstance(suspension_id, str):
+            return
+        if event.type == "suspension_open":
+            marker = transport.IN_FLIGHT_REQUEST.get()
+            if marker is None or suspension_id in self._lane_suspensions:
+                return
+            self._lane_suspensions[suspension_id] = marker
+        elif self._lane_suspensions.pop(suspension_id, None) is None:
+            return
+        self._lane_changed.set()
+        self._lane_changed.clear()
+
+    async def _end_of_input(self) -> None:
+        """Withdraw this host as a responder and close every suspension as ``cursor_closed`` (§3.6).
+
+        Called at stdin EOF. A host that never declared ``suspensions`` has
+        nothing waiting on it, and this does nothing.
+        """
+        if self._remove_responder is None:
+            return
+        self.declare_suspensions(False)
+        await self._session.close_suspensions()
+
+    @property
+    def answered_by(self) -> dict[str, Any]:
+        """Who an ``answer_suspension`` over this wire is recorded as: ``{"client": "rpc"}``."""
+        return {"client": "rpc"}
+
+    def lane_open(self, marker: object) -> bool:
+        """Whether the control lane is open for the request ``marker`` names.
+
+        Open while a suspension raised in a task that request started is still
+        open (docs/STEP-DEBUGGER.md §3.6).
+
+        Args:
+            marker: The in-flight request's marker.
+
+        Returns:
+            True while such a suspension is open.
+        """
+        return marker in self._lane_suspensions.values()
+
+    def declare_suspensions(self, enabled: bool) -> bool:
+        """Register this host as the session's live suspension responder, or withdraw it (§3.8).
+
+        Args:
+            enabled: Whether the host renders suspensions and answers them.
+
+        Returns:
+            Whether the host is registered now.
+        """
+        if enabled and self._remove_responder is None:
+            self._remove_responder = self._session.add_suspension_responder("rpc")
+        elif not enabled and self._remove_responder is not None:
+            self._remove_responder()
+            self._remove_responder = None
+        return self._remove_responder is not None
 
     async def _acquire_event_credit(self) -> bool:
         """Wait for room to enqueue one more event-derived item (T3/G4).

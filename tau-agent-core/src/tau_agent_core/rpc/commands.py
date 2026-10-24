@@ -228,6 +228,7 @@ from tau_agent_core.rpc.dialect import (
     TURN_STILL_RUNNING,
 )
 from tau_agent_core.submission import Submission, SubmissionResult
+from tau_agent_core.suspensions import SuspensionAnswerError
 
 if TYPE_CHECKING:
     from tau_agent_core.agent_session import AgentSession, ExtensionActionResult
@@ -1060,7 +1061,11 @@ async def _submit_and_acknowledge(
         "The provenance differentiator (REMOTE-CONTROL.md §3 Tier C): the full "
         "quad (source/submitter/submission_id/correlation) is required on the "
         "wire, and every AgentEvent the resulting turn emits is stamped with "
-        "it. Dual completion (C3): this response only acknowledges admission."
+        "it. Dual completion (C3): this response only acknowledges admission. "
+        "A frontend submitting for a person sends `interactive`; a program driving "
+        "a sub-agent cursor sends `agent`, or a reopen may land in its branch "
+        "(an entry an `agent` turn writes on a child cursor is passed over when "
+        "the session reopens, docs/STEP-DEBUGGER.md §3.12.6)."
     ),
     params_schema=SUBMIT_PARAMS_SCHEMA,
     result_schema=SUBMIT_RESULT_SCHEMA,
@@ -3411,6 +3416,165 @@ async def _handle_answer_request(
 
 
 ### end tier-c:answer_request
+
+### begin tier-c:suspensions
+
+GET_PENDING_SUSPENSIONS_PARAMS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "scope": {
+            "type": "string",
+            "enum": ["cursor", "tree", "session"],
+            "description": (
+                "`session` (the default): every cursor's, as the suspension events "
+                "this host receives are. `tree`: those at this host's cursor and at "
+                "every cursor it owns, a sub-agent's included, each with its "
+                "`parent_cursor_id` and `depth`. `cursor`: this host's cursor's alone."
+            ),
+        },
+    },
+    "additionalProperties": False,
+    "required": [],
+}
+
+GET_PENDING_SUSPENSIONS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("get_pending_suspensions")
+
+
+@command(
+    "get_pending_suspensions",
+    tier="C",
+    since="0.15.0",
+    notes=(
+        "AgentSession.pending_suspensions, projected (docs/STEP-DEBUGGER.md §3.4). The "
+        "snapshot a host reads after it starts, beside the suspension_open and "
+        "suspension_closed events that keep it current. An empty list is the "
+        "ordinary answer. Read-only, and in the control lane: while a request in "
+        "flight waits on a suspension raised under it, this is served without "
+        "waiting for that request (§3.6)."
+    ),
+    params_schema=GET_PENDING_SUSPENSIONS_PARAMS_SCHEMA,
+    result_schema=GET_PENDING_SUSPENSIONS_RESULT_SCHEMA,
+)
+async def _handle_get_pending_suspensions(
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    session = handler.session
+    return {
+        "suspensions": session.pending_suspensions(
+            session.acting_cursor, params.get("scope", "session")
+        )
+    }
+
+
+ANSWER_SUSPENSION_PARAMS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "suspension_id": {
+            "type": "string",
+            "description": (
+                "The suspension's `id`, from suspension_open or get_pending_suspensions. "
+                "Any cursor's: an answer names a suspension, never a cursor."
+            ),
+        },
+        "action": {
+            "type": "string",
+            "description": "One of the suspension's action labels; `abort` also aborts its turn.",
+        },
+        "values": {
+            "type": "object",
+            "description": (
+                "Every declared field's value, keyed by field name; omitted is {}. "
+                "Checked as answer_request checks them, before anything is recorded."
+            ),
+        },
+    },
+    "additionalProperties": False,
+    "required": ["suspension_id", "action"],
+}
+
+ANSWER_SUSPENSION_RESULT_SCHEMA: dict[str, Any] = result_schema_for("answer_suspension")
+
+
+@command(
+    "answer_suspension",
+    tier="C",
+    since="0.15.0",
+    notes=(
+        "AgentSession.answer_suspension, projected (docs/STEP-DEBUGGER.md §3.3). Takes "
+        "no turn lock: the turn waiting on the suspension holds it, and this is what "
+        "lets it go on. The first valid answer wins; a later one gets `accepted: false`, "
+        "`reason: already_resolved`, and the winning resolution, which is not an error; "
+        "an answer arriving once the turn is aborted gets `reason: aborted` and the "
+        "abort's resolution. In the control lane (§3.6), so a host can answer a "
+        "suspension its own request in flight is waiting on. INVALID_PARAMS, with "
+        "nothing recorded and `data.reason` saying which: `unknown_id` (no such "
+        "suspension, or one closed too long ago to remember), `queued` (another on its "
+        "cursor is open ahead of it), `undeclared_action`, or `invalid_value` (values "
+        "its fields reject); `data` also echoes the params. No leaf: the answer moves no cursor, and the turn's own "
+        "events report what it writes next."
+    ),
+    params_schema=ANSWER_SUSPENSION_PARAMS_SCHEMA,
+    result_schema=ANSWER_SUSPENSION_RESULT_SCHEMA,
+)
+async def _handle_answer_suspension(
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    try:
+        outcome = handler.session.answer_suspension(
+            params["suspension_id"],
+            params["action"],
+            params.get("values"),
+            handler.answered_by,
+        )
+    except SuspensionAnswerError as exc:
+        raise RPCError(INVALID_PARAMS, str(exc), data={**params, "reason": exc.reason}) from exc
+    return {
+        "accepted": outcome["accepted"],
+        "reason": outcome.get("reason"),
+        "resolution": outcome["resolution"],
+    }
+
+
+DECLARE_CAPABILITIES_PARAMS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "suspensions": {
+            "type": "boolean",
+            "description": (
+                "True: this host renders suspension_open and answers with "
+                "answer_suspension, so it is a live responder (§3.8). False withdraws it."
+            ),
+        },
+    },
+    "additionalProperties": False,
+    "required": ["suspensions"],
+}
+
+DECLARE_CAPABILITIES_RESULT_SCHEMA: dict[str, Any] = result_schema_for("declare_capabilities")
+
+
+@command(
+    "declare_capabilities",
+    tier="C",
+    since="0.15.0",
+    notes=(
+        "RPC has no handshake, so a host says what it can do here (docs/STEP-DEBUGGER.md "
+        "§3.8). With `suspensions: true` the host is the session's live responder: a "
+        "suspension raised in a turn whose submission allowed user input waits for its "
+        "answer. A host that never declares it gets NoResponderError from every "
+        "api.suspend, which is right for a channel nobody sits on: a wait would hang the "
+        "turn until the host's own timeout. Idempotent; appends nothing."
+    ),
+    params_schema=DECLARE_CAPABILITIES_PARAMS_SCHEMA,
+    result_schema=DECLARE_CAPABILITIES_RESULT_SCHEMA,
+)
+async def _handle_declare_capabilities(
+    handler: "RPCHandler", msg_id: int | str | None, params: dict[str, Any]
+) -> dict[str, Any]:
+    return {"suspensions": handler.declare_suspensions(bool(params["suspensions"]))}
+
+
+### end tier-c:suspensions
 
 LIST_MANAGED_EXTENSIONS_RESULT_SCHEMA: dict[str, Any] = result_schema_for("list_managed_extensions")
 

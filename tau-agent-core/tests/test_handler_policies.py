@@ -705,6 +705,37 @@ async def test_a_bounded_handler_calling_prompt_hits_the_reentrant_guard_at_once
     assert [e.end_reason for e in ends] == ["error"]
 
 
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("policy", [None, "human"])
+async def test_a_tool_result_handler_calling_prompt_hits_the_reentrant_guard(
+    policy: str | None, parallel: bool
+) -> None:
+    errors: list[Any] = []
+
+    def reentrant(api: Any) -> None:
+        async def on_result(event: Any, ctx: Any) -> None:
+            await ctx.prompt("again")
+
+        api.on("tool_result", on_result, policy=policy)
+
+    ran: list[str] = []
+    session = _session(
+        reentrant,
+        tools=[_tool("one", ran), _tool("two", ran)],
+        tool_execution_mode="parallel" if parallel else "sequential",
+    )
+    session._extension_runner.on_error(errors.append)
+    script = _script(_calls("one", "two"), _text("ok"))
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=script):
+        if policy is None:
+            await asyncio.wait_for(session.prompt("go"), timeout=2)
+        else:
+            with pytest.raises(HandlerPolicyError) as raised:
+                await asyncio.wait_for(session.prompt("go"), timeout=2)
+            assert "reentrant self-submission" in raised.value.detail
+    assert errors and all("reentrant self-submission" in e.error for e in errors)
+
+
 async def test_a_task_a_handler_spawns_is_not_the_turn() -> None:
     from tau_agent_core.policies import runs_on_behalf_of
 

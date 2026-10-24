@@ -169,6 +169,98 @@
       ],
       "type": "object"
     },
+    "AnswerSuspension": {
+      "additionalProperties": false,
+      "description": "RPC `answer_suspension` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "action": {
+          "description": "One of the suspension's action labels; `abort` also aborts its turn.",
+          "type": "string"
+        },
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "suspension_id": {
+          "description": "The suspension's `id`, from suspension_open or get_pending_suspensions. Any cursor's: an answer names a suspension, never a cursor.",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": {},
+          "description": "Every declared field's value, keyed by field name; omitted is {}. Checked as answer_request checks them, before anything is recorded.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id",
+        "suspension_id",
+        "action"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/AnswerSuspensionResult"
+      }
+    },
+    "AnswerSuspensionResult": {
+      "properties": {
+        "accepted": {
+          "description": "True when this answer resolved the suspension. False is not an error: `reason` says why, and `resolution` is the one that stands, so two racing clients converge.",
+          "type": "boolean"
+        },
+        "reason": {
+          "description": "Null when accepted. `already_resolved`: another answer won. `aborted`: the suspension's turn was aborted first, so the abort stands.",
+          "enum": [
+            "already_resolved",
+            "aborted",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolution": {
+          "$ref": "#/$defs/Resolution",
+          "description": "{id, action, values, answered_by, at_ms}: what the suspending code receives. `answered_by` names this host's client."
+        }
+      },
+      "required": [
+        "accepted",
+        "reason",
+        "resolution"
+      ],
+      "type": "object"
+    },
+    "AnsweredBy": {
+      "additionalProperties": false,
+      "description": "Who answered a suspension: RPC's ``{client: \"rpc\"}``, or a serve connection.",
+      "properties": {
+        "client": {
+          "description": "\"rpc\", or the serve connection's hello `client`.",
+          "type": "string"
+        },
+        "client_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The serve connection's id."
+        }
+      },
+      "required": [
+        "client"
+      ],
+      "type": "object"
+    },
     "Argument": {
       "description": "One argument a flow needs before it can run.",
       "properties": {
@@ -491,6 +583,13 @@
         },
         "surface": {
           "$ref": "#/$defs/Surface"
+        },
+        "suspensions": {
+          "description": "The suspensions open or queued now on every cursor, each the state `suspension_open` carries (docs/STEP-DEBUGGER.md \u00a73.4), so a client that attaches mid-suspension can answer it.",
+          "items": {
+            "$ref": "#/$defs/SuspensionState"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -505,7 +604,8 @@
         "surface",
         "requests",
         "read_only",
-        "lock_holder"
+        "lock_holder",
+        "suspensions"
       ],
       "type": "object"
     },
@@ -2517,6 +2617,23 @@
       ],
       "type": "object"
     },
+    "Evidence": {
+      "additionalProperties": false,
+      "description": "One piece of plain-text evidence a suspension shows.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "text"
+      ],
+      "type": "object"
+    },
     "ExtensionInfo": {
       "description": "One loaded extension and what it registered, as `get_extension_state` lists it.",
       "properties": {
@@ -3363,6 +3480,51 @@
       ],
       "type": "object"
     },
+    "GetPendingSuspensions": {
+      "additionalProperties": false,
+      "description": "RPC `get_pending_suspensions` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
+      "properties": {
+        "cursor_id": {
+          "description": "The cursor the verb acts at.",
+          "type": "string"
+        },
+        "scope": {
+          "description": "`session` (the default): every cursor's, as the suspension events this host receives are. `tree`: those at this host's cursor and at every cursor it owns, a sub-agent's included, each with its `parent_cursor_id` and `depth`. `cursor`: this host's cursor's alone.",
+          "enum": [
+            "cursor",
+            "tree",
+            "session"
+          ],
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "cursor_id"
+      ],
+      "type": "object",
+      "x-result": {
+        "$ref": "#/$defs/GetPendingSuspensionsResult"
+      }
+    },
+    "GetPendingSuspensionsResult": {
+      "properties": {
+        "suspensions": {
+          "description": "The suspensions in scope, oldest first, each the same state suspension_open carries. A suspension open or queued now (docs/STEP-DEBUGGER.md \u00a73.4): {id, session_id, cursor_id, parent_cursor_id, depth, spawned_from, spec, site, extension, target_id, call, entry_id, queued, opened_at_ms}. `spec` is {title, body, fields, actions, evidence, targetId}; `actions` are {label} and `fields` are a form's; `queued` is true while another suspension on its cursor is open ahead of it, and only the open one can be answered.",
+          "items": {
+            "$ref": "#/$defs/SuspensionState"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "suspensions"
+      ],
+      "type": "object"
+    },
     "GetSessionName": {
       "additionalProperties": false,
       "description": "RPC `get_session_name` (docs/RPC-PROTOCOL.md) at one cursor. The daemon runs RPC's own handler at `cursor_id`.",
@@ -3879,6 +4041,10 @@
           "description": "The client's `PROTOCOL_VERSION`; a different one is refused.",
           "type": "string"
         },
+        "suspensions": {
+          "description": "Whether this connection renders `suspension_open` and answers with `answer_suspension` (docs/STEP-DEBUGGER.md \u00a73.8). A suspension waits for such a client; while none is attached the session carries a warning saying so.",
+          "type": "boolean"
+        },
         "token": {
           "anyOf": [
             {
@@ -4141,6 +4307,7 @@
       "type": "object"
     },
     "LockHolderRecord": {
+      "additionalProperties": false,
       "description": "The process holding a session's write lock, as its sidecar names it; each field may be null.",
       "properties": {
         "detail": {
@@ -4151,7 +4318,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Where to reach it instead (serve's address)."
         },
         "head": {
           "anyOf": [
@@ -4161,7 +4329,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Which head: tui, repl, -p, rpc, serve or sdk."
         },
         "host": {
           "anyOf": [
@@ -4191,7 +4360,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "When it took the lock, ISO-8601 UTC."
         }
       },
       "required": [
@@ -5331,6 +5501,54 @@
       ],
       "type": "object"
     },
+    "Resolution": {
+      "additionalProperties": false,
+      "description": "How a suspension was resolved: what ``api.suspend`` returned (docs/STEP-DEBUGGER.md \u00a73.3).",
+      "properties": {
+        "action": {
+          "description": "The action label picked; `abort` also aborted its turn.",
+          "type": "string"
+        },
+        "answered_by": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnsweredBy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who answered; null when the turn's abort resolved it."
+        },
+        "at_ms": {
+          "type": "integer"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The suspension's id; null when nothing was raised."
+        },
+        "values": {
+          "additionalProperties": true,
+          "description": "Each declared field's value.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "action",
+        "values",
+        "answered_by",
+        "at_ms"
+      ],
+      "type": "object"
+    },
     "Response": {
       "description": "The one answer to a request: a `result` or an `error`, never both.",
       "oneOf": [
@@ -6126,7 +6344,7 @@
     },
     "Submit": {
       "additionalProperties": false,
-      "description": "RPC `submit` (docs/RPC-PROTOCOL.md) at one cursor. Answered at admission, as over stdio, and its turn ends with a `submission_end` channel event. `multitask_strategy: \"fork\"` is accepted. A command answers success with `dispatched`, the arm it resolved to, where stdio refuses a step or a ready flow: the daemon performs a ready flow itself, except `fork` and `switch_session`, which come back for the client.",
+      "description": "RPC `submit` (docs/RPC-PROTOCOL.md) at one cursor. Answered at admission, as over stdio, and its turn ends with a `submission_end` channel event. `multitask_strategy: \"fork\"` is accepted. A command answers success with `dispatched`, the arm it resolved to, where stdio refuses a step or a ready flow: the daemon performs a ready flow itself, except `fork` and `switch_session`, which come back for the client. A frontend submitting for a person sends `interactive`; a program driving a sub-agent cursor sends `agent`, or a reopen may land in its branch.",
       "properties": {
         "allow_user_input": {
           "description": "Whether this submission's turn may open a blocking dialog.",
@@ -6456,10 +6674,90 @@
       ],
       "type": "object"
     },
+    "SuspensionAction": {
+      "additionalProperties": false,
+      "description": "A suspension's button: its label is the answer's ``action``.",
+      "properties": {
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
+    "SuspensionCall": {
+      "additionalProperties": false,
+      "description": "The call a ``tool_call`` suspension is about, with its arguments after earlier handlers.",
+      "properties": {
+        "effective_args": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "effective_args"
+      ],
+      "type": "object"
+    },
     "SuspensionEntry": {
       "description": "A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUGGER.md \u00a73.7).",
       "properties": {
+        "call": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SuspensionCall"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "close_reason": {
+          "enum": [
+            "answered",
+            "aborted",
+            "cursor_closed",
+            "abandoned"
+          ]
+        },
+        "continuation": {
+          "additionalProperties": {},
+          "type": "object"
+        },
         "copiedFrom": {
+          "type": "string"
+        },
+        "entryId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "extension": {
           "type": "string"
         },
         "id": {
@@ -6475,10 +6773,29 @@
             }
           ]
         },
+        "resolution": {
+          "$ref": "#/$defs/Resolution"
+        },
+        "site": {
+          "type": "string"
+        },
         "source": {
           "const": "agent"
         },
+        "spec": {
+          "$ref": "#/$defs/SuspensionSpec"
+        },
         "status": false,
+        "targetId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "timestamp": {
           "type": "string"
         },
@@ -6490,7 +6807,330 @@
         "id",
         "parentId",
         "timestamp",
-        "type"
+        "type",
+        "spec",
+        "site",
+        "extension",
+        "targetId",
+        "call",
+        "entryId",
+        "continuation",
+        "resolution",
+        "close_reason"
+      ],
+      "type": "object"
+    },
+    "SuspensionField": {
+      "additionalProperties": false,
+      "description": "One field of a suspension's form (``extension_types.validate_form_spec``).",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The declared default, when the extension gave one."
+        },
+        "kind": {
+          "enum": [
+            "text",
+            "select",
+            "multiselect",
+            "confirm",
+            "number"
+          ],
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A select or multiselect field's choices."
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "label"
+      ],
+      "type": "object"
+    },
+    "SuspensionList": {
+      "additionalProperties": false,
+      "description": "A suspension body of list items.",
+      "properties": {
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "list",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "items"
+      ],
+      "type": "object"
+    },
+    "SuspensionSpec": {
+      "additionalProperties": false,
+      "description": "What a suspension shows, normalized (``suspensions.validate_suspension_spec``).",
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/SuspensionAction"
+          },
+          "type": "array"
+        },
+        "body": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SuspensionText"
+            },
+            {
+              "$ref": "#/$defs/SuspensionList"
+            },
+            {
+              "$ref": "#/$defs/SuspensionTable"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "At most one body, told apart by `kind`."
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "type": "array"
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/SuspensionField"
+          },
+          "type": "array"
+        },
+        "targetId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The entry the suspension is about."
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "body",
+        "fields",
+        "actions",
+        "evidence",
+        "targetId"
+      ],
+      "type": "object"
+    },
+    "SuspensionState": {
+      "additionalProperties": false,
+      "description": "A suspension open or queued now, as ``suspension_open`` and the snapshots carry it.\n\ndocs/STEP-DEBUGGER.md \u00a73.4. ``AgentSession.pending_suspensions`` builds it.",
+      "properties": {
+        "call": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SuspensionCall"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "At a tool_call site, the call."
+        },
+        "cursor_id": {
+          "type": "string"
+        },
+        "depth": {
+          "description": "The length of its cursor's owner chain.",
+          "type": "integer"
+        },
+        "entry_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "At an entry_written site, the entry."
+        },
+        "extension": {
+          "description": "The extension that raised it.",
+          "type": "string"
+        },
+        "id": {
+          "description": "What `answer_suspension` names; also its side entry's id.",
+          "type": "string"
+        },
+        "opened_at_ms": {
+          "type": "integer"
+        },
+        "parent_cursor_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its cursor's owner; null for a root cursor."
+        },
+        "queued": {
+          "description": "Whether another suspension on its cursor is open ahead of it; only the open one can be answered.",
+          "type": "boolean"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "site": {
+          "description": "The hook it was raised from.",
+          "type": "string"
+        },
+        "spawned_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The entry a child cursor was opened at."
+        },
+        "spec": {
+          "$ref": "#/$defs/SuspensionSpec"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The entry it is about, from its spec."
+        }
+      },
+      "required": [
+        "id",
+        "session_id",
+        "cursor_id",
+        "parent_cursor_id",
+        "depth",
+        "spawned_from",
+        "spec",
+        "site",
+        "extension",
+        "target_id",
+        "call",
+        "entry_id",
+        "queued",
+        "opened_at_ms"
+      ],
+      "type": "object"
+    },
+    "SuspensionTable": {
+      "additionalProperties": false,
+      "description": "A suspension body of string cells; every row has one cell per column.",
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "table",
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "columns",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "SuspensionText": {
+      "additionalProperties": false,
+      "description": "A suspension body of text.",
+      "properties": {
+        "kind": {
+          "const": "text",
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
       ],
       "type": "object"
     },
@@ -7064,6 +7704,24 @@
           "default": null,
           "description": "One sentence saying this turn's prompt cache should have been read and was not, on agent_end. Null is the normal case and says nothing was observed: the cache was read, the server accounts for no cache, the prompt is under the minimum cacheable prefix, or a read earlier in this session already proved caching is on. A host renders it as a warning; see docs/PROMPT-CACHING.md \u00a77 for the three gates. None for all other event types."
         },
+        "close_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "answered",
+                "aborted",
+                "cursor_closed",
+                "abandoned"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On suspension_closed, why it closed: 'answered', 'aborted' (its turn's abort, an `abort` answer to an earlier one included), 'cursor_closed' (the session shut down, or the RPC host's input ended) or 'abandoned' (its task was cancelled). None for all other event types."
+        },
         "correlation": {
           "anyOf": [
             {
@@ -7202,6 +7860,18 @@
           "default": null,
           "description": "The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized \u2014 not by rpc/wire_events.py at event-projection time \u2014 because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types."
         },
+        "lock_holder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LockHolderRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On lock_changed, the process holding the session's write lock, or null. None for all other event types."
+        },
         "max_retries": {
           "anyOf": [
             {
@@ -7254,6 +7924,18 @@
           "default": null,
           "description": "Which side completion a side_completion_* event reports: 'compaction' or 'branch_summary'. Side work spends tokens and produces text outside any turn, so it stamps no submission_id and a host keys on this instead. The summary TEXT and what it cost are deliberately not on the wire \u2014 both land in the session log as a compaction or branch_summary entry, which get_entry serves with tokens_before, covered_tokens and summary_usage attached. Pushing unbounded content through an event is what WireEvent exists to avoid. None for all other event types. See docs/STREAMING-SIDE-WORK.md."
         },
+        "read_only": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On lock_changed, whether this process may no longer write the session: another process holds its write lock. None for all other event types."
+        },
         "reason": {
           "anyOf": [
             {
@@ -7295,6 +7977,18 @@
           "default": false,
           "description": "Only meaningful when delta is set. False (the common case): delta is an incremental suffix \u2014 append it to whatever was already accumulated for this block_type this turn. True: the provider replaced rather than extended the block's content \u2014 delta is the block's ENTIRE new value, and the receiver must RESET its accumulator to delta rather than appending. Mirrors event_projection.BlockDelta.replace exactly.",
           "type": "boolean"
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Resolution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On suspension_closed, how it was resolved. None for all other event types."
         },
         "response_headers": {
           "anyOf": [
@@ -7376,6 +8070,18 @@
           "default": null,
           "description": "WHO submitted (E4). None alongside submission_id."
         },
+        "suspension": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SuspensionState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On suspension_open and suspension_closed, the suspension. suspension_open is sent again with `queued` false when a queued one reaches the front of its cursor's queue. See docs/STEP-DEBUGGER.md \u00a73.4. None for all other event types."
+        },
         "timestamp": {
           "description": "Milliseconds since epoch.",
           "minimum": 0,
@@ -7434,7 +8140,10 @@
             "side_completion_update",
             "side_completion_end",
             "provider_retry",
-            "follow_ups_dropped"
+            "follow_ups_dropped",
+            "suspension_open",
+            "suspension_closed",
+            "lock_changed"
           ],
           "type": "string"
         }
@@ -8504,6 +9213,60 @@
       },
       {
         "additionalProperties": false,
+        "description": "A `get_pending_suspensions` request.",
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "method": {
+            "const": "get_pending_suspensions"
+          },
+          "params": {
+            "$ref": "#/$defs/GetPendingSuspensions"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
+        "description": "A `answer_suspension` request.",
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "jsonrpc": {
+            "const": "2.0"
+          },
+          "method": {
+            "const": "answer_suspension"
+          },
+          "params": {
+            "$ref": "#/$defs/AnswerSuspension"
+          }
+        },
+        "required": [
+          "jsonrpc",
+          "id",
+          "method"
+        ],
+        "type": "object"
+      },
+      {
+        "additionalProperties": false,
         "description": "A `list_managed_extensions` request.",
         "properties": {
           "id": {
@@ -8865,6 +9628,9 @@
     "answer_request": {
       "$ref": "#/$defs/AnswerRequestResult"
     },
+    "answer_suspension": {
+      "$ref": "#/$defs/AnswerSuspensionResult"
+    },
     "attach": {
       "$ref": "#/$defs/Attached"
     },
@@ -8933,6 +9699,9 @@
     },
     "get_pending_request": {
       "$ref": "#/$defs/GetPendingRequestResult"
+    },
+    "get_pending_suspensions": {
+      "$ref": "#/$defs/GetPendingSuspensionsResult"
     },
     "get_session_name": {
       "$ref": "#/$defs/GetSessionNameResult"
@@ -9024,7 +9793,7 @@
     ]
   },
   "description": "The tau serve protocol, JSON-RPC 2.0 over WebSocket (docs/SERVE-PROTOCOL.md). Request records are closed (`additionalProperties: false`), because the daemon refuses an unknown field. Everything the daemon sends is open: a client must ignore a field it does not know, so a minor version may add one. Each request $def is its method's `params` and names its answer in `x-result`, and `Results` maps every method to it; `Event`'s `x-data` maps every `kind` to its data.",
-  "title": "tau serve protocol 0.11",
+  "title": "tau serve protocol 0.12",
   "x-default-port": 8256,
-  "x-protocol-version": "0.11"
+  "x-protocol-version": "0.12"
 }

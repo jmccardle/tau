@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, Never, NotRequired, TypedDict
 
+from pydantic import BaseModel, ConfigDict, Field
+
 from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_agent_core.flows import FlowStep, Ready, View
 from tau_agent_core.json_schema import Named, Pattern, Shape
@@ -25,6 +27,142 @@ from tau_llm.types import (
     Usage,
     UserMessage,
 )
+
+# ─── Records the event stream carries too, so pydantic models (WireEvent) ─
+
+
+class _Record(BaseModel):
+    """A record both the command table's schemas and the event schema reference.
+
+    A pydantic model, because ``WireEvent`` is one and nests it; the schema
+    builder reads it the same way, so both wires name one ``$defs`` entry.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LockHolderRecord(_Record):
+    """The process holding a session's write lock, as its sidecar names it; each field may be null."""
+
+    pid: int | None
+    host: str | None
+    head: str | None = Field(description="Which head: tui, repl, -p, rpc, serve or sdk.")
+    started: str | None = Field(description="When it took the lock, ISO-8601 UTC.")
+    detail: str | None = Field(description="Where to reach it instead (serve's address).")
+
+
+class SuspensionAction(_Record):
+    """A suspension's button: its label is the answer's ``action``."""
+
+    label: str
+
+
+class Evidence(_Record):
+    """One piece of plain-text evidence a suspension shows."""
+
+    label: str
+    text: str
+
+
+class SuspensionField(_Record):
+    """One field of a suspension's form (``extension_types.validate_form_spec``)."""
+
+    name: str
+    kind: Literal["text", "select", "multiselect", "confirm", "number"]
+    label: str
+    default: str | int | float | bool | list[str] | None = Field(
+        default=None, description="The declared default, when the extension gave one."
+    )
+    options: list[str] | None = Field(
+        default=None, description="A select or multiselect field's choices."
+    )
+
+
+class SuspensionText(_Record):
+    """A suspension body of text."""
+
+    kind: Literal["text"]
+    text: str
+
+
+class SuspensionList(_Record):
+    """A suspension body of list items."""
+
+    kind: Literal["list"]
+    items: list[str]
+
+
+class SuspensionTable(_Record):
+    """A suspension body of string cells; every row has one cell per column."""
+
+    kind: Literal["table"]
+    columns: list[str]
+    rows: list[list[str]]
+
+
+class SuspensionSpec(_Record):
+    """What a suspension shows, normalized (``suspensions.validate_suspension_spec``)."""
+
+    title: str
+    body: SuspensionText | SuspensionList | SuspensionTable | None = Field(
+        description="At most one body, told apart by `kind`."
+    )
+    fields: list[SuspensionField]
+    actions: list[SuspensionAction]
+    evidence: list[Evidence]
+    targetId: str | None = Field(description="The entry the suspension is about.")
+
+
+class SuspensionCall(_Record):
+    """The call a ``tool_call`` suspension is about, with its arguments after earlier handlers."""
+
+    id: str | None
+    effective_args: dict[str, Any] | None
+
+
+class AnsweredBy(_Record):
+    """Who answered a suspension: RPC's ``{client: "rpc"}``, or a serve connection."""
+
+    client: str = Field(description='"rpc", or the serve connection\'s hello `client`.')
+    client_id: str | None = Field(default=None, description="The serve connection's id.")
+
+
+class Resolution(_Record):
+    """How a suspension was resolved: what ``api.suspend`` returned (docs/STEP-DEBUGGER.md §3.3)."""
+
+    id: str | None = Field(description="The suspension's id; null when nothing was raised.")
+    action: str = Field(description="The action label picked; `abort` also aborted its turn.")
+    values: dict[str, Any] = Field(description="Each declared field's value.")
+    answered_by: AnsweredBy | None = Field(
+        description="Who answered; null when the turn's abort resolved it."
+    )
+    at_ms: int
+
+
+class SuspensionState(_Record):
+    """A suspension open or queued now, as ``suspension_open`` and the snapshots carry it.
+
+    docs/STEP-DEBUGGER.md §3.4. ``AgentSession.pending_suspensions`` builds it.
+    """
+
+    id: str = Field(description="What `answer_suspension` names; also its side entry's id.")
+    session_id: str
+    cursor_id: str
+    parent_cursor_id: str | None = Field(description="Its cursor's owner; null for a root cursor.")
+    depth: int = Field(description="The length of its cursor's owner chain.")
+    spawned_from: str | None = Field(description="The entry a child cursor was opened at.")
+    spec: SuspensionSpec
+    site: str = Field(description="The hook it was raised from.")
+    extension: str = Field(description="The extension that raised it.")
+    target_id: str | None = Field(description="The entry it is about, from its spec.")
+    call: SuspensionCall | None = Field(description="At a tool_call site, the call.")
+    entry_id: str | None = Field(description="At an entry_written site, the entry.")
+    queued: bool = Field(
+        description="Whether another suspension on its cursor is open ahead of it; only "
+        "the open one can be answered."
+    )
+    opened_at_ms: int
+
 
 # ─── Shapes the core holds as dicts: specs, messages, entries ────────────
 
@@ -284,10 +422,27 @@ class ThinkingChangeEntry(_EntryBase):
 class SuspensionEntry(_EntryBase):
     """A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUGGER.md §3.7).
 
-    Its remaining fields are §3.7.1's; an open one is an :class:`IncompleteEntry`.
+    An open one is an :class:`IncompleteEntry`. A finalized one holds §3.7.1's
+    fields and how it closed.
+
+    Attributes:
+        site: The hook it was raised from.
+        extension: The extension that raised it.
+        entryId: At an ``entry_written`` site, the entry; else ``None``.
+        continuation: Where the turn stood, for a resume (§3.7.3).
+        close_reason: Why it closed.
     """
 
     type: Literal["suspension"]
+    spec: SuspensionSpec
+    site: str
+    extension: str
+    targetId: str | None
+    call: SuspensionCall | None
+    entryId: str | None
+    continuation: dict[str, Any]
+    resolution: Resolution
+    close_reason: Literal["answered", "aborted", "cursor_closed", "abandoned"]
 
 
 class ForeignEntry(_EntryBase):
@@ -452,17 +607,6 @@ class ModelSpec:
     id: str
     provider: str
     context_window: int
-
-
-@dataclass
-class LockHolderRecord:
-    """The process holding a session's write lock, as its sidecar names it; each field may be null."""
-
-    pid: int | None
-    host: str | None
-    head: str | None
-    started: str | None
-    detail: str | None
 
 
 @dataclass
@@ -708,6 +852,8 @@ RESULT_TYPES: dict[str, dict[str, Any]] = {
     "complete_message_id": {"matches": list[MessageMatch]},
     "get_entry": {"entry": Annotated[dict[str, Any], Shape(Entry)]},
     "get_pending_request": {"request": ExtensionRequest | None},
+    "get_pending_suspensions": {"suspensions": list[SuspensionState]},
+    "answer_suspension": {"resolution": Resolution},
     "list_managed_extensions": {"extensions": list[ManagedExtension]},
     "get_extension_state": {
         "extensions": list[ExtensionInfo],
@@ -742,6 +888,7 @@ PARAM_TYPES: dict[str, dict[str, Any]] = {
     "commit_branch": {"ids": list[str]},
     "next_step": {"bound": dict[str, Any]},
     "answer_request": {"values": dict[str, Any]},
+    "answer_suspension": {"values": dict[str, Any]},
     "set_extension_config": {"values": dict[str, Any]},
 }
 """The same, for params. A map keyed by argument or field name holds whatever that one takes."""

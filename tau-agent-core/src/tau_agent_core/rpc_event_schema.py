@@ -84,7 +84,9 @@ from tau_agent_core.events import (
     ErrorDetail,
     SideCompletionPurpose,
     SideCompletionReason,
+    SuspensionCloseReason,
 )
+from tau_agent_core.rpc.records import LockHolderRecord, Resolution, SuspensionState
 from tau_agent_core.submission import SubmissionSource
 
 
@@ -112,6 +114,9 @@ class WireEvent(BaseModel):
         "side_completion_end",
         "provider_retry",
         "follow_ups_dropped",
+        "suspension_open",
+        "suspension_closed",
+        "lock_changed",
     ] = Field(description="Event type discriminator.")
     timestamp: int = Field(ge=0, description="Milliseconds since epoch.")
     turn_index: int | None = Field(default=None, description="Turn number (turn_*).")
@@ -320,6 +325,35 @@ class WireEvent(BaseModel):
         "so this is the one field here that carries content no verb can pull "
         "afterwards. None for all other event types. See docs/TURN-SETTINGS.md "
         "§5 and §5.1.",
+    )
+    suspension: SuspensionState | None = Field(
+        default=None,
+        description="On suspension_open and suspension_closed, the suspension. "
+        "suspension_open is sent again with `queued` false when a queued one "
+        "reaches the front of its cursor's queue. See docs/STEP-DEBUGGER.md §3.4. "
+        "None for all other event types.",
+    )
+    resolution: Resolution | None = Field(
+        default=None,
+        description="On suspension_closed, how it was resolved. None for all other event types.",
+    )
+    close_reason: SuspensionCloseReason | None = Field(
+        default=None,
+        description="On suspension_closed, why it closed: 'answered', 'aborted' "
+        "(its turn's abort, an `abort` answer to an earlier one included), "
+        "'cursor_closed' (the session shut down, or the RPC host's input ended) or "
+        "'abandoned' (its task was cancelled). None for all other event types.",
+    )
+    read_only: bool | None = Field(
+        default=None,
+        description="On lock_changed, whether this process may no longer write "
+        "the session: another process holds its write lock. None for all other "
+        "event types.",
+    )
+    lock_holder: LockHolderRecord | None = Field(
+        default=None,
+        description="On lock_changed, the process holding the session's write "
+        "lock, or null. None for all other event types.",
     )
     leaf: str | None = Field(
         default=None,

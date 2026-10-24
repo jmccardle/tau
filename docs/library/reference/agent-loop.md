@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, call_gate: Callable[[str], str | None] | None = None, turn_settings: TurnSettingsSource | None = None, input_failure: TurnFailure | None = None)
+class AgentLoop(config: AgentLoopConfig, emit: Callable[[AgentEvent], Awaitable[None]] | None = None, tools: list[AgentTool] | None = None, model: Any = None, abort_signal: AbortSignal | None = None, hook_dispatcher: ExtensionRunner | None = None, steer_queue: list[Any] | None = None, mid_turn_compactor: MidTurnCompactor | None = None, writer: TurnWriter | None = None, call_gate: Callable[[str], str | None] | None = None, turn_settings: TurnSettingsSource | None = None, input_failure: TurnFailure | None = None, position: LoopPosition | None = None)
 ```
 
 `tau_agent_core.agent_loop.AgentLoop`
@@ -29,6 +29,7 @@ Events follow docs/SUBPHASE-0.0.md, "5. Agent Events".
 - `call_gate: Callable[[str], str | None] | None = None` — Given a model-issued call's tool name, the reason to refuse it, or ``None`` to let it run; how a masked tool stays declared, so the ``tools`` block and the prompt cache hold. ``None`` gates nothing.
 - `turn_settings: TurnSettingsSource | None = None` — Awaited before every request for its model, key, reasoning and temperature, so a switch made between two requests reaches the second (docs/TURN-SETTINGS.md §2). ``None`` sends every request with ``model`` and ``config``'s values.
 - `input_failure: TurnFailure | None = None` — An ``annotate`` failure, or a policed ``entry_written`` handler's failure, on an input written before the run; the run raises it after ``agent_start``, before any request.
+- `position: LoopPosition | None = None` — The turn's :class:`~tau_agent_core.continuation.LoopPosition`, which the loop keeps current and publishes while it runs, so a suspension can record its continuation; ``None`` makes a fresh one.
 
 ### add_tool
 
@@ -73,22 +74,16 @@ async run(prompts: list[Any], context: list[Any] | None = None) -> list[Any]
 
 `tau_agent_core.agent_loop.AgentLoop.run`
 
-Run the full agent loop for one or more prompts.
-
-This is the main entry point. It:
-1. Emits agent_start
-2. Adds prompt messages to context
-3. Loops: call LLM, execute tool calls, repeat until done
-4. Emits agent_end with final messages
+Run the full agent loop for one or more prompts, its position published (:meth:`_run`).
 
 **Parameters**
 
-- `prompts: list[Any]` — Messages to start with — user messages, and any extension-injected ``custom`` message dicts (serialized custom→user at the wire by ``_stream_response``).
-- `context: list[Any] | None = None` — Existing message history.
+- `prompts: list[Any]` — As for :meth:`_run`.
+- `context: list[Any] | None = None` — As for :meth:`_run`.
 
 **Returns**
 
-List of messages produced by the agent loop.
+As for :meth:`_run`.
 
 ### run_continue
 
@@ -98,18 +93,15 @@ async run_continue(context: list[Any] | None = None) -> list[Any]
 
 `tau_agent_core.agent_loop.AgentLoop.run_continue`
 
-Run another agent turn without adding new messages.
-
-Similar to run() but does not add new prompts.
-Used for follow-up turns.
+Run another agent turn without adding new messages, its position published.
 
 **Parameters**
 
-- `context: list[Any] | None = None` — Existing message history.
+- `context: list[Any] | None = None` — As for :meth:`_run_continue`.
 
 **Returns**
 
-List of messages produced.
+As for :meth:`_run_continue`.
 
 ## AgentLoopConfig
 <!-- agent: yes -->

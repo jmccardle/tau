@@ -89,9 +89,31 @@ EXPOSED: dict[str, str] = {
     "extension_records": "list_extensions",
     "get_extension_config": "get_extension_config",
     "set_extension_config": "set_extension_config",
+    "answer_suspension": "answer_suspension",
+    "pending_suspensions": "get_pending_suspensions",
 }
 
 NOT_EXPOSED: dict[str, str] = {
+    "add_suspension_responder": (
+        "A head registers itself as a responder in-process; a host does it with "
+        "declare_capabilities, whose effect this is, not by naming a responder."
+    ),
+    "suspension_responders": (
+        "Which heads registered is the process's own wiring; a host learns what it "
+        "needs from can_suspend's refusal, which names the missing responder."
+    ),
+    "suspend": (
+        "Raised by extension code inside a hook dispatch (docs/STEP-DEBUGGER.md §3.2); "
+        "a host is outside every dispatch, so on the wire it could only ever be refused."
+    ),
+    "close_suspensions": (
+        "What the head does when its responder is gone (shutdown, an RPC host's EOF); a "
+        "host that wants one suspension ended answers it with `abort`."
+    ),
+    "suspend_refusal": (
+        "Read by an extension at its input hook to refuse an unsteppable turn; the host "
+        "sees the refusal that results as SUBMISSION_REJECTED."
+    ),
     "set_extension_warning": (
         "A warning is written by the extension or loader that knows the problem (#60); a "
         "host reads the set and has no problem of its own to report through it."

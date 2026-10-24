@@ -29,6 +29,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
+from tau_agent_core.continuation import current_position
 from tau_agent_core.entry_annotations import AnnotationError, entry_blocks, json_value
 from tau_agent_core.policies import (
     Failed,
@@ -122,6 +123,13 @@ MESSAGE_POSITIONS = (MESSAGE_POSITION_BEFORE_USER, MESSAGE_POSITION_AFTER_USER)
 
 FIRING_UNIT_AGENT_LOOP_TURN = "agent_loop_turn"
 FIRING_UNIT_USER_TURN = "user_turn"
+
+
+def _note_returned(message: Any) -> None:
+    """Record a ``turn_end``/``user_turn_end`` return on the turn's position, for a suspension's continuation."""
+    position = current_position()
+    if position is not None and position.returned is not None:
+        position.returned.append(message)
 
 
 class ExtensionRunner:
@@ -384,6 +392,16 @@ class ExtensionRunner:
             return None
         return outcome.value
 
+    def _handler_index(self, hook: str, handler: HookHandler | PolicedHandler) -> int:
+        """``handler``'s position among ``hook``'s handlers, in load and registration order."""
+        index = 0
+        for ext in self._extensions:
+            for candidate in ext.handlers.get(hook, ()):
+                if candidate is handler:
+                    return index
+                index += 1
+        return index
+
     async def _call(
         self,
         ext: ExtensionHandlers,
@@ -404,7 +422,7 @@ class ExtensionRunner:
                 §3.2.2).
             HandlerPolicyError: a policed handler's outcome was ``Failed``.
         """
-        with dispatch_mark() as mark:
+        with dispatch_mark(hook, ext.name, event, self._handler_index(hook, handler)) as mark:
             try:
                 if isinstance(handler, PolicedHandler):
                     result = await self._call_policed(ext, hook, handler, event)
@@ -755,6 +773,7 @@ class ExtensionRunner:
                     continue
                 if result.get("message") is not None:
                     injected.append(result["message"])
+                    _note_returned(result["message"])
         return injected
 
     async def emit_user_turn_end(
@@ -829,6 +848,7 @@ class ExtensionRunner:
                     continue
                 if result.get("message") is not None:
                     injected.append(result["message"])
+                    _note_returned(result["message"])
         return injected
 
     async def emit_entry_written(self, kind: str, entry_id: str, message: dict[str, Any]) -> None:

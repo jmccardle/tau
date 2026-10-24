@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from tau_agent_core.event_projection import _DIFFABLE_FIELD
 from tau_agent_core.events import AgentEvent
+from tau_agent_core.rpc import records
 from tau_agent_core.rpc_event_schema import (
     WireEvent,
     event_capability_doc,
@@ -102,6 +103,9 @@ class TestEventTypesReflectAgentEvent:
             "side_completion_end",
             "provider_retry",
             "follow_ups_dropped",
+            "suspension_open",
+            "suspension_closed",
+            "lock_changed",
         }
 
     def test_raises_if_agent_event_type_is_no_longer_a_literal(self, monkeypatch):
@@ -143,6 +147,14 @@ class TestStopReasonMatchesTheProvider:
             AssistantMessage.model_fields["reasoning_level"].annotation
         )
         assert wire == set(EXTENDED_THINKING_LEVELS)
+
+
+TYPED_ON_THE_WIRE = {
+    "suspension": records.SuspensionState,
+    "resolution": records.Resolution,
+    "lock_holder": records.LockHolderRecord,
+}
+"""Fields an in-process ``AgentEvent`` carries as a plain dict and the wire types as a record."""
 
 
 class TestAntiDrift:
@@ -190,8 +202,11 @@ class TestAntiDrift:
     def test_shared_scalar_fields_have_matching_types(self):
         agent_fields = AgentEvent.model_fields
         wire_fields = WireEvent.model_fields
-        shared_names = (set(wire_fields) & set(agent_fields)) - {"type"}
+        shared_names = (set(wire_fields) & set(agent_fields)) - {"type"} - set(TYPED_ON_THE_WIRE)
         assert shared_names, "sanity: WireEvent and AgentEvent must share some scalar fields"
+        for name, record in TYPED_ON_THE_WIRE.items():
+            assert agent_fields[name].annotation == dict[str, typing.Any] | None
+            assert wire_fields[name].annotation == record | None
         for name in sorted(shared_names):
             assert wire_fields[name].annotation == agent_fields[name].annotation, (
                 f"WireEvent.{name} has drifted in TYPE from AgentEvent.{name}: "

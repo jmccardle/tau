@@ -102,6 +102,12 @@ second `abort` against the same compaction returns `None`.
 
 The `compaction_id` the signal was delivered to, which `commands._handle_abort` puts on its response; `None` when no aborter was bound.
 
+### answered_by
+
+`tau_agent_core.rpc.handler.RPCHandler.answered_by: dict[str, Any]`
+
+Who an ``answer_suspension`` over this wire is recorded as: ``{"client": "rpc"}``.
+
 ### await_outbound_prerequisites
 
 ```python
@@ -165,12 +171,51 @@ request instead of answering it.
 The ``compaction_id`` of the running ``compact``,
 or ``None``; the single-flight slot ``release_compaction`` frees.
 
+### declare_suspensions
+
+```python
+declare_suspensions(enabled: bool) -> bool
+```
+
+`tau_agent_core.rpc.handler.RPCHandler.declare_suspensions`
+
+Register this host as the session's live suspension responder, or withdraw it (§3.8).
+
+**Parameters**
+
+- `enabled: bool` — Whether the host renders suspensions and answers them.
+
+**Returns**
+
+Whether the host is registered now.
+
 ### exit_code
 
 `tau_agent_core.rpc.handler.RPCHandler.exit_code: int | None`
 
 The process exit code a signal asked for (143 for SIGTERM, 129
 for SIGHUP), or ``None`` when no signal ended the current ``run()``.
+
+### lane_open
+
+```python
+lane_open(marker: object) -> bool
+```
+
+`tau_agent_core.rpc.handler.RPCHandler.lane_open`
+
+Whether the control lane is open for the request ``marker`` names.
+
+Open while a suspension raised in a task that request started is still
+open (docs/STEP-DEBUGGER.md §3.6).
+
+**Parameters**
+
+- `marker: object` — The in-flight request's marker.
+
+**Returns**
+
+True while such a suspension is open.
 
 ### output_is_deliverable
 

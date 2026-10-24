@@ -21,6 +21,7 @@ from tau_agent_core.events import AgentEvent
 from tau_agent_core.submission import Submission
 from tau_coding_agent.backends import (
     DEFAULT_STREAM,
+    EventDetail,
     RenderRouter,
     TauBackend,
     TurnStream,
@@ -325,6 +326,15 @@ class TestRenderRouterStreams:
         await router.on_agent_event(AgentEvent(type="agent_start", timestamp=0))
 
         assert len(orphans) == 1 and "no submission_id" in orphans[0]
+
+    async def test_the_event_types_it_does_not_draw_yet_are_ignored_not_orphaned(self):
+        """A head ignores an event type it does not render (RPC-PROTOCOL's additive rule)."""
+        orphans: list[str] = []
+        router = RenderRouter(lambda _e: None, on_orphan=orphans.append)
+        for kind in ("suspension_open", "suspension_closed", "lock_changed"):
+            await router.on_agent_event(AgentEvent(type=kind, timestamp=0))  # type: ignore[arg-type]
+            await router.on_wire_event({"type": kind}, EventDetail())
+        assert orphans == []
 
     async def test_an_event_after_its_stream_closed_is_reported_not_swallowed(self):
         orphans: list[str] = []

@@ -33,7 +33,7 @@ from tau_agent_core.extension_warnings import ExtensionWarning
 from tau_agent_core.json_schema import SchemaBuilder, typed
 from tau_agent_core.rpc import records
 
-PROTOCOL_VERSION = "3.0"
+PROTOCOL_VERSION = "3.1"
 
 DIALECT = "jsonrpc-2.0"
 

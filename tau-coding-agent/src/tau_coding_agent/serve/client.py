@@ -79,6 +79,9 @@ class Replica:
         seq: The newest event applied.
         models: The :class:`~protocol.ModelRecord` dicts the attach answered.
         surface: The :class:`~protocol.Surface` dict as last read.
+        suspensions: The suspensions open or queued now, by id, as
+            ``suspension_open`` carries them; kept current from the attach
+            snapshot and the suspension events.
     """
 
     session_id: str
@@ -90,6 +93,7 @@ class Replica:
     cwd: str
     models: list[dict[str, Any]]
     surface: dict[str, Any]
+    suspensions: dict[str, dict[str, Any]] = field(default_factory=dict)
     _index: dict[str, int] = field(default_factory=dict)
 
     @classmethod
@@ -105,6 +109,7 @@ class Replica:
             cwd=attached["cwd"],
             models=list(attached["models"]),
             surface=dict(attached["surface"]),
+            suspensions={s["id"]: s for s in attached["suspensions"]},
         )
         replica._index = {e["id"]: i for i, e in enumerate(replica.entries)}
         return replica
@@ -131,6 +136,11 @@ class Replica:
             self.cursors = {c["cursor_id"]: c for c in event["data"]["cursors"]}
         elif kind == "ui" and event["data"]["op"] == "warnings":
             self.surface["warnings"] = event["data"]["warnings"]
+        elif kind == "agent_event" and event["data"]["type"] == "suspension_open":
+            suspension = event["data"]["suspension"]
+            self.suspensions[suspension["id"]] = suspension
+        elif kind == "agent_event" and event["data"]["type"] == "suspension_closed":
+            self.suspensions.pop(event["data"]["suspension"]["id"], None)
 
 
 class ServeError(Exception):
@@ -179,10 +189,13 @@ class ServeClient:
         client: str,
         on_event: EventHandler | None = None,
         token: str | None = None,
+        suspensions: bool = False,
     ) -> ServeClient:
         """Dial ``address``, say hello, and start reading.
 
         ``token`` defaults to ``TAUD_TOKEN`` from the environment.
+        ``suspensions`` declares that this client renders and answers
+        suspensions (``Hello.suspensions``).
 
         Raises:
             ServeError: the daemon refused the hello (protocol or token).
@@ -199,6 +212,7 @@ class ServeClient:
                 protocol=p.PROTOCOL_VERSION,
                 client=client,
                 token=token if token is not None else os.environ.get("TAUD_TOKEN"),
+                suspensions=suspensions,
             )
         )
         return self

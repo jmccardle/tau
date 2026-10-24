@@ -22,12 +22,15 @@ Reference: docs/IMPLEMENTATION-PLAN.md lines 460-500
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
+import contextvars
+import functools
 import json
 import os
 import signal
 import sys
-from typing import TYPE_CHECKING, TextIO
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, TextIO, TypeAlias
 
 from tau_agent_core.rpc import dialect
 
@@ -197,13 +200,65 @@ async def _read_stdin(self: "RPCHandler") -> None:
     long it keeps going. It cannot make progress either way — no further
     request can arrive until it sends an LF — but it cannot grow τ, wedge
     the reader against EOF, or defeat SIGTERM/SIGHUP (P1) while trying.
+
+    The reader only frames: each line, and each refusal of a bad one, is
+    queued in order for :func:`_dispatch_lines`, which serves them strictly
+    serially except through the control lane (docs/STEP-DEBUGGER.md §3.6).
     """
+    queue: asyncio.Queue[QueuedLine] = asyncio.Queue()
+    pump = asyncio.ensure_future(_pump_stdin(self, queue))
+    ending = asyncio.ensure_future(_on_input_end(self))
+    try:
+        await _dispatch_lines(self, queue)
+    finally:
+        pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump
+        if not self._input_ended.is_set():
+            ending.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await ending
+
+
+async def _on_input_end(self: "RPCHandler") -> None:
+    """At stdin EOF, at once rather than queued behind parked work, let the host's suspensions go.
+
+    A host that closed its input can answer nothing, so a request waiting on a
+    suspension would hold the session, and its write lock, forever. Its
+    responder is withdrawn and every suspension closed as ``cursor_closed``;
+    with none open this does nothing, so EOF behaves as it always did.
+    """
+    await self._input_ended.wait()
+    await self._end_of_input()
+
+
+QueuedLine: TypeAlias = "str | Callable[[], Awaitable[None]] | None"
+"""One item :func:`_pump_stdin` queues: a request line, a refusal to send, or ``None`` at the end."""
+
+CONTROL_VERBS: frozenset[str] = frozenset(
+    {"answer_suspension", "abort", "get_pending_suspensions", "get_state"}
+)
+"""The verbs the control lane dispatches without waiting for the request in flight (§3.6)."""
+
+IN_FLIGHT_REQUEST: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+    "tau_rpc_in_flight_request", default=None
+)
+"""The marker of the request whose handling this code descends from, or ``None``.
+
+A suspension raised in a task that carries a request's marker opens the control
+lane while that request is still in flight.
+"""
+
+
+async def _pump_stdin(self: "RPCHandler", queue: "asyncio.Queue[QueuedLine]") -> None:
+    """Frame stdin into ``queue``: lines and refusals in arrival order, then ``None``."""
     loop = asyncio.get_event_loop()
     reader = asyncio.StreamReader()
     protocol = asyncio.StreamReaderProtocol(reader)
     transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
     pending = bytearray()
     discarding = False
+    eof = False
     try:
         while True:
             read_task = asyncio.ensure_future(reader.read(_READ_CHUNK_BYTES))
@@ -236,17 +291,25 @@ async def _read_stdin(self: "RPCHandler") -> None:
             else:
                 pending += chunk
 
-            stop = False
             while True:
                 offset = pending.find(b"\n")
                 if offset < 0:
                     if len(pending) > MAX_REQUEST_LINE_BYTES:
-                        await _refuse_oversized_request(self, len(pending), line_complete=False)
+                        size = len(pending)
+                        queue.put_nowait(
+                            functools.partial(
+                                _refuse_oversized_request, self, size, line_complete=False
+                            )
+                        )
                         pending.clear()
                         discarding = True
                     break
                 if offset > MAX_REQUEST_LINE_BYTES:
-                    await _refuse_oversized_request(self, offset, line_complete=True)
+                    queue.put_nowait(
+                        functools.partial(
+                            _refuse_oversized_request, self, offset, line_complete=True
+                        )
+                    )
                     del pending[: offset + 1]
                     continue
                 raw = bytes(pending[:offset])
@@ -254,20 +317,107 @@ async def _read_stdin(self: "RPCHandler") -> None:
                 try:
                     line = raw.decode("utf-8")
                 except UnicodeDecodeError as exc:
-                    await _refuse_undecodable_request(self, exc, len(raw))
+                    queue.put_nowait(
+                        functools.partial(_refuse_undecodable_request, self, exc, len(raw))
+                    )
                     continue
                 if line.endswith("\r"):
                     line = line[:-1]
                 if not line.strip():
                     continue
-                await self._handle_line(line)
-                if self._session.shutdown_requested:
-                    stop = True
-                    break
-            if stop or eof:
+                queue.put_nowait(line)
+            if eof:
                 break
     finally:
         transport.close()
+        queue.put_nowait(None)
+        if eof:
+            self._input_ended.set()
+
+
+def _control_verb(line: str) -> bool:
+    """Whether ``line`` is a request for one of :data:`CONTROL_VERBS`."""
+    try:
+        request = json.loads(line)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(request, dict) and request.get("method") in CONTROL_VERBS
+
+
+async def _serve_item(self: "RPCHandler", item: "str | Callable[[], Awaitable[None]]") -> None:
+    """Handle one queued request line, or send one queued refusal."""
+    if isinstance(item, str):
+        await self._handle_line(item)
+    else:
+        await item()
+
+
+async def _dispatch_lines(self: "RPCHandler", queue: "asyncio.Queue[QueuedLine]") -> None:
+    """Serve ``queue`` in order, one request at a time, until ``None`` or a shutdown request.
+
+    Strictly serial, as the reader always was, except through the control lane:
+    while the request in flight waits on a suspension raised under it, a
+    :data:`CONTROL_VERBS` line is served at once, and any other line is held
+    until that request finishes, in order (docs/STEP-DEBUGGER.md §3.6). So a
+    host can answer the suspension its own request is waiting on, and no
+    ordering a host relies on changes while no suspension is open.
+
+    Args:
+        queue: What :func:`_pump_stdin` (or a test) queues.
+    """
+    held: collections.deque[QueuedLine] = collections.deque()
+    while True:
+        item = held.popleft() if held else await queue.get()
+        if item is None:
+            return
+        await _serve_in_flight(self, item, queue, held)
+        if self._session.shutdown_requested:
+            return
+
+
+async def _serve_in_flight(
+    self: "RPCHandler",
+    item: "str | Callable[[], Awaitable[None]]",
+    queue: "asyncio.Queue[QueuedLine]",
+    held: "collections.deque[QueuedLine]",
+) -> None:
+    """Serve ``item``, running the control lane for as long as it waits on a suspension."""
+    marker = object()
+    token = IN_FLIGHT_REQUEST.set(marker)
+    try:
+        task = asyncio.ensure_future(_serve_item(self, item))
+    finally:
+        IN_FLIGHT_REQUEST.reset(token)
+    try:
+        while not task.done():
+            changed = asyncio.ensure_future(self._lane_changed.wait())
+            waiting: set[asyncio.Future[Any]] = {task, changed}
+            nxt: asyncio.Future[Any] | None = None
+            if self.lane_open(marker):
+                nxt = asyncio.ensure_future(queue.get())
+                waiting.add(nxt)
+            try:
+                await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                changed.cancel()
+            if nxt is None:
+                continue
+            if not nxt.done():
+                nxt.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await nxt
+                continue
+            line = nxt.result()
+            if isinstance(line, str) and _control_verb(line):
+                await self._handle_line(line)
+            else:
+                held.append(line)
+        await task
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 async def _refuse_oversized_request(

@@ -902,15 +902,28 @@ class BranchResult:
     empty-but-successful-looking answer.
 
     Attributes:
-        ok: Whether the sub-agent's turn was admitted and finished without
-            raising. Read this first.
+        ok: Whether the sub-agent's turn was admitted and finished, neither
+            raising nor aborted. Read this first.
         cursor_id: The cursor its events carried; closed by the time this returns.
         label: The cursor's label: the ``label`` given, else the prompt's first
             60 characters.
         leaf: The sub-agent's final entry id, or ``None`` if it appended nothing;
             the handle to read the verdict back or ``ctx.summarize_branch`` it.
-        messages: The sub-agent turn's messages; empty when ``ok`` is false.
+        messages: The sub-agent turn's messages: empty when it failed or was
+            refused, and what it wrote before the abort when it was aborted.
         error: Why it failed, or ``None`` when ``ok``.
+        end_reason: How its turn's ``agent_end`` closed (``"done"``,
+            ``"aborted"``, …), or ``None`` when no turn ran.
+        aborted_by: On ``end_reason == "aborted"``: ``"suspension"`` when a
+            person answered ``abort`` at one of its suspensions, ``"shutdown"``
+            when the session shut down (or an RPC host's input ended) under one,
+            ``"parent"`` when the cursor that owns it was aborted, else
+            ``"signal"``. An aborted sub-agent is ``ok=False`` with ``error``
+            naming who aborted it; one stopped at a suspension was stopped by a
+            person, so a delegating extension never retries or escalates it
+            (docs/STEP-DEBUGGER.md §3.12.5).
+        answered_by: With ``aborted_by == "suspension"``, the resolution's
+            ``answered_by``.
     """
 
     ok: bool
@@ -919,6 +932,9 @@ class BranchResult:
     leaf: str | None
     messages: list[dict[str, Any]]
     error: str | None
+    end_reason: str | None = None
+    aborted_by: Literal["suspension", "shutdown", "signal", "parent"] | None = None
+    answered_by: dict[str, Any] | None = None
 
 
 @agent_facing(topic="extensions")
@@ -1361,6 +1377,28 @@ class ExtensionContext:
         """
         leaf: str | None = self._require_session().acting_cursor.leaf
         return leaf
+
+    @agent_facing(topic="extensions", since="0.15.0")
+    async def suspend(self, spec: dict[str, Any]) -> dict[str, Any]:
+        """``api.suspend``, from a handler that has ``ctx`` (docs/STEP-DEBUGGER.md §3.1).
+
+        The suspension is raised under the extension whose hook handler is
+        running.
+
+        Args:
+            spec: As for :meth:`ExtensionAPI.suspend`.
+
+        Returns:
+            As for :meth:`ExtensionAPI.suspend`.
+
+        Raises:
+            RuntimeError: no session is bound.
+            ValueError: a malformed spec.
+            SuspensionRefused: not a suspension site, or an unsteppable turn.
+            NoResponderError: nothing can answer it.
+        """
+        resolution: dict[str, Any] = await self._require_session().suspend(spec)
+        return resolution
 
     @property
     def cursors(self) -> tuple[Any, ...]:
@@ -2737,6 +2775,104 @@ class ExtensionAPI:
         entry_id: str = await self._session._append_custom_entry(REQUEST_ENTRY_TYPE, data)
         return entry_id
 
+    @agent_facing(topic="extensions", since="0.15.0")
+    async def suspend(self, spec: dict[str, Any]) -> dict[str, Any]:
+        """Stop the running turn until a responder answers ``spec`` (docs/STEP-DEBUGGER.md §3).
+
+        Permitted only where everything the turn produced is already in the
+        tree: a top-level ``tool_call``, ``entry_written``, ``turn_end`` and
+        ``user_turn_end``, and an ``ext:`` handler reached from one of them
+        (:meth:`can_suspend_here`). A durable ``suspension`` side entry is
+        written under the cursor's leaf, ``suspension_open`` reaches every head,
+        and every enclosing policy deadline pauses until this returns, time
+        queued behind another suspension on the cursor included. Picking
+        ``abort`` also aborts the turn; the turn's abort resolves it, and every
+        suspension queued behind it, as ``abort``.
+
+        Args:
+            spec: :func:`validate_ask_spec`'s spec (``title``, a body, ``fields``,
+                ``actions``) plus ``evidence``, a list of ``{label, text}``, and
+                ``targetId``, the entry it is about.
+
+        Returns:
+            ``{id, action, values, answered_by, at_ms}``. ``id`` is ``None``
+            when the turn was already aborted, and nothing was raised.
+
+        Raises:
+            ValueError: a malformed spec.
+            SuspensionRefused: not a suspension site, or a turn that cannot be
+                stepped (``store_history`` off, a read-only session).
+            NoResponderError: nothing can answer it (§3.8).
+        """
+        session = self._bound_session("suspend")
+        resolution: dict[str, Any] = await session.suspend(
+            spec, extension=self._emitting_extension_name("api.suspend")
+        )
+        return resolution
+
+    @agent_facing(topic="extensions", since="0.15.0")
+    def can_suspend(self) -> bool:
+        """Whether a suspension raised in this turn could be answered (§3.8, §3.9).
+
+        A turn is running here with ``store_history`` on and a writable
+        session, a live responder is registered, and the driving submission
+        set ``allow_user_input`` (a child turn reads its root turn's). The
+        debugger refuses an armed turn at ``input`` when this is false.
+
+        Returns:
+            True when :meth:`suspend` would not raise for want of a responder.
+        """
+        refusal: str | None = self._bound_session("can_suspend").suspend_refusal()
+        return refusal is None
+
+    @agent_facing(topic="extensions", since="0.15.0")
+    def suspend_refusal(self) -> str | None:
+        """Why a suspension raised in this turn could not be answered, or ``None`` (§3.8, §3.9).
+
+        The reason :meth:`can_suspend` reads false for, worded for a person: no
+        turn running, ``store_history`` off, a read-only session, no live
+        responder, or a submission (a child's root's) without
+        ``allow_user_input``. An armed ``input`` hook returns it as its
+        ``{"refuse": …}``.
+
+        Returns:
+            The reason, or ``None`` when a suspension could be raised.
+        """
+        refusal: str | None = self._bound_session("suspend_refusal").suspend_refusal()
+        return refusal
+
+    @agent_facing(topic="extensions", since="0.15.0")
+    def can_suspend_here(self) -> bool:
+        """Whether :meth:`suspend` may be called from the code running now (§3.2).
+
+        :meth:`can_suspend`, and the current hook dispatch is a suspension
+        site: not a notify event, a tool, ``input``, ``tool_result``,
+        ``annotate``, a nested tool call or a task a hook spawned. A producer
+        that reads false carries its hit to the next site.
+
+        Returns:
+            True when :meth:`suspend` would raise a suspension here.
+        """
+        from tau_agent_core.suspension import current_dispatch_mark
+        from tau_agent_core.suspensions import site_refusal
+
+        return self.can_suspend() and site_refusal(current_dispatch_mark()) is None
+
+    @agent_facing(topic="extensions", since="0.15.0")
+    def resumed(self) -> dict[str, Any] | None:
+        """The suspension whose resume is re-dispatching the hook running now, or ``None`` (§3.7.3).
+
+        ``{id, site, extension, resolution}``. Milestone 1 never resumes from
+        the tree, so this is ``None`` throughout; a resume (milestone 2) sets it.
+
+        Returns:
+            The resumed suspension's record, or ``None``.
+        """
+        from tau_agent_core.suspensions import RESUMED_SUSPENSION
+
+        record = RESUMED_SUSPENSION.get()
+        return None if record is None else dict(record)
+
     async def set_session_name(self, name: str) -> None:
         """Name the session (:func:`apply_session_name`, shared with the RPC verb).
 
@@ -2957,6 +3093,7 @@ _CONTEXT_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
     "summarize_branch": "refuse",
     "navigate": "refuse",
     "fork": "refuse",
+    "suspend": "refuse",
 }
 
 _API_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
@@ -2980,6 +3117,9 @@ _API_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
     "get_session_name": "loop",
     "send_user_message": "loop",
     "subscriber_count": "loop",
+    "can_suspend": "loop",
+    "suspend_refusal": "loop",
+    "resumed": "read",
     "submit": "refuse",
     "request": "refuse",
     "emit": "refuse",
@@ -2988,6 +3128,9 @@ _API_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
     "request_user_action": "refuse",
     "set_session_name": "refuse",
     "send_message": "refuse",
+    "suspend": "refuse",
+    # can_suspend_here asks which task runs the dispatch, which a worker thread has none of.
+    "can_suspend_here": "refuse",
 }
 
 police_thread_affinity(ExtensionUI, _UI_THREAD_AFFINITY)

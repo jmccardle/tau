@@ -86,6 +86,29 @@ session's cursors: inside a turn, its cursor, which a hook or tool running in
 it inherits; under ``tau serve``, the cursor a request names. Anywhere else
 :attr:`cursor`.
 
+### add_suspension_responder
+
+```python
+add_suspension_responder(name: str) -> Callable[[], None]
+```
+
+`tau_agent_core.agent_session.AgentSession.add_suspension_responder` · since 0.15.0
+
+Register a live responder: a head that renders suspensions and sends their answers (§3.8).
+
+``tau serve`` registers one per hosted session, so a suspension there
+waits for a client to attach; an RPC host registers one with
+``declare_capabilities``. With none registered, ``api.suspend`` raises
+:class:`~tau_agent_core.suspensions.NoResponderError`.
+
+**Parameters**
+
+- `name: str` — What the responder is, for the refusal and the record, e.g. ``"rpc"``.
+
+**Returns**
+
+A callable that removes this registration; calling it twice is harmless.
+
 ### answer_request
 
 ```python
@@ -114,6 +137,35 @@ The dispatched command's :class:`ExtensionCommandResult`. ``handled`` is ``False
 **Raises**
 
 - `ValueError` — no such request, the request carries no ask, an unknown action label, or values that :func:`validate_form_values` rejects. Fail-Early: nothing is coerced and no partial answer is persisted.
+
+### answer_suspension
+
+```python
+answer_suspension(suspension_id: str, action: str, values: dict[str, Any] | None = None, answered_by: dict[str, Any] | None = None) -> dict[str, Any]
+```
+
+`tau_agent_core.agent_session.AgentSession.answer_suspension` · since 0.15.0
+
+Answer an open suspension, from any cursor and any head; the first valid answer wins (§3.3).
+
+Takes no turn lock. A later answer to a closed suspension is not an
+error: it reports ``already_resolved`` with the winning resolution, so
+two racing clients converge.
+
+**Parameters**
+
+- `suspension_id: str` — The suspension's id.
+- `action: str` — One of its actions' labels; ``abort`` also aborts its turn.
+- `values: dict[str, Any] | None = None` — Every declared field's value; ``None`` is ``{}``.
+- `answered_by: dict[str, Any] | None = None` — Who answered, recorded on the resolution, e.g. ``{"client_id": "c3", "client": "tau-code/0.9"}``.
+
+**Returns**
+
+``{"accepted": True, "resolution": …}`` or ``{"accepted": False, "reason": "already_resolved" | "aborted", "resolution": …}``; an answer arriving once the turn is aborted loses to the abort.
+
+**Raises**
+
+- `ValueError` — no such suspension, one still queued, an undeclared action, or values its fields reject. Nothing is recorded.
 
 ### authorize_extension
 
@@ -193,6 +245,21 @@ Retire ``cursor``; a ``cursor_close`` channel event announces it.
 
 - `ValueError` — ``cursor`` is the head's, which a head swap replaces instead.
 - `RuntimeError` — a turn still holds it.
+
+### close_suspensions
+
+```python
+async close_suspensions() -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.close_suspensions` · since 0.15.0
+
+Close every open and queued suspension as ``abort``, reason ``cursor_closed``.
+
+For a head whose responder is gone: session shutdown, and an RPC host
+whose input ended. Each suspension's turn and the cursors it owns are
+aborted, as an ``abort`` answer would; background forks are not, which
+shutdown then cancels itself. Returns once each has closed.
 
 ### compact
 
@@ -391,10 +458,11 @@ The teardown counterpart to :meth:`emit_session_start`, dispatched through
 the runner (error-surfaced, not swallowed). The frontends fire it on TUI
 quit, headless completion and SIGINT/SIGTERM.
 
-First, and whether or not any extension listens, it cancels and awaits
-every forked branch, :meth:`deliver_queued` delivery and marshalled
-submission: none has an awaiting caller, and none may outlive the
-session (docs/SUBMISSION-LIFECYCLE.md "fork").
+First, and whether or not any extension listens, it closes every open
+suspension as ``abort`` (reason ``cursor_closed``), then cancels and
+awaits every forked branch, :meth:`deliver_queued` delivery and
+marshalled submission: none has an awaiting caller, and none may outlive
+the session (docs/SUBMISSION-LIFECYCLE.md "fork").
 
 **Parameters**
 
@@ -976,6 +1044,29 @@ The extension request the cursor points at, or ``None`` (EXTENSION-LOCKS §2).
 The cursor only — never a walk. Every head reads this to decide what to
 draw, and :meth:`submit` reads it to decide whether to refuse, so the
 thing a user is looking at and the thing that refused them are one entry.
+
+### pending_suspensions
+
+```python
+pending_suspensions(cursor: Cursor | None = None, scope: PendingScope = 'cursor') -> list[dict[str, Any]]
+```
+
+`tau_agent_core.agent_session.AgentSession.pending_suspensions` · since 0.15.0
+
+The suspensions open or queued now, as heads render them (§3.4, §3.12.4).
+
+**Parameters**
+
+- `cursor: Cursor | None = None` — The cursor ``scope`` is relative to; ``None`` is :attr:`acting_cursor`.
+- `scope: PendingScope = 'cursor'` — ``"cursor"``, that cursor's own; ``"tree"``, it and every cursor it owns; ``"session"``, every cursor's.
+
+**Returns**
+
+Each suspension's state (``Suspension.state``), oldest first.
+
+**Raises**
+
+- `ValueError` — an unknown ``scope``.
 
 ### performed
 
@@ -1969,6 +2060,60 @@ Read live, so it tracks :meth:`set_model` and :meth:`set_model_resolver`.
 
 - `CompactionPolicyError` — :meth:`require_compaction_resolver` is outstanding.
 - `ModelUnavailableError` — the session's own model would summarise and is unavailable.
+
+### suspend
+
+```python
+async suspend(spec: dict[str, Any], *, extension: str | None = None) -> dict[str, Any]
+```
+
+`tau_agent_core.agent_session.AgentSession.suspend`
+
+``api.suspend``: stop the acting cursor's turn until a responder answers (§3.3).
+
+Every enclosing policy deadline is paused for the whole call, queue
+time included (§4.3).
+
+**Parameters**
+
+- `spec: dict[str, Any]` — The suspension spec (:func:`~tau_agent_core.suspensions.validate_suspension_spec`).
+- `extension: str | None = None` — The extension raising it; ``None`` is the extension whose hook handler is running (``ctx.suspend``).
+
+**Returns**
+
+The resolution, ``{id, action, values, answered_by, at_ms}``.
+
+**Raises**
+
+- `ValueError` — a malformed spec.
+- `SuspensionRefused` — not a suspension site, or an unsteppable turn.
+- `NoResponderError` — nothing can answer it.
+
+### suspend_refusal
+
+```python
+suspend_refusal() -> str | None
+```
+
+`tau_agent_core.agent_session.AgentSession.suspend_refusal`
+
+Why a suspension raised now could not be answered, or ``None`` (§3.8, §3.9).
+
+Checked against the acting cursor's turn: it must exist, persist
+(``store_history``), and be writable; a live responder must be
+registered; and the driving submission must allow user input. A child
+cursor's ``agent`` turn reads that permission from its root turn, the
+top of its owner chain (§3.12.3).
+
+**Returns**
+
+The reason, or ``None`` when a suspension could be raised.
+
+### suspension_responders
+
+`tau_agent_core.agent_session.AgentSession.suspension_responders: tuple[str, ...]`
+
+The live responders registered now, in registration order.
 
 ### turn_lock
 

@@ -1322,6 +1322,74 @@ _GET_PENDING_REQUEST_RETURNS: dict[str, Any] = {
     "required": ["request"],
 }
 
+_SUSPENSION_STATE_DESCRIPTION = (
+    "A suspension open or queued now (docs/STEP-DEBUGGER.md §3.4): {id, session_id, "
+    "cursor_id, parent_cursor_id, depth, spawned_from, spec, site, extension, target_id, "
+    "call, entry_id, queued, opened_at_ms}. `spec` is {title, body, fields, actions, "
+    "evidence, targetId}; `actions` are {label} and `fields` are a form's; `queued` is "
+    "true while another suspension on its cursor is open ahead of it, and only the open "
+    "one can be answered."
+)
+
+_GET_PENDING_SUSPENSIONS_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "suspensions": {
+            "type": "array",
+            "description": (
+                "The suspensions in scope, oldest first, each the same state "
+                "suspension_open carries. " + _SUSPENSION_STATE_DESCRIPTION
+            ),
+        },
+    },
+    "required": ["suspensions"],
+}
+
+_ANSWER_SUSPENSION_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "accepted": {
+            "type": "boolean",
+            "description": (
+                "True when this answer resolved the suspension. False is not an error: "
+                "`reason` says why, and `resolution` is the one that stands, so two "
+                "racing clients converge."
+            ),
+        },
+        "reason": {
+            "type": ["string", "null"],
+            "enum": ["already_resolved", "aborted", None],
+            "description": (
+                "Null when accepted. `already_resolved`: another answer won. `aborted`: "
+                "the suspension's turn was aborted first, so the abort stands."
+            ),
+        },
+        "resolution": {
+            "type": "object",
+            "description": (
+                "{id, action, values, answered_by, at_ms}: what the suspending code "
+                "receives. `answered_by` names this host's client."
+            ),
+        },
+    },
+    "required": ["accepted", "reason", "resolution"],
+}
+
+_DECLARE_CAPABILITIES_RETURNS: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "suspensions": {
+            "type": "boolean",
+            "description": (
+                "Whether this host is now registered as the session's live suspension "
+                "responder: true means api.suspend may raise a suspension for it to "
+                "answer, false that api.suspend raises NoResponderError."
+            ),
+        },
+    },
+    "required": ["suspensions"],
+}
+
 _ANSWER_REQUEST_RETURNS: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1730,6 +1798,35 @@ CAPABILITIES: dict[str, Capability] = {
             on_wire=True,
             arguments=None,
             returns=_ANSWER_REQUEST_RETURNS,
+        ),
+        Capability(
+            "get_pending_suspensions",
+            "read",
+            "The suspensions open or queued now: at the cursor, in the tree of cursors "
+            "it owns, or in the whole session. What a head draws after an attach.",
+            on_wire=True,
+            arguments=None,
+            returns=_GET_PENDING_SUSPENSIONS_RETURNS,
+        ),
+        Capability(
+            "answer_suspension",
+            "mutation",
+            "Answer an open suspension with one of its actions and its fields' values; "
+            "the first valid answer resolves it and the waiting turn goes on. An "
+            "`abort` answer also aborts the turn.",
+            on_wire=True,
+            arguments=None,
+            returns=_ANSWER_SUSPENSION_RETURNS,
+        ),
+        Capability(
+            "declare_capabilities",
+            "mutation",
+            "Tell the session what this host can do: with `suspensions` true it is a "
+            "live responder, so a suspension raised in a turn it allowed user input "
+            "for waits for its answer.",
+            on_wire=True,
+            arguments=None,
+            returns=_DECLARE_CAPABILITIES_RETURNS,
         ),
         Capability(
             "list_managed_extensions",
