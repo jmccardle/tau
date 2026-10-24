@@ -27,6 +27,8 @@ from typing import Any
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.extension_types import ExtensionAPI
+from tau_agent_core.tool_pipeline import apply_tool_result_hooks
+from tau_agent_core.tools.base import AgentToolResult
 from tau_llm.types import Model
 from tau_coding_agent.session_store import Session
 
@@ -222,3 +224,70 @@ async def test_todo_state_survives_ondisk_reload(tmp_path):
     report = await reloaded_session.run_extension_command("todos", "")
     assert "1/2 completed" in report.output
     assert "#2 walk dog" in report.output
+
+
+# ── debug_hit: producer side of docs/STEP-DEBUGGER.md §5.4 ───────────────────
+
+
+async def _hits_for(tmp_path: Path, *calls: dict[str, Any]) -> list[Any]:
+    """Run each call and its result through the real ``tool_result`` hook; return the payloads."""
+    session = AgentSession(session_log=_session(tmp_path), model=_model(), extensions=[])
+    api = session._bind_extension_api("examples/38_todo.py")
+    todo_mod.todo_extension(api)
+    execute = session._registry._tools["todo"].execute
+    runner = session._extension_runner
+    hits: list[Any] = []
+    session._bind_extension_api("probe").on(
+        f"ext:{api._emitting_extension_name()}:debug_hit", hits.append
+    )
+    for params in calls:
+        out = await execute("call", params, None, None, None)
+        result = AgentToolResult(
+            tool_call_id="call", tool_name="todo", content=out["content"], details=out["details"]
+        )
+        await apply_tool_result_hooks(runner, result, params)
+    return hits
+
+
+async def test_debug_hits_for_created_completed_changed(tmp_path):
+    hits = await _hits_for(
+        tmp_path,
+        {"action": "add", "text": "buy milk"},
+        {"action": "toggle", "id": 1},
+        {"action": "toggle", "id": 1},
+    )
+    assert hits == [
+        {
+            "condition": "todo_created",
+            "evidence": [
+                {"label": "todo", "text": "#1: buy milk"},
+                {"label": "done", "text": "false"},
+            ],
+        },
+        {
+            "condition": "todo_completed",
+            "evidence": [
+                {"label": "todo", "text": "#1: buy milk"},
+                {"label": "done", "text": "true"},
+            ],
+        },
+        {
+            "condition": "todo_changed",
+            "evidence": [
+                {"label": "todo", "text": "#1: buy milk"},
+                {"label": "done", "text": "false"},
+            ],
+        },
+    ]
+
+
+async def test_debug_hit_for_clear_and_none_for_list_or_refusal(tmp_path):
+    hits = await _hits_for(
+        tmp_path,
+        {"action": "list"},
+        {"action": "toggle", "id": 9},
+        {"action": "add"},
+        {"action": "clear"},
+    )
+    assert [h["condition"] for h in hits] == ["todo_changed"]
+    assert set(hits[0]) == {"condition", "evidence"}

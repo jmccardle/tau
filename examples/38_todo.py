@@ -65,6 +65,21 @@ Or load directly through the public ``-e`` surface::
     tau -e examples/38_todo.py
     > Add a todo to buy milk
     > /todos
+
+## Debugger hits
+
+A ``tool_result`` hook emits ``debug_hit`` on ``ext:<name>:debug_hit`` after each
+landed ``todo`` call, for a break set such as ``/break add 38_todo:todo_completed``
+(docs/STEP-DEBUGGER.md §5.4). Payload: ``{condition, evidence}`` with evidence a
+list of ``{label, text}``.
+
+| condition | after |
+|---|---|
+| ``todo_created`` | ``add`` |
+| ``todo_completed`` | ``toggle`` that marks a todo done |
+| ``todo_changed`` | ``toggle`` that reopens one, and ``clear`` |
+
+A refused call (an ``error`` in its details) and a ``list`` emit nothing.
 """
 
 from __future__ import annotations
@@ -109,6 +124,34 @@ def _snapshot(
     if error is not None:
         record["error"] = error
     return record
+
+
+def _debug_hit(details: dict[str, Any], call_input: dict[str, Any]) -> dict[str, Any] | None:
+    """The ``debug_hit`` payload for one finished ``todo`` call, or ``None`` for no hit."""
+    action = details["action"]
+    if details.get("error") is not None or action == "list":
+        return None
+    if action == "clear":
+        return {
+            "condition": "todo_changed",
+            "evidence": [{"label": "action", "text": "cleared all todos"}],
+        }
+    todo = details["todos"][-1] if action == "add" else _find(details["todos"], call_input["id"])
+    if action == "add":
+        condition = "todo_created"
+    else:
+        condition = "todo_completed" if todo["done"] else "todo_changed"
+    return {
+        "condition": condition,
+        "evidence": [
+            {"label": "todo", "text": f"#{todo['id']}: {todo['text']}"},
+            {"label": "done", "text": str(todo["done"]).lower()},
+        ],
+    }
+
+
+def _find(todos: list[dict[str, Any]], todo_id: int) -> dict[str, Any]:
+    return next(t for t in todos if t["id"] == todo_id)
 
 
 def _format_list(todos: list[dict[str, Any]]) -> str:
@@ -253,6 +296,17 @@ def todo_extension(api: Any) -> None:
             "execution_mode": "sequential",
         }
     )
+
+    async def on_tool_result(event: dict[str, Any], ctx: Any) -> None:
+        """``tool_result`` hook: a hit is emitted from a hook, never from a notify event."""
+        if event["tool_name"] != "todo":
+            return None
+        hit = _debug_hit(event["details"], event["input"])
+        if hit is not None:
+            await api.emit("debug_hit", hit)
+        return None
+
+    api.on("tool_result", on_tool_result)
 
     api.register_command(
         "todos",
