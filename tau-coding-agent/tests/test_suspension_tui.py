@@ -112,13 +112,21 @@ async def _until(pilot: Any, predicate: Callable[[], Any], tries: int = 200) -> 
     raise AssertionError("the condition never held")
 
 
+def _buttons_laid_out(app: Any) -> bool:
+    """Whether the modal is on top with its button row mounted and given a height.
+
+    A query, not ``query_one``: the row may not be mounted yet when the screen is.
+    """
+    screen = _screen(app)
+    if screen is None:
+        return False
+    rows = screen.query("#suspension-buttons")
+    return bool(rows) and rows.first().region.height > 0
+
+
 async def _shown(pilot: Any, app: Any) -> suspension_ui.SuspensionScreen:
     """Wait until the modal is on top and laid out, so a click lands on its buttons."""
-    await _until(
-        pilot,
-        lambda: _screen(app) is not None
-        and _screen(app).query_one("#suspension-buttons").region.height > 0,  # type: ignore[union-attr]
-    )
+    await _until(pilot, lambda: _buttons_laid_out(app))
     screen = _screen(app)
     assert screen is not None
     return screen
