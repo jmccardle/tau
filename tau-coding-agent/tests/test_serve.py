@@ -10,6 +10,7 @@ from tau_agent_core.rpc import dialect
 
 import asyncio
 import io
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -21,6 +22,7 @@ from tau_agent_core.cursor import TURN_CURSOR
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, TextContent, Usage
 
+from tau_coding_agent.headless import CLIError
 from tau_coding_agent.serve import daemon as daemon_module
 from tau_coding_agent.serve import protocol as p
 from tau_coding_agent.serve.client import Address, ServeClient, ServeError, parse_address
@@ -337,6 +339,35 @@ async def _session_with_a_turn(client: ServeClient, cwd: Path, text: str = "hell
 
 def _user_entry(entries: list[dict[str, Any]]) -> str:
     return next(e["id"] for e in entries if e.get("message", {}).get("role") == "user")
+
+
+async def test_an_extension_under_serve_reads_its_config_json_slice(
+    tmp_path, provider, extensions_off
+):
+    extensions = tmp_path / "home" / ".tau" / "extensions"
+    extensions.mkdir(parents=True)
+    seen = tmp_path / "seen.json"
+    (extensions / "cfgprobe.py").write_text(
+        "import json\n"
+        "def register(api):\n"
+        f"    open({str(seen)!r}, 'w').write(json.dumps(api.config))\n"
+    )
+    config = {**_CONFIG, "extensions": {"cfgprobe": {"threshold": 3}}}
+    server, served = await _serve(tmp_path, config)
+    try:
+        client = await served.client()
+        await client.request(p.NewSession(cwd=str(tmp_path)))
+        await _until(seen.exists)
+        assert json.loads(seen.read_text()) == {"threshold": 3}
+    finally:
+        server.close()
+        await server.wait_closed()
+        await served.daemon.shutdown()
+
+
+def test_a_malformed_extensions_block_stops_the_daemon_at_construction(tmp_path):
+    with pytest.raises(CLIError, match='"extensions" must be a JSON object'):
+        Daemon({**_CONFIG, "extensions": []}, FileSessionCatalog(tmp_path / "sessions"))
 
 
 async def test_the_attach_answer_carries_the_whole_vocabulary_models_and_load_errors(
