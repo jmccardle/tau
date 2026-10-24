@@ -146,12 +146,23 @@ are:
 
 | site | when | the tree holds |
 |---|---|---|
-| `tool_call` | before a tool runs | the assistant entry with its calls, and the results of earlier calls in the batch |
+| `tool_call`, top-level calls only | before a tool runs | the assistant entry with its calls, and the results of earlier calls in the batch |
 | `entry_written` (new) | immediately after any message entry is durably written: user, assistant, toolResult, custom | everything up to and including that entry |
 | mutating `turn_end` | before the next sample | the whole turn so far |
 | `user_turn_end` | end of the prompt | the whole prompt |
 | a command handler | between turns; `ctx.ui.form`'s case (§3.10) | the path at the cursor; in-process only (§3.7) |
 | an `ext:` channel handler | when reached from one of the above | as for that site |
+
+**A nested tool call is not a site.** Code mode's inner calls go through
+`prepare_tool_call` with `parent_tool_call_id` set (`tool_pipeline.py:532`, from
+`codemode/extension.py`), so the `tool_call` hooks run for each of them. A
+suspension there would sit inside an executing outer tool: the outer call's
+result is not in the tree, and the code-mode program is mid-run in a child
+process. That breaks the rule above, no continuation could resume it, and a
+`-p` exit would unwind through code mode's `except BaseException`
+(`extension.py:380`) and lose the program (tau-search, round 5). So a `tool_call`
+with `parent_tool_call_id` refuses `api.suspend`, and its hits are carried, like
+any non-site hit, to the outer call's result `entry_written`.
 
 **`entry_written` is a new awaited hook.** It receives `{kind, entry_id, message,
 blocks}` after the store write returns. It cannot change the entry. It is the
@@ -225,23 +236,31 @@ one cursor, for example from two producers' `ext:` handlers in one dispatch.
 ### 3.2.2 `TurnSuspended` must reach the loop
 
 Under a deferred responder (§3.8), `api.suspend` raises `TurnSuspended` to
-unwind the turn. Several handlers between the suspension and the loop catch
-exceptions, and each would swallow or rewrite it (independent review, round 2,
-N6). So `TurnSuspended` is a **`BaseException`**, which `except Exception`
-does not catch, and each site that catches `BaseException` is taught it:
+unwind the turn. Handlers between the suspension and the loop catch exceptions,
+and each could swallow or rewrite it (independent review, round 2, N6). So:
 
-| site | today | with `TurnSuspended` |
-|---|---|---|
-| `tool_pipeline.py:296`, a `tool_call` hook exception becomes a block | `except Exception` | passes through |
-| `events.py:487-495`, an `ext:` / bus handler's exception is surfaced and swallowed | `except Exception` | passes through, which is the path the debugger uses |
-| the runner's `tool_result` and hook catches | `except Exception` | passes through |
-| `agent_loop.py:417`, `except BaseException` emits an error `agent_end` | catches it | emits `agent_end` with `end_reason: "suspended"` and writes nothing else |
-| `agent_session.py:4196`, a turn exception writes a `turn_error` node | catches `Exception` | passes through: no `turn_error` |
-| `asyncio.gather` in the parallel batch | could capture it | not reached: results' `entry_written` runs after the batch (§3.2) |
+- **`TurnSuspended` is a `BaseException`.** No `except Exception` catches it.
+- **The rule for every `except BaseException`:** re-raise `TurnSuspended`
+  untouched, before any other handling. Two sites map it rather than re-raise:
+  - `agent_loop.py:417` (and `:604` in `run_continue`) emits `agent_end` with
+    `end_reason: "suspended"` and writes nothing else;
+  - `submit_threadsafe` (`agent_session.py:3084`), which puts any exception on a
+    cross-thread caller's future, resolves the future as accepted with
+    `end_reason: "suspended"`, not with a raw `TurnSuspended`.
+- **A lint test enforces the rule.** It walks the AST of the five `src` trees
+  and fails on any `except BaseException` that does not re-raise
+  `TurnSuspended` first or appear on the mapped list. The rule cannot rot when
+  a new catch lands. There are 11 such catches today (tau-search, round 5),
+  including `agent_session.py:1535`, `codemode/extension.py:380`,
+  `_cpython_child.py:155`, `extension_auth.py:259`, `background.py:373`,
+  `serve/remote.py:148` and `session_store.py:629`.
+- **`except Exception` sites need nothing,** and `asyncio.gather` in the
+  parallel batch is not reached, because results' `entry_written` runs after
+  the batch (§3.2).
 
-Each row is a conformance case (§6.2). In milestone 1 nothing raises
-`TurnSuspended`, but the type and the table land then, because the bus path
-is in-process.
+Each mapped site and a sample of re-raising sites are conformance cases (§6.2).
+In milestone 1 nothing raises `TurnSuspended`, but the type, the rule and the
+lint land then, because the bus path is in-process.
 
 ### 3.3 Lifecycle, in-process
 
@@ -527,6 +546,13 @@ rests on the Future. Across processes it rests on a lock:
   path that ever replaced the log file (write-temp-and-rename, a compaction
   rewrite) would leave a lock on the log stranded on the old inode (tau-router,
   round 4).
+  - The sidecar outlives the process. That is harmless, because a `flock` dies
+    with its holder, and an existing sidecar never means "held".
+  - Delete, rename, move, fork and export handle it with the log. The catalog
+    ignores it, since it globs `*.jsonl` (`session_store.py:734`).
+  - Holding the lock while hosting changes visible behaviour: two TUIs on one
+    session become one writer and one read-only replica. The release notes say
+    so (tau-search, round 5).
 - **One descriptor per session per process.** `flock` locks belong to the open
   file description. A second `open()` and `flock` on the same file in the same
   process fails, exactly as in another process. So the process keeps one
@@ -1022,6 +1048,12 @@ Every head must produce the same tree: the same entries, the same finalized
 - two hits for one site: one suspension, listing both;
 - after `new_session` in a warm process on the file store, a second process can
   open the previous session for writing;
+- a code-mode program calls `web_search` with stepping in `every` mode: no
+  suspension inside the program; the hit is carried to the outer call's result
+  `entry_written`;
+- the `except BaseException` lint fails on a new catch that does not re-raise
+  `TurnSuspended`; `submit_threadsafe` resolves a suspended turn as
+  `end_reason: "suspended"`;
 - suspend under `-p`, exhaust the router's budget, then resume: tau-router steps
   down or refuses at `turn_resume`, before the first resumed request;
 - a form from a panel button between turns: no turn lock, no `abort` action; a
@@ -1138,4 +1170,7 @@ as milestone 2 (§7).
 | independent round 2, N9: state the tree cannot rebuild | §3.7.3 `turn_index` and `repeat` in the continuation |
 | round 5, tau-router: a resume can spend on a rung the router would refuse | §3.7.3 `turn_resume` is an awaited mutating hook before the first resumed request |
 | round 5, tectum: a session swap must release the old session's lock | §3.7.3 |
+| round 5, tau-search: nested code-mode calls fire `tool_call` mid-program | §3.2 a nested call is not a site; its hits carry to the outer result |
+| round 5, tau-search: the `except BaseException` table is incomplete and would rot | §3.2.2 a rule, two mapped sites, and a lint test |
+| round 5, tau-search: the sidecar's lifecycle | §3.7.3 |
 | independent round 2 minors | resume as a submission; forms under `-p` take the headless policy; pending hits combined (§5.2); effective-argument check; `store_history` off refused (§3.9); the session lock held while hosting; `-p` without `--answer` exits 3 |
