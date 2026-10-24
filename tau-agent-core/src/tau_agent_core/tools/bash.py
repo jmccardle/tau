@@ -132,7 +132,8 @@ class BashTool:
         """Execute the bash tool: :meth:`run`, rendered as the model reads it.
 
         Any nonzero exit is an error, whatever stderr holds, and its code ends the
-        text the model reads and is in ``details["exit_code"]`` (#88).
+        text the model reads and is in ``details["exit_code"]`` (#88). A negative
+        code is Python's "killed by signal N", so the text names the signal.
 
         Args:
             tool_call_id: Unique identifier for the tool call
@@ -163,7 +164,11 @@ class BashTool:
         if value["aborted"]:
             text, is_error = "Command was aborted", False
         elif exit_code != 0:
-            trailer = f"Command exited with code {exit_code}"
+            if exit_code is not None and exit_code < 0:
+                cause = " after timing out" if value["timed_out"] else ""
+                trailer = f"Command killed by signal {-exit_code}{cause}"
+            else:
+                trailer = f"Command exited with code {exit_code}"
             output = value["output"].rstrip("\n")
             text = f"{output}\n\n{trailer}" if output else trailer
             is_error = True
