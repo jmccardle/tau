@@ -199,8 +199,10 @@ class ExtensionRunner:
     A handler registered with a policy (docs/STEP-DEBUGGER.md §4) runs through
     it. Its ``Failed`` outcome raises
     :class:`~tau_agent_core.policies.HandlerPolicyError`: ``tool_call`` blocks on
-    it and ``annotate`` records it, as for any raise; every site that isolates
-    handler errors surfaces it and re-raises it instead, which ends the turn.
+    it and ``annotate`` records it, as for any raise; every mutating hook that
+    isolates handler errors surfaces it and re-raises it instead, which ends the
+    turn. The lifecycle hooks have no turn to end, so they surface it, set a
+    warning, and run the remaining handlers.
 
     ``has_handlers(event)`` gives call-sites the zero-extension fast path
     (pi ``agent-session.ts:405-411``): when it returns ``False`` the caller skips
@@ -1026,6 +1028,10 @@ class ExtensionRunner:
         ``session_shutdown`` for just the affected extension — e.g. a clean teardown
         on disable without touching its peers. Same error-surfacing (S44) and
         registration-order walk as the whole-runner variant.
+
+        A policed handler's ``Failed`` is surfaced and set as the extension's
+        ``policy:<hook>`` warning, never raised: there is no turn to end here, and
+        one extension's failure must not stop another's start or teardown.
         """
         handlers = ext.handlers.get(event_name)
         if not handlers:
@@ -1035,7 +1041,7 @@ class ExtensionRunner:
                 await self._call(ext, event_name, handler, event)
             except HandlerPolicyError as err:
                 self._emit_error(ExtensionError(ext.path, event_name, str(err)))
-                raise
+                self._warn(ext, event_name, f"{event_name} handler failed: {err.detail}")
             except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                 self._emit_error(ExtensionError(ext.path, event_name, str(err)))
 

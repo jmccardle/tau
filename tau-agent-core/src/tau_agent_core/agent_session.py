@@ -97,7 +97,7 @@ from tau_agent_core.session_lock import (
 )
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.entry_annotations import AnnotationError
-from tau_agent_core.policies import HandlerPolicyError
+from tau_agent_core.policies import HandlerPolicyError, runs_on_behalf_of
 from tau_agent_core.seed import check_seed, normalise_seed
 from tau_agent_core.suspension import TurnSuspended
 from tau_agent_core.agent_loop import AgentLoop, TurnFailure
@@ -3598,7 +3598,8 @@ class AgentSession:
             RuntimeError: Called off the session's own event loop (use
                 :meth:`submit_threadsafe`); the derived depth exceeds
                 ``MAX_SUBMISSION_DEPTH``; or the call is reentrant, from a hook on
-                the task already running this cursor's turn, which would deadlock.
+                the task already running this cursor's turn (or a policed
+                handler's task it awaits), which would deadlock.
             NotImplementedError: ``sub.multitask_strategy`` is unknown, or
                 ``sub.silent`` is True (only its ``store_history=False`` half
                 exists).
@@ -3610,11 +3611,11 @@ class AgentSession:
 
         sub = self._with_checked_depth(sub)
 
-        if cur.turn_task is not None and asyncio.current_task() is cur.turn_task:
+        if cur.turn_task is not None and runs_on_behalf_of(cur.turn_task):
             raise RuntimeError(
                 "submit(): reentrant self-submission. This call is running on "
                 "the same asyncio task as the turn currently in flight on this "
-                "session — a hook (input/tool_call/turn_end/user_turn_end) "
+                "session, or in a policed handler's task that turn awaits — a hook (input/tool_call/turn_end/user_turn_end) "
                 "calling session.submit()/session.prompt()/ctx.prompt() "
                 "before its own turn has returned. Every multitask_strategy "
                 "here waits for or acts on _turn_lock, which this task "

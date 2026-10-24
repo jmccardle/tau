@@ -678,3 +678,73 @@ async def test_a_policy_that_swallows_the_unwind_is_caught() -> None:
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
         with pytest.raises(SuspensionSwallowedError):
             await session.prompt("go")
+
+
+# ── review round 2 ───────────────────────────────────────────────────────────
+
+
+async def test_a_bounded_handler_calling_prompt_hits_the_reentrant_guard_at_once() -> None:
+    ends: list[Any] = []
+
+    def reentrant(api: Any) -> None:
+        api.register_policy("slow_gate", Bounded(5, "fail", "fail"))
+
+        async def on_turn_end(event: Any, ctx: Any) -> None:
+            await ctx.prompt("again")
+
+        api.on("turn_end", on_turn_end, policy="slow_gate")
+
+    session = _session(reentrant, _agent_ends(ends))
+    started = time.monotonic()
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
+        with pytest.raises(HandlerPolicyError) as raised:
+            await session.prompt("go")
+    assert time.monotonic() - started < 2
+    assert "reentrant self-submission" in raised.value.detail
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert [e.end_reason for e in ends] == ["error"]
+
+
+async def test_a_task_a_handler_spawns_is_not_the_turn() -> None:
+    from tau_agent_core.policies import runs_on_behalf_of
+
+    owner = asyncio.current_task()
+    assert owner is not None
+    seen: dict[str, bool] = {}
+
+    async def spawned() -> None:
+        seen["spawned"] = runs_on_behalf_of(owner)
+
+    async def call() -> None:
+        seen["policed"] = runs_on_behalf_of(owner)
+        await asyncio.create_task(spawned())
+
+    await PausableDeadline(1).run(call)
+    assert seen == {"policed": True, "spawned": False}
+
+
+def _shutdown_failer(api: Any) -> None:
+    def on_shutdown(event: Any, ctx: Any) -> None:
+        raise RuntimeError("teardown broke")
+
+    api.on("session_shutdown", on_shutdown, policy="human")
+
+
+_shut_down: list[str] = []
+
+
+def _shutdown_peer(api: Any) -> None:
+    api.on("session_shutdown", lambda event, ctx: _shut_down.append("peer"))
+
+
+async def test_a_failed_lifecycle_handler_does_not_stop_its_peers() -> None:
+    _shut_down.clear()
+    errors: list[Any] = []
+    session = _session(_shutdown_failer, _shutdown_peer)
+    session._extension_runner.on_error(errors.append)
+    await session._extension_runner.emit_session_shutdown({"type": "session_shutdown"})
+    assert _shut_down == ["peer"]
+    assert [e.event for e in errors] == ["session_shutdown"]
+    [warning] = session.extension_warnings()
+    assert (warning.source, warning.key) == (_ext_name(session, 0), "policy:session_shutdown")
+    assert warning.message == "session_shutdown handler failed: RuntimeError: teardown broke"

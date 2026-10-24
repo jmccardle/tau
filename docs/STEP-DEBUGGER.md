@@ -1253,13 +1253,35 @@ the session's `ExtensionRegistry`, and the tests are
 `tau-agent-core/tests/test_handler_policies.py`. Divergences and choices the
 spec left open:
 
-- **`Failed` at every isolating hook ends the turn.** §4.1 names `turn_end`,
-  `tool_result` and `entry_written`. The rule as built is general: wherever a
-  site isolates handler errors today (also `input`, `before_agent_start`,
-  `user_turn_end`, `session_before_switch` and the two lifecycle hooks), a
+- **`Failed` at every isolating mutating hook ends the turn.** §4.1 names
+  `turn_end`, `tool_result` and `entry_written`. The rule as built is general:
+  wherever a mutating hook isolates handler errors today (also `input`,
+  `before_agent_start`, `user_turn_end` and `session_before_switch`), a
   `Failed` is surfaced through `on_error` and `HandlerPolicyError` is raised out
   of the dispatch. `tool_call` blocks on it and `annotate` records it, as for
   any raise.
+- **At the lifecycle hooks `Failed` is surfaced, never raised.**
+  `session_start` and `session_shutdown` have no turn to end, and one
+  extension's failing start or teardown must not stop another's. So each
+  failure goes to `on_error` and sets the extension's `policy:<hook>` warning,
+  and every extension's handler still runs (review round 2).
+- **An emitter that awaits a policed channel takes its failure.** A handler
+  with no policy whose `await api.emit(...)` reaches a policed `ext:`
+  subscriber that fails now gets `HandlerPolicyError`, and if it does not catch
+  it, its own site's rule applies: at an isolating hook that ends the turn.
+  Before policies, a subscriber's error never reached the emitter. The same
+  holds for a `HandlerPolicyError` raised in any listener on an internal
+  channel. This is intended: the subscriber chose the policy, and the emitter
+  chose to await the channel.
+- **The reentrant-submit guard follows the policed task.** A bounded handler
+  runs in its own task, so `submit()`'s guard no longer compares task
+  identity with the turn's task; it asks `policies.runs_on_behalf_of`, which
+  follows each policed task to the task awaiting it. A `turn_end` handler under
+  `gating` that calls `ctx.prompt()` therefore fails at once with the reentrant
+  error, not after 30 s as `DeadlineExpired`. A context variable was the
+  suggested mark, but a task the handler merely spawns copies the context too
+  and would be refused when it legitimately waits for the lock, so the link is
+  kept per task instead (review round 2).
 - **The loop ends the turn the way it does for an `annotate` failure.** Its
   noted failure is now `AnnotationError | HandlerPolicyError`
   (`agent_loop.TurnFailure`). A failed `entry_written` is noted in
@@ -1294,8 +1316,10 @@ spec left open:
   claim the dispatch.
 - **Registration.** An unknown policy name raises at `api.on`, and so does a
   policy on a notify event. Registering a taken name, a built-in included,
-  raises. An extension's policies are removed when it is disabled or reloaded.
-  A handler that already resolved a policy keeps it.
+  raises. Names resolve at `api.on`, so an extension that uses another
+  extension's policy must load after it. An extension's policies are removed
+  when it is disabled or reloaded, but a handler that already resolved one
+  keeps it.
 
 ## 5. The debugger extension (`tau-debugger`)
 

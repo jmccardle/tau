@@ -1792,7 +1792,7 @@ The outcome: ``accepted=False`` with a ``rejection_reason`` when refused; otherw
 **Raises**
 
 - `ValueError` — ``cursor`` was not opened by this session.
-- `RuntimeError` — Called off the session's own event loop (use :meth:`submit_threadsafe`); the derived depth exceeds ``MAX_SUBMISSION_DEPTH``; or the call is reentrant, from a hook on the task already running this cursor's turn, which would deadlock.
+- `RuntimeError` — Called off the session's own event loop (use :meth:`submit_threadsafe`); the derived depth exceeds ``MAX_SUBMISSION_DEPTH``; or the call is reentrant, from a hook on the task already running this cursor's turn (or a policed handler's task it awaits), which would deadlock.
 - `NotImplementedError` — ``sub.multitask_strategy`` is unknown, or ``sub.silent`` is True (only its ``store_history=False`` half exists).
 - `UnsupportedCommandError` — A resolved command was unregistered before it ran.
 

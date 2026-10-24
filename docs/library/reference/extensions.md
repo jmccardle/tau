@@ -3306,6 +3306,31 @@ How many records were removed.
 
 - `AuthorizationStoreError` — The store cannot be read.
 
+## runs_on_behalf_of
+<!-- agent: yes -->
+
+```python
+runs_on_behalf_of(task: asyncio.Task[Any]) -> bool
+```
+
+`tau_agent_core.policies.runs_on_behalf_of` · since 0.15.0
+
+Whether the current task is ``task``, or a policed task that ``task`` is awaiting.
+
+A bounded handler runs in its own task, so a guard that compares
+``asyncio.current_task()`` with a turn's task would miss it. This follows
+each :meth:`PausableDeadline.run` task to the task awaiting it. A task a
+handler merely spawned is not followed, so it is never mistaken for the
+turn.
+
+**Parameters**
+
+- `task: asyncio.Task[Any]` — The task to test against, e.g. the one driving a turn.
+
+**Returns**
+
+True when the current code runs as part of ``task``.
+
 ## seed_tool_call
 <!-- agent: yes -->
 

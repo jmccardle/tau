@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import math
+import weakref
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -159,6 +160,35 @@ _ENCLOSING: contextvars.ContextVar[tuple[PausableDeadline, ...]] = contextvars.C
 )
 
 
+_AWAITED_BY: weakref.WeakKeyDictionary[asyncio.Task[Any], asyncio.Task[Any]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+@agent_facing(topic="extensions", since="0.15.0")
+def runs_on_behalf_of(task: asyncio.Task[Any]) -> bool:
+    """Whether the current task is ``task``, or a policed task that ``task`` is awaiting.
+
+    A bounded handler runs in its own task, so a guard that compares
+    ``asyncio.current_task()`` with a turn's task would miss it. This follows
+    each :meth:`PausableDeadline.run` task to the task awaiting it. A task a
+    handler merely spawned is not followed, so it is never mistaken for the
+    turn.
+
+    Args:
+        task: The task to test against, e.g. the one driving a turn.
+
+    Returns:
+        True when the current code runs as part of ``task``.
+    """
+    current = asyncio.current_task()
+    while current is not None:
+        if current is task:
+            return True
+        current = _AWAITED_BY.get(current)
+    return False
+
+
 @agent_facing(topic="extensions", since="0.15.0")
 def enclosing_deadlines() -> tuple[PausableDeadline, ...]:
     """Every policy deadline the current code runs under, outermost first.
@@ -271,6 +301,9 @@ class PausableDeadline:
 
         task = self._loop.create_task(_body(), context=context)
         self._task = task
+        awaiter = asyncio.current_task()
+        if awaiter is not None:
+            _AWAITED_BY[task] = awaiter
         if not self.paused:
             self._start_clock()
         try:
@@ -282,6 +315,7 @@ class PausableDeadline:
             raise
         finally:
             self._stop_clock()
+            _AWAITED_BY.pop(task, None)
         if self.expired:
             raise DeadlineExpired(self)
         return value
