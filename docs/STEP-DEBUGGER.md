@@ -208,7 +208,8 @@ returns.
   handlers. A notify event emitted while a permitted hook runs therefore does not
   inherit the permission.
 
-**Refused everywhere else, with a named error.** That includes every notify event
+**Refused everywhere else, with a named error.** That includes `turn_resume`
+(§3.7.3), nested tool calls (above), and every notify event
 (`message_update`, `message_end`, `tool_execution_*`, `provider_retry`).
 Several are emitted while a provider stream is open, and a parked handler would
 hold the stream open (`events.py:315-322`).
@@ -512,7 +513,16 @@ and in that time the provider's budget may be spent, the model held (429) or
 the key revoked. Two resume paths go straight to a sample (a user entry's or a
 node's `entry_written`) without passing `input` or `turn_end`, where the router
 routes. So the router re-checks its rung at `turn_resume`, and steps down or
-halts with its usual message, before any request is spent. An extension that
+halts with its usual message, before any request is spent.
+
+- **A handler halts a resume by returning `{"stop": "<reason>"}`.** The resumed
+  turn then ends cleanly with that text, as `abort` would: every pending call
+  gets an aborted result, the suspension stays answered, and the tree stays
+  valid. A budget refusal therefore never has to raise, and never reads as an
+  extension error (tau-router, round 5).
+- **`turn_resume` is not a suspension site.** A suspension raised while a
+  suspension is being resumed would nest one claim inside another. A hit
+  detected there is carried to the next permitted site, like any non-site hit. An extension that
 keeps state rebuilds it from the path at `session_start` (a fresh process) and
 adjusts at `turn_resume`.
 
@@ -1173,4 +1183,5 @@ as milestone 2 (§7).
 | round 5, tau-search: nested code-mode calls fire `tool_call` mid-program | §3.2 a nested call is not a site; its hits carry to the outer result |
 | round 5, tau-search: the `except BaseException` table is incomplete and would rot | §3.2.2 a rule, two mapped sites, and a lint test |
 | round 5, tau-search: the sidecar's lifecycle | §3.7.3 |
+| round 5, tau-router and tau-search: halting a resume without raising; is `turn_resume` a site? | §3.7.3 `{"stop": reason}`; not a site, listed as refused in §3.2 |
 | independent round 2 minors | resume as a submission; forms under `-p` take the headless policy; pending hits combined (§5.2); effective-argument check; `store_history` off refused (§3.9); the session lock held while hosting; `-p` without `--answer` exits 3 |
