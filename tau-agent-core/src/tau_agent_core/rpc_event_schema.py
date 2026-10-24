@@ -152,7 +152,8 @@ class WireEvent(BaseModel):
         "to say), 'terminate' (a tool asked to stop), 'aborted', 'max_turns' "
         "(the ceiling truncated the run), 'repeat_tool_calls' (the loop stopped "
         "itself because the model kept repeating an identical, wholly-failing "
-        "batch) or 'error'. None on every other event type. `error` says whether "
+        "batch), 'error' or 'suspended' (the turn unwound at a suspension and "
+        "resumes from the tree). None on every other event type. `error` says whether "
         "the loop raised; this says how it stopped when it did not, which is what "
         "tells a host that an answer is TRUNCATED rather than finished.",
     )

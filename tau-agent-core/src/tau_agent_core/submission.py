@@ -176,6 +176,10 @@ class SubmissionResult:
     (docs/EXTENSION-LOCKS.md §5). Set only alongside ``accepted=False``, and
     always beside a ``rejection_reason`` carrying the same facts as prose — so a
     head renders the record and a log reads the sentence.
+
+    ``end_reason`` is ``"suspended"`` when an accepted turn unwound at a
+    suspension (docs/STEP-DEBUGGER.md §3.2.2); ``messages`` then holds what it
+    wrote before parking. ``None`` otherwise.
     """
 
     accepted: bool  # LSP ApplyWorkspaceEditResult.applied
@@ -186,3 +190,5 @@ class SubmissionResult:
     command: Dispatched | None = None
 
     lock: ExtensionRequest | None = None
+
+    end_reason: Literal["suspended"] | None = None

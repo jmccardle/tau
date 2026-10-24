@@ -48,6 +48,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from tau_llm.abort import AbortSignal
+from tau_agent_core.suspension import TurnSuspended
 from tau_agent_core.tau_home import resolve_tau_home
 
 BACKGROUND_KEY = "background"
@@ -370,6 +371,8 @@ class BackgroundRegistry:
                 await task
             except asyncio.CancelledError:
                 pass
+            except TurnSuspended:
+                raise
             except BaseException:  # noqa: BLE001 — already reported through on_error
                 pass
         for handle, _ in tasks:
