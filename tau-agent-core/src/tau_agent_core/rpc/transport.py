@@ -645,45 +645,50 @@ async def _connect_stdout_writer(
     return asyncio.StreamWriter(stream_transport, protocol, None, loop), original_fd
 
 
+async def _next_output(self: "RPCHandler") -> dict[str, Any] | None:
+    """The next queued item, or ``None`` once ``_running`` is False with the queue empty.
+
+    Idle, it waits on whichever comes first, an item or ``_running`` going
+    False, so neither is noticed late. A getter cancelled after a put woke it
+    leaves that item queued, and the next pass takes it with ``get_nowait``.
+    """
+    while True:
+        if not self._output_queue.empty():
+            item: dict[str, Any] = self._output_queue.get_nowait()
+            return item
+        if not self._running:
+            return None
+        getter = asyncio.ensure_future(self._output_queue.get())
+        stopped = asyncio.ensure_future(self._not_running.wait())
+        try:
+            await asyncio.wait({getter, stopped}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stopped.cancel()
+            getter.cancel()
+        if getter.done() and not getter.cancelled():
+            got: dict[str, Any] = getter.result()
+            return got
+
+
 async def _write_stdout(self: "RPCHandler") -> None:
-    """Write queued responses/events to stdout, one at a time, in order.
+    """Write queued responses/events to stdout, one at a time, in order, until :func:`_next_output` ends.
 
-    FIFO ordering is the RPC protocol's only ordering guarantee to the
-    client (T6), so every write is fully drained — not merely handed to a
-    buffer — before the next queued item is even dequeued. Historically
-    this was enforced by awaiting `loop.run_in_executor(None, self
-    ._write_line, line)` to completion before looping; see
-    `_connect_stdout_writer` for why the MECHANISM changed (T6 blocker 2,
-    phase-4 review) — the reasoning this paragraph states is unchanged:
-    without something serializing writes end to end, N writes racing to
-    completion in whatever order the OS happens to service them is exactly
-    what a 20-response queue once measured emerging `1,3,5,...,0,15,...`.
+    FIFO is the protocol's only ordering guarantee (T6), so each write is
+    drained before the next item is dequeued; unserialized writes were once
+    measured arriving ``1,3,5,...,0,15,...``. An item's event credit
+    (``_credited``) is released only after its drain succeeds (T3,
+    docs/REMOTE-CONTROL.md §4[1]).
 
-    T3 consequence, stated deliberately as a natural effect of the writer
-    swap rather than a redesign of T3 itself: `await writer.drain()` below
-    is now REAL drain coupling to the OS's own acceptance of the bytes
-    (pi's own `waitForRawStdoutBackpressure()`, docs/REMOTE-CONTROL.md
-    §4[1]), so an item's event-credit (`_credited`) is released only AFTER
-    that drain succeeds — strictly stronger than the previous dequeue-time
-    release, which freed a credit the instant an item left `_output_queue`
-    regardless of whether the OS had actually accepted anything yet.
-
-    Deliberately does NOT catch write failures (T5/T6). A failed drain
-    means the peer's end of the pipe is gone — there is nothing useful to
-    do but stop, and swallowing the exception would leave us silently
-    producing output nobody can read. Letting it propagate ends this task;
-    `run()`'s `await self._stdout_task` re-raises it there.
+    Write failures are not caught (T5/T6): the peer is gone, and ``run()``'s
+    ``await self._stdout_task`` re-raises the error.
     """
     loop = asyncio.get_event_loop()
     writer, original_fd = await self._connect_stdout_writer(loop)
     try:
-        while self._running or not self._output_queue.empty():
-            try:
-                item = await asyncio.wait_for(self._output_queue.get(), timeout=0.5)
-            except asyncio.TimeoutError:
-                if not self._running and self._output_queue.empty():
-                    break
-                continue
+        while True:
+            item = await _next_output(self)
+            if item is None:
+                break
             credited = item.pop("_credited", False)
             await self.await_outbound_prerequisites(item)
             self.prepare_outbound(item)
