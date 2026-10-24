@@ -3089,6 +3089,9 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "required": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -6897,6 +6900,18 @@
           ],
           "default": null,
           "description": "A select or multiselect field's choices."
+        },
+        "required": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "False on a select means it may be answered null; absent means required."
         }
       },
       "required": [
