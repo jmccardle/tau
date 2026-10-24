@@ -465,16 +465,6 @@ were added:
 on its parent (`SideMark`: id, kind, status, preview), and the TUI draws it as a
 `⏸ kind` mark on the parent's row.
 
-**Built (M1a), a divergence for §3.12.6.** A child's frame entry records no
-`source`, and a fork child whose frame matches the path writes no frame entry at
-all, so "under an agent frame" is not readable from the tree. Instead every
-entry an `agent` submission's turn writes carries `"source": "agent"` (the frame
-entry, messages, tool results, extension nodes, a `branch_error`). Every other
-writer's entries carry no new field and stay byte-identical. `default_leaf` is
-the newest finished entry without that field, so a human who continues inside a
-child's branch reopens there. When no such entry exists, it falls back to the
-newest finished entry of any source.
-
 #### 3.7.3 Resuming from the tree
 
 A pending suspension with no live Future is one whose process died or exited.
@@ -1029,6 +1019,16 @@ So there is **no new session, no `SessionHost`, no `spawn_session`, no
 cross-session `spawnedBy`**. The tree view follows cursor owners within one
 session (§3.12.4), and the responder, abort and restart rules of §3.12.3–§3.12.5
 apply unchanged, because every child is a cursor in the same owner chain.
+
+**Built (M1a), a divergence.** A child's frame entry records no
+`source`, and a fork child whose frame matches the path writes no frame entry at
+all, so "under an agent frame" is not readable from the tree. Instead every
+entry an `agent` submission's turn writes carries `"source": "agent"` (the frame
+entry, messages, tool results, extension nodes, a `branch_error`). Every other
+writer's entries carry no new field and stay byte-identical. `default_leaf` is
+the newest finished entry without that field, so a human who continues inside a
+child's branch reopens there. When no such entry exists, it falls back to the
+newest finished entry of any source.
 
 Effort: the former slice M1h shrinks to about half a day: the `default_leaf`
 rule, the multi-root walker checks (both folded into M1a), and the two examples'
