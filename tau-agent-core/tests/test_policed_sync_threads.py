@@ -237,7 +237,7 @@ def test_each_member_is_wrapped_as_classified(cls: type) -> None:
         member = vars(cls)[name]
         fn = member.fget if isinstance(member, property) else member
         wrapped = hasattr(fn, "__wrapped__")
-        assert wrapped is (kind != "any"), f"{cls.__name__}.{name} ({kind})"
+        assert wrapped is (kind != "read"), f"{cls.__name__}.{name} ({kind})"
         if kind != "refuse":
             assert not inspect.iscoroutinefunction(getattr(fn, "__wrapped__", fn)), name
 
@@ -362,26 +362,99 @@ async def test_a_sync_handler_calling_prompt_fails_at_once_not_at_the_deadline()
 
 async def test_an_abandoned_handler_may_not_act_on_the_session_later() -> None:
     released = threading.Event()
+    done = threading.Event()
+    refused: dict[str, str] = {}
+    read: dict[str, Any] = {}
 
     def stale(api: Any) -> None:
         api.register_policy("tight", Bounded(0.05, "proceed", "proceed"))
 
         def on_turn_end(event: Any, ctx: Any) -> None:
             released.wait(2)
-            ctx.set_model("anything")
+            for label, attempt in (
+                ("set_model", lambda: ctx.set_model("anything")),
+                ("shutdown", ctx.shutdown),
+                ("set_warning", lambda: api.set_warning("late", "should not land")),
+                ("clear_warning", lambda: api.clear_warning("late")),
+                ("submit_threadsafe", lambda: api.submit_threadsafe("a late turn")),
+                ("notify", lambda: ctx.ui.notify("late")),
+            ):
+                try:
+                    attempt()
+                except RuntimeError as err:
+                    refused[label] = str(err)
+            read.update(
+                cwd=ctx.cwd,
+                shutdown_requested=ctx.shutdown_requested,
+                interactive=ctx.ui.interactive,
+                extension_name=api.extension_name,
+                config=api.config,
+                context=api.context is ctx,
+            )
+            done.set()
 
         api.on("turn_end", on_turn_end, policy="tight")
 
     session = _session(stale)
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
         await session.prompt("go")
+    entries = len(session.session_log.entries())
     released.set()
+    await _until(done.is_set)
     await _until(lambda: any("abandoned" in w.message for w in session.extension_warnings()))
+    assert set(refused) == {
+        "set_model",
+        "shutdown",
+        "set_warning",
+        "clear_warning",
+        "submit_threadsafe",
+        "notify",
+    }
+    for label, error in refused.items():
+        assert "this sync handler was abandoned" in error, label
+    assert read["cwd"] == session._extension_api.context.cwd
+    assert read["shutdown_requested"] is False and read["context"] is True
+    assert session._extension_api.context.shutdown_requested is False
+    await asyncio.sleep(0.05)
+    assert len(session.session_log.entries()) == entries
     [warning] = session.extension_warnings()
     assert warning.key == "policy:turn_end"
-    assert "raised RuntimeError: ExtensionContext.set_model: this sync handler was abandoned" in (
-        warning.message
-    )
+    assert "handler abandoned on its worker thread finished" in warning.message
+
+
+@pytest.mark.parametrize("mode", ["fail", "proceed"])
+async def test_a_sync_stop_iteration_is_carried_as_runtime_error_at_once(mode: str) -> None:
+    def stops(event: Any) -> None:
+        raise StopIteration("done early")
+
+    started = time.monotonic()
+    outcome = await Bounded(1, mode, mode).run(_call(stops, {}), _site())  # type: ignore[arg-type]
+    assert time.monotonic() - started < 0.5
+    if mode == "fail":
+        assert isinstance(outcome, Failed)
+        assert type(outcome.error) is RuntimeError
+        assert str(outcome.error) == "turn_end handler raised StopIteration"
+        assert isinstance(outcome.error.__cause__, StopIteration)
+    else:
+        assert outcome.record == "RuntimeError: turn_end handler raised StopIteration"  # type: ignore[union-attr]
+
+
+async def test_a_sync_stop_iteration_at_a_bounded_hook_fails_the_turn_at_once() -> None:
+    def stopper(api: Any) -> None:
+        api.register_policy("gate", Bounded(1, "fail", "fail"))
+
+        def on_turn_end(event: Any, ctx: Any) -> None:
+            raise StopIteration
+
+        api.on("turn_end", on_turn_end, policy="gate")
+
+    session = _session(stopper)
+    started = time.monotonic()
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
+        with pytest.raises(HandlerPolicyError) as raised:
+            await session.prompt("go")
+    assert time.monotonic() - started < 0.5
+    assert raised.value.detail == "RuntimeError: turn_end handler raised StopIteration"
 
 
 async def test_a_policed_sync_handler_blocks_the_turn_no_longer_than_its_deadline() -> None:

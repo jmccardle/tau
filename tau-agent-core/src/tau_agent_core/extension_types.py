@@ -2909,7 +2909,7 @@ class ExtensionAPI:
 
 # What a policed sync handler's worker thread may call (docs/STEP-DEBUGGER.md §4, #97).
 _UI_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
-    "interactive": "any",
+    "interactive": "read",
     "set_headless_defaults": "loop",
     "set_record_sink": "loop",
     "notify": "loop",
@@ -2921,10 +2921,10 @@ _UI_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
 }
 
 _CONTEXT_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
-    "cwd": "any",
-    "ui": "any",
+    "cwd": "read",
+    "ui": "read",
     "shutdown": "any",
-    "shutdown_requested": "any",
+    "shutdown_requested": "read",
     "signal": "loop",
     "is_idle": "loop",
     "session_id": "loop",
@@ -2960,10 +2960,10 @@ _CONTEXT_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
 }
 
 _API_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
-    "extension_name": "any",
-    "config": "any",
-    "ui": "any",
-    "context": "any",
+    "extension_name": "read",
+    "config": "read",
+    "ui": "read",
+    "context": "read",
     "submit_threadsafe": "any",
     "set_warning": "any",
     "clear_warning": "any",

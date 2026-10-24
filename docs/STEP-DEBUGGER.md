@@ -1350,6 +1350,12 @@ at the deadline, even at the cost of worker threads (2026-10-24).
   replaces the `Proceeded` warning under the same key. A thread that never
   finishes sets nothing more. The outcome already said it timed out. An outer
   cancellation (an enclosing deadline, an aborted turn) abandons it the same way.
+- **A `StopIteration` from a sync handler is carried as `RuntimeError`**
+  (`"<hook> handler raised StopIteration"`, with the `StopIteration` as its
+  cause), as asyncio does for a coroutine. An asyncio future refuses
+  `StopIteration`, so before review round 2 the thread's outcome never settled.
+  The call then waited out its whole deadline and reported a timeout instead of
+  an error.
 - **Context.** The thread sees the task's contextvars, so the acting cursor,
   the enclosing deadlines and the dispatch mark are all the handler's own.
   `runs_on_behalf_of` treats the thread as its deadline's task until it is
@@ -1362,10 +1368,17 @@ at the deadline, even at the cost of worker threads (2026-10-24).
   public member of `ExtensionContext`, `ExtensionAPI` and `ExtensionUI` from a
   table at the foot of `extension_types.py`. Off a worker thread the wrapper
   only calls through.
-  - **`any`** runs on the thread. These are `ctx.cwd`, `ctx.ui`,
-    `ctx.shutdown`/`shutdown_requested`, `api.extension_name`, `api.config`,
-    `api.ui`, `api.context`, `api.submit_threadsafe`, and
-    `api.set_warning`/`clear_warning`, which were already thread-safe (#60).
+  - **`read`** runs on the thread, before and after abandonment. These
+    thread-safe reads change nothing: `ctx.cwd`, `ctx.ui`,
+    `ctx.shutdown_requested`, `ui.interactive`, `api.extension_name`,
+    `api.config` (the extension's own copied slice), `api.ui` and `api.context`.
+    `ui` and `context` hand back objects whose own members are guarded.
+  - **`any`** runs on the thread until the handler is abandoned, then raises
+    `RuntimeError`. These are thread-safe but act on the session:
+    `ctx.shutdown`, `api.submit_threadsafe` and `api.set_warning`/`clear_warning`
+    (#60). Review round 2 found that these had skipped the abandonment check. A
+    sync subscriber that outlived a 0.1 s request could still set a warning,
+    request a shutdown, and start a real turn through `submit_threadsafe`.
   - **`loop`** is marshalled: it runs on the loop in the thread's context, and
     the thread blocks until it returns. This covers every other sync method and
     property, which read or write session state: `ctx.get_model`, `set_model`,
@@ -1373,7 +1386,9 @@ at the deadline, even at the cost of worker threads (2026-10-24).
     `api.on`, `register_*`, `send_user_message` and the rest. The task it runs
     in counts as awaited by the deadline's task. Once the handler is abandoned,
     a marshalled call raises `RuntimeError`, so a late thread cannot change the
-    session after the turn has moved on.
+    session after the turn has moved on. If the loop is stopped but not closed,
+    a marshalled call never runs and its daemon thread blocks for good. That is
+    harmless, because the thread holds no lock.
   - **`refuse`** raises `RuntimeError` naming the member. This covers every
     coroutine method (`ctx.prompt`, `complete`, `fork`, `api.submit`, `emit`,
     `ui.form`, …), which a thread cannot await, and `ctx.cursor`/`cursors`,

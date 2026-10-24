@@ -121,6 +121,19 @@ async def test_a_raising_subscriber_keeps_its_exception() -> None:
     assert str(reply.outcome.error) == "no route for this"
 
 
+async def test_a_sync_stop_iteration_is_raised_at_once_not_expired() -> None:
+    def stops(payload: Any) -> None:
+        raise StopIteration
+
+    _session(_subscriber("stops", stops))
+    started = time.monotonic()
+    [reply] = await _request(timeout_s=1)
+    assert time.monotonic() - started < 0.5
+    assert reply.status == "raised"
+    assert isinstance(reply.outcome, Failed) and type(reply.outcome.error) is RuntimeError
+    assert isinstance(reply.outcome.error.__cause__, StopIteration)
+
+
 async def test_a_subscribers_own_deadline_expiring_is_raised_not_expired() -> None:
     async def nested(payload: Any) -> None:
         async def inner() -> None:

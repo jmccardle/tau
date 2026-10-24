@@ -82,6 +82,14 @@ The deadline is the M1d one, so the §4 rules hold without new code:
   (§4.3). A request that reaches a human can therefore exceed `timeout_s`.
 - **A sync subscriber runs on a worker thread** and is abandoned at the
   deadline (#97). Its late finish sets its own `policy:<channel>` warning.
+  Once it is abandoned, every ctx or api call that acts on the session raises,
+  `api.set_warning`, `ctx.shutdown` and `api.submit_threadsafe` included. Only
+  the harmless reads (`read` in STEP-DEBUGGER.md §4, "Built (#97)") still
+  work. Review round 2 found the first three still working after abandonment;
+  the third started a real turn.
+- **A sync subscriber's `StopIteration` is `"raised"` at once**, as a
+  `RuntimeError` caused by it, matching an async subscriber. Before review
+  round 2 it was reported `"expired"` after the full `timeout_s`.
 - **Each subscriber task counts as awaited by the requester**, so
   `runs_on_behalf_of` follows it, and a subscriber that calls `ctx.prompt()`
   hits the reentrant guard at once.

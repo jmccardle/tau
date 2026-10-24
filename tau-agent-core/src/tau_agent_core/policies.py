@@ -202,7 +202,9 @@ class _Worker:
         """Run ``fn`` on the loop, in this thread's context, and block until it returns.
 
         The task it runs in counts as awaited by the deadline's task, since this
-        thread blocks on it, so :func:`runs_on_behalf_of` follows it.
+        thread blocks on it, so :func:`runs_on_behalf_of` follows it. A loop that
+        is stopped but not closed never runs it, so the daemon thread blocks for
+        good; it holds no lock, so nothing else waits on it.
 
         Raises:
             RuntimeError: the handler was abandoned, or the loop is closed.
@@ -360,6 +362,10 @@ class HandlerCall:
                 outcome: tuple[bool, Any] = (True, context.run(self.handler, *self.args))
             except BaseException as err:
                 outcome = (False, err)
+                if isinstance(err, StopIteration):
+                    carried = RuntimeError(f"{self.hook} handler raised StopIteration")
+                    carried.__cause__ = err
+                    outcome = (False, carried)
             try:
                 loop.call_soon_threadsafe(self._settle, worker, future, outcome, time.monotonic())
             except RuntimeError:
@@ -764,16 +770,19 @@ def check_outcome(outcome: Any, policy: str) -> Outcome:
     return outcome
 
 
-ThreadAffinity: TypeAlias = Literal["any", "loop", "refuse"]
+ThreadAffinity: TypeAlias = Literal["read", "any", "loop", "refuse"]
 """How a ctx or api member behaves when a policed sync handler's worker thread calls it.
 
-``"any"`` runs it on the thread: it is thread-safe. ``"loop"`` runs it on the
-loop and blocks the thread until it returns. ``"refuse"`` raises
-``RuntimeError``: a coroutine method, which the thread cannot await, or a member
-that hands out live loop objects.
+``"read"`` runs it on the thread, even after the handler is abandoned: a
+thread-safe read that changes nothing. ``"any"`` runs it on the thread until the
+handler is abandoned, then raises: thread-safe, but it acts on the session.
+``"loop"`` runs it on the loop and blocks the thread until it returns, and also
+raises once abandoned. ``"refuse"`` always raises ``RuntimeError``: a coroutine
+method, which the thread cannot await, or a member that hands out live loop
+objects.
 """
 
-_AFFINITIES: tuple[str, ...] = ("any", "loop", "refuse")
+_AFFINITIES: tuple[str, ...] = ("read", "any", "loop", "refuse")
 
 
 def _guarded(label: str, fn: Callable[..., Any], kind: ThreadAffinity) -> Callable[..., Any]:
@@ -781,7 +790,7 @@ def _guarded(label: str, fn: Callable[..., Any], kind: ThreadAffinity) -> Callab
     is_async = inspect.iscoroutinefunction(fn)
     if is_async and kind != "refuse":
         raise TypeError(f"{label} is a coroutine method; its thread affinity must be 'refuse'")
-    if kind == "any":
+    if kind == "read":
         return fn
     if is_async:
         reason = "it is a coroutine method, which a thread cannot await; make the handler async def"
@@ -798,6 +807,9 @@ def _guarded(label: str, fn: Callable[..., Any], kind: ThreadAffinity) -> Callab
                 f"{label} cannot be called from a sync handler running on a policed worker "
                 f"thread: {reason} (docs/STEP-DEBUGGER.md §4, #97)"
             )
+        if kind == "any":
+            worker.refuse_if_abandoned(label)
+            return fn(*args, **kwargs)
         return worker.call_on_loop(label, fn, *args, **kwargs)
 
     mark = getattr(inspect, "markcoroutinefunction", None)
