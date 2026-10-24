@@ -687,6 +687,29 @@ rests on the Future. Across processes it rests on a lock:
     who knows their mount does lock.
   - Nothing is skipped silently. The platform matrix states which platforms and
     filesystems the lock covers.
+- **Built (M1b), where it diverges.** `tau_agent_core/session_lock.py` holds
+  the registry and `SessionWriteLock`; a store's session carries one as
+  `write_lock`.
+  - The count is per tree per `AgentSession`, not per cursor: a session retains
+    a tree while any of its live cursors is on it, which is what keeps a swap
+    from dropping the lock under a lane. `emit_session_shutdown` releases all.
+  - A write through a session no host retains is not guarded: a library caller
+    writing a file it never hosted keeps the pre-lock behaviour.
+  - A read-only replica stays one. It does not take the lock when the holder
+    exits, because its entries may be stale; reopening the session does.
+  - The read-only state is also a `tau` warning (`session-lock:read-only`,
+    severity error), so every head's warnings surface carries it; the TUI and
+    REPL banner and RPC `get_state` read it from `AgentSession.write_access`.
+    Serve reports it on `Attached`, not per cursor, since it is per session.
+  - A failed `flock`, and on JMFTS an unsafe lock directory, open the session
+    read-only with the reason rather than raising at open.
+  - The filesystem type is read from `/proc/self/mountinfo`, the only place
+    NFS's `nolock`/`local_lock` show. Where there is none (not Linux) the
+    warning names "an unprobed filesystem". Sync folders are not detectable.
+  - The file store has no delete, rename or move today, so there is nothing to
+    carry the sidecar with; export reads entries, never the sidecar.
+  - `tau --mode repl --session X --name N` on a held session exits 2: the
+    rename it asks for cannot be written.
 - **A session that `tau serve` hosts.** The daemon holds the lock while it hosts
   the session, so a `-p --answer` against it is refused and names the daemon's
   socket: answer through serve. The daemon stays the single writer.

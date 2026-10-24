@@ -37,6 +37,7 @@ import pytest
 
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
+from tau_agent_core.session_lock import WRITABLE
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.commands import FRONTEND_COMMANDS
 from tau_agent_core.flows import Performed, Ready, View
@@ -105,6 +106,7 @@ def _session(**overrides: Any) -> MagicMock:
     session.cursor.session_id = "sess-1"
     session.cursor.is_streaming = False
     session.is_addressable = True
+    session.write_access = WRITABLE
     session.describe_tools.return_value = []
     session.subscribe.return_value = MagicMock()
     session.abort = MagicMock()
@@ -328,6 +330,8 @@ async def test_run_reads_a_request_writes_a_response_and_stops_at_eof(handler, m
                 "message_count": 0,
                 "leaf": "leaf-1",
                 "addressable": True,
+                "read_only": False,
+                "lock_holder": None,
                 "method": "get_state",
             },
         }
@@ -970,6 +974,8 @@ async def test_get_state_aggregates_the_session(handler, session):
         "message_count": 2,
         "leaf": "leaf-1",
         "addressable": True,
+        "read_only": False,
+        "lock_holder": None,
         "method": "get_state",
     }
 

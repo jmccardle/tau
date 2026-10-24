@@ -8,7 +8,7 @@
 
 - **Protocol version:** `0.11`
 - **Default port:** `8256`
-- **Counts:** 52 requests (37 of them RPC verbs), 10 event kinds, 207 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 52 requests (37 of them RPC verbs), 10 event kinds, 208 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
@@ -648,6 +648,8 @@ The answer to `Attach`.
 | `models` | list of [ModelRecord](#modelrecord) | yes | Every model the daemon's config defines, for a picker. |
 | `surface` | [Surface](#surface) | yes |  |
 | `requests` | list of [RequestEventData](#requesteventdata) | yes | The extension forms open now, which an `Answer` closes. |
+| `read_only` | boolean | yes | Another process holds the session's write lock, so this daemon refuses every prompt and write on it. |
+| `lock_holder` | [LockHolderRecord](#lockholderrecord) \| null | yes | That process, when `read_only` names one. |
 
 ### AttachmentCompletion
 
@@ -1372,6 +1374,8 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 | `message_count` | integer | yes | len(AgentSession.messages). |
 | `leaf` | string \| `null` | yes | cursor.leaf (F3: no host may cache 'the tip'). |
 | `addressable` | boolean | yes | Whether the CURRENT session is persisted: true if list_sessions returns it and switch_session can reach it later. The same predicate new_session/fork/switch_session publish on their session tuple, asked about the session this connection is on right now. False means the appending verbs (set_model, set_session_name, compact — D-7) will refuse with -32004 SESSION_NOT_PERSISTED, and nothing this connection does is written to the store. Reachable without a respawn: new_session {"persist": true} moves onto a persisted session. |
+| `read_only` | boolean | yes | Whether another process holds this session's write lock (docs/STEP-DEBUGGER.md §3.7.3): every prompt and write is refused, naming lock_holder. |
+| `lock_holder` | [LockHolderRecord](#lockholderrecord) \| null | yes | The process holding the lock when read_only: {pid, host, head, started, detail}, each null if its sidecar did not say; null when writable or when the lock could not be taken at all. |
 
 ### GetToolsResult
 
@@ -1455,6 +1459,18 @@ An extension file that failed to load, and why.
 |---|---|---|---|
 | `path` | string | yes |  |
 | `error` | string | yes |  |
+
+### LockHolderRecord
+
+The process holding a session's write lock, as its sidecar names it; each field may be null.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `pid` | integer \| null | yes |  |
+| `host` | string \| null | yes |  |
+| `head` | string \| null | yes |  |
+| `started` | string \| null | yes |  |
+| `detail` | string \| null | yes |  |
 
 ### ManagedExtension
 

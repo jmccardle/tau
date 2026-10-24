@@ -147,6 +147,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from tau_agent_core.cursor import Cursor
+from tau_agent_core.session_lock import set_head_label
 from tau_agent_core.rpc import RPCHandler, transport
 from tau_coding_agent.headless import (
     CLIError,
@@ -221,6 +222,7 @@ async def run_rpc(args: "CLIArgs", config: dict[str, Any]) -> int:
     silently ignored here (``--print``, positional messages, session
     continuation) — see its ``--mode rpc`` validation block.
     """
+    set_head_label("rpc")
     transport._take_over_stdout()
     try:
         print_model_warnings(check_model_entries(config, args.model or config.get("default_model")))

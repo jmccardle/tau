@@ -455,6 +455,17 @@ class ModelSpec:
 
 
 @dataclass
+class LockHolderRecord:
+    """The process holding a session's write lock, as its sidecar names it; each field may be null."""
+
+    pid: int | None
+    host: str | None
+    head: str | None
+    started: str | None
+    detail: str | None
+
+
+@dataclass
 class ModelRecord:
     """One model the config defines, as ``get_models`` lists it.
 
@@ -673,7 +684,11 @@ RESULT_TYPES: dict[str, dict[str, Any]] = {
     "list_sessions": {"sessions": list[SessionRow], "scope": SessionScope},
     "submit": {"command": CommandOutput, "view": View, "attachments": AttachmentReport},
     "prompt": {"command": CommandOutput, "view": View, "attachments": AttachmentReport},
-    "get_state": {"model": ModelSpec, "usage": Usage | None},
+    "get_state": {
+        "model": ModelSpec,
+        "usage": Usage | None,
+        "lock_holder": LockHolderRecord | None,
+    },
     "get_messages": {"messages": list[ContextMessage]},
     "get_tools": {"tools[].parameters": dict[str, Any]},
     "get_models": {"models": list[ModelRecord]},

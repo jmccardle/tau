@@ -85,6 +85,7 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import MultitaskStrategy, Submission
 from tau_agent_core.tools.image_resize import DEFAULT_MAX_IMAGE_DIMENSION
 from tau_agent_core.truncation import truncation_from_messages, truncation_notice
+from tau_agent_core.session_lock import read_only_banner, set_head_label
 from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import ConfigError
 from tau_coding_agent.headless import (
@@ -1467,6 +1468,7 @@ async def run_repl(
     """
     from tau_coding_agent.backends import DEFAULT_MAX_TOKENS, create_backend, make_model_resolver
 
+    set_head_label("repl")
     configured_steering_strategy(config)
     attachment_inline_limit(config)
     max_image_dimension(config)
@@ -1551,7 +1553,12 @@ async def run_repl(
     )
     agent_session.set_model_resolver(make_model_resolver(config))
 
-    if prior is not None:
+    if prior is not None and agent_session.write_access.read_only:
+        if args.name is not None:
+            raise CLIError(
+                f"--name cannot rename session {prior.id}: {agent_session.write_access.reason}"
+            )
+    elif prior is not None:
         if args.name is not None:
             await _require(backend, "set_session_name")(args.name)
         if "unavailable" not in model_config and (
@@ -1696,6 +1703,7 @@ class ReplLoop:
         turn alone would see nothing typed after a mid-turn form until the turn
         ended — missing the very delivery point the line was aimed at.
         """
+        self._announce_read_only()
         await self._show_request()
         self._read_task = asyncio.ensure_future(self._reader.read())
         while True:
@@ -2429,6 +2437,13 @@ class ReplLoop:
         if reclaimed is not None:
             self._return_to_draft(reclaimed)
         self.replay(session.messages)
+        self._announce_read_only()
+
+    def _announce_read_only(self) -> None:
+        """Print the read-only banner naming the holder, when this session is a replica."""
+        banner = read_only_banner(self._agent_session.extension_warnings())
+        if banner is not None:
+            self._renderer.line("error", banner)
 
     def replay(self, messages: list[dict[str, Any]]) -> None:
         """Draw a transcript this head did not stream: a resume, a fork, a swap.

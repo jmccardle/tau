@@ -423,6 +423,15 @@ ZoneTree > .tree--kind-structural { color: $tau-text-quiet; text-style: italic; 
     color: $warning;
 }
 
+#read-only-banner {
+    height: auto;
+    width: 100%;
+    padding: 0 1;
+    background: $tau-bg-alt;
+    color: $error;
+    text-style: bold;
+}
+
 /* === Extension panel host (E10 §6 / S68) === */
 
 #ext-panel-host {

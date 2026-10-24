@@ -41,6 +41,7 @@ from tau_agent_core.session_log import (
     session_name,
 )
 
+from tau_agent_core.session_lock import SessionWriteLock, sidecar_for
 from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import ConfigError
 
@@ -262,17 +263,47 @@ class Session:
     until then no listing can return it (``session_log_is_addressable``).
     """
 
-    def __init__(self, path: Path | None, header: dict[str, Any], entries: list[dict[str, Any]]):
+    def __init__(
+        self,
+        path: Path | None,
+        header: dict[str, Any],
+        entries: list[dict[str, Any]],
+        *,
+        allow_unlocked_fs: bool = False,
+    ):
         self._path = path
         self._header = header
         self._entries = entries
         self._ids: set[str] = {e["id"] for e in entries if "id" in e}
         self._unwritten = False
+        self._allow_unlocked_fs = allow_unlocked_fs
+        self._write_lock: SessionWriteLock | None = None
 
     @property
     def path(self) -> Path | None:
         """The session's file: ``None`` when ephemeral, and when deferred until its first write."""
         return None if self._unwritten else self._path
+
+    @property
+    def write_lock(self) -> SessionWriteLock | None:
+        """The lock on ``<file>.lock`` a host retains while it writes; ``None`` when ephemeral.
+
+        A deferred session's sidecar appears with its file (docs/STEP-DEBUGGER.md §3.7.3).
+        """
+        if self._path is None:
+            return None
+        if self._write_lock is None:
+            self._write_lock = SessionWriteLock(
+                sidecar_for(self._path),
+                ready=lambda: not self._unwritten,
+                allow_unlocked_fs=self._allow_unlocked_fs,
+            )
+        return self._write_lock
+
+    def _guard_write(self) -> None:
+        """Raise ``SessionReadOnlyError`` while another process holds this session."""
+        if self._write_lock is not None:
+            self._write_lock.guard()
 
     # --- identity / header -------------------------------------------------
 
@@ -369,6 +400,7 @@ class Session:
         id: str | None = None,  # seam 1 → --session-id
         base_dir: Path | None = None,  # seam 1 → --session-dir
         deferred: bool = False,
+        allow_unlocked_fs: bool = False,
     ) -> "Session":
         """Create a new persisted session.
 
@@ -383,6 +415,7 @@ class Session:
             deferred: Hold the header and opening chain in memory and write
                 them with the first append, so an unused session leaves no file
                 and no directory (``SessionCatalog.create_deferred``).
+            allow_unlocked_fs: ``sessions.allow_unlocked_fs`` for its write lock.
 
         Returns:
             The new session.
@@ -393,13 +426,13 @@ class Session:
         path = directory / _session_filename(timestamp, session_id)
         header = cls._build_header(session_id, timestamp, os.path.abspath(cwd), parent=None)
         if deferred:
-            session = cls(None, header, [])
+            session = cls(None, header, [], allow_unlocked_fs=allow_unlocked_fs)
             session._init_state(model, backend, system_prompt, name)
             session._path = path
             session._unwritten = True
         else:
             directory.mkdir(parents=True, exist_ok=True)
-            session = cls(path, header, [])
+            session = cls(path, header, [], allow_unlocked_fs=allow_unlocked_fs)
             session._persist_header()
             session._init_state(model, backend, system_prompt, name)
         _emit_session_event(SESSION_START, session)
@@ -426,8 +459,11 @@ class Session:
         return session
 
     @classmethod
-    def load(cls, path: Path) -> "Session":
-        """Stream a ``.jsonl`` file and reconstruct the session."""
+    def load(cls, path: Path, *, allow_unlocked_fs: bool = False) -> "Session":
+        """Stream a ``.jsonl`` file and reconstruct the session.
+
+        Loading takes no lock; a host retains :attr:`write_lock` when it writes.
+        """
         header: dict[str, Any] | None = None
         entries: list[dict[str, Any]] = []
         with path.open("r", encoding="utf-8") as handle:
@@ -444,7 +480,12 @@ class Session:
                     entries.append(obj)
         if header is None:
             raise ValueError(f"{path}: empty session file (no header)")
-        session = cls(path, header, normalize_loaded_entries(keep_last_per_id(entries)))
+        session = cls(
+            path,
+            header,
+            normalize_loaded_entries(keep_last_per_id(entries)),
+            allow_unlocked_fs=allow_unlocked_fs,
+        )
         _emit_session_event(SESSION_START, session)
         return session
 
@@ -456,13 +497,15 @@ class Session:
         *,
         base_dir: Path | None = None,  # seam 1
         at: str | None = None,
+        allow_unlocked_fs: bool = False,
     ) -> "Session":
         """Fork ``source`` into a new file whose header ``parent`` is the source id.
 
         Copies every entry, or with ``at`` only the path to that entry, so the
         fork's default leaf is ``at`` (docs/CURSORS.md §4); either way the copy
         set is ``session_log.entries_for_fork``. The copy is self-contained and a
-        written source file is never touched (§5.5). An unwritten deferred source
+        written source file is never touched (§5.5); the fork gets its own fresh
+        sidecar, never a copy of the source's. An unwritten deferred source
         is written first, so the fork's ``parent`` names a session on disk:
         forking is real activity on it.
 
@@ -480,7 +523,7 @@ class Session:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / _session_filename(timestamp, session_id)
         header = cls._build_header(session_id, timestamp, os.path.abspath(cwd), parent=source.id)
-        session = cls(path, header, copied)
+        session = cls(path, header, copied, allow_unlocked_fs=allow_unlocked_fs)
         session._persist_header()
         for entry in copied:
             session._persist_entry(entry)
@@ -558,6 +601,7 @@ class Session:
         The split also lets :meth:`_init_state` write a new session's opening
         entries from a synchronous classmethod, where there may be no running loop.
         """
+        self._guard_write()
         if parent_id is not None and parent_id not in self._ids:
             raise ValueError(f"append parent {parent_id!r} not found")
         entry: dict[str, Any] = {
@@ -577,7 +621,9 @@ class Session:
 
         Raises:
             ValueError: ``entry_id`` names no entry, or one that is not incomplete.
+            SessionReadOnlyError: another process holds this session.
         """
+        self._guard_write()
         for index, entry in enumerate(self._entries):
             if entry.get("id") == entry_id:
                 final = finalized_entry(entry, payload, _now_iso)
@@ -627,6 +673,8 @@ class Session:
             Path(staging).unlink(missing_ok=True)
             raise
         self._unwritten = False
+        if self._write_lock is not None:
+            self._write_lock.attach()
 
 
 def read_session_info(path: Path) -> SessionInfo | None:
@@ -751,10 +799,13 @@ class FileSessionCatalog(SessionCatalog):
     listing) that already implement this on-disk format. ``base_dir`` is the
     optional seam-1 override (``--session-dir``, and every test that sandboxes a
     ``tmp_path``); ``None`` means the real ``~/.tau/sessions``.
+    ``allow_unlocked_fs`` is ``sessions.allow_unlocked_fs``, handed to every
+    session's write lock.
     """
 
-    def __init__(self, base_dir: Path | None = None) -> None:
+    def __init__(self, base_dir: Path | None = None, *, allow_unlocked_fs: bool = False) -> None:
         self._base_dir = base_dir
+        self._allow_unlocked_fs = allow_unlocked_fs
 
     def create(
         self,
@@ -772,6 +823,7 @@ class FileSessionCatalog(SessionCatalog):
             system_prompt=system_prompt,
             name=name,
             base_dir=self._base_dir,
+            allow_unlocked_fs=self._allow_unlocked_fs,
         )
 
     def create_deferred(
@@ -792,6 +844,7 @@ class FileSessionCatalog(SessionCatalog):
             name=name,
             base_dir=self._base_dir,
             deferred=True,
+            allow_unlocked_fs=self._allow_unlocked_fs,
         )
 
     def create_ephemeral(
@@ -806,14 +859,16 @@ class FileSessionCatalog(SessionCatalog):
         return Session.create_in_memory(cwd, model, backend, system_prompt=system_prompt, name=name)
 
     def load(self, ref: str) -> Session:
-        return Session.load(Path(ref))
+        return Session.load(Path(ref), allow_unlocked_fs=self._allow_unlocked_fs)
 
     def fork(self, source: ConversationSession, cwd: str, *, at: str | None = None) -> Session:
         if not isinstance(source, Session):
             raise TypeError(
                 f"FileSessionCatalog.fork requires a file-backed Session, got {type(source)!r}"
             )
-        return Session.fork(source, cwd, base_dir=self._base_dir, at=at)
+        return Session.fork(
+            source, cwd, base_dir=self._base_dir, at=at, allow_unlocked_fs=self._allow_unlocked_fs
+        )
 
     def list(self, cwd: str | None = None) -> list[SessionInfo]:
         return list_sessions(cwd, base_dir=self._base_dir)

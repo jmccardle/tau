@@ -1184,6 +1184,7 @@ async def _handle_get_state(
     session = handler.session
     cursor = session.acting_cursor
     model_error = session.model_unavailable
+    access = session.write_access
     return {
         "session_id": cursor.session_id,
         "status": "running" if cursor.is_streaming else "idle",
@@ -1194,6 +1195,8 @@ async def _handle_get_state(
         "message_count": len(session.messages),
         "leaf": session.acting_cursor.leaf,
         "addressable": session.is_addressable,
+        "read_only": access.read_only,
+        "lock_holder": None if access.holder is None else access.holder.to_dict(),
     }
 
 

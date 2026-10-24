@@ -1164,6 +1164,20 @@ The change, as :meth:`preview_redeclare` reported it.
 
 - `ValueError` — a name is not a tool here.
 
+### release_write_locks
+
+```python
+release_write_locks() -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.release_write_locks`
+
+Release every write lock this session retains; :meth:`emit_session_shutdown` calls it.
+
+For a host discarding this session object while its process lives on
+(the TUI replacing a backend), so the trees it held become writable to
+other processes.
+
 ### reload_extension
 
 ```python
@@ -1717,7 +1731,8 @@ tree before it prompts. ``tau --mode rpc`` calls it once before
 ``RPCHandler.run`` for exactly that reason. Idempotent, and unnecessary
 before a turn: :meth:`submit` and :meth:`continue_conversation` both record
 before reading the pre-turn leaf, so the entry lands AHEAD of the turn it
-governs — which is where a rollback to that leaf needs it to be.
+governs — which is where a rollback to that leaf needs it to be. A
+read-only replica (:attr:`write_access`) records nothing.
 
 ### state
 
@@ -2034,6 +2049,16 @@ per fragment through the yielded watch, and exactly one
 **Returns**
 
 An async context manager yielding the watch: ``delta`` is the sink to hand the summariser, and ``finish`` records the text and usage the end event carries.
+
+### write_access
+
+`tau_agent_core.agent_session.AgentSession.write_access: WriteAccess`
+
+Whether this process may write the acting cursor's tree, and who holds it if not.
+
+Read-only when another process holds the tree's lock: every submit and
+write is refused with :attr:`WriteAccess.reason`, which names the holder.
+A tree no store locks (an SDK ``InMemorySessionLog``) is always writable.
 
 ## Argument
 <!-- agent: yes -->
@@ -3263,6 +3288,56 @@ Replace an incomplete entry's payload in place (see :meth:`SessionLog.finalize`)
 
 A context was asked for through an interrupted entry (docs/TAU-SERVE.md §4.3).
 
+## LockHolder
+<!-- agent: yes -->
+
+```python
+class LockHolder(pid: int | None, host: str | None, head: str | None, started: str | None, detail: str | None = None)
+```
+
+`tau_agent_core.session_lock.LockHolder`
+
+The process a sidecar says holds a session's write lock.
+
+Read from the sidecar, which the holder writes after taking the lock, so a
+field is ``None`` when the holder has not written it yet or wrote garbage.
+
+**Constructor parameters**
+
+- `pid: int | None` — The holder's process id.
+- `host: str | None` — The holder's hostname.
+- `head: str | None` — Which head it runs: ``tui``, ``repl``, ``-p``, ``rpc``, ``serve`` or ``sdk``.
+- `started: str | None` — When it took the lock, ISO-8601 UTC.
+- `detail: str | None = None` — Where to reach the holder instead (serve's address), or ``None``.
+
+### describe
+
+```python
+describe() -> str
+```
+
+`tau_agent_core.session_lock.LockHolder.describe`
+
+Name the holder for a refusal.
+
+**Returns**
+
+``pid 4242 (tui) on box since 2026-10-24T09:00:00Z``, unknown parts left out.
+
+### to_dict
+
+```python
+to_dict() -> dict[str, Any]
+```
+
+`tau_agent_core.session_lock.LockHolder.to_dict`
+
+The wire form.
+
+**Returns**
+
+``{pid, host, head, started, detail}``.
+
 ## MessageEntry
 <!-- agent: yes -->
 
@@ -4279,6 +4354,22 @@ when ``session_path`` is empty.
 
 - `state: SessionState` — The entries to write and the file to write them to.
 
+## SessionReadOnlyError
+<!-- agent: yes -->
+
+```python
+class SessionReadOnlyError(reason: str, holder: LockHolder | None)
+```
+
+`tau_agent_core.session_lock.SessionReadOnlyError`
+
+A write to a session this process opened read-only.
+
+**Constructor parameters**
+
+- `reason: str` — The refusal, naming the holder when there is one.
+- `holder: LockHolder | None` — As the attribute.
+
 ## tau_agent_core.session.SessionState
 <!-- agent: yes -->
 
@@ -4383,6 +4474,119 @@ which covers messages appended since that completion.
 - `compaction_settings: CompactionSettings` — The settings in force, as a copy.
 - `last_compaction: CompactionRecord | None` — The newest compaction entry, or ``None`` if this session has never compacted.
 - `usage: dict[str, Any] | None` — :meth:`AgentSession.get_usage` — ``None`` before the first completion.
+
+## SessionWriteLock
+<!-- agent: yes -->
+
+```python
+class SessionWriteLock(sidecar: Path | Callable[[], Path], *, ready: Callable[[], bool] = lambda: True, allow_unlocked_fs: bool = False, probe_directory: Path | None = None)
+```
+
+`tau_agent_core.session_lock.SessionWriteLock`
+
+One session object's share of its sidecar's lock, counted by its hosts.
+
+A store gives each session object one of these (``write_lock``). Every host
+(an ``AgentSession`` with a live cursor on the session) calls
+:meth:`retain` once and :meth:`release` once; the object takes one registry
+reference on the first retain and drops it on the last release. A store
+calls :meth:`guard` before each write.
+
+While nothing retains it, a write is not guarded: a library caller writing a
+session it never hosted gets the pre-lock behaviour.
+
+**Constructor parameters**
+
+- `sidecar: Path | Callable[[], Path]` — The lock file, or a callable resolving it when the lock is first taken; an ``OSError`` it raises refuses writing, naming why.
+- `ready: Callable[[], bool] = lambda: True` — Whether the sidecar may be created now; a deferred session answers ``False`` until its first write and then calls :meth:`attach`.
+- `allow_unlocked_fs: bool = False` — ``sessions.allow_unlocked_fs``: trust ``flock`` on a lock-blind filesystem, without the warning.
+- `probe_directory: Path | None = None` — Where to read the filesystem type; the sidecar's directory by default.
+
+### access
+
+```python
+access() -> WriteAccess
+```
+
+`tau_agent_core.session_lock.SessionWriteLock.access`
+
+This process's write access to the session now, without re-checking the sidecar.
+
+**Returns**
+
+Writable, or read-only with the reason and holder.
+
+### attach
+
+```python
+attach() -> None
+```
+
+`tau_agent_core.session_lock.SessionWriteLock.attach`
+
+Take the lock now that the sidecar may exist (a deferred session's first write).
+
+### check
+
+```python
+check() -> WriteAccess
+```
+
+`tau_agent_core.session_lock.SessionWriteLock.check`
+
+Re-check the held lock against the sidecar on disk (turn admission).
+
+A sidecar unlinked or replaced since it was locked is re-taken on the
+path; if another process got the new file first, this object turns
+read-only, naming it.
+
+**Returns**
+
+The access after the re-check.
+
+### guard
+
+```python
+guard() -> None
+```
+
+`tau_agent_core.session_lock.SessionWriteLock.guard`
+
+Refuse a write while this process holds the session read-only.
+
+**Raises**
+
+- `SessionReadOnlyError` — another process holds the lock, or it could not be taken.
+
+### release
+
+```python
+release() -> None
+```
+
+`tau_agent_core.session_lock.SessionWriteLock.release`
+
+Drop one retain; the last drops this object's registry reference.
+
+**Raises**
+
+- `RuntimeError` — nothing retains it.
+
+### retain
+
+```python
+retain() -> None
+```
+
+`tau_agent_core.session_lock.SessionWriteLock.retain`
+
+Open for writing once more; the first call takes the lock or records the holder.
+
+### retained
+
+`tau_agent_core.session_lock.SessionWriteLock.retained: bool`
+
+Whether any host holds this session open for writing.
 
 ## SideMark
 <!-- agent: yes -->
@@ -4592,6 +4796,24 @@ one with both is two answers to the same question.
 - `name: str` — The view's name, a key of :data:`~tau_agent_core.capabilities.VIEW_COMMANDS`.
 - `state: dict[str, Any] | None = None` — What a head draws the view from. ``None`` everywhere today — no capability projects the session tree yet (docs/VSCODE-HEAD.md §6), and this is the spot that payload lands in when one does, with no change to the union.
 - `unavailable_because: str | None = None` — Why no ``state`` rides with this, in a sentence a head can print. A head that has its own view of that name ignores it and opens it; a head that has none prints it and does nothing else. Not a fallback: it is the same idiom the RPC table's seven ``declined_because`` entries already use.
+
+## WriteAccess
+<!-- agent: yes -->
+
+```python
+class WriteAccess(read_only: bool, holder: LockHolder | None, reason: str | None, warning: str | None = None)
+```
+
+`tau_agent_core.session_lock.WriteAccess`
+
+Whether this process may write a session, and if not, why.
+
+**Constructor parameters**
+
+- `read_only: bool` — Writes are refused.
+- `holder: LockHolder | None` — The process that holds the lock, when that is the reason.
+- `reason: str | None` — The refusal every write and submit carries; ``None`` when writable.
+- `warning: str | None = None` — Set when the lock is held but cannot exclude anyone (a lock-blind filesystem); ``None`` otherwise.
 
 ## admission_reason
 <!-- agent: yes -->
@@ -4965,10 +5187,12 @@ entries_for_fork(entries: list[dict[str, Any]], at: str | None) -> list[dict[str
 
 `tau_agent_core.session_log.entries_for_fork` · since 0.15.0
 
-What a fork copies: the path to ``at`` and each path entry's finalized side children.
+What a fork copies: the path to ``at``, each path entry's finalized side children,
+and every finalized session mark (a side entry with no parent).
 
-An open side entry is never copied (docs/STEP-DEBUGGER.md §3.7.2). Every
-store's ``fork`` reads its copy set from here.
+An open side entry is never copied (docs/STEP-DEBUGGER.md §3.7.2), and only
+one parented to the fork point blocks the fork; an open session mark is
+dropped without blocking. Every store's ``fork`` reads its copy set from here.
 
 **Parameters**
 
@@ -5528,6 +5752,25 @@ same content at a new id.
 **Returns**
 
 The composed root→leaf message list.
+
+## read_only_banner
+<!-- agent: yes -->
+
+```python
+read_only_banner(warnings: list[Any]) -> str | None
+```
+
+`tau_agent_core.session_lock.read_only_banner`
+
+The banner a head shows while its session is a read-only replica.
+
+**Parameters**
+
+- `warnings: list[Any]` — The current warnings, as ``AgentSession.extension_warnings`` reads them.
+
+**Returns**
+
+``"READ-ONLY — <reason naming the holder>"``, or ``None`` when writable.
 
 ## selection_order
 <!-- agent: yes -->

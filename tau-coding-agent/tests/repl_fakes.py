@@ -18,6 +18,7 @@ from rich.console import Console
 
 from tau_agent_core.agent_session import ExtensionCommandResult
 from tau_agent_core.capabilities import BUILTIN, Vocabulary
+from tau_agent_core.session_lock import WRITABLE
 from tau_agent_core.compaction import CompactionResult
 from tau_agent_core.extension_locks import ExtensionRequest
 from tau_agent_core.flows import Dispatched, Performed
@@ -59,6 +60,7 @@ class FakeAgentSession:
         compactions: Every ``custom_instructions`` ``/compact`` was run with.
         cursor: The cursor the head bound, or ``None`` before the bind.
         model_unavailable: Why a turn would be refused for its model; ``None`` here.
+        write_access: Whether the bound session is writable; always here.
     """
 
     def __init__(self, events: list[str]) -> None:
@@ -73,6 +75,7 @@ class FakeAgentSession:
         self.compactions: list[str | None] = []
         self.compaction_result: CompactionResult | None = None
         self.model_unavailable: str | None = None
+        self.write_access = WRITABLE
 
     @property
     def messages(self) -> list[dict[str, Any]]:

@@ -453,12 +453,27 @@
           "description": "The cursor a client drives unless it opens its own.",
           "type": "string"
         },
+        "lock_holder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LockHolderRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "That process, when `read_only` names one."
+        },
         "models": {
           "description": "Every model the daemon's config defines, for a picker.",
           "items": {
             "$ref": "#/$defs/ModelRecord"
           },
           "type": "array"
+        },
+        "read_only": {
+          "description": "Another process holds the session's write lock, so this daemon refuses every prompt and write on it.",
+          "type": "boolean"
         },
         "requests": {
           "description": "The extension forms open now, which an `Answer` closes.",
@@ -488,7 +503,9 @@
         "cwd",
         "models",
         "surface",
-        "requests"
+        "requests",
+        "read_only",
+        "lock_holder"
       ],
       "type": "object"
     },
@@ -3498,6 +3515,17 @@
             "null"
           ]
         },
+        "lock_holder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LockHolderRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The process holding the lock when read_only: {pid, host, head, started, detail}, each null if its sidecar did not say; null when writable or when the lock could not be taken at all."
+        },
         "message_count": {
           "description": "len(AgentSession.messages).",
           "type": "integer"
@@ -3512,6 +3540,10 @@
             "string",
             "null"
           ]
+        },
+        "read_only": {
+          "description": "Whether another process holds this session's write lock (docs/STEP-DEBUGGER.md \u00a73.7.3): every prompt and write is refused, naming lock_holder.",
+          "type": "boolean"
         },
         "session_id": {
           "description": "AgentSession.state.session_id.",
@@ -3546,7 +3578,9 @@
         "usage",
         "message_count",
         "leaf",
-        "addressable"
+        "addressable",
+        "read_only",
+        "lock_holder"
       ],
       "type": "object"
     },
@@ -4103,6 +4137,69 @@
       "required": [
         "path",
         "error"
+      ],
+      "type": "object"
+    },
+    "LockHolderRecord": {
+      "description": "The process holding a session's write lock, as its sidecar names it; each field may be null.",
+      "properties": {
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pid": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "pid",
+        "host",
+        "head",
+        "started",
+        "detail"
       ],
       "type": "object"
     },

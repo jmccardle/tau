@@ -27,6 +27,7 @@ from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.extension_sources import ExplicitExtensionError
 from tau_agent_core.resources import ResourceError
 from tau_agent_core.sdk import BusDependencyError, require_bus_dependency
+from tau_agent_core.session_lock import set_head_label
 from tau_agent_core.tau_home import TauHomeError, pin_home_variables, resolve_tau_home
 from tau_coding_agent.config import ConfigError, load_config
 from tau_coding_agent.headless import (
@@ -517,6 +518,7 @@ def _launch_tui(args: CLIArgs, config: dict, model_warnings: Sequence[str] = ())
     ``model_warnings`` are :func:`~tau_coding_agent.headless.check_model_entries`'
     lines, which the TUI notifies on mount.
     """
+    set_head_label("tui")
     overrides: dict = {}
     if args.model or args.provider or args.thinking:
         name, model_config = resolve_model_config(config, args)

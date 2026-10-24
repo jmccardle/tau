@@ -45,6 +45,7 @@ from tau_agent_core.prompt_cache import PromptCacheObserver, completions_from_me
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import Submission
 from tau_agent_core.truncation import truncation_from_messages, truncation_notice
+from tau_agent_core.session_lock import set_head_label
 from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import (
     ConfigError,
@@ -1010,6 +1011,7 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
     ``<tmp>/.tau-<uid>/sessions``, which is how ``tau -p -c`` continues a session an
     RPC host started.
     """
+    set_head_label("-p")
     catalog = (
         catalog
         if catalog is not None
@@ -1077,6 +1079,9 @@ async def run_print(args: "CLIArgs", config: dict, catalog: SessionCatalog | Non
     else:
         session = catalog.fork(prior, cwd) if args.fork is not None else prior
     _bound_member(backend, "bind_cursor")(Cursor.newest(session))
+    access = getattr(getattr(backend, "agent_session", None), "write_access", None)
+    if access is not None and access.read_only:
+        raise CLIError(f"-p will not run against session {session.id}: {access.reason}")
     if prior is not None:
         if args.name is not None:
             await _bound_member(backend, "set_session_name")(args.name)

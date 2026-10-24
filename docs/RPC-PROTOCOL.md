@@ -18,7 +18,7 @@
 
 - **Protocol version:** `3.0`
 - **Dialect:** `jsonrpc-2.0`
-- **Counts:** 42 live verbs, 7 declined verbs, 15 event types, 65 type definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 42 live verbs, 7 declined verbs, 15 event types, 66 type definitions. Cite this line; never copy the numbers into hand-written prose.
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
 
@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 183,579 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 184,559 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -371,6 +371,17 @@ what rides on top of this on every response):
         "null"
       ]
     },
+    "lock_holder": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LockHolderRecord"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The process holding the lock when read_only: {pid, host, head, started, detail}, each null if its sidecar did not say; null when writable or when the lock could not be taken at all."
+    },
     "message_count": {
       "description": "len(AgentSession.messages).",
       "type": "integer"
@@ -385,6 +396,10 @@ what rides on top of this on every response):
         "string",
         "null"
       ]
+    },
+    "read_only": {
+      "description": "Whether another process holds this session's write lock (docs/STEP-DEBUGGER.md \u00a73.7.3): every prompt and write is refused, naming lock_holder.",
+      "type": "boolean"
     },
     "session_id": {
       "description": "AgentSession.state.session_id.",
@@ -419,7 +434,9 @@ what rides on top of this on every response):
     "usage",
     "message_count",
     "leaf",
-    "addressable"
+    "addressable",
+    "read_only",
+    "lock_holder"
   ],
   "type": "object"
 }
@@ -3250,6 +3267,18 @@ An extension file that failed to load, and why.
 |---|---|---|---|
 | `path` | string | yes |  |
 | `error` | string | yes |  |
+
+### LockHolderRecord
+
+The process holding a session's write lock, as its sidecar names it; each field may be null.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `pid` | integer \| null | yes |  |
+| `host` | string \| null | yes |  |
+| `head` | string \| null | yes |  |
+| `started` | string \| null | yes |  |
+| `detail` | string \| null | yes |  |
 
 ### ManagedExtension
 

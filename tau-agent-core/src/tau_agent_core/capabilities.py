@@ -496,6 +496,22 @@ _GET_STATE_RETURNS: dict[str, Any] = {
                 'new_session {"persist": true} moves onto a persisted session.'
             ),
         },
+        "read_only": {
+            "type": "boolean",
+            "description": (
+                "Whether another process holds this session's write lock "
+                "(docs/STEP-DEBUGGER.md §3.7.3): every prompt and write is "
+                "refused, naming lock_holder."
+            ),
+        },
+        "lock_holder": {
+            "type": ["object", "null"],
+            "description": (
+                "The process holding the lock when read_only: {pid, host, head, "
+                "started, detail}, each null if its sidecar did not say; null when "
+                "writable or when the lock could not be taken at all."
+            ),
+        },
     },
     "required": [
         "session_id",
@@ -507,6 +523,8 @@ _GET_STATE_RETURNS: dict[str, Any] = {
         "message_count",
         "leaf",
         "addressable",
+        "read_only",
+        "lock_holder",
     ],
 }
 

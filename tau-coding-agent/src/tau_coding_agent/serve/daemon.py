@@ -467,6 +467,8 @@ class SessionHost:
         """
         oldest = self.history[0]["params"]["seq"] if self.history else self.seq + 1
         replay = epoch == self.epoch and since is not None and since + 1 >= oldest
+        access = self.agent_session.write_access
+        holder = access.holder
         attached = p.Attached(
             session_id=self.session_id,
             epoch=self.epoch,
@@ -478,6 +480,8 @@ class SessionHost:
             models=self.models(),
             surface=self.surface(),
             requests=self.ui.open_forms(),
+            read_only=access.read_only,
+            lock_holder=None if holder is None else records.LockHolderRecord(**holder.to_dict()),
         )
         self.clients.add(client)
         client.attached.add(self.session_id)

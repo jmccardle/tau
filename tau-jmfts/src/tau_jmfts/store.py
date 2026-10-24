@@ -43,6 +43,7 @@ from tau_agent_core.session_log import (
     finalized_entry,
     normalize_loaded_entries,
 )
+from tau_agent_core.session_lock import SessionWriteLock, private_lock_dir
 from tau_jmfts.client import JmftsClient
 
 SESSION_VERSION = 1
@@ -267,6 +268,16 @@ class JmftsSessionLog:
         self._append_lock = threading.Lock()
         # Guards the mirror only, never held across I/O, so loop-thread readers never wait on a POST.
         self._mirror_lock = threading.Lock()
+        self._write_lock = SessionWriteLock(lambda: private_lock_dir() / f"jmfts-{self.id}.lock")
+
+    @property
+    def write_lock(self) -> SessionWriteLock:
+        """A host-local lock, ``$XDG_RUNTIME_DIR/tau/locks/jmfts-<id>.lock``, held while hosting.
+
+        It excludes a second writer on this host only; JMFTS has no lock of its
+        own (docs/STEP-DEBUGGER.md §3.7.3).
+        """
+        return self._write_lock
 
     # --- identity / header --------------------------------------------------
 
@@ -670,6 +681,7 @@ class JmftsSessionLog:
         §4). The POST runs on a worker thread, because it is synchronous HTTP and
         froze a head's screen on its own loop (docs/BLOCKING-PERSISTENCE.md §1).
         """
+        self._write_lock.guard()
         with self._mirror_lock:
             known = parent_id is None or parent_id in self._ids
         if not known:
@@ -684,7 +696,9 @@ class JmftsSessionLog:
 
         Raises:
             ValueError: ``entry_id`` names no entry, or one that is not incomplete.
+            SessionReadOnlyError: another process on this host holds the session.
         """
+        self._write_lock.guard()
         await asyncio.to_thread(self._finalize_now, entry_id, payload)
 
     def _finalize_now(self, entry_id: str, payload: dict[str, Any]) -> None:

@@ -114,6 +114,23 @@ class WarningsMarker(Static):
         self.update(text or "")
 
 
+class ReadOnlyBanner(Static):
+    """A one-line banner naming the process that holds this session for writing.
+
+    Its text is :func:`~tau_agent_core.session_lock.read_only_banner`'s; hidden
+    while the session is writable (docs/STEP-DEBUGGER.md §3.7.3).
+    """
+
+    def __init__(self) -> None:
+        super().__init__("", id="read-only-banner")
+        self.display = False
+
+    def show(self, text: str | None) -> None:
+        """Show ``text``, or hide the banner when it is ``None``."""
+        self.display = text is not None
+        self.update(text or "")
+
+
 def render_panel_body(body: dict[str, Any]) -> RenderableType:
     """Render a normalized ``ui.panel`` body dict to the panel's body renderable (S68).
 

@@ -198,6 +198,23 @@ def resolve_host_parent_id(config: dict[str, Any]) -> int | None:
     return parent_id
 
 
+def resolve_allow_unlocked_fs(config: dict[str, Any]) -> bool:
+    """``sessions.allow_unlocked_fs``: trust ``flock`` on a lock-blind filesystem (default false).
+
+    Raises:
+        StoreError: ``sessions`` is not an object, or the key is not a boolean.
+    """
+    sessions = config.get("sessions", {})
+    if not isinstance(sessions, dict):
+        raise StoreError(f'{default_config_path()} "sessions" must be an object')
+    value = sessions.get("allow_unlocked_fs", False)
+    if not isinstance(value, bool):
+        raise StoreError(
+            f'{default_config_path()} "sessions.allow_unlocked_fs" must be true or false'
+        )
+    return value
+
+
 def build_session_catalog(
     config: dict[str, Any],
     store_flag: str | None = None,
@@ -239,7 +256,7 @@ def build_session_catalog(
     base_dir = resolve_session_dir(session_dir)
     backend = resolve_backend_name(config, store_flag)
     if backend == "file":
-        return FileSessionCatalog(base_dir)
+        return FileSessionCatalog(base_dir, allow_unlocked_fs=resolve_allow_unlocked_fs(config))
     if backend == "jmfts":
         if base_dir is not None:
             raise StoreError(

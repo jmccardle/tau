@@ -25,6 +25,7 @@ from websockets.asyncio.server import serve as ws_serve, unix_serve
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import connect as sync_connect, unix_connect as sync_unix_connect
 
+from tau_agent_core.session_lock import set_head_label
 from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.serve import protocol as p
 from tau_coding_agent.serve.client import Address, ServeClient, ServeError, parse_address
@@ -168,6 +169,7 @@ async def serve(
     except ValueError as exc:
         print(f"tau serve: {exc}", file=sys.stderr)
         return 2
+    set_head_label("serve", str(address))
     catalog = build_session_catalog(config, None, None, persist=True)
     daemon = Daemon(config, catalog)
     stop = daemon.stopping

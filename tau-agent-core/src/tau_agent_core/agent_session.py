@@ -83,6 +83,14 @@ from tau_agent_core.session_log import (
     session_log_is_addressable,
 )
 from tau_agent_core.cursor import TURN_CURSOR, Cursor, EnqueuedWait, TurnFrame
+from tau_agent_core.session_lock import (
+    READ_ONLY_WARNING_KEY,
+    UNLOCKED_FS_WARNING_KEY,
+    WRITABLE,
+    SessionWriteLock,
+    WriteAccess,
+    write_lock_of,
+)
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.entry_annotations import AnnotationError
 from tau_agent_core.seed import check_seed, normalise_seed
@@ -728,6 +736,8 @@ class AgentSession:
         self._quiet_runner = ExtensionRunner(context=self._extension_api.context)
         self._events.on_error(self._surface_notify_error)
         self._events.on("message_end", self._record_completion_usage)
+        self._write_locks: dict[int, tuple[SessionLog, SessionWriteLock]] = {}
+        self._sync_write_locks()
         for ext in self._extensions:
             ext(self._bind_extension_api(_extension_factory_label(ext)))
 
@@ -811,8 +821,11 @@ class AgentSession:
         ``RPCHandler.run`` for exactly that reason. Idempotent, and unnecessary
         before a turn: :meth:`submit` and :meth:`continue_conversation` both record
         before reading the pre-turn leaf, so the entry lands AHEAD of the turn it
-        governs — which is where a rollback to that leaf needs it to be.
+        governs — which is where a rollback to that leaf needs it to be. A
+        read-only replica (:attr:`write_access`) records nothing.
         """
+        if self.write_access.read_only:
+            return
         await self._record_config()
 
     @property
@@ -837,6 +850,7 @@ class AgentSession:
             self._cursors.pop(old.id, None)
         self._cursor = cursor
         self._cursors[cursor.id] = cursor
+        self._sync_write_locks()
 
     @property
     def acting_cursor(self) -> Cursor:
@@ -883,6 +897,7 @@ class AgentSession:
         """
         cursor = Cursor(self._cursor.log, at, owner=owner, label=label)
         self._cursors[cursor.id] = cursor
+        self._sync_write_locks()
         await self._events.emit_channel("cursor_open", cursor=cursor)
         return cursor
 
@@ -902,7 +917,77 @@ class AgentSession:
         if cursor.busy:
             raise RuntimeError(f"close_cursor: cursor {cursor.id} is running a turn")
         if self._cursors.pop(cursor.id, None) is not None:
+            self._sync_write_locks()
             await self._events.emit_channel("cursor_close", cursor=cursor)
+
+    def _sync_write_locks(self) -> None:
+        """Retain the write lock of each tree a live cursor is on; release the rest.
+
+        One retain per tree per session, so a swap releases the old tree's lock
+        only once its last cursor (a lane still writing, a delivery) has closed
+        (docs/STEP-DEBUGGER.md §3.7.3).
+        """
+        live = {id(c.log): c.log for c in self._cursors.values()}
+        for key in [k for k in self._write_locks if k not in live]:
+            _log, lock = self._write_locks.pop(key)
+            lock.release()
+        for key, log in live.items():
+            found = None if key in self._write_locks else write_lock_of(log)
+            if found is not None:
+                found.retain()
+                self._write_locks[key] = (log, found)
+        self._show_write_access()
+
+    def release_write_locks(self) -> None:
+        """Release every write lock this session retains; :meth:`emit_session_shutdown` calls it.
+
+        For a host discarding this session object while its process lives on
+        (the TUI replacing a backend), so the trees it held become writable to
+        other processes.
+        """
+        for _log, lock in self._write_locks.values():
+            lock.release()
+        self._write_locks.clear()
+        self._show_write_access()
+
+    @property
+    @agent_facing(topic="sessions")
+    def write_access(self) -> WriteAccess:
+        """Whether this process may write the acting cursor's tree, and who holds it if not.
+
+        Read-only when another process holds the tree's lock: every submit and
+        write is refused with :attr:`WriteAccess.reason`, which names the holder.
+        A tree no store locks (an SDK ``InMemorySessionLog``) is always writable.
+        """
+        held = self._write_locks.get(id(self.acting_cursor.log))
+        return WRITABLE if held is None else held[1].access()
+
+    def _write_refusal(self, cursor: Cursor) -> str | None:
+        """Re-check ``cursor``'s tree's lock against its sidecar at turn admission; the refusal or ``None``."""
+        held = self._write_locks.get(id(cursor.log))
+        if held is None:
+            return None
+        access = held[1].check()
+        self._show_write_access()
+        return access.reason if access.read_only else None
+
+    def _show_write_access(self) -> None:
+        """Mirror the head tree's lock state into the warnings store, keyed ``session-lock:*``."""
+        held = self._write_locks.get(id(self._cursor.log))
+        access = WRITABLE if held is None else held[1].access()
+        read_only = access.reason if access.read_only else None
+        with self._warnings.batch():
+            self._set_tau_warning(READ_ONLY_WARNING_KEY, read_only, "error")
+            self._set_tau_warning(UNLOCKED_FS_WARNING_KEY, access.warning, "warning")
+
+    def _set_tau_warning(
+        self, key: str, message: str | None, severity: Literal["warning", "error"]
+    ) -> None:
+        """Set τ's own warning under ``key``, or clear it when ``message`` is ``None``."""
+        if message is None:
+            self._warnings.clear(TAU_SOURCE, key)
+        else:
+            self._warnings.set(ExtensionWarning(TAU_SOURCE, key, message, severity))
 
     def _registered(self, cursor: Cursor) -> Cursor:
         """``cursor``, if this session opened it; raise rather than run a stranger's."""
@@ -1852,11 +1937,13 @@ class AgentSession:
         await self._cancel_forked_tasks()
         await self._cancel_task_registry(self._delivery_tasks)
         await self._cancel_task_registry(self._threadsafe_tasks)
-        if not self._extension_runner.has_handlers("session_shutdown"):
-            return
-        await self._extension_runner.emit_session_shutdown(
-            {"type": "session_shutdown", "reason": reason}
-        )
+        try:
+            if self._extension_runner.has_handlers("session_shutdown"):
+                await self._extension_runner.emit_session_shutdown(
+                    {"type": "session_shutdown", "reason": reason}
+                )
+        finally:
+            self.release_write_locks()
 
     async def load_extensions(
         self,
@@ -3591,6 +3678,13 @@ class AgentSession:
             self._turn_token_counter += 1
             cur.turn_token = self._turn_token_counter
             if self._submission_runs_a_turn(sub):
+                refusal = self._write_refusal(cur)
+                if refusal is not None:
+                    return SubmissionResult(
+                        accepted=False,
+                        submission_id=sub.submission_id,
+                        rejection_reason=refusal,
+                    )
                 unavailable = self._recover_unavailable_model()
                 if unavailable is not None:
                     return SubmissionResult(

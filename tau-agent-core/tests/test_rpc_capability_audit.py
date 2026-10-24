@@ -77,6 +77,7 @@ EXPOSED: dict[str, str] = {
     "get_session_stats": "get_session_stats",
     "get_last_compaction": "get_session_stats",
     "is_addressable": "get_state",
+    "write_access": "get_state",
     # 0.9.8's eleven; the other four tree mutations are `tree_ops` functions
     # over a SessionLog, which this audit cannot see and never could.
     "summarize_and_navigate": "summarize_and_navigate",
@@ -332,6 +333,11 @@ NOT_EXPOSED: dict[str, str] = {
         "frontend builds the session, immediately after extension load. A "
         "verb letting a host re-fire this mid-connection would let it "
         "replay a moment no extension is written to see twice."
+    ),
+    "release_write_locks": (
+        "Teardown for a host discarding this session object while its process "
+        "lives on; emit_session_shutdown calls it. A wire verb would let a "
+        "client drop the lock under the host's own live cursors."
     ),
     "emit_session_shutdown": (
         "The session-teardown lifecycle hook, fired once at process end "

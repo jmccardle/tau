@@ -43,6 +43,7 @@ from tau_agent_core.rpc.records import (
     ExtensionInfo,
     ExtensionRequest,
     FormSpec,
+    LockHolderRecord,
     ModelRecord,
     PanelSpec,
     SessionScope,
@@ -548,6 +549,9 @@ class Attached:
         head_cursor_id: The cursor a client drives unless it opens its own.
         models: Every model the daemon's config defines, for a picker.
         requests: The extension forms open now, which an ``Answer`` closes.
+        read_only: Another process holds the session's write lock, so this
+            daemon refuses every prompt and write on it.
+        lock_holder: That process, when ``read_only`` names one.
     """
 
     session_id: str
@@ -560,6 +564,8 @@ class Attached:
     models: list[ModelRecord]
     surface: Surface
     requests: list[RequestEventData]
+    read_only: bool
+    lock_holder: LockHolderRecord | None
 
 
 @dataclass

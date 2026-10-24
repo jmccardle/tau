@@ -40,6 +40,7 @@ from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.compare import COMPARE_KEY
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.extension_warnings import ExtensionWarning, warnings_marker
+from tau_agent_core.session_lock import read_only_banner
 from tau_agent_core.session_log import config_at
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.tau_home import resolve_tau_home
@@ -654,6 +655,7 @@ class TauApp(App):
             yield extension_ui.ExtensionPanelHost()
 
         yield editor_widgets.StreamStrip()
+        yield extension_ui.ReadOnlyBanner()
         yield extension_ui.WarningsMarker()
         yield extension_ui.ExtensionStatusBar()
         yield Footer()
@@ -825,8 +827,9 @@ class TauApp(App):
         self._show_warnings_marker(backend.extension_warnings())
 
     def _show_warnings_marker(self, warnings: list[ExtensionWarning]) -> None:
-        """Render :func:`warnings_marker` for ``warnings``."""
+        """Render :func:`warnings_marker` and the read-only banner for ``warnings``."""
         self.query_one(extension_ui.WarningsMarker).show(warnings_marker(warnings))
+        self.query_one(extension_ui.ReadOnlyBanner).show(read_only_banner(warnings))
 
     def set_extension_panel(self, key: str, spec: dict[str, Any] | None) -> None:
         """Mount, update, or clear one keyed extension panel (E10 §6 / S68).
