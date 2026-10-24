@@ -3104,6 +3104,7 @@ _CONTEXT_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
     "abort": "loop",
     "get_context_usage": "loop",
     "get_model": "loop",
+    "get_setting_source": "loop",
     "set_model": "loop",
     "set_reasoning": "loop",
     "get_usage": "loop",
