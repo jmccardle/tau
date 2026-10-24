@@ -6,7 +6,7 @@
 <!-- agent: yes -->
 
 ```python
-class AgentSession(*, model: Model | UnavailableModel, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, model_source: SettingSource | None = None, reasoning_source: SettingSource | None = None, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS, tool_allowlist: Sequence[str] | None = None, tool_denylist: Sequence[str] = ())
+class AgentSession(*, model: Model | UnavailableModel, session_log: SessionLog | None = None, cursor: Cursor | None = None, system_prompt: str = '', tools: list[AgentTool] | None = None, extensions: list[Callable] | None = None, api_key: str | None = None, reasoning: str | None = None, model_source: str | None = None, model_restored: bool = False, reasoning_source: str | None = None, reasoning_restored: bool = False, compaction_settings: CompactionSettings | None = None, compaction_policy: CompactionPolicy | None = None, extensions_config: dict[str, dict[str, Any]] | None = None, model_resolver: Callable[[str], Model] | None = None, max_turns: int | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, cwd: str | None = None, prompt_templates: PromptTemplateCatalog = EMPTY_TEMPLATES, skills: SkillCatalog = EMPTY_SKILLS, tool_allowlist: Sequence[str] | None = None, tool_denylist: Sequence[str] = ())
 ```
 
 `tau_agent_core.agent_session.AgentSession`
@@ -30,8 +30,10 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 - `extensions: list[Callable] | None = None` — Inline extension factories, each called at construction with an api bound to its own runner bucket.
 - `api_key: str | None = None` — The key ``model`` is called with; ``None`` passes no key.
 - `reasoning: str | None = None` — Requested thinking level for every turn and compaction; ``None`` sends no reasoning control, which is not ``"off"`` (docs/REASONING-WIRE.md §4).
-- `model_source: SettingSource | None = None` — Where ``model`` came from (docs/TURN-SETTINGS.md §8); ``None`` is ``cli``, the constructor argument given explicitly.
-- `reasoning_source: SettingSource | None = None` — Where ``reasoning`` came from; ``None`` is ``cli`` when ``reasoning`` was given and ``default`` when it was not.
+- `model_source: str | None = None` — Where ``model`` came from (docs/TURN-SETTINGS.md §8); ``None`` is ``cli``, the constructor argument given explicitly.
+- `model_restored: bool = False` — Whether a resume restored ``model`` and ``model_source``.
+- `reasoning_source: str | None = None` — Where ``reasoning`` came from; ``None`` is ``cli`` when ``reasoning`` was given and ``default`` when it was not.
+- `reasoning_restored: bool = False` — Whether a resume restored ``reasoning`` and its source.
 - `compaction_settings: CompactionSettings | None = None` — Settings when no ``compaction_policy`` is given; ``None`` means the defaults.
 - `compaction_policy: CompactionPolicy | None = None` — A declared policy that supplies its own settings and summarizer. Mutually exclusive with ``compaction_settings``. One naming a summarizer needs ``model_resolver``, or construction raises.
 - `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by file stem; each extension's ``api.config`` is its slice.
@@ -48,7 +50,7 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 
 **Raises**
 
-- `ValueError` — Both or neither of ``session_log`` and ``cursor``; both compaction arguments; ``max_turns`` below 1; an unknown ``no_tools``.
+- `ValueError` — Both or neither of ``session_log`` and ``cursor``; both compaction arguments; ``max_turns`` below 1; an unknown ``no_tools``; a source outside the vocabulary, or a restored setting with no source.
 
 ### abort
 
@@ -4806,7 +4808,9 @@ class SettingSource(source: str, restored: bool = False)
 
 `tau_agent_core.setting_sources.SettingSource`
 
-Where the model or thinking level in force came from.
+Where the model or thinking level in force came from, as an extension reads it.
+
+Never stored on the config path, which holds the JSON keys of :func:`source_keys`.
 
 **Constructor parameters**
 
@@ -5999,16 +6003,16 @@ The banner a head shows while its session is a read-only replica.
 
 ``"READ-ONLY — <reason naming the holder>"``, or ``None`` when writable.
 
-## restored_source
+## restored_keys
 <!-- agent: yes -->
 
 ```python
-restored_source(recorded: Mapping[str, Any], setting: str) -> SettingSource
+restored_keys(recorded: Mapping[str, Any], setting: str) -> dict[str, Any]
 ```
 
-`tau_agent_core.setting_sources.restored_source`
+`tau_agent_core.setting_sources.restored_keys`
 
-The source of a value a resume restores from ``recorded``.
+:func:`source_keys` for a value a resume restores from ``recorded``.
 
 **Parameters**
 
@@ -6017,7 +6021,7 @@ The source of a value a resume restores from ``recorded``.
 
 **Returns**
 
-The recorded source with ``restored=True``; ``resume`` when none was recorded.
+The recorded source, or ``resume`` when none was recorded, with ``restored`` true.
 
 **Raises**
 
@@ -6137,6 +6141,31 @@ what callers already see rather than re-sorting on a new principle.
 **Returns**
 
 A fresh dict of command name to one-line description. Fresh rather than shared, because it goes to callers that hold it.
+
+## source_keys
+<!-- agent: yes -->
+
+```python
+source_keys(setting: str, source: str, *, restored: bool = False) -> dict[str, Any]
+```
+
+`tau_agent_core.setting_sources.source_keys`
+
+The JSON keys a head's model config carries for ``setting``'s source.
+
+**Parameters**
+
+- `setting: str` — ``"model"`` or ``"thinking"``.
+- `source: str` — A :data:`SETTING_SOURCES` value or ``extension:<name>``.
+- `restored: bool = False` — Whether a resume restored the value.
+
+**Returns**
+
+``{"<setting>_source": source, "<setting>_restored": restored}``.
+
+**Raises**
+
+- `ValueError` — ``setting`` or ``source`` is outside the vocabulary.
 
 ## split_compare_args
 <!-- agent: yes -->

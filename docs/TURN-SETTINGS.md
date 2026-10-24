@@ -269,8 +269,10 @@ module load), it raises `RuntimeError` rather than guess.
 The constructor keeps defaults, because `AgentSession(model=…)` is the
 argument given explicitly: `model_source=None` is `cli`, and
 `reasoning_source=None` is `cli` when `reasoning` is given and `default` when it
-is not. `TauBackend` passes `config["model_source"]` / `["thinking_source"]`
-through. `create_agent_session(model=None)` now means `"gpt-4o"` with source
+is not. `model_restored` / `reasoning_restored` (bools, default `False`) say a
+resume restored the value; a restored setting without its source raises.
+`TauBackend` passes the model config's four keys through (§8.5).
+`create_agent_session(model=None)` now means `"gpt-4o"` with source
 `default`. It previously defaulted to the string, which made the two cases
 indistinguishable.
 
@@ -297,8 +299,9 @@ value.
 
 **On resume the recorded source survives** (tau-router's follow-up request): a
 resumed `/model` pick reads `SettingSource("command", restored=True)`, not
-`resume`. `restored_source(recorded, setting)` reads it off the resumed config.
-An entry with no source gives `SettingSource("resume", restored=True)`. A flag
+`resume`. A head reads it off the resumed config with `restored_keys(recorded,
+setting)`, which gives `{"model_source": "command", "model_restored": true}`.
+An entry with no source gives source `resume`, restored. A flag
 given on resume replaces only its own setting (`-m Y` gives `cli`, and the
 thinking level stays restored). The heads that resume are `-p`, the REPL, the
 TUI's session picker and `tau serve` loading a session. A serve fork restores
@@ -340,3 +343,24 @@ asked for.
 **Not done:** a TUI attached to `tau serve` (`--connect`) sends `/model` as the
 RPC verb, so it records `rpc`, not `command`.
 
+### 8.5 Config-path values are JSON
+
+Every dict on the config path holds JSON values only: a head's model config
+(`resolve_model_config`, `TauBackend`'s config, `tau serve`'s `new_session`
+sources), the folded config (`config_at`), the `extra` keys of
+`record_settings`, the tree's config entries, and RPC and serve payloads. A
+model config starts as `config.json` and stays plain JSON.
+
+So a source is a string under `model_source` / `thinking_source`, and whether
+a resume restored it is a bool under `model_restored` / `thinking_restored`.
+`source_keys(setting, source, restored=)` and `restored_keys(recorded,
+setting)` in `tau_agent_core.setting_sources` build both keys, and check the
+source against the vocabulary. The `*_restored` keys live only in a head's
+model config and the session's own state. The tree never records them,
+because a restore is a fact about one process opening the session, not about
+the conversation.
+
+`SettingSource` is the extension-facing view, built only where an extension
+reads it: `ctx.get_setting_source` and `AgentSession.get_setting_source`. The
+`turn_setting_changed` event carries the source as a plain string, because a
+setter change is never restored.

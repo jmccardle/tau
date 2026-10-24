@@ -17,7 +17,8 @@ from tau_agent_core.session_log import CONFIG_ENTRY_TYPE, InMemorySessionLog, co
 from tau_agent_core.setting_sources import (
     SettingSource,
     check_source,
-    restored_source,
+    restored_keys,
+    source_keys,
 )
 from tau_agent_core.submission import Submission
 
@@ -144,7 +145,7 @@ class TestConstruction:
         assert named.get_setting_source("model") == SettingSource("cli")
 
     async def test_the_first_record_carries_both_sources(self) -> None:
-        session = _session(model_source=SettingSource("default"))
+        session = _session(model_source="default")
         await session.start()
         recorded = _recorded(session)
         assert recorded["model_source"] == "default"
@@ -284,8 +285,10 @@ class TestExtensionAttribution:
 
         session = _session(
             reader,
-            model_source=SettingSource("command", restored=True),
-            reasoning_source=SettingSource("resume", restored=True),
+            model_source="command",
+            model_restored=True,
+            reasoning_source="resume",
+            reasoning_restored=True,
         )
         await session.emit_session_start("startup")
         await _turn(session)
@@ -293,14 +296,37 @@ class TestExtensionAttribution:
         assert reads == [("session_start", *restored), ("input", *restored)]
 
 
+class TestConfigPathIsJson:
+    def test_source_keys_are_a_string_and_a_bool(self) -> None:
+        assert source_keys("model", "cli") == {"model_source": "cli", "model_restored": False}
+
+    def test_source_keys_refuse_a_source_outside_the_vocabulary(self) -> None:
+        with pytest.raises(ValueError, match="not a setting source"):
+            source_keys("thinking", "whoever")
+
+    def test_a_recorded_source_that_is_not_a_string_raises(self) -> None:
+        with pytest.raises(ValueError, match="a source is a string"):
+            restored_keys({"model_source": {"source": "cli"}}, "model")
+
+    def test_a_restored_setting_needs_its_source(self) -> None:
+        with pytest.raises(ValueError, match="model_restored needs"):
+            _session(model_restored=True)
+
+
 class TestResume:
     def test_a_recorded_source_is_restored_as_recorded(self) -> None:
         recorded = {"model": "big", "model_source": "command", "thinking": "high"}
-        assert restored_source(recorded, "model") == SettingSource("command", restored=True)
+        assert restored_keys(recorded, "model") == {
+            "model_source": "command",
+            "model_restored": True,
+        }
 
     def test_an_entry_written_before_sources_restores_as_resume(self) -> None:
         recorded = {"model": "big", "thinking": "high"}
-        assert restored_source(recorded, "thinking") == SettingSource("resume", restored=True)
+        assert restored_keys(recorded, "thinking") == {
+            "thinking_source": "resume",
+            "thinking_restored": True,
+        }
 
     async def test_a_restored_value_writes_no_source_and_fires_nothing(self) -> None:
         log = InMemorySessionLog()
@@ -315,8 +341,10 @@ class TestResume:
             model=_model(),
             tools=[],
             extensions=[_observer(seen)],
-            model_source=restored_source(recorded, "model"),
-            reasoning_source=restored_source(recorded, "thinking"),
+            model_source=recorded["model_source"],
+            model_restored=True,
+            reasoning_source=recorded["thinking_source"],
+            reasoning_restored=True,
         )
         before = len(log.entries())
         await resumed.start()

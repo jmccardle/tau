@@ -1,7 +1,9 @@
 """Where a turn setting came from: the source vocabulary for model and thinking.
 
-See docs/TURN-SETTINGS.md §8. A head names the source it applies; the session
-records it beside the value and hands it to extensions as a :class:`SettingSource`.
+See docs/TURN-SETTINGS.md §8. Every dict on the config path holds JSON: a
+source is a plain string under :data:`SOURCE_KEYS`, and whether a resume
+restored it is a bool under :data:`RESTORED_KEYS`. :class:`SettingSource` is
+the extension-facing view, built only where an extension reads it.
 """
 
 from __future__ import annotations
@@ -34,17 +36,22 @@ EXTENSION_SOURCE_PREFIX = "extension:"
 SOURCE_KEYS: dict[Setting, str] = {"model": "model_source", "thinking": "thinking_source"}
 """The config key that records each setting's source."""
 
+RESTORED_KEYS: dict[Setting, str] = {"model": "model_restored", "thinking": "thinking_restored"}
+"""The head model-config key that says a resume restored each setting; never in the tree."""
+
 ACTING_EXTENSION: ContextVar[str | None] = ContextVar("tau_acting_extension", default=None)
 """The identifier of the extension whose code is running, while one is."""
 
 
-def check_source(source: str) -> str:
+def check_source(source: object) -> str:
     """Return ``source`` if it is in the vocabulary.
 
     Raises:
         ValueError: it is neither a :data:`SETTING_SOURCES` value nor
             ``extension:<name>`` with a non-empty name.
     """
+    if not isinstance(source, str):
+        raise ValueError(f"{source!r} is not a setting source; a source is a string")
     if source in SETTING_SOURCES:
         return source
     if source.startswith(EXTENSION_SOURCE_PREFIX) and len(source) > len(EXTENSION_SOURCE_PREFIX):
@@ -71,7 +78,9 @@ def check_setting(setting: str) -> Setting:
 @agent_facing(topic="sessions")
 @dataclass(frozen=True)
 class SettingSource:
-    """Where the model or thinking level in force came from.
+    """Where the model or thinking level in force came from, as an extension reads it.
+
+    Never stored on the config path, which holds the JSON keys of :func:`source_keys`.
 
     Attributes:
         source: A :data:`SETTING_SOURCES` value or ``extension:<name>``.
@@ -88,22 +97,42 @@ class SettingSource:
 
 
 @agent_facing(topic="sessions")
-def restored_source(recorded: Mapping[str, Any], setting: str) -> SettingSource:
-    """The source of a value a resume restores from ``recorded``.
+def source_keys(setting: str, source: str, *, restored: bool = False) -> dict[str, Any]:
+    """The JSON keys a head's model config carries for ``setting``'s source.
+
+    Args:
+        setting: ``"model"`` or ``"thinking"``.
+        source: A :data:`SETTING_SOURCES` value or ``extension:<name>``.
+        restored: Whether a resume restored the value.
+
+    Returns:
+        ``{"<setting>_source": source, "<setting>_restored": restored}``.
+
+    Raises:
+        ValueError: ``setting`` or ``source`` is outside the vocabulary.
+    """
+    checked = check_setting(setting)
+    return {SOURCE_KEYS[checked]: check_source(source), RESTORED_KEYS[checked]: restored}
+
+
+@agent_facing(topic="sessions")
+def restored_keys(recorded: Mapping[str, Any], setting: str) -> dict[str, Any]:
+    """:func:`source_keys` for a value a resume restores from ``recorded``.
 
     Args:
         recorded: The folded config at the resumed position (``config_at``).
         setting: ``"model"`` or ``"thinking"``.
 
     Returns:
-        The recorded source with ``restored=True``; ``resume`` when none was recorded.
+        The recorded source, or ``resume`` when none was recorded, with
+        ``restored`` true.
 
     Raises:
         ValueError: ``setting`` is not a turn setting, or the recorded source is
             not in the vocabulary.
     """
     value = recorded.get(SOURCE_KEYS[check_setting(setting)])
-    return SettingSource("resume" if value is None else str(value), restored=True)
+    return source_keys(setting, "resume" if value is None else value, restored=True)
 
 
 def acting_extension_source(what: str) -> str:

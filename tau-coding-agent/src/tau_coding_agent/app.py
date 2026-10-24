@@ -42,7 +42,7 @@ from tau_agent_core.cursor import Cursor
 from tau_agent_core.extension_warnings import ExtensionWarning, warnings_marker
 from tau_agent_core.session_lock import read_only_banner
 from tau_agent_core.session_log import config_at
-from tau_agent_core.setting_sources import SettingSource, restored_source
+from tau_agent_core.setting_sources import restored_keys, source_keys
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import (
@@ -2897,13 +2897,10 @@ class TauApp(App):
             return False
 
         try:
-            sources = {
-                "model_source": SettingSource("default"),
-                "thinking_source": SettingSource("default"),
-            }
+            sources = {**source_keys("model", "default"), **source_keys("thinking", "default")}
             sources.update({k: v for k, v in model_config.items() if k in sources})
             if picked:
-                sources["model_source"] = SettingSource("command")
+                sources.update(source_keys("model", "command"))
             backend = create_backend(
                 self._apply_run_config({**model_config, **sources, "config_name": model})
             )
@@ -4163,11 +4160,11 @@ class TauApp(App):
             else:
                 resumed = {"config_name": session.model, "unavailable": problem}
                 backend_name = session.backend
-            resumed["model_source"] = restored_source(recorded, "model")
-            resumed["thinking_source"] = SettingSource("default")
+            resumed.update(restored_keys(recorded, "model"))
+            resumed.update(source_keys("thinking", "default"))
             if "thinking" in recorded:
                 resumed["thinking"] = recorded["thinking"]
-                resumed["thinking_source"] = restored_source(recorded, "thinking")
+                resumed.update(restored_keys(recorded, "thinking"))
             await self._replace_backend(create_backend(self._apply_run_config(resumed)), "resume")
             self._session_runtime = self._build_session_runtime(
                 self.current_backend, session.model, backend_name

@@ -37,7 +37,7 @@ from tau_agent_core.rpc import dialect, records
 from tau_agent_core.rpc.wire_events import WireEventProjector
 from tau_agent_core.sdk import LoadExtensionsResult, load_failure_notice, withheld_notices
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
-from tau_agent_core.setting_sources import SettingSource
+from tau_agent_core.setting_sources import source_keys
 from tau_agent_core.session_log import (
     OpenSideEntryError,
     SessionLog,
@@ -862,13 +862,12 @@ class Daemon:
         asyncio.get_running_loop().create_task(stop_after_answer())
         return ANSWERED
 
-    async def load(
-        self, ref: str, *, sources: dict[str, SettingSource] | None = None
-    ) -> SessionHost:
+    async def load(self, ref: str, *, sources: dict[str, Any] | None = None) -> SessionHost:
         """The host for session ``ref`` (an id or unambiguous prefix), loading it if needed.
 
-        ``sources`` replaces the restored model and thinking sources of a host
-        built here, for a session this daemon has just created (docs/TURN-SETTINGS.md §8).
+        ``sources``, the :func:`~tau_agent_core.setting_sources.source_keys`
+        of both settings, replaces the restored sources of a host built here,
+        for a session this daemon has just created (docs/TURN-SETTINGS.md §8).
 
         Raises:
             RequestError: no session matches ``ref``.
@@ -893,7 +892,7 @@ class Daemon:
         self,
         log: ConversationSession,
         model: str | None,
-        sources: dict[str, SettingSource] | None = None,
+        sources: dict[str, Any] | None = None,
     ) -> SessionHost:
         """Build a backend for ``log`` from the daemon's config.
 
@@ -1075,8 +1074,8 @@ class Daemon:
         )
         self.log(f"session {log.id[:8]} created in {cwd}")
         sources = {
-            "model_source": SettingSource("default" if request.model is None else "rpc"),
-            "thinking_source": SettingSource("default"),
+            **source_keys("model", "default" if request.model is None else "rpc"),
+            **source_keys("thinking", "default"),
         }
         return self._opened(await self.load(log.id, sources=sources))
 

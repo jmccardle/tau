@@ -1616,10 +1616,11 @@ class TauBackend(Backend):
     turns until it happens (docs/PRICING-AND-COMPACTION-CONFIG.md §6). A config
     with ``unavailable`` (``headless.resolve_model_config``'s ``open_unavailable``)
     opens on an :class:`~tau_agent_core.model_availability.UnavailableModel`.
-    ``config["model_source"]`` / ``config["thinking_source"]`` are the
-    :class:`~tau_agent_core.setting_sources.SettingSource` of each, as
-    :func:`~tau_coding_agent.headless.resolve_model_config` derives them;
-    absent, the session's constructor defaults apply (docs/TURN-SETTINGS.md §8).
+    ``config["model_source"]`` / ``["thinking_source"]`` (strings) and
+    ``["model_restored"]`` / ``["thinking_restored"]`` (bools) say where each
+    came from, as :func:`~tau_coding_agent.headless.resolve_model_config`
+    derives them; absent, the session's constructor defaults apply
+    (docs/TURN-SETTINGS.md §8).
 
     Attributes:
         comparisons: The open comparisons (:meth:`compare`), by id, until ended.
@@ -1692,7 +1693,9 @@ class TauBackend(Backend):
             api_key=api_key,
             reasoning=reasoning_arg,
             model_source=config.get("model_source"),
+            model_restored=bool(config.get("model_restored")),
             reasoning_source=config.get("thinking_source"),
+            reasoning_restored=bool(config.get("thinking_restored")),
             compaction_settings=compaction.settings,
             bus_available=bool(config.get("bus_available", False)),
             no_tools=no_tools,

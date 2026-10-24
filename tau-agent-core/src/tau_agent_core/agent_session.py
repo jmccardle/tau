@@ -679,8 +679,10 @@ class AgentSession:
             (docs/REASONING-WIRE.md §4).
         model_source: Where ``model`` came from (docs/TURN-SETTINGS.md §8);
             ``None`` is ``cli``, the constructor argument given explicitly.
+        model_restored: Whether a resume restored ``model`` and ``model_source``.
         reasoning_source: Where ``reasoning`` came from; ``None`` is ``cli``
             when ``reasoning`` was given and ``default`` when it was not.
+        reasoning_restored: Whether a resume restored ``reasoning`` and its source.
         compaction_settings: Settings when no ``compaction_policy`` is given;
             ``None`` means the defaults.
         compaction_policy: A declared policy that supplies its own settings and
@@ -712,7 +714,8 @@ class AgentSession:
 
     Raises:
         ValueError: Both or neither of ``session_log`` and ``cursor``; both
-            compaction arguments; ``max_turns`` below 1; an unknown ``no_tools``.
+            compaction arguments; ``max_turns`` below 1; an unknown ``no_tools``;
+            a source outside the vocabulary, or a restored setting with no source.
     """
 
     def __init__(
@@ -726,8 +729,10 @@ class AgentSession:
         extensions: list[Callable] | None = None,
         api_key: str | None = None,
         reasoning: str | None = None,
-        model_source: SettingSource | None = None,
-        reasoning_source: SettingSource | None = None,
+        model_source: str | None = None,
+        model_restored: bool = False,
+        reasoning_source: str | None = None,
+        reasoning_restored: bool = False,
         compaction_settings: CompactionSettings | None = None,
         compaction_policy: CompactionPolicy | None = None,
         extensions_config: dict[str, dict[str, Any]] | None = None,
@@ -799,10 +804,18 @@ class AgentSession:
         self._delivery_tasks: dict[str, asyncio.Task[Any]] = {}
         self._api_key = api_key
         self._reasoning = reasoning
-        self._model_source = model_source or SettingSource("cli")
-        self._reasoning_source = reasoning_source or SettingSource(
-            "default" if reasoning is None else "cli"
-        )
+        for name, restored, source in (
+            ("model", model_restored, model_source),
+            ("reasoning", reasoning_restored, reasoning_source),
+        ):
+            if restored and source is None:
+                raise ValueError(f"{name}_restored needs the {name}_source the resume restored")
+        self._model_source = check_source("cli" if model_source is None else model_source)
+        self._model_restored = model_restored
+        if reasoning_source is None:
+            reasoning_source = "default" if reasoning is None else "cli"
+        self._reasoning_source = check_source(reasoning_source)
+        self._reasoning_restored = reasoning_restored
         self._setting_changes: dict[str | None, dict[Setting, Any]] = {}
         if compaction_policy is not None and compaction_settings is not None:
             raise ValueError(
@@ -905,12 +918,12 @@ class AgentSession:
         changed.update(extra or {})
         considered = [s for s in SETTINGS if keys is None or keys & set(_VALUE_KEYS[s])]
         for setting in considered:
-            current = self._turn_setting_source(setting)
+            source, restored = self._turn_setting_source(setting)
             key = SOURCE_KEYS[setting]
             if any(k in changed for k in _VALUE_KEYS[setting]) or (
-                not current.restored and recorded.get(key) != current.source
+                not restored and recorded.get(key) != source
             ):
-                changed[key] = current.source
+                changed[key] = source
         if changed:
             await cursor.append_config(**changed)
         await self._announce_setting_changes(cursor, considered, changed)
@@ -1673,7 +1686,7 @@ class AgentSession:
         model, api_key = self.resolve_model(name)
         cursor = self.acting_cursor
         old = self._setting_value("model")
-        old_source = self._turn_setting_source("model").source
+        old_source, _ = self._turn_setting_source("model")
         if cursor is not self._cursor:
             cursor.frame = replace(
                 self._frame_or_default(cursor),
@@ -1687,7 +1700,8 @@ class AgentSession:
             self._model = model
             self._model_name = name
             self._api_key = api_key
-            self._model_source = SettingSource(source)
+            self._model_source = source
+            self._model_restored = False
         self._note_setting_change(cursor, "model", old, old_source)
         return self.get_model()
 
@@ -1720,14 +1734,15 @@ class AgentSession:
             )
         cursor = self.acting_cursor
         old = self._setting_value("thinking")
-        old_source = self._turn_setting_source("thinking").source
+        old_source, _ = self._turn_setting_source("thinking")
         if cursor is not self._cursor:
             cursor.frame = replace(
                 self._frame_or_default(cursor), reasoning=level, reasoning_source=source
             )
         else:
             self._reasoning = level
-            self._reasoning_source = SettingSource(source)
+            self._reasoning_source = source
+            self._reasoning_restored = False
         self._note_setting_change(cursor, "thinking", old, old_source)
         return level
 
@@ -1741,10 +1756,14 @@ class AgentSession:
         Raises:
             ValueError: ``setting`` is not one of those.
         """
-        return self._turn_setting_source(check_setting(setting))
+        source, restored = self._turn_setting_source(check_setting(setting))
+        return SettingSource(source, restored=restored)
 
-    def _turn_setting_source(self, setting: Setting) -> SettingSource:
-        """The source of :meth:`_setting_value`: its cursor frame's, else the session's.
+    def _turn_setting_source(self, setting: Setting) -> tuple[str, bool]:
+        """The source of :meth:`_setting_value`, its cursor frame's else the session's.
+
+        Returns:
+            ``(source, restored)``. A frame's value is never restored.
 
         Raises:
             ValueError: the frame sets the value and names no source.
@@ -1752,18 +1771,18 @@ class AgentSession:
         frame = self.acting_cursor.frame
         if setting == "model":
             if frame is None or frame.model is None:
-                return self._model_source
+                return self._model_source, self._model_restored
             framed, field = frame.model_source, "model_source"
         else:
             if frame is None or frame.reasoning is None:
-                return self._reasoning_source
+                return self._reasoning_source, self._reasoning_restored
             framed, field = frame.reasoning_source, "reasoning_source"
         if framed is None:
             raise ValueError(
                 f"cursor {self.acting_cursor.id}'s TurnFrame sets its {setting} with no "
                 f"source; set {field} beside it"
             )
-        return SettingSource(framed)
+        return framed, False
 
     def _setting_value(self, setting: Setting) -> Any:
         """The acting cursor's model name or thinking level, as ``turn_setting_changed`` carries it.
@@ -1787,7 +1806,7 @@ class AgentSession:
         A call that changed neither the value nor the source is no change and
         holds nothing (docs/TURN-SETTINGS.md §8.4).
         """
-        now = (self._setting_value(setting), self._turn_setting_source(setting).source)
+        now = (self._setting_value(setting), self._turn_setting_source(setting)[0])
         if now == (old, old_source):
             return
         key = None if cursor is self._cursor else cursor.id

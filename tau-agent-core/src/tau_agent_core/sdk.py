@@ -42,7 +42,6 @@ from tau_agent_core.extension_sources import (
 from tau_agent_core.extension_types import ExtensionAPI
 from tau_agent_core.prompt_templates import load_prompt_templates
 from tau_agent_core.session_log import InMemorySessionLog, SessionLog
-from tau_agent_core.setting_sources import SettingSource
 from tau_agent_core.tau_home import resolve_tau_home
 from tau_agent_core.tool_schema import output_schema_of
 from tau_agent_core.skills import Skill, load_skills, render_skills_block
@@ -2277,7 +2276,7 @@ def create_agent_session(
     if bus_available:
         require_bus_dependency()
     # 1. Resolve model
-    model_source = SettingSource("cli" if model is not None else "default")
+    model_source = "cli" if model is not None else "default"
     if model is None:
         model = DEFAULT_SDK_MODEL
     if isinstance(model, str):

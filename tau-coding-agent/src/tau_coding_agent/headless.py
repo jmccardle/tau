@@ -46,7 +46,7 @@ from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
 from tau_agent_core.submission import Submission
 from tau_agent_core.truncation import truncation_from_messages, truncation_notice
 from tau_agent_core.session_lock import set_head_label
-from tau_agent_core.setting_sources import SettingSource, restored_source
+from tau_agent_core.setting_sources import restored_keys, source_keys
 from tau_agent_core.tau_home import resolve_tau_home
 from tau_coding_agent.config import (
     ConfigError,
@@ -195,8 +195,9 @@ def resolve_model_config(
     :class:`~tau_agent_core.model_availability.UnavailableModel`
     (docs/SILENT-DEFAULTS.md §10). A ``--model`` is user input and always raises.
 
-    ``model_config["model_source"]`` and ``["thinking_source"]`` say where each
-    came from (:func:`setting_sources_for`).
+    ``model_config`` holds JSON only. Its ``model_source`` / ``thinking_source``
+    and ``model_restored`` / ``thinking_restored`` say where each setting came
+    from (:func:`setting_sources_for`).
 
     Raises:
         CLIError: no model named, an unconfigured bare name, or a malformed flag.
@@ -260,7 +261,7 @@ def setting_sources_for(
     fallback_model: str | None,
     prior_config: dict[str, Any] | None,
     suffixed: bool,
-) -> dict[str, SettingSource]:
+) -> dict[str, Any]:
     """Where :func:`resolve_model_config`'s model and thinking level came from.
 
     Decided by which flags were given, never by comparing values, so ``-m X``
@@ -273,26 +274,27 @@ def setting_sources_for(
         suffixed: Whether the model spec carried a ``:level`` suffix.
 
     Returns:
-        ``{"model_source", "thinking_source"}``: ``cli`` for a flag; for a
-        resumed value, the source recorded with it (``restored=True``); else
-        ``default``. A suffix takes the source of the spec it was on.
+        The :func:`~tau_agent_core.setting_sources.source_keys` of both
+        settings: ``cli`` for a flag; for a resumed value, the source recorded
+        with it, restored; else ``default``. A suffix takes the source of the
+        spec it was on.
     """
     recorded = prior_config or {}
     if args.model:
-        model = SettingSource("cli")
+        model = source_keys("model", "cli")
     elif fallback_model:
-        model = restored_source(recorded, "model")
+        model = restored_keys(recorded, "model")
     else:
-        model = SettingSource("default")
+        model = source_keys("model", "default")
     if args.thinking:
-        thinking = SettingSource("cli")
+        thinking = source_keys("thinking", "cli")
     elif suffixed:
-        thinking = model
+        thinking = source_keys("thinking", model["model_source"], restored=model["model_restored"])
     elif prior_config is not None and "thinking" in prior_config:
-        thinking = restored_source(recorded, "thinking")
+        thinking = restored_keys(recorded, "thinking")
     else:
-        thinking = SettingSource("default")
-    return {"model_source": model, "thinking_source": thinking}
+        thinking = source_keys("thinking", "default")
+    return {**model, **thinking}
 
 
 def _apply_run_flags(

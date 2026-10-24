@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import patch
 
@@ -32,16 +33,25 @@ def _isolate_cwd(tmp_path: Any, monkeypatch: Any) -> None:
     monkeypatch.chdir(tmp_path)
 
 
+def _read(config: dict[str, Any]) -> tuple[SettingSource, SettingSource]:
+    """Both settings' sources, after checking the model config is plain JSON."""
+    assert json.loads(json.dumps(config)) == config
+    return (
+        SettingSource(config["model_source"], config["model_restored"]),
+        SettingSource(config["thinking_source"], config["thinking_restored"]),
+    )
+
+
 def _sources(**args: Any) -> tuple[SettingSource, SettingSource]:
     _name, config = resolve_model_config(_CONFIG, CLIArgs(**args))
-    return config["model_source"], config["thinking_source"]
+    return _read(config)
 
 
 def _resumed(prior: dict[str, Any], **args: Any) -> tuple[SettingSource, SettingSource]:
     _name, config = resolve_model_config(
         _CONFIG, CLIArgs(**args), fallback_model=prior["model"], prior_config=prior
     )
-    return config["model_source"], config["thinking_source"]
+    return _read(config)
 
 
 class TestFlags:
