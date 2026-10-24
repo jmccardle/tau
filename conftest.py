@@ -11,14 +11,16 @@ Rationale: docs/PORTABLE-HOME.md §7.
 
 ``HOME`` itself is left alone: tests that exercise home resolution, and the
 packages' ``_hermetic_extensions_dir`` fixtures (which compare ``Path.home()``
-to the real one), depend on it. Instead the session fails if a test writes into
+to the real one), depend on it. Instead the session fails if a test creates a file in
 the real ``~/.tau`` (#70).
 """
 
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
+from typing import Iterable
 
 import pytest
 
@@ -48,22 +50,49 @@ def snapshot_home_tau(home: Path) -> dict[str, tuple[int, int]]:
     return seen
 
 
+def _dashed(path: Path) -> str:
+    """Encode *path* as the file session store names a cwd directory, minus the trailing ``--``."""
+    return "--" + str(path).lstrip("/\\").replace("/", "-").replace("\\", "-").replace(":", "-")
+
+
+def _names_inside(directory: str, roots: Iterable[Path]) -> bool:
+    """Whether a dashed session directory name encodes a path inside one of *roots*."""
+    for root in roots:
+        prefix = _dashed(root)
+        if directory == prefix + "--" or directory.startswith(prefix + "-"):
+            return True
+    return False
+
+
 def home_tau_changes(
-    before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]
+    before: dict[str, tuple[int, int]],
+    after: dict[str, tuple[int, int]],
+    roots: Iterable[Path],
 ) -> list[str]:
-    """List the paths added, modified or removed between two snapshots.
+    """List the new files a test plausibly put under ``.tau``.
+
+    Modifications and removals are ignored, since a live ``tau serve`` appends to
+    its log and session files. A new file counts when it sits directly under
+    ``.tau``, or under ``.tau/sessions/<dir>`` where ``<dir>`` encodes a cwd
+    inside one of *roots* (the pytest rootdir and the temp directories).
 
     Args:
         before: A :func:`snapshot_home_tau` result.
         after: A later one for the same home.
+        roots: Directories a test's cwd could be inside.
 
     Returns:
-        Sorted lines, each prefixed ``new``, ``modified`` or ``removed``.
+        Sorted lines, each ``new <path>``.
     """
-    lines = [f"new {p}" for p in after.keys() - before.keys()]
-    lines += [f"modified {p}" for p in before.keys() & after.keys() if before[p] != after[p]]
-    lines += [f"removed {p}" for p in before.keys() - after.keys()]
-    return sorted(lines)
+    roots = list(roots)
+    found = []
+    for rel in after.keys() - before.keys():
+        parts = Path(rel).parts
+        direct = len(parts) == 2
+        session = len(parts) >= 4 and parts[1] == "sessions" and _names_inside(parts[2], roots)
+        if direct or session:
+            found.append(f"new {rel}")
+    return sorted(found)
 
 
 def _is_worker(config: pytest.Config) -> bool:
@@ -78,14 +107,18 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    """Fail the session, naming each path, if a test wrote into the real ``~/.tau``.
+    """Fail the session, naming each path, if a test created a file in the real ``~/.tau``.
 
-    The whole tree is watched, so a live ``tau`` running beside the suite also
-    trips it; that is a false positive worth one rerun, not a reason to look away.
+    Only plausibly-test files count (see :func:`home_tau_changes`), so a live
+    ``tau serve`` writing beside the suite does not trip it.
     """
     if _is_worker(session.config):
         return
-    changes = home_tau_changes(session.config.stash[_BEFORE], snapshot_home_tau(Path.home()))
+    roots = [session.config.rootpath, Path(tempfile.gettempdir()).resolve()]
+    if session.config.option.basetemp:
+        roots.append(Path(session.config.option.basetemp).resolve())
+    after = snapshot_home_tau(Path.home())
+    changes = home_tau_changes(session.config.stash[_BEFORE], after, roots)
     if not changes:
         return
     reporter = session.config.pluginmanager.get_plugin("terminalreporter")
