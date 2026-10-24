@@ -740,3 +740,18 @@ async def test_turn_end_node_failure_in_a_tool_turn_stops_before_the_next_turn()
     (note,) = [e for e in _message_entries(session) if e.get("customType") == "note"]
     assert note["ext"] == {_ext_name(session): {"error": "RuntimeError: boom on note"}}
     _assert_every_call_answered(session)
+
+
+@pytest.mark.parametrize("annotated", [False, True])
+async def test_custom_node_with_an_unknown_block_fails_the_same_with_or_without_annotate(
+    annotated: bool,
+) -> None:
+    """Acceptance does not depend on an unrelated extension being loaded."""
+    extensions = [_failing_on(set(), value={"ok": 1})] if annotated else []
+    session = _session(*extensions)
+    before = list(session.session_log.entries())
+    with pytest.raises(ValueError, match=r"content\[0\] is not a text or image block"):
+        await session._append_custom_message(
+            {"customType": "aside", "content": [{"type": "weird"}]}
+        )
+    assert session.session_log.entries() == before

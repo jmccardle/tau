@@ -360,7 +360,9 @@ across a reload.
 block. A `content` that is a plain `str` (`UserMessage.content` is
 `str | list[…]`, `tau-llm/src/tau_llm/types.py:154`; a custom node's content can
 be a `str` too) is normalized to one text block at index 0. An image block
-yields no `Block`. Offsets are in code points (Python
+yields no `Block`. *Built note:* `create_custom_message` refuses content that is
+not a str or a list of text and image blocks, so a custom node with any other
+block fails when it is made, whether or not an `annotate` handler is loaded. Offsets are in code points (Python
 `str` indices), because τ stores JSON strings. `content_hash` is the SHA-256 hex
 of the text's UTF-8 bytes.
 
