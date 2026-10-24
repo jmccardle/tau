@@ -147,6 +147,18 @@ def test_resolve_does_not_mutate_source_config():
     assert config["extensions"]["budget"]["ceiling"] == 1.0
 
 
+def test_resolve_shares_no_nested_value_with_the_config_or_the_overrides():
+    config = _config()
+    overrides = {"budget": {"tags": ["cli"]}}
+    merged = resolve_extensions_config(config, overrides)
+
+    merged["gate"]["paths"].append("added")
+    merged["budget"]["tags"].append("added")
+
+    assert config["extensions"]["gate"]["paths"] == ["src/"]
+    assert overrides == {"budget": {"tags": ["cli"]}}
+
+
 def test_resolve_non_object_extensions_raises():
     with pytest.raises(CLIError, match='"extensions" must be a JSON object'):
         resolve_extensions_config({"extensions": ["budget"]}, {})

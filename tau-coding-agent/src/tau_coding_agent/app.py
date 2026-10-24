@@ -13,6 +13,7 @@ from textual import on, work
 from textual.timer import Timer
 from datetime import datetime
 import asyncio
+import copy
 import inspect
 import os
 import traceback
@@ -278,7 +279,7 @@ class TauApp(App):
         self._skills: list[str] = list(run_config.get("skills", []))
         self._no_skills: bool = bool(run_config.get("no_skills", False))
         self._max_turns: Optional[int] = run_config.get("max_turns")
-        self._ext_config_overrides: dict[str, dict[str, Any]] = dict(
+        self._ext_config_overrides: dict[str, dict[str, Any]] = copy.deepcopy(
             run_config.get("ext_config", {})
         )
         self._model_warnings: list[str] = list(run_config.get("model_warnings", []))

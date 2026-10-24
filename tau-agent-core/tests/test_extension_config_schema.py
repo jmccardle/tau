@@ -122,6 +122,32 @@ class TestTheReadASettingsScreenIsBuiltFrom:
         with pytest.raises(ValueError, match="no loaded extension"):
             session.get_extension_config("nope")
 
+    async def test_mutating_a_nested_api_config_value_leaves_the_session_config(self, tmp_path):
+        ext = _write(
+            tmp_path / "paths.py",
+            "def register(api):\n    api.config['paths'].append('added')\n",
+        )
+        session = _make_session()
+
+        await session.load_extensions(
+            [str(ext)], discover=False, extensions_config={"paths": {"paths": ["a"]}}
+        )
+
+        assert session.get_extension_config("paths")["values"] == {"paths": ["a"]}
+
+    async def test_mutating_a_nested_value_in_the_returned_values_leaves_the_session_config(
+        self, tmp_path
+    ):
+        ext = _write(tmp_path / "budget.py", _SCHEMA_EXT)
+        session = _make_session()
+        await session.load_extensions(
+            [str(ext)], discover=False, extensions_config={"budget": {"tags": ["a"]}}
+        )
+
+        session.get_extension_config("budget")["values"]["tags"].append("added")
+
+        assert session.get_extension_config("budget")["values"] == {"tags": ["a"]}
+
 
 class TestTheWrite:
     async def test_values_reach_the_extension_after_the_reload(self, tmp_path):
@@ -179,3 +205,60 @@ class TestTheWrite:
 
         with pytest.raises(ValueError, match="declares no CONFIG_SCHEMA"):
             await session.set_extension_config("plain", {"anything": 1})
+
+
+class TestTheSessionKeepsNoHandleOnTheCallersDicts:
+    async def test_mutating_the_map_given_to_the_constructor_leaves_the_session_config(
+        self, tmp_path
+    ):
+        ext = _write(tmp_path / "budget.py", _SCHEMA_EXT)
+        given = {"budget": {"tags": ["a"]}}
+        session = _make_session(extensions_config=given)
+        await session.load_extensions([str(ext)], discover=False)
+
+        given["budget"]["tags"].append("added")
+
+        assert session.get_extension_config("budget")["values"] == {"tags": ["a"]}
+
+    async def test_mutating_the_map_given_to_load_extensions_leaves_the_session_config(
+        self, tmp_path
+    ):
+        ext = _write(tmp_path / "budget.py", _SCHEMA_EXT)
+        session = _make_session()
+        given = {"budget": {"tags": ["a"]}}
+        await session.load_extensions([str(ext)], discover=False, extensions_config=given)
+
+        given["budget"]["tags"].append("added")
+
+        assert session.get_extension_config("budget")["values"] == {"tags": ["a"]}
+
+    async def test_two_sessions_given_one_map_do_not_share_a_write(self, tmp_path):
+        ext = _write(tmp_path / "budget.py", _SCHEMA_EXT)
+        shared = {"budget": {"ceiling": 1.0}}
+        first, second = _make_session(), _make_session()
+        await first.load_extensions([str(ext)], discover=False, extensions_config=shared)
+        await second.load_extensions([str(ext)], discover=False, extensions_config=shared)
+
+        await first.set_extension_config(
+            "budget", {"ceiling": 7.0, "notify": False, "mode": "strict"}
+        )
+
+        assert second.get_extension_config("budget")["values"] == {"ceiling": 1.0}
+        assert shared == {"budget": {"ceiling": 1.0}}
+
+    async def test_mutating_the_dict_given_to_set_extension_config_leaves_the_session_config(
+        self, tmp_path
+    ):
+        ext = _write(
+            tmp_path / "picker.py",
+            'CONFIG_SCHEMA = {"fields": [{"name": "tags", "kind": "multiselect",'
+            ' "options": ["a", "b"]}]}\n\ndef register(api):\n    pass\n',
+        )
+        session = _make_session()
+        await session.load_extensions([str(ext)], discover=False)
+        values = {"tags": ["a"]}
+        await session.set_extension_config("picker", values)
+
+        values["tags"].append("b")
+
+        assert session.get_extension_config("picker")["values"] == {"tags": ["a"]}

@@ -362,7 +362,7 @@ import τ-agent-core internals.
 - `context: ExtensionContext | None = None` — The shared context; ``None`` makes a fresh one. Either way ``session`` is bound onto it.
 - `session: Any = None` — The ``AgentSession``, or ``None`` for an unbound api whose session-backed methods raise.
 - `hook_handlers: ExtensionHandlers | None = None` — This extension's own runner bucket. ``None`` gives the api no identity: hook registration, :meth:`emit`, :meth:`submit` and command registration then raise.
-- `config: dict[str, Any] | None = None` — This extension's config slice (:attr:`config`); copied, and ``None`` reads as ``{}``.
+- `config: dict[str, Any] | None = None` — This extension's config slice (:attr:`config`); deep-copied, so a handler mutating a nested value never reaches the session's config, and ``None`` reads as ``{}``.
 
 ### append_entry
 

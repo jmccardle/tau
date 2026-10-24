@@ -655,7 +655,8 @@ class AgentSession:
             summarizer. Mutually exclusive with ``compaction_settings``. One
             naming a summarizer needs ``model_resolver``, or construction raises.
         extensions_config: Per-extension config keyed by file stem; each
-            extension's ``api.config`` is its slice.
+            extension's ``api.config`` is its slice. Deep-copied, so the caller's
+            map and the session's never share nested values (#99).
         model_resolver: Turns a config model name into a ``Model`` for
             :meth:`set_model` and the policy's summarizer; see
             :meth:`set_model_resolver`.
@@ -746,7 +747,7 @@ class AgentSession:
         self._vocabulary: Vocabulary | None = None
         self._vocabulary_revision = -1
         self._extensions = extensions or []
-        self._extensions_config: dict[str, dict[str, Any]] = extensions_config or {}
+        self._extensions_config: dict[str, dict[str, Any]] = copy.deepcopy(extensions_config or {})
         self._loaded_extensions: dict[str, LoadedExtension] = {}
         self._disabled_paths: set[str] = set()
         self._extension_load_errors: list["ExtensionLoadError"] = []
@@ -2095,8 +2096,8 @@ class AgentSession:
             user_dir: The drop-in directory; ``None`` means
                 ``<tau home>/extensions``.
             extensions_config: Per-extension config keyed by identifier (S40),
-                stored BEFORE binding so each ``api.config`` is sliced from it.
-                ``None`` keeps the current map.
+                deep-copied and stored BEFORE binding so each ``api.config`` is
+                sliced from it. ``None`` keeps the current map.
             collect_explicit_errors: Collect an explicit failure into ``errors``
                 like a discovered one, and keep loading (the TUI cannot abort
                 mid-load).
@@ -2117,7 +2118,7 @@ class AgentSession:
         """
         self._bind_loop()
         if extensions_config is not None:
-            self._extensions_config = extensions_config
+            self._extensions_config = copy.deepcopy(extensions_config)
 
         from tau_agent_core.sdk import _load_extensions
 
@@ -2414,8 +2415,8 @@ class AgentSession:
         The read a settings screen is built from. ``schema`` is the extension's
         ``CONFIG_SCHEMA``, normalized at load into ``{title, fields}`` — the same
         shape ``ui.form`` takes, so a head that can render a form can render this
-        with no new widget. ``values`` is the live slice ``api.config`` returns
-        for the extension, keyed by file stem.
+        with no new widget. ``values`` is a deep copy of the slice ``api.config`` is built from for
+        the extension, keyed by file stem; mutating it leaves the session alone.
 
         Args:
             path: A managed path or a unique file stem.
@@ -2435,7 +2436,7 @@ class AgentSession:
         return {
             "path": target,
             "schema": loaded.config_schema,
-            "values": dict(self._extensions_config.get(extension_identifier(target), {})),
+            "values": copy.deepcopy(self._extensions_config.get(extension_identifier(target), {})),
         }
 
     async def set_extension_config(
@@ -2447,7 +2448,8 @@ class AgentSession:
         against the declared schema first: an undeclared key, or a value whose
         Python type does not match its field's kind, RAISES rather than being
         dropped — a settings screen that silently discards a key is the failure
-        this schema exists to prevent.
+        this schema exists to prevent. ``values`` is deep-copied, so the caller
+        keeps no handle on the stored slice (#99).
 
         The reload is what makes the change visible: ``api.config`` is captured
         when the extension's API is bound, so a slice written without one would
@@ -2488,7 +2490,7 @@ class AgentSession:
             validate_form_values(schema["fields"], values)
         except ValueError as err:
             raise ValueError(f"{extension_identifier(target)} config: {err}") from err
-        self._extensions_config[extension_identifier(target)] = dict(values)
+        self._extensions_config[extension_identifier(target)] = copy.deepcopy(values)
         result = await self.reload_extension(target)
         return ExtensionActionResult("configure", result.path, result.ok, result.message)
 
