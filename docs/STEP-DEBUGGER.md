@@ -441,6 +441,31 @@ suspension side child is refused, naming it, because both sessions could
 otherwise resume the same calls (independent review, round 2, N8).
 `daemon._fork` checks only the path today (`daemon.py:1158`).
 
+**Built (M1a), beyond this record.** One copy rule, `session_log.entries_for_fork`,
+serves the file store, the JMFTS store and `daemon._fork`. Three guards
+were added:
+
+- A cursor never sits on a side entry: its constructor and `move` refuse one,
+  so nothing can be parented on it.
+- `fork_admission_reason` refuses a side entry as a fork point, and a point
+  with an open side child.
+- A fork with no `at` copies every entry except open side entries, and is
+  refused when the default leaf has an open side child.
+
+`get_tree` rows and `TreeNode`/`BrowseNode` carry a side entry as a `side` list
+on its parent (`SideMark`: id, kind, status, preview), and the TUI draws it as a
+`⏸ kind` mark on the parent's row.
+
+**Built (M1a), a divergence for §3.12.6.** A child's frame entry records no
+`source`, and a fork child whose frame matches the path writes no frame entry at
+all, so "under an agent frame" is not readable from the tree. Instead every
+entry an `agent` submission's turn writes carries `"source": "agent"` (the frame
+entry, messages, tool results, extension nodes, a `branch_error`). Every other
+writer's entries carry no new field and stay byte-identical. `default_leaf` is
+the newest finished entry without that field, so a human who continues inside a
+child's branch reopens there. When no such entry exists, it falls back to the
+newest finished entry of any source.
+
 #### 3.7.3 Resuming from the tree
 
 A pending suspension with no live Future is one whose process died or exited.

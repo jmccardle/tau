@@ -589,6 +589,9 @@
             }
           ]
         },
+        "source": {
+          "const": "agent"
+        },
         "status": false,
         "summary": {
           "type": "string"
@@ -994,6 +997,9 @@
               "type": "null"
             }
           ]
+        },
+        "source": {
+          "const": "agent"
         },
         "status": false,
         "summarizerModelId": {
@@ -1507,6 +1513,9 @@
             }
           ]
         },
+        "source": {
+          "const": "agent"
+        },
         "status": false,
         "timestamp": {
           "type": "string"
@@ -1569,6 +1578,9 @@
               "type": "null"
             }
           ]
+        },
+        "source": {
+          "const": "agent"
         },
         "status": false,
         "timestamp": {
@@ -1866,6 +1878,9 @@
             }
           ]
         },
+        "source": {
+          "const": "agent"
+        },
         "status": false,
         "timestamp": {
           "type": "string"
@@ -2067,6 +2082,9 @@
         },
         {
           "$ref": "#/$defs/ThinkingChangeEntry"
+        },
+        {
+          "$ref": "#/$defs/SuspensionEntry"
         },
         {
           "$ref": "#/$defs/ForeignEntry"
@@ -2861,6 +2879,9 @@
               "type": "null"
             }
           ]
+        },
+        "source": {
+          "const": "agent"
         },
         "status": false,
         "timestamp": {
@@ -4113,6 +4134,9 @@
             }
           ]
         },
+        "source": {
+          "const": "agent"
+        },
         "status": false,
         "timestamp": {
           "type": "string"
@@ -4184,6 +4208,9 @@
               "type": "null"
             }
           ]
+        },
+        "source": {
+          "const": "agent"
         },
         "status": false,
         "timestamp": {
@@ -4342,6 +4369,9 @@
               "type": "null"
             }
           ]
+        },
+        "source": {
+          "const": "agent"
         },
         "status": false,
         "targetId": {
@@ -5260,6 +5290,9 @@
               "type": "null"
             }
           ]
+        },
+        "source": {
+          "const": "agent"
         },
         "status": false,
         "timestamp": {
@@ -6292,6 +6325,44 @@
       ],
       "type": "object"
     },
+    "SuspensionEntry": {
+      "description": "A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUGGER.md \u00a73.7).",
+      "properties": {
+        "copiedFrom": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "parentId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "const": "agent"
+        },
+        "status": false,
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "const": "suspension"
+        }
+      },
+      "required": [
+        "id",
+        "parentId",
+        "timestamp",
+        "type"
+      ],
+      "type": "object"
+    },
     "SystemMessage": {
       "description": "The system prompt, which a session stores as its first message entry.",
       "properties": {
@@ -6354,6 +6425,9 @@
               "type": "null"
             }
           ]
+        },
+        "source": {
+          "const": "agent"
         },
         "status": false,
         "timestamp": {

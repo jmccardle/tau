@@ -107,6 +107,10 @@ def is_incomplete(entry: dict[str, Any]) -> bool:
     return entry.get("status") == INCOMPLETE
 
 
+AGENT_SOURCE = "agent"
+"""The ``source`` an entry carries when an ``agent`` submission wrote it; no other writer sets one."""
+
+
 SIDE_KINDS: frozenset[str] = frozenset({"suspension"})
 """Entry kinds written beside a cursor's leaf rather than on its path (docs/STEP-DEBUGGER.md §3.7.1).
 
@@ -235,7 +239,12 @@ def keep_last_per_id(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 @agent_facing(topic="sessions")
 def default_leaf(entries: list[dict[str, Any]]) -> str | None:
-    """Where a reopened tree continues: the newest finished entry a cursor wrote.
+    """Where a reopened tree continues: the newest finished entry a person's turn wrote.
+
+    An entry carrying ``source: "agent"`` (:data:`AGENT_SOURCE`), which a
+    sub-agent's turn wrote, is passed over, so a session a child wrote last
+    reopens in the main conversation. When nothing else qualifies, the newest
+    finished entry of any source is the answer (docs/STEP-DEBUGGER.md §3.7.2).
 
     Skipped: an incomplete entry, so a session interrupted mid-message reopens at
     the entry before it and the interrupted branch stays beside the retry
@@ -251,6 +260,7 @@ def default_leaf(entries: list[dict[str, Any]]) -> str | None:
     Returns:
         The entry id, or ``None`` for a log with no such entry.
     """
+    fallback: str | None = None
     for entry in reversed(entries):
         kind = str(entry.get("type", ""))
         if (
@@ -259,8 +269,11 @@ def default_leaf(entries: list[dict[str, Any]]) -> str | None:
             and not is_incomplete(entry)
             and not is_side_entry(entry)
         ):
-            return str(entry["id"])
-    return None
+            if entry.get("source") != AGENT_SOURCE:
+                return str(entry["id"])
+            if fallback is None:
+                fallback = str(entry["id"])
+    return fallback
 
 
 @agent_facing(topic="sessions")

@@ -166,6 +166,8 @@ class _EntryBase(TypedDict):
     """Every finished entry's common fields; ``status`` is absent once an entry is finished.
 
     ``copiedFrom`` is set on an entry ``paste_subtree`` minted: the id it copies.
+    ``source`` is ``"agent"`` on an entry a sub-agent's turn wrote and absent on
+    every other (``session_log.AGENT_SOURCE``).
     """
 
     id: str
@@ -173,6 +175,7 @@ class _EntryBase(TypedDict):
     timestamp: str
     status: NotRequired[Never]
     copiedFrom: NotRequired[str]
+    source: NotRequired[Literal["agent"]]
 
 
 class MessageEntry(_EntryBase):
@@ -278,6 +281,15 @@ class ThinkingChangeEntry(_EntryBase):
     level: str | None
 
 
+class SuspensionEntry(_EntryBase):
+    """A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUGGER.md §3.7).
+
+    Its remaining fields are §3.7.1's; an open one is an :class:`IncompleteEntry`.
+    """
+
+    type: Literal["suspension"]
+
+
 class ForeignEntry(_EntryBase):
     """A document another system's store put in the tree, typed ``system:kind`` (``jmfts:document``)."""
 
@@ -309,6 +321,7 @@ Entry = Annotated[
     | NavigateEntry
     | ModelChangeEntry
     | ThinkingChangeEntry
+    | SuspensionEntry
     | ForeignEntry
     | IncompleteEntry,
     Named(

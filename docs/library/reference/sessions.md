@@ -4876,7 +4876,12 @@ default_leaf(entries: list[dict[str, Any]]) -> str | None
 
 `tau_agent_core.session_log.default_leaf`
 
-Where a reopened tree continues: the newest finished entry a cursor wrote.
+Where a reopened tree continues: the newest finished entry a person's turn wrote.
+
+An entry carrying ``source: "agent"`` (:data:`AGENT_SOURCE`), which a
+sub-agent's turn wrote, is passed over, so a session a child wrote last
+reopens in the main conversation. When nothing else qualifies, the newest
+finished entry of any source is the answer (docs/STEP-DEBUGGER.md §3.7.2).
 
 Skipped: an incomplete entry, so a session interrupted mid-message reopens at
 the entry before it and the interrupted branch stays beside the retry

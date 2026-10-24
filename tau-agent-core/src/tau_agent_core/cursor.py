@@ -22,6 +22,7 @@ from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.session_log import (
     CONFIG_ENTRY_TYPE,
     CONFIG_KEYS,
+    AGENT_SOURCE,
     INCOMPLETE,
     SIDE_KINDS,
     SessionLog,
@@ -267,7 +268,7 @@ class Cursor:
             ValueError: the leaf is an incomplete entry; nothing grows from one.
         """
         self._refuse_incomplete_leaf()
-        entry_id = await self.log.append_at(self._leaf, entry_type, payload)
+        entry_id = await self.log.append_at(self._leaf, entry_type, self._stamped(payload))
         self._leaf = entry_id
         self._leaf_incomplete = False
         return entry_id
@@ -291,7 +292,7 @@ class Cursor:
         """
         self._refuse_incomplete_leaf()
         entry_id = await self.log.append_at(
-            self._leaf, entry_type, {**payload, "status": INCOMPLETE}
+            self._leaf, entry_type, self._stamped({**payload, "status": INCOMPLETE})
         )
         self._open[entry_id] = self._leaf
         return entry_id
@@ -318,7 +319,9 @@ class Cursor:
                 f"finalize: entry {entry_id!r} hangs from {self._open[entry_id]!r}, not "
                 f"this cursor's leaf {self._leaf!r}"
             )
-        await self.log.finalize(entry_id, {**payload, **({"ext": ext} if ext else {})})
+        await self.log.finalize(
+            entry_id, self._stamped({**payload, **({"ext": ext} if ext else {})})
+        )
         del self._open[entry_id]
         self._leaf = entry_id
         self._leaf_incomplete = False
@@ -341,7 +344,9 @@ class Cursor:
                 f"open_side: {kind!r} is not a side kind ({', '.join(sorted(SIDE_KINDS))})"
             )
         self._refuse_incomplete_leaf()
-        return await self.log.append_at(self._leaf, kind, {**payload, "status": INCOMPLETE})
+        return await self.log.append_at(
+            self._leaf, kind, self._stamped({**payload, "status": INCOMPLETE})
+        )
 
     async def finalize_side(self, entry_id: str, **payload: Any) -> None:
         """Complete a side entry :meth:`open_side` wrote, moving nothing.
@@ -357,7 +362,18 @@ class Cursor:
         entry = next((e for e in self.log.entries() if str(e["id"]) == entry_id), None)
         if entry is None or not is_side_entry(entry):
             raise ValueError(f"finalize_side: {entry_id!r} names no side entry")
-        await self.log.finalize(entry_id, payload)
+        await self.log.finalize(entry_id, self._stamped(payload))
+
+    def _stamped(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """``payload`` with ``source: "agent"`` while an ``agent`` submission's turn holds this cursor.
+
+        Any other writer's payload is returned unchanged, so its entries stay
+        byte-identical; ``session_log.default_leaf`` reads the field.
+        """
+        submission = self.submission
+        if submission is not None and submission.source == AGENT_SOURCE:
+            return {**payload, "source": AGENT_SOURCE}
+        return payload
 
     def _refuse_incomplete_leaf(self) -> None:
         """Raise when the leaf is an interrupted entry, which a cursor never extends."""

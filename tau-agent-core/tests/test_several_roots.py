@@ -10,7 +10,8 @@ from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.export import render_session_html
 from tau_agent_core.projections import browse_rows
-from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.cursor import Cursor
+from tau_agent_core.session_log import InMemorySessionLog, default_leaf
 
 
 async def _session() -> tuple[AgentSession, str, str]:
@@ -63,3 +64,69 @@ async def test_every_walker_sees_every_root_and_branch():
     page = render_session_html(entries, leaf=main_leaf)
     assert f"{len(entries)} in 5 branches" in page
     assert page.count('<details class="branch">') == 4
+
+
+def _model() -> Model:
+    return Model(
+        id="test-model",
+        name="test-model",
+        api="openai-completions",
+        provider="openai",
+        base_url="http://localhost",
+        context_window=128000,
+        max_tokens=4096,
+    )
+
+
+@pytest.mark.usefixtures("fake_llm")
+async def test_agent_written_entries_carry_source_and_no_other_entry_does():
+    session, branch_point, main_leaf = await _session()
+    entries = session.session_log.entries()
+    main_path = {e["id"] for e in ConversationTree(entries, main_leaf).path()}
+
+    for entry in entries:
+        if entry["id"] in main_path:
+            assert "source" not in entry, entry
+        else:
+            assert entry["source"] == "agent", entry
+    child_configs = [
+        e for e in entries if e.get("customType") == "config" and e["id"] not in main_path
+    ]
+    assert len(child_configs) == 2, "each fresh root records its frame, stamped"
+
+
+@pytest.mark.usefixtures("fake_llm")
+async def test_a_session_an_agent_child_wrote_last_reopens_in_the_main_conversation():
+    session, _branch_point, main_leaf = await _session()
+    entries = session.session_log.entries()
+    assert entries[-1]["source"] == "agent", "a child wrote last"
+    assert default_leaf(entries) == main_leaf
+    assert Cursor.newest(session.session_log).leaf == main_leaf
+
+
+@pytest.mark.usefixtures("fake_llm")
+async def test_a_human_who_continues_in_a_child_branch_reopens_there():
+    session, _branch_point, _main_leaf = await _session()
+    child_leaf = session.session_log.entries()[-1]["id"]
+    session.cursor.move(child_leaf)
+    await session.prompt("a person typed here")
+    human_leaf = session.cursor.leaf
+    assert await session.spawn(None, "a later child", tools=[]) is not None
+
+    entries = session.session_log.entries()
+    assert entries[-1]["source"] == "agent"
+    assert default_leaf(entries) == human_leaf
+    assert "source" not in next(e for e in entries if e["id"] == human_leaf)
+
+
+@pytest.mark.usefixtures("fake_llm")
+async def test_a_session_holding_only_agent_branches_falls_back_to_the_newest():
+    session = AgentSession(
+        session_log=InMemorySessionLog(),
+        model=_model(),
+        compaction_settings=CompactionSettings(auto=False),
+    )
+    assert (await session.spawn(None, "only child", tools=[])).ok
+    entries = session.session_log.entries()
+    assert all(e["source"] == "agent" for e in entries)
+    assert default_leaf(entries) == entries[-1]["id"]

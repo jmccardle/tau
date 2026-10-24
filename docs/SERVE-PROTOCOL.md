@@ -8,7 +8,7 @@
 
 - **Protocol version:** `0.11`
 - **Default port:** `8256`
-- **Counts:** 52 requests (37 of them RPC verbs), 10 event kinds, 206 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 52 requests (37 of them RPC verbs), 10 event kinds, 207 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
@@ -683,6 +683,7 @@ A summary of the branch left at `fromId`, in the path where it was appended.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"branch_summary"` | yes |  |
 | `summary` | string | yes |  |
 | `fromId` | string \| null | yes |  |
@@ -783,6 +784,7 @@ A summary that replaces the path before `firstKeptId` in the context.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"compaction"` | yes |  |
 | `summary` | string | yes |  |
 | `firstKeptId` | string | yes |  |
@@ -933,6 +935,7 @@ Durable data the model never sees.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"customEntry"` | yes |  |
 | `customType` | string | yes |  |
 | `data` | object | yes |  |
@@ -957,6 +960,7 @@ An extension's message, which reaches the model unless `visibleToModel` is false
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"customMessage"` | yes |  |
 | `customType` | string | yes |  |
 | `message` | [CustomRoleMessage](#customrolemessage) | yes |  |
@@ -1034,6 +1038,7 @@ A splice anchor with no summary: the path before `firstKeptId` leaves the contex
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"elide"` | yes |  |
 | `firstKeptId` | string | yes |  |
 | `coveredEntries` | integer | no |  |
@@ -1061,7 +1066,7 @@ A splice anchor with no summary: the path before `firstKeptId` leaves the contex
 
 One session-log entry, told apart by `type`; an unfinished one carries `status: "incomplete"`. Apply by `id`, last write wins (docs/TAU-SERVE.md §4.1).
 
-One of: [MessageEntry](#messageentry), [CustomMessageEntry](#custommessageentry), [CustomEntryEntry](#customentryentry), [CompactionEntry](#compactionentry), [ElideEntry](#elideentry), [BranchSummaryEntry](#branchsummaryentry), [SessionInfoEntry](#sessioninfoentry), [NavigateEntry](#navigateentry), [ModelChangeEntry](#modelchangeentry), [ThinkingChangeEntry](#thinkingchangeentry), [ForeignEntry](#foreignentry), [IncompleteEntry](#incompleteentry).
+One of: [MessageEntry](#messageentry), [CustomMessageEntry](#custommessageentry), [CustomEntryEntry](#customentryentry), [CompactionEntry](#compactionentry), [ElideEntry](#elideentry), [BranchSummaryEntry](#branchsummaryentry), [SessionInfoEntry](#sessioninfoentry), [NavigateEntry](#navigateentry), [ModelChangeEntry](#modelchangeentry), [ThinkingChangeEntry](#thinkingchangeentry), [SuspensionEntry](#suspensionentry), [ForeignEntry](#foreignentry), [IncompleteEntry](#incompleteentry).
 
 ### EntryAppendEvent
 
@@ -1261,6 +1266,7 @@ A document another system's store put in the tree, typed `system:kind` (`jmfts:d
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | string matching `^[^:]+:.+$` | yes |  |
 
 ### FormField
@@ -1475,6 +1481,7 @@ A message on the conversation path.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"message"` | yes |  |
 | `message` | [Message](#message) | yes |  |
 | `ext` | object | no |  |
@@ -1499,6 +1506,7 @@ Legacy: the config model from here on, before config entries.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"model_change"` | yes |  |
 | `model` | string \| null | yes |  |
 | `backend` | string \| null | no |  |
@@ -1535,6 +1543,7 @@ Legacy: a recorded move to `targetId`, written before cursors (docs/CURSORS.md �
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"navigate"` | yes |  |
 | `targetId` | string \| null | yes |  |
 
@@ -1759,6 +1768,7 @@ The session's display name from here on; the model never sees it.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"session_info"` | yes |  |
 | `name` | string | yes |  |
 
@@ -1971,6 +1981,20 @@ What a session answers beyond its tree, which a head reads without a round trip.
 | `load_errors` | list of list of string | yes | `[path, error]` per extension file that failed to load. |
 | `warnings` | list of [ExtensionWarning](#extensionwarning) | yes | The session's current extension warnings (#60); a `ui` event with op `warnings` carries each change. |
 
+### SuspensionEntry
+
+A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUGGER.md §3.7).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
+| `type` | `"suspension"` | yes |  |
+
 ### SystemMessage
 
 The system prompt, which a session stores as its first message entry.
@@ -2000,6 +2024,7 @@ Legacy: the reasoning level from here on, before config entries.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"thinking_change"` | yes |  |
 | `level` | string \| null | yes |  |
 
