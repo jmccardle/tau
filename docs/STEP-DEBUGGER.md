@@ -187,6 +187,10 @@ per-entry stepping point, and it replaces stepping at `annotate`.
     until every result of the batch is written. No tool in the batch can then
     be finished and unrecorded while a human reads. In sequential mode each
     result is its own group, because the next tool has not started;
+  - **a stream failure.** `_stream_failed` (`agent_loop.py:~1063-1090`)
+    finalizes the errored assistant entry, writes an error result per call, and
+    then raises. Those writes are one group, and the raise follows the group's
+    `entry_written` (final review, M2-1);
   - every other write is a group of one.
 - A break that a producer detects at a non-permitted site is carried to the
   next permitted one. Examples: tau-router's model change at `input`, or a
@@ -241,17 +245,34 @@ unwind the turn. Handlers between the suspension and the loop catch exceptions,
 and each could swallow or rewrite it (independent review, round 2, N6). So:
 
 - **`TurnSuspended` is a `BaseException`.** No `except Exception` catches it.
-- **The rule for every `except BaseException`:** re-raise `TurnSuspended`
-  untouched, before any other handling. Two sites map it rather than re-raise:
+- **The rule for every catch that can see a `BaseException`:** the exception
+  leaves the handler unchanged. Either every path through the handler ends in a
+  bare `raise`, so cleanup-then-reraise is compliant, or the handler re-raises
+  `TurnSuspended` explicitly before anything that could swallow, wrap or replace
+  it. `session_store.py:629` and `extension_auth.py:259` unlink a temp file and
+  then `raise`, and they stay as they are (tau-search, round 6). Two sites map
+  it rather than re-raise:
   - `agent_loop.py:417` (and `:604` in `run_continue`) emits `agent_end` with
     `end_reason: "suspended"` and writes nothing else;
   - `submit_threadsafe` (`agent_session.py:3084`), which puts any exception on a
     cross-thread caller's future, resolves the future as accepted with
     `end_reason: "suspended"`, not with a raw `TurnSuspended`.
 - **A lint test enforces the rule.** It walks the AST of the five `src` trees
-  and fails on any `except BaseException` that does not re-raise
-  `TurnSuspended` first or appear on the mapped list. The rule cannot rot when
-  a new catch lands. There are 11 such catches today (tau-search, round 5),
+  and fails on any non-compliant handler. It covers `except BaseException`,
+  bare `except:`, `except*`, `contextlib.suppress(BaseException)`, a `return` in
+  `finally`, and `asyncio.gather(..., return_exceptions=True)`. None of the
+  first four exist in src today. Each `gather` site other than the parallel
+  batch must either be shown unreachable from a suspension, or handle
+  `TurnSuspended` explicitly; there are seven, including `compare.py:137`,
+  `codemode/scoped.py:130`, `agent_session.py:3881` and `tau_llm/abort.py:115`
+  (final review, M1-1). The rule cannot rot when a new catch lands.
+- **Core detects a swallowed unwind at runtime.** Code outside the five trees is
+  not linted: tau-router, tau-debugger, any third-party extension. An
+  extension's own `except BaseException` in a bus handler would swallow
+  `TurnSuspended`, and under `-p` the turn would then run tools the human never
+  stepped through. So `api.suspend` marks the dispatch when it raises. If that
+  dispatch returns normally anyway, core raises a loud error naming the
+  extension that swallowed it, and the turn ends in error. There are 11 such catches today (tau-search, round 5),
   including `agent_session.py:1535`, `codemode/extension.py:380`,
   `_cpython_child.py:155`, `extension_auth.py:259`, `background.py:373`,
   `serve/remote.py:148` and `session_store.py:629`.
@@ -441,34 +462,42 @@ loop stands:
 |---|---|
 | `phase` | the dispatch that suspended: `dispatch:tool_call`, `dispatch:entry_written`, `dispatch:turn_end`, `dispatch:user_turn_end` |
 | `group`, `index`, `handler` | for `entry_written`: the write group, the entry within it, and how far the dispatch had got |
-| `pending_calls` | the batch's calls with no result in the tree, in order |
+| `pending_calls` | the batch's calls with no result in the tree, in order. Each is `{id, prepared, effective_args, blocked}`: whether its `tool_call` hooks had all run, its arguments after them, and a block reason if one blocked it |
+| `returned` | for `turn_end` and `user_turn_end`: the messages already returned by the handlers that ran. Those are appended only after every handler returns (`agent_loop.py:810-814`), so they are not yet in the tree |
 | `turn_index` | the loop's own counter, which the tree cannot rebuild, because steer and follow-up user entries look alike there (N9) |
 | `repeat` | `prev_batch` and `repeat_count` (`agent_loop.py:~385-397`), the repeat-tool-call limit's state (N9) |
 | `pending_abort` | a turn abort already decided but not yet taken, such as an `annotate` failure (ENTRY-ANNOTATIONS.md §4.3) (N5) |
-| `then` | what follows the dispatch: `tools`, `sample`, `break`, `end_prompt` or `nothing` |
+| `then` | what follows the dispatch: `tools`, `sample`, `break`, `end_prompt`, `nothing`, or `raise` with the stored error |
+| `loop` | which loop the turn was in, `run` or `run_continue` (`agent_loop.py:446-605`), so `sample` re-enters the right one |
 
 **Resume runs the continuation:**
 
 1. **Claim** the suspension (below), and finalize its side entry.
-2. **Re-dispatch the suspended phase in full,** with `event["resumed"]`. The
-   replay rule (below) gives the suspending handler its stored answer, so the
-   dispatch reaches every handler, including those after the suspending one
-   (N4). `entry_written` continues through the rest of its group.
+2. **Resume the suspended dispatch from the stored `handler`,** with
+   `event["resumed"]`. The handlers before it in load order already ran, so
+   re-running them would make an `entry_written` recorder write twice (final
+   review, M1-3). The replay rule (below) answers the suspending handler for
+   the suspended entry, and the dispatch then reaches every later handler
+   (N4). The group's later entries get a full `entry_written` dispatch.
 3. **Honour `pending_abort`** before anything else runs. If an `annotate`
    failure had already doomed the turn, its pending calls get aborted results,
    and the turn ends in error, as it would have without the break. A break
    never lets a vetoed call run (N5). `entry_written` therefore runs before that
    abort takes effect, in-process too.
 4. **Then `then`:**
-   - `tools`: run `pending_calls` through the normal tool path. Their
-     `tool_call` hooks run again with `event["resumed"]`. Each call's effective
-     arguments are compared with the stored `effective_args`. A mismatch refuses
-     the resume, naming the call, because a non-deterministic patch would
-     otherwise run arguments the human never saw. The human may then answer
-     `abort`. In parallel mode, `pending_calls` includes calls *1…k−1*, which
-     were prepared but whose hook outcomes existed only in memory.
-   - `sample`, `break`, `end_prompt` or `nothing`: exactly what the loop would
-     have done next.
+   - `tools`: run `pending_calls`. A call marked `prepared` is not dispatched
+     again. It runs with its stored `effective_args`, or stays blocked with its
+     stored reason, so it runs exactly what the human was shown. In parallel
+     mode those are calls *1…k−1*. The suspended call *k* resumes its
+     `tool_call` dispatch from the stored `handler`, with the replay rule
+     answering the suspending handler, and starts from its stored
+     `effective_args`. Calls not yet prepared are dispatched normally.
+   - `sample` re-enters the stored `loop` **at its top**, so the `max_turns`
+     ceiling, steer delivery, `call_gate` and the mid-turn `_compact_if_needed`
+     (`agent_loop.py:411`) all run, as in an uninterrupted turn (final review,
+     M2-2). `break`, `end_prompt` and `nothing` do exactly what the loop would
+     have done next. `raise` raises the stored error, so a break on a stream
+     failure's write group still ends the turn in that error (M2-1).
 5. On `abort` at any phase, every call in `pending_calls` gets an aborted result.
 
 | site | `then`, by case |
@@ -520,6 +549,12 @@ halts with its usual message, before any request is spent.
   gets an aborted result, the suspension stays answered, and the tree stays
   valid. A budget refusal therefore never has to raise, and never reads as an
   extension error (tau-router, round 5).
+- **A `Failed` outcome at `turn_resume` stops the resume with the error.** That
+  covers a raise, and a `gating` timeout after the claim. The pending calls get
+  aborted results and a `turn_error` is written, so the tree is valid. A
+  failure that merely ended the resume would lift the pending-prompt refusal
+  with calls still unanswered, and the provider would reject the next prompt
+  (final review, M2-3).
 - **`turn_resume` is not a suspension site.** A suspension raised while a
   suspension is being resumed would nest one claim inside another. A hit
   detected there is carried to the next permitted site, like any non-site hit. An extension that
@@ -543,11 +578,15 @@ rests on the Future. Across processes it rests on a lock:
   a file-store session for writing takes an exclusive `fcntl.flock`, without
   blocking, and holds it until it closes the session. That covers every hosting
   head: the TUI, the REPL, RPC, `-p` and serve. A session swap in a warm process
-  (`new_session`, `switch_session`, a runtime swap) closes the old session, and
-  so releases its lock. Without that, each Tectum reset (`new_session`,
+  (`new_session`, `switch_session`, a runtime swap) **decrements** the old
+  session's lock count, and the lock is released when the count reaches zero. A
+  swap must not drop the lock under a cursor that is still writing, such as a
+  live `spawn_branch` lane (final review, M1-2). Without that, each Tectum reset (`new_session`,
   `tau_node.py:712`) would leak one held descriptor (tectum-arecibo, round 5). A second process may still open
-  the session read-only, and every submit or answer from it is refused, naming
-  the holder.
+  the session read-only. That head shows it: the TUI and the REPL show a banner
+  naming the holder, RPC and serve report `read_only: true` with the holder in
+  state, and every submit or answer is refused with that reason (final review,
+  M1-5).
   - So a TUI holding a session that a `-p --answer` tries to resume refuses the
     `-p`, and the TUI's replica never goes stale behind its back. The answer
     belongs in the TUI.
@@ -583,18 +622,32 @@ rests on the Future. Across processes it rests on a lock:
   `finalized_entry`'s refusal (`session_log.py:118`) sees only lines already
   loaded. Without the lock, two `-p --answer` runs would both finalize, and both
   would run the pending calls, so tools would execute twice.
-- **Where the lock cannot be taken, τ fails loudly.** `fcntl.flock` is POSIX and
-  advisory, and it is unreliable on some network filesystems. If the lock call
-  fails, or is unsupported on the platform, opening the session for writing is
-  refused with that reason. It is never skipped silently. The platform matrix
-  states which platforms the lock covers.
+- **A fork creates a fresh sidecar** for the new session. It never copies the
+  source's lock file (final review, M1-6).
+- **A bare `fork()` without `exec` inherits the lock.** `O_CLOEXEC` closes the
+  descriptor across `exec` only. A child that forks and keeps running, without
+  `exec`, holds a share of the `flock` until it exits. The record states this,
+  and a test pins it. τ's own subprocesses all `exec` (final review, M1-7).
+- **Where the lock cannot be trusted, τ fails loudly.** `fcntl.flock` is POSIX
+  and advisory. If the lock call fails, or is unsupported on the platform,
+  opening the session for writing is refused with that reason. On some network
+  filesystems `flock` *succeeds* and excludes nothing: NFS mounted `nolock` or
+  `local_lock=flock`, SMB, sshfs, and sync folders. So the session directory's
+  filesystem type is checked with `statfs`, and those types are refused unless
+  the config explicitly opts in (`sessions.allow_unlocked_fs`). Nothing is
+  skipped silently. The platform matrix states which platforms and filesystems
+  the lock covers (final review, M2-4).
 - **A session that `tau serve` hosts.** The daemon holds the lock while it hosts
   the session, so a `-p --answer` against it is refused and names the daemon's
   socket: answer through serve. The daemon stays the single writer.
 - **JMFTS store.** It offers no cross-process lock, and John ruled out schema
-  changes. So in v1 a JMFTS-backed session is resumed only through a single
-  writer: serve, or the one process that holds it. A `-p --answer` from a
-  second process is refused with that reason.
+  changes. So in v1 a JMFTS-backed session takes a host-local sidecar,
+  `$TAU_HOME/locks/jmfts-<session id>.lock`, which covers one host only. And
+  `-p --answer` on a JMFTS-backed session is **refused** with that reason,
+  because a deferred responder is exactly the cross-process case the host-local
+  lock cannot vouch for. A live suspension in serve or the TUI is answered
+  in-process as usual. This default comes from the final review (M2-4) and is
+  flagged to John, who may lift it.
 
 **A re-dispatch replays the answer; it never asks twice.** A resume re-runs
 the hooks of the site that suspended, and those hooks may emit the same hit
@@ -619,11 +672,11 @@ idempotent:
 - `api.resumed()` exposes the same record to any handler that wants to know.
   No producer or debugger has to remember anything to be correct.
 
-**Why `turn_end` and `user_turn_end` dispatch again in full.** Messages returned
-by `turn_end` handlers are appended only after every handler returns. So after a
-crash none of that dispatch's returns are in the tree. Dispatching again is
-therefore correct, but a handler with side effects outside the tree sees the
-event twice. `event["resumed"]` lets it tell.
+**`turn_end` and `user_turn_end` resume from the stored handler too.** Messages
+returned by those handlers are appended only after every handler returns, so
+they are not in the tree at the suspension. The continuation stores them as
+`returned`, the dispatch resumes from the stored `handler`, and the stored and
+new returns are appended together when it finishes. No handler runs twice.
 
 **What is lost across processes, and how each piece is rebuilt:**
 
@@ -708,6 +761,13 @@ check happens before admission:
 - Its config can choose `unsteppable: run` instead. The turn then runs
   unstepped, with a session warning saying so. That is an explicit choice, not
   a silent skip.
+- **Only top-level turns are steppable in v1.** A child cursor's turn, one
+  whose submission source is `"agent"` (`spawn_branch`, a delegate), is
+  submitted with `allow_user_input=False` (`agent_session.py:3744-3750`). Under
+  the rule above, every spawn would then be refused. So the debugger runs child
+  cursors unstepped by default, with one session warning per child. Stepping
+  children is deferred (§7). This default is flagged to John (final review,
+  M1-4).
 - **`store_history` off is unsteppable too.** With nothing persisted,
   `entry_written` never fires, and stepping would silently stop. So an armed
   debugger refuses such a turn at `input` in the same way.
@@ -1056,6 +1116,31 @@ Every head must produce the same tree: the same entries, the same finalized
   it;
 - armed stepping with `store_history` off: refused at `input`;
 - two hits for one site: one suspension, listing both;
+- an extension's bus handler with its own `except BaseException` swallows
+  `TurnSuspended`: core raises an error naming the extension, and no tool runs;
+- the lint flags a new `gather(return_exceptions=True)` site and a bare
+  `except:`; a cleanup-then-bare-`raise` handler passes;
+- a session swap while a `spawn_branch` lane still writes: the lock is kept
+  until the lane ends;
+- a resumed `entry_written` dispatch: handlers before the stored one do not run
+  again; a recorder writes once;
+- a parallel resume: prepared calls run with their stored arguments and are not
+  dispatched again; a stored block stays a block;
+- a spawned child turn with stepping armed: it runs unstepped, with a warning;
+  it is not refused;
+- a second TUI on a held session: a banner names the holder, and submits are
+  refused with that reason;
+- a fork gets a fresh sidecar; a bare `fork()` child keeps the lock until it
+  exits;
+- a break on a stream failure's write group, then a resume: the turn ends in
+  the original error;
+- a `sample` resume: steers queued meanwhile are delivered, and `max_turns`
+  still applies;
+- `turn_resume` raises, or a `gating` handler there times out: aborted results
+  and a `turn_error` are written, and prompts work afterwards;
+- a session directory on an NFS `nolock` or sshfs mount: opening it for writing
+  is refused unless `sessions.allow_unlocked_fs` is set;
+- `-p --answer` on a JMFTS-backed session: refused, naming the reason;
 - after `new_session` in a warm process on the file store, a second process can
   open the previous session for writing;
 - a code-mode program calls `web_search` with stepping in `every` mode: no
@@ -1122,6 +1207,10 @@ matrix (about 1.5 days) closes v1.
   and commands are refused mid-turn (`app.py:1055-1065`, `repl.py:1811-1817`,
   `remote.py:1005-1030`).
 - **per-client roles and display names over networked serve** (§3.11).
+- **stepping child cursors** (`spawn_branch`, delegates): they run unstepped
+  with a warning in v1 (§3.9).
+- **`-p --answer` on JMFTS-backed sessions** (§3.7.3): refused until a
+  cross-host lock exists, or John lifts it.
 - **breaking on notify events** (compaction, retries, deltas): suspending there
   holds a stream open.
 - **resuming a form across processes** (§3.7.3): a command's flow lives in a
@@ -1184,4 +1273,14 @@ as milestone 2 (§7).
 | round 5, tau-search: the `except BaseException` table is incomplete and would rot | §3.2.2 a rule, two mapped sites, and a lint test |
 | round 5, tau-search: the sidecar's lifecycle | §3.7.3 |
 | round 5, tau-router and tau-search: halting a resume without raising; is `turn_resume` a site? | §3.7.3 `{"stop": reason}`; not a site, listed as refused in §3.2 |
+| final review M1-1: `gather(return_exceptions=True)` and other catch forms; unlinted extensions swallowing the unwind | §3.2.2 widened lint; runtime detection naming the extension |
+| final review M1-2: a swap dropping the lock under a live writer | §3.7.3 count decrement |
+| final review M1-3: re-dispatch "in full" makes recorders write twice | §3.7.3 resume from the stored handler; `returned`; prepared calls not re-dispatched |
+| final review M1-4: children refused under armed stepping | §3.9 children unstepped by default; only top-level turns steppable |
+| final review M1-5, M1-6, M1-7: visible read-only replica; fresh sidecar on fork; bare `fork()` | §3.7.3 |
+| final review M2-1: a stream failure's writes and raise | §3.2 write group; `then: raise` |
+| final review M2-2: `sample` must re-enter the loop top; the right loop | §3.7.3 `loop` field and loop-top re-entry |
+| final review M2-3: a `Failed` `turn_resume` | §3.7.3 stops with aborted results and a `turn_error` |
+| final review M2-4: network filesystems; JMFTS single writer | §3.7.3 `statfs` refusal with opt-in; JMFTS host-local sidecar, `-p --answer` refused |
+| round 6, tau-search: the lint must allow cleanup-then-reraise | §3.2.2 bare `raise` is compliant |
 | independent round 2 minors | resume as a submission; forms under `-p` take the headless policy; pending hits combined (§5.2); effective-argument check; `store_history` off refused (§3.9); the session lock held while hosting; `-p` without `--answer` exits 3 |
