@@ -114,7 +114,7 @@ from tau_agent_core.suspensions import (
     suspension_site,
     validate_suspension_spec,
 )
-from tau_agent_core.agent_loop import AgentLoop, TurnFailure
+from tau_agent_core.agent_loop import AgentLoop, TurnFailure, build_agent_end
 from tau_agent_core.agent_loop_types import AgentLoopConfig, TurnSettings
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
 from tau_agent_core.commands import (
@@ -3872,20 +3872,20 @@ class AgentSession:
             if on_admitted is not None:
                 on_admitted()
 
-            self._require_compaction_ready()
-            if self._compaction_policy is not None:
-                self._policy_turns_used += 1
-                self._compaction_policy.admit_turn(self._policy_turns_used)
-
-            next_turn = cur.next_turn_queue
-            cur.next_turn_queue = []
-            queued = [self._queued_content_to_user(c) for c in next_turn]
-
             side_usage_before = self.side_usage
             await self._events.emit_channel(
                 "submission_start", submission=sub, text=text, images=images, cursor=cur
             )
             try:
+                async with self._turn_failure_on_the_wire():
+                    self._require_compaction_ready()
+                    if self._compaction_policy is not None:
+                        self._policy_turns_used += 1
+                        self._compaction_policy.admit_turn(self._policy_turns_used)
+                    next_turn = cur.next_turn_queue
+                    cur.next_turn_queue = []
+                    queued = [self._queued_content_to_user(c) for c in next_turn]
+
                 turn_messages = await self._run_one_turn(
                     text if user_turn else None,
                     images,
@@ -4393,6 +4393,21 @@ class AgentSession:
             )
         return result.messages
 
+    @contextlib.asynccontextmanager
+    async def _turn_failure_on_the_wire(self) -> AsyncIterator[None]:
+        """End a turn that fails before its loop exists with ``agent_start`` and ``agent_end``.
+
+        The loop closes its own failures. A failure before it (a ``before_agent_start``
+        hook, node validation, loop setup) would otherwise leave a host that was
+        told ``accepted`` with no terminal event (#93). Raises the same exception.
+        """
+        try:
+            yield
+        except Exception as exc:
+            await self._emit_stamped(AgentEvent(type="agent_start", timestamp=self._timestamp()))
+            await self._emit_stamped(build_agent_end([], exc))
+            raise
+
     async def _run_one_turn(
         self,
         text: str | None,
@@ -4437,97 +4452,101 @@ class AgentSession:
         queued = queued or []
         seed = seed or []
 
-        user_msg: UserMessage | None = None
-        if text is not None:
-            content: list[dict[str, Any]] = [{"type": "text", "text": text}]
-            if images:
-                content.extend(images)
-            user_msg = UserMessage.model_validate(
-                {
-                    "role": "user",
-                    "content": content,
-                    "timestamp": self._timestamp(),
-                }
+        async with self._turn_failure_on_the_wire():
+            user_msg: UserMessage | None = None
+            if text is not None:
+                content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+                if images:
+                    content.extend(images)
+                user_msg = UserMessage.model_validate(
+                    {
+                        "role": "user",
+                        "content": content,
+                        "timestamp": self._timestamp(),
+                    }
+                )
+
+            # Get context: use provided context or fall back to session messages.
+            if context is not None:
+                context_messages = list(context)  # copy to avoid mutation
+                strip_ref = strip_ref_text if strip_ref_text is not None else text
+                context_ends_with_user = strip_ref is not None and _ends_with_user_text(
+                    context_messages, strip_ref
+                )
+            else:
+                context_messages = self.messages
+                context_ends_with_user = False
+
+            if context_ends_with_user:
+                context_messages = context_messages[:-1]
+
+            system_prompt_override: str | None = None
+            pre_user_messages: list[dict[str, Any]] = []
+            post_user_messages: list[dict[str, Any]] = []
+            hooks = self._hooks()
+            if text is not None and hooks.has_handlers("before_agent_start"):
+                stored_prompt = _leading_system_prompt(context_messages)
+                before = await hooks.emit_before_agent_start(
+                    prompt=text,
+                    images=images,
+                    system_prompt=stored_prompt
+                    if stored_prompt is not None
+                    else self._turn_system_prompt(),
+                )
+                if before is not None:
+                    if before.get("system_prompt") is not None:
+                        system_prompt_override = before["system_prompt"]
+                    for msg in before.get("messages") or []:
+                        node = self._custom_message_node(msg)
+                        if msg.get("position") == MESSAGE_POSITION_BEFORE_USER:
+                            pre_user_messages.append(node)
+                        else:
+                            post_user_messages.append(node)
+
+            # Build the agent loop config
+            config = AgentLoopConfig(
+                system_prompt=self._turn_system_prompt(),
+                system_prompt_override=system_prompt_override,
+                tool_execution_mode=self._tool_execution_mode,
+                **self._turn_cap(),
             )
 
-        # Get context: use provided context or fall back to session messages.
-        if context is not None:
-            context_messages = list(context)  # copy to avoid mutation
-            strip_ref = strip_ref_text if strip_ref_text is not None else text
-            context_ends_with_user = strip_ref is not None and _ends_with_user_text(
-                context_messages, strip_ref
+            writer = _CursorWriter(
+                self.acting_cursor, persist, self._annotation, self._entry_written
             )
-        else:
-            context_messages = self.messages
-            context_ends_with_user = False
 
-        if context_ends_with_user:
-            context_messages = context_messages[:-1]
-
-        system_prompt_override: str | None = None
-        pre_user_messages: list[dict[str, Any]] = []
-        post_user_messages: list[dict[str, Any]] = []
-        hooks = self._hooks()
-        if text is not None and hooks.has_handlers("before_agent_start"):
-            stored_prompt = _leading_system_prompt(context_messages)
-            before = await hooks.emit_before_agent_start(
-                prompt=text,
-                images=images,
-                system_prompt=stored_prompt
-                if stored_prompt is not None
-                else self._turn_system_prompt(),
-            )
-            if before is not None:
-                if before.get("system_prompt") is not None:
-                    system_prompt_override = before["system_prompt"]
-                for msg in before.get("messages") or []:
-                    node = self._custom_message_node(msg)
-                    if msg.get("position") == MESSAGE_POSITION_BEFORE_USER:
-                        pre_user_messages.append(node)
-                    else:
-                        post_user_messages.append(node)
-
-        # Build the agent loop config
-        config = AgentLoopConfig(
-            system_prompt=self._turn_system_prompt(),
-            system_prompt_override=system_prompt_override,
-            tool_execution_mode=self._tool_execution_mode,
-            **self._turn_cap(),
-        )
-
-        writer = _CursorWriter(self.acting_cursor, persist, self._annotation, self._entry_written)
-
-        # The inputs are written before the loop runs, so a crash mid-turn keeps the prompt.
-        if persist:
-            await self._record_config()
-        user = [] if user_msg is None else [user_msg]
-        prompts = [*seed, *pre_user_messages, *user, *queued, *post_user_messages]
-        input_failure: TurnFailure | None = None
-        position = LoopPosition(loop="run", then="sample")
-        with positioned(position):
-            for message in prompts:
+            # The inputs are written before the loop runs, so a crash mid-turn keeps the prompt.
+            if persist:
+                await self._record_config()
+            user = [] if user_msg is None else [user_msg]
+            prompts = [*seed, *pre_user_messages, *user, *queued, *post_user_messages]
+            input_failure: TurnFailure | None = None
+            position = LoopPosition(loop="run", then="sample")
+            with positioned(position):
+                for message in prompts:
+                    try:
+                        await writer.append(message)
+                    except AnnotationError as err:
+                        input_failure = input_failure or err
                 try:
-                    await writer.append(message)
-                except AnnotationError as err:
+                    await writer.close_group()
+                except HandlerPolicyError as err:
                     input_failure = input_failure or err
-            try:
-                await writer.close_group()
-            except HandlerPolicyError as err:
-                input_failure = input_failure or err
-        loop = AgentLoop(
-            config=config,
-            emit=self._emit_stamped,
-            tools=self._turn_tools(),
-            turn_settings=lambda: self._request_settings(persist),
-            abort_signal=self.acting_cursor.abort_signal,
-            hook_dispatcher=hooks,
-            steer_queue=self.acting_cursor.steer_queue,
-            mid_turn_compactor=self._compact_mid_turn,
-            writer=writer,
-            call_gate=self._model_call_refusal,
-            input_failure=input_failure,
-            position=position,
-        )
+            loop = AgentLoop(
+                config=config,
+                emit=self._emit_stamped,
+                tools=self._turn_tools(),
+                turn_settings=lambda: self._request_settings(persist),
+                abort_signal=self.acting_cursor.abort_signal,
+                hook_dispatcher=hooks,
+                steer_queue=self.acting_cursor.steer_queue,
+                mid_turn_compactor=self._compact_mid_turn,
+                writer=writer,
+                call_gate=self._model_call_refusal,
+                input_failure=input_failure,
+                position=position,
+            )
+
         self.acting_cursor.turn_writer = writer
 
         # Cleared BEFORE loop.run, because loop.run is what emits agent_end.
