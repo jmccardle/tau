@@ -40,6 +40,7 @@ from tau_agent_core.policies import (
     Proceeded,
     check_outcome,
 )
+from tau_agent_core.setting_sources import ACTING_EXTENSION
 from tau_agent_core.suspension import SuspensionSwallowedError, TurnSuspended, dispatch_mark
 
 if TYPE_CHECKING:
@@ -229,6 +230,7 @@ class ExtensionRunner:
         "session_before_switch",
         "annotate",
         "entry_written",
+        "turn_setting_changed",
     )
 
     LIFECYCLE_EVENTS = ("session_start", "session_shutdown")
@@ -320,6 +322,13 @@ class ExtensionRunner:
                 pass
 
         return unsubscribe
+
+    def owner_of_tool(self, name: str) -> str | None:
+        """The identifier of the active extension that registered tool ``name``, if any."""
+        for ext in self._extensions:
+            if name in ext.tools:
+                return ext.name
+        return None
 
     def has_handlers(self, event: str) -> bool:
         """Whether any loaded extension has a handler for ``event`` (fast path)."""
@@ -413,7 +422,8 @@ class ExtensionRunner:
 
         A :class:`~tau_agent_core.policies.PolicedHandler` runs through its
         policy (:meth:`_call_policed`); the mark closes only once the policy has
-        returned, so after the handler's task has.
+        returned, so after the handler's task has. ``ext`` is the
+        :data:`~tau_agent_core.setting_sources.ACTING_EXTENSION` throughout.
 
         Raises:
             SuspensionSwallowedError: a suspension was raised inside the handler
@@ -422,6 +432,20 @@ class ExtensionRunner:
                 §3.2.2).
             HandlerPolicyError: a policed handler's outcome was ``Failed``.
         """
+        token = ACTING_EXTENSION.set(ext.name)
+        try:
+            return await self._call_marked(ext, hook, handler, event)
+        finally:
+            ACTING_EXTENSION.reset(token)
+
+    async def _call_marked(
+        self,
+        ext: ExtensionHandlers,
+        hook: str,
+        handler: HookHandler | PolicedHandler,
+        event: dict[str, Any],
+    ) -> Any:
+        """:meth:`_call`'s body, run with ``ext`` as the acting extension."""
         with dispatch_mark(hook, ext.name, event, self._handler_index(hook, handler)) as mark:
             try:
                 if isinstance(handler, PolicedHandler):
@@ -902,6 +926,29 @@ class ExtensionRunner:
                     raise
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "entry_written", str(err)))
+
+    async def emit_turn_setting_changed(self, event: dict[str, Any]) -> None:
+        """Dispatch ``turn_setting_changed``: a model or thinking change was recorded.
+
+        docs/TURN-SETTINGS.md §8. Notify-grade: the change is already in the tree
+        when this runs, so the return value is ignored and nothing can veto it.
+        Each handler gets its own copy of ``{"type", "cursor_id", "setting",
+        "old", "new", "source"}``. Handler exceptions are surfaced via
+        :meth:`on_error` and dispatch continues; a policy's ``Failed`` re-raises.
+
+        Args:
+            event: The payload without ``type``.
+        """
+        base = {"type": "turn_setting_changed", **event}
+        for ext in list(self._extensions):
+            for handler in ext.handlers.get("turn_setting_changed", []):
+                try:
+                    await self._call(ext, "turn_setting_changed", handler, dict(base))
+                except HandlerPolicyError as err:
+                    self._emit_error(ExtensionError(ext.path, "turn_setting_changed", str(err)))
+                    raise
+                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
+                    self._emit_error(ExtensionError(ext.path, "turn_setting_changed", str(err)))
 
     async def emit_annotate(
         self, kind: str, message: dict[str, Any]

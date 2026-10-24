@@ -191,7 +191,12 @@ async def start_comparison(
     for name, (model, api_key) in zip(models, resolved):
         cursor = await session.open_cursor(leaf, owner=head, label=name)
         cursor.frame = TurnFrame(
-            tools=tools, model=model, api_key=api_key, model_name=name, hooks=True
+            tools=tools,
+            model=model,
+            api_key=api_key,
+            model_name=name,
+            model_source="spawn",
+            hooks=True,
         )
         cursors.append(cursor)
     turns = []

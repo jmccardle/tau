@@ -95,7 +95,7 @@ async def test_the_shared_resolution_opens_it_refuses_a_turn_and_set_model_repai
     assert not result.accepted and result.rejection_reason == message
     assert session.messages == []
 
-    session.set_model("unused")
+    session.set_model("unused", source="command")
     assert session.model_unavailable is None
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_ok):
         result = await session.submit(

@@ -23,6 +23,7 @@ from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.compaction import CompactionSettings
 from tau_agent_core.extension_types import ExtensionAPI, ExtensionContext
 from tau_agent_core.session_log import InMemorySessionLog
+from tau_agent_core.setting_sources import as_extension
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
 _TS = 1_700_000_000_000
@@ -51,6 +52,11 @@ def _session(model: Model | None = None, resolver=None) -> AgentSession:
 
 def _ctx(session: AgentSession) -> ExtensionContext:
     return session._extension_api.context
+
+
+def _ext_set_model(session: AgentSession, name: str) -> dict:
+    """``ctx.set_model(name)`` called as an extension, so the change has a source."""
+    return as_extension("tester", _ctx(session).set_model)(name)
 
 
 class _RecordingStream:
@@ -111,7 +117,7 @@ class TestGetModel:
 
     def test_reflects_a_prior_set_model(self):
         session = _session(_model("model-a"), resolver=lambda name: _model(name))
-        _ctx(session).set_model("model-b")
+        _ext_set_model(session, "model-b")
         assert session.get_model()["id"] == "model-b"
 
 
@@ -122,11 +128,11 @@ class TestSetModel:
     def test_requires_a_resolver(self):
         session = _session(resolver=None)
         with pytest.raises(RuntimeError, match="no model resolver is bound"):
-            _ctx(session).set_model("model-b")
+            _ext_set_model(session, "model-b")
 
     def test_returns_the_new_projection(self):
         session = _session(_model("model-a"), resolver=lambda name: _model(name, 200000))
-        result = _ctx(session).set_model("model-b")
+        result = _ext_set_model(session, "model-b")
         assert result == {"id": "model-b", "provider": "openai", "context_window": 200000}
 
     def test_unknown_name_error_propagates(self):
@@ -135,12 +141,12 @@ class TestSetModel:
 
         session = _session(resolver=resolver)
         with pytest.raises(KeyError, match="unknown model"):
-            _ctx(session).set_model("nope")
+            _ext_set_model(session, "nope")
 
     def test_non_model_return_is_type_error(self):
         session = _session(resolver=lambda name: {"id": name})  # type: ignore[arg-type,return-value]
         with pytest.raises(TypeError, match="expected a tau_llm.types.Model"):
-            _ctx(session).set_model("model-b")
+            _ext_set_model(session, "model-b")
 
     async def test_next_turn_effect_through_the_loop(self):
         """set_model takes effect on the NEXT completion, never mid-stream."""
@@ -152,7 +158,7 @@ class TestSetModel:
         ):
             await session.prompt("one")
             assert seen == ["model-a"]  # first turn used the original model
-            _ctx(session).set_model("model-b")
+            _ext_set_model(session, "model-b")
             await session.prompt("two")
         assert seen == ["model-a", "model-b"]  # the switch reached the next turn
 

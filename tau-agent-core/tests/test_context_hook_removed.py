@@ -75,6 +75,7 @@ def test_context_is_not_a_hook_event() -> None:
         "session_before_switch",
         "annotate",
         "entry_written",
+        "turn_setting_changed",
     )
 
 

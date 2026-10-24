@@ -52,6 +52,9 @@ class TurnFrame:
         model_name: The config name ``model`` was resolved from, recorded as the
             ``model`` config key; ``None`` when ``model`` was handed in directly.
         reasoning: The thinking level to request, or ``None`` for the session's.
+        model_source: Where ``model`` came from; required with ``model``
+            (docs/TURN-SETTINGS.md §8).
+        reasoning_source: Where ``reasoning`` came from; required with ``reasoning``.
         system_prompt: The prompt to run under, or ``None`` for the session's.
         max_turns: The loop's turn ceiling for this cursor; ``None`` is no ceiling.
         hooks: Whether extension hooks run on this cursor's turns. Off by default:
@@ -63,9 +66,23 @@ class TurnFrame:
     api_key: str | None = None
     model_name: str | None = None
     reasoning: str | None = None
+    model_source: str | None = None
+    reasoning_source: str | None = None
     system_prompt: str | None = None
     max_turns: int | None = None
     hooks: bool = False
+
+    def __post_init__(self) -> None:
+        """Refuse a model or level with no source.
+
+        Raises:
+            ValueError: ``model`` without ``model_source``, or ``reasoning``
+                without ``reasoning_source``.
+        """
+        if self.model is not None and self.model_source is None:
+            raise ValueError("a TurnFrame that sets model needs model_source")
+        if self.reasoning is not None and self.reasoning_source is None:
+            raise ValueError("a TurnFrame that sets reasoning needs reasoning_source")
 
 
 def _require_entry(log: SessionLog, entry_id: str | None, what: str) -> bool:

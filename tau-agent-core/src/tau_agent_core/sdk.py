@@ -2110,9 +2110,13 @@ def _build_system_prompt(
     return "\n".join(lines)
 
 
+DEFAULT_SDK_MODEL = "gpt-4o"
+"""The model :func:`create_agent_session` resolves when given none."""
+
+
 @agent_facing(topic="sdk")
 def create_agent_session(
-    model: str | Model = "gpt-4o",
+    model: str | Model | None = None,
     provider: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
@@ -2160,7 +2164,9 @@ def create_agent_session(
     settled here.
 
     Args:
-        model: Model identifier string or Model object (default: "gpt-4o").
+        model: Model identifier string or Model object. ``None`` is ``"gpt-4o"``,
+            the built-in default, and records source ``default`` rather than
+            ``cli`` (docs/TURN-SETTINGS.md §8).
         provider: Provider name for model resolution; required for an id that
             is not built in (:func:`resolve_model`).
         base_url: Optional custom API base URL.
@@ -2270,6 +2276,9 @@ def create_agent_session(
     if bus_available:
         require_bus_dependency()
     # 1. Resolve model
+    model_source = "cli" if model is not None else "default"
+    if model is None:
+        model = DEFAULT_SDK_MODEL
     if isinstance(model, str):
         model = resolve_model(model, provider=provider, base_url=base_url)
 
@@ -2316,6 +2325,7 @@ def create_agent_session(
         extensions=ext_factories,
         api_key=api_key,
         reasoning=reasoning_arg,
+        model_source=model_source,
         compaction_policy=compaction_policy,
         compaction_settings=compaction_settings,
         model_resolver=model_resolver,

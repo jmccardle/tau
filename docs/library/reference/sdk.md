@@ -327,7 +327,7 @@ context and the tool list. ``tau_coding_agent.headless`` re-exports it.
 <!-- agent: yes -->
 
 ```python
-create_agent_session(model: str | Model = 'gpt-4o', provider: str | None = None, base_url: str | None = None, api_key: str | None = None, tools: list[str] | None = None, session_log: SessionLog | None = None, extensions: list[Callable] | None = None, system_prompt: str | None = None, no_context_files: bool = False, thinking_level: str | None = None, cwd: str | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', compaction_policy: CompactionPolicy | None = None, compaction_settings: CompactionSettings | None = None, model_resolver: Callable[[str], Model] | None = None, bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, max_turns: int | None = None, tool_options: dict[str, dict[str, Any]] | None = None, prompt_template_paths: Iterable[str | Path] = (), no_prompt_templates: bool = False, skill_paths: Iterable[str | Path] = (), no_skills: bool = False) -> AgentSession
+create_agent_session(model: str | Model | None = None, provider: str | None = None, base_url: str | None = None, api_key: str | None = None, tools: list[str] | None = None, session_log: SessionLog | None = None, extensions: list[Callable] | None = None, system_prompt: str | None = None, no_context_files: bool = False, thinking_level: str | None = None, cwd: str | None = None, tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel', compaction_policy: CompactionPolicy | None = None, compaction_settings: CompactionSettings | None = None, model_resolver: Callable[[str], Model] | None = None, bus_available: bool = False, no_tools: Literal['all', 'builtin'] | None = None, max_turns: int | None = None, tool_options: dict[str, dict[str, Any]] | None = None, prompt_template_paths: Iterable[str | Path] = (), no_prompt_templates: bool = False, skill_paths: Iterable[str | Path] = (), no_skills: bool = False) -> AgentSession
 ```
 
 `tau_agent_core.sdk.create_agent_session`
@@ -357,7 +357,7 @@ settled here.
 
 **Parameters**
 
-- `model: str | Model = 'gpt-4o'` — Model identifier string or Model object (default: "gpt-4o").
+- `model: str | Model | None = None` — Model identifier string or Model object. ``None`` is ``"gpt-4o"``, the built-in default, and records source ``default`` rather than ``cli`` (docs/TURN-SETTINGS.md §8).
 - `provider: str | None = None` — Provider name for model resolution; required for an id that is not built in (:func:`resolve_model`).
 - `base_url: str | None = None` — Optional custom API base URL.
 - `api_key: str | None = None` — Optional API key.

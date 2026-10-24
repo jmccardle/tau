@@ -170,7 +170,10 @@ class TestTheChangeIsRecordedAheadOfItsRequest:
         ]
         assert kinds == ["config", "user", "assistant", "toolResult", "config", "assistant"]
         mid_loop = path[4]["data"]
-        assert set(mid_loop) == {"model", "model_spec"}
+        assert set(mid_loop) == {"model", "model_spec", "model_source"}
+        assert mid_loop["model_source"] == (
+            "extension:test_turn_settings._on_first_turn_end.<locals>.factory"
+        )
         assert mid_loop["model_spec"]["id"] == "cheap"
         assert (path[5]["message"] or {}).get("model") == "cheap"
 
@@ -215,7 +218,7 @@ class TestTheModelNameIsRecordedForResume:
 
     async def test_a_name_already_on_the_path_is_not_written_again(self):
         session = _session()
-        session.set_model("cheap")
+        session.set_model("cheap", source="command")
         await session.cursor.append_config(model="cheap", backend="openai")
         with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_Provider()):
             await session.submit(_sub("one"))
@@ -226,7 +229,7 @@ class TestTheModelNameIsRecordedForResume:
         other = await session.open_cursor(None, owner=session.cursor, label="sub")
         token = TURN_CURSOR.set(other)
         try:
-            session.set_model("side")
+            session.set_model("side", source="command")
         finally:
             TURN_CURSOR.reset(token)
         assert other.frame is not None and other.frame.model_name == "side"
@@ -237,11 +240,11 @@ class TestSetReasoning:
     def test_an_unknown_level_raises(self):
         session = _session()
         with pytest.raises(ValueError, match="not a thinking level"):
-            session.set_reasoning("extreme")
+            session.set_reasoning("extreme", source="command")
 
     def test_off_is_a_level_and_is_what_the_next_request_sends(self):
         session = _session()
-        assert session.set_reasoning("off") == "off"
+        assert session.set_reasoning("off", source="command") == "off"
         assert session._turn_reasoning() == "off"
 
     async def test_a_non_head_cursor_gets_it_on_its_frame(self):
@@ -249,7 +252,7 @@ class TestSetReasoning:
         other = await session.open_cursor(None, owner=session.cursor, label="sub")
         token = TURN_CURSOR.set(other)
         try:
-            session.set_reasoning("minimal")
+            session.set_reasoning("minimal", source="command")
         finally:
             TURN_CURSOR.reset(token)
         assert other.frame is not None and other.frame.reasoning == "minimal"

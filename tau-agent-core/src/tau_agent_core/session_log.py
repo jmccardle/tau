@@ -317,6 +317,8 @@ CONFIG_KEYS: frozenset[str] = frozenset(
         "system_prompt_digest",
         "tool_exposure",
         "tool_declaration",
+        "model_source",
+        "thinking_source",
     }
 )
 """What a config entry may set. Each key is optional; a later entry on a path
@@ -332,6 +334,8 @@ overrides an earlier one key by key.
 - ``tool_exposure``: ``{tool name: exposure}`` overriding each tool's declared
   exposure; always the whole map, because the fold replaces a key wholesale.
   Experimental (experiments/tool-exposure/RESULTS.md).
+- ``model_source`` / ``thinking_source``: where the model or level came from
+  (:data:`~tau_agent_core.setting_sources.SETTING_SOURCES`, docs/TURN-SETTINGS.md §8).
 - ``tool_declaration``: ``{tool name: bool}``, whether the model's ``tools``
   block declares it, overriding the default from its exposure. Written only by
   an explicit redeclaration, because any change re-bills the prompt cache.

@@ -331,10 +331,10 @@ def test_set_model_puts_the_new_models_block_in_force():
     """``ctx.set_model`` delegates to ``AgentSession.set_model``."""
     backend = _backend(_per_model_config())
     assert backend.agent_session.summarizer()[0].id == "main-id"
-    backend.agent_session.set_model("big")
+    backend.agent_session.set_model("big", source="command")
     assert _settings(backend) == (False, 5000, 600)
     assert backend.agent_session.summarizer()[0].id == "main-id"
-    backend.agent_session.set_model("small")
+    backend.agent_session.set_model("small", source="command")
     assert _settings(backend) == (
         True,
         DEFAULT_COMPACTION_SETTINGS.reserve_tokens,
@@ -348,7 +348,7 @@ def test_set_model_refused_by_compaction_leaves_everything_as_it_was():
     config["models"]["main"]["context_window"] = 32000
     backend = _backend(config, "small")
     with pytest.raises(CompactionPolicyError):
-        backend.agent_session.set_model("big")
+        backend.agent_session.set_model("big", source="command")
     assert backend.agent_session.get_model()["id"] == "small-id"
     assert _settings(backend)[0] is True
 
@@ -381,7 +381,7 @@ def test_tui_model_switch_and_set_model_agree(make_app):
     rebuilt.agent_session.set_model_resolver(make_model_resolver(app.config))
 
     switched = _backend(config, "main")
-    switched.agent_session.set_model("big")
+    switched.agent_session.set_model("big", source="command")
 
     assert _settings(rebuilt) == _settings(switched) == (False, 5000, 600)
     assert rebuilt.agent_session.summarizer() == switched.agent_session.summarizer()
