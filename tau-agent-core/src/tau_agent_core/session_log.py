@@ -108,10 +108,7 @@ def is_incomplete(entry: dict[str, Any]) -> bool:
 
 
 AGENT_SOURCE = "agent"
-"""The ``source`` an entry carries when a child cursor wrote it; no other writer sets one."""
-
-HUMAN_SOURCES: frozenset[str] = frozenset({"interactive", "voice"})
-"""Submission sources that are a person, whose turns are never stamped, even on a child cursor."""
+"""The ``source`` an entry carries when a sub-agent wrote it on a child cursor; no other writer sets one."""
 
 
 SIDE_KINDS: frozenset[str] = frozenset({"suspension"})
@@ -245,7 +242,7 @@ def default_leaf(entries: list[dict[str, Any]]) -> str | None:
     """Where a reopened tree continues: the newest finished entry a person's turn wrote.
 
     An entry carrying ``source: "agent"`` (:data:`AGENT_SOURCE`), which a
-    child cursor wrote, is passed over, so a session a child wrote last
+    sub-agent wrote, is passed over, so a session a child wrote last
     reopens in the main conversation. When nothing else qualifies, the newest
     finished entry of any source is the answer (docs/STEP-DEBUGGER.md §3.7.2).
 

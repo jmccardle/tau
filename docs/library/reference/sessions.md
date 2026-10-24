@@ -2808,7 +2808,7 @@ side_marks(entry_id: str | None) -> list[SideMark]
 
 **Parameters**
 
-- `entry_id: str | None` — The parent id.
+- `entry_id: str | None` — The parent id; ``None`` gives the session-level marks, side entries opened before the first entry, which are never roots.
 
 **Returns**
 
@@ -2873,7 +2873,8 @@ A well-formed session has one root (first entry with ``parentId is None``);
 orphaned entries (broken parent chain) are also returned as roots. Each
 node's children are sorted by timestamp (oldest first); ``is_leaf`` marks
 this tree's leaf. A side entry is no node: it is a :class:`SideMark` in
-its parent's ``side``, unless that parent is missing.
+its parent's ``side``, or in ``side_marks(None)`` when it has no parent.
+Only a side entry naming a parent that is missing is drawn, as an orphan.
 
 **Returns**
 
@@ -4399,7 +4400,7 @@ A side entry, drawn as a mark on its parent rather than as a child (docs/STEP-DE
 - `entry_id: str` — The side entry's id.
 - `kind: str` — Its ``type``, a member of ``session_log.SIDE_KINDS``.
 - `status: Literal['incomplete', 'final']` — ``"incomplete"`` while open, ``"final"`` once finalized.
-- `preview: str` — Its first line of text, as a row's preview.
+- `preview: str` — Its label: the kind and ``(open)`` or ``(closed)``.
 
 ## ToolBlockChange
 <!-- agent: yes -->
@@ -4879,7 +4880,7 @@ default_leaf(entries: list[dict[str, Any]]) -> str | None
 Where a reopened tree continues: the newest finished entry a person's turn wrote.
 
 An entry carrying ``source: "agent"`` (:data:`AGENT_SOURCE`), which a
-child cursor wrote, is passed over, so a session a child wrote last
+sub-agent wrote, is passed over, so a session a child wrote last
 reopens in the main conversation. When nothing else qualifies, the newest
 finished entry of any source is the answer (docs/STEP-DEBUGGER.md §3.7.2).
 

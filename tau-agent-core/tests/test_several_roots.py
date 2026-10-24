@@ -164,3 +164,18 @@ async def test_a_persons_turn_on_a_child_cursor_is_not_stamped():
     written = ConversationTree(session.session_log.entries(), child.leaf).path()
     assert written[-1]["id"] == child.leaf
     assert "source" not in written[-1] and "source" not in written[-2]
+
+
+@pytest.mark.usefixtures("fake_llm")
+async def test_a_client_turn_and_an_idle_write_on_a_child_cursor_are_not_stamped():
+    session, branch_point, _main_leaf = await _session()
+    child = await session.open_cursor(branch_point, owner=session.cursor, label="client")
+    result = await session.submit(_submission("a client prompt, unsourced", "rpc"), cursor=child)
+    assert result.accepted
+    turn = ConversationTree(session.session_log.entries(), child.leaf).path()[-2:]
+    assert all("source" not in e for e in turn)
+
+    config = await child.append_config(model="other")
+    entries = session.session_log.entries()
+    assert "source" not in next(e for e in entries if e["id"] == config)
+    assert default_leaf(entries) == config, "a reopen lands on the new config"
