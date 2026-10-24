@@ -1977,7 +1977,7 @@ matrix (about 1.5 days) closes v1.
 - **resuming a form across processes** (§3.7.3): a command's flow lives in a
   coroutine.
 - **panels and statuses in serve's `Attached`:** a real gap that tau-code found,
-  but not this record's. It gets its own issue.
+  but not this record's. Built under #90 (docs/TAU-SERVE.md §7.6).
 - **evidence-span highlighting:** cut by John, not deferred.
 
 ## 8. Open

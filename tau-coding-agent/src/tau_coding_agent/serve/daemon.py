@@ -266,10 +266,13 @@ class ServeUI:
 
     A form goes to every attached client and the first :class:`~protocol.Answer`
     wins. With no client attached, each field takes its declared default.
+    Panels and statuses are kept by key, so an attach can carry them (#90).
     """
 
     def __init__(self, host: SessionHost) -> None:
         self._host = host
+        self._panels: dict[str, dict[str, Any]] = {}
+        self._statuses: dict[str, str] = {}
         self._forms: dict[str, tuple[asyncio.Future[dict[str, Any] | None], dict[str, Any]]] = {}
 
     async def form(self, spec: dict[str, Any]) -> dict[str, Any] | None:
@@ -302,10 +305,26 @@ class ServeUI:
         self._host.publish("ui", p.to_wire(p.UiNotify(message=message, level=level)))
 
     def set_status(self, key: str, text: str | None) -> None:
+        if text is None:
+            self._statuses.pop(key, None)
+        else:
+            self._statuses[key] = text
         self._host.publish("ui", p.to_wire(p.UiStatus(key=key, text=text)))
 
     def panel(self, key: str, spec: dict[str, Any] | None) -> None:
+        if spec is None:
+            self._panels.pop(key, None)
+        else:
+            self._panels[key] = spec
         self._host.publish("ui", p.to_wire(p.UiPanel(key=key, spec=spec)))
+
+    def panels(self) -> dict[str, dict[str, Any]]:
+        """Every open panel's spec, by key."""
+        return dict(self._panels)
+
+    def statuses(self) -> dict[str, str]:
+        """Every set status text, by key."""
+        return dict(self._statuses)
 
 
 class SessionHost:
@@ -517,6 +536,8 @@ class SessionHost:
             loaded=[p.ExtensionInfo(**info) for info in state["extensions"]],
             load_errors=[[err["path"], err["error"]] for err in state["errors"]],
             warnings=session.extension_warnings(),
+            panels=self.ui.panels(),
+            statuses=self.ui.statuses(),
         )
 
     def _on_warnings(self, warnings: list[ExtensionWarning]) -> None:

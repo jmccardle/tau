@@ -462,6 +462,10 @@ class Surface:
         load_errors: ``[path, error]`` per extension file that failed to load.
         warnings: The session's current extension warnings (#60); a ``ui``
             event with op ``warnings`` carries each change.
+        panels: Every panel open now, by key (#90); a ``ui`` event with op
+            ``panel`` opens, replaces or (with a ``None`` spec) closes one.
+        statuses: Every status-line text set now, by key (#90); a ``ui`` event
+            with op ``status`` sets one or (with ``None``) clears it.
     """
 
     commands: list[CommandInfo]
@@ -471,6 +475,8 @@ class Surface:
     loaded: list[ExtensionInfo]
     load_errors: list[list[str]]
     warnings: list[ExtensionWarning]
+    panels: dict[str, Annotated[dict[str, Any], Shape(PanelSpec)]]
+    statuses: dict[str, str]
 
 
 @dataclass
