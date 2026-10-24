@@ -1,67 +1,69 @@
 # Stepping an agent: a suspension primitive in core, a debugger beside it
 
 Design record (2026-10-24), nothing built; John approved the plan the same day.
-John asked for a step debugger: the agent stops at an event, a human reads what
-happened, answers with an action
-(step, step over, continue, abort) and optionally a verdict and a note, and the
-agent goes on. It must behave the same in the Textual TUI, `tau --mode repl`,
-`tau -p`, `tau --mode rpc`, `tau serve` (local and networked) and Tau Code.
+
+John asked for a step debugger. The agent stops at an event. A human reads what
+happened and answers with an action (step, step over, continue, abort), and
+optionally a verdict and a note. Then the agent goes on. It must behave the same
+in the Textual TUI, `tau --mode repl`, `tau -p`, `tau --mode rpc`, `tau serve`
+(local and networked) and Tau Code.
 
 The record makes three changes, in two homes:
 
-- **τ core gets a suspension primitive** (§3): `await ctx.suspend(spec)`. An
-  extension states what it needs: actions, fields, context. Every head renders
-  it, any attached responder answers it, and core records the answer durably.
-- **τ core gets extensible handler policies** (§4, #83): a hook handler names a
-  timeout and failure policy at registration. τ ships `gating`, `advisory` and
-  `human` as the first three. The API is experimental.
+- **τ core gets a suspension primitive** (§3): `await api.suspend(spec)`. An
+  extension states what it needs: actions, fields and context. Every head
+  renders it. A live responder answers it in-process, or a later process answers
+  it from the tree. Either way the turn resumes from the tree by one rule (§3.7).
+- **τ core gets extensible handler policies** (§4, #83). A hook handler names a
+  policy at registration. A policy is a protocol, not a set of enum fields. τ
+  ships `gating`, `advisory` and `human`. The API is experimental.
 - **A new repository, `tau-debugger`, gets the debugger extension** (§5). It
   will live at `~/Development/tau-debugger`, MIT-licensed like τ and JMFTS, and
-  is created when the build starts. It holds the break conditions, the stepping
-  modes and the notes. It contains no head-specific code.
+  is created when the build starts. It contains no head-specific code.
 
-§8 records that nothing is open.
+Nothing is open (§8). The record was revised after two review rounds and an
+independent architecture review (§9 maps each finding to its section).
 
 ## 1. What is missing, head by head
 
 ### 1.1 Nothing in τ can suspend a turn for a human
 
-`agent_loop.py:~722` states the loop "never blocks" on input. The two ways an
-extension can involve a human today each fail the requirement:
+`agent_loop.py:~722` says the loop "never blocks" on input. The two ways an
+extension can involve a human today each fall short:
 
 - **`api.request_user_action` (lock and ask)** appends one `extension_request`
-  entry and returns at once (`extension_types.py:2493`). It is durable and every
+  entry and returns at once (`extension_types.py:2493`). It is durable, and every
   head renders it. But a request raised mid-turn is inert, because the turn keeps
   appending behind it and a request is read only at the cursor's leaf
   (EXTENSION-LOCKS.md §4.1). It gates the *next* turn, not the current one.
-- **`ctx.ui.form`** (`extension_types.py:643`) does await an answer, mid-turn.
+- **`ctx.ui.form`** (`extension_types.py:643`) does await an answer mid-turn.
   But it is the one blocking dialog EXTENSION-LOCKS.md left standing, for a
-  narrow use: a flow collecting a missing command argument (`extension_types.py:498-503`).
-  It reaches a human only when the submission set `allow_user_input`, which
-  defaults to `False` (`submission.py:147`). It has a delegate only in the TUI,
-  the REPL and the serve daemon.
+  narrow use: a flow collecting a missing command argument
+  (`extension_types.py:498-503`). It reaches a human only when the submission set
+  `allow_user_input` (default `False`, `submission.py:147`). It has a delegate
+  only in the TUI, the REPL and the serve daemon.
 
 ### 1.2 Per head
 
 | head | an extension can present | the head can send back | short of the requirement |
 |---|---|---|---|
-| TUI | toast, status, panel with buttons, form modal, ask row + modal (`extension_ui.py:20-59`, `:243-312`) | steer (typed text mid-turn), abort (Esc), panel button, `ctrl+e` chord, ask answer | slash commands refused mid-turn (`app.py:1055-1065`); form only under `allow_user_input` |
+| TUI | toast, status, panel with buttons, form modal, ask row and modal (`extension_ui.py:20-59`, `:243-312`) | steer, abort (Esc), panel button, `ctrl+e` chord, ask answer | slash commands refused mid-turn (`app.py:1055-1065`); form only under `allow_user_input` |
+| TUI under `--connect` | the same, from serve events (`serve/remote.py:872-891`) | `answer` for forms, `answer_request` for asks | panel actions go through `submit` with `reject`, so they are refused mid-turn (`remote.py:1004-1029`); `Attached.requests` is never read (`client.py:96-110`) |
 | REPL | styled lines, prompt-prefix status, printed panel, field-by-field form and ask (`repl.py:782`, `:2081-2172`) | steer, Ctrl+C abort, `/panel <key> <n>`, ask answer | commands refused mid-turn (`repl.py:1811-1817`); same form gate |
-| `-p` text / `--mode json` | `[τ]` lines on stderr, or `{"type":"extension",…}` records; nothing pressable (`headless.py:1098-1106`) | argv prompt, SIGINT/SIGTERM abort | no input channel at all; a pending ask is never surfaced (`headless.py` never reads it); form raises `HeadlessDialogError` |
-| `--mode rpc` | notify/status/panel to stderr only; no delegate, no record sink (`rpc_mode.py:123-129`) | the command table, including `abort`, `get_pending_request`, `answer_request` (`rpc/commands.py:3283-3401`) | no push of a pending ask: the host polls; no form at all |
-| serve, local | `ui` events (notify, status, panel); `request` events for forms, answered by `Answer`, first wins (`daemon.py:248-283`); asks on `CursorState.request` | `hello`, `attach`, `answer`, RPC verbs at a named cursor (`protocol.py:276-346`) | the form Future lives in RAM, holds the turn lock, and returns **defaults** when no client is attached (`daemon.py:261-263`); `Attached.requests` is not read by the `--connect` client (`client.py:96-110`); panels and statuses are not in the attach snapshot |
-| serve, networked | the same | the same | one optional shared token checked at `hello` (`daemon.py:732`), no TLS, no per-client role; `client_id` is a per-connection label, so an answer can name a connection but not a person |
-| Tau Code (web, VS Code) | notify, status, panel buttons, forms (`request`/`request_closed`), asks with text/select/multiselect/confirm/number fields (tau-code `ui/src/request-panel.tsx:35-120`) | `answer`, `answer_request`, panel commands | panels and statuses live in a 20-event ring, not the snapshot, so a reattaching head loses them (tau-code `session.ts:151`) |
+| `-p` text / `--mode json` | `[τ]` lines on stderr, or `{"type":"extension",…}` records; nothing pressable (`headless.py:1098-1106`) | argv prompt; SIGINT/SIGTERM abort | no input channel; a pending ask is never surfaced; form raises `HeadlessDialogError` |
+| `--mode rpc` | notify, status and panel go to stderr only; no delegate, no record sink (`rpc_mode.py:123-129`) | the command table, including `abort`, `get_pending_request`, `answer_request` (`rpc/commands.py:3283-3401`) | no push of a pending ask; stdin is read **serially** (`rpc/transport.py:263`), so a request that waits blocks every later line, an answer included |
+| serve, local | `ui` events; `request` events for forms, answered by `Answer` with the first answer winning (`daemon.py:248-283`); asks on `CursorState.request` | `hello`, `attach`, `answer`, RPC verbs at a named cursor (`protocol.py:276-346`) | the form Future lives in RAM, holds the turn lock, and returns **defaults** when no client is attached (`daemon.py:261-263`); panels and statuses are not in the attach snapshot |
+| serve, networked | the same | the same | one optional shared token checked at `hello` (`daemon.py:732`); no TLS; no per-client role; `client_id` names a connection, not a person |
+| Tau Code (web, VS Code) | notify, status, panel buttons, forms, asks with text/select/multiselect/confirm/number fields (tau-code `ui/src/request-panel.tsx:35-120`) | `answer`, `answer_request`, panel commands | panels and statuses live in a 20-event ring, not the snapshot (tau-code `session.ts:151`) |
 
-Three gaps recur across the table, and §3 closes each one:
+Three gaps recur, and §3 closes each one:
 
 1. **No head-agnostic wait.** The only mid-turn wait is serve's form, plus the
-   in-process TUI and REPL delegates. RPC and `-p` have none.
-2. **No pending state in snapshots.** An attaching client learns about durable
-   asks through `cursors[].request`, but not about forms, panels or statuses
-   reliably.
+   in-process TUI and REPL delegates.
+2. **No pending state in snapshots.** Asks arrive through `cursors[].request`.
+   Forms, panels and statuses do not arrive reliably.
 3. **An unanswered wait fabricates an answer.** Serve's form returns field
-   defaults when nobody is attached. For a question that gates work that is a
+   defaults when nobody is attached. For a question that gates work, that is a
    silent default, which Fail Early forbids.
 
 ### 1.3 What EXTENSION-LOCKS.md requires of a new primitive
@@ -74,32 +76,32 @@ EXTENSION-LOCKS.md §1 removed `confirm`, `select` and `input` for three defects
    looking at, and it died with the process.
 
 Its fix was durable tree state for questions that gate the *next* turn. A step
-debugger gates the *current* turn, mid-flight, so it cannot use that fix
-directly. A new primitive must therefore answer each defect explicitly:
+debugger gates the *current* turn. The new primitive answers each defect
+directly:
 
 | defect | this record's answer |
 |---|---|
-| no record outside the TUI | the suspension is an event every head receives, and part of every attach snapshot (§3.4) |
-| only a TUI delegate could answer | an answer is a verb any head can send: RPC, serve, the in-process heads (§3.5) |
-| holds the turn lock; dies with the process | it holds the lock on purpose (§3.6), but abort, steer, reads and answers still work; a durable entry records it, and a restart reports it instead of losing it silently (§3.7) |
+| no record outside the TUI | a suspension is an event every head receives, and part of every attach snapshot (§3.4) |
+| only a TUI delegate could answer | an answer is a verb any head can send, and a later `-p` process can send it (§3.5) |
+| holds the turn lock; dies with the process | it holds the lock on purpose, while abort, steer, reads and answers keep working (§3.6). It is a durable entry, and a process that dies or exits leaves a turn that resumes from the tree (§3.7) |
 
-## 2. Why the debugger needs core changes at all
+## 2. Why the debugger needs core changes
 
 The debugger could be written today against `ctx.ui.form`, in the TUI only.
 John ruled that out: a TUI-only debugger is a fix that reaches one head
-(feature-doc's second recurring fault). The suspension is a *reading* every head
+(feature-doc's second recurring fault). A suspension is a *reading* every head
 must present and answer the same way. So it belongs in `tau_agent_core`, and the
 heads only render it.
 
-## 3. The primitive: `ctx.suspend`
+## 3. The primitive: `api.suspend`
 
 ### 3.1 The call
 
 ```python
-resolution = await ctx.suspend({
+resolution = await api.suspend({
     "title": "Break: repeated tool call",
     "text": "bash `pytest -q` called 3 times with the same arguments",   # body: text | list | table
-    "evidence": [{"label": "last result", "text": "…"}],                 # plain data, rendered generically
+    "evidence": [{"label": "last result", "text": "…"}],                 # plain data
     "fields": [
         {"name": "verdict", "kind": "select",
          "options": ["fine", "intervene", "intervene_earlier", "wrong"], "required": False},
@@ -113,570 +115,704 @@ resolution = await ctx.suspend({
 #               "answered_by": {"client_id": "c3", "client": "tau-code/0.9"}, "at_ms": …}
 ```
 
+- **It is on `api`, resolved through the dispatch context.** A handler on an
+  `ext:` bus channel receives no `ctx` (`events.py:483-495`), and the runner's
+  `ctx` is session-wide (`runner.py:200`, `:281`). So the call is `api.suspend`,
+  which finds its site, cursor and policy deadlines in the dispatch-scoped
+  context (§3.2). `ctx.suspend` is an alias where a `ctx` exists.
 - **The spec is the Ask spec** (`validate_ask_spec`, `extension_types.py:409`),
   plus `evidence` and `targetId`. Every head that renders an ask already renders
-  this. Tau Code estimates half a day for it (tau-code-arecibo, 2026-10-24),
-  because its `RequestPanel` and field renderers are reused.
-- **`evidence` is plain data:** a list of `{label, text}`. Heads render it as
-  text. There is no span highlighting and no scroll-to-entry, in v1 or after
-  (John, 2026-10-24).
+  this. Tau Code estimates half a day for it, reusing `RequestPanel` and its
+  field renderers.
+- **`evidence` is plain data:** a list of `{label, text}`, rendered as text. There
+  is no span highlighting and no scroll-to-entry, in v1 or after (John,
+  2026-10-24).
 - **`targetId` is named for the JMFTS store.** It is in tau-jmfts
   `_CROSS_REF_FIELDS` (`store.py:158`), so a JMFTS fork remaps it.
-- **`abort` is an action like any other** to the extension. When the human
-  picks it, core also trips the turn's abort signal (§3.6).
+- **`abort` is an action like any other** to the extension. When the human picks
+  it, core also trips the turn's abort signal (§3.6).
 
-### 3.2 Where it may be called
+### 3.2 Where it may be called: never while an entry is held unwritten
 
-`ctx.suspend` is permitted only while the runner is dispatching a hook that its
-caller awaits, at a point where no provider stream is open:
+**The rule:** `api.suspend` is permitted only at a point where everything the
+turn has produced so far is already in the tree. A suspension must never hold
+an entry that exists only in memory. So a process that dies, or deliberately
+exits (§3.8), loses nothing. The turn then resumes from the tree (§3.7).
 
-| site | when | what is on disk |
+That rule rejects three hooks that run *before* their entry's write: `input`
+(the prompt), `tool_result` (the tool's output) and `annotate` (#82, any message).
+A suspension in any of them would park an unwritten entry. The permitted sites
+are:
+
+| site | when | the tree holds |
 |---|---|---|
-| `input` | a prompt is submitted, before its user entry exists (`agent_session.py:3283`) | the path before the prompt |
-| `tool_call` | before a tool runs | the assistant entry, finalized, with its calls |
-| `tool_result` | after a tool ran, before its result is written | as above |
-| `annotate` (#82) | before any message write, the assistant finalize included | for the assistant, its entry is open (incomplete) |
+| `tool_call` | before a tool runs | the assistant entry with its calls, and the results of earlier calls in the batch |
+| `entry_written` (new) | immediately after any message entry is durably written: user, assistant, toolResult, custom | everything up to and including that entry |
 | mutating `turn_end` | before the next sample | the whole turn so far |
 | `user_turn_end` | end of the prompt | the whole prompt |
-| a command handler | between turns; `ctx.ui.form`'s case (§3.9) | the path at the cursor |
-| an `ext:` channel handler | when it is reached from one of the above | as for that site |
+| a command handler | between turns; `ctx.ui.form`'s case (§3.10) | the path at the cursor; in-process only (§3.7) |
+| an `ext:` channel handler | when reached from one of the above | as for that site |
 
-**The open assistant entry is not a conflict.** `Cursor.open` leaves the
-cursor's leaf at the entry's parent (`self._open[id] = self._leaf`). A
-suspension's side entry (§3.7) hangs from that leaf, so it is a *sibling* of the
-incomplete assistant entry, not a child. The rule is therefore not "no entry
-open". It is "the side entry is written without moving the leaf", which holds
-at every site above.
+**`entry_written` is a new awaited hook.** It receives `{kind, entry_id, message,
+blocks}` after the store write returns. It cannot change the entry. It is the
+per-entry stepping point, and it replaces stepping at `annotate`.
 
-**The permission is a dispatch-scoped token, not a flag.** The runner puts a
-mutable token in a context variable for the length of one dispatch, and marks
-it closed when the dispatch returns. Python `contextvars` propagate through
-`await`, so an extension's `ext:` bus handler, which a producer calls from its
-own hook (`await api.emit(...)`), sees the open token. That is how the debugger
-parks on a hit (§5.2). Two copies must not inherit it, and the token design
-closes both:
+- For an assistant message it runs after the finalize and before tool
+  execution. The provider stream has ended by then.
+- A break that a producer detects at a non-permitted site is carried to the
+  next permitted one. Examples: tau-router's model change at `input`, or a
+  condition read in `tool_result`. `api.can_suspend_here()` tells the handler
+  which case it is in. The debugger queues the hit and suspends at the next
+  site, normally that entry's `entry_written`.
 
-- **A task spawned from a hook** (`asyncio.create_task` copies the context)
-  holds a reference to the same token. The runner closes it on return, so a
-  later `ctx.suspend` from that task is refused.
-- **An `EventBus` notify dispatch** resets the variable to `None` before
-  calling its handlers. A notify event emitted while a permitted hook is
-  running therefore does not inherit the permission.
+**The permission is a dispatch-scoped token.** The runner places a mutable
+token in a context variable for one dispatch, and closes it when that dispatch
+returns.
 
-**Refused everywhere else, with a named error.** That includes every notify
-event on the `EventBus` (`message_update`, `message_end`, `tool_execution_*`,
-`provider_retry`). Several are emitted while a provider stream is open, and a
-parked handler would hold the stream open (`events.py:315-322`).
+- `contextvars` propagate through `await`. So an `ext:` bus handler, which a
+  producer calls from its own hook (`await api.emit(...)`), sees the open token.
+  That is how the debugger parks on a hit (§5.2).
+- A task spawned from a hook (`asyncio.create_task` copies the context) holds
+  the same token. The token is closed once the hook returns, so a later
+  `api.suspend` from that task is refused.
+- An `EventBus` notify dispatch resets the variable to `None` before it calls its
+  handlers. A notify event emitted while a permitted hook runs therefore does not
+  inherit the permission.
+
+**Refused everywhere else, with a named error.** That includes every notify event
+(`message_update`, `message_end`, `tool_execution_*`, `provider_retry`).
+Several are emitted while a provider stream is open, and a parked handler would
+hold the stream open (`events.py:315-322`).
 
 ### 3.2.1 Concurrent suspensions on one cursor
 
-In a parallel tool batch, the `tool_call` hooks run in the sequential prepare
-loop (`agent_loop.py:1371-1374`), before any tool starts. The `tool_result`
-hooks run inside `asyncio.gather` (`_run_tool`, around `agent_loop.py:1417`), so
-two of them can suspend at once while other tools are still running.
+In a parallel tool batch the `tool_call` hooks run in the sequential prepare loop
+(`agent_loop.py:1371-1374`), before any tool starts. Each tool's result write,
+and so its `entry_written`, happens inside `asyncio.gather` (`_run_tool`, around
+`:1417`). Two of those can therefore suspend at once while other tools still
+run.
 
-The rule is that **suspensions on one cursor are serialized**. A second
-`ctx.suspend` on the same cursor waits, first in first out, until the open one
-resolves, and heads show it as queued. Tools that are already running keep
-running, because nothing can pause a subprocess mid-flight. So in a parallel
-batch, "step" at `tool_result` paces the result writes, not the executions. The
-debugger documents this. To step tool *execution* strictly, break at
-`tool_call`: those suspensions all happen before any tool in the batch starts.
-Core does not force sequential execution, which would change behaviour whether
-or not anyone is stepping.
+- **Suspensions on one cursor are serialized.** A second `api.suspend` on the
+  same cursor waits FIFO until the open one resolves. Heads show it as queued.
+- **Running tools keep running.** Nothing can pause a subprocess mid-flight.
+  So in a parallel batch, a step at a result's `entry_written` paces what the
+  human reviews, not what executes.
+- **To step execution strictly, break at `tool_call`.** All of a batch's
+  `tool_call` suspensions happen before any of its tools starts. Core does not
+  force sequential execution, because that would change behaviour whether or not
+  anyone is stepping.
+- **An abort resolves every queued suspension** on that cursor with
+  `action: "abort"`, not only the open one. A queued suspension must not open
+  afterwards and ask a human about a turn that has already ended.
 
-### 3.3 Lifecycle
+### 3.3 Lifecycle, in-process
 
-1. **Raise.** Core validates the spec, checks the site and the responder rule
-   (§3.8), and checks the calling handler's policy (§4.3). It mints a
-   suspension id and writes the durable record (§3.7). It registers a Future
-   keyed by the id, emits `suspension_open {id, cursor_id, spec}`, and awaits the
-   Future raced against the turn's abort signal.
-2. **Render.** Every head shows it: the TUI and the REPL natively, serve and RPC
-   as an event, Tau Code from the serve event. A client that attaches or
-   reattaches later gets it from the snapshot (§3.4).
+1. **Raise.** Core validates the spec and checks four things: the site (§3.2),
+   the responder rule (§3.8), the turn's precondition (§3.9), and the calling
+   dispatch's policies (§4.3). It mints a suspension id and opens the durable
+   side entry (§3.7). It pauses every enclosing policy deadline (§4.3),
+   registers a Future, and emits `suspension_open {id, cursor_id, spec,
+   queued}`. It waits for its turn in the cursor's FIFO, then awaits the Future
+   raced against the turn's abort signal.
+2. **Render.** Every head shows it: natively in the TUI and the REPL, and as an
+   event over RPC, serve and Tau Code. A client that attaches later gets it from
+   the snapshot (§3.4).
 3. **Answer.** Any responder sends `answer_suspension {id, action, values}`.
-   Core validates `values` against the fields (the way `answer_request` does),
-   so a head can keep the form up on an error.
-4. **Resolve.** The first valid answer resolves the Future, finalizes the durable
-   record with the resolution, and emits `suspension_closed {id, resolution}` to
-   every head. A later answer to a closed id returns `{"accepted": false,
-   "reason": "already resolved", "resolution": …}`. That is not an error, so a
-   race between two clients is idempotent and both heads converge.
-5. **Return.** `ctx.suspend` returns the resolution to the extension.
+   Core validates `values` against the fields, as `answer_request` does, so a head
+   can keep the form up on an error.
+4. **Resolve.** The first valid answer resolves the Future, finalizes the side
+   entry with the resolution, and emits `suspension_closed {id, resolution}`. A
+   later answer to a closed id returns `{"accepted": false, "reason": "already
+   resolved", "resolution": …}`, which is not an error. Two racing clients
+   therefore converge.
+5. **Return.** Deadlines resume, and `api.suspend` returns the resolution.
 
 ### 3.4 Snapshot and events
 
 - **Events:** `suspension_open` and `suspension_closed` are `AgentEvent` types,
-  so they reach every head through the paths events already take: the TUI and
-  REPL in-process, `--mode json` records, the RPC event stream, and serve.
-- **Snapshot:** serve's `Attached` gains `suspensions: [SuspensionState]`, read by
-  both the `--connect` client and Tau Code. The RPC head gains
-  `get_pending_suspensions`, for a host that connects mid-wait.
-- **The protocol change is additive.** It still needs a lockstep τ and tau-code
-  release, because `hello` refuses a different `PROTOCOL_VERSION` (tau-code
-  `generated.ts` is generated from `tau serve --schema`).
-
-While this is being changed, serve's `Attached` should also carry the live
-panels and statuses that tau-code found missing. That gap is real, but it is not
-this record's to close, so it is tracked separately (§7).
+  so they reach every head: in-process to the TUI and the REPL, as records under
+  `--mode json`, on the RPC event stream, and over serve.
+- **Snapshot:** serve's `Attached` gains `suspensions: [SuspensionState]`, read
+  by the `--connect` client and by Tau Code. RPC gains `get_pending_suspensions`.
+- **Side entries on the wire.** Serve announces a side entry as an entry with
+  `side: true`, and replicas apply `is_side_entry` (§3.7.2). Otherwise serve's
+  `entry_open` (`daemon.py:102`) would leave every replica holding an incomplete
+  entry that looks like a branch.
+- **The protocol change is additive,** but it needs a lockstep τ and tau-code
+  release, because `hello` refuses a different `PROTOCOL_VERSION`.
 
 ### 3.5 The answer verb, per head
 
 | head | how a human answers |
 |---|---|
-| TUI | a modal built from the spec, the same widgets as `ExtensionAskScreen`; it opens by itself, and does not close on Esc without an action |
-| REPL | field by field, then a numbered action list, as `_collect_answer` does for asks |
-| `--mode rpc` | `answer_suspension` in the command table, unguarded by the turn lock, like `answer_request` |
-| serve (local, networked), Tau Code | `answer_suspension` as an RPC verb at a session, from any attached client |
-| `-p` | none; see §3.8 |
+| TUI | a modal built from the spec, the same widgets as `ExtensionAskScreen`; it opens by itself, and Esc does not close it without an action |
+| TUI under `--connect` | the same modal, fed by `suspension_open` and `Attached.suspensions`, answering with `answer_suspension`. It declares the capability in `hello`. `RemoteBackend._answer_form` (`remote.py:879-891`) is migrated in the same release |
+| REPL | field by field, then a numbered action list, as `_collect_answer` does for asks. Ctrl+C at a suspension is `abort`, not "dismiss" |
+| `--mode rpc` | `answer_suspension`, `abort` and `get_pending_suspensions` run in a **control lane** that the serial reader dispatches without waiting for the request in flight (§3.6) |
+| serve, local and networked; Tau Code | `answer_suspension` as an RPC verb at a session, from any attached client |
+| `-p` | `tau -p --answer <action> [--field name=value …]` in a later process (§3.8) |
 
 ### 3.6 Locks, and what keeps working
 
-The suspended turn **keeps `Cursor.turn_lock`**. Releasing it would end the
-single-writer guarantee for that cursor while the turn is still in flight, and
-a second turn would write into the middle of the first.
-
-While a cursor is suspended:
+A suspended turn **keeps `Cursor.turn_lock`**. Releasing it would end the
+single-writer guarantee for that cursor while its turn is still in flight.
 
 | still works | how |
 |---|---|
 | answering | `answer_suspension` takes no turn lock |
-| abort | trips the turn's signal; the suspension resolves with `action: "abort"`, and the loop takes its existing abort path |
+| abort | trips the turn's signal; the open and all queued suspensions resolve with `action: "abort"`; the loop takes its abort path (below) |
 | steer | queued as today; delivered at the next `_deliver_steer`, after the suspension resolves |
 | reads, attach, `get_pending_suspensions` | unguarded today |
 | other cursors' turns | each cursor has its own lock (`cursor.py:109-110`) |
-| `rollback` strategy | it sets abort and then waits for the lock; abort resolves the suspension, so the lock is released |
+| `rollback` strategy | it sets abort, which resolves the suspension and releases the lock |
 
 Mutating RPC verbs and session swaps fail after their existing 5 s wait with
-`TURN_STILL_RUNNING`, as they do for any long turn. That is the intended refusal.
+`TURN_STILL_RUNNING`, as they do for any long turn.
 
-**One core fix comes with this.** Today, after a `tool_call` hook returns, the
-tool runs even if the signal tripped during the hook. Sequential mode checks the
-signal at `agent_loop.py:1280`, prepares and runs the hooks at `:1293`, and
-executes at `:1335`, with no check in between. The parallel prepare loop
-(`:1371-1374`) does not check it at all. An abort chosen at a `tool_call`
-suspension must not run the tool. So the loop checks the signal after the
-`tool_call` hooks and before execution, in both modes, and routes to
-`_aborted_batch`.
+**RPC's serial reader gets a control lane.** `rpc/transport.py:263` awaits each
+line before reading the next. So a command handler waiting in a form, or any
+request that awaits a suspension, would block the host's own
+`answer_suspension`. That is a deadlock. The reader therefore dispatches four
+verbs without waiting on the request in flight: `answer_suspension`, `abort`,
+`get_pending_suspensions` and `get_state`. Everything else stays serial, so hosts
+that rely on in-order handling, Tectum included, see no change. Responses carry
+their request id, as they already do.
 
-**Abort still writes what exists.** An abort resolves the suspension, the
-handler returns, and the write that the hook was holding still happens. Only
-then does the loop take its abort path. This is the same reasoning as
-ENTRY-ANNOTATIONS.md §4.3: an unwritten entry wedges the session.
+**One core fix comes with this.** Today the tool runs even if the signal tripped
+during a `tool_call` hook. In sequential mode the loop checks the signal at
+`agent_loop.py:1280`, runs the hooks at `:1293` and executes at `:1335`, with no
+check in between. The parallel prepare loop (`:1371-1374`) never checks. An abort
+chosen at a `tool_call` suspension must not run the tool. So the loop checks the
+signal after the `tool_call` hooks and before execution, in both modes, and
+routes to `_aborted_batch`.
 
-- At **`annotate`** on an assistant message, the assistant entry is finalized.
-  Its calls then get `ABORTED_TOOL_RESULT` from `_aborted_batch`. Without the
-  finalize, `entries_to_messages` would raise `IncompleteEntryError` at it.
-- At **`tool_result`**, the tool has run, so its real result is written. The
-  batch's other unanswered calls get aborted results. Without that, the
-  assistant's call would stay unanswered.
-- At **`tool_call`**, the tool does not run (the fix above), and the call gets
-  an aborted result.
+**Abort writes nothing new beyond the aborted results.** Every permitted site has
+its entries already written (§3.2). An abort at `tool_call` gives that call and
+the batch's later calls `ABORTED_TOOL_RESULT`. An abort at any other site ends
+the turn on the existing abort path. No `IncompleteEntryError` and no unanswered
+call can arise from a suspension.
 
-### 3.7 Durability: recorded, and reported after a restart
+### 3.7 Durability and resume: one mechanism
 
-The Future lives in memory. A restart cannot resume a parked coroutine, and v1
-does not pretend to. Instead:
+The tree is the truth. A suspension is an entry, an answer closes it, and the
+loop resumes from the leaf. Three situations use the same code:
 
-- **A durable record.** On raise, core writes a `suspension` entry as a side
-  child of the cursor's leaf. It does not move the cursor, so the turn's next
-  entry still hangs from the leaf and the path the model reads is unchanged. The
-  entry is written with `status: "incomplete"` and holds `{spec, site,
-  targetId}`. On resolve, core finalizes it with the resolution.
+- an in-process answer: the Future is live, and the loop simply continues;
+- a restart after a crash, in serve or the TUI: the side entry is still open,
+  so the suspension is pending again;
+- a `-p` process that exited on purpose at a suspension (§3.8).
+
+#### 3.7.1 The side entry
+
+- On raise, core writes a `suspension` entry as a side child of the cursor's leaf,
+  with `status: "incomplete"` and `{spec, site, extension, targetId, call}`.
+  `call` is the `tool_call_id` at a `tool_call` site.
+- `extension` keeps forms and debugger breaks apart in the dataset.
+- On resolve, core finalizes the entry with the resolution: action, values, and
+  who answered.
+- **The finalized entry is the verdict record.** The debugger's dataset is these
+  entries. They mirror to JMFTS like any other entry.
 - **Side writes are new cursor API.** `Cursor.finalize` moves the leaf onto the
   entry it finalizes (`cursor.py:311-313`), and `Cursor.append` moves it onto the
-  new entry. Neither may be used for a side entry. So the cursor gains
-  `open_side(kind, **payload)` and `finalize_side(entry_id, **payload)`. They
-  call `SessionLog.append_at(leaf, …)` and `SessionLog.finalize`, which every
-  store already has, and they touch neither `_leaf` nor `_open`.
-- **The answer is the verdict record.** A finalized `suspension` entry holds
-  the action, the field values (the verdict and the note) and who answered. The
-  debugger's dataset is these entries. They mirror to JMFTS like any other
-  entry.
-- **A restart reports, and never continues silently.** On load, an incomplete
-  `suspension` entry means a turn was suspended when the process stopped.
-  - The session raises a session warning (#60's warnings store), naming the
-    suspension and its site.
-  - The turn's pending tool calls are in the state any interrupted turn leaves
-    (`admission_reason` names them), and recovery is the existing one: continue
-    from an earlier entry.
-  - Resuming at a boundary is deferred (§7).
+  new entry. Neither is usable here. So the cursor gains
+  `open_side(kind, **payload)` and `finalize_side(entry_id, **payload)`. They call
+  `SessionLog.append_at(leaf, …)` and `SessionLog.finalize`, and touch neither
+  `_leaf` nor `_open`.
 
-**One predicate makes the side entry safe:** `is_side_entry(entry)` in
-`session_log`. Every walker that counts or follows children calls it, instead of
-each learning the kind separately:
+#### 3.7.2 One predicate for every walker
 
-- `default_leaf` skips side entries, as it skips `navigate`
-  (`session_log.py:170`). Otherwise a reopened session would continue from a
-  resolved suspension.
-- `ConversationTree`'s children and branch counting leave them out, so a fork
-  picker or a branch indicator does not show every suspension as a branch.
-- the tree views (the TUI tree browser, `get_tree`) show a side entry as a
-  mark on its parent;
-- the JMFTS store's tree derivation does the same.
+`is_side_entry(entry)` in `session_log` is exported from the public API.
+`ctx.leaf_id()` is added beside it, so an extension never infers the leaf from
+"the last entry" (memory_reflex does today, at `memory_reflex.py:709-713`).
 
-`entries_to_messages` needs no change: a side entry is never an ancestor of a
-later entry, so it is never on a path the model reads. A second side kind later
-(see the notes in §7) costs one line in the predicate.
+Every walker that counts or follows children calls the predicate:
 
-**Why not a namespaced kind** (`system:kind`)? `default_leaf` already skips
-those, but its docstring reserves them for documents another system put in the
-tree, such as the JMFTS store's `jmfts:document` (`session_log.py:158-161`).
-`suspension` is τ's own, so it is a bare word with its own skip.
+| walker | effect |
+|---|---|
+| `default_leaf` (`session_log.py:170`) | skips side entries, as it skips `navigate` |
+| `ConversationTree` children and branch counting | leaves them out, so fork pickers and branch indicators do not show a branch per suspension |
+| the TUI tree browser, `get_tree` | show a side entry as a mark on its parent |
+| HTML export (`export.py:640-690`) | does not count it as a tip, so `max(children, key=newest)` cannot pick it |
+| `complete_message_id("in_session")` | does not offer it |
+| the JMFTS store's tree derivation; serve replicas (§3.4) | the same rule |
 
-**Why not `ext` on the target entry?** `ext` is write-once, written in the
-entry's one write (ENTRY-ANNOTATIONS.md §4). A suspension at `tool_call`
-happens after the assistant entry is final. A side entry needs no rewrite.
+`entries_to_messages` needs no change, because a side entry is never an ancestor
+of a later entry. A second side kind later costs one line in the predicate.
 
-### 3.8 Responders, and heads with none
+**Forks copy side children.** A fork at a point copies the path
+(`session_store.py:461`, `daemon.py:1157`). It also copies the side children of
+each copied entry, so verdicts and mode changes on a shared prefix survive. #84
+does the same for tau-jmfts's `at=` fork.
 
-A suspension is raised only if something can answer it. Core keeps a responder
-count per session:
+#### 3.7.3 Resuming from the tree
 
-- the TUI and the REPL count as one responder while they are bound;
-- an RPC host counts once it declares the `suspensions` capability in the
-  handshake;
-- each serve client counts once its `hello` declares the capability.
+A pending suspension with no live Future is one whose process died or exited.
+Answering it starts a resume. Core takes the cursor's turn lock, finalizes the
+side entry, and enters the loop at the point that the site and the leaf
+determine:
+
+| site of the suspension | leaf | resume does |
+|---|---|---|
+| `tool_call`, call *k* of a batch | the assistant entry, or call *k−1*'s result | run calls *k…n* through the normal tool path. Their `tool_call` hooks run again with `event["resumed"] = {suspension_id, resolution}`, and the suspending handler uses that to avoid suspending twice. On `abort`, calls *k…n* get aborted results. Then the turn continues: `turn_end`, then sample |
+| `entry_written` of a user entry | the user entry | sample |
+| `entry_written` of an assistant entry with calls | the assistant entry | run its calls, as above from call 1 |
+| `entry_written` of an assistant entry with text only | the assistant entry | `turn_end`, then the end of the prompt (follow-ups, `user_turn_end`, `agent_end`) |
+| `entry_written` of result *k* | result *k* | run calls *k+1…n*, then `turn_end`, then sample |
+| `entry_written` of a custom node | the node | sample, which is what follows every custom node the loop writes |
+| mutating `turn_end` | the turn's last entry | dispatch `turn_end` again in full, with `event["resumed"]`, then sample or end |
+| `user_turn_end` | the prompt's last entry | dispatch `user_turn_end` again, then `agent_end` |
+| a command handler (form) | — | **not resumable across processes.** A pending form whose process died is closed with `action: "abandoned"` and a session warning. The user runs the command again. A command is a flow in a coroutine, and its state is not in the tree |
+
+**Why `turn_end` and `user_turn_end` dispatch again in full.** Messages returned
+by `turn_end` handlers are appended only after every handler returns. So after a
+crash none of that dispatch's returns are in the tree. Dispatching again is
+therefore correct, but a handler with side effects outside the tree sees the
+event twice. `event["resumed"]` lets it tell.
+
+**What is lost across processes, and how each piece is rebuilt:**
+
+| in-memory state | across a process boundary |
+|---|---|
+| model, reasoning, turn settings | rebuilt from the `config` entries on the path (CURSORS.md) |
+| the turn counter against `max_turns` | rebuilt: assistant entries since the prompt's user entry |
+| system prompt, tools | rebuilt from config, as on any reload |
+| abort signal, retry state, policy deadlines | fresh |
+| answered calls in the batch | not re-run; their results are in the tree |
+| steer, follow-up and `nextTurn` queues | **lost**, never in the tree. After a crash the resume warning says so. A deliberate `-p` exit has none, because `-p` has no steer channel |
+| extensions' in-memory state | the extension's job. The resume dispatches `session_start` before resuming, and an extension rebuilds from the path. The debugger rebuilds its counters from the path (§5.5) |
+| the provider's prompt cache | cold, unless the resume falls inside the provider's cache TTL. That costs money, not correctness |
+
+### 3.8 Responders, live and deferred
+
+A suspension is raised only if something can answer it.
+
+**A live responder** answers in-process. It counts only while
+`user_input_permitted()` is true for the submission that drives the turn
+(`extension_types.py:575-590`, default `False`, `submission.py:147`). A turn
+submitted by a timer, a bus message or an extension's `api.submit` has no live
+responder unless its submitter set `allow_user_input`. The live responders are:
+
+- the TUI and the REPL, while bound;
+- an RPC host, once it calls the new verb `declare_capabilities
+  {suspensions: true}`, because RPC has no handshake today;
+- a serve client whose `hello` declares the capability. `hello` is per
+  connection, so the count is the attached connections that declared it.
+
+**A deferred responder** answers in a later process. `-p` is one, for its own
+prompt only. When a suspension is raised under `-p`:
+
+1. Core writes the open side entry, as usual.
+2. `api.suspend` raises `TurnSuspended`. It unwinds the loop without writing
+   aborted results or a `turn_error`, so the tree stays exactly at the
+   suspension point. `agent_end` carries `end_reason: "suspended"`.
+3. `-p` prints the suspension and exits with a **distinct exit code, 3**, which
+   means "suspended". It is neither success (0) nor error (1). Text mode prints
+   the title, evidence, actions, session id, suspension id, and the command that
+   answers it. `--mode json` prints one `{"type": "suspension_open", …}` record.
+   (3 is proposed: the build checks that no current `-p` path exits 3.)
+4. A later process answers and resumes:
+   `tau -p --session <id> --answer step [--field verdict=fine] [--field note=…]`.
+   It resumes by §3.7.3 and runs until the next break, which exits 3 again, or
+   until the turn completes.
+5. `--answer` is required while a suspension is pending. Without it, `-p`
+   refuses and names the pending suspension. It never continues silently.
+6. Any other head can answer the same suspension. A `-p` session suspended at
+   exit 3 can be answered from the TUI, from `tau serve` with an attached client,
+   or from Tau Code. The answering head resumes the turn.
+
+**Where nothing can answer,** `api.suspend` raises `NoResponderError`:
 
 | situation | behaviour |
 |---|---|
-| `-p`, text or `--mode json` | there is no responder. `ctx.suspend` raises `NoResponderError`. The debugger arms only after checking `ctx.can_suspend()`, so `/step on` under `-p` fails at arm time, naming the alternatives: run under `tau serve` and attach a client, or use `--mode rpc` with a host that declares `suspensions` |
-| `--mode rpc`, host did not declare `suspensions` | the same: `NoResponderError` at the call. This is right for Tectum's voice nodes: nobody sits on that channel, and a wait would hang the voice turn until its outer timeout (tectum-arecibo) |
-| serve with zero attached responders | the suspension **waits**. It does not default. `list_sessions` shows the cursor as suspended, a session warning says it is waiting for a client, and the first client to attach receives it in its snapshot |
-| `ui.form` under `allow_user_input=False` | unchanged: the headless policy applies (§3.9) |
+| `--mode rpc`, host did not declare `suspensions` | `NoResponderError`. This is right for Tectum's voice nodes: nobody sits on that channel, and a wait would hang the voice turn until its outer timeout (tectum-arecibo) |
+| a live head, submission without `allow_user_input` | `NoResponderError` |
+| serve with zero attached responders | the suspension **waits** and does not default. `list_sessions` shows the cursor as suspended, a session warning says it is waiting for a client, and the first capable client to attach gets it in its snapshot. Under serve, `can_suspend()` is therefore always true |
+| `ui.form` with no responder | the headless policy applies, unchanged (§3.10) |
 
-A `-p` control channel (stdin JSON or a socket) is deferred (§7). `tau serve`
-plus an attached client covers the scripted case today.
+### 3.9 Refusing a turn that cannot be stepped
 
-### 3.9 Relation to `request_user_action` and `ctx.ui.form`
+An armed debugger whose config came back from the tree must not discover
+mid-turn that nobody can answer. If it did, the failure would differ by site: a
+blocked call at `tool_call` (`runner.py:289-313`), an error elsewhere. So the
+check happens before admission:
+
+- The `input` hook gains a return form, `{"refuse": "<reason>"}`. `submit` then
+  returns `accepted=False` with that reason, and no entry is written.
+- The debugger returns it when stepping is armed at the cursor and
+  `api.can_suspend()` is false. The reason names the alternatives: attach a
+  client under serve, declare the capability, or set `allow_user_input`.
+- Its config can choose `unsteppable: run` instead. The turn then runs
+  unstepped, with a session warning saying so. That is an explicit choice, not
+  a silent skip.
+
+### 3.10 Relation to `request_user_action` and `ctx.ui.form`
 
 - **`request_user_action` stays,** for a different job: a durable gate on the
-  next turn that survives a restart. A suspension gates the current turn. The
-  two share the Ask spec and the head renderers.
-- **`ctx.ui.form` is reimplemented on `ctx.suspend`.** A form becomes a
-  suspension with the actions `submit` and `cancel`. That removes `ServeUI.form`'s
-  private Future and its `request`/`Answer` path, and with it the defaults that
-  serve fabricates when nobody is attached. Forms then work in RPC too.
+  next turn. It shares the Ask spec and the head renderers.
+- **`ctx.ui.form` is rebuilt on `api.suspend`,** with the actions `submit` and
+  `cancel`. That removes `ServeUI.form`'s private Future and its `request`/`Answer`
+  path, and with it the defaults serve fabricates when nobody is attached. Forms
+  then work in RPC too.
+  - **The serve verb `answer` and the `request`/`request_closed` events are
+    removed** in the same release, in favour of `answer_suspension` and
+    `suspension_open`/`suspension_closed`. Two clients use them today: Tau Code
+    and the TUI under `--connect` (`remote.py:879-891`). Both are migrated in
+    that release. The tests that pin the old path change with it:
+    `test_serve.py:274-283`, `test_serve_schema.py:300`, `:401`, and
+    `test_headless_submission_source.py:260`.
 - **A form usually suspends outside a turn,** from a command handler collecting
-  a missing argument (`extension_types.py:498-503`). §3.2 permits that site.
-  There:
-  - `ctx.suspend` takes no lock of its own. It holds whatever its caller holds:
-    `_drive_turn`'s turn lock for a command typed as a prompt, nothing for a
-    panel button or a chord (`run_extension_command`, `agent_session.py:5459-5491`).
-  - Its side entry hangs from the cursor's leaf, as at any other site.
-  - The `abort` action is not offered, because there is no turn to abort.
-    `cancel` resolves the form with `None`, as today.
-  - The responder rule applies unchanged. The headless policy
-    (`--ui-defaults form=defaults`, or `HeadlessDialogError`) is kept for heads
-    with no responder. A flow collecting a command argument may legitimately
-    take defaults; a step-debugger break may not.
-- The serve verbs `answer` and the `request`/`request_closed` events are
-  superseded by `answer_suspension` and `suspension_open`/`suspension_closed`.
-  They are removed in the same release. τ is below 1.0, and tau-code is the only
-  client (tau-code-arecibo).
+  an argument. There it takes no lock of its own: it holds `_drive_turn`'s lock
+  for a command typed as a prompt, and nothing for a panel button or a chord
+  (`run_extension_command`, `agent_session.py:5459-5491`). It offers no `abort`,
+  and `cancel` resolves it with `None`. The headless policy
+  (`--ui-defaults form=defaults`, or `HeadlessDialogError`) is kept for heads with
+  no responder. A flow collecting a command argument may take defaults; a
+  step-debugger break may not.
 
-### 3.10 Who may answer over networked serve
+### 3.11 Who may answer over networked serve
 
-Any client that passed `hello` may answer, which is the same rule as every other
-write verb today. Per-client roles are not added here: τ's threat model is
-scrappy, and tokens and locks are opt-in. The resolution records who answered
-(`client_id` and the `hello.client` label), so the dataset can attribute
-verdicts to a connection. Naming a person needs a client-supplied display name,
-which is deferred (§7).
+Any client that passed `hello` may answer, the same rule as every other write
+verb today. Per-client roles are not added: τ's threat model is scrappy, and
+tokens and locks are opt-in. The resolution records `client_id` and the
+`hello.client` label, so verdicts can be attributed to a connection.
 
 ## 4. Handler policies (#83): an open mechanism
 
 John wants this extensible, and he will not fix a set until he has tinkered.
-So the policy is a registered object, not an enum. **The API is experimental**:
-its names and defaults may change below 1.0.
+**The API is experimental**: names and defaults may change below 1.0.
 
-### 4.1 Shape
+### 4.1 A policy is a protocol
 
 ```python
-api.register_policy("gating", HandlerPolicy(
-    timeout_s=10.0,
-    on_timeout="fail",      # fail | proceed
-    on_error="fail",        # fail | proceed
-    surface="error",        # error | warning
-))
+class HandlerPolicy(Protocol):
+    async def run(self, call: Callable[[], Awaitable[Any]], site: PolicySite) -> Outcome: ...
+
+# Outcome = Returned(value) | Failed(error) | Proceeded(record)
+# PolicySite: hook name, extension name, deadline(seconds) -> PausableDeadline, warn(text)
+
+api.register_policy("gating", Bounded(timeout_s=30, on_timeout="fail", on_error="fail"))
 api.on("tool_call", handler, policy="gating")
 ```
 
-- **`timeout_s`:** `None` means no timeout.
-- **`fail`** means what failure means at that hook: a `tool_call` blocks the
-  call (it already fails closed on an exception, `tool_pipeline.py:297`); an
-  `annotate` writes the error ext and aborts the turn (ENTRY-ANNOTATIONS.md
-  §4.3); `turn_end` and `tool_result` end the turn with the error.
-- **`proceed`** continues as if the handler had returned nothing.
-- **`surface`** chooses between a turn error and a session warning
-  (`ctx.set_warning`).
-- A timed-out handler is cancelled, so the work it was doing stops.
-- **A policy applies to `ext:` channel handlers too.** On `fail`, the handler's
-  error or timeout is raised into the emitter's `await api.emit(...)` as
-  `HandlerPolicyError`. The emitter sees it and takes its own documented action.
-  For example, tau-router falls back to base routing and sets a warning when
-  its decider pull fails. On `proceed`, `emit` returns normally and the warning
-  is raised. A handler with no policy keeps today's failure isolation: its
-  exception is surfaced, and `emit` does not raise.
+- **A policy decides how a handler is run and what its failure becomes.**
+  Retry, fall back to another decider, or proceed-and-record are each a new
+  class, with no core change.
+- **The hook site interprets the outcome:**
+  - **`Failed`** means what failure means at that hook. A `tool_call` blocks
+    the call (it already fails closed, `tool_pipeline.py:297`). `annotate`
+    writes the error ext and aborts the turn (ENTRY-ANNOTATIONS.md §4.3).
+    `turn_end`, `tool_result` and `entry_written` end the turn with the error.
+  - **`Proceeded`** continues as if the handler returned nothing, and its
+    `record` is kept where the site has a place for it. At `annotate` that is
+    `ext[name] = {"error": …, "proceeded": true}`, so a proceeded failure is never
+    read as a clean pass in the dataset. Elsewhere it becomes a session warning.
+- **`ext:` channel handlers run under policies too.** A `Failed` outcome raises
+  `HandlerPolicyError` into the emitter's `await api.emit(...)`. A `Proceeded`
+  outcome returns normally and raises its warning. A handler with no policy keeps
+  today's failure isolation. Its exception is surfaced, and `emit` does not
+  raise.
+- **Enforcement is a cancel scope.** Each policed handler runs in its own task.
+  A watchdog cancels that task when its `PausableDeadline` expires, and the
+  dispatch token (§3.2) closes when the task returns. A deadline resumed after a
+  pause, already past its time, fires immediately.
 
 ### 4.2 Built-ins
 
-| name | `timeout_s` | `on_timeout` | `on_error` | `surface` | for |
+| name | class | timeout | on timeout | on error | for |
 |---|---|---|---|---|---|
-| `gating` | 30 | fail | fail | error | a decider or check whose answer gates the step |
-| `advisory` | 15 | proceed | proceed | warning | a recorder or monitor whose absence must not stop work |
-| `human` | none | — | fail | error | a handler that suspends for a human (§3) |
+| `gating` | `Bounded` | 30 s | `Failed` | `Failed` | a decider or check whose answer gates the step |
+| `advisory` | `Bounded` | 15 s | `Proceeded` | `Proceeded` | a recorder or monitor whose absence must not stop work |
+| `human` | `Unbounded` | none | — | `Failed` | a handler that suspends for a human (§3) |
 
 John set these numbers (2026-10-24). They should become faster eventually, but
 an error because a model is slow is a punishing design, so they start generous.
-A handler that names no policy behaves exactly as today: no timeout, and errors
-as each hook handles them now. So landing this changes no existing extension.
+A handler that names no policy behaves exactly as today. Landing this changes no
+existing extension.
+
+As one example of a non-built-in, tau-router proposes that a failed decider pull
+should fall back to base routing and set a warning. That is tau-router's
+proposed behaviour, not a ruling.
 
 ### 4.3 How policies and suspension meet
 
 A suspension happens inside nested dispatches. The debugger's `debug_hit`
-handler runs inside the producer's hook, and the producer's handler may have a
-timeout. The shadow pass's will be `gating`. A check on the calling handler alone
-is not enough. If the producer's 30 s clock kept running, it would cancel the
-suspension while the human was still reading. Under `proceed`, it would then
-continue as if nothing had happened: a fabricated "continue", the defect §1.2
-item 3 forbids (tau-router, tau-search).
+handler runs inside the producer's hook, and the producer's handler may be
+`gating`. If the producer's 30 s clock kept running, it would cancel the
+suspension while the human was still reading. Under `Proceeded`, the turn would
+then continue as if nothing had happened: a fabricated "continue".
 
-**The rule: a policy's clock pauses while a suspension raised under it is
-open.** A policy timeout is not `asyncio.wait_for`. It is a deadline object
-kept in the same dispatch-scoped context as the §3.2 token, one per enclosing
-dispatch. `ctx.suspend` pauses every enclosing deadline when it opens and
-resumes them when it resolves. So a timeout measures the handler's own work and
-never the human's reading time.
+**The rule: every enclosing deadline pauses from the moment `api.suspend` is
+called, until it returns.** That includes time spent queued behind another
+suspension on the cursor (§3.2.1). So a timeout measures a handler's own work,
+never a human's reading time and never the queue.
 
 - An inner timeout is capped by the outer one, for every wait except a
   suspension.
 - A producer may register its hook under any policy and still emit `debug_hit`.
-- The debugger registers its handlers with `policy="human"`. With no timeout,
-  its own clock has nothing to pause.
+- The debugger registers its handlers with `policy="human"`.
 
-The alternative was to refuse `ctx.suspend` whenever any enclosing dispatch has
-a timeout (tau-router). That is simpler, but it forbids a `gating` decider from
-ever producing a break condition, and decider questions are §5.3's main external
-producer.
+The alternative was to refuse `api.suspend` under any enclosing timeout
+(tau-router, round 1). That forbids a `gating` decider from ever producing a
+break, and decider questions are §5.3's main external producer.
 
 ## 5. The debugger extension (`tau-debugger`)
 
 ### 5.1 Home and dependencies
 
-- **Repository:** `~/Development/tau-debugger`, MIT. It is created when the
-  build starts.
-- **It depends on** τ ≥ the release that ships §3 and §4, and on #82 (`annotate`).
-- **It contains no head code.** Everything it shows goes through `ctx.suspend`,
+- **Repository:** `~/Development/tau-debugger`, MIT, created when the build
+  starts.
+- **It depends on** the τ release that ships §3 and §4.
+- **It contains no head code.** Everything it shows goes through `api.suspend`,
   `ctx.ui.set_status` and its commands.
 
 ### 5.2 Break conditions over the bus
 
-Producers announce and emit on their own `ext:` channels (`extension_types.py:57`).
-The debugger only consumes them:
+Producers announce conditions and emit hits on their own `ext:` channels
+(`extension_types.py:57`). The debugger only consumes them.
 
-- **Conditions are pulled, not pushed.** The debugger emits
-  `ext:tau_debugger:need_conditions` when a turn starts with stepping armed, and
-  on `/break list`. Each producer answers by emitting
-  `ext:<producer>:debug_conditions` = `[{name, describe}]`, which feeds the
-  break-set picker. A push at `session_start` would miss `/new`, fork and resume,
-  where `session_start` does not fire in 0.14, and it would depend on load order.
-  This is the same request-and-reply idiom as tau-router's decider pull.
-- **A hit** is emitted when a condition fires: `ext:<producer>:debug_hit` =
-  `{condition, evidence, targetId?}`.
-- **The producer contract:** emit `debug_hit` from a §3.2 site (a hook, never a
-  notify event or a task the hook spawned). Any policy is allowed, because its
-  clock pauses during the suspension (§4.3).
+- **Conditions are pulled.** The debugger emits `ext:tau_debugger:need_conditions`
+  when a turn starts with stepping armed, and on `/break list`. Each producer
+  answers on `ext:<producer>:debug_conditions` = `[{name, describe}]`, which
+  feeds the break-set picker.
+  - A push at `session_start` would miss `/new`, fork and resume, where
+    `session_start` does not fire in 0.14, and it would depend on load order.
+  - This is the same request-and-reply idiom as tau-router's decider pull.
+- **A hit** is emitted on `ext:<producer>:debug_hit` = `{condition, evidence,
+  targetId?}`.
+- **The producer contract:** emit `debug_hit` from a hook, never from a notify
+  event or a task the hook spawned. Any policy is allowed, because its clock
+  pauses during the suspension (§4.3). At a permitted site (§3.2) the debugger
+  suspends inside the emit. At any other hook it queues the hit for the next
+  permitted site.
 
-Emission is awaited (`events.py:19-25`), and the producer emits from inside its
-own hook. So the debugger's handler for `debug_hit` runs at a permitted site
-(§3.2) and can suspend there, holding the producer's hook and with it the loop.
-A producer with no debugger loaded pays one emit with no subscribers.
-
-The `all` channel does not receive `ext:` channels (`events.py:483-495`), so the
-debugger subscribes to each producer by name. The list comes from its config.
+The `all` channel does not receive `ext:` channels (`events.py:483-495`). So the
+debugger subscribes to each producer by name, from its config.
 
 ### 5.3 Built-in deterministic conditions
 
-These need no decider. Each is observable at a permitted site:
+These need no decider:
 
-| condition | site |
-|---|---|
-| every step (each completion, each tool call) | `annotate`, `tool_call` |
-| a tool, or a named tool | `tool_call` |
-| a tool error (`is_error`; a nonzero bash exit since #88) | `tool_result` |
-| a risky bash command, `git commit`/`push`/`reset` | `tool_call`, regex over `command` |
-| a write or edit to a test file, or outside an allowlist | `tool_call`, the `path` argument |
-| an edit diff that removes asserts | `tool_result`, the edit tool's `details.diff` |
-| the same call repeated N times; the same error text repeated | `tool_call` / `tool_result`, debugger state |
-| oversized tool output | `tool_result`, in characters |
-| a text-only completion; an assistant claim regex ("all tests pass") | `annotate`, assistant |
-| N completions with no file edits | debugger state |
-| a context-size threshold | `annotate`, assistant `usage` |
+| condition | read at | suspends at |
+|---|---|---|
+| every step: each entry written, and each tool call | `entry_written`, `tool_call` | the same |
+| a tool, or a named tool | `tool_call` | `tool_call` |
+| a tool error (`is_error`; any nonzero bash exit since #88) | `entry_written`, toolResult | the same |
+| a risky bash command; `git commit`/`push`/`reset` | `tool_call`, regex over `command` | `tool_call` |
+| a write or edit to a test file, or outside an allowlist | `tool_call`, the `path` argument | `tool_call` |
+| an edit diff that removes asserts | `entry_written`, toolResult `details.diff` | the same |
+| the same call repeated N times; the same error text repeated | `tool_call` / `entry_written`, from the path | the same |
+| oversized tool output | `entry_written`, toolResult, in characters | the same |
+| a text-only completion; an assistant claim regex ("all tests pass") | `entry_written`, assistant | the same |
+| N completions with no file edits; a context-size threshold | `entry_written`, assistant (`usage`) | the same |
 
 Conditions from other producers:
 
-- **todo** created, changed and completed come from `examples/38_todo.py`, which
-  gains three emits.
+- **todo** created, changed and completed come from `examples/38_todo.py`,
+  which gains three emits.
 - **decider questions** (`q:<id>`) come from the shadow extension.
-- **a model change** comes from tau-router. It emits after `set_model`
-  succeeds, from its `input` and `turn_end` hooks, with evidence `{from, to,
-  why, source: route | decider_lease | step_down}`. A human `/model` is not a
-  router hit. tau-router's refusal holds (429/401) are seen on notify events, so
-  they are status-only.
+- **a model change** comes from tau-router, as one condition, `model_change`,
+  with `source` as a filter field. It emits after `set_model` succeeds, from
+  `input` and `turn_end`, with evidence `{from, to, why, source: route |
+  decider_lease | step_down}`. A hit at `input` is carried to the user entry's
+  `entry_written`. A human `/model` is not a router hit. Refusal holds (429/401)
+  appear only on notify events, so they are status-only.
 
-Two conditions are deliberately not in v1:
-
-- **compaction and provider retries.** They are visible only as notify events
-  (`side_completion_start`, `provider_retry`), where suspending is refused (§3.2).
-  They can still be shown in the status line.
-- **delegate/`spawn_branch`.** It has no event; a delegate tool is caught as a
-  named tool.
+Not in v1: compaction and provider retries, which are visible only as notify
+events, and shown in the status line instead; and `spawn_branch`, which has no
+event. A delegate tool is caught as a named tool.
 
 ### 5.4 Stepping semantics
 
-- **step:** suspend at the next permitted site with any condition, then return
-  to step mode.
-- **step over** (continue): run until a condition in the selected break set
-  fires.
-- **continue:** run without stopping until the human arms stepping again.
+- **step:** suspend at the next permitted site, then stay in step mode.
+- **step over:** run until a condition in the selected break set fires.
+- **continue:** run without stopping, until stepping is armed again.
 - **abort:** trip the turn's signal (§3.6).
-- The break set is edited in the suspension's own fields (a multiselect), and
-  with `/break add|rm|list` between turns.
+
+The break set is edited in the suspension's own fields (a multiselect), and with
+`/break add|rm|list` between turns.
 
 ### 5.5 Where the mode lives
 
-The mode and the break set are written as a `customEntry`
-(`tau_debugger.config`) by the arming command, between turns. Because they are
-in the tree:
+The debugger's effective config at a point in the tree is a fold over the path:
 
-- a fork carries the mode with it;
+- each `tau_debugger.config` customEntry on the path, written by the arming
+  command between turns;
+- then each resolution of a `tau_debugger` suspension hanging off an entry on
+  the path, read through `is_side_entry` children. A choice made at a
+  suspension, such as "continue" or an edit to the break set, applies from that
+  point on.
+
+Because both live in the tree, and forks copy side children (§3.7.2):
+
+- a fork carries the mode;
 - navigating back before the arming entry disarms;
-- a restart keeps it.
+- a restart, or the next `-p` invocation, honours the same conditions without
+  being told again.
 
-This follows the per-cursor-config-in-the-tree direction (CURSORS.md). The
-debugger reads its config at the cursor when a turn starts.
+The debugger also rebuilds its counters from the path (repeated calls, edits
+since the last completion). So nothing it decides with depends on surviving
+memory.
 
 ### 5.6 Notes and verdicts
 
-- **At a suspension:** the note and verdict are the resolution's field values,
-  stored durably in the finalized `suspension` entry (§3.7). The debugger writes
-  nothing else.
-- **At an `annotate`-site break:** the debugger *also* returns the resolution
-  from its `annotate` handler, so it lands in `ext["tau_debugger"]` on the very
-  entry the human looked at (ENTRY-ANNOTATIONS.md §2). That makes "verdict per
-  entry" a single read.
+- **At a suspension:** the note and the verdict are the resolution's values,
+  stored in the finalized `suspension` entry (§3.7.1). Its `targetId` names the
+  entry looked at.
 - **Between turns:** `/note [targetId] <text>` appends a `tau_debugger.note`
-  `customEntry`.
+  customEntry.
 - **Voice:** no τ head captures audio, and Tau Code has no microphone access. An
   OS-level whisper hotkey that types into whichever client has focus fills any
-  note field, in every head. Nothing in τ or tau-debugger changes for it.
+  note field, in every head, and `--field note=…` under `-p`. Nothing in τ or
+  tau-debugger changes for it.
 
 ### 5.7 Cost when not armed
 
-The debugger registers its handlers at load, and each returns at once when the
-config at the cursor says unarmed. The cost is one dictionary read per hook
-call, plus `entry_blocks` on each written message for its `annotate` handler.
-Conformance (§6) measures a turn with the debugger loaded and unarmed against a
-turn without it.
+Each handler returns at once when the config fold says unarmed. The fold is
+cached per leaf. Conformance (§6) measures a turn with the debugger loaded and
+unarmed against a turn without it.
 
 ## 6. Conformance
 
 ### 6.1 One scripted session, stepped from every head
 
-The scenario uses a faux provider (the test helpers' stub). One prompt yields a
-completion that calls `bash` twice, then one that answers in text. The debugger
-is armed in `every` mode, and the script answers each suspension in order: step,
-step with a note, step over, continue.
+The session runs on a faux provider. One prompt yields a completion that calls
+`bash` twice, then a text answer. The debugger is armed in `every` mode. The
+script answers in order: step, step with a note, step over, continue.
 
-Every head must produce the same tree: the same entries, the same four finalized
-`suspension` entries with the same resolutions, and the same `ext` on the
-annotated entries.
+Every head must produce the same tree: the same entries, the same finalized
+`suspension` entries with the same resolutions, and the same leaf.
 
 | head | driver |
 |---|---|
 | TUI | Textual `pilot`, pressing the modal's actions |
-| REPL | a pty or stdin driver answering the field prompts |
-| `--mode rpc` | a JSON driver that reads `suspension_open` and sends `answer_suspension` |
+| TUI under `--connect` | `pilot`, against a local `tau serve` |
+| REPL | a pty driver answering the field prompts |
+| `--mode rpc` | a JSON driver: `declare_capabilities`, then reading `suspension_open` and sending `answer_suspension` |
 | serve, local | the τ client library over the unix socket |
 | serve, networked | the same, over loopback TCP with `serve.token` set |
 | Tau Code | tau-code's own e2e suite against a pinned `tau serve` (in that repository) |
-| `-p` | arming fails with `NoResponderError`, and no turn runs |
+| `-p` text and json | a loop: run, expect exit 3 and a printed suspension, answer with `--answer`, repeat, until exit 0 |
 
 ### 6.2 The edge cases
 
 - two clients answer at once: one wins, the other gets `already resolved`, and
   both heads close the suspension;
-- a client disconnects while a suspension is open and reattaches: it sees the
-  suspension in `Attached.suspensions`;
+- a client disconnects and reattaches during a suspension: it sees it in
+  `Attached.suspensions`;
 - serve with no client attached: the suspension waits, and the first client to
   attach answers it;
-- abort during a `tool_call` suspension: the tool does not run, and the batch
-  gets aborted results;
-- abort during an `annotate` suspension on an assistant message: the entry is
-  finalized, its calls get aborted results, and the leaf is not incomplete;
-- abort during a `tool_result` suspension: the real result is written, and the
-  batch's other calls get aborted results;
+- abort at a `tool_call` suspension: that call and the later calls get aborted
+  results, and no tool runs;
+- abort with a second suspension queued: both resolve as `abort`, and the queued
+  one never opens;
+- two result `entry_written` suspensions in one parallel batch: the second is
+  queued until the first resolves;
 - a `gating` producer emits `debug_hit` and the debugger suspends: the
-  suspension outlasts the producer's 30 s, the producer's clock resumes after
-  the answer, and the turn does not fail;
-- a task spawned from a hook calls `ctx.suspend` after the hook returned:
+  suspension outlasts 30 s, and the producer's clock resumes after the answer
+  and does not fail the turn;
+- a second hit queued behind the first under a `gating` producer: it does not
+  time out in the queue;
+- a task spawned from a hook calls `api.suspend` after the hook returned:
   refused;
-- a notify event emitted during a permitted hook calls `ctx.suspend`: refused;
-- two `tool_result` suspensions in one parallel batch: the second is queued
-  until the first resolves;
-- a form from a panel button between turns: it suspends with no turn lock, and
-  offers no `abort`;
-- kill the daemon during a suspension and reload: the incomplete `suspension`
-  entry raises a session warning, the reopened leaf is not the side entry, and
-  no turn continues;
-- a suspension from a notify-event handler gets the named error.
+- a notify event emitted during a permitted hook calls `api.suspend`: refused;
+- `api.suspend` at `input`, `tool_result` or `annotate`: refused, and the
+  debugger carries the hit to the next `entry_written`;
+- kill the daemon at each §3.7.3 site, reload, and answer: the turn resumes as
+  the table says, and the tree matches an uninterrupted run with the same
+  answers;
+- `-p` exits 3 at each site; `--answer` resumes it; `-p` without `--answer`
+  refuses and names the suspension;
+- a `-p` suspension answered from the TUI instead: it resumes in the TUI;
+- a turn submitted by `api.submit` without `allow_user_input`, while armed:
+  refused at `input` with the reason, or run unstepped with a warning under
+  `unsteppable: run`;
+- an RPC host that never declared the capability: `NoResponderError`;
+- an RPC host suspended inside a command's form: its `answer_suspension` is read
+  and answered (control lane), with no deadlock;
+- a mode change at a suspension, then a fork from the prefix: the fork keeps the
+  mode;
+- a form from a panel button between turns: no turn lock, no `abort` action; a
+  crash leaves it `abandoned` with a warning.
 
-A headless harness (no Textual) drives the RPC and serve rows, so the matrix
-runs in the container matrix with the rest of the suite.
+A headless harness, with no Textual, drives the RPC, serve and `-p` rows, so the
+matrix runs in the container matrix with the rest of the suite.
 
-## 7. Scope
+## 7. Scope and effort
 
-**v1:**
+**v1, in two milestones.**
 
-- §3 in τ core: `ctx.suspend`, `ctx.can_suspend`, the dispatch-scoped token,
-  per-cursor serialization, the events, the snapshot field,
-  `answer_suspension`, `get_pending_suspensions`, `Cursor.open_side` and
-  `finalize_side`, and the `suspension` entry with `is_side_entry`;
-- `ctx.ui.form` reimplemented on it; serve's `answer` and `request` removed;
-- the `tool_call` abort check (§3.6);
-- §4: `register_policy`, `policy=` on `api.on`, the three built-ins,
-  experimental;
-- head rendering in the TUI, REPL, RPC, serve and Tau Code;
-- `tau-debugger` with §5.3's conditions, the bus convention, the stepping modes
-  and notes;
-- three emits in `examples/38_todo.py`;
-- the §6 matrix.
+*Milestone 1, in-process (about 5 days in τ):*
+
+- `api.suspend` and the alias `ctx.suspend`, `can_suspend`, `can_suspend_here`,
+  the dispatch token, per-cursor FIFO, events, `Attached.suspensions`,
+  `answer_suspension`, `get_pending_suspensions`, `declare_capabilities`, and
+  the RPC control lane;
+- the `entry_written` hook, the `input` hook's `refuse` form, and the
+  `tool_call` abort check;
+- `Cursor.open_side`/`finalize_side`, `is_side_entry` with every walker in
+  §3.7.2, `ctx.leaf_id()`, and forks copying side children;
+- §4: `HandlerPolicy`, `register_policy`, `policy=`, pausable deadlines, and the
+  three built-ins;
+- `ctx.ui.form` rebuilt on suspend; serve's `answer` and `request` removed; the
+  `--connect` TUI migrated;
+- rendering in the TUI, the REPL, RPC and serve. Tau Code is about half a day,
+  in that repository;
+- `tau-debugger` (about 1.5 days): conditions, the bus idiom, stepping modes,
+  the config fold, notes.
+
+*Milestone 2, across processes (about 3 days):*
+
+- resume from the tree at every §3.7.3 site, for both restarts and answers to
+  orphaned suspensions;
+- the `-p` deferred responder: `TurnSuspended`, exit 3, the printed suspension,
+  `--answer` and `--field`, and refusal without `--answer`.
+
+Milestone 2 is v1, not v1.1. It is the same mechanism as crash recovery, which
+v1 needs anyway, and §3.2's site rule was chosen to make it possible. The §6
+matrix (about 1.5 days) closes v1.
 
 **Deferred, each with its reason:**
 
-- **a `-p` control channel:** serve plus an attached client covers scripted use.
-- **resuming a suspension after a restart:** v1 reports it (§3.7); resuming
-  mid-turn needs a parked coroutine to be reconstructed.
-- **notes mid-turn while not suspended:** storage is not the obstacle. A `note`
-  side entry via `open_side` (§3.7) is safe mid-turn, and the predicate takes one
-  more kind. What is missing is an input path in every head while a turn runs:
-  typed text is a steer in the TUI and the REPL, and commands are refused
-  mid-turn (`app.py:1055-1065`, `repl.py:1811-1817`, `remote.py:1005-1030`).
-  Adding one is a second per-head UI, so v1 takes notes in a suspension or
-  between turns.
-- **per-client roles and display names over networked serve** (§3.10).
+- **notes mid-turn while not suspended.** Storage is not the obstacle: a `note`
+  side entry via `open_side` is safe mid-turn. What is missing is an input path
+  in every head while a turn runs. Typed text is a steer in the TUI and the REPL,
+  and commands are refused mid-turn (`app.py:1055-1065`, `repl.py:1811-1817`,
+  `remote.py:1005-1030`).
+- **per-client roles and display names over networked serve** (§3.11).
 - **breaking on notify events** (compaction, retries, deltas): suspending there
-  holds the provider stream open.
-- **panels and statuses in serve's `Attached`:** a real gap tau-code found, but
-  not this record's. It gets its own issue.
+  holds a stream open.
+- **resuming a form across processes** (§3.7.3): a command's flow lives in a
+  coroutine.
+- **panels and statuses in serve's `Attached`:** a real gap that tau-code found,
+  but not this record's. It gets its own issue.
 - **evidence-span highlighting:** cut by John, not deferred.
 
 ## 8. Open
 
-Nothing is open. John approved the `ctx.suspend` plan and set the policy
-numbers (§4.2) on 2026-10-24. The side entry's safety, open at 8442e44, was
-settled in review: one `is_side_entry` predicate, and new non-moving cursor
-calls (§3.7). An independent architecture review is running in parallel, and
-its findings arrive as amendments.
+Nothing. John approved the plan and set the policy numbers (§4.2) on 2026-10-24.
+He also set `-p` stop-and-resume as the target (§3.8). Its effort puts it in v1
+as milestone 2 (§7).
+
+## 9. Review trail
+
+| finding | resolved in |
+|---|---|
+| round 1, tau-router and tau-search: enclosing timeouts cancel a suspension | §4.3 pausable deadlines |
+| round 1, tau-search: contextvar leaks to spawned tasks and notify events | §3.2 dispatch token |
+| round 1: `Cursor.finalize` moves the leaf | §3.7.1 `open_side`/`finalize_side` |
+| round 1: parallel `tool_result` suspensions | §3.2.1 |
+| round 1: per-walker skips | §3.7.2 one predicate |
+| round 2, tau-search: abort leaves queued suspensions | §3.2.1, §3.6 |
+| round 2, tau-router: pause from the call, including the queue; name the enforcement; an expired deadline fires on resume | §4.3, §4.1 |
+| round 2, tectum: read the leaf without "last entry" | §3.7.2 `ctx.leaf_id()`, exported predicate |
+| independent B1: RPC serial reader deadlocks | §3.6 control lane |
+| independent M1: `allow_user_input` ignored | §3.8 live responder rule |
+| independent M2: mode changes inside a suspension do not persist | §5.5 config fold, §3.7.2 forks copy side children |
+| independent M3: `--connect` TUI uses `answer`/`request` | §1.2, §3.5, §3.10 migration and tests |
+| independent M4: config restored from the tree skips the arm check | §3.9 refusal before admission |
+| independent M5: policy vocabulary is closed; proceed at `annotate` writes nothing | §4.1 protocol and `Proceeded(record)` |
+| independent M6: queued suspensions do not pause their deadline; cancel scope unstated | §4.3, §4.1 |
+| independent m1–m6 | §3.1 `api.suspend`; §3.7.2 walkers and wire; §3.7.1 `extension`; §3.7.2 forks; §3.8 responder registration; §3.7.3 resume replaces the dangling-call warning |
+| John: `-p` must step, as stop and resume | §3.8, §3.7.3, §7 milestone 2 |
+| independent nits: REPL Ctrl+C; prompt-cache TTL | §3.5; §3.7.3 |
+| design change in this revision: no suspension may hold an unwritten entry, so `input`, `tool_result` and `annotate` are no longer sites, and `entry_written` is added | §3.2 |
