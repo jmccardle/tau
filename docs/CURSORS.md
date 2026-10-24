@@ -246,8 +246,9 @@ spawner's own tree. Its owner is the cursor of the turn that asked.
 - **Abort cascades.** Aborting a cursor aborts every live cursor it owns, owned
   cursors first. Today a branch awaited inside a tool has its own signal, so the
   parent's abort does not reach it.
-- **Extensions are opt-in.** By default a sub-agent's cursor runs no extension hooks,
-  which matches today. Opting in is allowed, because §7 gives each cursor its own
+- **Extensions run by default.** A sub-agent's cursor runs extension hooks unless
+  the spawner passes `hooks=False` (#102, 2026-10-24: the step debugger must see
+  a child's tool calls without spawners changing). §7 gives each cursor its own
   context.
 - **The result** carries the cursor's `id`, its final `leaf`, its messages, and `ok`
   or `error`. Containment is unchanged: a failed sub-agent returns `ok=False` and
@@ -258,7 +259,7 @@ spawner's own tree. Its owner is the cursor of the turn that asked.
 
 **Built:** the operation is `AgentSession.spawn`. `ctx.spawn_branch` keeps its
 name for extensions and delegates to it. The sub-agent's differences from its
-session are a `TurnFrame(tools, model, system_prompt, max_turns, hooks=False)` on
+session are a `TurnFrame(tools, model, system_prompt, max_turns, hooks)` on
 its cursor. The frame has no thinking field, so a sub-agent runs at its session's
 thinking level, and `_record_config` records that level. `BranchResult.cursor_id`
 replaces `lane`.

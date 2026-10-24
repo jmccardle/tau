@@ -1203,7 +1203,7 @@ inherited**:
   today's rule, so a sub-agent cannot start asking for command arguments.
 - It is not a capability an extension passes at spawn. The owner chain already
   records the root, and the debugger decides whether to suspend, so spawning
-  extensions need no change.
+  extensions need no change. Spawned children run extension hooks by default (#102).
 - A child's suspension is answerable from any attached client of the session,
   not only from the parent's cursor. `answer_suspension` names the suspension
   id, never a cursor.

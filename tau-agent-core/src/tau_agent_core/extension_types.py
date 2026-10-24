@@ -1635,7 +1635,7 @@ class ExtensionContext:
         max_turns: int | None = None,
         label: str | None = None,
         system_prompt: str | None = None,
-        hooks: bool = False,
+        hooks: bool = True,
     ) -> "BranchResult":
         """Run a tool-using sub-agent on its own cursor in THIS conversation (C2/W14).
 
@@ -1663,7 +1663,7 @@ class ExtensionContext:
             max_turns: Cap on the sub-agent's loop turns, or ``None`` for no cap.
             label: The cursor's label; defaults to the prompt's first 60 characters.
             system_prompt: Replaces the session's system prompt for this branch.
-            hooks: Whether extension hooks fire during the sub-agent's turn.
+            hooks: Whether extension hooks fire in the sub-agent's turn; ``False`` mutes them.
 
         Returns:
             A :class:`BranchResult`. **Check ``ok``** — a failed sub-agent returns a

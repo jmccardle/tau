@@ -1807,7 +1807,7 @@ would let one reader's arithmetic rewrite it (see :meth:`get_usage`).
 ### spawn
 
 ```python
-async spawn(at: str | None, prompt: str | None = None, *, seed: list[dict[str, Any]] | None = None, tools: list[str], model: str | Model | None = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = False, owner: Cursor | None = None) -> BranchResult
+async spawn(at: str | None, prompt: str | None = None, *, seed: list[dict[str, Any]] | None = None, tools: list[str], model: str | Model | None = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = True, owner: Cursor | None = None) -> BranchResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.spawn`
@@ -1820,7 +1820,7 @@ first, then the prompt as a user message if one is given, and with no
 prompt the loop answers the seed directly. The cursor is owned by ``owner`` (default: the running turn's), so aborting
 the owner aborts it, and it runs under a :class:`~tau_agent_core.cursor.TurnFrame`:
 only ``tools``, ``model``/``system_prompt`` when given, ``max_turns``, and
-no extension hooks unless ``hooks``. Its turn is an ordinary submission
+extension hooks unless ``hooks=False``. Its turn is an ordinary submission
 (``source="agent"``, ``submitter="fork:<label>"``) whose events carry its
 cursor's id. Its first append records that frame as a config entry, so the
 sub-agent's spec is in the tree. The cursor is closed before this returns,
@@ -1840,7 +1840,7 @@ refused submission (without the entry).
 - `max_turns: int | None = None` — Its turn ceiling; ``None`` is no ceiling, not the session's.
 - `label: str | None = None` — What it is for, for display; ``None`` means the prompt's first 60 characters, or the seed's tool names.
 - `system_prompt: str | None = None` — Its system prompt; ``None`` means the session's.
-- `hooks: bool = False` — Whether extension hooks fire in its turn.
+- `hooks: bool = True` — Whether extension hooks fire in its turn; ``False`` suppresses them all.
 - `owner: Cursor | None = None` — The cursor it answers to; ``None`` means :attr:`acting_cursor`.
 
 **Returns**
@@ -4947,7 +4947,7 @@ A node in the browsable session tree (pi ``SessionTreeNode``).
 <!-- agent: yes -->
 
 ```python
-class TurnFrame(tools: tuple[str, ...], model: Any = None, api_key: str | None = None, model_name: str | None = None, reasoning: str | None = None, model_source: str | None = None, reasoning_source: str | None = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = False)
+class TurnFrame(tools: tuple[str, ...], model: Any = None, api_key: str | None = None, model_name: str | None = None, reasoning: str | None = None, model_source: str | None = None, reasoning_source: str | None = None, system_prompt: str | None = None, max_turns: int | None = None, hooks: bool = True)
 ```
 
 `tau_agent_core.cursor.TurnFrame`
@@ -4969,7 +4969,7 @@ config the first time the cursor's turn appends.
 - `reasoning_source: str | None = None` — Where ``reasoning`` came from; required with ``reasoning``.
 - `system_prompt: str | None = None` — The prompt to run under, or ``None`` for the session's.
 - `max_turns: int | None = None` — The loop's turn ceiling for this cursor; ``None`` is no ceiling.
-- `hooks: bool = False` — Whether extension hooks run on this cursor's turns. Off by default: a sub-agent stays as constrained as its spawner asked.
+- `hooks: bool = True` — Whether extension hooks run on this cursor's turns. On by default; ``False`` gives the cursor a runner with no registrations.
 
 ## UnavailableModel
 <!-- agent: yes -->

@@ -116,7 +116,7 @@ When `store_history` is off (`_CursorWriter.persist` is `False`), nothing is
 written, and `annotate` is not called. A result with nowhere to go is not
 computed.
 
-A branch spawned with `spawn(hooks=False)`, the default, dispatches through the
+A branch spawned with `spawn(hooks=False)` dispatches through the
 quiet runner (`AgentSession._hooks`), which has no registrations. So its entries
 are never annotated, the same as every other hook on that branch.
 

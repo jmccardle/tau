@@ -57,8 +57,8 @@ class TurnFrame:
         reasoning_source: Where ``reasoning`` came from; required with ``reasoning``.
         system_prompt: The prompt to run under, or ``None`` for the session's.
         max_turns: The loop's turn ceiling for this cursor; ``None`` is no ceiling.
-        hooks: Whether extension hooks run on this cursor's turns. Off by default:
-            a sub-agent stays as constrained as its spawner asked.
+        hooks: Whether extension hooks run on this cursor's turns. On by default;
+            ``False`` gives the cursor a runner with no registrations.
     """
 
     tools: tuple[str, ...]
@@ -70,7 +70,7 @@ class TurnFrame:
     reasoning_source: str | None = None
     system_prompt: str | None = None
     max_turns: int | None = None
-    hooks: bool = False
+    hooks: bool = True
 
     def __post_init__(self) -> None:
         """Refuse a model or level with no source.

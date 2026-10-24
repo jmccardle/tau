@@ -400,3 +400,44 @@ async def test_every_event_of_the_sub_agents_turn_carries_its_cursor():
 
     assert seen and {e.cursor_id for e in seen} == {result.cursor_id}
     assert {e.source for e in seen} == {"agent"}
+
+
+async def _tool_call_hook_hits(**spawn_kwargs: Any) -> list[str]:
+    """Spawn a child that calls ``lookup`` and return the tool names a ``tool_call`` hook saw."""
+    seen: list[str] = []
+
+    def ext(api: Any) -> None:
+        api.on("tool_call", lambda event, ctx: seen.append(event["tool_name"]))
+
+    session = AgentSession(
+        session_log=InMemorySessionLog(),
+        model=_model(),
+        system_prompt="",
+        tools=[_Tool("lookup")],
+        api_key="k",
+        extensions=[ext],
+    )
+    await session.cursor.append_message(
+        {"role": "user", "content": [{"type": "text", "text": "shared prefix"}]}
+    )
+    provider = _Provider(
+        lambda n: (
+            _reply("x", [ToolCall(id="c1", name="lookup", arguments={})]) if n == 1 else "done"
+        )
+    )
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
+        result = await session._extension_api.context.spawn_branch(
+            session.cursor.leaf, "go", tools=["lookup"], **spawn_kwargs
+        )
+    assert result.ok, result.error
+    return seen
+
+
+async def test_a_child_runs_tool_call_hooks_by_default():
+    """#102: no ``hooks`` argument means the child's tool calls reach registered hooks."""
+    assert await _tool_call_hook_hits() == ["lookup"]
+
+
+async def test_hooks_false_suppresses_a_childs_tool_call_hooks():
+    """#102: an explicit ``hooks=False`` keeps the old quiet child."""
+    assert await _tool_call_hook_hits(hooks=False) == []
