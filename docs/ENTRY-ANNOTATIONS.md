@@ -5,7 +5,7 @@ JSON for each entry the loop writes. τ stores that JSON on the entry as
 `ext[<extension name>]`, in the one write that records the entry, and never sends
 it to the model. The first user of this is the tau-debugger shadow pass, which
 runs the Horopter decider over every step and records what it answered. §8 holds
-two questions that are not settled.
+the one question that is not settled: the hook timeout.
 
 ## 1. What is missing
 
@@ -38,15 +38,21 @@ read-modify-write, and that races unless it runs under `_append_lock`.
 ```json
 {"type": "message", "id": "3fa9c1d2", "parentId": "…", "timestamp": "…",
  "message": {"role": "toolResult", "content": […], …},
- "ext": {"shadow": {"horopter": {"hv-2026-10-20": {"fired": […], "gate": "pass"}}}}}
+ "ext": {"tau_debugger.shadow": {"horopter": {"hv-2026-10-20": {"fired": […], "gate": "pass"}}}}}
 ```
 
 `ext` is an entry-level field, a sibling of `message`. Each key is an extension's
 name, and each value is whatever that extension's `annotate` handler returned.
+Since #35 that name is the module identifier, so it usually contains dots. A
+reader must index `ext["tau_debugger.shadow"]` and must not split the key on
+dots as a path.
 
-- **The model never sees it.** Model input is built from `entry["message"]` only
-  (`conversation_tree.py:95`, through `entries_to_messages`). So the tree-as-truth
-  invariant holds: what the model receives is still exactly the path's messages.
+- **The model never sees it.** `entries_to_messages` (`conversation_tree.py:158`)
+  builds model input. It reads `entry["message"]` for `message` and
+  `customMessage` entries (`:193-196`), and it builds the `compaction` and
+  `branch_summary` messages from `summary`. It reads no other field. So the
+  tree-as-truth invariant holds: what the model receives is still exactly the
+  path's messages.
   The prompt-cache invariant holds for the same reason, because no byte of `ext`
   is in any request.
 - **Not inside `message`.** The message is validated through pydantic models such
@@ -57,31 +63,43 @@ name, and each value is whatever that extension's `annotate` handler returned.
   have no `details`.
 
 The value must be JSON: a dict, list, str, int, float, bool or null, nested. A
-handler that returns anything else fails the write (§4.3).
+handler that returns anything else has failed (§4.3).
 
 ## 3. When it is written: the `annotate` hook
 
-### 3.1 The site is the turn writer, not the loop
+### 3.1 One helper, called before every message write
 
-Every message a turn records reaches the log through `_CursorWriter`
-(`agent_session.py:425`). `append` takes the user message, each tool result
-(`_record`, `agent_loop.py:1491`), steers and custom nodes. `finalize` takes the
-assistant message. `Cursor.append_message` has one caller, at
-`agent_session.py:472`.
+Model-visible entries reach the log at five call sites in `agent_session.py`:
 
-So `annotate` runs inside the writer, immediately before the store call:
-
-| entry | today's write | where `annotate` runs |
+| entry | site | path |
 |---|---|---|
-| user | `_CursorWriter.append` | before `append_message` |
-| toolResult | `_record` → `_CursorWriter.append` | before `append_message`; the `tool_result` hook has already run (`agent_loop.py:1336` precedes `:1350`) |
-| custom node | `_CursorWriter.append` | before `append_custom_message` |
-| assistant | `open()` then `_CursorWriter.finalize` | before `Cursor.finalize`, so its return joins the finalize payload |
+| user, toolResult, turn-loop custom node | `_CursorWriter.append` (`:454`) | `Cursor.append_message` (one caller, `:472`) or `append_custom_message` |
+| assistant | `open()` then `_CursorWriter.finalize` (`:446`) | `Cursor.finalize` |
+| `user_turn_end` injection | `:4294` | `acting_cursor.append_custom_message`, bypassing the writer |
+| `send_message`, the exposure notice (`:2677`) | `_append_custom_message` (`:4955`), when idle | `acting_cursor.append_custom_message`, bypassing the writer |
+
+A tool result reaches `_CursorWriter.append` through `_record`
+(`agent_loop.py:1492`), after the `tool_result` hook has run
+(`agent_loop.py:1336` precedes `:1350`).
+
+The annotation logic lives in **one** `AgentSession` method,
+`_annotation(kind, message) -> dict | None` (my name). It runs every
+`annotate` handler and returns the `ext` dict, or `None`. All four sites call it
+immediately before their store call. `Cursor.append_message`,
+`append_custom_message` and `finalize` each take an optional `ext`, which they
+write beside `message`. The cursor itself stays unaware of extensions.
 
 The coordinator's sketch placed the hook inside `_record` for tool results and
-between `DoneEvent` and `finalize` for assistant messages. The writer is the
-common point under both of those, and it covers user messages and custom nodes
-with no third site. That is the one place this record departs from the sketch.
+between `DoneEvent` and `finalize` for assistant messages. Those two are covered
+by the writer. The two direct sites matter because §7 routes a steer through
+`send_message`, and a steer is an entry the shadow pass must annotate.
+
+**Excluded, by design:** the direct appends that write no message are never
+annotated. These are `append_config` (`:2741`), `append_compaction` (`:4515`)
+and `append_custom_entry` (`:5015`), along with `branch_summary`, model changes,
+labels and navigation records. Compaction and `branch_summary` entries are model
+input, but their text is a summary τ generated, not a message a turn produced.
+None of the others is model input. None of them has blocks (§6).
 
 An assistant message finalized after a stream error (`agent_loop.py:1087`) is
 annotated the same way. Its `stop_reason` is in the message the handler receives.
@@ -131,7 +149,8 @@ incomplete (`session_log.py:118`). No API that edits a finished entry is added.
 
 - **navigate** moves the cursor and copies nothing. The shared prefix is the same
   entries, so it carries the same annotations.
-- **`Session.fork`** copies the entry dicts whole (`session_store.py:~480`), so
+- **`Session.fork`** copies the entry dicts whole
+  (`tau-coding-agent/src/tau_coding_agent/session_store.py:451`), so
   `ext` travels.
 - **The JMFTS fork** copies `structured_content` verbatim (`store.py:483-563`), so
   `ext` travels there too. The full-matrix children of §5.3 are a separate case,
@@ -144,10 +163,34 @@ incomplete (`session_log.py:118`). No API that edits a finished entry is added.
 
 ### 4.3 A failed handler
 
-A handler that raises, or returns a value that is not JSON, fails the write. It
-does not fail quietly, and the entry is not written without its annotation. That
-is a fault the shadow pass must see (a gap in the record looks like a pass). It
-is also the boundary §8.1 has to place for a slow handler.
+A handler can raise, or return a value that is not JSON. Either way, the entry
+**is still written**, with the failure recorded in place of the annotation, and
+the turn is then aborted:
+
+1. The entry is written as usual, with `ext[<extension name>] =
+   {"error": "<ExceptionType>: <message>"}`. Other extensions' annotations on the
+   same entry are kept.
+2. The turn aborts with that error after the write. It ends as an error
+   `agent_end`, the way a provider failure does.
+
+Writing the entry keeps the tree valid. Withholding it would wedge the session:
+
+- **A tool result:** the tool has already run, and its call is in the finalized
+  assistant entry. An unwritten result leaves the path ending on an unanswered
+  call, and the provider rejects the next request on resume. The abort records
+  `ABORTED_TOOL_RESULT` for each call in the batch that has no result yet,
+  through the existing `_aborted_batch` (`agent_loop.py:1190`).
+- **An assistant message:** without its finalize, the entry would stay
+  `incomplete`. `entries_to_messages` raises `IncompleteEntryError` at it
+  (`conversation_tree.py:187`), so the session could not continue from there.
+- **A user message or custom node:** the prompt or steer would be lost.
+
+With the entry written, every case continues normally from the new leaf, once
+the faulty extension is fixed or disabled. No separate repair path is needed.
+
+The failure is recorded on the entry, not left as a gap. The shadow pass must see
+it, because an unannotated entry reads as a pass. §8.1's timeout policy builds on
+this failure state: a timed-out handler is a failed handler.
 
 ## 5. JMFTS
 
@@ -227,15 +270,20 @@ with `at=` copies only the documents on the `ConversationTree` path
 (RQ2.5) forks at a point and compares each branch against the shared prefix's
 annotations. Under today's code, the fork has no annotations to compare against.
 
-**Default:** tau-jmfts's `at=` fork also copies the `horopter:annotations`
-children of each entry it copies, re-parented onto the copy. This is a tau-jmfts
-change. JMFTS itself does not change. The cost is one children listing per
-copied entry, plus one POST per annotation child.
+**Decided (tau-search and tau-router, 2026-10-24):** tau-jmfts's `at=` fork also
+copies every child of each copied entry that is not a τ document
+(`not _is_tau_doc`), re-parented onto the copy. The store does not name
+`horopter:annotations` or any other extension's usetype. Naming one would put an
+extension in the store layer. §5.2's rule against document ids makes a generic
+copy safe, because a copied child holds no reference that needs remapping.
 
-**Alternative, for the reviewers:** leave the fork as it is, and have
-fork-and-compare read the prefix's annotations from the source session's
-documents. That avoids the copy, but the comparison then depends on the source
-session still existing. A fork that outlives its source loses the baseline.
+This is a tau-jmfts change (#84), and JMFTS itself does not change. The cost is
+one children listing per copied entry, plus one POST per child.
+
+The rejected alternative was to leave the fork alone and have fork-and-compare
+read the source session's annotations. That fork would silently depend on its
+source still existing, and a fork that outlives its source would lose the
+baseline.
 
 **A shadow extension with no sink refuses to start.** If it is configured to
 record the full matrix and no JMFTS client is reachable, it raises at load. It
@@ -254,14 +302,24 @@ into two parts:
 
 | kind | text, which offsets index |
 |---|---|
-| `user`, `assistant_text` | the `TextContent.text` string |
+| `user`, `assistant_text`, `custom` | the `TextContent.text` string |
 | `thinking` | the `ThinkingContent` text |
-| `tool_call` | `json.dumps(arguments, ensure_ascii=False)` of the stored `ToolCall.arguments`. It is a rendering, because `arguments` is a parsed object (`tau-llm/src/tau_llm/types.py:87`). The function owns the rendering, so it is stable. |
+| `tool_call` | `json.dumps(arguments, ensure_ascii=False)` of the stored `ToolCall.arguments`, with default separators and no `sort_keys` (`tau-llm/src/tau_llm/types.py:87`). |
 | `tool_result` | a tool result's text content block |
-| `details` | `json.dumps(details, ensure_ascii=False)`. This is its own kind, because `details` is not model-visible (the providers never read it). |
+| `details` | `json.dumps(details, ensure_ascii=False)`, with the same settings. This is its own kind, because `details` is not model-visible (the providers never read it). |
+
+`tool_call` and `details` are renderings, because both fields are parsed
+objects. Their offsets index the rendering that `entry_blocks` owns, not the
+bytes the model streamed. The rendering keeps the stored key order, which is the
+order the arguments were parsed in, so its text and `content_hash` depend on
+that order. A JSON round trip preserves the order, so the rendering is stable
+across a reload.
 
 `block` is the index into `message.content`, or `"details"` for the details
-block. An image block yields no `Block`. Offsets are in code points (Python
+block. A `content` that is a plain `str` (`UserMessage.content` is
+`str | list[…]`, `tau-llm/src/tau_llm/types.py:154`; a custom node's content can
+be a `str` too) is normalized to one text block at index 0. An image block
+yields no `Block`. Offsets are in code points (Python
 `str` indices), because τ stores JSON strings. `content_hash` is the SHA-256 hex
 of the text's UTF-8 bytes.
 
@@ -310,10 +368,10 @@ proposes:
 John has not ruled on this. Two things it must settle: whether the timeout is
 per handler and declared at registration, or one global; and whether "advisory"
 is the handler's declaration or the hook's kind. Until it is ruled on, `annotate`
-behaves like every other hook: no timeout, and a raise fails the write (§4.3).
+behaves like every other hook: no timeout, and a raise is a failed handler (§4.3).
 
-### 8.2 The `at=` fork
-
-§5.4's default copies annotation children on a fork at a point. Its alternative
-keeps the fork unchanged and reads the source session. The reviewers choose
-between them. If no reviewer objects, the default is built.
+The reviewers so far lean towards one rule for `annotate` and tau-router's
+decider pull alike: a per-handler timeout declared at registration, where the
+handler declares itself advisory or gating (tau-router). Tectum prefers a
+bounded timeout that fails loudly over no timeout. Whatever is ruled, a timed-out
+handler fails in the §4.3 state. Tracked in #83.

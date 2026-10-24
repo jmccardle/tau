@@ -111,7 +111,7 @@ Findings, which means writing the finding rather than lengthening the clause.
 `CONSTRAINED-GEN-AND-BRANCHING-PLAN.md` · `JMFTS-INTEGRATION-PLAN.md` ·
 `RESEARCH-INTEGRATION-EVALUATION.md` · `ALPHA-SELECTOR-SPEC.md` ·
 `TRUST-GATE.md` (Tier 8; research record 2026-10-12, nothing built — six open questions) ·
-`ENTRY-ANNOTATIONS.md` (an `annotate` hook writes extension JSON as `ext` on the entry in its one write, with the full matrix in JMFTS child documents; design record 2026-10-24, nothing built) ·
+`ENTRY-ANNOTATIONS.md` (an `annotate` hook writes extension JSON as `ext` on the entry in its one write; the full matrix goes to JMFTS child documents; design record 2026-10-24, nothing built) ·
 `M2-RESULTS.md` · `M3-DESIGN.md` · `WORKSTREAM-CROSSWALK.md` (the status index across the four vocabularies).
 
 **Upstream llama.cpp:** `UPSTREAM-LLAMACPP-SILENT-OVERRIDES.md` (two reproduced silent constraint overrides) ·
