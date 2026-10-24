@@ -47,6 +47,7 @@ from tau_agent_core.agent_loop_types import (
 from tau_agent_core.entry_annotations import AnnotationError
 from tau_agent_core.events import AgentEndReason, AgentEvent, ErrorDetail
 from tau_agent_core.provider_retry import provider_retry_event
+from tau_agent_core.suspension import TurnSuspended
 from tau_agent_core.messages import convert_to_llm, create_custom_message
 from tau_agent_core.tool_pipeline import (
     BlockedCall,
@@ -117,6 +118,13 @@ class TurnWriter(Protocol):
 
         Raises:
             AnnotationError: after the write, when an ``annotate`` handler failed.
+        """
+        ...
+
+    async def close_group(self) -> None:
+        """End a write group: dispatch ``entry_written`` for each entry written since the last call.
+
+        docs/STEP-DEBUGGER.md §3.2. The loop calls it after a group's last write.
         """
         ...
 
@@ -358,6 +366,7 @@ class AgentLoop:
                     batch = await self._refuse_cut_off_calls(assistant, tool_calls)
                 else:
                     batch = await self._execute_tool_calls(assistant, tool_calls)
+                await self._close_group()
 
                 for msg in batch.messages:
                     messages.append(msg)
@@ -427,6 +436,9 @@ class AgentLoop:
                 end_reason = "max_turns"
             self._raise_annotation_failure()
 
+        except TurnSuspended:
+            await self._emit_agent_end(final_messages, end_reason="suspended")
+            raise
         except BaseException as exc:
             final_messages.extend(getattr(exc, STREAM_RECORDED_ATTR, []))
             setattr(exc, COMPLETED_MESSAGES_ATTR, list(final_messages))
@@ -547,6 +559,7 @@ class AgentLoop:
                     batch = await self._refuse_cut_off_calls(assistant, tool_calls)
                 else:
                     batch = await self._execute_tool_calls(assistant, tool_calls)
+                await self._close_group()
 
                 for msg in batch.messages:
                     messages.append(msg)
@@ -618,6 +631,9 @@ class AgentLoop:
                 end_reason = "max_turns"
             self._raise_annotation_failure()
 
+        except TurnSuspended:
+            await self._emit_agent_end(final_messages, end_reason="suspended")
+            raise
         except BaseException as exc:
             final_messages.extend(getattr(exc, STREAM_RECORDED_ATTR, []))
             setattr(exc, COMPLETED_MESSAGES_ATTR, list(final_messages))
@@ -773,6 +789,7 @@ class AgentLoop:
                     message=payload,
                 )
             )
+        await self._close_group()
         return len(pending)
 
     async def _write(self, message: Any) -> None:
@@ -786,6 +803,11 @@ class AgentLoop:
                 await self._writer.append(message)
             except AnnotationError as err:
                 self._note_annotation_failure(err)
+
+    async def _close_group(self) -> None:
+        """End the current write group (:meth:`TurnWriter.close_group`), if there is a writer."""
+        if self._writer is not None:
+            await self._writer.close_group()
 
     def _note_annotation_failure(self, err: AnnotationError) -> None:
         """Keep the first ``annotate`` failure; a later one is already on its entry.
@@ -823,6 +845,7 @@ class AgentLoop:
             self._recorded = {}
             batch = await self._aborted_batch(tool_calls, prior=[])
             final_messages.extend(batch.messages)
+            await self._close_group()
         raise failure
 
     @staticmethod
@@ -879,6 +902,7 @@ class AgentLoop:
             messages.append(node)
             final_messages.append(node)
             await self._write(node)
+        await self._close_group()
         self._raise_annotation_failure()
 
     @staticmethod
@@ -1083,6 +1107,7 @@ class AgentLoop:
                             await self._writer.finalize(handle, final_msg)
                         except AnnotationError as err:
                             self._note_annotation_failure(err)
+                    await self._close_group()
                     await self._emit(
                         AgentEvent(
                             type="message_end",
@@ -1180,6 +1205,7 @@ class AgentLoop:
             batch = await self._aborted_batch(tool_calls, prior=[], text=UNRUN_TOOL_RESULT)
             recorded.extend(batch.messages)
         setattr(failure, STREAM_RECORDED_ATTR, recorded)
+        await self._close_group()
 
     async def _execute_tool_calls(
         self,
@@ -1388,6 +1414,7 @@ class AgentLoop:
                     prepared.call.id,
                 )
                 await self._record(blocked)
+                await self._close_group()
                 all_results.append(blocked)
                 continue
             elif isinstance(prepared, ErrorCall):
@@ -1404,8 +1431,25 @@ class AgentLoop:
                     )
                 )
                 await self._record(errored)
+                await self._close_group()
                 all_results.append(errored)
                 continue
+
+            if self._abort_signal is not None and self._abort_signal.is_aborted():
+                await self._emit(
+                    AgentEvent(
+                        type="tool_execution_end",
+                        timestamp=int(time.time() * 1000),
+                        tool_call_id=tc.id,
+                        tool_name=tc.name,
+                        result=ABORTED_TOOL_RESULT,
+                        is_error=True,
+                    )
+                )
+                aborted_call = AgentToolResult.from_error(tc.name, ABORTED_TOOL_RESULT, tc.id)
+                await self._record(aborted_call)
+                all_results.append(aborted_call)
+                return await self._aborted_batch(tool_calls, prior=all_results)
 
             result = await self._execute_tool(prepared)
             result = await self._apply_after_hooks(result, prepared.arguments)
@@ -1423,6 +1467,7 @@ class AgentLoop:
             )
 
             await self._record(result)
+            await self._close_group()
             all_results.append(result)
             if result.terminate:
                 terminated = True
@@ -1446,6 +1491,8 @@ class AgentLoop:
         prepared_calls = []
         for tc in tool_calls:
             prepared = await self._prepare_tool_call(tc)
+            if self._abort_signal is not None and self._abort_signal.is_aborted():
+                return await self._aborted_batch(tool_calls, prior=[])
             prepared_calls.append(prepared)
 
         for tc in tool_calls:
@@ -1501,6 +1548,9 @@ class AgentLoop:
         results = await asyncio.gather(
             *(_run_tool(i, pc) for i, pc in enumerate(prepared_calls)), return_exceptions=True
         )
+        for res in results:
+            if isinstance(res, TurnSuspended):
+                raise res
 
         all_results: list[AgentToolResult] = []
         for i, res in enumerate(results):
@@ -1540,6 +1590,7 @@ class AgentLoop:
                     )
                 )
         await _flush_prefix()
+        await self._close_group()
 
         terminated = any(getattr(r, "terminate", False) for r in all_results)
         return self._build_batch_result(all_results, terminate=terminated)

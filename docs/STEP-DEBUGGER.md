@@ -164,6 +164,14 @@ process. That breaks the rule above, no continuation could resume it, and a
 with `parent_tool_call_id` refuses `api.suspend`, and its hits are carried, like
 any non-site hit, to the outer call's result `entry_written`.
 
+**Built (M1c).** The `tool_call` event already carried `parent_tool_call_id`
+for a nested call, so a handler can tell one apart with no change. Until #94 is
+fixed, code mode's script calls go through `DirectToolInvoker`
+(`codemode/invoker.py`), which bypasses the hook pipeline entirely, so they fire
+no `tool_call` and are neither stepped nor gated; once #94 routes them through
+`ctx.execute_tool`, they fire `tool_call` with `parent_tool_call_id` and are
+refused as suspension sites.
+
 **`entry_written` is a new awaited hook.** It receives `{kind, entry_id, message,
 blocks}` after the store write returns. It cannot change the entry. It is the
 per-entry stepping point, and it replaces stepping at `annotate`.
@@ -192,6 +200,15 @@ per-entry stepping point, and it replaces stepping at `annotate`.
     then raises. Those writes are one group, and the raise follows the group's
     `entry_written` (final review, M2-1);
   - every other write is a group of one.
+
+  **Built (M1c).** The session's turn writer holds each written entry and
+  `TurnWriter.close_group` dispatches them; the loop and the session call it
+  after each group above. Two placements the list leaves open: the synthesized
+  results of an aborted, cut-off or annotation-failed batch are one group with
+  the batch, and `api.send_message` and a raising turn's `turn_error` node are
+  groups of one. A handler error is surfaced through `on_error` and the next
+  handler runs, the convention `turn_end` uses; an entry whose blocks cannot be
+  derived raises, since `annotate` would already have failed on it.
 - A break that a producer detects at a non-permitted site is carried to the
   next permitted one. Examples: tau-router's model change at `input`, or a
   condition read in `tool_result`. `api.can_suspend_here()` tells the handler
@@ -286,6 +303,34 @@ and each could swallow or rewrite it (independent review, round 2, N6). So:
 Each mapped site and a sample of re-raising sites are conformance cases (§6.2).
 In milestone 1 nothing raises `TurnSuspended`, but the type, the rule and the
 lint land then, because the bus path is in-process.
+
+**Built (M1c), with three divergences.** `TurnSuspended`,
+`SuspensionSwallowedError` and the dispatch mark live in
+`tau_agent_core/suspension.py`; the lint is
+`tau-agent-core/tests/test_turn_suspended_lint.py`.
+
+- The loop's mapping emits `agent_end` with `end_reason: "suspended"` and then
+  re-raises, rather than returning. Returning would run the session's tail
+  (follow-ups, auto-compaction, `user_turn_end`), which writes. The session
+  passes it through without a `turn_error` node, `submit` raises it, and
+  `submit_threadsafe` maps it: `SubmissionResult` gains
+  `end_reason: "suspended"`, and `messages` holds what the turn wrote.
+- The runner wraps each hook handler's call in a dispatch mark that
+  `mark_suspension_raised` sets (`api.suspend`'s hook for M1e). A handler that
+  then returns, or raises anything but `TurnSuspended`, gets
+  `SuspensionSwallowedError` naming its extension. That error is a
+  `BaseException`, so the hook error convention, which reports an `Exception`
+  and runs the next handler, cannot absorb it; the turn ends through the loop's
+  error path with `end_reason: "error"`. Finalizing the side entry as
+  `abandoned` waits for M1e, which creates it.
+- The lint found eight `gather(return_exceptions=True)` sites. The parallel
+  batch re-raises `TurnSuspended` from its results; the other seven are on an
+  allowlist keyed by file and function, each with its reason. Of the
+  `except BaseException` catches, only `background.py`'s `cancel_all` and the
+  code-mode child (`_cpython_child.py`, a separate process with no hooks)
+  did not re-raise. The first now re-raises `TurnSuspended`; the second is
+  allowlisted. An `except TurnSuspended` that does not re-raise must be on the
+  allowlist as a mapped site, as `submit_threadsafe` is.
 
 ### 3.3 Lifecycle, in-process
 
@@ -385,6 +430,11 @@ check in between. The parallel prepare loop (`:1371-1374`) never checks. An abor
 chosen at a `tool_call` suspension must not run the tool. So the loop checks the
 signal after the `tool_call` hooks and before execution, in both modes, and
 routes to `_aborted_batch`.
+
+**Built (M1c).** Sequentially, the call whose hook tripped the signal gets its
+aborted result and `tool_execution_end`, then `_aborted_batch` answers the rest.
+In parallel, the prepare loop checks after each call's hooks, so a later call's
+`tool_call` hooks do not run either.
 
 **Abort writes nothing new beyond the aborted results.** Every permitted site has
 its entries already written (§3.2). An abort at `tool_call` gives that call and
@@ -809,6 +859,12 @@ check happens before admission:
 
 - The `input` hook gains a return form, `{"refuse": "<reason>"}`. `submit` then
   returns `accepted=False` with that reason, and no entry is written.
+  **Built (M1c).** The reason must be a non-empty string. So that nothing is
+  written, `submit` now records the turn's config entry after the input
+  pipeline and the lock check rather than before them; a lock refusal writes
+  nothing either. Every head already shows `rejection_reason` for a refused
+  submission (the TUI's notice, the REPL's error line, `-p`'s error, RPC and
+  serve's `SUBMISSION_REJECTED`), so none changed.
 - The debugger returns it when stepping is armed at the cursor and
   `api.can_suspend()` is false. The reason names the alternatives: attach a
   client under serve, declare the capability, or set `allow_user_input`.

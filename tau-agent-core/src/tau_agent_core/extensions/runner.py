@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
 from tau_agent_core.entry_annotations import AnnotationError, entry_blocks, json_value
+from tau_agent_core.suspension import SuspensionSwallowedError, TurnSuspended, dispatch_mark
 
 if TYPE_CHECKING:
     from tau_agent_core.extension_types import ExtensionContext
@@ -160,6 +161,8 @@ class ExtensionRunner:
     - ``annotate``           — return JSON to store at ``ext[<extension name>]``
                                on the message entry about to be written; see
                                :meth:`emit_annotate`.
+    - ``entry_written``      — observe a message entry once its write group is
+                               on disk; see :meth:`emit_entry_written`.
 
     (A fourth hook, ``context`` — per-call replace of the message list — existed
     through E2 but was ELIMINATED in E5 §3.2 / S30. Under the durable-hook
@@ -194,6 +197,7 @@ class ExtensionRunner:
         "user_turn_end",
         "session_before_switch",
         "annotate",
+        "entry_written",
     )
 
     LIFECYCLE_EVENTS = ("session_start", "session_shutdown")
@@ -298,11 +302,30 @@ class ExtensionRunner:
                 file=sys.stderr,
             )
 
-    async def _call(self, handler: HookHandler, event: dict[str, Any]) -> Any:
-        """Invoke ``handler(event, ctx)``, awaiting an async handler."""
-        result = handler(event, self._context)
-        if inspect.isawaitable(result):
-            result = await result
+    async def _call(
+        self, ext: ExtensionHandlers, hook: str, handler: HookHandler, event: dict[str, Any]
+    ) -> Any:
+        """Invoke ``handler(event, ctx)``, awaiting an async handler, under a dispatch mark.
+
+        Raises:
+            SuspensionSwallowedError: a suspension was raised inside the handler
+                (:func:`~tau_agent_core.suspension.mark_suspension_raised`) and the
+                handler returned or raised something else (docs/STEP-DEBUGGER.md
+                §3.2.2).
+        """
+        with dispatch_mark() as mark:
+            try:
+                result = handler(event, self._context)
+                if inspect.isawaitable(result):
+                    result = await result
+            except TurnSuspended:
+                raise
+            except Exception as err:
+                if mark.raised_by is not None:
+                    raise SuspensionSwallowedError(ext.name, hook, mark.raised_by) from err
+                raise
+            if mark.raised_by is not None:
+                raise SuspensionSwallowedError(ext.name, hook, mark.raised_by)
         return result
 
     async def emit_tool_call(self, event: dict[str, Any]) -> dict[str, Any] | None:
@@ -322,7 +345,7 @@ class ExtensionRunner:
             if not handlers:
                 continue
             for handler in handlers:
-                handler_result = await self._call(handler, event)
+                handler_result = await self._call(ext, "tool_call", handler, event)
                 if handler_result:
                     result = handler_result
                     if result.get("block"):
@@ -350,7 +373,7 @@ class ExtensionRunner:
                 continue
             for handler in handlers:
                 try:
-                    handler_result = await self._call(handler, current)
+                    handler_result = await self._call(ext, "tool_result", handler, current)
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "tool_result", str(err)))
                     continue
@@ -427,7 +450,7 @@ class ExtensionRunner:
                     "system_prompt": current_system_prompt,
                 }
                 try:
-                    result = await self._call(handler, event)
+                    result = await self._call(ext, "before_agent_start", handler, event)
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "before_agent_start", str(err)))
                     continue
@@ -492,13 +515,21 @@ class ExtensionRunner:
         - ``{"handled": True}`` — consume the input WITHOUT starting a turn (a
           command-like extension that showed its own feedback); dispatch stops
           immediately and the call-site returns without a turn.
+        - ``{"refuse": "<reason>"}`` — refuse the submission: dispatch stops,
+          and ``submit`` returns ``accepted=False`` with that reason and writes
+          nothing (docs/STEP-DEBUGGER.md §3.9). The reason must be a non-empty
+          string.
         - ``{"prompt": <text>}`` and/or ``{"images": [...]}`` — replace the
           running prompt/images; later handlers see the replacement (chaining,
           like ``before_agent_start``'s ``system_prompt``).
         - ``None`` / ``{}`` — pass through unchanged.
 
         Returns ``{"handled": bool, "prompt": str, "images": ...}`` — the running
-        values (on ``handled`` the call-site discards them with the turn).
+        values (on ``handled`` the call-site discards them with the turn) — plus
+        ``"refuse": <reason>`` when a handler refused.
+
+        Raises:
+            ValueError: a ``refuse`` value that is not a non-empty string.
 
         Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime) and
         dispatch continues to the next handler — pi's ``emitInput`` wraps each
@@ -519,12 +550,25 @@ class ExtensionRunner:
                     "submitter": submitter,
                 }
                 try:
-                    result = await self._call(handler, event)
+                    result = await self._call(ext, "input", handler, event)
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "input", str(err)))
                     continue
                 if not result:
                     continue
+                if "refuse" in result:
+                    reason = result["refuse"]
+                    if not isinstance(reason, str) or not reason:
+                        raise ValueError(
+                            f"input handler of {ext.path!r} returned refuse={reason!r}; "
+                            "the reason must be a non-empty string"
+                        )
+                    return {
+                        "handled": False,
+                        "refuse": reason,
+                        "prompt": current_prompt,
+                        "images": current_images,
+                    }
                 if result.get("handled"):
                     return {
                         "handled": True,
@@ -596,7 +640,7 @@ class ExtensionRunner:
                     "messages": messages,
                 }
                 try:
-                    result = await self._call(handler, event)
+                    result = await self._call(ext, "turn_end", handler, event)
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "turn_end", str(err)))
                     continue
@@ -667,7 +711,7 @@ class ExtensionRunner:
                     "messages": messages,
                 }
                 try:
-                    result = await self._call(handler, event)
+                    result = await self._call(ext, "user_turn_end", handler, event)
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "user_turn_end", str(err)))
                     continue
@@ -676,6 +720,43 @@ class ExtensionRunner:
                 if result.get("message") is not None:
                     injected.append(result["message"])
         return injected
+
+    async def emit_entry_written(self, kind: str, entry_id: str, message: dict[str, Any]) -> None:
+        """Dispatch ``entry_written`` for one message entry already in the store.
+
+        docs/STEP-DEBUGGER.md §3.2. The call-site dispatches each entry of a
+        write group, in order, once the group's last write has returned. Each
+        handler gets its own deep copy of ``{"type", "kind", "entry_id",
+        "message", "blocks"}``, so it cannot change the entry or what a later
+        handler sees. The return value is ignored.
+
+        Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime, as
+        for ``turn_end``) and dispatch continues to the next handler.
+
+        Args:
+            kind: ``"user"``, ``"assistant"``, ``"toolResult"`` or ``"custom"``.
+            entry_id: The written entry's id.
+            message: The message dict as written.
+
+        Raises:
+            ValueError: the entry's blocks cannot be derived (:func:`entry_blocks`).
+        """
+        writing = [ext for ext in self._extensions if ext.handlers.get("entry_written")]
+        if not writing:
+            return
+        base = {
+            "type": "entry_written",
+            "kind": kind,
+            "entry_id": entry_id,
+            "message": message,
+            "blocks": entry_blocks(kind, message),
+        }
+        for ext in writing:
+            for handler in ext.handlers["entry_written"]:
+                try:
+                    await self._call(ext, "entry_written", handler, copy.deepcopy(base))
+                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
+                    self._emit_error(ExtensionError(ext.path, "entry_written", str(err)))
 
     async def emit_annotate(
         self, kind: str, message: dict[str, Any]
@@ -715,7 +796,9 @@ class ExtensionRunner:
         failure: AnnotationError | None = None
         for ext in annotating:
             try:
-                value = await self._call(ext.handlers["annotate"][0], copy.deepcopy(base))
+                value = await self._call(
+                    ext, "annotate", ext.handlers["annotate"][0], copy.deepcopy(base)
+                )
                 if value is None:
                     continue
                 ext_values[ext.name] = json_value(value)
@@ -763,7 +846,7 @@ class ExtensionRunner:
             for handler in handlers:
                 event = {"type": "session_before_switch", "reason": reason, "target": target}
                 try:
-                    result = await self._call(handler, event)
+                    result = await self._call(ext, "session_before_switch", handler, event)
                 except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                     self._emit_error(ExtensionError(ext.path, "session_before_switch", str(err)))
                     continue
@@ -818,7 +901,7 @@ class ExtensionRunner:
             return
         for handler in handlers:
             try:
-                await self._call(handler, event)
+                await self._call(ext, event_name, handler, event)
             except Exception as err:  # noqa: BLE001 — surfaced, not dropped
                 self._emit_error(ExtensionError(ext.path, event_name, str(err)))
 

@@ -86,6 +86,7 @@ from tau_agent_core.cursor import TURN_CURSOR, Cursor, EnqueuedWait, TurnFrame
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.entry_annotations import AnnotationError
 from tau_agent_core.seed import check_seed, normalise_seed
+from tau_agent_core.suspension import TurnSuspended
 from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig, TurnSettings
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
@@ -429,6 +430,8 @@ _Annotator = Callable[
     [str, dict[str, Any]], Awaitable[tuple[dict[str, Any] | None, AnnotationError | None]]
 ]
 
+_EntryWritten = Callable[[str, str, dict[str, Any]], Awaitable[None]]
+
 
 class _CursorWriter:
     """The :class:`~tau_agent_core.agent_loop.TurnWriter` one turn writes through.
@@ -438,19 +441,30 @@ class _CursorWriter:
 
     Each written message is annotated first (:meth:`AgentSession._annotation`);
     a failed handler's entry is still written, then :class:`AnnotationError` is
-    raised (docs/ENTRY-ANNOTATIONS.md §4.3).
+    raised (docs/ENTRY-ANNOTATIONS.md §4.3). Each written entry is held for
+    ``entry_written`` until :meth:`close_group` (docs/STEP-DEBUGGER.md §3.2).
 
     Attributes:
         messages: This turn's new messages in order: ``prompt()``'s return.
-        persist: ``store_history``. ``False`` still collects, and writes and
-            annotates nothing.
+        persist: ``store_history``. ``False`` still collects, and writes,
+            annotates and announces nothing.
     """
 
-    def __init__(self, cursor: Cursor, persist: bool, annotate: _Annotator) -> None:
+    def __init__(
+        self, cursor: Cursor, persist: bool, annotate: _Annotator, written: _EntryWritten
+    ) -> None:
         self._cursor = cursor
         self.persist = persist
         self._annotate = annotate
+        self._written = written
+        self._group: list[tuple[str, str, dict[str, Any]]] = []
         self.messages: list[dict[str, Any]] = []
+
+    async def close_group(self) -> None:
+        """Dispatch ``entry_written`` for each entry written since the last call, in order."""
+        group, self._group = self._group, []
+        for kind, entry_id, message in group:
+            await self._written(kind, entry_id, message)
 
     async def open(self, message: dict[str, Any]) -> str | None:
         if not self.persist:
@@ -465,6 +479,7 @@ class _CursorWriter:
                 raise RuntimeError("finalize: no entry was opened for this message")
             ext, failure = await self._annotate("assistant", message_dict)
             await self._cursor.finalize(handle, message=message_dict, ext=ext)
+            self._group.append(("assistant", handle, message_dict))
         self.messages.append(message_dict)
         if failure is not None:
             raise failure
@@ -488,10 +503,15 @@ class _CursorWriter:
                 )
             if self.persist:
                 ext, failure = await self._annotate("custom", message_dict)
-                await self._cursor.append_custom_message(message_dict, str(custom_type), ext=ext)
+                entry_id = await self._cursor.append_custom_message(
+                    message_dict, str(custom_type), ext=ext
+                )
+                self._group.append(("custom", entry_id, message_dict))
         elif self.persist:
-            ext, failure = await self._annotate(str(message_dict.get("role")), message_dict)
-            await self._cursor.append_message(message_dict, ext=ext)
+            kind = str(message_dict.get("role"))
+            ext, failure = await self._annotate(kind, message_dict)
+            entry_id = await self._cursor.append_message(message_dict, ext=ext)
+            self._group.append((kind, entry_id, message_dict))
         self.messages.append(message_dict)
         if failure is not None:
             raise failure
@@ -3101,10 +3121,19 @@ class AgentSession:
         with the caller's own :class:`~tau_agent_core.submission.Submission`. The
         only addition is transporting the outcome — result OR exception — back
         across the thread boundary, because a caller in another thread cannot see
-        this task.
+        this task. A turn that unwound at a suspension resolves as accepted with
+        ``end_reason="suspended"``, never as a raw ``TurnSuspended``
+        (docs/STEP-DEBUGGER.md §3.2.2).
         """
         try:
             result = await self.submit(sub, context=context)
+        except TurnSuspended as suspended:
+            result = SubmissionResult(
+                accepted=True,
+                submission_id=sub.submission_id,
+                messages=suspended.messages,
+                end_reason="suspended",
+            )
         except BaseException as exc:
             future.set_exception(exc)
             raise
@@ -3170,10 +3199,12 @@ class AgentSession:
     def _submission_runs_a_turn(self, sub: Submission) -> bool:
         """Whether ``sub`` will reach the model, rather than write nothing at all.
 
-        Read before the pre-turn leaf is captured, to decide whether to record the
-        config (:meth:`_record_config`). The record has to happen THERE and not
-        later: a rollback refuses when the pre-turn leaf is ``None``, so a first
-        turn on an empty log needs the entry written before the leaf is read.
+        Decides whether to record the config (:meth:`_record_config`) once the
+        input pipeline has admitted the turn, and to re-read the pre-turn leaf
+        after it: a rollback refuses when that leaf is ``None``, so a first turn
+        on an empty log needs the entry written before the leaf is read. Not
+        earlier, so a refused submission writes nothing (docs/STEP-DEBUGGER.md
+        §3.9).
 
         But two submissions promise to write NOTHING, and both are pinned:
         ``store_history=False`` (test_submit_admission.py) and a command dispatch,
@@ -3291,7 +3322,9 @@ class AgentSession:
         it (``handled``), or ``expand_commands`` resolved it to a command. In both
         cases the submission was still ACCEPTED — admitted and acted on, just not
         by a model turn — which is exactly the distinction
-        :attr:`~tau_agent_core.submission.SubmissionResult.command` carries.
+        :attr:`~tau_agent_core.submission.SubmissionResult.command` carries. An
+        ``input`` handler's ``refuse`` and an unresolvable ``/ext:…`` are the
+        ``accepted=False`` cases.
 
         Extracted from :meth:`submit`'s body so the ``"steer"`` branch can run the
         SAME pipeline on the SAME terms. A steer that skipped it would be the one
@@ -3308,6 +3341,16 @@ class AgentSession:
             input_result = await hooks.emit_input(
                 text, images, source=sub.source, submitter=sub.submitter
             )
+            if "refuse" in input_result:
+                return (
+                    text,
+                    images,
+                    SubmissionResult(
+                        accepted=False,
+                        submission_id=sub.submission_id,
+                        rejection_reason=input_result["refuse"],
+                    ),
+                )
             if input_result["handled"]:
                 return (
                     text,
@@ -3590,7 +3633,8 @@ class AgentSession:
 
             self._turn_token_counter += 1
             cur.turn_token = self._turn_token_counter
-            if self._submission_runs_a_turn(sub):
+            runs_a_turn = self._submission_runs_a_turn(sub)
+            if runs_a_turn:
                 unavailable = self._recover_unavailable_model()
                 if unavailable is not None:
                     return SubmissionResult(
@@ -3598,7 +3642,6 @@ class AgentSession:
                         submission_id=sub.submission_id,
                         rejection_reason=unavailable.message(),
                     )
-                await self._record_config()
             cur.pre_turn_leaf = cur.leaf
 
             cur.is_streaming = True
@@ -3621,6 +3664,11 @@ class AgentSession:
                     rejection_reason=refusal_reason(locked),
                     lock=locked,
                 )
+
+            # After the input pipeline, so a refused submission writes nothing (STEP-DEBUGGER §3.9).
+            if runs_a_turn:
+                await self._record_config()
+                cur.pre_turn_leaf = cur.leaf
 
             if on_admitted is not None:
                 on_admitted()
@@ -4193,7 +4241,7 @@ class AgentSession:
             **self._turn_cap(),
         )
 
-        writer = _CursorWriter(self.acting_cursor, persist, self._annotation)
+        writer = _CursorWriter(self.acting_cursor, persist, self._annotation, self._entry_written)
 
         # The inputs are written before the loop runs, so a crash mid-turn keeps the prompt.
         if persist:
@@ -4206,6 +4254,7 @@ class AgentSession:
                 await writer.append(message)
             except AnnotationError as err:
                 input_failure = input_failure or err
+        await writer.close_group()
         loop = AgentLoop(
             config=config,
             emit=self._emit_stamped,
@@ -4225,6 +4274,9 @@ class AgentSession:
         self.acting_cursor.persistence_settled.clear()
         try:
             await loop.run(prompts=prompts, context=context_messages)
+        except TurnSuspended as exc:
+            exc.messages = list(writer.messages)
+            raise
         except Exception as exc:
             await self._append_turn_error(writer, exc)
             raise
@@ -4310,6 +4362,18 @@ class AgentSession:
         ext, failure = await hooks.emit_annotate(kind, message)
         return (ext or None), failure
 
+    async def _entry_written(self, kind: str, entry_id: str, message: dict[str, Any]) -> None:
+        """Dispatch ``entry_written`` for one entry whose write group is on disk.
+
+        Args:
+            kind: ``"user"``, ``"assistant"``, ``"toolResult"`` or ``"custom"``.
+            entry_id: The written entry's id.
+            message: The message dict as written.
+        """
+        hooks = self._hooks()
+        if hooks.has_handlers("entry_written"):
+            await hooks.emit_entry_written(kind, entry_id, message)
+
     @staticmethod
     async def _append_turn_error(writer: _CursorWriter, exc: BaseException) -> None:
         """Write the ``turn_error`` node that ends a turn that raised.
@@ -4320,6 +4384,7 @@ class AgentSession:
         """
         with contextlib.suppress(AnnotationError):
             await writer.append(turn_error_message(exc))
+        await writer.close_group()
 
     async def _run_user_turn_end(self, turn_messages: list[dict[str, Any]]) -> None:
         """Fire the ``user_turn_end`` hook once, at the user-turn boundary (§16.5).
@@ -4355,14 +4420,18 @@ class AgentSession:
             messages=list(turn_messages),
         )
         failure: AnnotationError | None = None
+        written: list[tuple[str, dict[str, Any]]] = []
         for raw in injected:
             node = self._custom_message_node(raw, hook="user_turn_end")
             ext, err = await self._annotation("custom", node)
-            await self.acting_cursor.append_custom_message(
+            entry_id = await self.acting_cursor.append_custom_message(
                 node, custom_type=str(node["customType"]), ext=ext
             )
+            written.append((entry_id, node))
             turn_messages.append(node)
             failure = failure or err
+        for entry_id, node in written:
+            await self._entry_written("custom", entry_id, node)
         if failure is not None:
             raise failure
 
@@ -4419,7 +4488,9 @@ class AgentSession:
                 **self._turn_cap(),
             )
 
-            writer = _CursorWriter(cur, persist=True, annotate=self._annotation)
+            writer = _CursorWriter(
+                cur, persist=True, annotate=self._annotation, written=self._entry_written
+            )
             loop = AgentLoop(
                 config=config,
                 emit=self._emit_stamped,
@@ -4433,6 +4504,9 @@ class AgentSession:
             )
             try:
                 await loop.run_continue(context=context_messages)
+            except TurnSuspended as exc:
+                exc.messages = list(writer.messages)
+                raise
             except Exception as exc:
                 await self._append_turn_error(writer, exc)
                 raise
@@ -5027,6 +5101,7 @@ class AgentSession:
             node, custom_type=str(message["customType"]), ext=ext
         )
         self._announce_append("custom_message", entry_id=entry_id, message=node)
+        await self._entry_written("custom", entry_id, node)
         if failure is not None:
             raise failure
         return entry_id

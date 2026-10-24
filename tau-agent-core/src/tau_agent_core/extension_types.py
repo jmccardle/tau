@@ -1861,7 +1861,8 @@ class ExtensionAPI:
 
         The mutating hooks (``ExtensionRunner.HOOK_EVENTS``: ``tool_call``,
         ``tool_result``, ``before_agent_start``, ``input``, ``turn_end``,
-        ``user_turn_end``, ``session_before_switch``, ``annotate``) and the lifecycle hooks (``LIFECYCLE_EVENTS``:
+        ``user_turn_end``, ``session_before_switch``, ``annotate``,
+        ``entry_written``) and the lifecycle hooks (``LIFECYCLE_EVENTS``:
         ``session_start``, ``session_shutdown``) go to this extension's runner
         bucket, where handler errors are surfaced. Everything else — notify
         events, ``"all"``, and ``ext:<name>:<topic>`` channels from :meth:`emit` —

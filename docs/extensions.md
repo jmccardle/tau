@@ -87,11 +87,17 @@ uniformly:
 value is applied) — `tool_call` (veto/patch args before execution),
 `tool_result` (modify content/details/terminate after execution),
 `before_agent_start` (contribute to the system prompt), `input` (transform
-the user prompt pre-node), `turn_end`, `user_turn_end`,
-`session_before_switch` (veto a session new/fork/switch operation),
-`annotate` (return JSON stored on the entry about to be written as
+the user prompt pre-node; return `{"handled": True}` to consume it without a
+turn, or `{"refuse": "<reason>"}` to refuse the submission, which `submit`
+reports as `accepted=False` with that reason and writes nothing), `turn_end`,
+`user_turn_end`, `session_before_switch` (veto a session new/fork/switch
+operation), `annotate` (return JSON stored on the entry about to be written as
 `ext[<extension name>]`, never sent to the model; at most one handler per
-extension; see `docs/ENTRY-ANNOTATIONS.md`).
+extension; see `docs/ENTRY-ANNOTATIONS.md`), `entry_written` (observe
+`{kind, entry_id, message, blocks}` for each message entry after it is in the
+store; a deep copy, return ignored; dispatched per write group, so a parallel
+tool batch's results fire only once every result is written; not dispatched
+when `store_history` is off; see `docs/STEP-DEBUGGER.md` §3.2).
 
 **Lifecycle hooks** — `session_start`, `session_shutdown` (each carries a
 `reason`, e.g. `"reload"`).
