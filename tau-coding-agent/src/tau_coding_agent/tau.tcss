@@ -378,6 +378,17 @@ ZoneTree > .tree--kind-structural { color: $tau-text-quiet; text-style: italic; 
 .ext-ask-panel { color: $tau-text; margin-bottom: 1; }
 #ext-ask-buttons { margin-top: 1; }
 
+/* === Suspension modal (docs/STEP-DEBUGGER.md §3.5) === */
+
+#suspension-dialog { width: 84; max-height: 90%; }
+.suspension-site { color: $tau-text-dim; margin-bottom: 1; }
+.suspension-text { color: $tau-text; margin-bottom: 1; }
+.suspension-call { color: $tau-role-tool; margin-bottom: 1; }
+.suspension-evidence { color: $tau-text; margin-bottom: 1; }
+.suspension-queued { color: $tau-role-pending; margin-top: 1; }
+.suspension-queue { color: $tau-text-muted; margin-top: 1; }
+.suspension-buttons { margin-top: 1; }
+
 /* Margin and padding match .chat-message; only the border colour says it is not a message. */
 .ext-request-row {
     width: 100%;

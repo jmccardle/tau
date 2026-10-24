@@ -53,6 +53,12 @@ BY_GESTURE: dict[str, str] = {
         "reason: the fields are whatever the raising extension declared, which the "
         "Argument vocabulary cannot say"
     ),
+    "answer_suspension": (
+        "the suspension modal, which opens by itself when a turn suspends: fill the "
+        "fields and press one of its actions — `suspension_ui.SuspensionScreen` into "
+        "`AgentSession.answer_suspension`. Its responder registers in "
+        "`TauApp._rebind_after_session_swap`. Not a Flow, for `answer_request`'s reason"
+    ),
 }
 
 NOT_REACHABLE: dict[str, str] = {
@@ -65,17 +71,10 @@ NOT_REACHABLE: dict[str, str] = {
         "dispatch for it would re-open the finding the flow projection closed. "
         "Machine-reachable today via the RPC verb of the same name."
     ),
-    "answer_suspension": (
-        "Not yet: the TUI's suspension modal lands in slice M1f "
-        "(docs/STEP-DEBUGGER.md §3.5), and until then the TUI registers no "
-        "suspension responder, so api.suspend raises NoResponderError there and "
-        "nothing waits for an answer it cannot give. Machine-reachable today over "
-        "RPC and serve."
-    ),
     "declare_capabilities": (
         "A wire handshake, not a person's act: RPC has no hello, so a host declares "
         "what it renders here. The TUI is in-process and registers as a responder "
-        "itself, which it does once it renders suspensions (slice M1f)."
+        "itself, in `TauApp._rebind_after_session_swap`."
     ),
 }
 
@@ -118,13 +117,14 @@ def test_an_unreachable_mutation_gives_a_real_reason(mutation: str):
 
 STYLESHEET = Path(dialogs.__file__).with_name("tau.tcss")
 
-STYLED_ID_CAP = 36
-"""Distinct `#id` selectors the stylesheet may name. Measured 2026-09-04; 36 from 2026-10-03.
+STYLED_ID_CAP = 37
+"""Distinct `#id` selectors the stylesheet may name. Measured 2026-09-04; 37 from M1f-a.
 
 An id names one mounted widget, so an id rule is a proper noun and a vocabulary
 of proper nouns is the one thing a style guide cannot constrain. This was 53 when
 the four dialog roles were restated once per modal; the shell took it to 35.
-``#compare-dialog`` made it 36: the shell's sizing rule needs one id per dialog.
+``#compare-dialog`` made it 36 and ``#suspension-dialog`` 37: the shell's sizing
+rule needs one id per dialog.
 Anything per-modal, per-message or per-stream takes a class.
 """
 

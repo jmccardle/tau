@@ -137,7 +137,14 @@ from tau_coding_agent.chat_widgets import (
     ENTER_KEY_MODES,
     ENTER_KEY_CONFIG_KEY,
 )
-from tau_coding_agent import modals, editor_widgets, extension_ui, transcript, tree_browser
+from tau_coding_agent import (
+    modals,
+    editor_widgets,
+    extension_ui,
+    suspension_ui,
+    transcript,
+    tree_browser,
+)
 from tau_coding_agent.compare_view import CompareScreen
 
 if TYPE_CHECKING:
@@ -242,6 +249,7 @@ class TauApp(App):
         self._cwd: Path = Path.cwd()
         self.messages: list[dict] = []
         self._session_event_unsub: Optional[Callable[[], None]] = None
+        self._suspension_responder: Optional[suspension_ui.SuspensionResponder] = None
         self._submissions_in_flight: int = 0
         self._pending_steer: list[str] = []
         self._render_router: Optional[RenderRouter] = None
@@ -1929,6 +1937,13 @@ class TauApp(App):
         self._return_pending_to_the_editor()
         self._set_activity("Cancelling…")
 
+    def _abort_suspended_turn(self) -> None:
+        """The suspension modal's ``Abort turn``: what Esc does mid-turn, whoever submitted the turn."""
+        if self.current_backend is None:
+            return
+        self.current_backend.abort()
+        self._return_pending_to_the_editor()
+
     # -- "press it again": two keys that ask before doing something big -------
 
     CONFIRM_SECONDS = 3.0
@@ -2605,7 +2620,7 @@ class TauApp(App):
 
         Everything ``AgentSessionRuntime``'s own swap does NOT know how to do
         — the seam-3 extension-bus bridge, the model-name resolver, the
-        renderer — because it is TUI-specific, not session-lifecycle logic
+        suspension responder, the renderer — because it is TUI-specific, not session-lifecycle logic
         (``agent_session_runtime.py``'s module docstring is explicit that
         this is exactly why ``set_rebind_session`` exists rather than the
         runtime hardcoding it). Two callers:
@@ -2627,10 +2642,16 @@ class TauApp(App):
         if self._session_event_unsub is not None:
             self._session_event_unsub()
             self._session_event_unsub = None
+        if self._suspension_responder is not None:
+            self._suspension_responder.detach()
+            self._suspension_responder = None
         agent_session = getattr(self.current_backend, "agent_session", None)
         if agent_session is not None:
             self._cursor = agent_session.cursor
             self._session_event_unsub = subscribe_session_events(agent_session.route_session_event)
+            self._suspension_responder = suspension_ui.SuspensionResponder(
+                self, agent_session, self._abort_suspended_turn
+            )
             binder = getattr(agent_session, "set_model_resolver", None)
             if binder is not None:
                 binder(make_model_resolver(self.config))
