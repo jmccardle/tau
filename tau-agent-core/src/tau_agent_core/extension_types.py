@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import fnmatch
-import inspect
+import functools
 import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Literal
@@ -32,12 +32,15 @@ from tau_agent_core.extension_locks import REQUEST_ENTRY_TYPE, build_request_dat
 from tau_agent_core.extension_warnings import TAU_SOURCE
 from tau_agent_core.policies import (
     Failed,
+    HandlerCall,
     HandlerPolicy,
     HandlerPolicyError,
     PolicedHandler,
     PolicySite,
     Proceeded,
+    ThreadAffinity,
     check_outcome,
+    police_thread_affinity,
 )
 from tau_agent_core.tool_catalog import ExtensionInfo, ToolDescription, match_tools
 from tau_agent_core.tool_output import suspend_capture
@@ -1986,13 +1989,9 @@ class ExtensionAPI:
             self._session.set_extension_warning(name, f"policy:{channel}", text)
 
         async def policed(*args: Any, **kwargs: Any) -> Any:
-            async def call() -> Any:
-                result = handler(*args, **kwargs)
-                if inspect.isawaitable(result):
-                    result = await result
-                return result
-
             site = PolicySite(channel, name, warn)
+            bound = functools.partial(handler, **kwargs) if kwargs else handler
+            call = HandlerCall(bound, args, hook=channel, warn=site.warn)
             outcome = check_outcome(await resolved.run(call, site), policy)
             if isinstance(outcome, Failed):
                 raise HandlerPolicyError(name, channel, policy, outcome.error)
@@ -2830,3 +2829,89 @@ class ExtensionAPI:
     def context(self) -> ExtensionContext:
         """The shared :class:`ExtensionContext` handlers receive as ``ctx``."""
         return self._context
+
+
+# What a policed sync handler's worker thread may call (docs/STEP-DEBUGGER.md §4, #97).
+_UI_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
+    "interactive": "any",
+    "set_headless_defaults": "loop",
+    "set_record_sink": "loop",
+    "notify": "loop",
+    "set_status": "loop",
+    "panel": "loop",
+    "emit_veto": "loop",
+    "emit_constraints": "loop",
+    "form": "refuse",
+}
+
+_CONTEXT_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
+    "cwd": "any",
+    "ui": "any",
+    "shutdown": "any",
+    "shutdown_requested": "any",
+    "signal": "loop",
+    "is_idle": "loop",
+    "session_id": "loop",
+    "abort": "loop",
+    "get_context_usage": "loop",
+    "get_model": "loop",
+    "set_model": "loop",
+    "set_reasoning": "loop",
+    "get_usage": "loop",
+    "list_tools": "loop",
+    "describe_tool": "loop",
+    "list_extensions": "loop",
+    "find_extension": "loop",
+    "leaf_id": "loop",
+    "entries": "loop",
+    "resolve_model": "loop",
+    "set_ui_delegate": "loop",
+    "set_record_sink": "loop",
+    "emit_veto_record": "loop",
+    "set_headless_ui_defaults": "loop",
+    "cursor": "refuse",
+    "cursors": "refuse",
+    "prompt": "refuse",
+    "compact": "refuse",
+    "execute_tool": "refuse",
+    "set_tool_exposure": "refuse",
+    "complete": "refuse",
+    "complete_text": "refuse",
+    "spawn_branch": "refuse",
+    "summarize_branch": "refuse",
+    "navigate": "refuse",
+    "fork": "refuse",
+}
+
+_API_THREAD_AFFINITY: dict[str, ThreadAffinity] = {
+    "extension_name": "any",
+    "config": "any",
+    "ui": "any",
+    "context": "any",
+    "submit_threadsafe": "any",
+    "set_warning": "any",
+    "clear_warning": "any",
+    "on": "loop",
+    "register_policy": "loop",
+    "register_tool": "loop",
+    "get_all_tools": "loop",
+    "set_active_tools": "loop",
+    "register_command": "loop",
+    "get_command": "loop",
+    "unregister_command": "loop",
+    "register_flow": "loop",
+    "register_shortcut": "loop",
+    "get_session_name": "loop",
+    "send_user_message": "loop",
+    "submit": "refuse",
+    "emit": "refuse",
+    "run_command": "refuse",
+    "append_entry": "refuse",
+    "request_user_action": "refuse",
+    "set_session_name": "refuse",
+    "send_message": "refuse",
+}
+
+police_thread_affinity(ExtensionUI, _UI_THREAD_AFFINITY)
+police_thread_affinity(ExtensionContext, _CONTEXT_THREAD_AFFINITY)
+police_thread_affinity(ExtensionAPI, _API_THREAD_AFFINITY)

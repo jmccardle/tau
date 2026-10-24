@@ -34,6 +34,11 @@ ALLOWED: dict[tuple[str, str, str], str] = {
         "except TurnSuspended",
     ): "mapped: resolves the caller's future as accepted with end_reason 'suspended'",
     (
+        "tau-agent-core/src/tau_agent_core/policies.py",
+        "HandlerCall.on_worker_thread.work",
+        "except BaseException",
+    ): "carries a sync handler's exception across the thread; the awaiting task re-raises it",
+    (
         "tau-agent-core/src/tau_agent_core/codemode/_cpython_child.py",
         "_run",
         "except BaseException",

@@ -2202,6 +2202,70 @@ turn; every other site raises :class:`HandlerPolicyError`, which ends the turn
 
 - `error: Exception` — Why: the handler's exception, or :class:`DeadlineExpired`.
 
+## HandlerCall
+<!-- agent: yes -->
+
+```python
+class HandlerCall(handler: Callable[..., Any], args: Sequence[Any], *, hook: str, warn: Callable[[str], None])
+```
+
+`tau_agent_core.policies.HandlerCall` · since 0.15.0
+
+A handler bound to its arguments: the ``call`` core hands a policy.
+
+``await call()`` runs the handler inline, in the awaiting task.
+:meth:`PausableDeadline.run` runs a sync one (a plain ``def``) on a worker
+thread instead, so the deadline returns on time however long it blocks;
+the thread cannot be killed, so it is abandoned (docs/STEP-DEBUGGER.md §4,
+#97).
+
+**Constructor parameters**
+
+- `handler: Callable[..., Any]` — The handler.
+- `args: Sequence[Any]` — Its positional arguments.
+- `hook: str` — The hook or ``ext:`` channel, for the late-finish warning.
+- `warn: Callable[[str], None]` — Sets the handler's ``policy:<hook>`` session warning.
+
+### __call__
+
+```python
+async __call__() -> Any
+```
+
+`tau_agent_core.policies.HandlerCall.__call__` · since 0.15.0
+
+Call the handler here and await what it returns if that is awaitable.
+
+### abandoned
+
+`tau_agent_core.policies.HandlerCall.abandoned` · since 0.15.0
+
+Whether a deadline stopped waiting for its worker thread.
+
+### on_worker_thread
+
+```python
+async on_worker_thread() -> Any
+```
+
+`tau_agent_core.policies.HandlerCall.on_worker_thread` · since 0.15.0
+
+Run the handler on a new daemon thread and await it; an awaitable it returns is awaited here.
+
+The thread runs in a copy of this task's context. Cancelled, this stops
+waiting and abandons the thread: its result is dropped, and when it
+finishes the warning says how late.
+
+**Returns**
+
+What the handler returned.
+
+### sync
+
+`tau_agent_core.policies.HandlerCall.sync` · since 0.15.0
+
+Whether the handler is not a coroutine function.
+
 ## HandlerPolicy
 <!-- agent: yes -->
 
@@ -3321,7 +3385,8 @@ A bounded handler runs in its own task, so a guard that compares
 ``asyncio.current_task()`` with a turn's task would miss it. This follows
 each :meth:`PausableDeadline.run` task to the task awaiting it. A task a
 handler merely spawned is not followed, so it is never mistaken for the
-turn.
+turn. A sync handler's worker thread (#97) has no task; it counts as its
+deadline's task until that deadline abandons it.
 
 **Parameters**
 

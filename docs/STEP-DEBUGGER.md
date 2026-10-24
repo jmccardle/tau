@@ -1321,6 +1321,74 @@ spec left open:
   when it is disabled or reloaded, but a handler that already resolved one
   keeps it.
 
+**Built (#97): a sync handler returns at its deadline.** Under M1d, a plain
+`def` handler under `Bounded` ran to completion inside its task's first step.
+It held the loop, so the watchdog could not fire, and a 40 s handler under
+`gating` came back `Returned` after 40 s. John ruled that execution must return
+at the deadline, even at the cost of worker threads (2026-10-24).
+
+- **The thread rule lives in `PausableDeadline.run`.** Core hands a policy a
+  `HandlerCall`, not a lambda. `await call()` runs the handler inline, which is
+  what `Unbounded` does. `PausableDeadline.run` runs a sync `HandlerCall` (not a
+  coroutine function) on a new daemon thread in a copy of the task's context,
+  and awaits a future the thread settles through `call_soon_threadsafe`. Any
+  policy that runs its call under `site.deadline(...)` gets this rule, a custom
+  one included. An awaitable the sync handler returns is awaited on the loop.
+- **One daemon thread per call, not `asyncio.to_thread`.** A thread cannot be
+  killed, so a hung handler keeps its thread forever. In the default executor
+  that would starve every other `to_thread` and `getaddrinfo` user, and executor
+  workers are joined at interpreter exit (by `asyncio.run` for up to 300 s, and
+  by `concurrent.futures` with no limit), so one hung handler would hang
+  `tau`'s exit. A daemon thread does neither. Starting one costs well under a
+  millisecond per policed call.
+- **Abandonment.** At the deadline the watchdog cancels the task, as for an
+  async handler, and the policy maps `DeadlineExpired` as usual. The thread is
+  abandoned (`HandlerCall.abandoned`). Its result is dropped, and a coroutine
+  it returned is closed. When it finishes, it sets the extension's
+  `policy:<hook>` warning, `"<hook> handler abandoned on its worker thread
+  finished 1.8s late"` or `"… raised <Type>: <message> 1.8s late"`, which
+  replaces the `Proceeded` warning under the same key. A thread that never
+  finishes sets nothing more. The outcome already said it timed out. An outer
+  cancellation (an enclosing deadline, an aborted turn) abandons it the same way.
+- **Context.** The thread sees the task's contextvars, so the acting cursor,
+  the enclosing deadlines and the dispatch mark are all the handler's own.
+  `runs_on_behalf_of` treats the thread as its deadline's task until it is
+  abandoned, so the reentrant-submit guard still recognises the turn.
+  Afterwards the thread is no longer part of the turn. A thread cannot suspend.
+  `api.suspend` is a coroutine method, and the affinity rule below refuses
+  every coroutine method on a worker thread, so the dispatch mark is never set
+  from a thread. That is refused, not honoured.
+- **ctx and api thread affinity.** `policies.police_thread_affinity` wraps every
+  public member of `ExtensionContext`, `ExtensionAPI` and `ExtensionUI` from a
+  table at the foot of `extension_types.py`. Off a worker thread the wrapper
+  only calls through.
+  - **`any`** runs on the thread. These are `ctx.cwd`, `ctx.ui`,
+    `ctx.shutdown`/`shutdown_requested`, `api.extension_name`, `api.config`,
+    `api.ui`, `api.context`, `api.submit_threadsafe`, and
+    `api.set_warning`/`clear_warning`, which were already thread-safe (#60).
+  - **`loop`** is marshalled: it runs on the loop in the thread's context, and
+    the thread blocks until it returns. This covers every other sync method and
+    property, which read or write session state: `ctx.get_model`, `set_model`,
+    `entries`, `leaf_id`, `signal`, `abort`, `list_tools`, every `ctx.ui` paint,
+    `api.on`, `register_*`, `send_user_message` and the rest. The task it runs
+    in counts as awaited by the deadline's task. Once the handler is abandoned,
+    a marshalled call raises `RuntimeError`, so a late thread cannot change the
+    session after the turn has moved on.
+  - **`refuse`** raises `RuntimeError` naming the member. This covers every
+    coroutine method (`ctx.prompt`, `complete`, `fork`, `api.submit`, `emit`,
+    `ui.form`, …), which a thread cannot await, and `ctx.cursor`/`cursors`,
+    which hand out live `Cursor` objects. Use `ctx.leaf_id()` instead.
+
+  `tests/test_policed_sync_threads.py` fails when a public member is missing
+  from the table, so a new ctx or api method must be classified.
+- **Unpoliced, `human` and `Unbounded` sync handlers still run inline** on the
+  loop, as before.
+- **Limit: an async handler is not preempted.** Under a policy, a blocking call
+  inside an `async def` handler holds the loop and its own watchdog. Async
+  handlers must not block; this is asyncio's own rule. John has not ruled on
+  it, and no second event loop is built. Author guidance is in
+  `docs/extensions.md`, "Handlers must not block".
+
 ## 5. The debugger extension (`tau-debugger`)
 
 ### 5.1 Home and dependencies

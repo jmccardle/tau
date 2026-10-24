@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from tau_agent_core.entry_annotations import AnnotationError, entry_blocks, json_value
 from tau_agent_core.policies import (
     Failed,
+    HandlerCall,
     HandlerPolicyError,
     PolicedHandler,
     PolicySite,
@@ -372,10 +373,8 @@ class ExtensionRunner:
             TypeError: the policy returned something that is not an outcome.
         """
         site = PolicySite(hook, ext.name, lambda text: self._warn(ext, hook, text))
-        outcome = check_outcome(
-            await policed.policy.run(lambda: self._invoke(policed.handler, event), site),
-            policed.name,
-        )
+        call = HandlerCall(policed.handler, (event, self._context), hook=hook, warn=site.warn)
+        outcome = check_outcome(await policed.policy.run(call, site), policed.name)
         if isinstance(outcome, Failed):
             raise HandlerPolicyError(ext.name, hook, policed.name, outcome.error)
         if isinstance(outcome, Proceeded):
