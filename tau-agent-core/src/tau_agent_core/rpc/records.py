@@ -76,6 +76,10 @@ class SuspensionField(_Record):
     options: list[str] | None = Field(
         default=None, description="A select or multiselect field's choices."
     )
+    required: bool | None = Field(
+        default=None,
+        description="False on a select means it may be answered null; absent means required.",
+    )
 
 
 class SuspensionText(_Record):
@@ -175,6 +179,7 @@ class FormField(TypedDict):
     label: NotRequired[str]
     default: NotRequired[Any]
     options: NotRequired[list[str]]
+    required: NotRequired[bool]
 
 
 class FormSpec(TypedDict):

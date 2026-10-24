@@ -3380,7 +3380,7 @@ no policy the form raises instead of fabricating an answer.
 
 **Returns**
 
-The field's declared ``default`` when present; otherwise the kind's empty value (``""``, ``0``, ``False``, ``[]``), or a ``select``'s first option.
+The field's declared ``default`` when present; otherwise the kind's empty value (``""``, ``0``, ``False``, ``[]``); a ``select``'s first option, or ``None`` when it is optional (``required: False``).
 
 ## is_extension_disabled
 <!-- agent: yes -->
@@ -3907,15 +3907,15 @@ Shared by :meth:`ExtensionUI.form` and the TUI's ``ExtensionFormScreen``.
 
 **Parameters**
 
-- `spec: Any` — ``{title?: str, fields: [field, ...]}``; each field is ``{name: str, kind: str, label?: str, default?: Any, options?: [str, ...]}``. A ``select``/``multiselect`` field must carry non-empty string ``options``.
+- `spec: Any` — ``{title?: str, fields: [field, ...]}``; each field is ``{name: str, kind: str, label?: str, default?: Any, options?: [str, ...], required?: bool}``. A ``select``/``multiselect`` field must carry non-empty string ``options``. ``required: False`` on a ``select`` lets it be left unanswered (its value is ``None``); every other kind has a natural empty value, so the key is kept but changes nothing.
 
 **Returns**
 
-The title (default ``"Form"``) and the normalized fields: ``label`` defaulted to ``name``, ``default``/``options`` kept when present.
+The title (default ``"Form"``) and the normalized fields: ``label`` defaulted to ``name``, ``default``/``options``/``required`` kept when present.
 
 **Raises**
 
-- `ValueError` — a non-dict spec, a non-string title or label, an empty or absent ``fields`` list, a field without a non-empty string ``name``, a duplicate name, an unknown ``kind``, or a select/multiselect without valid ``options``. Nothing is silently dropped.
+- `ValueError` — a non-dict spec, a non-string title or label, an empty or absent ``fields`` list, a field without a non-empty string ``name``, a duplicate name, an unknown ``kind``, a non-bool ``required``, or a select/multiselect without valid ``options``. Nothing is silently dropped.
 
 ## validate_form_values
 <!-- agent: yes -->
@@ -3936,11 +3936,11 @@ one-shot return value.
 **Parameters**
 
 - `fields: list[dict[str, Any]]` — The normalized field list, as returned by :func:`validate_form_spec`.
-- `values: dict[str, Any]` — The answers, keyed by field name. Every declared field must be present; missing is not the same as empty and is not filled in here.
+- `values: dict[str, Any]` — The answers, keyed by field name. Every declared field must be present; missing is not the same as empty and is not filled in here. An optional ``select`` left unanswered is present as ``None``.
 
 **Raises**
 
-- `ValueError` — an undeclared key, a missing declared field, a value whose type does not match its kind, or a ``select``/``multiselect`` value outside its declared options. Fail-Early: nothing is coerced and nothing is dropped.
+- `ValueError` — an undeclared key, a missing declared field, a value whose type does not match its kind, or a ``select``/``multiselect`` value outside its declared options (``None`` is admitted only for an optional ``select``). Fail-Early: nothing is coerced and nothing is dropped.
 
 ## validate_panel_spec
 <!-- agent: yes -->

@@ -18,6 +18,7 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 from tau_agent_core.extension_types import (
     CHOICE_FILTER_THRESHOLD,
+    field_is_optional,
     filter_choices,
     validate_form_spec,
 )
@@ -181,7 +182,8 @@ class ChoiceField(Vertical):
     :data:`~tau_agent_core.extension_types.CHOICE_FILTER_THRESHOLD` options and
     narrows by :func:`~tau_agent_core.extension_types.filter_choices`. While it
     has focus the arrow keys move the list and Enter commits the highlighted
-    option (docs/MODEL-PICKER.md §4).
+    option (docs/MODEL-PICKER.md §4). An ``optional`` field with no valid default
+    starts with nothing highlighted, and Delete returns it to unanswered.
     """
 
     class Committed(Message):
@@ -198,11 +200,14 @@ class ChoiceField(Vertical):
         "pagedown": "page_down",
     }
 
-    def __init__(self, options: list[str], default: Any, *, id: str) -> None:
+    def __init__(
+        self, options: list[str], default: Any, *, id: str, optional: bool = False
+    ) -> None:
         super().__init__(id=id, classes="tau-choice")
         self._options = list(options)
         self._shown = list(options)
-        self._default = default if default in options else options[0]
+        self._optional = optional
+        self._default = default if default in options else (None if optional else options[0])
 
     def compose(self) -> ComposeResult:
         if len(self._options) > CHOICE_FILTER_THRESHOLD:
@@ -213,7 +218,8 @@ class ChoiceField(Vertical):
         yield ChoiceList(*self._prompts(self._options), classes="tau-dialog-input tau-choice-list")
 
     def on_mount(self) -> None:
-        self.query_one(ChoiceList).highlighted = self._options.index(self._default)
+        choices = self.query_one(ChoiceList)
+        choices.highlighted = None if self._default is None else self._options.index(self._default)
 
     @staticmethod
     def _prompts(options: list[str]) -> list[Option]:
@@ -225,8 +231,14 @@ class ChoiceField(Vertical):
         return list(self._shown)
 
     @property
+    def filter_text(self) -> str:
+        """What the filter box holds; empty when there is no box."""
+        boxes = self.query(".tau-choice-filter")
+        return boxes.first(Input).value if boxes else ""
+
+    @property
     def value(self) -> Optional[str]:
-        """The highlighted option, or ``None`` when the filter leaves none."""
+        """The highlighted option, or ``None`` when nothing is highlighted."""
         index = self.query_one(ChoiceList).highlighted
         return None if index is None else self._shown[index]
 
@@ -254,6 +266,10 @@ class ChoiceField(Vertical):
         self.post_message(self.Committed(self))
 
     def on_key(self, event: events.Key) -> None:
+        if event.key == "delete" and self._optional:
+            event.stop()
+            self.query_one(ChoiceList).highlighted = None
+            return
         move = self._MOVES.get(event.key)
         if move is not None and isinstance(self.screen.focused, Input):
             event.stop()
@@ -295,7 +311,10 @@ class _FieldForm(TauDialog[_T]):
             # The Checkbox carries its own label; no separate Static row.
             yield Checkbox(label, value=bool(field.get("default", False)), id=wid)
             return
-        yield Static(label, classes="ext-form-label")
+        yield Static(
+            f"{label} (optional, Delete clears)" if field_is_optional(field) else label,
+            classes="ext-form-label",
+        )
         if kind in ("text", "number"):
             default = field.get("default", "")
             yield Input(
@@ -305,7 +324,9 @@ class _FieldForm(TauDialog[_T]):
                 classes="tau-dialog-input",
             )
         elif kind == "select":
-            yield ChoiceField(field["options"], field.get("default"), id=wid)
+            yield ChoiceField(
+                field["options"], field.get("default"), id=wid, optional=field_is_optional(field)
+            )
         elif kind == "multiselect":
             options = field["options"]
             chosen_set = set(field.get("default", []) or [])
@@ -349,9 +370,15 @@ class _FieldForm(TauDialog[_T]):
         """Every field's answer, or ``None`` after saying which choice has none."""
         for index, field in enumerate(self._fields):
             wid = f"#{self._field_widget_id(index)}"
-            if field["kind"] == "select" and self.query_one(wid, ChoiceField).value is None:
-                self.notify(f"{field['label']}: the filter matches no option", severity="warning")
-                return None
+            if field["kind"] != "select":
+                continue
+            choice = self.query_one(wid, ChoiceField)
+            if choice.value is not None:
+                continue
+            if field_is_optional(field) and not choice.filter_text:
+                continue
+            self.notify(f"{field['label']}: the filter matches no option", severity="warning")
+            return None
         answers: dict[str, Any] = {}
         for index, field in enumerate(self._fields):
             wid = f"#{self._field_widget_id(index)}"

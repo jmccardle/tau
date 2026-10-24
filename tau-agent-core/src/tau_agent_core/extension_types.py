@@ -127,18 +127,21 @@ def validate_form_spec(spec: Any) -> tuple[str, list[dict[str, Any]]]:
 
     Args:
         spec: ``{title?: str, fields: [field, ...]}``; each field is ``{name: str,
-            kind: str, label?: str, default?: Any, options?: [str, ...]}``. A
-            ``select``/``multiselect`` field must carry non-empty string ``options``.
+            kind: str, label?: str, default?: Any, options?: [str, ...],
+            required?: bool}``. A ``select``/``multiselect`` field must carry
+            non-empty string ``options``. ``required: False`` on a ``select`` lets
+            it be left unanswered (its value is ``None``); every other kind has a
+            natural empty value, so the key is kept but changes nothing.
 
     Returns:
         The title (default ``"Form"``) and the normalized fields: ``label``
-        defaulted to ``name``, ``default``/``options`` kept when present.
+        defaulted to ``name``, ``default``/``options``/``required`` kept when present.
 
     Raises:
         ValueError: a non-dict spec, a non-string title or label, an empty or
             absent ``fields`` list, a field without a non-empty string ``name``, a
-            duplicate name, an unknown ``kind``, or a select/multiselect without
-            valid ``options``. Nothing is silently dropped.
+            duplicate name, an unknown ``kind``, a non-bool ``required``, or a
+            select/multiselect without valid ``options``. Nothing is silently dropped.
     """
     if not isinstance(spec, dict):
         raise ValueError("ui.form: spec must be a dict")
@@ -172,6 +175,10 @@ def validate_form_spec(spec: Any) -> tuple[str, list[dict[str, Any]]]:
         field: dict[str, Any] = {"name": name, "kind": kind, "label": label}
         if "default" in raw:
             field["default"] = raw["default"]
+        if "required" in raw:
+            if not isinstance(raw["required"], bool):
+                raise ValueError(f"ui.form: field {name!r} 'required' must be a bool")
+            field["required"] = raw["required"]
         if kind in ("select", "multiselect"):
             options = raw.get("options")
             if not isinstance(options, list) or not options:
@@ -181,6 +188,19 @@ def validate_form_spec(spec: Any) -> tuple[str, list[dict[str, Any]]]:
             field["options"] = list(options)
         fields.append(field)
     return title, fields
+
+
+def field_is_optional(field: dict[str, Any]) -> bool:
+    """Say whether a validated ``select`` field may be left unanswered.
+
+    Args:
+        field: One field from :func:`validate_form_spec`'s normalized list.
+
+    Returns:
+        True for a ``select`` declared ``required: False``; no other kind is
+        optional in this sense, because each has an empty value to answer with.
+    """
+    return field["kind"] == "select" and field.get("required", True) is False
 
 
 @agent_facing(topic="extensions")
@@ -195,13 +215,14 @@ def form_headless_value(field: dict[str, Any]) -> Any:
 
     Returns:
         The field's declared ``default`` when present; otherwise the kind's empty
-        value (``""``, ``0``, ``False``, ``[]``), or a ``select``'s first option.
+        value (``""``, ``0``, ``False``, ``[]``); a ``select``'s first option, or
+        ``None`` when it is optional (``required: False``).
     """
     if "default" in field:
         return field["default"]
     kind = field["kind"]
     if kind == "select":
-        return field["options"][0]
+        return None if field_is_optional(field) else field["options"][0]
     return _FORM_EMPTY_VALUE[kind]
 
 
@@ -219,11 +240,13 @@ def validate_form_values(fields: list[dict[str, Any]], values: dict[str, Any]) -
             :func:`validate_form_spec`.
         values: The answers, keyed by field name. Every declared field must be
             present; missing is not the same as empty and is not filled in here.
+            An optional ``select`` left unanswered is present as ``None``.
 
     Raises:
         ValueError: an undeclared key, a missing declared field, a value whose
             type does not match its kind, or a ``select``/``multiselect`` value
-            outside its declared options. Fail-Early: nothing is coerced and
+            outside its declared options (``None`` is admitted only for an
+            optional ``select``). Fail-Early: nothing is coerced and
             nothing is dropped.
     """
     declared = {f["name"]: f for f in fields}
@@ -242,6 +265,8 @@ def validate_form_values(fields: list[dict[str, Any]], values: dict[str, Any]) -
             raise ValueError(f"field {name!r} is 'number' but got {type(value).__name__}")
         if kind == "confirm" and not isinstance(value, bool):
             raise ValueError(f"field {name!r} is 'confirm' but got {type(value).__name__}")
+        if kind == "select" and value is None and field_is_optional(field):
+            continue
         if kind == "select" and value not in field["options"]:
             raise ValueError(f"field {name!r} value {value!r} is not one of {field['options']}")
         if kind == "multiselect":
