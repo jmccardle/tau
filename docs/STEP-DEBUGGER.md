@@ -392,11 +392,24 @@ rests on the Future. Across processes it rests on the store:
   in-process. Releasing the lock at the finalize would lift the prompt refusal
   while the resumed batch still runs, and another process could then append a
   prompt over calls in flight (tau-search, round 4).
-- **Every file-store writer takes the same lock per turn.** A TUI, REPL, RPC or
-  `-p` process tries the lock without blocking when it admits a turn, and holds
-  it until the turn ends. If another process holds it, the submit is refused,
-  naming the holder. This is the single-writer rule serve already follows,
-  applied across processes. It costs one `flock` call per turn. Today
+- **The lock is held per process, per session file.** The file store takes it
+  without blocking when the first turn on that file in this process is
+  admitted, and keeps a count across that process's cursors. It releases the
+  lock when the last of those turns ends. `flock` locks belong to the open file,
+  so a lock per turn or per cursor would make two cursors in one process refuse
+  each other. memory_reflex's `spawn_branch` lane overlaps the main voice turn
+  in one Tectum process by design (tectum-arecibo, round 4). Inside one process,
+  turns on the same file keep using `Cursor.turn_lock` and the in-process rules,
+  as today.
+- **Another process is refused.** If a different process holds the lock, the
+  submit is refused, naming the holder. This is the single-writer rule serve
+  already follows, applied across processes. It costs one `flock` call per
+  process-turn edge.
+- **Where the lock cannot be taken, τ fails loudly.** `fcntl.flock` is POSIX and
+  advisory, and it is unreliable on some network filesystems. If the lock call
+  fails, or is unsupported on the platform, the submit is refused with that
+  reason. It is never skipped silently. The platform matrix states which
+  platforms the lock covers. Today
   nothing locks the file store across processes (`session_store.py`,
   `session_log.py` and `headless.py` have no `flock`, `fcntl` or `O_EXCL`).
   `finalized_entry`'s refusal (`session_log.py:118`) sees only lines already
@@ -489,7 +502,11 @@ prompt only. When a suspension is raised under `-p`:
    refuses and names the pending suspension. It never continues silently.
 6. Any other head can answer the same suspension. A `-p` session suspended at
    exit 3 can be answered from the TUI, from `tau serve` with an attached client,
-   or from Tau Code. The answering head resumes the turn.
+   or from Tau Code. The answering head resumes the turn. That holds for an
+   *orphaned* suspension. A *live* one is held by its own process, under the
+   §3.7.3 lock, so another process's `-p --answer` is refused, naming the
+   holder. A live suspension is answered in the head that is waiting, or through
+   serve if serve hosts it (tau-router, round 4).
 
 **Where nothing can answer,** `api.suspend` raises `NoResponderError`:
 
@@ -800,6 +817,9 @@ Every head must produce the same tree: the same entries, the same finalized
   every pending tool runs exactly once;
 - a TUI submits while a `-p --answer` resume is mid-batch: refused by the lock,
   not interleaved;
+- on the file store, a `spawn_branch` lane turn overlaps a main-cursor turn in
+  one process: neither is refused. A second process submitting meanwhile is
+  refused, naming the holder;
 - a parallel batch where call *k* suspended, then a resume with the debugger in
   `every` mode: call 1 suspends with a new suspension, and only call *k*
   receives the stored resolution;
@@ -916,4 +936,6 @@ as milestone 2 (§7).
 | round 3, tau-search: nothing stops a new prompt over a pending suspension | §3.7.3 refused on every head until answered |
 | round 3, tau-search: two processes can both claim an orphaned suspension | §3.7.3 atomic claim: `flock` and a re-read; serve holds the lock; JMFTS resumes only through a single writer |
 | round 4, tau-router: a parallel resume could hand call *k*'s answer to call 1 | §3.7.3 replay key `(extension, site, call)` at `tool_call` |
-| round 4, tau-search: releasing the claim lock at finalize opens a window for another writer | §3.7.3 lock held to the end of the resumed turn; every file-store writer takes it per turn |
+| round 4, tau-search: releasing the claim lock at finalize opens a window for another writer | §3.7.3 lock held to the end of the resumed turn; every file-store writer takes it |
+| round 4, tectum: a per-turn lock refuses a second cursor in the same process | §3.7.3 the lock is per process per session file, counted across cursors |
+| round 4, tau-router and tau-search: "any head can answer" vs a live suspension; `flock` on network filesystems | §3.8 point 6; §3.7.3 fail loudly where the lock cannot be taken |
