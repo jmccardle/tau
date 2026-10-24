@@ -1322,6 +1322,7 @@ One field of an extension form (`extension_types.validate_form_spec`).
 | `label` | string | no |  |
 | `default` | any | no |  |
 | `options` | list of string | no |  |
+| `required` | boolean | no |  |
 
 ### FormSpec
 
@@ -2109,6 +2110,7 @@ One field of a suspension's form (``extension_types.validate_form_spec``).
 | `label` | string | yes |  |
 | `default` | string \| integer \| number \| boolean \| list of string \| null | no | The declared default, when the extension gave one. |
 | `options` | list of string \| null | no | A select or multiselect field's choices. |
+| `required` | boolean \| null | no | False on a select means it may be answered null; absent means required. |
 
 ### SuspensionList
 
