@@ -709,10 +709,18 @@ rests on the Future. Across processes it rests on a lock:
   - The file store has no delete, rename or move today, so a sidecar is never
     removed; export reads entries, never the sidecar. A future delete removes
     the sidecar with the log.
-  - Taking the lock re-reads the log if its inode, size or mtime changed since
-    this object loaded or last wrote it, and moves cursors sitting on the old
-    default leaf to the new one, so a session loaded while another process
-    held it never writes from a stale copy (M1b review, tau-router).
+  - Taking the lock, or re-taking a replaced sidecar at turn admission,
+    re-reads the log if its inode or size differs from what this object last
+    read (the bytes actually read, not a later `stat`) or wrote, and moves
+    cursors on the old default leaf to the new one. So a session loaded while
+    another process held it never writes from a stale copy. A log that no
+    longer parses (a torn last line) opens read-only with that reason and lets
+    the lock go (M1b review, tau-router).
+  - A local FUSE or host-shared mount (encfs, mergerfs, virtiofs, vboxsf) gets
+    a softer warning, that another host or mount may go undetected; network
+    filesystems keep "a second writer is not detected".
+  - An `AgentSession` collected without shutdown queues its releases, which
+    run at the next acquire or release; a finalizer never releases inside one.
   - Compaction and branch summaries check write access before the summarizer
     runs, so a read-only replica spends no tokens.
   - The legacy `SessionManager` writes JSONL without the lock and is not

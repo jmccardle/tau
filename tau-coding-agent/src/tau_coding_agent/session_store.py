@@ -278,7 +278,7 @@ class Session:
         self._unwritten = False
         self._allow_unlocked_fs = allow_unlocked_fs
         self._write_lock: SessionWriteLock | None = None
-        self._disk_mark: tuple[int, int, int] | None = None
+        self._disk_mark: tuple[int, int] | None = None
 
     @property
     def path(self) -> Path | None:
@@ -303,11 +303,16 @@ class Session:
         return self._write_lock
 
     def _mark_disk(self) -> None:
-        """Remember the file as this object last read or wrote it: inode, size, mtime."""
+        """Remember the file as this object just wrote it: inode and size.
+
+        Only after this object's own write, which nobody else interleaves
+        while it holds the lock; a read records what it read instead
+        (:func:`_read_session_file`).
+        """
         if self.path is None:
             return
         st = os.stat(self.path)
-        self._disk_mark = (st.st_ino, st.st_size, st.st_mtime_ns)
+        self._disk_mark = (st.st_ino, st.st_size)
 
     def _refresh_from_disk(self) -> bool:
         """Re-read the file if another writer changed it since this object last saw it.
@@ -316,18 +321,24 @@ class Session:
         process held it never becomes the writer on a copy missing that
         process's last entries (docs/STEP-DEBUGGER.md §3.7.3).
 
+        The file is append-only and a rewrite replaces its inode, so inode and
+        size say whether anything was added.
+
         Returns:
             Whether the entries were reloaded.
+
+        Raises:
+            ValueError: the file no longer parses (a torn last line).
         """
         if self.path is None or self._disk_mark is None:
             return False
         st = os.stat(self.path)
-        if (st.st_ino, st.st_size, st.st_mtime_ns) == self._disk_mark:
+        if (st.st_ino, st.st_size) == self._disk_mark:
             return False
-        _header, entries = _read_session_file(self.path)
+        _header, entries, mark = _read_session_file(self.path)
         self._entries = normalize_loaded_entries(keep_last_per_id(entries))
         self._ids = {e["id"] for e in self._entries if "id" in e}
-        self._mark_disk()
+        self._disk_mark = mark
         return True
 
     def _guard_write(self) -> None:
@@ -495,14 +506,14 @@ class Session:
         Loading takes no lock; a host retains :attr:`write_lock` when it writes,
         and taking it re-reads the file if another writer changed it meanwhile.
         """
-        header, entries = _read_session_file(path)
+        header, entries, mark = _read_session_file(path)
         session = cls(
             path,
             header,
             normalize_loaded_entries(keep_last_per_id(entries)),
             allow_unlocked_fs=allow_unlocked_fs,
         )
-        session._mark_disk()
+        session._disk_mark = mark
         _emit_session_event(SESSION_START, session)
         return session
 
@@ -697,29 +708,38 @@ class Session:
             self._write_lock.attach()
 
 
-def _read_session_file(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """A ``.jsonl`` file's header and raw entry lines.
+def _read_session_file(
+    path: Path,
+) -> tuple[dict[str, Any], list[dict[str, Any]], tuple[int, int]]:
+    """A ``.jsonl`` file's header, raw entry lines, and the mark of what was read.
+
+    The mark is the open file's inode and the number of bytes actually read,
+    so an append landing after the read shows as a change (docs/STEP-DEBUGGER.md
+    §3.7.3), never as part of what this read saw.
 
     Raises:
-        ValueError: the file is empty or its first line is not a session header.
+        ValueError: the file is empty, its first line is not a session header,
+            or a line is not JSON.
     """
     header: dict[str, Any] | None = None
     entries: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            obj = json.loads(line)
-            if header is None:
-                if obj.get("type") != "session":
-                    raise ValueError(f"{path}: first line is not a session header")
-                header = obj
-            else:
-                entries.append(obj)
+    with path.open("rb") as handle:
+        ino = os.fstat(handle.fileno()).st_ino
+        data = handle.read()
+    for raw in data.decode("utf-8").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        if header is None:
+            if obj.get("type") != "session":
+                raise ValueError(f"{path}: first line is not a session header")
+            header = obj
+        else:
+            entries.append(obj)
     if header is None:
         raise ValueError(f"{path}: empty session file (no header)")
-    return header, entries
+    return header, entries, (ino, len(data))
 
 
 def read_session_info(path: Path) -> SessionInfo | None:

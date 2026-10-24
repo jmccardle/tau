@@ -363,3 +363,35 @@ def test_a_failed_flock_keeps_the_lock_blind_warning(tmp_path, monkeypatch):
     assert access.read_only and "flock is unavailable" in (access.reason or "")
     assert access.warning is not None and "fuse.sshfs" in access.warning
     lock.release()
+
+
+def test_a_queued_release_runs_at_the_next_acquire_not_before(tmp_path):
+    queued = SessionWriteLock(tmp_path / "a.lock")
+    queued.retain()
+    session_lock.release_later([queued])
+    assert not can_lock(queued.sidecar), "queueing releases nothing yet"
+    other = SessionWriteLock(tmp_path / "b.lock")
+    other.retain()
+    assert can_lock(queued.sidecar), "the next acquire drained the queue first"
+    assert not queued.retained
+    other.release()
+
+
+@pytest.mark.parametrize(
+    ("blind", "strong"),
+    [
+        ("nfs4 (local_lock=flock)", True),
+        ("cifs", True),
+        ("smb3", True),
+        ("9p", True),
+        ("fuse.sshfs", True),
+        ("fuse.encfs", False),
+        ("fuse.mergerfs", False),
+        ("virtiofs", False),
+    ],
+)
+def test_a_local_fuse_mount_gets_the_softer_warning(blind, strong):
+    text = session_lock.blind_filesystem_warning(blind)
+    assert blind in text
+    assert ("a second writer is not detected" in text) is strong
+    assert ("may not reach other hosts or mounts" in text) is not strong

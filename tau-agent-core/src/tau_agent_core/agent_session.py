@@ -92,6 +92,7 @@ from tau_agent_core.session_lock import (
     SessionReadOnlyError,
     SessionWriteLock,
     WriteAccess,
+    release_later,
     write_lock_of,
 )
 from tau_agent_core.conversation_tree import ConversationTree
@@ -563,13 +564,14 @@ class _SideCompletionWatch:
 
 
 def _release_held(held: dict[int, tuple[SessionLog, SessionWriteLock]]) -> None:
-    """Release write locks a collected ``AgentSession`` never released (its finalizer).
+    """Queue the releases a collected ``AgentSession`` never made (its finalizer).
+
+    Queued, not run: a finalizer can fire inside an acquire (``session_lock.release_later``).
 
     Args:
         held: The session's ``_write_locks``; emptied.
     """
-    for _log, lock in held.values():
-        lock.release()
+    release_later([lock for _log, lock in held.values()])
     held.clear()
 
 
@@ -958,11 +960,22 @@ class AgentSession:
             found.retain()
             self._write_locks[key] = (log, found)
             if found.take_refreshed():
-                fresh_leaf = default_leaf(log.entries())
-                for cursor in self._cursors.values():
-                    if cursor.log is log and cursor.leaf == stale_leaf and not cursor.busy:
-                        cursor.move(fresh_leaf)
+                self._follow_reload(log, stale_leaf)
         self._show_write_access()
+
+    def _follow_reload(
+        self, log: SessionLog, stale_leaf: str | None, *, admitting: Cursor | None = None
+    ) -> None:
+        """Move cursors on ``log`` from the default leaf before a reload to the one after.
+
+        A busy cursor stays put, except ``admitting``: the turn being admitted
+        holds it but has written nothing yet.
+        """
+        fresh_leaf = default_leaf(log.entries())
+        for cursor in self._cursors.values():
+            idle = not cursor.busy or cursor is admitting
+            if cursor.log is log and cursor.leaf == stale_leaf and idle:
+                cursor.move(fresh_leaf)
 
     def release_write_locks(self) -> None:
         """Release every write lock this session retains; :meth:`emit_session_shutdown` calls it.
@@ -1004,7 +1017,10 @@ class AgentSession:
         held = self._write_locks.get(id(cursor.log))
         if held is None:
             return None
+        stale_leaf = default_leaf(cursor.log.entries())
         access = held[1].check()
+        if held[1].take_refreshed():
+            self._follow_reload(cursor.log, stale_leaf, admitting=cursor)
         self._show_write_access()
         return access.reason if access.read_only else None
 

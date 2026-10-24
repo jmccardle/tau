@@ -4541,7 +4541,8 @@ check() -> WriteAccess
 Re-check the held lock against the sidecar on disk (turn admission).
 
 A sidecar unlinked or replaced since it was locked is re-taken on the
-path; if another process got the new file first, this object turns
+path, and the store re-reads what another writer may have appended in
+between; if another process got the new file first, this object turns
 read-only, naming it.
 
 **Returns**
