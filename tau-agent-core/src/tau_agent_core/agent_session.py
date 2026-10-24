@@ -4136,7 +4136,7 @@ class AgentSession:
         max_turns: int | None = None,
         label: str | None = None,
         system_prompt: str | None = None,
-        hooks: bool = False,
+        hooks: bool = True,
         owner: Cursor | None = None,
     ) -> BranchResult:
         """Run a sub-agent turn on a new cursor at ``at`` (docs/CURSORS.md §6).
@@ -4147,7 +4147,7 @@ class AgentSession:
         prompt the loop answers the seed directly. The cursor is owned by ``owner`` (default: the running turn's), so aborting
         the owner aborts it, and it runs under a :class:`~tau_agent_core.cursor.TurnFrame`:
         only ``tools``, ``model``/``system_prompt`` when given, ``max_turns``, and
-        no extension hooks unless ``hooks``. Its turn is an ordinary submission
+        extension hooks unless ``hooks=False``. Its turn is an ordinary submission
         (``source="agent"``, ``submitter="fork:<label>"``) whose events carry its
         cursor's id. Its first append records that frame as a config entry, so the
         sub-agent's spec is in the tree. The cursor is closed before this returns,
@@ -4174,7 +4174,7 @@ class AgentSession:
             label: What it is for, for display; ``None`` means the prompt's first
                 60 characters, or the seed's tool names.
             system_prompt: Its system prompt; ``None`` means the session's.
-            hooks: Whether extension hooks fire in its turn.
+            hooks: Whether extension hooks fire in its turn; ``False`` suppresses them all.
             owner: The cursor it answers to; ``None`` means :attr:`acting_cursor`.
 
         Returns:
@@ -4348,7 +4348,7 @@ class AgentSession:
         this wraps :meth:`spawn` in a task tracked in :attr:`_forked_tasks`, keyed by
         ``sub.submission_id`` (known now; the cursor is not opened until the task runs).
         It offers every tool a turn of ``owner``'s would — a fork continues the same
-        job — under ``owner``'s turn cap, with no extension hooks (NODE-ADDRESSABLE-AGENTS.md
+        job — under ``owner``'s turn cap, with ``hooks=False`` (NODE-ADDRESSABLE-AGENTS.md
         decision 4). An exception the task should never raise is surfaced through
         :meth:`_surface_extension_error` (:meth:`_on_fork_task_done`), not left to
         asyncio's "never retrieved" warning.
@@ -4360,6 +4360,7 @@ class AgentSession:
                 sub.text,
                 tools=[t.name for t in self._turn_tools()],
                 max_turns=self._max_turns,
+                hooks=False,
                 owner=owner,
             )
         )

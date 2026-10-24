@@ -1862,7 +1862,7 @@ True once `shutdown()` has been called on this context (P3).
 ### spawn_branch
 
 ```python
-async spawn_branch(parent_id: str | None, prompt: str | None = None, *, seed: list[dict[str, Any]] | None = None, tools: list[str], model: Any = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = False) -> 'BranchResult'
+async spawn_branch(parent_id: str | None, prompt: str | None = None, *, seed: list[dict[str, Any]] | None = None, tools: list[str], model: Any = None, max_turns: int | None = None, label: str | None = None, system_prompt: str | None = None, hooks: bool = True) -> 'BranchResult'
 ```
 
 `tau_agent_core.extension_types.ExtensionContext.spawn_branch`
@@ -1891,7 +1891,7 @@ of the calling message, whose call is still unanswered
 - `max_turns: int | None = None` — Cap on the sub-agent's loop turns, or ``None`` for no cap.
 - `label: str | None = None` — The cursor's label; defaults to the prompt's first 60 characters.
 - `system_prompt: str | None = None` — Replaces the session's system prompt for this branch.
-- `hooks: bool = False` — Whether extension hooks fire during the sub-agent's turn.
+- `hooks: bool = True` — Whether extension hooks fire in the sub-agent's turn; ``False`` mutes them.
 
 **Returns**
 
