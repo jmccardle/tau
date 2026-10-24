@@ -924,10 +924,8 @@ it claims to survive a restart it cannot (tau-search, round 7).
   session. Selecting a child's suspension focuses that cursor's branch in the
   client, and answering it needs no cursor change. Tau Code gets a "pending in
   tree" list and cursor focus (tau-code-arecibo is told).
-- **Separate-session children** are designed in §3.12.6. Their parent→child
-  link is written in the child session's header (`spawnedBy {session, cursor,
-  entry}`), so a client can enumerate the tree from session metadata, the same
-  way a fork names its source.
+- **Separate conversations** are fresh roots in the same session (§3.12.6), so
+  the tree view needs no cross-session links.
 
 #### 3.12.5 Interactions
 
@@ -952,49 +950,64 @@ it claims to survive a restart it cannot (tau-search, round 7).
   it owns, as `AgentSession.abort` already does (it trips owned cursors). So
   aborting the root aborts the tree, and no separate tree verb is needed.
 
-#### 3.12.6 Child sessions: separate conversations in the same process
+#### 3.12.6 A separate conversation is a fresh root in the same session
 
-John framed it: agents that are not forks are essentially separate
-conversations. A delegate fleet (`examples/20_delegate.py`,
-`51_delegate_fleet.py`) runs each child as a `tau -p` subprocess, which §3.12.2
-refuses while `step_children` is on. The way to step a fleet as a tree is to run
-each child as a **new session in the same process**, not a subprocess. τ has no
-such API today: `ctx.fork` copies a session into a new file or moves the head
-cursor (`extension_types.py:1637`), and the runtime's `new_session` swaps the
-current session out (`agent_session_runtime.py:273`). So:
+John ruled (2026-10-24): a non-fork child agent is **not** a new session. It is
+a new cursor in the same session, parented on the session's metadata, which
+may have many children. All of a session's agents stay grouped as one session.
 
-- **`api.spawn_session(prompt, *, model, tools, seed, label) -> ChildSession`**
-  (new). It creates a new session whose header carries `spawnedBy {session,
-  cursor, entry}`, runs one prompt in it, and returns a handle whose result
-  carries the same `end_reason` / `aborted_by` as §3.12.5.
-- **The head hosts it.** Core defines a `SessionHost` protocol with one method:
-  create and run a child session. Serve's daemon implements it by creating
-  another `SessionHost` entry, so every attached client sees the child session
-  in `list_sessions` with its `spawnedBy`, and can attach to it. The TUI and the
-  REPL implement it with a second in-process `AgentSession` from the same backend
-  factory. `-p` and RPC have no host, so `spawn_session` raises there, and a
-  delegate keeps its subprocess path, refused under `step_children` as before.
-- **The responder is inherited across sessions** by the same root rule
-  (§3.12.3): the child session's root is the parent session's root turn. A child
-  session's suspension is answerable from any client attached to the child
-  session.
-- **The tree view spans sessions.** `get_pending_suspensions {scope: "tree"}`
-  follows `spawnedBy` links as well as cursor owners, and each item carries its
-  `session_id`. `suspension_open` for a child session is also sent to clients
-  attached to the root session, so one head sees the whole fleet.
-- **Abort cascades across sessions.** A child session is owned by the spawning
-  cursor, exactly as a child cursor is, so aborting the root aborts the fleet.
-- **A restart abandons a pending child session's suspension,** as in §3.12.3a.
-- **Extensions load per child session,** as they do per session under serve
-  today. An extension that needs shared state across sessions keeps it in its
-  own module, or behind a remote service, as the decider does (it is remote-only,
-  John 2026-10-24).
+- **A fork child** is a cursor branching from a conversation entry:
+  `spawn_branch(at=<entry>)`, as today.
+- **A non-fork child** is a cursor whose path starts fresh under the session
+  header: `spawn_branch(at=None)`. It shares nothing with the main conversation
+  but the session's metadata.
 
-Effort: about 3–4 days in τ, covering `spawn_session`, the `SessionHost`
-protocol and its serve and in-process implementations, the `spawnedBy` header
-and catalog listing, the cross-session tree and abort, and tests. It is its own
-slice, **M1h**, built after M1e because it reuses M1e's protocol. The delegate
-examples then gain a `spawn_session` mode. Separate *processes* stay refused.
+**The metadata entry is the session header.** A file-store session's first
+line is the header (`{"type": "session", "id", "cwd", "parent"}`). It is not an
+entry: the first entries have `parentId: null`, which makes them children of the
+header. `spawn` documents `at=None` as "before the root" (`agent_session.py`,
+`spawn`), so a non-fork child is a second root under the same header.
+
+**It works today** (probe, master a98dff7, in-memory store, 2026-10-24):
+
+- `spawn_branch(None, "fresh task")` writes a new root, a `config` entry with
+  `parentId: null`, and the child's turn under it. A second and a third call
+  write further roots beside it.
+- The child's context holds only its own prompt and reply. The main
+  conversation is not in it, and the system prompt comes from the child's frame.
+- `spawn_branch(<first entry>)` gives fork children: two of them under one
+  entry are siblings, and `children_of` lists both.
+- The main cursor's leaf does not move.
+
+**What it needs, beyond §3.12's in-process rules:**
+
+- **`default_leaf` must prefer the main conversation.** Today it picks the
+  newest finished entry anywhere (`session_log.py:152-172`), so a session
+  reopened after a child wrote last opens *inside the child's conversation*. A
+  child's branch starts with a `config` entry recording its frame (source
+  `"agent"`). So `default_leaf` skips entries under a branch whose frame source
+  is `"agent"`, unless no other entry exists. The rule applies to fork children
+  too, which have the same surprise today. This is part of slice M1a.
+- **Every walker must accept several roots.** `ConversationTree`, the TUI tree
+  browser and `get_tree`, HTML export's tip and trunk choice
+  (`export.py:640-690`), and tau-jmfts's mirror, where a null parent maps to the
+  conversation root document. The probe covered `ConversationTree` and the
+  in-memory store only. The rest is a conformance case (§6.2), checked in slice
+  M1a alongside the side-entry walkers.
+- **The delegate examples gain a cursor mode.** `examples/20_delegate.py` and
+  `51_delegate_fleet.py` get a mode that runs each child as
+  `spawn_branch(at=None, …)` instead of a `tau -p` subprocess. That mode is
+  steppable under `step_children`. The subprocess mode stays refused under
+  `step_children` (§3.12.2).
+
+So there is **no new session, no `SessionHost`, no `spawn_session`, no
+cross-session `spawnedBy`**. The tree view follows cursor owners within one
+session (§3.12.4), and the responder, abort and restart rules of §3.12.3–§3.12.5
+apply unchanged, because every child is a cursor in the same owner chain.
+
+Effort: the former slice M1h shrinks to about half a day: the `default_leaf`
+rule, the multi-root walker checks (both folded into M1a), and the two examples'
+cursor mode (with M1g).
 
 ## 4. Handler policies (#83): an open mechanism
 
@@ -1366,11 +1379,12 @@ Every head must produce the same tree: the same entries, the same finalized
 - `step_children` on under `-p`: refused at `input`, naming serve or the TUI;
 - a human aborts a child at a suspension: the spawn result has `aborted_by:
   "suspension"`, and tau-router's planner does not retry it;
-- `spawn_session` under serve with `step_children: start`: the child session
-  appears in `list_sessions` with `spawnedBy`, its suspension appears in the
-  root session's tree view, a client attached to the root answers it, and
-  aborting the root aborts it;
-- `spawn_session` under `-p` or RPC: raises, naming the missing host;
+- three fresh-root children (`spawn_branch(at=None)`) and two fork children in
+  one session: every walker (tree browser, `get_tree`, HTML export, tau-jmfts
+  mirror) shows them as branches of one session; reopening lands on the main
+  conversation, not a child's leaf;
+- `step_children: start` with fresh-root children under serve: each child's
+  suspension appears in the tree view, and a client answers it by id;
 - after `new_session` in a warm process on the file store, a second process can
   open the previous session for writing;
 - a code-mode program calls `web_search` with stepping in `every` mode: no
@@ -1416,8 +1430,6 @@ type and its site table (§3.2.2); forks copying only finalized side entries and
 refusing an open one (§3.7.2); and the session lock held while hosting, on a
 sidecar, with one descriptor per process (§3.7.3).
 
-*Slice M1h, child sessions (about 3–4 days, after M1e):* `api.spawn_session`, the `SessionHost` protocol with serve and in-process hosts, the `spawnedBy` header, the cross-session tree view and abort (§3.12.6).
-
 *Milestone 2, across processes (about 3 days):*
 
 - resume from the tree by the recorded continuation (§3.7.3): re-dispatch in
@@ -1440,8 +1452,8 @@ matrix (about 1.5 days) closes v1.
   `remote.py:1005-1030`).
 - **per-client roles and display names over networked serve** (§3.11).
 - **stepping separate-process delegates** (§3.12.2): refused while
-  `step_children` is on. In-process child cursors are steppable in v1, and child
-  sessions in the same process are steppable after slice M1h (§3.12.6).
+  `step_children` is on. In-process child cursors, fork children and fresh-root
+  children alike (§3.12.6), are steppable in v1.
 - **`-p --answer` on JMFTS-backed sessions** (§3.7.3): refused until a
   cross-host lock exists, or John lifts it.
 - **breaking on notify events** (compaction, retries, deltas): suspending there
@@ -1523,6 +1535,6 @@ as milestone 2 (§7).
 | John, child agents: an option to step them from their start, tree-wide | §3.12 `step_children`, root-responder inheritance, the tree scope, cross-cursor rules; §3.9 |
 | round 7, tau-search: a child suspension holds the parent's unwritten result; `-p` roots | §3.12.3 live responders only; §3.12.3a abandoned on restart |
 | round 7, tau-router: a human abort on a child must not be retried | §3.12.5 `end_reason` / `aborted_by` and the delegating-extension contract |
-| coordinator: separate conversations, not only branches | §3.12.6 `spawn_session`, `SessionHost`, `spawnedBy`, slice M1h |
+| coordinator, then John: separate conversations; then "a cursor in the same session, from the metadata" | §3.12.6 a fresh root under the session header (`spawn_branch(at=None)`); `default_leaf` prefers the main conversation; no new session |
 | tau-code-arecibo: protocol asks | §3.4 `suspension_closed` reason, live read-only state, `side` on tree entries |
 | independent round 2 minors | resume as a submission; forms under `-p` take the headless policy; pending hits combined (§5.2); effective-argument check; `store_history` off refused (§3.9); the session lock held while hosting; `-p` without `--answer` exits 3 |
