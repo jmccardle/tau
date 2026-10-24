@@ -25,6 +25,7 @@ Reference: docs/CLI-PLAN.md (Core flag set); docs/SUBMISSION-LIFECYCLE.md.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import signal
@@ -483,9 +484,9 @@ def resolve_extensions_config(
     for name, ext_conf in base.items():
         if not isinstance(ext_conf, dict):
             raise CLIError(f'{default_config_path()} "extensions.{name}" must be a JSON object')
-        merged[name] = dict(ext_conf)
+        merged[name] = copy.deepcopy(ext_conf)
     for name, kv in overrides.items():
-        merged.setdefault(name, {}).update(kv)
+        merged.setdefault(name, {}).update(copy.deepcopy(kv))
     return merged
 
 

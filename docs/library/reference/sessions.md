@@ -32,7 +32,7 @@ docs/SUBMISSION-LIFECYCLE.md; per-cursor turn state follows docs/CURSORS.md.
 - `reasoning: str | None = None` — Requested thinking level for every turn and compaction; ``None`` sends no reasoning control, which is not ``"off"`` (docs/REASONING-WIRE.md §4).
 - `compaction_settings: CompactionSettings | None = None` — Settings when no ``compaction_policy`` is given; ``None`` means the defaults.
 - `compaction_policy: CompactionPolicy | None = None` — A declared policy that supplies its own settings and summarizer. Mutually exclusive with ``compaction_settings``. One naming a summarizer needs ``model_resolver``, or construction raises.
-- `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by file stem; each extension's ``api.config`` is its slice.
+- `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by file stem; each extension's ``api.config`` is its slice. Deep-copied, so the caller's map and the session's never share nested values (#99).
 - `model_resolver: Callable[[str], Model] | None = None` — Turns a config model name into a ``Model`` for :meth:`set_model` and the policy's summarizer; see :meth:`set_model_resolver`.
 - `max_turns: int | None = None` — The loop's turn ceiling, at least 1; ``None`` is no ceiling.
 - `tool_execution_mode: Literal['sequential', 'parallel'] = 'parallel'` — Whether one response's tool calls run in parallel or one at a time.
@@ -928,7 +928,7 @@ starts here reaches that loop. Nothing is printed; the caller surfaces
 - `explicit_paths: list[str] | None = None` — ``-e`` values, paths or module names. A failure here raises unless ``collect_explicit_errors``.
 - `discover: bool = True` — Whether to discover drop-ins and packages; ``-ne`` sets False. ``explicit_paths`` load either way.
 - `user_dir: str | None = None` — The drop-in directory; ``None`` means ``<tau home>/extensions``.
-- `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by identifier (S40), stored BEFORE binding so each ``api.config`` is sliced from it. ``None`` keeps the current map.
+- `extensions_config: dict[str, dict[str, Any]] | None = None` — Per-extension config keyed by identifier (S40), deep-copied and stored BEFORE binding so each ``api.config`` is sliced from it. ``None`` keeps the current map.
 - `collect_explicit_errors: bool = False` — Collect an explicit failure into ``errors`` like a discovered one, and keep loading (the TUI cannot abort mid-load).
 - `store_path: str | None = None` — The authorization store; ``None`` is the file beside the drop-in directory. :meth:`authorize_extension` writes the same one.
 
@@ -1485,7 +1485,8 @@ The write half of :meth:`get_extension_config`. ``values`` is checked
 against the declared schema first: an undeclared key, or a value whose
 Python type does not match its field's kind, RAISES rather than being
 dropped — a settings screen that silently discards a key is the failure
-this schema exists to prevent.
+this schema exists to prevent. ``values`` is deep-copied, so the caller
+keeps no handle on the stored slice (#99).
 
 The reload is what makes the change visible: ``api.config`` is captured
 when the extension's API is bound, so a slice written without one would

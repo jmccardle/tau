@@ -535,3 +535,12 @@ async def test_not_now_is_remembered_for_the_run(app):
         await pilot.pause()
         assert not isinstance(app.screen, ExtensionAuthorizationDialog)
         assert ("late", str(directory / "late.py")) in app._declined_extensions
+
+
+def test_app_keeps_no_handle_on_the_run_configs_ext_config(make_app):
+    run_config = {"ext_config": {"budget": {"tags": ["a"]}}}
+    app = make_app(cli_run_config=run_config)
+
+    run_config["ext_config"]["budget"]["tags"].append("added")
+
+    assert app._ext_config_overrides == {"budget": {"tags": ["a"]}}
