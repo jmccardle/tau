@@ -97,14 +97,14 @@ class TestTheCli:
 
 class TestPrintMode:
     async def test_a_failing_discovered_extension_is_one_notice_and_the_run_goes_on(
-        self, ext_dir, no_model, capsys
+        self, ext_dir, no_model, capsys, tau_home
     ):
         rc = await run_print(CLIArgs(messages=["hi"], print_mode=True, model="m"), _config())
         assert rc == 0
         err = capsys.readouterr().err
         assert f"[τ] {_NOTICE.format(path=ext_dir / 'broken.py')}" in err.splitlines()
 
-    async def test_disabled_says_nothing(self, ext_dir, no_model, capsys):
+    async def test_disabled_says_nothing(self, ext_dir, no_model, capsys, tau_home):
         assert main(["ext", "list"]) == 0
         assert main(["ext", "disable", "broken"]) == 0
         capsys.readouterr()
