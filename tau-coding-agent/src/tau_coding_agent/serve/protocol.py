@@ -581,8 +581,8 @@ class Attached:
     surface: Surface
     requests: list[RequestEventData]
     read_only: bool
-    lock_holder: LockHolderRecord | None
-    suspensions: list[SuspensionState]
+    lock_holder: Annotated[dict[str, Any], Shape(LockHolderRecord)] | None
+    suspensions: list[Annotated[dict[str, Any], Shape(SuspensionState)]]
 
 
 @dataclass

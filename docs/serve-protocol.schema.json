@@ -208,11 +208,16 @@
     "AnswerSuspensionResult": {
       "properties": {
         "accepted": {
-          "description": "True when this answer resolved the suspension. False when it was already resolved, which is not an error: `resolution` is then the answer that won, so two racing clients converge.",
+          "description": "True when this answer resolved the suspension. False is not an error: `reason` says why, and `resolution` is the one that stands, so two racing clients converge.",
           "type": "boolean"
         },
         "reason": {
-          "description": "`already resolved` when `accepted` is false; null otherwise.",
+          "description": "Null when accepted. `already_resolved`: another answer won. `aborted`: the suspension's turn was aborted first, so the abort stands.",
+          "enum": [
+            "already_resolved",
+            "aborted",
+            null
+          ],
           "type": [
             "string",
             "null"
@@ -231,13 +236,24 @@
       "type": "object"
     },
     "AnsweredBy": {
-      "description": "Who answered a suspension: RPC's `{client: \"rpc\"}`, or a serve connection.",
+      "additionalProperties": false,
+      "description": "Who answered a suspension: RPC's ``{client: \"rpc\"}``, or a serve connection.",
       "properties": {
         "client": {
+          "description": "\"rpc\", or the serve connection's hello `client`.",
           "type": "string"
         },
         "client_id": {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The serve connection's id."
         }
       },
       "required": [
@@ -2602,6 +2618,7 @@
       "type": "object"
     },
     "Evidence": {
+      "additionalProperties": false,
       "description": "One piece of plain-text evidence a suspension shows.",
       "properties": {
         "label": {
@@ -3472,7 +3489,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "`cursor` (the default): the suspensions at this host's cursor. `tree`: those at the cursor and at every cursor it owns, a sub-agent's included, each with its `parent_cursor_id` and `depth`. `session`: every cursor's.",
+          "description": "`session` (the default): every cursor's, as the suspension events this host receives are. `tree`: those at this host's cursor and at every cursor it owns, a sub-agent's included, each with its `parent_cursor_id` and `depth`. `cursor`: this host's cursor's alone.",
           "enum": [
             "cursor",
             "tree",
@@ -4290,6 +4307,7 @@
       "type": "object"
     },
     "LockHolderRecord": {
+      "additionalProperties": false,
       "description": "The process holding a session's write lock, as its sidecar names it; each field may be null.",
       "properties": {
         "detail": {
@@ -4300,7 +4318,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Where to reach it instead (serve's address)."
         },
         "head": {
           "anyOf": [
@@ -4310,7 +4329,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Which head: tui, repl, -p, rpc, serve or sdk."
         },
         "host": {
           "anyOf": [
@@ -4340,7 +4360,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "When it took the lock, ISO-8601 UTC."
         }
       },
       "required": [
@@ -5481,9 +5502,11 @@
       "type": "object"
     },
     "Resolution": {
-      "description": "How a suspension was resolved: what `api.suspend` returned (docs/STEP-DEBUGGER.md \u00a73.3).",
+      "additionalProperties": false,
+      "description": "How a suspension was resolved: what ``api.suspend`` returned (docs/STEP-DEBUGGER.md \u00a73.3).",
       "properties": {
         "action": {
+          "description": "The action label picked; `abort` also aborted its turn.",
           "type": "string"
         },
         "answered_by": {
@@ -5494,7 +5517,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Who answered; null when the turn's abort resolved it."
         },
         "at_ms": {
           "type": "integer"
@@ -5507,10 +5531,12 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The suspension's id; null when nothing was raised."
         },
         "values": {
-          "additionalProperties": {},
+          "additionalProperties": true,
+          "description": "Each declared field's value.",
           "type": "object"
         }
       },
@@ -6649,7 +6675,8 @@
       "type": "object"
     },
     "SuspensionAction": {
-      "description": "A suspension's button: its label is the answer's `action`.",
+      "additionalProperties": false,
+      "description": "A suspension's button: its label is the answer's ``action``.",
       "properties": {
         "label": {
           "type": "string"
@@ -6661,12 +6688,13 @@
       "type": "object"
     },
     "SuspensionCall": {
-      "description": "The call a `tool_call` suspension is about, with its arguments after earlier handlers.",
+      "additionalProperties": false,
+      "description": "The call a ``tool_call`` suspension is about, with its arguments after earlier handlers.",
       "properties": {
         "effective_args": {
           "anyOf": [
             {
-              "additionalProperties": {},
+              "additionalProperties": true,
               "type": "object"
             },
             {
@@ -6704,6 +6732,14 @@
             }
           ]
         },
+        "close_reason": {
+          "enum": [
+            "answered",
+            "aborted",
+            "cursor_closed",
+            "abandoned"
+          ]
+        },
         "continuation": {
           "additionalProperties": {},
           "type": "object"
@@ -6735,14 +6771,6 @@
             {
               "type": "null"
             }
-          ]
-        },
-        "reason": {
-          "enum": [
-            "answered",
-            "aborted",
-            "cursor_closed",
-            "abandoned"
           ]
         },
         "resolution": {
@@ -6788,12 +6816,104 @@
         "entryId",
         "continuation",
         "resolution",
-        "reason"
+        "close_reason"
+      ],
+      "type": "object"
+    },
+    "SuspensionField": {
+      "additionalProperties": false,
+      "description": "One field of a suspension's form (``extension_types.validate_form_spec``).",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The declared default, when the extension gave one."
+        },
+        "kind": {
+          "enum": [
+            "text",
+            "select",
+            "multiselect",
+            "confirm",
+            "number"
+          ],
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A select or multiselect field's choices."
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "label"
+      ],
+      "type": "object"
+    },
+    "SuspensionList": {
+      "additionalProperties": false,
+      "description": "A suspension body of list items.",
+      "properties": {
+        "items": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "list",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "items"
       ],
       "type": "object"
     },
     "SuspensionSpec": {
-      "description": "What a suspension shows, normalized (`suspensions.validate_suspension_spec`).",
+      "additionalProperties": false,
+      "description": "What a suspension shows, normalized (``suspensions.validate_suspension_spec``).",
       "properties": {
         "actions": {
           "items": {
@@ -6804,12 +6924,19 @@
         "body": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PanelBody"
+              "$ref": "#/$defs/SuspensionText"
+            },
+            {
+              "$ref": "#/$defs/SuspensionList"
+            },
+            {
+              "$ref": "#/$defs/SuspensionTable"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "At most one body, told apart by `kind`."
         },
         "evidence": {
           "items": {
@@ -6819,7 +6946,7 @@
         },
         "fields": {
           "items": {
-            "$ref": "#/$defs/FormField"
+            "$ref": "#/$defs/SuspensionField"
           },
           "type": "array"
         },
@@ -6831,7 +6958,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "The entry the suspension is about."
         },
         "title": {
           "type": "string"
@@ -6848,7 +6976,8 @@
       "type": "object"
     },
     "SuspensionState": {
-      "description": "A suspension open or queued now, as `suspension_open` and the snapshots carry it.",
+      "additionalProperties": false,
+      "description": "A suspension open or queued now, as ``suspension_open`` and the snapshots carry it.\n\ndocs/STEP-DEBUGGER.md \u00a73.4. ``AgentSession.pending_suspensions`` builds it.",
       "properties": {
         "call": {
           "anyOf": [
@@ -6859,7 +6988,7 @@
               "type": "null"
             }
           ],
-          "description": "At a `tool_call` site, the call; else `None`."
+          "description": "At a tool_call site, the call."
         },
         "cursor_id": {
           "type": "string"
@@ -6877,9 +7006,10 @@
               "type": "null"
             }
           ],
-          "description": "At an `entry_written` site, the entry; else `None`."
+          "description": "At an entry_written site, the entry."
         },
         "extension": {
+          "description": "The extension that raised it.",
           "type": "string"
         },
         "id": {
@@ -6898,10 +7028,10 @@
               "type": "null"
             }
           ],
-          "description": "Its cursor's owner, or `None` for a root cursor."
+          "description": "Its cursor's owner; null for a root cursor."
         },
         "queued": {
-          "description": "Whether another suspension on its cursor is open ahead of it.",
+          "description": "Whether another suspension on its cursor is open ahead of it; only the open one can be answered.",
           "type": "boolean"
         },
         "session_id": {
@@ -6920,7 +7050,7 @@
               "type": "null"
             }
           ],
-          "description": "The entry a child cursor was opened at, or `None`."
+          "description": "The entry a child cursor was opened at."
         },
         "spec": {
           "$ref": "#/$defs/SuspensionSpec"
@@ -6934,7 +7064,7 @@
               "type": "null"
             }
           ],
-          "description": "The entry it is about, from its spec, or `None`."
+          "description": "The entry it is about, from its spec."
         }
       },
       "required": [
@@ -6952,6 +7082,55 @@
         "entry_id",
         "queued",
         "opened_at_ms"
+      ],
+      "type": "object"
+    },
+    "SuspensionTable": {
+      "additionalProperties": false,
+      "description": "A suspension body of string cells; every row has one cell per column.",
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "table",
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "columns",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "SuspensionText": {
+      "additionalProperties": false,
+      "description": "A suspension body of text.",
+      "properties": {
+        "kind": {
+          "const": "text",
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
       ],
       "type": "object"
     },
@@ -7525,6 +7704,24 @@
           "default": null,
           "description": "One sentence saying this turn's prompt cache should have been read and was not, on agent_end. Null is the normal case and says nothing was observed: the cache was read, the server accounts for no cache, the prompt is under the minimum cacheable prefix, or a read earlier in this session already proved caching is on. A host renders it as a warning; see docs/PROMPT-CACHING.md \u00a77 for the three gates. None for all other event types."
         },
+        "close_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "answered",
+                "aborted",
+                "cursor_closed",
+                "abandoned"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On suspension_closed, why it closed: 'answered', 'aborted' (its turn's abort, an `abort` answer to an earlier one included), 'cursor_closed' (the session shut down, or the RPC host's input ended) or 'abandoned' (its task was cancelled). None for all other event types."
+        },
         "correlation": {
           "anyOf": [
             {
@@ -7666,15 +7863,14 @@
         "lock_holder": {
           "anyOf": [
             {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/LockHolderRecord"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "On lock_changed, the process holding the session's write lock ({pid, host, head, started, detail}), or null. None for all other event types."
+          "description": "On lock_changed, the process holding the session's write lock, or null. None for all other event types."
         },
         "max_retries": {
           "anyOf": [
@@ -7751,20 +7947,11 @@
               "type": "string"
             },
             {
-              "enum": [
-                "answered",
-                "aborted",
-                "cursor_closed",
-                "abandoned"
-              ],
-              "type": "string"
-            },
-            {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. On suspension_closed, why the suspension closed: 'answered', 'aborted' (its turn's abort, an `abort` answer to an earlier one included), 'cursor_closed' (the session shut down) or 'abandoned' (its task was cancelled). None for all other event types."
+          "description": "What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. None for all other event types."
         },
         "reasoning_level": {
           "anyOf": [
@@ -7794,15 +7981,14 @@
         "resolution": {
           "anyOf": [
             {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/Resolution"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "On suspension_closed, how it was resolved: {id, action, values, answered_by, at_ms}; `answered_by` is null when the turn's abort resolved it. None for all other event types."
+          "description": "On suspension_closed, how it was resolved. None for all other event types."
         },
         "response_headers": {
           "anyOf": [
@@ -7887,15 +8073,14 @@
         "suspension": {
           "anyOf": [
             {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/$defs/SuspensionState"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "On suspension_open and suspension_closed, the suspension (SuspensionState): `id` (what answer_suspension names), `session_id`, `cursor_id`, `parent_cursor_id`, `depth` (owner-chain length), `spawned_from` (a child cursor's origin entry), `spec` ({title, body, fields, actions, evidence, targetId}), `site`, `extension`, `target_id`, `call` ({id, effective_args} at a tool_call), `entry_id` (at an entry_written), `queued` and `opened_at_ms`. suspension_open is sent again with `queued` false when a queued one reaches the front of its cursor's queue. See docs/STEP-DEBUGGER.md \u00a73.4. None for all other event types."
+          "description": "On suspension_open and suspension_closed, the suspension. suspension_open is sent again with `queued` false when a queued one reaches the front of its cursor's queue. See docs/STEP-DEBUGGER.md \u00a73.4. None for all other event types."
         },
         "timestamp": {
           "description": "Milliseconds since epoch.",

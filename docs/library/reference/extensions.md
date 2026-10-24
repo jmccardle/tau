@@ -286,7 +286,7 @@ class:`Returned`, or ``on_timeout``'s or ``on_error``'s outcome.
 <!-- agent: yes -->
 
 ```python
-class BranchResult(ok: bool, cursor_id: str, label: str, leaf: str | None, messages: list[dict[str, Any]], error: str | None, end_reason: str | None = None, aborted_by: Literal['suspension', 'signal', 'parent'] | None = None, answered_by: dict[str, Any] | None = None)
+class BranchResult(ok: bool, cursor_id: str, label: str, leaf: str | None, messages: list[dict[str, Any]], error: str | None, end_reason: str | None = None, aborted_by: Literal['suspension', 'shutdown', 'signal', 'parent'] | None = None, answered_by: dict[str, Any] | None = None)
 ```
 
 `tau_agent_core.extension_types.BranchResult`
@@ -300,14 +300,14 @@ empty-but-successful-looking answer.
 
 **Constructor parameters**
 
-- `ok: bool` — Whether the sub-agent's turn was admitted and finished without raising. Read this first.
+- `ok: bool` — Whether the sub-agent's turn was admitted and finished, neither raising nor aborted. Read this first.
 - `cursor_id: str` — The cursor its events carried; closed by the time this returns.
 - `label: str` — The cursor's label: the ``label`` given, else the prompt's first 60 characters.
 - `leaf: str | None` — The sub-agent's final entry id, or ``None`` if it appended nothing; the handle to read the verdict back or ``ctx.summarize_branch`` it.
-- `messages: list[dict[str, Any]]` — The sub-agent turn's messages; empty when ``ok`` is false.
+- `messages: list[dict[str, Any]]` — The sub-agent turn's messages: empty when it failed or was refused, and what it wrote before the abort when it was aborted.
 - `error: str | None` — Why it failed, or ``None`` when ``ok``.
 - `end_reason: str | None = None` — How its turn's ``agent_end`` closed (``"done"``, ``"aborted"``, …), or ``None`` when no turn ran.
-- `aborted_by: Literal['suspension', 'signal', 'parent'] | None = None` — On ``end_reason == "aborted"``: ``"suspension"`` when a person answered ``abort`` at one of its suspensions, ``"parent"`` when the cursor that owns it was aborted, else ``"signal"``. A child stopped at a suspension was stopped by a person, so a delegating extension never retries or escalates it (docs/STEP-DEBUGGER.md §3.12.5).
+- `aborted_by: Literal['suspension', 'shutdown', 'signal', 'parent'] | None = None` — On ``end_reason == "aborted"``: ``"suspension"`` when a person answered ``abort`` at one of its suspensions, ``"shutdown"`` when the session shut down (or an RPC host's input ended) under one, ``"parent"`` when the cursor that owns it was aborted, else ``"signal"``. An aborted sub-agent is ``ok=False`` with ``error`` naming who aborted it; one stopped at a suspension was stopped by a person, so a delegating extension never retries or escalates it (docs/STEP-DEBUGGER.md §3.12.5).
 - `answered_by: dict[str, Any] | None = None` — With ``aborted_by == "suspension"``, the resolution's ``answered_by``.
 
 ## BusDependencyError
@@ -1022,6 +1022,26 @@ suspension queued behind it, as ``abort``.
 - `ValueError` — a malformed spec.
 - `SuspensionRefused` — not a suspension site, or a turn that cannot be stepped (``store_history`` off, a read-only session).
 - `NoResponderError` — nothing can answer it (§3.8).
+
+### suspend_refusal
+
+```python
+suspend_refusal() -> str | None
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.suspend_refusal` · since 0.15.0
+
+Why a suspension raised in this turn could not be answered, or ``None`` (§3.8, §3.9).
+
+The reason :meth:`can_suspend` reads false for, worded for a person: no
+turn running, ``store_history`` off, a read-only session, no live
+responder, or a submission (a child's root's) without
+``allow_user_input``. An armed ``input`` hook returns it as its
+``{"refuse": …}``.
+
+**Returns**
+
+The reason, or ``None`` when a suspension could be raised.
 
 ### ui
 
@@ -2685,6 +2705,22 @@ What a head renders and an attach snapshot carries: ``SuspensionState`` on the w
 **Returns**
 
 ``{id, session_id, cursor_id, parent_cursor_id, depth, spawned_from, spec, site, extension, target_id, call, entry_id, queued, opened_at_ms}``. ``depth`` is the cursor's owner-chain length; ``spawned_from`` the entry a child cursor was opened at.
+
+## SuspensionAnswerError
+<!-- agent: yes -->
+
+```python
+class SuspensionAnswerError(reason: AnswerRefusal, message: str)
+```
+
+`tau_agent_core.suspensions.SuspensionAnswerError` · since 0.15.0
+
+An answer to a suspension that was refused, with nothing recorded.
+
+**Constructor parameters**
+
+- `reason: AnswerRefusal` — :data:`AnswerRefusal`: ``unknown_id`` (no such suspension, or one closed too long ago to remember), ``queued`` (another on its cursor is open ahead of it), ``undeclared_action`` or ``invalid_value``.
+- `message: str` — *(no description)*
 
 ## SuspensionRefused
 <!-- agent: yes -->

@@ -161,11 +161,11 @@ async def test_a_declared_host_sees_the_suspension_and_answers_it(handler: RPCHa
         assert answered["accepted"] is True and answered["reason"] is None
         assert answered["resolution"]["answered_by"] == {"client": "rpc"}
         closed = await wire.until(_event("suspension_closed"))
-        assert closed["params"]["reason"] == "answered"
+        assert closed["params"]["close_reason"] == "answered"
         await wire.until(_event("agent_end"))
         wire.send(6, "answer_suspension", {"suspension_id": suspension["id"], "action": "step"})
         again = (await wire.until(_response(6)))["result"]
-        assert again["accepted"] is False and again["reason"] == "already resolved"
+        assert again["accepted"] is False and again["reason"] == "already_resolved"
     await wire.close()
     assert _suspended[0]["values"] == {"note": "ok"}
 
@@ -201,3 +201,87 @@ async def test_with_no_suspension_open_the_reader_stays_serial(handler: RPCHandl
     await wire.until(_response(2))
     await wire.close()
     assert wire.position(_response(1)) < wire.position(_response(2))
+
+
+async def test_the_default_scope_lists_every_cursors_suspension(handler: RPCHandler) -> None:
+    """The host receives every cursor's suspension events, so the default read lists them all."""
+    wire = _Wire(handler)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
+        wire.send(1, "declare_capabilities", {"suspensions": True})
+        await wire.until(_response(1))
+        wire.send(2, "prompt", {"text": "/work", "expand_commands": True})
+        opened = await wire.until(_event("suspension_open"))
+        assert opened["params"]["suspension"]["cursor_id"] != handler.session.cursor.id
+        wire.send(3, "get_pending_suspensions")
+        wire.send(4, "get_pending_suspensions", {"scope": "cursor"})
+        default = (await wire.until(_response(3)))["result"]["suspensions"]
+        own = (await wire.until(_response(4)))["result"]["suspensions"]
+        assert len(default) == 1 and own == []
+        sid = default[0]["id"]
+        wire.send(
+            5, "answer_suspension", {"suspension_id": sid, "action": "step", "values": {"note": ""}}
+        )
+        await wire.until(_response(2))
+    await wire.close()
+
+
+async def test_each_refused_answer_names_its_reason(handler: RPCHandler) -> None:
+    wire = _Wire(handler)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
+        wire.send(1, "declare_capabilities", {"suspensions": True})
+        await wire.until(_response(1))
+        wire.send(2, "prompt", {"text": "hi", "allow_user_input": True})
+        sid = (await wire.until(_event("suspension_open")))["params"]["suspension"]["id"]
+        cases = {
+            10: ({"suspension_id": "nope", "action": "step"}, "unknown_id"),
+            11: ({"suspension_id": sid, "action": "jump"}, "undeclared_action"),
+            12: ({"suspension_id": sid, "action": "step", "values": {}}, "invalid_value"),
+        }
+        for msg_id, (params, _reason) in cases.items():
+            wire.send(msg_id, "answer_suspension", params)
+        for msg_id, (params, reason) in cases.items():
+            error = (await wire.until(_response(msg_id)))["error"]
+            assert error["code"] == -32602
+            assert error["data"]["reason"] == reason
+            assert error["data"]["suspension_id"] == params["suspension_id"]
+        wire.send(
+            13,
+            "answer_suspension",
+            {"suspension_id": sid, "action": "step", "values": {"note": ""}},
+        )
+        await wire.until(_response(13))
+        await wire.until(_event("agent_end"))
+    await wire.close()
+
+
+async def test_a_queued_refusal_reaches_the_wire_as_queued() -> None:
+    from unittest.mock import MagicMock
+
+    from tau_agent_core.suspensions import SuspensionAnswerError
+
+    session = MagicMock()
+    session.answer_suspension.side_effect = SuspensionAnswerError("queued", "queued behind x")
+    handler = RPCHandler(session)
+    params = {"suspension_id": "s2", "action": "step"}
+    with pytest.raises(commands.RPCError) as raised:
+        await commands._handle_answer_suspension(handler, 1, params)
+    assert raised.value.data == {**params, "reason": "queued"}
+
+
+def test_the_event_fields_are_typed_records_and_the_close_reason_has_its_own_field() -> None:
+    from tau_agent_core.rpc_event_schema import WireEvent
+
+    properties = WireEvent.model_json_schema()["properties"]
+    refs = {
+        name: [branch.get("$ref") for branch in properties[name]["anyOf"]]
+        for name in ("suspension", "resolution", "lock_holder")
+    }
+    assert refs == {
+        "suspension": ["#/$defs/SuspensionState", None],
+        "resolution": ["#/$defs/Resolution", None],
+        "lock_holder": ["#/$defs/LockHolderRecord", None],
+    }
+    close = [b.get("enum") for b in properties["close_reason"]["anyOf"]]
+    assert ["answered", "aborted", "cursor_closed", "abandoned"] in close
+    reason = [b.get("enum") for b in properties["reason"]["anyOf"]]
+    assert ["manual", "threshold", "navigate"] in reason

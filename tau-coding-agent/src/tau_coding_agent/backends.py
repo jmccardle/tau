@@ -654,6 +654,8 @@ class RenderRouter:
         The stream projects it onto the wire and renders that (:meth:`TurnStream.feed`),
         so a local bus and ``tau --connect`` (:meth:`on_wire_event`) draw one way.
         """
+        if event.type in UNRENDERED_EVENTS:
+            return
         if event.type.startswith("side_completion_"):
             (wire,) = project_event(MessageDeltaProjector(), event)
             await self._route_side_completion(wire, EventDetail.of(event))
@@ -665,6 +667,8 @@ class RenderRouter:
 
     async def on_wire_event(self, wire: dict[str, Any], detail: EventDetail) -> None:
         """Route one wire event (a ``tau serve`` ``agent_event``) with its rejoined detail."""
+        if wire["type"] in UNRENDERED_EVENTS:
+            return
         if wire["type"].startswith("side_completion_"):
             await self._route_side_completion(wire, detail)
             return
@@ -773,6 +777,12 @@ class RenderRouter:
         if self._on_orphan is not None:
             self._on_orphan(reason)
 
+
+UNRENDERED_EVENTS = frozenset({"suspension_open", "suspension_closed", "lock_changed"})
+"""Event types this head does not draw yet, so it ignores them rather than reporting orphans.
+
+Suspensions are drawn from slice M1f; a lock change is read from the warnings banner.
+"""
 
 #: The stream a REPLAYED transcript is tagged with; never a live submission's id.
 REPLAY_STREAM = "replay"

@@ -798,7 +798,7 @@ class AgentSession:
         self._quiet_runner = ExtensionRunner(context=self._extension_api.context)
         self._events.on_error(self._surface_notify_error)
         self._events.on("message_end", self._record_completion_usage)
-        self._suspensions = SuspensionBroker(self._emit_suspension, self.abort)
+        self._suspensions = SuspensionBroker(self._emit_suspension, self._abort_cursor_tree)
         self._suspension_responders: list[str] = []
         self._lock_seen: tuple[bool, dict[str, Any] | None] | None = None
         self._write_locks: dict[int, tuple[SessionLog, SessionWriteLock]] = {}
@@ -2055,7 +2055,7 @@ class AgentSession:
             reason: As pi's ``SessionShutdownEvent.reason``: ``"quit"``,
                 ``"reload"``, ``"new"``, ``"resume"`` or ``"fork"``.
         """
-        await self._suspensions.close_all("cursor_closed")
+        await self.close_suspensions()
         await self._cancel_forked_tasks()
         await self._cancel_task_registry(self._delivery_tasks)
         await self._cancel_task_registry(self._threadsafe_tasks)
@@ -4025,7 +4025,13 @@ class AgentSession:
             if event.cursor_id == cursor.id:
                 ends.append(event)
 
-        stop_listening = self._events.on("agent_end", on_end)
+        stop_ends = self._events.on("agent_end", on_end)
+        stop_closes = self._events.on("suspension_closed", on_end)
+
+        def stop_listening() -> None:
+            stop_ends()
+            stop_closes()
+
         try:
             if stored_seed is None:
                 result = await self.submit(sub, cursor=cursor)
@@ -4061,28 +4067,44 @@ class AgentSession:
                 error=result.rejection_reason or "the sub-agent's submission was refused",
                 **self._branch_ending(cursor, ends),
             )
+        ending = self._branch_ending(cursor, ends)
+        aborted_by = ending.get("aborted_by")
         return BranchResult(
-            ok=True,
+            ok=aborted_by is None,
             cursor_id=cursor.id,
             label=cursor.label,
             leaf=cursor.leaf,
             messages=list(result.messages),
-            error=None,
-            **self._branch_ending(cursor, ends),
+            error=None if aborted_by is None else _aborted_branch_error(aborted_by, ending),
+            **ending,
         )
 
-    def _branch_ending(self, cursor: Cursor, ends: list[AgentEvent]) -> dict[str, Any]:
-        """A spawned turn's ``end_reason``, and on an abort who aborted it (docs/STEP-DEBUGGER.md §3.12.5)."""
-        answer = self._suspensions.take_abort_answer(cursor.id)
+    @staticmethod
+    def _branch_ending(cursor: Cursor, events: list[AgentEvent]) -> dict[str, Any]:
+        """A spawned turn's ``end_reason``, and on an abort who aborted it (docs/STEP-DEBUGGER.md §3.12.5).
+
+        ``events`` are its cursor's ``agent_end`` and ``suspension_closed``
+        events. A suspension closed by an ``abort`` answer blames
+        ``suspension``; one closed by the session's shutdown blames
+        ``shutdown``; else an aborted owner blames ``parent``, and anything
+        else ``signal``.
+        """
+        ends = [e for e in events if e.type == "agent_end"]
         end_reason = ends[-1].end_reason if ends else None
         if end_reason != "aborted":
             return {"end_reason": end_reason}
-        if answer is not None:
-            return {
-                "end_reason": end_reason,
-                "aborted_by": "suspension",
-                "answered_by": answer.get("answered_by"),
-            }
+        for closed in events:
+            if closed.type != "suspension_closed":
+                continue
+            resolution = closed.resolution or {}
+            if closed.close_reason == "answered" and resolution.get("action") == "abort":
+                return {
+                    "end_reason": end_reason,
+                    "aborted_by": "suspension",
+                    "answered_by": resolution.get("answered_by"),
+                }
+            if closed.close_reason == "cursor_closed":
+                return {"end_reason": end_reason, "aborted_by": "shutdown"}
         owner = cursor.owner
         by_parent = owner is not None and owner.abort_signal.is_aborted()
         return {"end_reason": end_reason, "aborted_by": "parent" if by_parent else "signal"}
@@ -5201,6 +5223,16 @@ class AgentSession:
                 :attr:`acting_cursor`.
         """
         target = self.acting_cursor if cursor is None else self._registered(cursor)
+        self._abort_cursor_tree(target)
+        for task in self._forked_tasks.values():
+            task.cancel()
+
+    def _abort_cursor_tree(self, target: Cursor) -> None:
+        """A user abort of ``target``'s turn and every cursor it owns, deepest first; no fork is cancelled.
+
+        What an ``abort`` answer to a suspension does: it stops that turn and its
+        children, never an unrelated background fork (docs/STEP-DEBUGGER.md §3.6).
+        """
         for owned in reversed(self._owned_by(target)):
             owned.abort_signal.abort(reason="user")
             owned.steer_queue.clear()
@@ -5209,8 +5241,6 @@ class AgentSession:
         target.abort_signal.abort(reason="user")
         target.steer_queue.clear()
         _drop_enqueued(target)
-        for task in self._forked_tasks.values():
-            task.cancel()
 
     def _owned_by(self, owner: Cursor) -> list[Cursor]:
         """Live cursors ``owner`` owns, directly or through another, shallowest first."""
@@ -5670,6 +5700,17 @@ class AgentSession:
         return gates
 
     @agent_facing(topic="sessions", since="0.15.0")
+    async def close_suspensions(self) -> None:
+        """Close every open and queued suspension as ``abort``, reason ``cursor_closed``.
+
+        For a head whose responder is gone: session shutdown, and an RPC host
+        whose input ended. Each suspension's turn and the cursors it owns are
+        aborted, as an ``abort`` answer would; background forks are not, which
+        shutdown then cancels itself. Returns once each has closed.
+        """
+        await self._suspensions.close_all("cursor_closed")
+
+    @agent_facing(topic="sessions", since="0.15.0")
     def answer_suspension(
         self,
         suspension_id: str,
@@ -5680,7 +5721,7 @@ class AgentSession:
         """Answer an open suspension, from any cursor and any head; the first valid answer wins (§3.3).
 
         Takes no turn lock. A later answer to a closed suspension is not an
-        error: it reports ``already resolved`` with the winning resolution, so
+        error: it reports ``already_resolved`` with the winning resolution, so
         two racing clients converge.
 
         Args:
@@ -5692,7 +5733,8 @@ class AgentSession:
 
         Returns:
             ``{"accepted": True, "resolution": …}`` or ``{"accepted": False,
-            "reason": "already resolved", "resolution": …}``.
+            "reason": "already_resolved" | "aborted", "resolution": …}``; an
+            answer arriving once the turn is aborted loses to the abort.
 
         Raises:
             ValueError: no such suspension, one still queued, an undeclared
@@ -6189,6 +6231,15 @@ class AgentSession:
         import time
 
         return int(time.time() * 1000)
+
+
+def _aborted_branch_error(aborted_by: str, ending: dict[str, Any]) -> str:
+    """The ``BranchResult.error`` of a sub-agent whose turn was aborted, naming who aborted it."""
+    if aborted_by == "suspension":
+        who = ending.get("answered_by") or {}
+        by = who.get("client", "a responder") if isinstance(who, dict) else "a responder"
+        return f"the sub-agent was aborted at a suspension by {by} (aborted_by: suspension)"
+    return f"the sub-agent's turn was aborted (aborted_by: {aborted_by})"
 
 
 def _drop_enqueued(cursor: Cursor) -> None:

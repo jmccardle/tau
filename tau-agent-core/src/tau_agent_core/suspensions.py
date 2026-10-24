@@ -12,6 +12,7 @@ boundary, though the side entry records the continuation milestone 2 reads.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextvars
 import copy
 import time
@@ -50,6 +51,15 @@ RESUMED_SUSPENSION: contextvars.ContextVar[dict[str, Any] | None] = contextvars.
 Read by ``api.resumed``. Milestone 1 has no resume from the tree, so nothing sets it.
 """
 
+CLOSED_MEMORY = 256
+"""How many closed suspensions the broker remembers, to answer a late answer with ``already_resolved``.
+
+Older ones are forgotten, so a very late answer is refused as ``unknown_id``.
+"""
+
+AnswerRefusal = Literal["unknown_id", "queued", "undeclared_action", "invalid_value"]
+"""Why ``answer_suspension`` refused an answer, as ``SuspensionAnswerError.reason`` and RPC ``data.reason``."""
+
 PendingScope = Literal["cursor", "tree", "session"]
 """Which suspensions :meth:`SuspensionBroker.pending` lists: one cursor's, a cursor and
 every cursor it owns, or the whole session's."""
@@ -75,6 +85,22 @@ class NoResponderError(SuspensionRefused):
     driving the turn did not set ``allow_user_input`` (for a child turn, its
     root turn's submission).
     """
+
+
+@agent_facing(topic="extensions", since="0.15.0")
+class SuspensionAnswerError(ValueError):
+    """An answer to a suspension that was refused, with nothing recorded.
+
+    Attributes:
+        reason: :data:`AnswerRefusal`: ``unknown_id`` (no such suspension, or one
+            closed too long ago to remember), ``queued`` (another on its cursor is
+            open ahead of it), ``undeclared_action`` or ``invalid_value``.
+    """
+
+    def __init__(self, reason: AnswerRefusal, message: str) -> None:
+        """Carry the machine-readable ``reason`` beside the message."""
+        super().__init__(message)
+        self.reason: AnswerRefusal = reason
 
 
 @agent_facing(topic="extensions", since="0.15.0")
@@ -312,9 +338,8 @@ class SuspensionBroker:
         self._abort_cursor = abort_cursor
         self._open: dict[str, Suspension] = {}
         self._queues: dict[str, list[Suspension]] = {}
-        self._closed: dict[str, dict[str, Any]] = {}
+        self._closed: collections.OrderedDict[str, dict[str, Any]] = collections.OrderedDict()
         self._forced: dict[str, SuspensionCloseReason] = {}
-        self._abort_answers: dict[str, dict[str, Any]] = {}
 
     def pending(
         self, cursor: Cursor | None = None, scope: PendingScope = "session"
@@ -346,17 +371,6 @@ class SuspensionBroker:
             return False
 
         return [s for s in self._open.values() if under(s.cursor)]
-
-    def take_abort_answer(self, cursor_id: str) -> dict[str, Any] | None:
-        """The ``abort`` answer that aborted ``cursor_id``'s turn, forgotten as it is read.
-
-        Args:
-            cursor_id: The cursor whose turn ended.
-
-        Returns:
-            The resolution, or ``None`` when no answer aborted it.
-        """
-        return self._abort_answers.pop(cursor_id, None)
 
     def get(self, suspension_id: str) -> Suspension | None:
         """The suspension ``suspension_id`` names while it is open or queued, else ``None``."""
@@ -461,8 +475,9 @@ class SuspensionBroker:
     async def close_all(self, reason: SuspensionCloseReason) -> None:
         """Resolve every open and queued suspension as ``abort``, closing each with ``reason``.
 
-        Each one's turn is aborted too, as an ``abort`` answer would. Returns once
-        every one has finalized its side entry and emitted ``suspension_closed``.
+        Each one's cursor is aborted too, with the cursors it owns, as an
+        ``abort`` answer would. Returns once every one has finalized its side
+        entry and emitted ``suspension_closed``.
 
         Args:
             reason: The close reason, e.g. ``"cursor_closed"`` at session shutdown.
@@ -484,6 +499,8 @@ class SuspensionBroker:
     ) -> None:
         """Finalize the side entry, leave the queue, wake the next, and emit ``suspension_closed``."""
         self._closed[suspension.id] = resolution
+        while len(self._closed) > CLOSED_MEMORY:
+            self._closed.popitem(last=False)
         self._open.pop(suspension.id, None)
         queue = self._queues.get(suspension.cursor.id, [])
         if suspension in queue:
@@ -496,10 +513,12 @@ class SuspensionBroker:
             suspension.future.cancel()
         try:
             await suspension.cursor.finalize_side(
-                suspension.id, **suspension.payload, resolution=resolution, reason=reason
+                suspension.id, **suspension.payload, resolution=resolution, close_reason=reason
             )
             await self._emit(
-                "suspension_closed", suspension, {"resolution": resolution, "reason": reason}
+                "suspension_closed",
+                suspension,
+                {"resolution": resolution, "close_reason": reason},
             )
         finally:
             suspension.closed.set()
@@ -513,6 +532,10 @@ class SuspensionBroker:
     ) -> dict[str, Any]:
         """Answer an open suspension; the first valid answer wins (§3.3).
 
+        An answer that arrives once the suspension's turn is aborted, even in the
+        same tick as the abort and before the waiter wakes, loses to the abort:
+        it is refused and the suspension resolves as ``abort``.
+
         Args:
             suspension_id: The suspension's id.
             action: One of its spec's action labels. :data:`ABORT_ACTION` also
@@ -522,39 +545,51 @@ class SuspensionBroker:
             answered_by: Who answered, e.g. ``{"client_id", "client"}``; recorded.
 
         Returns:
-            ``{"accepted": True, "resolution": …}``, or ``{"accepted": False,
-            "reason": "already resolved", "resolution": …}`` for one already
-            closed, which is not an error.
+            ``{"accepted": True, "reason": None, "resolution": …}``, or
+            ``{"accepted": False, "reason": "already_resolved" | "aborted",
+            "resolution": …}`` with the resolution that stands, which is not an
+            error.
 
         Raises:
-            ValueError: no such suspension, one still queued behind another, an
-                action its spec does not declare, or values its fields reject.
+            SuspensionAnswerError: ``reason`` ``unknown_id``, ``queued``,
+                ``undeclared_action`` or ``invalid_value``; nothing is recorded.
         """
         closed = self._closed.get(suspension_id)
         if closed is not None:
-            return {"accepted": False, "reason": "already resolved", "resolution": closed}
+            return {"accepted": False, "reason": "already_resolved", "resolution": closed}
         suspension = self._open.get(suspension_id)
         if suspension is None:
-            raise ValueError(f"answer_suspension: no suspension with id {suspension_id!r}")
+            raise SuspensionAnswerError(
+                "unknown_id", f"answer_suspension: no suspension with id {suspension_id!r}"
+            )
         if suspension.future.done():
             return {
                 "accepted": False,
-                "reason": "already resolved",
+                "reason": "already_resolved",
                 "resolution": suspension.future.result(),
             }
+        if suspension.signal.is_aborted():
+            aborted = aborted_resolution(suspension_id)
+            self._forced[suspension_id] = "aborted"
+            suspension.future.set_result(aborted)
+            return {"accepted": False, "reason": "aborted", "resolution": aborted}
         if not suspension.ready.done():
-            raise ValueError(
+            raise SuspensionAnswerError(
+                "queued",
                 f"answer_suspension: suspension {suspension_id!r} is queued behind another on "
-                f"cursor {suspension.cursor.id}; answer the open one first"
+                f"cursor {suspension.cursor.id}; answer the open one first",
             )
         labels = [a["label"] for a in suspension.spec["actions"]]
         if action not in labels:
-            raise ValueError(f"answer_suspension: {action!r} is not one of its actions {labels}")
+            raise SuspensionAnswerError(
+                "undeclared_action",
+                f"answer_suspension: {action!r} is not one of its actions {labels}",
+            )
         answered = dict(values or {})
         try:
             validate_form_values(suspension.spec["fields"], answered)
         except ValueError as exc:
-            raise ValueError(f"answer_suspension: {exc}") from exc
+            raise SuspensionAnswerError("invalid_value", f"answer_suspension: {exc}") from exc
         resolution = {
             "id": suspension_id,
             "action": action,
@@ -564,6 +599,5 @@ class SuspensionBroker:
         }
         suspension.future.set_result(resolution)
         if action == ABORT_ACTION:
-            self._abort_answers[suspension.cursor.id] = resolution
             self._abort_cursor(suspension.cursor)
-        return {"accepted": True, "resolution": resolution}
+        return {"accepted": True, "reason": None, "resolution": resolution}

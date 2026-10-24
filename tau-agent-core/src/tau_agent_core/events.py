@@ -230,8 +230,7 @@ class AgentEvent(BaseModel):
         reason: What asked for it — ``"manual"``, ``"threshold"`` or
             ``"navigate"``. Set on all three ``side_completion_*`` events, so a
             reader that joins late still learns whether the compaction it is
-            watching was requested or imposed. On ``suspension_closed``, why it
-            closed (:data:`SuspensionCloseReason`). ``None`` on every other type.
+            watching was requested or imposed. ``None`` on every other type.
         delta: One text fragment of a side completion, on
             ``side_completion_update``. ``None`` elsewhere.
         text: The finished side-completion text, on ``side_completion_end``.
@@ -256,6 +255,8 @@ class AgentEvent(BaseModel):
             queued one reaches the front of its cursor's queue.
         resolution: On ``suspension_closed``, what ``api.suspend`` returned:
             ``{id, action, values, answered_by, at_ms}``.
+        close_reason: On ``suspension_closed``, why it closed
+            (:data:`SuspensionCloseReason`). ``None`` on every other type.
         read_only: On ``lock_changed``, whether this process may no longer
             write the head cursor's tree.
         lock_holder: On ``lock_changed``, the process holding the tree's lock
@@ -311,7 +312,7 @@ class AgentEvent(BaseModel):
     correlation: dict[str, Any] | None = None
 
     purpose: SideCompletionPurpose | None = None
-    reason: SideCompletionReason | SuspensionCloseReason | None = None
+    reason: SideCompletionReason | None = None
     delta: str | None = None
     text: str | None = None
     usage: dict[str, int] | None = None
@@ -324,6 +325,7 @@ class AgentEvent(BaseModel):
 
     suspension: dict[str, Any] | None = None
     resolution: dict[str, Any] | None = None
+    close_reason: SuspensionCloseReason | None = None
     read_only: bool | None = None
     lock_holder: dict[str, Any] | None = None
 

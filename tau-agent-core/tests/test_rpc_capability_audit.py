@@ -106,6 +106,10 @@ NOT_EXPOSED: dict[str, str] = {
         "Raised by extension code inside a hook dispatch (docs/STEP-DEBUGGER.md §3.2); "
         "a host is outside every dispatch, so on the wire it could only ever be refused."
     ),
+    "close_suspensions": (
+        "What the head does when its responder is gone (shutdown, an RPC host's EOF); a "
+        "host that wants one suspension ended answers it with `abort`."
+    ),
     "suspend_refusal": (
         "Read by an extension at its input hook to refuse an unsteppable turn; the host "
         "sees the refusal that results as SUBMISSION_REJECTED."

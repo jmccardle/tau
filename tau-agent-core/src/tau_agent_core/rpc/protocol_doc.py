@@ -233,9 +233,10 @@ def render() -> str:
         "something already on the wire (a command/event/field removed or renamed, "
         "a field's meaning or type changed, a previously optional param made "
         "required). MINOR bumps on a purely additive change (a new command, a new "
-        "optional param, a new field on an existing result or event) — additive "
-        "changes are always safe to ignore: **a client MUST ignore any field it "
-        "does not recognize.**"
+        "optional param, a new field on an existing result or event, a new event "
+        "type) — additive changes are always safe to ignore: **a client MUST ignore "
+        "any field, and any event type, it does not recognize.** A new event type "
+        "reaches every client, whatever version it was built against."
     )
     w("")
     w("## Limits")

@@ -18,11 +18,11 @@
 
 - **Protocol version:** `3.1`
 - **Dialect:** `jsonrpc-2.0`
-- **Counts:** 45 live verbs, 7 declined verbs, 18 event types, 73 type definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 45 live verbs, 7 declined verbs, 18 event types, 77 type definitions. Cite this line; never copy the numbers into hand-written prose.
 
 Call get_capabilities (no params) first on every new connection, before any mutating command. Compare protocol_version's MAJOR component against what this host was built against; refuse to send anything else on a mismatch rather than discovering it on the first failing request.
 
-`protocol_version` is `MAJOR.MINOR`. MAJOR bumps on a change that breaks something already on the wire (a command/event/field removed or renamed, a field's meaning or type changed, a previously optional param made required). MINOR bumps on a purely additive change (a new command, a new optional param, a new field on an existing result or event) — additive changes are always safe to ignore: **a client MUST ignore any field it does not recognize.**
+`protocol_version` is `MAJOR.MINOR`. MAJOR bumps on a change that breaks something already on the wire (a command/event/field removed or renamed, a field's meaning or type changed, a previously optional param made required). MINOR bumps on a purely additive change (a new command, a new optional param, a new field on an existing result or event, a new event type) — additive changes are always safe to ignore: **a client MUST ignore any field, and any event type, it does not recognize.** A new event type reaches every client, whatever version it was built against.
 
 ## Limits
 
@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 195,473 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 205,739 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -1284,7 +1284,7 @@ what rides on top of this on every response):
 
 #### `answer_suspension`
 
-*Since 0.15.0.* AgentSession.answer_suspension, projected (docs/STEP-DEBUGGER.md §3.3). Takes no turn lock: the turn waiting on the suspension holds it, and this is what lets it go on. The first valid answer wins; a later one gets `accepted: false`, `already resolved`, and the winning resolution, which is not an error. In the control lane (§3.6), so a host can answer a suspension its own request in flight is waiting on. INVALID_PARAMS, with nothing recorded, for an unknown id, a suspension still queued behind another, an undeclared action, or values its fields reject. No leaf: the answer moves no cursor, and the turn's own events report what it writes next.
+*Since 0.15.0.* AgentSession.answer_suspension, projected (docs/STEP-DEBUGGER.md §3.3). Takes no turn lock: the turn waiting on the suspension holds it, and this is what lets it go on. The first valid answer wins; a later one gets `accepted: false`, `reason: already_resolved`, and the winning resolution, which is not an error; an answer arriving once the turn is aborted gets `reason: aborted` and the abort's resolution. In the control lane (§3.6), so a host can answer a suspension its own request in flight is waiting on. INVALID_PARAMS, with nothing recorded and `data.reason` saying which: `unknown_id` (no such suspension, or one closed too long ago to remember), `queued` (another on its cursor is open ahead of it), `undeclared_action`, or `invalid_value` (values its fields reject); `data` also echoes the params. No leaf: the answer moves no cursor, and the turn's own events report what it writes next.
 
 **Params schema:**
 
@@ -1321,11 +1321,16 @@ what rides on top of this on every response):
 {
   "properties": {
     "accepted": {
-      "description": "True when this answer resolved the suspension. False when it was already resolved, which is not an error: `resolution` is then the answer that won, so two racing clients converge.",
+      "description": "True when this answer resolved the suspension. False is not an error: `reason` says why, and `resolution` is the one that stands, so two racing clients converge.",
       "type": "boolean"
     },
     "reason": {
-      "description": "`already resolved` when `accepted` is false; null otherwise.",
+      "description": "Null when accepted. `already_resolved`: another answer won. `aborted`: the suspension's turn was aborted first, so the abort stands.",
+      "enum": [
+        "already_resolved",
+        "aborted",
+        null
+      ],
       "type": [
         "string",
         "null"
@@ -1982,7 +1987,7 @@ what rides on top of this on every response):
   "additionalProperties": false,
   "properties": {
     "scope": {
-      "description": "`cursor` (the default): the suspensions at this host's cursor. `tree`: those at the cursor and at every cursor it owns, a sub-agent's included, each with its `parent_cursor_id` and `depth`. `session`: every cursor's.",
+      "description": "`session` (the default): every cursor's, as the suspension events this host receives are. `tree`: those at this host's cursor and at every cursor it owns, a sub-agent's included, each with its `parent_cursor_id` and `depth`. `cursor`: this host's cursor's alone.",
       "enum": [
         "cursor",
         "tree",
@@ -2949,15 +2954,16 @@ Every `type: "event"` notification carries a `WireEvent` payload (generated from
 | `reasoning_level` | `off` \| `minimal` \| `low` \| `medium` \| `high` \| `xhigh` \| `null` | The thinking level this completion was requested with, after the provider clamped it to what the model supports, on the message_end that carries usage. Null when no reasoning control was sent — no level was set, or the model does not declare reasoning — so a requested level that was clamped or not sent is visible rather than silent. None for all other event types. See docs/REASONING-WIRE.md §3. |
 | `cache_notice` | string \| `null` | One sentence saying this turn's prompt cache should have been read and was not, on agent_end. Null is the normal case and says nothing was observed: the cache was read, the server accounts for no cache, the prompt is under the minimum cacheable prefix, or a read earlier in this session already proved caching is on. A host renders it as a warning; see docs/PROMPT-CACHING.md §7 for the three gates. None for all other event types. |
 | `purpose` | `compaction` \| `branch_summary` \| `null` | Which side completion a side_completion_* event reports: 'compaction' or 'branch_summary'. Side work spends tokens and produces text outside any turn, so it stamps no submission_id and a host keys on this instead. The summary TEXT and what it cost are deliberately not on the wire — both land in the session log as a compaction or branch_summary entry, which get_entry serves with tokens_before, covered_tokens and summary_usage attached. Pushing unbounded content through an event is what WireEvent exists to avoid. None for all other event types. See docs/STREAMING-SIDE-WORK.md. |
-| `reason` | `manual` \| `threshold` \| `navigate` \| `answered` \| `aborted` \| `cursor_closed` \| `abandoned` \| `null` | What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. On suspension_closed, why the suspension closed: 'answered', 'aborted' (its turn's abort, an `abort` answer to an earlier one included), 'cursor_closed' (the session shut down) or 'abandoned' (its task was cancelled). None for all other event types. |
+| `reason` | `manual` \| `threshold` \| `navigate` \| `null` | What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. None for all other event types. |
 | `attempt` | integer \| `null` | Which retry a provider_retry announces, counting from 1. A provider_retry says a request failed before producing any output and will be sent again, byte-identical, after delay_seconds; `error` is the failure. A host renders it as a passing warning: if the retries run out, the turn's agent_end carries the final error as usual. None for all other event types. See docs/PROVIDER-RETRY.md. |
 | `max_retries` | integer \| `null` | The most retries that request will make, on provider_retry. None for all other event types. |
 | `delay_seconds` | number \| `null` | Seconds τ waits before re-sending, on provider_retry: the server's Retry-After when it sent one, else an exponential backoff. None for all other event types. |
 | `dropped` | array \| `null` | The texts a user abort discarded, on follow_ups_dropped: the queued followUps in queue order, then the enqueue submissions that were waiting for the turn, in submission order. They were never written to the session, so this is the one field here that carries content no verb can pull afterwards. None for all other event types. See docs/TURN-SETTINGS.md §5 and §5.1. |
-| `suspension` | object \| `null` | On suspension_open and suspension_closed, the suspension (SuspensionState): `id` (what answer_suspension names), `session_id`, `cursor_id`, `parent_cursor_id`, `depth` (owner-chain length), `spawned_from` (a child cursor's origin entry), `spec` ({title, body, fields, actions, evidence, targetId}), `site`, `extension`, `target_id`, `call` ({id, effective_args} at a tool_call), `entry_id` (at an entry_written), `queued` and `opened_at_ms`. suspension_open is sent again with `queued` false when a queued one reaches the front of its cursor's queue. See docs/STEP-DEBUGGER.md §3.4. None for all other event types. |
-| `resolution` | object \| `null` | On suspension_closed, how it was resolved: {id, action, values, answered_by, at_ms}; `answered_by` is null when the turn's abort resolved it. None for all other event types. |
+| `suspension` | any \| `null` | On suspension_open and suspension_closed, the suspension. suspension_open is sent again with `queued` false when a queued one reaches the front of its cursor's queue. See docs/STEP-DEBUGGER.md §3.4. None for all other event types. |
+| `resolution` | any \| `null` | On suspension_closed, how it was resolved. None for all other event types. |
+| `close_reason` | `answered` \| `aborted` \| `cursor_closed` \| `abandoned` \| `null` | On suspension_closed, why it closed: 'answered', 'aborted' (its turn's abort, an `abort` answer to an earlier one included), 'cursor_closed' (the session shut down, or the RPC host's input ended) or 'abandoned' (its task was cancelled). None for all other event types. |
 | `read_only` | boolean \| `null` | On lock_changed, whether this process may no longer write the session: another process holds its write lock. None for all other event types. |
-| `lock_holder` | object \| `null` | On lock_changed, the process holding the session's write lock ({pid, host, head, started, detail}), or null. None for all other event types. |
+| `lock_holder` | any \| `null` | On lock_changed, the process holding the session's write lock, or null. None for all other event types. |
 | `leaf` | string \| `null` | The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized — not by rpc/wire_events.py at event-projection time — because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types. |
 
 ## Error codes
@@ -2984,12 +2990,12 @@ Every record the schemas above reference, from `get_capabilities`' `$defs`. A cl
 
 ### AnsweredBy
 
-Who answered a suspension: RPC's `{client: "rpc"}`, or a serve connection.
+Who answered a suspension: RPC's ``{client: "rpc"}``, or a serve connection.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `client` | string | yes |  |
-| `client_id` | string | no |  |
+| `client` | string | yes | "rpc", or the serve connection's hello `client`. |
+| `client_id` | string \| null | no | The serve connection's id. |
 
 ### Argument
 
@@ -3447,9 +3453,9 @@ The process holding a session's write lock, as its sidecar names it; each field 
 |---|---|---|---|
 | `pid` | integer \| null | yes |  |
 | `host` | string \| null | yes |  |
-| `head` | string \| null | yes |  |
-| `started` | string \| null | yes |  |
-| `detail` | string \| null | yes |  |
+| `head` | string \| null | yes | Which head: tui, repl, -p, rpc, serve or sdk. |
+| `started` | string \| null | yes | When it took the lock, ISO-8601 UTC. |
+| `detail` | string \| null | yes | Where to reach it instead (serve's address). |
 
 ### ManagedExtension
 
@@ -3599,14 +3605,14 @@ A flow with every required argument bound: the mutation, and what to call it wit
 
 ### Resolution
 
-How a suspension was resolved: what `api.suspend` returned (docs/STEP-DEBUGGER.md §3.3).
+How a suspension was resolved: what ``api.suspend`` returned (docs/STEP-DEBUGGER.md §3.3).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string \| null | yes |  |
-| `action` | string | yes |  |
-| `values` | object | yes |  |
-| `answered_by` | [AnsweredBy](#answeredby) \| null | yes |  |
+| `id` | string \| null | yes | The suspension's id; null when nothing was raised. |
+| `action` | string | yes | The action label picked; `abort` also aborted its turn. |
+| `values` | object | yes | Each declared field's value. |
+| `answered_by` | [AnsweredBy](#answeredby) \| null | yes | Who answered; null when the turn's abort resolved it. |
 | `at_ms` | integer | yes |  |
 
 ### SessionInfoEntry
@@ -3673,7 +3679,7 @@ A compaction or branch summary as the context renders it: a user message with no
 
 ### SuspensionAction
 
-A suspension's button: its label is the answer's `action`.
+A suspension's button: its label is the answer's ``action``.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -3681,7 +3687,7 @@ A suspension's button: its label is the answer's `action`.
 
 ### SuspensionCall
 
-The call a `tool_call` suspension is about, with its arguments after earlier handlers.
+The call a ``tool_call`` suspension is about, with its arguments after earlier handlers.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -3709,41 +3715,81 @@ A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUG
 | `entryId` | string \| null | yes |  |
 | `continuation` | object | yes |  |
 | `resolution` | [Resolution](#resolution) | yes |  |
-| `reason` | `"answered"` \| `"aborted"` \| `"cursor_closed"` \| `"abandoned"` | yes |  |
+| `close_reason` | `"answered"` \| `"aborted"` \| `"cursor_closed"` \| `"abandoned"` | yes |  |
+
+### SuspensionField
+
+One field of a suspension's form (``extension_types.validate_form_spec``).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes |  |
+| `kind` | `"text"` \| `"select"` \| `"multiselect"` \| `"confirm"` \| `"number"` | yes |  |
+| `label` | string | yes |  |
+| `default` | string \| integer \| number \| boolean \| list of string \| null | no | The declared default, when the extension gave one. |
+| `options` | list of string \| null | no | A select or multiselect field's choices. |
+
+### SuspensionList
+
+A suspension body of list items.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"list"` | yes |  |
+| `items` | list of string | yes |  |
 
 ### SuspensionSpec
 
-What a suspension shows, normalized (`suspensions.validate_suspension_spec`).
+What a suspension shows, normalized (``suspensions.validate_suspension_spec``).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `title` | string | yes |  |
-| `body` | [PanelBody](#panelbody) \| null | yes |  |
-| `fields` | list of [FormField](#formfield) | yes |  |
+| `body` | [SuspensionText](#suspensiontext) \| [SuspensionList](#suspensionlist) \| [SuspensionTable](#suspensiontable) \| null | yes | At most one body, told apart by `kind`. |
+| `fields` | list of [SuspensionField](#suspensionfield) | yes |  |
 | `actions` | list of [SuspensionAction](#suspensionaction) | yes |  |
 | `evidence` | list of [Evidence](#evidence) | yes |  |
-| `targetId` | string \| null | yes |  |
+| `targetId` | string \| null | yes | The entry the suspension is about. |
 
 ### SuspensionState
 
-A suspension open or queued now, as `suspension_open` and the snapshots carry it.
+A suspension open or queued now, as ``suspension_open`` and the snapshots carry it.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | What `answer_suspension` names; also its side entry's id. |
 | `session_id` | string | yes |  |
 | `cursor_id` | string | yes |  |
-| `parent_cursor_id` | string \| null | yes | Its cursor's owner, or `None` for a root cursor. |
+| `parent_cursor_id` | string \| null | yes | Its cursor's owner; null for a root cursor. |
 | `depth` | integer | yes | The length of its cursor's owner chain. |
-| `spawned_from` | string \| null | yes | The entry a child cursor was opened at, or `None`. |
+| `spawned_from` | string \| null | yes | The entry a child cursor was opened at. |
 | `spec` | [SuspensionSpec](#suspensionspec) | yes |  |
 | `site` | string | yes | The hook it was raised from. |
-| `extension` | string | yes |  |
-| `target_id` | string \| null | yes | The entry it is about, from its spec, or `None`. |
-| `call` | [SuspensionCall](#suspensioncall) \| null | yes | At a `tool_call` site, the call; else `None`. |
-| `entry_id` | string \| null | yes | At an `entry_written` site, the entry; else `None`. |
-| `queued` | boolean | yes | Whether another suspension on its cursor is open ahead of it. |
+| `extension` | string | yes | The extension that raised it. |
+| `target_id` | string \| null | yes | The entry it is about, from its spec. |
+| `call` | [SuspensionCall](#suspensioncall) \| null | yes | At a tool_call site, the call. |
+| `entry_id` | string \| null | yes | At an entry_written site, the entry. |
+| `queued` | boolean | yes | Whether another suspension on its cursor is open ahead of it; only the open one can be answered. |
 | `opened_at_ms` | integer | yes |  |
+
+### SuspensionTable
+
+A suspension body of string cells; every row has one cell per column.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"table"` | yes |  |
+| `columns` | list of string | yes |  |
+| `rows` | list of list of string | yes |  |
+
+### SuspensionText
+
+A suspension body of text.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `kind` | `"text"` | yes |  |
+| `text` | string | yes |  |
 
 ### SystemMessage
 

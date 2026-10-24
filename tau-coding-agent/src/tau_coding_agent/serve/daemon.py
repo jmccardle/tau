@@ -493,11 +493,8 @@ class SessionHost:
             surface=self.surface(),
             requests=self.ui.open_forms(),
             read_only=access.read_only,
-            lock_holder=None if holder is None else records.LockHolderRecord(**holder.to_dict()),
-            suspensions=[
-                records.SuspensionState(**p.json_safe(state))
-                for state in self.agent_session.pending_suspensions(scope="session")
-            ],
+            lock_holder=None if holder is None else holder.to_dict(),
+            suspensions=p.json_safe(self.agent_session.pending_suspensions(scope="session")),
         )
         self.clients.add(client)
         client.attached.add(self.session_id)
@@ -590,7 +587,7 @@ class SessionHost:
             suspension = event.suspension or {}
             self.daemon.log(
                 f"{self.tag} cursor {event.cursor_id} {event.type} {suspension.get('id')}"
-                + (f" ({event.reason})" if event.reason else "")
+                + (f" ({event.close_reason})" if event.close_reason else "")
             )
         if event.type == "tool_execution_start" and event.tool_call_id:
             self._tool_started[event.tool_call_id] = time.monotonic()

@@ -149,7 +149,7 @@ answer_suspension(suspension_id: str, action: str, values: dict[str, Any] | None
 Answer an open suspension, from any cursor and any head; the first valid answer wins (§3.3).
 
 Takes no turn lock. A later answer to a closed suspension is not an
-error: it reports ``already resolved`` with the winning resolution, so
+error: it reports ``already_resolved`` with the winning resolution, so
 two racing clients converge.
 
 **Parameters**
@@ -161,7 +161,7 @@ two racing clients converge.
 
 **Returns**
 
-``{"accepted": True, "resolution": …}`` or ``{"accepted": False, "reason": "already resolved", "resolution": …}``.
+``{"accepted": True, "resolution": …}`` or ``{"accepted": False, "reason": "already_resolved" | "aborted", "resolution": …}``; an answer arriving once the turn is aborted loses to the abort.
 
 **Raises**
 
@@ -245,6 +245,21 @@ Retire ``cursor``; a ``cursor_close`` channel event announces it.
 
 - `ValueError` — ``cursor`` is the head's, which a head swap replaces instead.
 - `RuntimeError` — a turn still holds it.
+
+### close_suspensions
+
+```python
+async close_suspensions() -> None
+```
+
+`tau_agent_core.agent_session.AgentSession.close_suspensions` · since 0.15.0
+
+Close every open and queued suspension as ``abort``, reason ``cursor_closed``.
+
+For a head whose responder is gone: session shutdown, and an RPC host
+whose input ended. Each suspension's turn and the cursors it owns are
+aborted, as an ``abort`` answer would; background forks are not, which
+shutdown then cancels itself. Returns once each has closed.
 
 ### compact
 

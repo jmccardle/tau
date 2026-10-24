@@ -896,22 +896,26 @@ class BranchResult:
     empty-but-successful-looking answer.
 
     Attributes:
-        ok: Whether the sub-agent's turn was admitted and finished without
-            raising. Read this first.
+        ok: Whether the sub-agent's turn was admitted and finished, neither
+            raising nor aborted. Read this first.
         cursor_id: The cursor its events carried; closed by the time this returns.
         label: The cursor's label: the ``label`` given, else the prompt's first
             60 characters.
         leaf: The sub-agent's final entry id, or ``None`` if it appended nothing;
             the handle to read the verdict back or ``ctx.summarize_branch`` it.
-        messages: The sub-agent turn's messages; empty when ``ok`` is false.
+        messages: The sub-agent turn's messages: empty when it failed or was
+            refused, and what it wrote before the abort when it was aborted.
         error: Why it failed, or ``None`` when ``ok``.
         end_reason: How its turn's ``agent_end`` closed (``"done"``,
             ``"aborted"``, …), or ``None`` when no turn ran.
         aborted_by: On ``end_reason == "aborted"``: ``"suspension"`` when a
-            person answered ``abort`` at one of its suspensions, ``"parent"``
-            when the cursor that owns it was aborted, else ``"signal"``. A child
-            stopped at a suspension was stopped by a person, so a delegating
-            extension never retries or escalates it (docs/STEP-DEBUGGER.md §3.12.5).
+            person answered ``abort`` at one of its suspensions, ``"shutdown"``
+            when the session shut down (or an RPC host's input ended) under one,
+            ``"parent"`` when the cursor that owns it was aborted, else
+            ``"signal"``. An aborted sub-agent is ``ok=False`` with ``error``
+            naming who aborted it; one stopped at a suspension was stopped by a
+            person, so a delegating extension never retries or escalates it
+            (docs/STEP-DEBUGGER.md §3.12.5).
         answered_by: With ``aborted_by == "suspension"``, the resolution's
             ``answered_by``.
     """
@@ -923,7 +927,7 @@ class BranchResult:
     messages: list[dict[str, Any]]
     error: str | None
     end_reason: str | None = None
-    aborted_by: Literal["suspension", "signal", "parent"] | None = None
+    aborted_by: Literal["suspension", "shutdown", "signal", "parent"] | None = None
     answered_by: dict[str, Any] | None = None
 
 
@@ -2745,6 +2749,22 @@ class ExtensionAPI:
         """
         refusal: str | None = self._bound_session("can_suspend").suspend_refusal()
         return refusal is None
+
+    @agent_facing(topic="extensions", since="0.15.0")
+    def suspend_refusal(self) -> str | None:
+        """Why a suspension raised in this turn could not be answered, or ``None`` (§3.8, §3.9).
+
+        The reason :meth:`can_suspend` reads false for, worded for a person: no
+        turn running, ``store_history`` off, a read-only session, no live
+        responder, or a submission (a child's root's) without
+        ``allow_user_input``. An armed ``input`` hook returns it as its
+        ``{"refuse": …}``.
+
+        Returns:
+            The reason, or ``None`` when a suspension could be raised.
+        """
+        refusal: str | None = self._bound_session("suspend_refusal").suspend_refusal()
+        return refusal
 
     @agent_facing(topic="extensions", since="0.15.0")
     def can_suspend_here(self) -> bool:

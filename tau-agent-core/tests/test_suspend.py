@@ -25,7 +25,9 @@ from tau_agent_core.policies import Bounded
 from tau_agent_core.session_log import InMemorySessionLog, is_incomplete
 from tau_agent_core.submission import Submission
 from tau_agent_core.suspensions import (
+    CLOSED_MEMORY,
     NoResponderError,
+    SuspensionAnswerError,
     SuspensionBroker,
     SuspensionRefused,
     validate_suspension_spec,
@@ -210,9 +212,9 @@ async def test_an_answered_suspension_returns_its_resolution_and_finalizes_its_s
     assert first["site"] == "entry_written"
     assert first["entryId"] == user_entry["id"]
     assert first["resolution"]["id"] == first["id"] == results[0]["id"]
-    assert first["reason"] == "answered"
+    assert first["close_reason"] == "answered"
     assert first["continuation"]["phase"] == "dispatch:entry_written"
-    kinds = [(e.type, e.reason) for e in seen if e.type.startswith("suspension_")]
+    kinds = [(e.type, e.close_reason) for e in seen if e.type.startswith("suspension_")]
     assert kinds == [("suspension_open", None), ("suspension_closed", "answered")] * 2
     assert session.cursor.leaf != first["id"]
 
@@ -238,7 +240,7 @@ async def test_a_second_answer_converges_on_already_resolved() -> None:
     assert replies[0]["accepted"] is True
     assert replies[1] == {
         "accepted": False,
-        "reason": "already resolved",
+        "reason": "already_resolved",
         "resolution": replies[0]["resolution"],
     }
     assert results[0]["values"] == {"note": "a"}
@@ -574,9 +576,9 @@ async def test_the_turns_abort_resolves_the_open_suspension_as_abort() -> None:
     assert results[0]["action"] == "abort"
     assert results[0]["answered_by"] is None
     [closed] = [e for e in seen if e.type == "suspension_closed"]
-    assert closed.reason == "aborted"
+    assert closed.close_reason == "aborted"
     [entry] = _suspensions(session)
-    assert entry["reason"] == "aborted"
+    assert entry["close_reason"] == "aborted"
 
 
 async def test_session_shutdown_closes_an_open_suspension_as_cursor_closed() -> None:
@@ -598,7 +600,7 @@ async def test_session_shutdown_closes_an_open_suspension_as_cursor_closed() -> 
         await asyncio.wait_for(turn, timeout=2)
     assert results[0]["action"] == "abort"
     [closed] = [e for e in seen if e.type == "suspension_closed"]
-    assert closed.reason == "cursor_closed"
+    assert closed.close_reason == "cursor_closed"
 
 
 # ── deadlines pause (§4.3) ───────────────────────────────────────────────────
@@ -716,8 +718,9 @@ async def test_a_second_suspension_on_a_cursor_waits_its_turn() -> None:
     await asyncio.sleep(0.01)
     [open_first, queued_second] = broker.pending(cursor, "cursor")
     assert (open_first.queued, queued_second.queued) == (False, True)
-    with pytest.raises(ValueError, match="queued"):
+    with pytest.raises(SuspensionAnswerError, match="queued") as refused:
         broker.answer(queued_second.id, "step", {"note": ""})
+    assert refused.value.reason == "queued"
     broker.answer(open_first.id, "step", {"note": "1"})
     assert (await first)["values"] == {"note": "1"}
     await asyncio.sleep(0.01)
@@ -741,7 +744,7 @@ async def test_an_abort_answer_resolves_every_queued_suspension_as_abort() -> No
     resolution = await second
     assert resolution["action"] == "abort" and resolution["answered_by"] is None
     assert aborted == [cursor]
-    closed = [(e["id"], e["reason"]) for k, e in events if k == "suspension_closed"]
+    closed = [(e["id"], e["close_reason"]) for k, e in events if k == "suspension_closed"]
     assert [reason for _, reason in closed] == ["answered", "aborted"]
     assert [(k, e["queued"]) for k, e in events if e["id"] == closed[1][0]] == [
         ("suspension_open", True),
@@ -765,9 +768,9 @@ async def test_a_cancelled_waiter_closes_its_suspension_as_abandoned() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert [(k, e.get("reason")) for k, e in events][-1] == ("suspension_closed", "abandoned")
+    assert [(k, e.get("close_reason")) for k, e in events][-1] == ("suspension_closed", "abandoned")
     [entry] = [e for e in cursor.entries() if e.get("type") == "suspension"]
-    assert entry["reason"] == "abandoned" and not is_incomplete(entry)
+    assert entry["close_reason"] == "abandoned" and not is_incomplete(entry)
 
 
 # ── lock_changed (§3.4) ──────────────────────────────────────────────────────
@@ -802,3 +805,45 @@ async def test_a_change_of_lock_holder_is_a_lock_changed_event() -> None:
     await asyncio.sleep(0)
     assert [(e.read_only, e.lock_holder) for e in seen] == [(True, holder.to_dict())]
     session._write_locks.clear()
+
+
+# ── round 2: an answer after the abort, and bounded memory ───────────────────
+
+
+async def test_an_answer_after_the_abort_in_the_same_tick_loses_to_it() -> None:
+    broker, cursor, events, _ = await _broker()
+    task = _raise(broker, cursor)
+    await asyncio.sleep(0.01)
+    [open_one] = broker.pending()
+    cursor.abort_signal.abort("user")
+    reply = broker.answer(open_one.id, "step", {"note": ""})
+    assert (reply["accepted"], reply["reason"]) == (False, "aborted")
+    resolution = await task
+    assert resolution["action"] == "abort" and resolution["answered_by"] is None
+    assert events[-1][1]["close_reason"] == "aborted"
+    [entry] = [e for e in cursor.entries() if e.get("type") == "suspension"]
+    assert entry["close_reason"] == "aborted" and entry["resolution"]["action"] == "abort"
+
+
+async def test_an_answer_before_the_abort_in_the_same_tick_stands() -> None:
+    broker, cursor, events, _ = await _broker()
+    task = _raise(broker, cursor)
+    await asyncio.sleep(0.01)
+    [open_one] = broker.pending()
+    reply = broker.answer(open_one.id, "step", {"note": "first"})
+    cursor.abort_signal.abort("user")
+    assert reply["accepted"] is True
+    assert (await task)["values"] == {"note": "first"}
+    assert events[-1][1]["close_reason"] == "answered"
+
+
+async def test_the_broker_forgets_what_it_no_longer_needs() -> None:
+    broker, cursor, _events, _ = await _broker()
+    for _ in range(CLOSED_MEMORY + 20):
+        task = _raise(broker, cursor)
+        await asyncio.sleep(0)
+        broker.answer(broker.pending()[0].id, "step", {"note": ""})
+        await task
+    assert len(broker._closed) == CLOSED_MEMORY
+    assert broker._open == {} and broker._queues == {} and broker._forced == {}
+    assert not hasattr(broker, "_abort_answers")

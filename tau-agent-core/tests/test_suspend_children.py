@@ -144,7 +144,7 @@ async def test_aborting_the_parent_resolves_the_childs_suspension_and_blames_the
         await asyncio.wait_for(session.prompt("go"), timeout=2)
     assert _results[0]["action"] == "abort" and _results[0]["answered_by"] is None
     [closed] = [e for e in seen if e.type == "suspension_closed"]
-    assert closed.reason == "aborted"
+    assert closed.close_reason == "aborted"
     [branch] = _branches
     assert (branch.end_reason, branch.aborted_by) == ("aborted", "parent")
 
@@ -262,3 +262,120 @@ async def test_fork_and_delivery_done_callbacks_do_not_report_a_suspended_turn()
     session._on_fork_task_done("s1", task)
     session._on_delivery_done("c1", task)
     assert errors == []
+
+
+# ── round 2 ──────────────────────────────────────────────────────────────────
+
+
+def _child_cursor(session: AgentSession, cursor_id: str) -> Any:
+    return next(c for c in session.cursors if c.id == cursor_id)
+
+
+@pytest.mark.parametrize("how", ["answer", "parent", "signal", "shutdown"])
+async def test_an_aborted_child_is_not_ok_and_says_who_aborted_it(how: str) -> None:
+    session = _session()
+
+    def on_event(event: AgentEvent) -> None:
+        if event.type != "suspension_open" or not event.suspension:
+            return
+        sid, cursor_id = event.suspension["id"], event.suspension["cursor_id"]
+        loop = asyncio.get_running_loop()
+        if how == "answer":
+            loop.call_soon(
+                lambda: session.answer_suspension(sid, "abort", {"note": ""}, {"client": "t"})
+            )
+        elif how == "parent":
+            loop.call_soon(lambda: session.abort(session.cursor))
+        elif how == "signal":
+            loop.call_soon(lambda: session.abort(_child_cursor(session, cursor_id)))
+        else:
+            loop.create_task(session.close_suspensions())
+
+    session.subscribe(on_event)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(*SCRIPT)):
+        await asyncio.wait_for(session.prompt("go"), timeout=2)
+    [branch] = _branches
+    expected = {
+        "answer": "suspension",
+        "parent": "parent",
+        "signal": "signal",
+        "shutdown": "shutdown",
+    }
+    assert branch.ok is False and branch.end_reason == "aborted"
+    assert branch.aborted_by == expected[how]
+    assert branch.error is not None and f"aborted_by: {expected[how]}" in branch.error
+
+
+async def test_suspend_refusal_names_why_a_turn_cannot_be_stepped() -> None:
+    seen: list[Any] = []
+
+    def probe(api: Any) -> None:
+        api.on("input", lambda event, ctx: seen.append(api.suspend_refusal()))
+
+    session = AgentSession(session_log=InMemorySessionLog(), model=_model(), extensions=[probe])
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
+        await asyncio.wait_for(session.prompt("go"), timeout=2)
+    session.add_suspension_responder("test")
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
+        await asyncio.wait_for(session.prompt("again"), timeout=2)
+    assert seen[0] is not None and "no live responder" in seen[0]
+    assert seen[1] is None
+
+
+async def test_an_abort_answer_to_a_child_leaves_an_unrelated_fork_running() -> None:
+    session = _session()
+    gate = asyncio.Event()
+    queue = list(SCRIPT)
+    from test_suspend import _Stream
+    from tau_llm.streaming import DoneEvent
+    from tau_llm.types import Usage
+
+    async def fake(model: Any, context: Any, options: Any = None) -> Any:
+        last = context["messages"][-1]
+        content = last.get("content") if isinstance(last, dict) else last.content
+        text = content if isinstance(content, str) else str(content)
+        if "FORK" in text:
+            await gate.wait()
+            return _Stream([DoneEvent(final=_text("fork done"), usage=Usage())])
+        return _Stream([DoneEvent(final=queue.pop(0), usage=Usage())])
+
+    seen: list[AgentEvent] = []
+    _answer_with(session, "abort", seen)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake):
+        queue.insert(0, _text("first"))
+        await asyncio.wait_for(session.prompt("first"), timeout=2)
+        fork = Submission(
+            text="FORK",
+            source="interactive",
+            submitter="human",
+            submission_id="f1",
+            multitask_strategy="fork",
+        )
+        assert (await session.submit(fork)).accepted
+        [fork_task] = session._forked_tasks.values()
+        await asyncio.wait_for(session.prompt("go"), timeout=2)
+        assert _branches[0].aborted_by == "suspension"
+        assert not fork_task.done()
+        gate.set()
+        await asyncio.wait_for(fork_task, timeout=2)
+    texts = [
+        e["message"]["content"][0].get("text")
+        for e in session.session_log.entries()
+        if e.get("type") == "message" and e["message"]["role"] == "assistant"
+    ]
+    assert "fork done" in texts
+
+
+async def test_the_cursor_scoped_abort_reaches_owned_cursors_and_no_fork() -> None:
+    session = AgentSession(session_log=InMemorySessionLog(), model=_model())
+    child = await session.open_cursor(None, owner=session.cursor, label="child")
+    grandchild = await session.open_cursor(None, owner=child, label="grandchild")
+    stranger = await session.open_cursor(None, label="stranger")
+    sleeper = asyncio.ensure_future(asyncio.sleep(10))
+    session._forked_tasks["f"] = sleeper
+    session._abort_cursor_tree(session.cursor)
+    assert child.abort_signal.is_aborted() and grandchild.abort_signal.is_aborted()
+    assert not stranger.abort_signal.is_aborted()
+    assert not sleeper.cancelled()
+    sleeper.cancel()
+    session._forked_tasks.clear()

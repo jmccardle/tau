@@ -39,6 +39,13 @@ distinct from a generic errored result, so a front-end can render
 The extension that vetoed the call (its runner path label),
 paired with ``blocked`` on a ``tool_execution_end``; ``None`` otherwise.
 
+### close_reason
+
+`tau_agent_core.events.AgentEvent.close_reason: SuspensionCloseReason | None`
+
+On ``suspension_closed``, why it closed
+(:data:`SuspensionCloseReason`). ``None`` on every other type.
+
 ### correlation
 
 `tau_agent_core.events.AgentEvent.correlation: dict[str, Any] | None`
@@ -177,13 +184,12 @@ write the head cursor's tree.
 
 ### reason
 
-`tau_agent_core.events.AgentEvent.reason: SideCompletionReason | SuspensionCloseReason | None`
+`tau_agent_core.events.AgentEvent.reason: SideCompletionReason | None`
 
 What asked for it — ``"manual"``, ``"threshold"`` or
 ``"navigate"``. Set on all three ``side_completion_*`` events, so a
 reader that joins late still learns whether the compaction it is
-watching was requested or imposed. On ``suspension_closed``, why it
-closed (:data:`SuspensionCloseReason`). ``None`` on every other type.
+watching was requested or imposed. ``None`` on every other type.
 
 ### resolution
 

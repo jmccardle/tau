@@ -228,6 +228,7 @@ from tau_agent_core.rpc.dialect import (
     TURN_STILL_RUNNING,
 )
 from tau_agent_core.submission import Submission, SubmissionResult
+from tau_agent_core.suspensions import SuspensionAnswerError
 
 if TYPE_CHECKING:
     from tau_agent_core.agent_session import AgentSession, ExtensionActionResult
@@ -3425,9 +3426,10 @@ GET_PENDING_SUSPENSIONS_PARAMS_SCHEMA: dict[str, Any] = {
             "type": "string",
             "enum": ["cursor", "tree", "session"],
             "description": (
-                "`cursor` (the default): the suspensions at this host's cursor. `tree`: "
-                "those at the cursor and at every cursor it owns, a sub-agent's included, "
-                "each with its `parent_cursor_id` and `depth`. `session`: every cursor's."
+                "`session` (the default): every cursor's, as the suspension events "
+                "this host receives are. `tree`: those at this host's cursor and at "
+                "every cursor it owns, a sub-agent's included, each with its "
+                "`parent_cursor_id` and `depth`. `cursor`: this host's cursor's alone."
             ),
         },
     },
@@ -3459,7 +3461,7 @@ async def _handle_get_pending_suspensions(
     session = handler.session
     return {
         "suspensions": session.pending_suspensions(
-            session.acting_cursor, params.get("scope", "cursor")
+            session.acting_cursor, params.get("scope", "session")
         )
     }
 
@@ -3501,11 +3503,14 @@ ANSWER_SUSPENSION_RESULT_SCHEMA: dict[str, Any] = result_schema_for("answer_susp
         "AgentSession.answer_suspension, projected (docs/STEP-DEBUGGER.md §3.3). Takes "
         "no turn lock: the turn waiting on the suspension holds it, and this is what "
         "lets it go on. The first valid answer wins; a later one gets `accepted: false`, "
-        "`already resolved`, and the winning resolution, which is not an error. In the "
-        "control lane (§3.6), so a host can answer a suspension its own request in "
-        "flight is waiting on. INVALID_PARAMS, with nothing recorded, for an unknown "
-        "id, a suspension still queued behind another, an undeclared action, or values "
-        "its fields reject. No leaf: the answer moves no cursor, and the turn's own "
+        "`reason: already_resolved`, and the winning resolution, which is not an error; "
+        "an answer arriving once the turn is aborted gets `reason: aborted` and the "
+        "abort's resolution. In the control lane (§3.6), so a host can answer a "
+        "suspension its own request in flight is waiting on. INVALID_PARAMS, with "
+        "nothing recorded and `data.reason` saying which: `unknown_id` (no such "
+        "suspension, or one closed too long ago to remember), `queued` (another on its "
+        "cursor is open ahead of it), `undeclared_action`, or `invalid_value` (values "
+        "its fields reject); `data` also echoes the params. No leaf: the answer moves no cursor, and the turn's own "
         "events report what it writes next."
     ),
     params_schema=ANSWER_SUSPENSION_PARAMS_SCHEMA,
@@ -3521,8 +3526,8 @@ async def _handle_answer_suspension(
             params.get("values"),
             handler.answered_by,
         )
-    except ValueError as exc:
-        raise RPCError(INVALID_PARAMS, str(exc), data=dict(params)) from exc
+    except SuspensionAnswerError as exc:
+        raise RPCError(INVALID_PARAMS, str(exc), data={**params, "reason": exc.reason}) from exc
     return {
         "accepted": outcome["accepted"],
         "reason": outcome.get("reason"),

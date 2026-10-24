@@ -1351,14 +1351,18 @@ _ANSWER_SUSPENSION_RETURNS: dict[str, Any] = {
         "accepted": {
             "type": "boolean",
             "description": (
-                "True when this answer resolved the suspension. False when it was "
-                "already resolved, which is not an error: `resolution` is then the "
-                "answer that won, so two racing clients converge."
+                "True when this answer resolved the suspension. False is not an error: "
+                "`reason` says why, and `resolution` is the one that stands, so two "
+                "racing clients converge."
             ),
         },
         "reason": {
             "type": ["string", "null"],
-            "description": "`already resolved` when `accepted` is false; null otherwise.",
+            "enum": ["already_resolved", "aborted", None],
+            "description": (
+                "Null when accepted. `already_resolved`: another answer won. `aborted`: "
+                "the suspension's turn was aborted first, so the abort stands."
+            ),
         },
         "resolution": {
             "type": "object",

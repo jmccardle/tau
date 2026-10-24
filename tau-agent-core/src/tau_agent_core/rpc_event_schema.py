@@ -86,6 +86,7 @@ from tau_agent_core.events import (
     SideCompletionReason,
     SuspensionCloseReason,
 )
+from tau_agent_core.rpc.records import LockHolderRecord, Resolution, SuspensionState
 from tau_agent_core.submission import SubmissionSource
 
 
@@ -287,16 +288,13 @@ class WireEvent(BaseModel):
         "through an event is what WireEvent exists to avoid. None for all other "
         "event types. See docs/STREAMING-SIDE-WORK.md.",
     )
-    reason: SideCompletionReason | SuspensionCloseReason | None = Field(
+    reason: SideCompletionReason | None = Field(
         default=None,
         description="What asked for a side completion: 'manual' (a person or "
         "this host), 'threshold' (the auto-trigger, which nobody asked for) or "
         "'navigate' (the tree browser's summarising move). On all three "
         "side_completion_* events, so a host that attached mid-summary still "
-        "learns whether the work was requested or imposed. On suspension_closed, "
-        "why the suspension closed: 'answered', 'aborted' (its turn's abort, an "
-        "`abort` answer to an earlier one included), 'cursor_closed' (the session "
-        "shut down) or 'abandoned' (its task was cancelled). None for all other "
+        "learns whether the work was requested or imposed. None for all other "
         "event types.",
     )
     attempt: int | None = Field(
@@ -328,24 +326,23 @@ class WireEvent(BaseModel):
         "afterwards. None for all other event types. See docs/TURN-SETTINGS.md "
         "§5 and §5.1.",
     )
-    suspension: dict[str, Any] | None = Field(
+    suspension: SuspensionState | None = Field(
         default=None,
-        description="On suspension_open and suspension_closed, the suspension "
-        "(SuspensionState): `id` (what answer_suspension names), `session_id`, "
-        "`cursor_id`, `parent_cursor_id`, `depth` (owner-chain length), "
-        "`spawned_from` (a child cursor's origin entry), `spec` ({title, body, "
-        "fields, actions, evidence, targetId}), `site`, `extension`, "
-        "`target_id`, `call` ({id, effective_args} at a tool_call), `entry_id` "
-        "(at an entry_written), `queued` and `opened_at_ms`. suspension_open is "
-        "sent again with `queued` false when a queued one reaches the front of "
-        "its cursor's queue. See docs/STEP-DEBUGGER.md §3.4. None for all other "
-        "event types.",
+        description="On suspension_open and suspension_closed, the suspension. "
+        "suspension_open is sent again with `queued` false when a queued one "
+        "reaches the front of its cursor's queue. See docs/STEP-DEBUGGER.md §3.4. "
+        "None for all other event types.",
     )
-    resolution: dict[str, Any] | None = Field(
+    resolution: Resolution | None = Field(
         default=None,
-        description="On suspension_closed, how it was resolved: {id, action, "
-        "values, answered_by, at_ms}; `answered_by` is null when the turn's "
-        "abort resolved it. None for all other event types.",
+        description="On suspension_closed, how it was resolved. None for all other event types.",
+    )
+    close_reason: SuspensionCloseReason | None = Field(
+        default=None,
+        description="On suspension_closed, why it closed: 'answered', 'aborted' "
+        "(its turn's abort, an `abort` answer to an earlier one included), "
+        "'cursor_closed' (the session shut down, or the RPC host's input ended) or "
+        "'abandoned' (its task was cancelled). None for all other event types.",
     )
     read_only: bool | None = Field(
         default=None,
@@ -353,11 +350,10 @@ class WireEvent(BaseModel):
         "the session: another process holds its write lock. None for all other "
         "event types.",
     )
-    lock_holder: dict[str, Any] | None = Field(
+    lock_holder: LockHolderRecord | None = Field(
         default=None,
         description="On lock_changed, the process holding the session's write "
-        "lock ({pid, host, head, started, detail}), or null. None for all other "
-        "event types.",
+        "lock, or null. None for all other event types.",
     )
     leaf: str | None = Field(
         default=None,

@@ -38,11 +38,14 @@ new consumer with no legacy ``block_delta.replace``-ignoring bug to preserve
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypeVar
+
+from pydantic import BaseModel
 
 from tau_agent_core.event_projection import MessageDeltaProjector
 from tau_agent_core.events import AgentEvent, ErrorDetail
 from tau_agent_core.prompt_cache import PromptCacheObserver
+from tau_agent_core.rpc.records import LockHolderRecord, Resolution, SuspensionState
 from tau_agent_core.rpc_event_schema import WireEvent
 from tau_agent_core.truncation import dropped_tool_calls
 
@@ -191,6 +194,14 @@ def _truncation_fields(message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_R = TypeVar("_R", bound=BaseModel)
+
+
+def _record(model: type[_R], value: dict[str, Any] | None) -> _R | None:
+    """``value`` validated as ``model``, so a shape that drifted from its record fails here."""
+    return None if value is None else model.model_validate(value)
+
+
 def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
     """Build a :class:`WireEvent` for ``event``'s bounded/provenance fields.
 
@@ -235,9 +246,10 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
         max_retries=event.max_retries,
         delay_seconds=event.delay_seconds,
         dropped=event.dropped,
-        suspension=event.suspension,
-        resolution=event.resolution,
+        suspension=_record(SuspensionState, event.suspension),
+        resolution=_record(Resolution, event.resolution),
+        close_reason=event.close_reason,
         read_only=event.read_only,
-        lock_holder=event.lock_holder,
+        lock_holder=_record(LockHolderRecord, event.lock_holder),
         **extra,
     )

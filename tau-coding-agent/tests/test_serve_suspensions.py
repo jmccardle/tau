@@ -94,13 +94,13 @@ async def test_a_late_client_sees_the_suspension_in_its_snapshot_and_answers_it(
         action="step",
         values={"note": "late"},
     )
-    assert (again["accepted"], again["reason"]) == (False, "already resolved")
+    assert (again["accepted"], again["reason"]) == (False, "already_resolved")
     await _until(lambda: not replica.suspensions and not late.suspensions)
     host = stepping.daemon.hosts[session_id]
     await _until(lambda: not host.agent_session.cursor.busy)
     [entry] = [e for e in host.log.entries() if e.get("type") == "suspension"]
     assert entry["resolution"]["values"] == {"note": "seen"}
-    assert entry["reason"] == "answered"
+    assert entry["close_reason"] == "answered"
     await other.close()
     await driver.close()
 
