@@ -61,7 +61,7 @@ from tau_agent_core.commands import (
 )
 from tau_agent_core.compaction import estimate_tokens
 from tau_agent_core.extension_locks import ExtensionRequest, refusal_reason
-from tau_agent_core.extension_types import match_choice
+from tau_agent_core.extension_types import field_is_optional, match_choice
 from tau_agent_core.messages import is_displayed
 from tau_agent_core.flows import (
     Dispatched,
@@ -797,7 +797,7 @@ async def ask_form(
 
     Returns:
         ``{field name: value}`` typed per field kind, or ``None`` when the form was
-        cancelled — Ctrl+C or EOF, since no field can be declared required.
+        cancelled — Ctrl+C or EOF.
 
     Raises:
         ValueError: The spec is not one that function accepts.
@@ -833,21 +833,23 @@ async def ask_fields(
     answers: dict[str, Any] = {}
     for field in fields:
         value = await _ask_field(reader, renderer, field)
-        if value is None:
+        if value is _CANCELLED:
             return None
         answers[field["name"]] = value
     return answers
 
 
-async def _ask_field(
-    reader: LineReader, renderer: ReplRenderer, field: dict[str, Any]
-) -> Any | None:
-    """Ask one validated field with the control its kind names. ``None`` = cancelled.
+_CANCELLED: Any = object()
+"""What :func:`_ask_field` returns for a cancelled field; ``None`` is a legitimate answer."""
 
-    Cancelling is Ctrl+C or EOF and nothing else: ``validate_form_spec`` has no
-    ``required`` key, so no field can be declared one and an empty answer is a
-    VALUE rather than a refusal — otherwise a form with one optional box could not
-    be submitted at all, and the answers already typed were thrown away with it.
+
+async def _ask_field(reader: LineReader, renderer: ReplRenderer, field: dict[str, Any]) -> Any:
+    """Ask one validated field with the control its kind names; ``_CANCELLED`` = cancelled.
+
+    Cancelling is Ctrl+C or EOF and nothing else: an empty answer is a VALUE
+    rather than a refusal — otherwise a form with one optional box could not be
+    submitted at all, and the answers already typed were thrown away with it. A
+    blank answer to an optional ``select`` is ``None``.
 
     Raises:
         ValueError: The kind has no control here — a new field kind is a rendering
@@ -864,11 +866,13 @@ async def _ask_field(
         prompt = f"{label} [1-{len(options)}, comma-separated]"
     if kind == "confirm":
         prompt = f"{label} [y/n]"
+    if field_is_optional(field):
+        prompt += " (blank = no answer)"
 
     validate = _FIELD_VALIDATORS[kind](options) if kind in _FIELD_VALIDATORS else None
     answer = await reader.ask(prompt, default=_default_text(field), validate=validate)
     if answer is None:
-        return None
+        return _CANCELLED
     return _field_value(field, answer.strip())
 
 
@@ -903,7 +907,7 @@ def _field_value(field: dict[str, Any], answer: str) -> Any:
     The fallbacks are the TUI's, so one spec answers the same in both heads
     (``_FieldForm._collect``, modals.py:206–238): a cleared text box is ``""``, a
     cleared number is its default, an untouched radio is its default or the first
-    option, and an emptied multiselect is ``[]``.
+    option (``None`` when optional), and an emptied multiselect is ``[]``.
 
     Raises:
         ValueError: The kind has no value rule here.
@@ -922,7 +926,9 @@ def _field_value(field: dict[str, Any], answer: str) -> Any:
     if kind == "select":
         if answer:
             return match_choice(options, answer)
-        return default if default in options else options[0]
+        if default in options:
+            return default
+        return None if field_is_optional(field) else options[0]
     if kind == "multiselect":
         picked = (_as_index(part.strip(), options) for part in answer.split(",") if part.strip())
         return list(dict.fromkeys(options[index] for index in picked if index is not None))

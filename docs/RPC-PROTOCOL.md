@@ -36,7 +36,7 @@ Bounds this process enforces, as numbers rather than as something to discover by
 
 ### What a host must be prepared to RECEIVE
 
-**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 205,739 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
+**There is no matching bound on τ's side of the wire, and a host must not impose one** (T8). Response lines are as large as the answer is: `get_capabilities` alone answers with **more than 64 KiB** (its result serializes to 206,110 bytes, before the JSON-RPC envelope) — and that is the one verb [version negotiation](#version-negotiation) tells every host to send FIRST, before anything else. `get_messages` has no ceiling at all.
 
 This is worth stating because 64 KiB is the *default* line length in widely-used stream readers — `asyncio.StreamReader` among them, whose `readline()` raises `ValueError: Separator is found, but chunk is longer than limit` rather than returning a short read. It is the same number, and the same failure, that `max_request_line_bytes` above exists to have fixed on the inbound side. A host that frames its own lines over chunked reads has neither problem; a host that delegates framing to a capped `readline` has chosen a fatal input class without meaning to.
 
@@ -3384,6 +3384,7 @@ One field of an extension form (`extension_types.validate_form_spec`).
 | `label` | string | no |  |
 | `default` | any | no |  |
 | `options` | list of string | no |  |
+| `required` | boolean | no |  |
 
 ### FormSpec
 
@@ -3728,6 +3729,7 @@ One field of a suspension's form (``extension_types.validate_form_spec``).
 | `label` | string | yes |  |
 | `default` | string \| integer \| number \| boolean \| list of string \| null | no | The declared default, when the extension gave one. |
 | `options` | list of string \| null | no | A select or multiselect field's choices. |
+| `required` | boolean \| null | no | False on a select means it may be answered null; absent means required. |
 
 ### SuspensionList
 
