@@ -161,6 +161,7 @@ class RPCHandler:
         self._drain_progress = 0
         self._output_queue: asyncio.Queue = asyncio.Queue()
         self._event_credits = _EventCredits(output_queue_event_bound)
+        self._not_running = asyncio.Event()
         self._running = False
         self._shutting_down = False
         # Real stdout handle for this run (see module-level `_take_over_stdout`).
@@ -186,6 +187,22 @@ class RPCHandler:
         handlers in `commands.py` reach it through here rather than a private
         attribute."""
         return self._session
+
+    @property
+    def _running(self) -> bool:
+        """Whether ``run()`` is still taking requests; the writer exits once this is False and the queue is empty.
+
+        Setting it False wakes an idle writer at once through ``_not_running``,
+        so shutdown never waits on a poll interval.
+        """
+        return not self._not_running.is_set()
+
+    @_running.setter
+    def _running(self, value: bool) -> None:
+        if value:
+            self._not_running.clear()
+        else:
+            self._not_running.set()
 
     @property
     def runtime(self) -> "AgentSessionRuntime | None":
