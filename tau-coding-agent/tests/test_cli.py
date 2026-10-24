@@ -380,10 +380,19 @@ def test_resolve_provider_override():
     assert mc["backend"] == "anthropic"
 
 
+_FLAG_SOURCES = {
+    "model_source": "cli",
+    "model_restored": False,
+    "thinking_source": "default",
+    "thinking_restored": False,
+}
+"""What resolve_model_config records for a ``--model`` flag and no thinking flag (#25)."""
+
+
 def test_resolve_provider_slash_id_shorthand():
     name, mc = resolve_model_config(_config(), CLIArgs(model="openai/gpt-4o-mini"))
     assert name == "openai/gpt-4o-mini"
-    assert mc == {"backend": "openai", "model": "gpt-4o-mini"}
+    assert mc == {"backend": "openai", "model": "gpt-4o-mini", **_FLAG_SOURCES}
 
 
 def test_resolve_refuses_a_bare_id_that_is_not_configured():
@@ -404,12 +413,12 @@ def test_resolve_refuses_an_unconfigured_default_model():
 
 def test_resolve_a_provider_prefix_is_ad_hoc():
     _name, mc = resolve_model_config(_config(), CLIArgs(model="anthropic/some-model"))
-    assert mc == {"backend": "anthropic", "model": "some-model"}
+    assert mc == {"backend": "anthropic", "model": "some-model", **_FLAG_SOURCES}
 
 
 def test_resolve_a_bare_id_with_provider_flag_is_ad_hoc():
     _name, mc = resolve_model_config(_config(), CLIArgs(model="some-model", provider="gemini"))
-    assert mc == {"backend": "gemini", "model": "some-model"}
+    assert mc == {"backend": "gemini", "model": "some-model", **_FLAG_SOURCES}
 
 
 def test_resolve_a_configured_name_with_a_level_suffix_is_that_entry():
