@@ -122,7 +122,7 @@ class ReadOnlyBanner(Static):
     """
 
     def __init__(self) -> None:
-        super().__init__("", id="read-only-banner")
+        super().__init__("")
         self.display = False
 
     def show(self, text: str | None) -> None:

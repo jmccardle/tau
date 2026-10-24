@@ -278,6 +278,7 @@ class Session:
         self._unwritten = False
         self._allow_unlocked_fs = allow_unlocked_fs
         self._write_lock: SessionWriteLock | None = None
+        self._disk_mark: tuple[int, int, int] | None = None
 
     @property
     def path(self) -> Path | None:
@@ -297,8 +298,37 @@ class Session:
                 sidecar_for(self._path),
                 ready=lambda: not self._unwritten,
                 allow_unlocked_fs=self._allow_unlocked_fs,
+                on_acquire=self._refresh_from_disk,
             )
         return self._write_lock
+
+    def _mark_disk(self) -> None:
+        """Remember the file as this object last read or wrote it: inode, size, mtime."""
+        if self.path is None:
+            return
+        st = os.stat(self.path)
+        self._disk_mark = (st.st_ino, st.st_size, st.st_mtime_ns)
+
+    def _refresh_from_disk(self) -> bool:
+        """Re-read the file if another writer changed it since this object last saw it.
+
+        Called when the write lock is taken, so a session loaded while another
+        process held it never becomes the writer on a copy missing that
+        process's last entries (docs/STEP-DEBUGGER.md §3.7.3).
+
+        Returns:
+            Whether the entries were reloaded.
+        """
+        if self.path is None or self._disk_mark is None:
+            return False
+        st = os.stat(self.path)
+        if (st.st_ino, st.st_size, st.st_mtime_ns) == self._disk_mark:
+            return False
+        _header, entries = _read_session_file(self.path)
+        self._entries = normalize_loaded_entries(keep_last_per_id(entries))
+        self._ids = {e["id"] for e in self._entries if "id" in e}
+        self._mark_disk()
+        return True
 
     def _guard_write(self) -> None:
         """Raise ``SessionReadOnlyError`` while another process holds this session."""
@@ -462,30 +492,17 @@ class Session:
     def load(cls, path: Path, *, allow_unlocked_fs: bool = False) -> "Session":
         """Stream a ``.jsonl`` file and reconstruct the session.
 
-        Loading takes no lock; a host retains :attr:`write_lock` when it writes.
+        Loading takes no lock; a host retains :attr:`write_lock` when it writes,
+        and taking it re-reads the file if another writer changed it meanwhile.
         """
-        header: dict[str, Any] | None = None
-        entries: list[dict[str, Any]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                obj = json.loads(line)
-                if header is None:
-                    if obj.get("type") != "session":
-                        raise ValueError(f"{path}: first line is not a session header")
-                    header = obj
-                else:
-                    entries.append(obj)
-        if header is None:
-            raise ValueError(f"{path}: empty session file (no header)")
+        header, entries = _read_session_file(path)
         session = cls(
             path,
             header,
             normalize_loaded_entries(keep_last_per_id(entries)),
             allow_unlocked_fs=allow_unlocked_fs,
         )
+        session._mark_disk()
         _emit_session_event(SESSION_START, session)
         return session
 
@@ -637,6 +654,7 @@ class Session:
             return
         with self.path.open("x", encoding="utf-8") as handle:
             handle.write(json.dumps(self._header) + "\n")
+        self._mark_disk()
 
     def _persist_entry(self, entry: dict[str, Any]) -> None:
         if self._unwritten:
@@ -646,6 +664,7 @@ class Session:
             return
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
+        self._mark_disk()
 
     def _write_held(self) -> None:
         """Create a deferred session's file: the header, then every entry held, the new one last.
@@ -673,8 +692,34 @@ class Session:
             Path(staging).unlink(missing_ok=True)
             raise
         self._unwritten = False
+        self._mark_disk()
         if self._write_lock is not None:
             self._write_lock.attach()
+
+
+def _read_session_file(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """A ``.jsonl`` file's header and raw entry lines.
+
+    Raises:
+        ValueError: the file is empty or its first line is not a session header.
+    """
+    header: dict[str, Any] | None = None
+    entries: list[dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            if header is None:
+                if obj.get("type") != "session":
+                    raise ValueError(f"{path}: first line is not a session header")
+                header = obj
+            else:
+                entries.append(obj)
+    if header is None:
+        raise ValueError(f"{path}: empty session file (no header)")
+    return header, entries
 
 
 def read_session_info(path: Path) -> SessionInfo | None:

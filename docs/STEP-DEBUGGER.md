@@ -706,8 +706,17 @@ rests on the Future. Across processes it rests on a lock:
   - The filesystem type is read from `/proc/self/mountinfo`, the only place
     NFS's `nolock`/`local_lock` show. Where there is none (not Linux) the
     warning names "an unprobed filesystem". Sync folders are not detectable.
-  - The file store has no delete, rename or move today, so there is nothing to
-    carry the sidecar with; export reads entries, never the sidecar.
+  - The file store has no delete, rename or move today, so a sidecar is never
+    removed; export reads entries, never the sidecar. A future delete removes
+    the sidecar with the log.
+  - Taking the lock re-reads the log if its inode, size or mtime changed since
+    this object loaded or last wrote it, and moves cursors sitting on the old
+    default leaf to the new one, so a session loaded while another process
+    held it never writes from a stale copy (M1b review, tau-router).
+  - Compaction and branch summaries check write access before the summarizer
+    runs, so a read-only replica spends no tokens.
+  - The legacy `SessionManager` writes JSONL without the lock and is not
+    covered.
   - `tau --mode repl --session X --name N` on a held session exits 2: the
     rename it asks for cannot be written.
 - **A session that `tau serve` hosts.** The daemon holds the lock while it hosts

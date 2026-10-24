@@ -125,7 +125,11 @@ def test_the_descriptor_is_close_on_exec_so_a_subprocess_never_inherits_it(tmp_p
         fd = next(e.fd for e in session_lock._REGISTRY.values() if e.path == lock.sidecar)
         assert fcntl.fcntl(fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC
         child = subprocess.Popen(
-            [sys.executable, "-c", f"import os, sys\ntry:\n os.fstat({fd})\nexcept OSError:\n sys.exit(7)"],
+            [
+                sys.executable,
+                "-c",
+                f"import os, sys\ntry:\n os.fstat({fd})\nexcept OSError:\n sys.exit(7)",
+            ],
             close_fds=False,
         )
         assert child.wait(timeout=30) == 7, "the child saw the lock descriptor"
@@ -206,6 +210,11 @@ def test_a_lock_blind_filesystem_warns_and_the_opt_in_silences_it(tmp_path, monk
         (("nfs", {"nolock"}), "nfs (nolock)"),
         (("cifs", {"rw"}), "cifs"),
         (("fuse.sshfs", {"rw"}), "fuse.sshfs"),
+        (("fuse.rclone", {"rw"}), "fuse.rclone"),
+        (("fuse", {"rw"}), "fuse"),
+        (("9p", {"rw"}), "9p"),
+        (("virtiofs", {"rw"}), "virtiofs"),
+        (("vboxsf", {"rw"}), "vboxsf"),
     ],
 )
 def test_lock_blind_filesystems_are_named(monkeypatch, tmp_path, mount, blind):
@@ -283,4 +292,74 @@ def test_an_unusable_lock_dir_refuses_writing_naming_it(tmp_path, monkeypatch):
     lock = SessionWriteLock(lambda: refused() / "x.lock")
     lock.retain()
     assert lock.access().read_only and str(tmp_path) in (lock.access().reason or "")
+    lock.release()
+
+
+def test_a_sidecar_deleted_then_retaken_by_a_second_object_folds_into_one_entry(tmp_path):
+    first = SessionWriteLock(tmp_path / "s.lock")
+    first.retain()
+    before = held_descriptor_count()
+    first.sidecar.unlink()
+    second = SessionWriteLock(tmp_path / "s.lock")
+    second.retain()
+    assert not first.check().read_only
+    assert held_descriptor_count() == before, "the unlinked inode's descriptor was closed"
+    second.release()
+    assert not can_lock(first.sidecar), "the first object's share keeps the new file held"
+    assert not first.check().read_only
+    first.release()
+    assert can_lock(first.sidecar)
+    assert held_descriptor_count() == before - 1
+
+
+RAW_HOLDER = textwrap.dedent(
+    """
+    import fcntl, json, os, sys
+    fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    print("locked", flush=True)
+    sys.stdin.readline()
+    os.pwrite(fd, json.dumps({"pid": os.getpid(), "head": "tui"}).encode(), 0)
+    print("written", flush=True)
+    sys.stdin.read()
+    """
+)
+
+
+def test_holder_info_written_after_a_refusal_is_read_at_the_next_one(tmp_path):
+    sidecar = tmp_path / "s.lock"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", RAW_HOLDER, str(sidecar)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    try:
+        assert proc.stdout.readline().strip() == "locked"
+        lock = SessionWriteLock(sidecar)
+        lock.retain()
+        assert lock.access().holder is not None and lock.access().holder.pid is None
+        proc.stdin.write("go\n")
+        proc.stdin.flush()
+        assert proc.stdout.readline().strip() == "written"
+        holder = lock.access().holder
+        assert holder is not None and holder.pid == proc.pid and holder.head == "tui"
+        lock.release()
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=30)
+
+
+def test_a_failed_flock_keeps_the_lock_blind_warning(tmp_path, monkeypatch):
+    def unsupported(_fd: int, _op: int) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(session_lock, "lock_blind_filesystem", lambda _d: "fuse.sshfs")
+    monkeypatch.setattr(session_lock.fcntl, "flock", unsupported)
+    lock = SessionWriteLock(tmp_path / "s.lock")
+    lock.retain()
+    access = lock.access()
+    assert access.read_only and "flock is unavailable" in (access.reason or "")
+    assert access.warning is not None and "fuse.sshfs" in access.warning
     lock.release()

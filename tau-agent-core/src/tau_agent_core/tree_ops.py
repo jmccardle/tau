@@ -23,6 +23,7 @@ from tau_llm.docs import agent_facing
 from tau_agent_core.compaction import estimate_span_tokens
 from tau_agent_core.conversation_tree import ConversationTree, is_system_message
 from tau_agent_core.cursor import Cursor
+from tau_agent_core.session_lock import write_lock_of
 from tau_agent_core.session_log import config_entry_at
 from tau_agent_core.tree_surgery import (
     branch_refusal_reason,
@@ -110,9 +111,14 @@ async def summarize_and_navigate(
             append the result), or the summarizer returned nothing usable — the
             second raised by ``session_manager.summarize_branch``, not fabricated
             into an empty summary here.
+        SessionReadOnlyError: another process holds the tree; checked before
+            the model call, so a read-only replica spends nothing.
     """
     from tau_agent_core.session_manager import summarize_branch
 
+    lock = write_lock_of(cursor.log)
+    if lock is not None:
+        lock.guard()
     if target_id not in {e["id"] for e in cursor.entries()}:
         raise ValueError(f"summarize target {target_id!r} not found")
     branch_text = cursor.tree().subtree_text(target_id)

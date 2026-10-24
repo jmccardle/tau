@@ -81,6 +81,8 @@ class SessionManager:
     """File-level session management: JSONL persistence of one active session's tree.
 
     Holds a position (the active entry) that appends parent to by default.
+    It writes JSONL without the session write lock (``session_lock``), so a
+    second writer through it is not detected (docs/STEP-DEBUGGER.md §3.7.3).
 
     Args:
         cwd: Working directory recorded in new sessions; ``None`` uses the

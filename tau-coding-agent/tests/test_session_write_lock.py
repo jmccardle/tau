@@ -295,11 +295,15 @@ async def test_a_deferred_session_takes_its_lock_with_its_first_write(catalog):
     await host.emit_session_shutdown()
 
 
-async def test_a_lock_blind_filesystem_raises_a_session_warning_unless_allowed(tmp_path, monkeypatch):
+async def test_a_lock_blind_filesystem_raises_a_session_warning_unless_allowed(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(session_lock, "lock_blind_filesystem", lambda _d: "cifs")
     host = _host(FileSessionCatalog(tmp_path / "a").create(os.getcwd(), "m", "openai"))
     messages = [w.message for w in host.extension_warnings()]
-    assert "cross-process exclusion unavailable on cifs; a second writer is not detected" in messages
+    assert (
+        "cross-process exclusion unavailable on cifs; a second writer is not detected" in messages
+    )
     assert not host.write_access.read_only
     await host.emit_session_shutdown()
     assert host.extension_warnings() == []
@@ -366,3 +370,102 @@ async def test_the_tui_shows_a_read_only_banner_naming_the_holder(make_app, monk
             assert banner.display is False
         finally:
             holder.stop()
+
+
+WRITE_AND_EXIT = textwrap.dedent(
+    """
+    import asyncio, sys
+    from tau_llm.types import Model
+    from tau_agent_core import session_lock
+    from tau_agent_core.agent_session import AgentSession
+    from tau_coding_agent.session_store import Session
+    session_lock.lock_blind_filesystem = lambda _d: None
+    model = Model(id="m", provider="openai", api="openai-completions",
+                  base_url="http://127.0.0.1:1/v1", name="m", context_window=8192, max_tokens=256)
+    async def go():
+        host = AgentSession(session_log=Session.load(__import__("pathlib").Path(sys.argv[1])),
+                            model=model, tools=[])
+        await host.cursor.append_message({"role": "user", "content": "A's last words"})
+        await host.emit_session_shutdown()
+    asyncio.run(go())
+    """
+)
+
+
+async def test_a_session_loaded_before_the_holder_wrote_and_exited_reloads_on_taking_the_lock(
+    catalog,
+):
+    session = _new(catalog)
+    stale = catalog.load(str(session.path))
+    subprocess.run([sys.executable, "-c", WRITE_AND_EXIT, str(session.path)], check=True)
+    host = _host(stale)
+    assert not host.write_access.read_only
+    assert "A's last words" in repr(host.messages), "the writer's last turn is in view"
+    await host.cursor.append_message({"role": "user", "content": "B follows"})
+    reread = Session.load(Path(str(session.path)))
+    texts = [m.get("content") for m in reread.messages]
+    assert texts[-2:] == ["A's last words", "B follows"], "B continued from A's leaf"
+    await host.emit_session_shutdown()
+
+
+async def _seeded(catalog: FileSessionCatalog) -> Session:
+    session = _new(catalog)
+    host = _host(session)
+    for i in range(4):
+        await host.cursor.append_message({"role": "user", "content": f"question {i} " * 40})
+        await host.cursor.append_message(
+            {"role": "assistant", "content": [{"type": "text", "text": f"answer {i} " * 40}]}
+        )
+    await host.emit_session_shutdown()
+    return session
+
+
+async def test_a_read_only_replica_compacts_and_summarizes_without_a_model_call(catalog):
+    session = await _seeded(catalog)
+    holder = Holder(session)
+    calls: list[str] = []
+
+    async def counted(*_a: Any, **_k: Any) -> Any:
+        calls.append("model")
+        raise AssertionError("a read-only replica reached the model")
+
+    try:
+        host = _host(catalog.load(str(session.path)))
+        assert host.write_access.read_only
+        target = host.cursor.tree().path()[2]["id"]
+        with (
+            patch("tau_agent_core.compaction.complete_simple", side_effect=counted),
+            patch("tau_agent_core.session_manager.summarize_branch", side_effect=counted),
+        ):
+            with pytest.raises(SessionReadOnlyError, match=str(holder.proc.pid)):
+                await host.compact()
+            with pytest.raises(SessionReadOnlyError, match=str(holder.proc.pid)):
+                await host._perform_compaction("auto")
+            with pytest.raises(SessionReadOnlyError, match=str(holder.proc.pid)):
+                await host.summarize_and_navigate(target)
+        assert calls == []
+        await host.emit_session_shutdown()
+    finally:
+        holder.stop()
+
+
+async def test_a_constructor_that_raises_releases_the_lock(catalog):
+    session = _new(catalog)
+
+    def broken(_api: Any) -> None:
+        raise RuntimeError("factory failed")
+
+    with pytest.raises(RuntimeError, match="factory failed"):
+        AgentSession(session_log=session, model=_model(), tools=[], extensions=[broken])
+    assert can_lock(session)
+
+
+async def test_a_host_dropped_without_shutdown_releases_the_lock_when_collected(catalog):
+    import gc
+
+    session = _new(catalog)
+    host = _host(session)
+    assert not can_lock(session)
+    del host
+    gc.collect()
+    assert can_lock(session)

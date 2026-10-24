@@ -22,6 +22,7 @@ import inspect
 import logging
 import os
 import uuid
+import weakref
 from collections.abc import Sequence
 import contextlib
 from contextlib import asynccontextmanager
@@ -79,6 +80,7 @@ from tau_agent_core.session_log import (
     AGENT_SOURCE,
     SessionLog,
     config_at,
+    default_leaf,
     config_entry_at,
     session_log_is_addressable,
 )
@@ -87,6 +89,7 @@ from tau_agent_core.session_lock import (
     READ_ONLY_WARNING_KEY,
     UNLOCKED_FS_WARNING_KEY,
     WRITABLE,
+    SessionReadOnlyError,
     SessionWriteLock,
     WriteAccess,
     write_lock_of,
@@ -559,6 +562,17 @@ class _SideCompletionWatch:
         self.usage = dict(usage)
 
 
+def _release_held(held: dict[int, tuple[SessionLog, SessionWriteLock]]) -> None:
+    """Release write locks a collected ``AgentSession`` never released (its finalizer).
+
+    Args:
+        held: The session's ``_write_locks``; emptied.
+    """
+    for _log, lock in held.values():
+        lock.release()
+    held.clear()
+
+
 @agent_facing(topic="sessions")
 class AgentSession:
     """One conversation: an agent loop, its events, and a cursor over a session log.
@@ -737,9 +751,14 @@ class AgentSession:
         self._events.on_error(self._surface_notify_error)
         self._events.on("message_end", self._record_completion_usage)
         self._write_locks: dict[int, tuple[SessionLog, SessionWriteLock]] = {}
+        weakref.finalize(self, _release_held, self._write_locks)
         self._sync_write_locks()
-        for ext in self._extensions:
-            ext(self._bind_extension_api(_extension_factory_label(ext)))
+        try:
+            for ext in self._extensions:
+                ext(self._bind_extension_api(_extension_factory_label(ext)))
+        except BaseException:
+            self.release_write_locks()
+            raise
 
     def _frame_config(self) -> dict[str, Any]:
         """The config keys this session's frame sets (docs/CURSORS.md §5).
@@ -933,9 +952,16 @@ class AgentSession:
             lock.release()
         for key, log in live.items():
             found = None if key in self._write_locks else write_lock_of(log)
-            if found is not None:
-                found.retain()
-                self._write_locks[key] = (log, found)
+            if found is None:
+                continue
+            stale_leaf = default_leaf(log.entries())
+            found.retain()
+            self._write_locks[key] = (log, found)
+            if found.take_refreshed():
+                fresh_leaf = default_leaf(log.entries())
+                for cursor in self._cursors.values():
+                    if cursor.log is log and cursor.leaf == stale_leaf and not cursor.busy:
+                        cursor.move(fresh_leaf)
         self._show_write_access()
 
     def release_write_locks(self) -> None:
@@ -961,6 +987,17 @@ class AgentSession:
         """
         held = self._write_locks.get(id(self.acting_cursor.log))
         return WRITABLE if held is None else held[1].access()
+
+    def _require_writable(self) -> None:
+        """Refuse model work whose product would be written to a read-only tree, before it runs.
+
+        Raises:
+            SessionReadOnlyError: another process holds the acting cursor's tree.
+        """
+        access = self.write_access
+        if access.read_only:
+            self._show_write_access()
+            raise SessionReadOnlyError(access.reason or "session is open read-only", access.holder)
 
     def _write_refusal(self, cursor: Cursor) -> str | None:
         """Re-check ``cursor``'s tree's lock against its sidecar at turn admission; the refusal or ``None``."""
@@ -1726,9 +1763,11 @@ class AgentSession:
             ValueError: The summarizer returned nothing usable. Raised by
                 ``session_manager.summarize_branch``, never fabricated into an
                 empty summary here.
+            SessionReadOnlyError: the tree is read-only; no summarizer is called.
         """
         from tau_agent_core.tree_ops import summarize_and_navigate
 
+        self._require_writable()
         model, api_key = self.summarizer()
         messages, usage = await summarize_and_navigate(
             self.acting_cursor,
@@ -4560,6 +4599,7 @@ class AgentSession:
             CompactionError: if summary generation fails. Fail-Early — no
                 fabricated summary is written.
         """
+        self._require_writable()
         await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
         try:
             return await self._perform_compaction("manual", custom_instructions=custom_instructions)
@@ -4653,7 +4693,11 @@ class AgentSession:
         The two no-op returns above the completion emit nothing at all: no tokens
         were spent and no text was produced, so a start with no end would leave
         every renderer holding an open box forever.
+
+        Raises:
+            SessionReadOnlyError: the tree is read-only; no summarizer is called.
         """
+        self._require_writable()
         path_entries = self.acting_cursor.tree().context_entries()
         if not any(e.get("type") in ("message", "customMessage") for e in path_entries):
             return None
