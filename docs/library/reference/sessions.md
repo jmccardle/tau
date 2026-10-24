@@ -4516,6 +4516,9 @@ access() -> WriteAccess
 
 This process's write access to the session now, without re-checking the sidecar.
 
+Runs releases a collected host queued (:func:`release_later`) first,
+so a long-lived process frees them at its next banner or admission.
+
 **Returns**
 
 Writable, or read-only with the reason and holder.

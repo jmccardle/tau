@@ -395,3 +395,13 @@ def test_a_local_fuse_mount_gets_the_softer_warning(blind, strong):
     assert blind in text
     assert ("a second writer is not detected" in text) is strong
     assert ("may not reach other hosts or mounts" in text) is not strong
+
+
+def test_a_queued_release_that_raises_does_not_stop_the_drain(tmp_path, caplog):
+    broken = SessionWriteLock(tmp_path / "never.lock")
+    queued = SessionWriteLock(tmp_path / "a.lock")
+    queued.retain()
+    session_lock.release_later([broken, queued])
+    assert not queued.access().read_only
+    assert can_lock(queued.sidecar), "the second release ran after the first raised"
+    assert "queued release" in caplog.text

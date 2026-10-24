@@ -31,6 +31,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import json
+import logging
 import os
 import socket
 import stat
@@ -225,7 +226,11 @@ def _drain_pending() -> None:
     _draining = True
     try:
         while _PENDING:
-            _PENDING.popleft().release()
+            lock = _PENDING.popleft()
+            try:
+                lock.release()
+            except Exception:
+                logging.getLogger(__name__).exception("queued release of %s failed", lock.sidecar)
     finally:
         _draining = False
 
@@ -563,6 +568,9 @@ class SessionWriteLock:
                 self._take()
             except BaseException:
                 self._retains -= 1
+                if self._entry is not None:
+                    _release(self._entry)
+                self._entry = None
                 raise
 
     def release(self) -> None:
@@ -620,7 +628,7 @@ class SessionWriteLock:
         try:
             if self._on_acquire():
                 self._refreshed = True
-        except (OSError, ValueError) as exc:
+        except Exception as exc:
             self._refusal = (
                 f"session opened read-only: it could not be re-read after taking its lock: {exc}"
             )
@@ -640,9 +648,14 @@ class SessionWriteLock:
     def access(self) -> WriteAccess:
         """This process's write access to the session now, without re-checking the sidecar.
 
+        Runs releases a collected host queued (:func:`release_later`) first,
+        so a long-lived process frees them at its next banner or admission.
+
         Returns:
             Writable, or read-only with the reason and holder.
         """
+        with _GUARD:
+            _drain_pending()
         if self._holder is not None:
             self._holder = _reread_holder(self.sidecar, self._holder)
         entry = _live(self._entry) if self._entry is not None else None

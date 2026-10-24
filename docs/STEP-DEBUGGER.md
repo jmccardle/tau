@@ -714,13 +714,21 @@ rests on the Future. Across processes it rests on a lock:
     read (the bytes actually read, not a later `stat`) or wrote, and moves
     cursors on the old default leaf to the new one. So a session loaded while
     another process held it never writes from a stale copy. A log that no
-    longer parses (a torn last line) opens read-only with that reason and lets
-    the lock go (M1b review, tau-router).
+    longer parses (a torn last line, or a line that is not a JSON object)
+    opens read-only with that reason and lets the lock go (M1b review,
+    tau-router). It stays read-only until the file is repaired: truncate the
+    torn trailing line, or move the file aside.
+  - The (inode, bytes) mark does not detect an in-place rewrite of the same
+    size, or a same-size replacement that reuses the inode number. Nothing in
+    τ does either: the log is append-only.
   - A local FUSE or host-shared mount (encfs, mergerfs, virtiofs, vboxsf) gets
     a softer warning, that another host or mount may go undetected; network
     filesystems keep "a second writer is not detected".
   - An `AgentSession` collected without shutdown queues its releases, which
-    run at the next acquire or release; a finalizer never releases inside one.
+    run at the process's next lock operation or access check (a turn
+    admission, a banner refresh); a finalizer never releases inside one. A
+    long-lived embedder that drops sessions without shutdown holds their
+    locks until then, so it should call `emit_session_shutdown`.
   - Compaction and branch summaries check write access before the summarizer
     runs, so a read-only replica spends no tokens.
   - The legacy `SessionManager` writes JSONL without the lock and is not

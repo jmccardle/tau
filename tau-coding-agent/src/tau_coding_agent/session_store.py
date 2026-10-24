@@ -715,22 +715,25 @@ def _read_session_file(
 
     The mark is the open file's inode and the number of bytes actually read,
     so an append landing after the read shows as a change (docs/STEP-DEBUGGER.md
-    §3.7.3), never as part of what this read saw.
+    §3.7.3), never as part of what this read saw. Lines split on ``\n`` alone:
+    U+2028, U+2029 and NEL are legal unescaped inside a JSON string.
 
     Raises:
         ValueError: the file is empty, its first line is not a session header,
-            or a line is not JSON.
+            or a line is not a JSON object.
     """
     header: dict[str, Any] | None = None
     entries: list[dict[str, Any]] = []
     with path.open("rb") as handle:
         ino = os.fstat(handle.fileno()).st_ino
         data = handle.read()
-    for raw in data.decode("utf-8").splitlines():
+    for number, raw in enumerate(data.split(b"\n"), start=1):
         line = raw.strip()
         if not line:
             continue
         obj = json.loads(line)
+        if not isinstance(obj, dict):
+            raise ValueError(f"{path}: line {number} is not a JSON object")
         if header is None:
             if obj.get("type") != "session":
                 raise ValueError(f"{path}: first line is not a session header")

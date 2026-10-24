@@ -537,3 +537,46 @@ async def test_a_torn_last_line_opens_read_only_and_releases_the_descriptor(cata
         await host.cursor.append_message({"role": "user", "content": "x"})
     await host.emit_session_shutdown()
     assert stale.write_lock is not None and not stale.write_lock.retained
+
+
+def test_unescaped_line_separators_inside_a_json_string_load(catalog):
+    session = _new(catalog)
+    text = "before between\u0085after end"
+    line = (
+        '{"type": "message", "id": "u2028001", "parentId": "%s", '
+        '"timestamp": "2026-10-24T00:00:00.000Z", '
+        '"message": {"role": "user", "content": "%s"}}\n'
+    ) % (session.entries()[-1]["id"], text)
+    with open(str(session.path), "ab") as handle:
+        handle.write(line.encode("utf-8"))
+    loaded = catalog.load(str(session.path))
+    assert loaded.messages[-1]["content"] == text
+
+
+@pytest.mark.parametrize("bad", ["null", "[1]", '"bare"'])
+async def test_a_wrong_shape_line_after_the_load_opens_read_only_and_lets_go(catalog, bad):
+    session = _new(catalog)
+    stale = catalog.load(str(session.path))
+    with open(str(session.path), "a") as handle:
+        handle.write(bad + "\n")
+    before = held_descriptor_count()
+    host = _host(stale)
+    access = host.write_access
+    assert access.read_only and "not a JSON object" in (access.reason or "")
+    assert held_descriptor_count() == before
+    assert can_lock(stale)
+    await host.emit_session_shutdown()
+
+
+async def test_a_dropped_hosts_lock_is_freed_by_the_next_access_check(catalog):
+    import gc
+
+    session = _new(catalog)
+    host = _host(session)
+    other = _host(_new(catalog))
+    del host
+    gc.collect()
+    assert not can_lock(session), "queued, not yet run"
+    other.write_access
+    assert can_lock(session)
+    await other.emit_session_shutdown()
