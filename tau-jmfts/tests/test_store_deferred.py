@@ -46,9 +46,13 @@ class _Client:
 
     def get_subtree(self, root_id: int, max_depth: Any = None) -> dict[str, Any]:
         under: set[int] = {root_id}
-        for doc_id in sorted(self.docs):
-            if self.docs[doc_id].get("parent_id") in under:
-                under.add(doc_id)
+        grew = True
+        while grew:
+            grew = False
+            for doc_id in sorted(self.docs):
+                if doc_id not in under and self.docs[doc_id].get("parent_id") in under:
+                    under.add(doc_id)
+                    grew = True
         under.discard(root_id)
         return {"root": self.docs[root_id], "descendants": [self.docs[i] for i in sorted(under)]}
 
@@ -231,3 +235,68 @@ async def test_a_fork_copies_non_tau_children_of_copied_entries_only():
         assert [n["parent_id"] for n in notes] == [by_text[f"m{ids.index(e)}"] for e in expect], at
         assert all(n["sequential"] is False and n["content"] == "" for n in notes), at
     assert not any(d.get("dedup") for d in client.docs.values())
+
+
+def _foreign(client: _Client, parent: int, tag: str, **extra: Any) -> dict[str, Any]:
+    doc = client.create_document(
+        title=tag,
+        content="",
+        parent_id=parent,
+        usetype="horopter:annotations",
+        structured_content={"n": tag},
+        auto_embed=False,
+        sequential=False,
+    )
+    doc["position"] = None
+    return doc
+
+
+def _tags(client: _Client, fork: JmftsSessionLog) -> list[str]:
+    return [n["structured_content"]["n"] for n in _notes(client, fork)]
+
+
+async def test_a_fork_at_a_point_copies_nested_non_tau_descendants_of_copied_entries():
+    client, log, ids = await _annotated_session()
+    near = log._doc_id(ids[1])
+    kids = [
+        d
+        for d in client.docs.values()
+        if d.get("parent_id") == near and d["usetype"] == "horopter:annotations"
+    ]
+    _foreign(client, kids[0]["id"], "grandchild-on-path")
+    far = [
+        d
+        for d in client.docs.values()
+        if d.get("parent_id") == log._doc_id(ids[2]) and d["usetype"] == "horopter:annotations"
+    ]
+    _foreign(client, far[0]["id"], "grandchild-off-path")
+    fork = JmftsSessionCatalog(client).fork(log, ".", at=ids[1])  # type: ignore[arg-type]
+    assert _tags(client, fork) == [ids[1], "grandchild-on-path"]
+
+
+async def test_a_fork_copies_a_reparented_child_after_its_higher_id_parent():
+    client, log, ids = await _annotated_session()
+    entry = log._doc_id(ids[1])
+    old = _foreign(client, entry, "child")
+    young = _foreign(client, entry, "parent")
+    old["parent_id"] = young["id"]
+    assert old["id"] < young["id"]
+    for at in (ids[1], None):
+        fork = JmftsSessionCatalog(client).fork(log, ".", at=at)  # type: ignore[arg-type]
+        notes = {n["structured_content"]["n"]: n for n in _notes(client, fork)}
+        assert notes["child"]["parent_id"] == notes["parent"]["id"], at
+        assert notes["parent"]["id"] < notes["child"]["id"], at
+
+
+async def test_a_full_fork_drops_an_annotation_under_an_open_side_entry():
+    client = _Client()
+    log = _deferred(client)
+    cursor = Cursor.newest(log)
+    first = await cursor.append_message({"role": "user", "content": "hi"})
+    open_side = await cursor.open_side("suspension", site="turn_end")
+    _foreign(client, log._doc_id(open_side), "under-open")
+    assert open_side != first
+    await cursor.append_message({"role": "user", "content": "later"})
+    fork = JmftsSessionCatalog(client).fork(log, ".")  # type: ignore[arg-type]
+    assert all(e["type"] != "suspension" for e in fork.entries())
+    assert _tags(client, fork) == []

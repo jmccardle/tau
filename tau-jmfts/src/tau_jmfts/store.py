@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import heapq
 import os
 import socket
 import threading
@@ -209,6 +210,62 @@ def _required(config: dict[str, Any], key: str, session_id: str) -> str:
     if value is None:
         raise ValueError(f"session {session_id} has no {key!r} in its config")
     return str(value)
+
+
+def _copy_order(
+    docs: list[dict[str, Any]],
+    root_id: int,
+    seed: set[int],
+    exclude: set[int],
+    *,
+    closure: bool,
+) -> list[dict[str, Any]]:
+    """The documents of a fork's copy set, parents before children, ties by id.
+
+    With ``closure`` the set is ``seed`` plus every non-τ descendant of it; without,
+    it is ``seed`` minus ``exclude`` and every non-τ descendant of ``exclude``. Both
+    walk a parent-to-children map of ``docs``, so no request is added. Ordering is
+    topological, not by id, because JMFTS can re-parent a document.
+
+    Raises:
+        ValueError: a copied document's parent is neither the root nor copied.
+    """
+    by_id = {d["id"]: d for d in docs}
+    children: dict[int, list[int]] = {}
+    for d in docs:
+        children.setdefault(d["parent_id"], []).append(d["id"])
+
+    def foreign_below(start: set[int]) -> set[int]:
+        found: set[int] = set()
+        queue = list(start)
+        while queue:
+            for child in children.get(queue.pop(), []):
+                if child not in found and not _is_tau_doc(by_id[child]):
+                    found.add(child)
+                    queue.append(child)
+        return found
+
+    chosen = seed | foreign_below(seed) if closure else seed - exclude - foreign_below(exclude)
+    placed = {root_id}
+    ready: list[int] = []
+    waiting: dict[int, list[int]] = {}
+    for i in chosen:
+        parent = by_id[i]["parent_id"]
+        if parent in placed:
+            heapq.heappush(ready, i)
+        else:
+            waiting.setdefault(parent, []).append(i)
+    ordered: list[dict[str, Any]] = []
+    while ready:
+        i = heapq.heappop(ready)
+        ordered.append(by_id[i])
+        placed.add(i)
+        for child in waiting.pop(i, []):
+            heapq.heappush(ready, child)
+    if len(ordered) != len(chosen):
+        orphans = sorted(i for kids in waiting.values() for i in kids)
+        raise ValueError(f"fork: documents {orphans} have a parent outside the copy set")
+    return ordered
 
 
 def _is_tau_doc(doc: dict[str, Any]) -> bool:
@@ -513,8 +570,8 @@ class JmftsSessionLog:
         With ``at``, only the documents on the path to that entry are copied, so the
         fork continues from it (docs/CURSORS.md §4), plus every non-τ document under
         a copied entry or under another such child (docs/ENTRY-ANNOTATIONS.md §5.4),
-        re-parented onto the copy. A non-τ copy keeps its source's ordering: it is
-        created ``sequential`` only if the source has a ``position``. Either way the copy set is
+        re-parented onto the copy. A copy reproduces its source's current ordering: it
+        is created ``sequential`` only if the source has a ``position`` now. Either way the copy set is
         ``session_log.entries_for_fork``: finalized side entries ride along, an open
         one is dropped, and an open one at the fork point refuses the fork. The
         mirror snapshot and the server subtree are read under ``_append_lock``, so
@@ -561,19 +618,15 @@ class JmftsSessionLog:
         )
         new_root_id = new_root["id"]
 
-        descendants = sorted(subtree["descendants"], key=lambda d: d["id"])
         if at is not None:
-            on_path = {source._doc_id(entry_id) for entry_id in kept}
-            copied_ids = set(on_path)
-            for d in descendants:
-                if d["id"] in copied_ids or _is_tau_doc(d):
-                    continue
-                if d["parent_id"] in copied_ids:
-                    copied_ids.add(d["id"])
-            descendants = [d for d in descendants if d["id"] in copied_ids]
+            seed = {source._doc_id(entry_id) for entry_id in kept}
+            exclude: set[int] = set()
         else:
-            dropped = {source._doc_id(e["id"]) for e in source_entries if e["id"] not in kept}
-            descendants = [d for d in descendants if d["id"] not in dropped]
+            seed = {d["id"] for d in subtree["descendants"]}
+            exclude = {source._doc_id(e["id"]) for e in source_entries if e["id"] not in kept}
+        descendants = _copy_order(
+            subtree["descendants"], source._root_doc_id, seed, exclude, closure=at is not None
+        )
         old_to_new: dict[int, int] = {}
         for doc in descendants:
             old_parent = doc["parent_id"]
