@@ -487,6 +487,28 @@ already_resolved`; a refused one is `INVALID_PARAMS` with `data.reason` one of
 migration move to **M1f** with the rest of the rendering; `-p --answer` is
 milestone 2.
 
+**Built (M1f-a), the TUI row.** `tau_coding_agent/suspension_ui.py`. The
+modal is a `_FieldForm`, as `ExtensionAskScreen` is: the spec's title, a
+line naming the extension, site, cursor (with its depth for a child) and the
+written entry at `entry_written`, the body, the call's id and effective
+arguments at `tool_call`, each evidence item, the fields, and one button per
+action. It shows the session's oldest answerable suspension (scope `session`,
+so a child's comes up too), and lists every other pending one as `open` or
+`queued`. A queued suspension shown on its own has its buttons disabled until
+it reaches the front. An answer goes through `AgentSession.answer_suspension`
+with `answered_by: {client: "tui"}`. A refusal is a toast, and the form stays
+up with what was typed. Only `suspension_closed` dismisses the modal, whatever
+its reason, including another responder's answer. Esc does not dismiss it.
+With no `abort` action in the spec, an `Abort turn` button does what Esc does
+on the main screen; a spec that declares `abort` answers with it instead. The
+transcript is unchanged: the side entry already shows as M1a's `⏸` mark in
+the tree browser. `examples/80_step_mode.py` is the demo: it suspends before
+every top-level tool call (`step`, `skip`, `abort`) and refuses at `input`
+when `can_suspend()` is false. Still owed: **M1f-b**, the REPL's
+field-by-field answer and its responder; **M1f-c**, the `--connect` TUI
+(`Attached.suspensions`, `hello` capability, `answer_suspension`),
+`ctx.ui.form` rebuilt on suspend, and serve's `answer`/`request` removed.
+
 ### 3.6 Locks, and what keeps working
 
 A suspended turn **keeps `Cursor.turn_lock`**. Releasing it would end the
@@ -1044,6 +1066,14 @@ until they render suspensions in M1f**, so `api.suspend` raises
 `tau -p` registers none either; its deferred responder, exit 3 and `--answer`
 are milestone 2, so under `-p` a suspension raises `NoResponderError`, the
 §3.8 "nothing can answer" row.
+
+**Built (M1f-a).** The local TUI registers as `"tui"` each time it binds a
+session's `AgentSession` (`TauApp._rebind_after_session_swap`), and withdraws
+the registration on the next bind. Its typed prompts already set
+`allow_user_input`, so they can be stepped; a turn an extension or timer
+submits still cannot. The REPL (M1f-b) and the `--connect` TUI (M1f-c) still
+register nothing, so `api.suspend` raises `NoResponderError` there.
+`NoResponderError`'s message still names only serve and RPC.
 
 ### 3.9 Refusing a turn that cannot be stepped
 
