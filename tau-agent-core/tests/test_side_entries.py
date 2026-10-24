@@ -189,6 +189,17 @@ async def test_a_fork_copies_finalized_side_children_and_refuses_an_open_one():
         entries_for_fork(entries, "nope")
 
 
+async def test_a_fork_at_a_point_copies_finalized_session_marks_and_drops_open_ones():
+    log, cursor, user, reply = await _conversation()
+    session_level = Cursor(log, None)
+    kept = await session_level.open_side("suspension")
+    await session_level.finalize_side(kept, resolution={"action": "step"})
+    still_open = await session_level.open_side("suspension")
+    for at in (user, reply, None):
+        copied = [e["id"] for e in entries_for_fork(log.entries(), at)]
+        assert kept in copied and still_open not in copied
+
+
 async def test_a_whole_fork_drops_an_open_side_entry_off_the_default_leaf():
     log, cursor, user, reply = await _conversation()
     cursor.move(user)

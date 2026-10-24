@@ -162,10 +162,12 @@ class OpenSideEntryError(ValueError):
 
 @agent_facing(topic="sessions", since="0.15.0")
 def entries_for_fork(entries: list[dict[str, Any]], at: str | None) -> list[dict[str, Any]]:
-    """What a fork copies: the path to ``at`` and each path entry's finalized side children.
+    """What a fork copies: the path to ``at``, each path entry's finalized side children,
+    and every finalized session mark (a side entry with no parent).
 
-    An open side entry is never copied (docs/STEP-DEBUGGER.md §3.7.2). Every
-    store's ``fork`` reads its copy set from here.
+    An open side entry is never copied (docs/STEP-DEBUGGER.md §3.7.2), and only
+    one parented to the fork point blocks the fork; an open session mark is
+    dropped without blocking. Every store's ``fork`` reads its copy set from here.
 
     Args:
         entries: The source log's entries in append order.
@@ -192,7 +194,11 @@ def entries_for_fork(entries: list[dict[str, Any]], at: str | None) -> list[dict
         e
         for e in entries
         if str(e.get("id")) in on_path
-        or (is_side_entry(e) and not is_incomplete(e) and e.get("parentId") in on_path)
+        or (
+            is_side_entry(e)
+            and not is_incomplete(e)
+            and (e.get("parentId") is None or e.get("parentId") in on_path)
+        )
     ]
 
 

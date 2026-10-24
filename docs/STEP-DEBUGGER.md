@@ -460,6 +460,9 @@ were added:
   with an open side child.
 - A fork with no `at` copies every entry except open side entries, and is
   refused when the default leaf has an open side child.
+- A fork at a point also copies every finalized session mark (a side entry
+  with no parent), since it belongs to the whole session; an open one is
+  dropped and blocks no fork at a point.
 
 `get_tree` rows and `TreeNode`/`BrowseNode` carry a side entry as a `side` list
 on its parent (`SideMark`: id, kind, status, preview), and the TUI draws it as a
