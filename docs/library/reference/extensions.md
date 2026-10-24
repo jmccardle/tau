@@ -2666,11 +2666,11 @@ One raised suspension, open or queued, as the broker holds it.
 - `entry_id: str | None` — At an ``entry_written`` site, the entry written; else ``None``.
 - `queued: bool` — Whether another suspension on its cursor is open ahead of it.
 - `opened_at_ms: int` — When it was raised.
-- `signal: AbortSignal` — *(no description)*
-- `payload: dict[str, Any]` — *(no description)*
-- `future: asyncio.Future[dict[str, Any]]` — *(no description)*
-- `ready: asyncio.Future[None]` — *(no description)*
-- `closed: asyncio.Event = asyncio.Event()` — *(no description)*
+- `signal: AbortSignal` — Its turn's abort signal, captured when it was raised.
+- `payload: dict[str, Any]` — Its side entry's fields, written again when it is finalized.
+- `future: asyncio.Future[dict[str, Any]]` — Resolved by the first valid answer.
+- `ready: asyncio.Future[None]` — Resolved when it reaches the front of its cursor's queue.
+- `closed: asyncio.Event = asyncio.Event()` — Set once its side entry is finalized and ``suspension_closed`` sent.
 
 ### state
 

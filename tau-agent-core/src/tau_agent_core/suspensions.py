@@ -215,6 +215,11 @@ class Suspension:
         entry_id: At an ``entry_written`` site, the entry written; else ``None``.
         queued: Whether another suspension on its cursor is open ahead of it.
         opened_at_ms: When it was raised.
+        signal: Its turn's abort signal, captured when it was raised.
+        payload: Its side entry's fields, written again when it is finalized.
+        future: Resolved by the first valid answer.
+        ready: Resolved when it reaches the front of its cursor's queue.
+        closed: Set once its side entry is finalized and ``suspension_closed`` sent.
     """
 
     id: str
