@@ -1,7 +1,8 @@
 # Stepping an agent: a suspension primitive in core, a debugger beside it
 
-Design record (2026-10-24), nothing built. John asked for a step debugger: the
-agent stops at an event, a human reads what happened, answers with an action
+Design record (2026-10-24), nothing built; John approved the plan the same day.
+John asked for a step debugger: the agent stops at an event, a human reads what
+happened, answers with an action
 (step, step over, continue, abort) and optionally a verdict and a note, and the
 agent goes on. It must behave the same in the Textual TUI, `tau --mode repl`,
 `tau -p`, `tau --mode rpc`, `tau serve` (local and networked) and Tau Code.
@@ -19,7 +20,7 @@ The record makes three changes, in two homes:
   is created when the build starts. It holds the break conditions, the stepping
   modes and the notes. It contains no head-specific code.
 
-§8 lists what is open.
+§8 records that nothing is open.
 
 ## 1. What is missing, head by head
 
@@ -126,29 +127,63 @@ resolution = await ctx.suspend({
 
 ### 3.2 Where it may be called
 
-`ctx.suspend` is permitted only while the runner is dispatching a hook whose
-caller is awaiting it and has no entry open at the cursor:
+`ctx.suspend` is permitted only while the runner is dispatching a hook that its
+caller awaits, at a point where no provider stream is open:
 
 | site | when | what is on disk |
 |---|---|---|
+| `input` | a prompt is submitted, before its user entry exists (`agent_session.py:3283`) | the path before the prompt |
 | `tool_call` | before a tool runs | the assistant entry, finalized, with its calls |
 | `tool_result` | after a tool ran, before its result is written | as above |
-| `annotate` (#82) | before any message write, the assistant finalize included | the assistant entry is open (incomplete) |
+| `annotate` (#82) | before any message write, the assistant finalize included | for the assistant, its entry is open (incomplete) |
 | mutating `turn_end` | before the next sample | the whole turn so far |
 | `user_turn_end` | end of the prompt | the whole prompt |
+| a command handler | between turns; `ctx.ui.form`'s case (§3.9) | the path at the cursor |
 | an `ext:` channel handler | when it is reached from one of the above | as for that site |
 
-The runner sets a context variable for the dispatch. Python `contextvars`
-propagate through `await`, so an extension's own `ext:` bus handler, which a
-producer calls from its hook (`await api.emit(...)`), inherits the permission.
-That is how the debugger parks on a hit (§5.2).
+**The open assistant entry is not a conflict.** `Cursor.open` leaves the
+cursor's leaf at the entry's parent (`self._open[id] = self._leaf`). A
+suspension's side entry (§3.7) hangs from that leaf, so it is a *sibling* of the
+incomplete assistant entry, not a child. The rule is therefore not "no entry
+open". It is "the side entry is written without moving the leaf", which holds
+at every site above.
 
-**Refused everywhere else, with a named error.** That includes the notify
-events on the `EventBus` (`message_update`, `message_end`,
-`tool_execution_*`). They are emitted *while* a provider stream is open, and a
-parked handler would hold the stream open (events.py:315-322). A command handler
-is refused too, because it runs between turns, where `request_user_action` is
-the right tool.
+**The permission is a dispatch-scoped token, not a flag.** The runner puts a
+mutable token in a context variable for the length of one dispatch, and marks
+it closed when the dispatch returns. Python `contextvars` propagate through
+`await`, so an extension's `ext:` bus handler, which a producer calls from its
+own hook (`await api.emit(...)`), sees the open token. That is how the debugger
+parks on a hit (§5.2). Two copies must not inherit it, and the token design
+closes both:
+
+- **A task spawned from a hook** (`asyncio.create_task` copies the context)
+  holds a reference to the same token. The runner closes it on return, so a
+  later `ctx.suspend` from that task is refused.
+- **An `EventBus` notify dispatch** resets the variable to `None` before
+  calling its handlers. A notify event emitted while a permitted hook is
+  running therefore does not inherit the permission.
+
+**Refused everywhere else, with a named error.** That includes every notify
+event on the `EventBus` (`message_update`, `message_end`, `tool_execution_*`,
+`provider_retry`). Several are emitted while a provider stream is open, and a
+parked handler would hold the stream open (`events.py:315-322`).
+
+### 3.2.1 Concurrent suspensions on one cursor
+
+In a parallel tool batch, the `tool_call` hooks run in the sequential prepare
+loop (`agent_loop.py:1371-1374`), before any tool starts. The `tool_result`
+hooks run inside `asyncio.gather` (`_run_tool`, around `agent_loop.py:1417`), so
+two of them can suspend at once while other tools are still running.
+
+The rule is that **suspensions on one cursor are serialized**. A second
+`ctx.suspend` on the same cursor waits, first in first out, until the open one
+resolves, and heads show it as queued. Tools that are already running keep
+running, because nothing can pause a subprocess mid-flight. So in a parallel
+batch, "step" at `tool_result` paces the result writes, not the executions. The
+debugger documents this. To step tool *execution* strictly, break at
+`tool_call`: those suspensions all happen before any tool in the batch starts.
+Core does not force sequential execution, which would change behaviour whether
+or not anyone is stepping.
 
 ### 3.3 Lifecycle
 
@@ -217,11 +252,27 @@ Mutating RPC verbs and session swaps fail after their existing 5 s wait with
 `TURN_STILL_RUNNING`, as they do for any long turn. That is the intended refusal.
 
 **One core fix comes with this.** Today, after a `tool_call` hook returns, the
-tool runs even if the signal tripped during the hook: sequential mode checks the
-signal before the hooks, and the parallel prepare loop does not check it at all
-(`agent_loop.py:1280`, `:1344-1347`). An abort chosen at a `tool_call`
+tool runs even if the signal tripped during the hook. Sequential mode checks the
+signal at `agent_loop.py:1280`, prepares and runs the hooks at `:1293`, and
+executes at `:1335`, with no check in between. The parallel prepare loop
+(`:1371-1374`) does not check it at all. An abort chosen at a `tool_call`
 suspension must not run the tool. So the loop checks the signal after the
-`tool_call` hooks and before execution, and routes to `_aborted_batch`.
+`tool_call` hooks and before execution, in both modes, and routes to
+`_aborted_batch`.
+
+**Abort still writes what exists.** An abort resolves the suspension, the
+handler returns, and the write that the hook was holding still happens. Only
+then does the loop take its abort path. This is the same reasoning as
+ENTRY-ANNOTATIONS.md §4.3: an unwritten entry wedges the session.
+
+- At **`annotate`** on an assistant message, the assistant entry is finalized.
+  Its calls then get `ABORTED_TOOL_RESULT` from `_aborted_batch`. Without the
+  finalize, `entries_to_messages` would raise `IncompleteEntryError` at it.
+- At **`tool_result`**, the tool has run, so its real result is written. The
+  batch's other unanswered calls get aborted results. Without that, the
+  assistant's call would stay unanswered.
+- At **`tool_call`**, the tool does not run (the fix above), and the call gets
+  an aborted result.
 
 ### 3.7 Durability: recorded, and reported after a restart
 
@@ -232,8 +283,13 @@ does not pretend to. Instead:
   child of the cursor's leaf. It does not move the cursor, so the turn's next
   entry still hangs from the leaf and the path the model reads is unchanged. The
   entry is written with `status: "incomplete"` and holds `{spec, site,
-  targetId}`. On resolve, core finalizes it with the resolution, by the
-  incomplete → finalize path every store already has.
+  targetId}`. On resolve, core finalizes it with the resolution.
+- **Side writes are new cursor API.** `Cursor.finalize` moves the leaf onto the
+  entry it finalizes (`cursor.py:311-313`), and `Cursor.append` moves it onto the
+  new entry. Neither may be used for a side entry. So the cursor gains
+  `open_side(kind, **payload)` and `finalize_side(entry_id, **payload)`. They
+  call `SessionLog.append_at(leaf, …)` and `SessionLog.finalize`, which every
+  store already has, and they touch neither `_leaf` nor `_open`.
 - **The answer is the verdict record.** A finalized `suspension` entry holds
   the action, the field values (the verdict and the note) and who answered. The
   debugger's dataset is these entries. They mirror to JMFTS like any other
@@ -247,15 +303,22 @@ does not pretend to. Instead:
     from an earlier entry.
   - Resuming at a boundary is deferred (§7).
 
-Three changes make the side entry safe:
+**One predicate makes the side entry safe:** `is_side_entry(entry)` in
+`session_log`. Every walker that counts or follows children calls it, instead of
+each learning the kind separately:
 
-- `default_leaf` skips the `suspension` kind, as it skips `navigate`
+- `default_leaf` skips side entries, as it skips `navigate`
   (`session_log.py:170`). Otherwise a reopened session would continue from a
   resolved suspension.
-- `entries_to_messages` ignores it. It is not on any path the model reads,
-  because it is never an ancestor of a later entry.
-- The tree views (the TUI tree browser, `get_tree`) render it as a mark on its
-  parent, not as a branch.
+- `ConversationTree`'s children and branch counting leave them out, so a fork
+  picker or a branch indicator does not show every suspension as a branch.
+- the tree views (the TUI tree browser, `get_tree`) show a side entry as a
+  mark on its parent;
+- the JMFTS store's tree derivation does the same.
+
+`entries_to_messages` needs no change: a side entry is never an ancestor of a
+later entry, so it is never on a path the model reads. A second side kind later
+(see the notes in §7) costs one line in the predicate.
 
 **Why not a namespaced kind** (`system:kind`)? `default_leaf` already skips
 those, but its docstring reserves them for documents another system put in the
@@ -278,8 +341,9 @@ count per session:
 
 | situation | behaviour |
 |---|---|
-| `-p`, text or `--mode json` | there is no responder. `ctx.suspend` raises `NoResponderError`. The debugger arms only after checking `ctx.can_suspend()`, so `/step on` under `-p` fails at arm time, naming the alternatives: run under `tau serve` and attach a client, or use `--mode rpc` |
-| serve with zero attached responders | the suspension **waits**. It does not default. `list_sessions` shows the cursor as suspended, and the first client to attach receives it in its snapshot |
+| `-p`, text or `--mode json` | there is no responder. `ctx.suspend` raises `NoResponderError`. The debugger arms only after checking `ctx.can_suspend()`, so `/step on` under `-p` fails at arm time, naming the alternatives: run under `tau serve` and attach a client, or use `--mode rpc` with a host that declares `suspensions` |
+| `--mode rpc`, host did not declare `suspensions` | the same: `NoResponderError` at the call. This is right for Tectum's voice nodes: nobody sits on that channel, and a wait would hang the voice turn until its outer timeout (tectum-arecibo) |
+| serve with zero attached responders | the suspension **waits**. It does not default. `list_sessions` shows the cursor as suspended, a session warning says it is waiting for a client, and the first client to attach receives it in its snapshot |
 | `ui.form` under `allow_user_input=False` | unchanged: the headless policy applies (§3.9) |
 
 A `-p` control channel (stdin JSON or a socket) is deferred (§7). `tau serve`
@@ -293,10 +357,20 @@ plus an attached client covers the scripted case today.
 - **`ctx.ui.form` is reimplemented on `ctx.suspend`.** A form becomes a
   suspension with the actions `submit` and `cancel`. That removes `ServeUI.form`'s
   private Future and its `request`/`Answer` path, and with it the defaults that
-  serve fabricates when nobody is attached. Forms then work in RPC too. The
-  headless policy (`--ui-defaults form=defaults`, or `HeadlessDialogError`) is
-  kept for heads with no responder, because a flow collecting a command argument
-  may legitimately take defaults. A step-debugger break may not.
+  serve fabricates when nobody is attached. Forms then work in RPC too.
+- **A form usually suspends outside a turn,** from a command handler collecting
+  a missing argument (`extension_types.py:498-503`). §3.2 permits that site.
+  There:
+  - `ctx.suspend` takes no lock of its own. It holds whatever its caller holds:
+    `_drive_turn`'s turn lock for a command typed as a prompt, nothing for a
+    panel button or a chord (`run_extension_command`, `agent_session.py:5459-5491`).
+  - Its side entry hangs from the cursor's leaf, as at any other site.
+  - The `abort` action is not offered, because there is no turn to abort.
+    `cancel` resolves the form with `None`, as today.
+  - The responder rule applies unchanged. The headless policy
+    (`--ui-defaults form=defaults`, or `HeadlessDialogError`) is kept for heads
+    with no responder. A flow collecting a command argument may legitimately
+    take defaults; a step-debugger break may not.
 - The serve verbs `answer` and the `request`/`request_closed` events are
   superseded by `answer_suspension` and `suspension_open`/`suspension_closed`.
   They are removed in the same release. τ is below 1.0, and tau-code is the only
@@ -337,27 +411,55 @@ api.on("tool_call", handler, policy="gating")
 - **`proceed`** continues as if the handler had returned nothing.
 - **`surface`** chooses between a turn error and a session warning
   (`ctx.set_warning`).
-- A timed-out handler is cancelled (`asyncio.wait_for`), so the work it was
-  doing stops.
+- A timed-out handler is cancelled, so the work it was doing stops.
+- **A policy applies to `ext:` channel handlers too.** On `fail`, the handler's
+  error or timeout is raised into the emitter's `await api.emit(...)` as
+  `HandlerPolicyError`. The emitter sees it and takes its own documented action.
+  For example, tau-router falls back to base routing and sets a warning when
+  its decider pull fails. On `proceed`, `emit` returns normally and the warning
+  is raised. A handler with no policy keeps today's failure isolation: its
+  exception is surfaced, and `emit` does not raise.
 
 ### 4.2 Built-ins
 
 | name | `timeout_s` | `on_timeout` | `on_error` | `surface` | for |
 |---|---|---|---|---|---|
-| `gating` | 10 | fail | fail | error | a decider or check whose answer gates the step |
-| `advisory` | 2 | proceed | proceed | warning | a recorder or monitor whose absence must not stop work |
+| `gating` | 30 | fail | fail | error | a decider or check whose answer gates the step |
+| `advisory` | 15 | proceed | proceed | warning | a recorder or monitor whose absence must not stop work |
 | `human` | none | — | fail | error | a handler that suspends for a human (§3) |
 
-The numbers are a first guess for John to tune; they are not measured. A
-handler that names no policy behaves exactly as today: no timeout, and errors as
-each hook handles them now. So landing this changes no existing extension.
+John set these numbers (2026-10-24). They should become faster eventually, but
+an error because a model is slow is a punishing design, so they start generous.
+A handler that names no policy behaves exactly as today: no timeout, and errors
+as each hook handles them now. So landing this changes no existing extension.
 
 ### 4.3 How policies and suspension meet
 
-`ctx.suspend` refuses, with a named error, inside a handler whose policy has a
-timeout. A human cannot be timed out without a fabricated answer, so the
-mismatch is caught at the call, not after 10 seconds. The debugger registers its
-handlers with `policy="human"`.
+A suspension happens inside nested dispatches. The debugger's `debug_hit`
+handler runs inside the producer's hook, and the producer's handler may have a
+timeout. The shadow pass's will be `gating`. A check on the calling handler alone
+is not enough. If the producer's 30 s clock kept running, it would cancel the
+suspension while the human was still reading. Under `proceed`, it would then
+continue as if nothing had happened: a fabricated "continue", the defect §1.2
+item 3 forbids (tau-router, tau-search).
+
+**The rule: a policy's clock pauses while a suspension raised under it is
+open.** A policy timeout is not `asyncio.wait_for`. It is a deadline object
+kept in the same dispatch-scoped context as the §3.2 token, one per enclosing
+dispatch. `ctx.suspend` pauses every enclosing deadline when it opens and
+resumes them when it resolves. So a timeout measures the handler's own work and
+never the human's reading time.
+
+- An inner timeout is capped by the outer one, for every wait except a
+  suspension.
+- A producer may register its hook under any policy and still emit `debug_hit`.
+- The debugger registers its handlers with `policy="human"`. With no timeout,
+  its own clock has nothing to pause.
+
+The alternative was to refuse `ctx.suspend` whenever any enclosing dispatch has
+a timeout (tau-router). That is simpler, but it forbids a `gating` decider from
+ever producing a break condition, and decider questions are §5.3's main external
+producer.
 
 ## 5. The debugger extension (`tau-debugger`)
 
@@ -374,10 +476,18 @@ handlers with `policy="human"`.
 Producers announce and emit on their own `ext:` channels (`extension_types.py:57`).
 The debugger only consumes them:
 
-- `ext:<producer>:debug_conditions`, emitted at `session_start`: `[{name,
-  describe}]`. This feeds the break-set picker.
-- `ext:<producer>:debug_hit`, emitted when a condition fires: `{condition,
-  evidence, targetId?}`.
+- **Conditions are pulled, not pushed.** The debugger emits
+  `ext:tau_debugger:need_conditions` when a turn starts with stepping armed, and
+  on `/break list`. Each producer answers by emitting
+  `ext:<producer>:debug_conditions` = `[{name, describe}]`, which feeds the
+  break-set picker. A push at `session_start` would miss `/new`, fork and resume,
+  where `session_start` does not fire in 0.14, and it would depend on load order.
+  This is the same request-and-reply idiom as tau-router's decider pull.
+- **A hit** is emitted when a condition fires: `ext:<producer>:debug_hit` =
+  `{condition, evidence, targetId?}`.
+- **The producer contract:** emit `debug_hit` from a §3.2 site (a hook, never a
+  notify event or a task the hook spawned). Any policy is allowed, because its
+  clock pauses during the suspension (§4.3).
 
 Emission is awaited (`events.py:19-25`), and the producer emits from inside its
 own hook. So the debugger's handler for `debug_hit` runs at a permitted site
@@ -405,9 +515,16 @@ These need no decider. Each is observable at a permitted site:
 | N completions with no file edits | debugger state |
 | a context-size threshold | `annotate`, assistant `usage` |
 
-Conditions from other producers: todo created, changed and completed come from
-`examples/38_todo.py`, which gains three emits. Decider questions (`q:<id>`)
-come from the shadow extension. A model change comes from tau-router.
+Conditions from other producers:
+
+- **todo** created, changed and completed come from `examples/38_todo.py`, which
+  gains three emits.
+- **decider questions** (`q:<id>`) come from the shadow extension.
+- **a model change** comes from tau-router. It emits after `set_model`
+  succeeds, from its `input` and `turn_end` hooks, with evidence `{from, to,
+  why, source: route | decider_lease | step_down}`. A human `/model` is not a
+  router hit. tau-router's refusal holds (429/401) are seen on notify events, so
+  they are status-only.
 
 Two conditions are deliberately not in v1:
 
@@ -497,10 +614,23 @@ annotated entries.
   attach answers it;
 - abort during a `tool_call` suspension: the tool does not run, and the batch
   gets aborted results;
+- abort during an `annotate` suspension on an assistant message: the entry is
+  finalized, its calls get aborted results, and the leaf is not incomplete;
+- abort during a `tool_result` suspension: the real result is written, and the
+  batch's other calls get aborted results;
+- a `gating` producer emits `debug_hit` and the debugger suspends: the
+  suspension outlasts the producer's 30 s, the producer's clock resumes after
+  the answer, and the turn does not fail;
+- a task spawned from a hook calls `ctx.suspend` after the hook returned:
+  refused;
+- a notify event emitted during a permitted hook calls `ctx.suspend`: refused;
+- two `tool_result` suspensions in one parallel batch: the second is queued
+  until the first resolves;
+- a form from a panel button between turns: it suspends with no turn lock, and
+  offers no `abort`;
 - kill the daemon during a suspension and reload: the incomplete `suspension`
   entry raises a session warning, the reopened leaf is not the side entry, and
   no turn continues;
-- a `gating`-policy handler that calls `ctx.suspend` gets the named error;
 - a suspension from a notify-event handler gets the named error.
 
 A headless harness (no Textual) drives the RPC and serve rows, so the matrix
@@ -510,9 +640,10 @@ runs in the container matrix with the rest of the suite.
 
 **v1:**
 
-- §3 in τ core: `ctx.suspend`, `ctx.can_suspend`, the events, the snapshot
-  field, `answer_suspension`, `get_pending_suspensions`, and the `suspension`
-  entry with its default-leaf, path and tree-view rules;
+- §3 in τ core: `ctx.suspend`, `ctx.can_suspend`, the dispatch-scoped token,
+  per-cursor serialization, the events, the snapshot field,
+  `answer_suspension`, `get_pending_suspensions`, `Cursor.open_side` and
+  `finalize_side`, and the `suspension` entry with `is_side_entry`;
 - `ctx.ui.form` reimplemented on it; serve's `answer` and `request` removed;
 - the `tool_call` abort check (§3.6);
 - §4: `register_policy`, `policy=` on `api.on`, the three built-ins,
@@ -528,9 +659,13 @@ runs in the container matrix with the rest of the suite.
 - **a `-p` control channel:** serve plus an attached client covers scripted use.
 - **resuming a suspension after a restart:** v1 reports it (§3.7); resuming
   mid-turn needs a parked coroutine to be reconstructed.
-- **notes mid-turn while not suspended:** an append at the cursor while an
-  entry is open breaks `finalize` (`cursor.py:293-315`). Notes go in a
-  suspension, or between turns.
+- **notes mid-turn while not suspended:** storage is not the obstacle. A `note`
+  side entry via `open_side` (§3.7) is safe mid-turn, and the predicate takes one
+  more kind. What is missing is an input path in every head while a turn runs:
+  typed text is a steer in the TUI and the REPL, and commands are refused
+  mid-turn (`app.py:1055-1065`, `repl.py:1811-1817`, `remote.py:1005-1030`).
+  Adding one is a second per-head UI, so v1 takes notes in a suspension or
+  between turns.
 - **per-client roles and display names over networked serve** (§3.10).
 - **breaking on notify events** (compaction, retries, deltas): suspending there
   holds the provider stream open.
@@ -540,11 +675,8 @@ runs in the container matrix with the rest of the suite.
 
 ## 8. Open
 
-1. **The policy numbers** (§4.2): 10 s for `gating` and 2 s for `advisory` are
-   guesses. John tunes them.
-2. **The side entry** (§3.7): the reviewers should check that a `suspension`
-   entry as a non-moving side child is safe for every walker: `default_leaf`,
-   `ConversationTree`, `tree_surgery.admission_reason`, the JMFTS mirror and the
-   tree views. If one of them cannot be taught the kind cheaply, the fallback
-   is to keep the record only in memory and lose the restart report. That is
-   weaker, and it would need John's agreement.
+Nothing is open. John approved the `ctx.suspend` plan and set the policy
+numbers (§4.2) on 2026-10-24. The side entry's safety, open at 8442e44, was
+settled in review: one `is_side_entry` predicate, and new non-moving cursor
+calls (§3.7). An independent architecture review is running in parallel, and
+its findings arrive as amendments.
