@@ -731,6 +731,44 @@ loop's tools next turn.
 - `ValueError` — if a required key is missing.
 - `TypeError` — if ``parameters`` is not a dict or ``execute`` is not callable.
 
+### request
+
+```python
+async request(topic: str, payload: Any, *, timeout_s: float) -> list[RequestReply]
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.request`
+
+Ask every subscriber of ``ext:<name>:<topic>`` and collect each answer (docs/EXT-REQUEST.md).
+
+The requester's terms replace each subscriber's own policy for this
+call: every subscriber runs under a ``timeout_s`` deadline, and a timeout
+or an error is :class:`~tau_agent_core.policies.Failed`. A subscriber
+registered under ``advisory`` cannot turn that into ``Proceeded``.
+
+Subscribers run concurrently, each deadline starting at once, so the
+whole call takes at most ``timeout_s`` of their own time. A suspension
+inside a subscriber pauses its clock (docs/STEP-DEBUGGER.md §4.3), and an
+enclosing deadline caps all of them. A sync subscriber runs on a worker
+thread and is abandoned at the deadline (#97). ``payload`` is passed
+as-is to each, as by :meth:`emit`.
+
+**Parameters**
+
+- `topic: str` — The topic, the last segment of the channel name.
+- `payload: Any` — Delivered to each subscriber.
+- `timeout_s: float` — Each subscriber's budget in seconds; positive and finite.
+
+**Returns**
+
+class:`~tau_agent_core.policies.RequestReply` per subscriber, in subscription order; ``[]`` with none, which the caller judges.
+
+**Raises**
+
+- `ValueError` — an empty ``topic`` or a bad ``timeout_s``.
+- `RuntimeError` — no runner bucket is bound, so there is no channel name.
+- `TurnSuspended` — a subscriber suspended; the others are cancelled.
+
 ### request_user_action
 
 ```python
@@ -988,6 +1026,32 @@ class:`concurrent.futures.Future` resolving to the class:`~tau_agent_core.submis
 
 - `RuntimeError` — No runner bucket or no ``AgentSession`` is bound; the session is not bound to a running loop yet; or this is called from the session's own loop, where blocking on the future deadlocks.
 - `ValueError` — ``correlation`` carries a non-JSON value.
+
+### subscriber_count
+
+```python
+subscriber_count(topic: str) -> int
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.subscriber_count`
+
+How many handlers are subscribed to this extension's ``ext:<name>:<topic>``.
+
+Subscriptions are made at load, so this is already complete in
+``session_start``.
+
+**Parameters**
+
+- `topic: str` — The topic, the last segment of the channel name.
+
+**Returns**
+
+The number of subscribers :meth:`emit` and :meth:`request` would reach.
+
+**Raises**
+
+- `ValueError` — ``topic`` is empty or whitespace.
+- `RuntimeError` — no runner bucket is bound.
 
 ### suspend
 
@@ -2342,6 +2406,70 @@ turn; every other site raises :class:`HandlerPolicyError`, which ends the turn
 
 - `error: Exception` — Why: the handler's exception, or :class:`DeadlineExpired`.
 
+## HandlerCall
+<!-- agent: yes -->
+
+```python
+class HandlerCall(handler: Callable[..., Any], args: Sequence[Any], *, hook: str, warn: Callable[[str], None])
+```
+
+`tau_agent_core.policies.HandlerCall` · since 0.15.0
+
+A handler bound to its arguments: the ``call`` core hands a policy.
+
+``await call()`` runs the handler inline, in the awaiting task.
+:meth:`PausableDeadline.run` runs a sync one (a plain ``def``) on a worker
+thread instead, so the deadline returns on time however long it blocks;
+the thread cannot be killed, so it is abandoned (docs/STEP-DEBUGGER.md §4,
+#97).
+
+**Constructor parameters**
+
+- `handler: Callable[..., Any]` — The handler.
+- `args: Sequence[Any]` — Its positional arguments.
+- `hook: str` — The hook or ``ext:`` channel, for the late-finish warning.
+- `warn: Callable[[str], None]` — Sets the handler's ``policy:<hook>`` session warning.
+
+### __call__
+
+```python
+async __call__() -> Any
+```
+
+`tau_agent_core.policies.HandlerCall.__call__` · since 0.15.0
+
+Call the handler here and await what it returns if that is awaitable.
+
+### abandoned
+
+`tau_agent_core.policies.HandlerCall.abandoned` · since 0.15.0
+
+Whether a deadline stopped waiting for its worker thread.
+
+### on_worker_thread
+
+```python
+async on_worker_thread() -> Any
+```
+
+`tau_agent_core.policies.HandlerCall.on_worker_thread` · since 0.15.0
+
+Run the handler on a new daemon thread and await it; an awaitable it returns is awaited here.
+
+The thread runs in a copy of this task's context. Cancelled, this stops
+waiting and abandons the thread: its result is dropped, and when it
+finishes the warning says how late.
+
+**Returns**
+
+What the handler returned.
+
+### sync
+
+`tau_agent_core.policies.HandlerCall.sync` · since 0.15.0
+
+Whether the handler is not a coroutine function.
+
 ## HandlerPolicy
 <!-- agent: yes -->
 
@@ -2648,6 +2776,24 @@ session warning keyed ``policy:<hook>``.
 **Constructor parameters**
 
 - `record: str` — One line saying what failed.
+
+## RequestReply
+<!-- agent: yes -->
+
+```python
+class RequestReply(extension: str | None, outcome: Returned | Failed, status: RequestStatus, abandoned: bool = False)
+```
+
+`tau_agent_core.policies.RequestReply` · since 0.15.0
+
+One subscriber's answer to ``api.request`` (docs/EXT-REQUEST.md).
+
+**Constructor parameters**
+
+- `extension: str | None` — The subscriber's extension; ``None`` when it subscribed through an api bound to no extension.
+- `outcome: Returned | Failed` — :class:`Returned` with the handler's return value, or :class:`Failed` with its exception or :class:`DeadlineExpired`.
+- `status: RequestStatus` — ``"returned"``; ``"expired"`` when the request's deadline fired; ``"raised"`` when the handler raised, a ``DeadlineExpired`` of its own included.
+- `abandoned: bool = False` — The deadline expired on a sync handler whose worker thread was still running, and left it behind (#97).
 
 ## Returned
 <!-- agent: yes -->
@@ -3562,7 +3708,8 @@ A bounded handler runs in its own task, so a guard that compares
 ``asyncio.current_task()`` with a turn's task would miss it. This follows
 each :meth:`PausableDeadline.run` task to the task awaiting it. A task a
 handler merely spawned is not followed, so it is never mistaken for the
-turn.
+turn. A sync handler's worker thread (#97) has no task; it counts as its
+deadline's task until that deadline abandons it.
 
 **Parameters**
 

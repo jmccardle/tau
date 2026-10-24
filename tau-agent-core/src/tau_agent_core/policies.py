@@ -10,15 +10,24 @@ run exactly as before policies existed.
 
 Deadlines are pausable so that a suspension (``api.suspend``, slice M1e) can
 stop every enclosing clock while a human reads: :func:`pause_enclosing_deadlines`.
+
+A plain ``def`` handler run under a deadline runs on a worker thread, so the
+deadline can return on time while the thread is abandoned (#97);
+:func:`police_thread_affinity` keeps such a thread off loop-only state.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
+import functools
+import inspect
 import math
+import sys
+import threading
+import time
 import weakref
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
@@ -165,6 +174,66 @@ _AWAITED_BY: weakref.WeakKeyDictionary[asyncio.Task[Any], asyncio.Task[Any]] = (
 )
 
 
+class _Worker:
+    """One policed sync handler's worker thread, as the loop and the thread both see it.
+
+    Attributes:
+        loop: The loop the deadline runs on, where loop-affine calls are marshalled.
+        awaiter: The deadline's task, which awaits the thread.
+        ident: The thread's ident, set by the thread before the handler runs.
+        abandoned_at: ``time.monotonic()`` when the awaiter stopped waiting; ``None`` until then.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, awaiter: asyncio.Task[Any] | None) -> None:
+        self.loop = loop
+        self.awaiter = awaiter
+        self.ident: int | None = None
+        self.abandoned_at: float | None = None
+
+    def refuse_if_abandoned(self, label: str) -> None:
+        """Raise when the handler this thread runs was abandoned at its deadline."""
+        if self.abandoned_at is not None:
+            raise RuntimeError(
+                f"{label}: this sync handler was abandoned on its worker thread when its "
+                "deadline expired, so it may no longer act on the session (#97)"
+            )
+
+    def call_on_loop(self, label: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        """Run ``fn`` on the loop, in this thread's context, and block until it returns.
+
+        The task it runs in counts as awaited by the deadline's task, since this
+        thread blocks on it, so :func:`runs_on_behalf_of` follows it. A loop that
+        is stopped but not closed never runs it, so the daemon thread blocks for
+        good; it holds no lock, so nothing else waits on it.
+
+        Raises:
+            RuntimeError: the handler was abandoned, or the loop is closed.
+        """
+        self.refuse_if_abandoned(label)
+
+        async def on_loop() -> Any:
+            self.refuse_if_abandoned(label)
+            task = asyncio.current_task()
+            if task is not None and self.awaiter is not None:
+                _AWAITED_BY[task] = self.awaiter
+            return fn(*args, **kwargs)
+
+        return asyncio.run_coroutine_threadsafe(on_loop(), self.loop).result()
+
+
+_WORKER: contextvars.ContextVar[_Worker | None] = contextvars.ContextVar(
+    "tau_policed_worker", default=None
+)
+
+
+def _current_worker() -> _Worker | None:
+    """The policed worker this thread is, or ``None`` on any other thread, the loop's included."""
+    worker = _WORKER.get()
+    if worker is None or worker.ident != threading.get_ident():
+        return None
+    return worker
+
+
 @agent_facing(topic="extensions", since="0.15.0")
 def runs_on_behalf_of(task: asyncio.Task[Any]) -> bool:
     """Whether the current task is ``task``, or a policed task that ``task`` is awaiting.
@@ -173,7 +242,8 @@ def runs_on_behalf_of(task: asyncio.Task[Any]) -> bool:
     ``asyncio.current_task()`` with a turn's task would miss it. This follows
     each :meth:`PausableDeadline.run` task to the task awaiting it. A task a
     handler merely spawned is not followed, so it is never mistaken for the
-    turn.
+    turn. A sync handler's worker thread (#97) has no task; it counts as its
+    deadline's task until that deadline abandons it.
 
     Args:
         task: The task to test against, e.g. the one driving a turn.
@@ -181,7 +251,11 @@ def runs_on_behalf_of(task: asyncio.Task[Any]) -> bool:
     Returns:
         True when the current code runs as part of ``task``.
     """
-    current = asyncio.current_task()
+    worker = _current_worker()
+    if worker is not None:
+        current = None if worker.abandoned_at is not None else worker.awaiter
+    else:
+        current = asyncio.current_task()
     while current is not None:
         if current is task:
             return True
@@ -244,6 +318,119 @@ def pause_enclosing_deadlines() -> Iterator[tuple[PausableDeadline, ...]]:
     finally:
         for deadline in reversed(paused):
             deadline.resume()
+
+
+@agent_facing(topic="extensions", since="0.15.0")
+class HandlerCall:
+    """A handler bound to its arguments: the ``call`` core hands a policy.
+
+    ``await call()`` runs the handler inline, in the awaiting task.
+    :meth:`PausableDeadline.run` runs a sync one (a plain ``def``) on a worker
+    thread instead, so the deadline returns on time however long it blocks;
+    the thread cannot be killed, so it is abandoned (docs/STEP-DEBUGGER.md §4,
+    #97).
+
+    Args:
+        handler: The handler.
+        args: Its positional arguments.
+        hook: The hook or ``ext:`` channel, for the late-finish warning.
+        warn: Sets the handler's ``policy:<hook>`` session warning.
+
+    Attributes:
+        sync: Whether the handler is not a coroutine function.
+        abandoned: Whether a deadline stopped waiting for its worker thread.
+    """
+
+    def __init__(
+        self,
+        handler: Callable[..., Any],
+        args: Sequence[Any],
+        *,
+        hook: str,
+        warn: Callable[[str], None],
+    ) -> None:
+        self.handler = handler
+        self.args = tuple(args)
+        self.hook = hook
+        self.warn = warn
+        self.sync = not inspect.iscoroutinefunction(handler)
+        self.abandoned = False
+
+    async def __call__(self) -> Any:
+        """Call the handler here and await what it returns if that is awaitable."""
+        result = self.handler(*self.args)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    async def on_worker_thread(self) -> Any:
+        """Run the handler on a new daemon thread and await it; an awaitable it returns is awaited here.
+
+        The thread runs in a copy of this task's context. Cancelled, this stops
+        waiting and abandons the thread: its result is dropped, and when it
+        finishes the warning says how late.
+
+        Returns:
+            What the handler returned.
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[Any] = loop.create_future()
+        worker = _Worker(loop, asyncio.current_task())
+        context = contextvars.copy_context()
+        context.run(_WORKER.set, worker)
+
+        def work() -> None:
+            worker.ident = threading.get_ident()
+            try:
+                outcome: tuple[bool, Any] = (True, context.run(self.handler, *self.args))
+            except BaseException as err:
+                outcome = (False, err)
+                if isinstance(err, StopIteration):
+                    carried = RuntimeError(f"{self.hook} handler raised StopIteration")
+                    carried.__cause__ = err
+                    outcome = (False, carried)
+            try:
+                loop.call_soon_threadsafe(self._settle, worker, future, outcome, time.monotonic())
+            except RuntimeError:
+                print(
+                    f"[τ] {self.hook} handler finished on its worker thread after the event "
+                    f"loop closed: {'returned' if outcome[0] else describe(outcome[1])}",
+                    file=sys.stderr,
+                )
+
+        name = getattr(self.handler, "__qualname__", type(self.handler).__name__)
+        threading.Thread(target=work, name=f"tau-policed:{self.hook}:{name}", daemon=True).start()
+        try:
+            result = await future
+        except asyncio.CancelledError:
+            if not (future.done() and not future.cancelled()):
+                worker.abandoned_at = time.monotonic()
+                self.abandoned = True
+            raise
+        if inspect.isawaitable(result):
+            result = await result
+        return result
+
+    def _settle(
+        self,
+        worker: _Worker,
+        future: asyncio.Future[Any],
+        outcome: tuple[bool, Any],
+        finished: float,
+    ) -> None:
+        """On the loop: hand the thread's outcome to its awaiter, or, abandoned, drop it and warn."""
+        ok, value = outcome
+        if worker.abandoned_at is None and not future.done():
+            if ok:
+                future.set_result(value)
+            else:
+                future.set_exception(value)
+            return
+        if ok and inspect.iscoroutine(value):
+            value.close()
+        late = max(0.0, finished - (worker.abandoned_at or finished))
+        what = "finished" if ok else f"raised {describe(value)}"
+        self.warn(f"{self.hook} handler abandoned on its worker thread {what} {late:.1f}s late")
 
 
 @agent_facing(topic="extensions", since="0.15.0")
@@ -320,6 +507,8 @@ class PausableDeadline:
         context.run(_ENCLOSING.set, (*self._enclosing, self))
 
         async def _body() -> Any:
+            if isinstance(call, HandlerCall) and call.sync:
+                return await call.on_worker_thread()
             return await call()
 
         task = self._loop.create_task(_body(), context=context)
@@ -602,3 +791,173 @@ def check_outcome(outcome: Any, policy: str) -> Outcome:
             "Returned, Failed or Proceeded"
         )
     return outcome
+
+
+ThreadAffinity: TypeAlias = Literal["read", "any", "loop", "refuse"]
+"""How a ctx or api member behaves when a policed sync handler's worker thread calls it.
+
+``"read"`` runs it on the thread, even after the handler is abandoned: a
+thread-safe read that changes nothing. ``"any"`` runs it on the thread until the
+handler is abandoned, then raises: thread-safe, but it acts on the session.
+``"loop"`` runs it on the loop and blocks the thread until it returns, and also
+raises once abandoned. ``"refuse"`` always raises ``RuntimeError``: a coroutine
+method, which the thread cannot await, or a member that hands out live loop
+objects.
+"""
+
+_AFFINITIES: tuple[str, ...] = ("read", "any", "loop", "refuse")
+
+
+def _guarded(label: str, fn: Callable[..., Any], kind: ThreadAffinity) -> Callable[..., Any]:
+    """``fn`` wrapped to act on ``kind`` when called from a policed worker thread."""
+    is_async = inspect.iscoroutinefunction(fn)
+    if is_async and kind != "refuse":
+        raise TypeError(f"{label} is a coroutine method; its thread affinity must be 'refuse'")
+    if kind == "read":
+        return fn
+    if is_async:
+        reason = "it is a coroutine method, which a thread cannot await; make the handler async def"
+    else:
+        reason = "it hands out live objects that only the event loop may touch"
+
+    @functools.wraps(fn)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        worker = _current_worker()
+        if worker is None:
+            return fn(*args, **kwargs)
+        if kind == "refuse":
+            raise RuntimeError(
+                f"{label} cannot be called from a sync handler running on a policed worker "
+                f"thread: {reason} (docs/STEP-DEBUGGER.md §4, #97)"
+            )
+        if kind == "any":
+            worker.refuse_if_abandoned(label)
+            return fn(*args, **kwargs)
+        return worker.call_on_loop(label, fn, *args, **kwargs)
+
+    mark = getattr(inspect, "markcoroutinefunction", None)
+    if is_async and mark is not None:
+        mark(guarded)
+    return guarded
+
+
+def police_thread_affinity(cls: type, table: Mapping[str, ThreadAffinity]) -> None:
+    """Wrap each member of ``cls`` named in ``table`` to honour its affinity (#97).
+
+    A property's getter is wrapped. The table is kept as
+    ``cls.__tau_thread_affinity__``, which a test checks covers every public
+    member, so a new one cannot escape classification.
+
+    Args:
+        cls: The class whose members a policed sync handler can reach.
+        table: Member name to :data:`ThreadAffinity`.
+
+    Raises:
+        KeyError: ``table`` names a member ``cls`` does not define.
+        ValueError: an unknown affinity.
+        TypeError: a coroutine method not classified ``"refuse"``.
+    """
+    for name, kind in table.items():
+        if kind not in _AFFINITIES:
+            raise ValueError(f"{cls.__name__}.{name}: unknown thread affinity {kind!r}")
+        if name not in cls.__dict__:
+            raise KeyError(f"{cls.__name__} defines no member {name!r} to classify")
+        member = cls.__dict__[name]
+        label = f"{cls.__name__}.{name}"
+        if isinstance(member, property):
+            if member.fget is None:
+                raise TypeError(f"{label} is a property with no getter")
+            getter = _guarded(label, member.fget, kind)
+            setattr(cls, name, property(getter, member.fset, member.fdel, member.__doc__))
+        else:
+            setattr(cls, name, _guarded(label, member, kind))
+    setattr(cls, "__tau_thread_affinity__", dict(table))
+
+
+RequestStatus = Literal["returned", "expired", "raised"]
+"""How one subscriber answered an ``api.request``."""
+
+
+@agent_facing(topic="extensions", since="0.15.0")
+@dataclass(frozen=True)
+class RequestReply:
+    """One subscriber's answer to ``api.request`` (docs/EXT-REQUEST.md).
+
+    Attributes:
+        extension: The subscriber's extension; ``None`` when it subscribed
+            through an api bound to no extension.
+        outcome: :class:`Returned` with the handler's return value, or
+            :class:`Failed` with its exception or :class:`DeadlineExpired`.
+        status: ``"returned"``; ``"expired"`` when the request's deadline
+            fired; ``"raised"`` when the handler raised, a ``DeadlineExpired``
+            of its own included.
+        abandoned: The deadline expired on a sync handler whose worker thread
+            was still running, and left it behind (#97).
+    """
+
+    extension: str | None
+    outcome: Returned | Failed
+    status: RequestStatus
+    abandoned: bool = False
+
+
+async def _reply(extension: str | None, call: HandlerCall, timeout_s: float) -> RequestReply:
+    """Run one subscriber under its own deadline and say how it answered."""
+    deadline = PausableDeadline(timeout_s)
+    try:
+        value = await deadline.run(call)
+    except DeadlineExpired as err:
+        if err.deadline is deadline:
+            return RequestReply(extension, Failed(err), "expired", call.abandoned)
+        return RequestReply(extension, Failed(err), "raised")
+    except Exception as err:
+        return RequestReply(extension, Failed(err), "raised")
+    return RequestReply(extension, Returned(value), "returned")
+
+
+async def request_replies(
+    calls: Sequence[tuple[str | None, HandlerCall]], timeout_s: float
+) -> list[RequestReply]:
+    """Run every call concurrently, each under its own ``timeout_s`` deadline (docs/EXT-REQUEST.md).
+
+    All deadlines start together, so the whole request takes at most
+    ``timeout_s`` of the subscribers' own time; a suspension pauses it (§4.3)
+    and an enclosing deadline caps it. Each subscriber task counts as awaited
+    by the caller, for :func:`runs_on_behalf_of`.
+
+    A ``BaseException`` from any subscriber, ``TurnSuspended`` included, and
+    the caller's own cancellation cancel the rest, wait for them, and leave
+    unchanged. A sync subscriber still running is abandoned (#97).
+
+    Args:
+        calls: ``(extension, call)`` per subscriber, in subscription order.
+        timeout_s: Each subscriber's budget; positive and finite.
+
+    Returns:
+        One reply per call, in order.
+
+    Raises:
+        ValueError: ``timeout_s`` is not a positive, finite number.
+    """
+    _check_seconds("timeout_s", timeout_s)
+    if not calls:
+        return []
+    loop = asyncio.get_running_loop()
+    awaiter = asyncio.current_task()
+    tasks = [loop.create_task(_reply(extension, call, timeout_s)) for extension, call in calls]
+    if awaiter is not None:
+        for task in tasks:
+            _AWAITED_BY[task] = awaiter
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.wait(tasks)
+        for task in tasks:
+            if not task.cancelled():
+                task.exception()
+        raise
+    finally:
+        for task in tasks:
+            _AWAITED_BY.pop(task, None)

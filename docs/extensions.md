@@ -127,6 +127,17 @@ example to this.
 it six times; `user_turn_end` fires once per `prompt()`. Anything that should
 happen once per thing-the-user-asked-for wants the latter.
 
+**Handlers must not block.** A `sleep()` or a slow call holds the agent up from
+getting back to work. With no timeout (no `policy=`, `"human"`, or `Unbounded`)
+a handler runs inline on the event loop, sync or async, and an `async def`
+that blocks inside its body stalls the loop, which is
+[asyncio's own rule](https://docs.python.org/3/library/asyncio-dev.html#running-blocking-code),
+not a τ limit. Give any reaction that could make the UI unresponsive, or that
+waits on a remote service, a timeout policy: `policy="gating"`, `"advisory"`, or
+your own `Bounded`. Under one, a plain `def` handler runs on a worker thread and
+the hook returns at the deadline; ctx and api calls it makes are marshalled onto
+the loop or refused (docs/STEP-DEBUGGER.md §4, "Built (#97)").
+
 **The one sharp edge:** `api.on("turn_end", ...)` always resolves to the
 *mutating* hook, never the notify event of the same name — there is no way
 to observe the plain notify-grade `turn_end` via `api.on`. Use `"all"` or
@@ -140,7 +151,7 @@ Grouped by purpose, with real signatures from `extension_types.py`:
 
 ```python
 # Events
-api.on(event: str, handler: Callable) -> Callable[[], None]
+api.on(event: str, handler: Callable, *, policy: str | None = None) -> Callable[[], None]
 
 # Tools
 api.register_tool(definition: dict | ExtensionToolDefinition) -> None
@@ -166,6 +177,8 @@ api.submit_threadsafe(...)
 
 # Inter-extension pub/sub
 await api.emit(topic: str, payload: Any) -> None    # ext:<name>:<topic> channels
+await api.request(topic, payload, *, timeout_s) -> list[RequestReply]  # one reply per subscriber, docs/EXT-REQUEST.md
+api.subscriber_count(topic: str) -> int
 
 # Per-extension config — replaces the deleted register_flag/get_flag
 api.config -> dict[str, Any]     # from ~/.tau/config.json "extensions.<name>", or --ext-config

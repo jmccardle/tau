@@ -542,6 +542,24 @@ listener bound, the error goes to stderr.
 
 A callable that removes ``listener``; calling it twice is harmless.
 
+### subscribers
+
+```python
+subscribers(channel: str) -> tuple[Callable[..., Any], ...]
+```
+
+`tau_agent_core.events.EventBus.subscribers`
+
+A snapshot of ``channel``'s handlers, in subscription order.
+
+**Parameters**
+
+- `channel: str` — Channel name; ``"all"`` subscribers are not included.
+
+**Returns**
+
+The handlers; an api's ``ext:`` subscription is a :class:`ChannelSubscriber`.
+
 ## follow_ups_dropped_notice
 <!-- agent: yes -->
 
