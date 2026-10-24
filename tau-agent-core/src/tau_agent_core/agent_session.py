@@ -4019,6 +4019,13 @@ class AgentSession:
             submission_id=uuid.uuid4().hex,
             multitask_strategy="enqueue",
         )
+        ends: list[AgentEvent] = []
+
+        def on_end(event: AgentEvent) -> None:
+            if event.cursor_id == cursor.id:
+                ends.append(event)
+
+        stop_listening = self._events.on("agent_end", on_end)
         try:
             if stored_seed is None:
                 result = await self.submit(sub, cursor=cursor)
@@ -4038,8 +4045,10 @@ class AgentSession:
                 leaf=cursor.leaf,
                 messages=[],
                 error=str(exc),
+                **self._branch_ending(cursor, ends),
             )
         finally:
+            stop_listening()
             if not cursor.busy:
                 await self.close_cursor(cursor)
         if not result.accepted:
@@ -4050,6 +4059,7 @@ class AgentSession:
                 leaf=cursor.leaf,
                 messages=[],
                 error=result.rejection_reason or "the sub-agent's submission was refused",
+                **self._branch_ending(cursor, ends),
             )
         return BranchResult(
             ok=True,
@@ -4058,7 +4068,24 @@ class AgentSession:
             leaf=cursor.leaf,
             messages=list(result.messages),
             error=None,
+            **self._branch_ending(cursor, ends),
         )
+
+    def _branch_ending(self, cursor: Cursor, ends: list[AgentEvent]) -> dict[str, Any]:
+        """A spawned turn's ``end_reason``, and on an abort who aborted it (docs/STEP-DEBUGGER.md §3.12.5)."""
+        answer = self._suspensions.take_abort_answer(cursor.id)
+        end_reason = ends[-1].end_reason if ends else None
+        if end_reason != "aborted":
+            return {"end_reason": end_reason}
+        if answer is not None:
+            return {
+                "end_reason": end_reason,
+                "aborted_by": "suspension",
+                "answered_by": answer.get("answered_by"),
+            }
+        owner = cursor.owner
+        by_parent = owner is not None and owner.abort_signal.is_aborted()
+        return {"end_reason": end_reason, "aborted_by": "parent" if by_parent else "signal"}
 
     def _checked_seed(
         self, at: str | None, seed: list[dict[str, Any]], prompted: bool
@@ -4115,12 +4142,15 @@ class AgentSession:
         task.add_done_callback(lambda t: self._on_fork_task_done(submission_id, t))
 
     def _on_fork_task_done(self, submission_id: str, task: asyncio.Task[Any]) -> None:
-        """Untrack a finished forked task; surface an unexpected exception (Fail-Early)."""
+        """Untrack a finished forked task; surface an unexpected exception (Fail-Early).
+
+        A turn that unwound at a suspension (:class:`TurnSuspended`) did not fail.
+        """
         self._forked_tasks.pop(submission_id, None)
         if task.cancelled():
             return
         error = task.exception()
-        if error is not None:
+        if error is not None and not isinstance(error, TurnSuspended):
             self._surface_extension_error(
                 ExtensionError(
                     extension_path=f"fork:{submission_id}", event="fork", error=str(error)
@@ -4196,12 +4226,15 @@ class AgentSession:
         await self.close_cursor(cursor)
 
     def _on_delivery_done(self, cursor_id: str, task: asyncio.Task[Any]) -> None:
-        """Untrack a finished delivery; surface an unexpected exception (Fail-Early)."""
+        """Untrack a finished delivery; surface an unexpected exception (Fail-Early).
+
+        A turn that unwound at a suspension (:class:`TurnSuspended`) did not fail.
+        """
         self._delivery_tasks.pop(cursor_id, None)
         if task.cancelled():
             return
         error = task.exception()
-        if error is not None:
+        if error is not None and not isinstance(error, TurnSuspended):
             self._surface_extension_error(
                 ExtensionError(
                     extension_path=f"deliver:{cursor_id}", event="deliver_queued", error=str(error)

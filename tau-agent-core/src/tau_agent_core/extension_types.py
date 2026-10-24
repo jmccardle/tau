@@ -905,6 +905,15 @@ class BranchResult:
             the handle to read the verdict back or ``ctx.summarize_branch`` it.
         messages: The sub-agent turn's messages; empty when ``ok`` is false.
         error: Why it failed, or ``None`` when ``ok``.
+        end_reason: How its turn's ``agent_end`` closed (``"done"``,
+            ``"aborted"``, …), or ``None`` when no turn ran.
+        aborted_by: On ``end_reason == "aborted"``: ``"suspension"`` when a
+            person answered ``abort`` at one of its suspensions, ``"parent"``
+            when the cursor that owns it was aborted, else ``"signal"``. A child
+            stopped at a suspension was stopped by a person, so a delegating
+            extension never retries or escalates it (docs/STEP-DEBUGGER.md §3.12.5).
+        answered_by: With ``aborted_by == "suspension"``, the resolution's
+            ``answered_by``.
     """
 
     ok: bool
@@ -913,6 +922,9 @@ class BranchResult:
     leaf: str | None
     messages: list[dict[str, Any]]
     error: str | None
+    end_reason: str | None = None
+    aborted_by: Literal["suspension", "signal", "parent"] | None = None
+    answered_by: dict[str, Any] | None = None
 
 
 @agent_facing(topic="extensions")

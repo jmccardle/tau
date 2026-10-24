@@ -309,6 +309,7 @@ class SuspensionBroker:
         self._queues: dict[str, list[Suspension]] = {}
         self._closed: dict[str, dict[str, Any]] = {}
         self._forced: dict[str, SuspensionCloseReason] = {}
+        self._abort_answers: dict[str, dict[str, Any]] = {}
 
     def pending(
         self, cursor: Cursor | None = None, scope: PendingScope = "session"
@@ -340,6 +341,17 @@ class SuspensionBroker:
             return False
 
         return [s for s in self._open.values() if under(s.cursor)]
+
+    def take_abort_answer(self, cursor_id: str) -> dict[str, Any] | None:
+        """The ``abort`` answer that aborted ``cursor_id``'s turn, forgotten as it is read.
+
+        Args:
+            cursor_id: The cursor whose turn ended.
+
+        Returns:
+            The resolution, or ``None`` when no answer aborted it.
+        """
+        return self._abort_answers.pop(cursor_id, None)
 
     def get(self, suspension_id: str) -> Suspension | None:
         """The suspension ``suspension_id`` names while it is open or queued, else ``None``."""
@@ -547,5 +559,6 @@ class SuspensionBroker:
         }
         suspension.future.set_result(resolution)
         if action == ABORT_ACTION:
+            self._abort_answers[suspension.cursor.id] = resolution
             self._abort_cursor(suspension.cursor)
         return {"accepted": True, "resolution": resolution}

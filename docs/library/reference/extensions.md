@@ -286,7 +286,7 @@ class:`Returned`, or ``on_timeout``'s or ``on_error``'s outcome.
 <!-- agent: yes -->
 
 ```python
-class BranchResult(ok: bool, cursor_id: str, label: str, leaf: str | None, messages: list[dict[str, Any]], error: str | None)
+class BranchResult(ok: bool, cursor_id: str, label: str, leaf: str | None, messages: list[dict[str, Any]], error: str | None, end_reason: str | None = None, aborted_by: Literal['suspension', 'signal', 'parent'] | None = None, answered_by: dict[str, Any] | None = None)
 ```
 
 `tau_agent_core.extension_types.BranchResult`
@@ -306,6 +306,9 @@ empty-but-successful-looking answer.
 - `leaf: str | None` — The sub-agent's final entry id, or ``None`` if it appended nothing; the handle to read the verdict back or ``ctx.summarize_branch`` it.
 - `messages: list[dict[str, Any]]` — The sub-agent turn's messages; empty when ``ok`` is false.
 - `error: str | None` — Why it failed, or ``None`` when ``ok``.
+- `end_reason: str | None = None` — How its turn's ``agent_end`` closed (``"done"``, ``"aborted"``, …), or ``None`` when no turn ran.
+- `aborted_by: Literal['suspension', 'signal', 'parent'] | None = None` — On ``end_reason == "aborted"``: ``"suspension"`` when a person answered ``abort`` at one of its suspensions, ``"parent"`` when the cursor that owns it was aborted, else ``"signal"``. A child stopped at a suspension was stopped by a person, so a delegating extension never retries or escalates it (docs/STEP-DEBUGGER.md §3.12.5).
+- `answered_by: dict[str, Any] | None = None` — With ``aborted_by == "suspension"``, the resolution's ``answered_by``.
 
 ## BusDependencyError
 <!-- agent: yes -->
