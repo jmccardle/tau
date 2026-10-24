@@ -986,8 +986,9 @@ current session out (`agent_session_runtime.py:273`). So:
   cursor, exactly as a child cursor is, so aborting the root aborts the fleet.
 - **A restart abandons a pending child session's suspension,** as in §3.12.3a.
 - **Extensions load per child session,** as they do per session under serve
-  today. A heavy extension shares its state through the process resource
-  registry (DECIDER-BACKEND.md).
+  today. An extension that needs shared state across sessions keeps it in its
+  own module, or behind a remote service, as the decider does (it is remote-only,
+  John 2026-10-24).
 
 Effort: about 3–4 days in τ, covering `spawn_session`, the `SessionHost`
 protocol and its serve and in-process implementations, the `spawnedBy` header
