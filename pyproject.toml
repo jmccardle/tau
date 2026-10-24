@@ -2,7 +2,7 @@
 name = "ffwf-tau-monorepo"
 version = "0.14.1"
 description = "τ (tau-agent-core) monorepo"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tau-llm/tests", "tau-agent-core/tests", "tau-coding-agent/tests", "tau-jmfts/tests"]
@@ -22,7 +22,7 @@ markers = [
 addopts = ["-m", "not llama"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
@@ -32,7 +32,7 @@ ignore_missing_imports = true
 # mypy config: the five package src trees. line-length 100 keeps the format
 # churn small relative to the existing code.
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 extend-exclude = ["venv"]
 
 [tool.ruff.lint]

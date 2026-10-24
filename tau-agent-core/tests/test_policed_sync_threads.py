@@ -242,6 +242,17 @@ def test_each_member_is_wrapped_as_classified(cls: type) -> None:
             assert not inspect.iscoroutinefunction(getattr(fn, "__wrapped__", fn)), name
 
 
+@pytest.mark.parametrize(
+    "method",
+    [ExtensionAPI.emit, ExtensionAPI.request, ExtensionContext.prompt, ExtensionContext.execute_tool],
+    ids=lambda m: m.__qualname__,
+)
+def test_a_guarded_coroutine_method_still_reads_as_one(method: Any) -> None:
+    """The sync guard is marked with ``inspect.markcoroutinefunction`` (#100)."""
+    assert hasattr(method, "__wrapped__")
+    assert inspect.iscoroutinefunction(method)
+
+
 def test_a_coroutine_method_cannot_be_marshalled() -> None:
     class Probe:
         async def go(self) -> None:

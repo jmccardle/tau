@@ -10,9 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from typing import Any, Callable, Literal
-
-from typing_extensions import TypedDict
+from typing import Any, Callable, Literal, TypedDict
 
 from tau_agent_core.tools.base import AgentToolResult, _WalkAborted
 

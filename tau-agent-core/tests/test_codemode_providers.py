@@ -322,7 +322,7 @@ def test_the_prompt_keeps_a_non_identifier_parameter_and_names_the_stubbed_tool(
     assert '\'my_tool_arguments\', {"from": int, "my-arg": NotRequired[str]}' in text
     assert "async def from_(*, a: int, b: int) -> str:" in text
     namespace: dict[str, Any] = {}
-    header = "from typing import Any, Literal\nfrom typing_extensions import NotRequired, TypedDict, Unpack\n"
+    header = "from typing import Any, Literal, NotRequired, TypedDict, Unpack\n"
     exec(header + text, namespace)
     assert namespace["my_tool_arguments"].__required_keys__ == {"from"}
     compile(render_type_check_stubs(stubs), "stubs.pyi", "exec")

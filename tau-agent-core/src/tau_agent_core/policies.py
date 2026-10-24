@@ -835,9 +835,8 @@ def _guarded(label: str, fn: Callable[..., Any], kind: ThreadAffinity) -> Callab
             return fn(*args, **kwargs)
         return worker.call_on_loop(label, fn, *args, **kwargs)
 
-    mark = getattr(inspect, "markcoroutinefunction", None)
-    if is_async and mark is not None:
-        mark(guarded)
+    if is_async:
+        inspect.markcoroutinefunction(guarded)
     return guarded
 
 

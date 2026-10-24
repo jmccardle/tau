@@ -55,7 +55,7 @@ test harness run the same agent without a UI toolkit in sight.
 pip install ffwf-tau-agent-core
 ```
 
-Python 3.11 or newer. Pulls in `ffwf-tau-llm`.
+Python 3.12 or newer. Pulls in `ffwf-tau-llm`.
 
 Two extras, both off by default:
 

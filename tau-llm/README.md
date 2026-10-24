@@ -42,7 +42,7 @@ an agent loop attached.
 pip install ffwf-tau-llm
 ```
 
-Python 3.11 or newer. Note the `ffwf-` prefix: `tau-llm` on PyPI is an unrelated
+Python 3.12 or newer. Note the `ffwf-` prefix: `tau-llm` on PyPI is an unrelated
 project.
 
 ## Example
