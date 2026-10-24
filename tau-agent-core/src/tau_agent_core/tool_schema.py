@@ -222,8 +222,10 @@ def tool_from_function(
     args_model = create_model(f"{tool_name}_arguments", **fields)
     parameters = args_model.model_json_schema()
     parameters.setdefault("properties", {})
-    out = TypeAdapter(hints["return"])
-    output_schema = output_schema_for(hints["return"])
+    # A name, not the subscript: mypy 2.1 with pydantic 2.14 reads TypeAdapter's argument as a TypeForm.
+    return_type: Any = hints["return"]
+    out = TypeAdapter(return_type)
+    output_schema = output_schema_for(return_type)
 
     async def execute(
         tool_call_id: str, params: dict[str, Any], signal: Any, on_update: Any, ctx: Any
