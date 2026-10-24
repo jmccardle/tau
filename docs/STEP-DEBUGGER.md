@@ -479,11 +479,23 @@ true for a TUI or REPL, and for `-p` the deferred-responder rule of §3.8.
 **Resume fires `turn_resume`, not `session_start`.** A TUI answering a `-p`
 suspension already fired `session_start` when it loaded the session
 (`agent_session.py:1761-1792`). Firing it again would run setup twice, such as
-nats_bus's subscription or a logger's file. So a resume dispatches a new
-lifecycle event, `turn_resume {suspension_id, continuation}`, and
-`session_start` stays process-start only. An extension that keeps state rebuilds
-it from the path at `session_start` (a fresh process) and adjusts at
-`turn_resume` (N7).
+nats_bus's subscription or a logger's file (N7). So `session_start` stays
+process-start only, and a resume dispatches `turn_resume {suspension_id,
+continuation}`.
+
+**`turn_resume` is an awaited, mutating hook, not a lifecycle notice.** It runs
+with `(event, ctx)` after the claim and before the first resumed step, under
+each handler's policy like any other hook. A failure is not swallowed, as a
+lifecycle event's would be (`_emit_lifecycle_one`). `ctx.set_model` and
+`set_reasoning` are permitted, and a change applies to the first resumed
+request. The reason is tau-router (round 5): a `-p` exit 3 can sit for days,
+and in that time the provider's budget may be spent, the model held (429) or
+the key revoked. Two resume paths go straight to a sample (a user entry's or a
+node's `entry_written`) without passing `input` or `turn_end`, where the router
+routes. So the router re-checks its rung at `turn_resume`, and steps down or
+halts with its usual message, before any request is spent. An extension that
+keeps state rebuilds it from the path at `session_start` (a fresh process) and
+adjusts at `turn_resume`.
 
 **A pending suspension blocks new prompts at its cursor, on every head.** After
 a crash or a `-p` exit 3, the leaf can be an assistant entry with unanswered
@@ -1005,6 +1017,8 @@ Every head must produce the same tree: the same entries, the same finalized
   it;
 - armed stepping with `store_history` off: refused at `input`;
 - two hits for one site: one suspension, listing both;
+- suspend under `-p`, exhaust the router's budget, then resume: tau-router steps
+  down or refuses at `turn_resume`, before the first resumed request;
 - a form from a panel button between turns: no turn lock, no `abort` action; a
   crash leaves it `abandoned` with a warning.
 
@@ -1117,4 +1131,5 @@ as milestone 2 (§7).
 | independent round 2, N7: `session_start` fired twice in a live process | §3.7.3 `turn_resume` |
 | independent round 2, N8: a fork copies open suspensions | §3.7.2 finalized only; refuse a fork at an open one |
 | independent round 2, N9: state the tree cannot rebuild | §3.7.3 `turn_index` and `repeat` in the continuation |
+| round 5, tau-router: a resume can spend on a rung the router would refuse | §3.7.3 `turn_resume` is an awaited mutating hook before the first resumed request |
 | independent round 2 minors | resume as a submission; forms under `-p` take the headless policy; pending hits combined (§5.2); effective-argument check; `store_history` off refused (§3.9); the session lock held while hosting; `-p` without `--answer` exits 3 |
