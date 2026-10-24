@@ -4820,11 +4820,11 @@ class AgentSession:
                 fabricated summary is written.
         """
         self._require_writable()
-        await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
+        await self._emit_stamped(AgentEvent(type="agent_start", timestamp=self._timestamp()))
         try:
             return await self._perform_compaction("manual", custom_instructions=custom_instructions)
         finally:
-            await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
+            await self._emit_stamped(AgentEvent(type="agent_end", timestamp=self._timestamp()))
 
     async def compact_messages(
         self, messages: list[dict[str, Any]], custom_instructions: str | None = None
@@ -5064,11 +5064,11 @@ class AgentSession:
                 "compact, because compaction writes to the tree and this turn writes nothing"
             )
 
-        await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
+        await self._emit_stamped(AgentEvent(type="agent_start", timestamp=self._timestamp()))
         try:
             await self._perform_compaction("threshold")
         finally:
-            await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
+            await self._emit_stamped(AgentEvent(type="agent_end", timestamp=self._timestamp()))
         compacted = list(self.messages)
         self.acting_cursor.in_flight_context = compacted
         return compacted
@@ -5108,11 +5108,11 @@ class AgentSession:
         if not should_compact(estimate.tokens, context_window, settings):
             return
 
-        await self._events.emit(AgentEvent(type="agent_start", timestamp=self._timestamp()))
+        await self._emit_stamped(AgentEvent(type="agent_start", timestamp=self._timestamp()))
         try:
             await self._perform_compaction("threshold")
         finally:
-            await self._events.emit(AgentEvent(type="agent_end", timestamp=self._timestamp()))
+            await self._emit_stamped(AgentEvent(type="agent_end", timestamp=self._timestamp()))
 
     def _queue_message(self, content: str, deliver_as: str = "followUp") -> None:
         """Queue a user message for injection (the seam ``send_user_message`` calls).

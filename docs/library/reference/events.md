@@ -62,7 +62,9 @@ can fan out to the right stream. ``None`` alongside ``submission_id``
 
 The :class:`~tau_agent_core.cursor.Cursor` whose turn emitted
 this event. Several cursors run turns on one session at once, so a
-renderer routes by it (docs/CURSORS.md §6). ``None`` outside a turn.
+renderer routes by it (docs/CURSORS.md §6). Every ``agent_start`` and
+``agent_end`` carries it; one a manual ``compact()`` brackets, outside any
+turn, names the head cursor.
 
 ### delay_seconds
 
