@@ -23,6 +23,7 @@ from tau_agent_core.session_log import (
     CONFIG_ENTRY_TYPE,
     CONFIG_KEYS,
     AGENT_SOURCE,
+    HUMAN_SOURCES,
     INCOMPLETE,
     SIDE_KINDS,
     SessionLog,
@@ -365,15 +366,19 @@ class Cursor:
         await self.log.finalize(entry_id, self._stamped(payload))
 
     def _stamped(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """``payload`` with ``source: "agent"`` while an ``agent`` submission's turn holds this cursor.
+        """``payload`` with ``source: "agent"`` when a child cursor writes it, unless a person's turn does.
 
-        Any other writer's payload is returned unchanged, so its entries stay
-        byte-identical; ``session_log.default_leaf`` reads the field.
+        A child cursor has an :attr:`owner`. The head's writes, and a turn whose
+        submission source is in :data:`~tau_agent_core.session_log.HUMAN_SOURCES`,
+        are returned unchanged, so their entries stay byte-identical;
+        ``session_log.default_leaf`` reads the field.
         """
+        if self.owner is None:
+            return payload
         submission = self.submission
-        if submission is not None and submission.source == AGENT_SOURCE:
-            return {**payload, "source": AGENT_SOURCE}
-        return payload
+        if submission is not None and submission.source in HUMAN_SOURCES:
+            return payload
+        return {**payload, "source": AGENT_SOURCE}
 
     def _refuse_incomplete_leaf(self) -> None:
         """Raise when the leaf is an interrupted entry, which a cursor never extends."""

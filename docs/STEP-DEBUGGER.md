@@ -1023,12 +1023,16 @@ apply unchanged, because every child is a cursor in the same owner chain.
 **Built (M1a), a divergence.** A child's frame entry records no
 `source`, and a fork child whose frame matches the path writes no frame entry at
 all, so "under an agent frame" is not readable from the tree. Instead every
-entry an `agent` submission's turn writes carries `"source": "agent"` (the frame
-entry, messages, tool results, extension nodes, a `branch_error`). Every other
-writer's entries carry no new field and stay byte-identical. `default_leaf` is
-the newest finished entry without that field, so a human who continues inside a
-child's branch reopens there. When no such entry exists, it falls back to the
-newest finished entry of any source.
+entry a **child cursor** writes (one with an `owner`) carries `"source": "agent"`:
+its frame entry, messages, tool results, extension nodes and `branch_error`.
+The submission source does not decide it, because any RPC client or
+`api.submit` caller may submit as `"agent"`, and a self-continuation loop on the
+main cursor must not be passed over. A turn whose source is a person's
+(`session_log.HUMAN_SOURCES`: `interactive`, `voice`) is exempt even on a
+child cursor. The head's writes carry no new field and stay byte-identical.
+`default_leaf` is the newest finished entry without that field, so a human who
+continues inside a child's branch reopens there. When no such entry exists, it
+falls back to the newest finished entry of any source.
 
 Effort: the former slice M1h shrinks to about half a day: the `default_leaf`
 rule, the multi-root walker checks (both folded into M1a), and the two examples'

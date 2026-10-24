@@ -12,6 +12,7 @@ from tau_agent_core.export import render_session_html
 from tau_agent_core.projections import browse_rows
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.session_log import InMemorySessionLog, default_leaf
+from tau_agent_core.submission import Submission
 
 
 async def _session() -> tuple[AgentSession, str, str]:
@@ -130,3 +131,36 @@ async def test_a_session_holding_only_agent_branches_falls_back_to_the_newest():
     entries = session.session_log.entries()
     assert all(e["source"] == "agent" for e in entries)
     assert default_leaf(entries) == entries[-1]["id"]
+
+
+def _submission(text: str, source: str) -> Submission:
+    return Submission(text=text, source=source, submitter="test", submission_id=text)  # type: ignore[arg-type]
+
+
+@pytest.mark.usefixtures("fake_llm")
+async def test_an_agent_loop_on_the_main_cursor_is_not_passed_over():
+    session, _branch_point, _main_leaf = await _session()
+    for n in range(3):
+        result = await session.submit(_submission(f"continue {n}", "agent"))
+        assert result.accepted
+    loop_leaf = session.cursor.leaf
+    assert await session.spawn(None, "a child after the loop", tools=[]) is not None
+
+    entries = session.session_log.entries()
+    assert entries[-1]["source"] == "agent"
+    assert default_leaf(entries) == loop_leaf
+    loop_path = ConversationTree(entries, loop_leaf).path()
+    assert all("source" not in e for e in loop_path), "the head's writes are never stamped"
+
+
+@pytest.mark.usefixtures("fake_llm")
+async def test_a_persons_turn_on_a_child_cursor_is_not_stamped():
+    session, branch_point, _main_leaf = await _session()
+    child = await session.open_cursor(branch_point, owner=session.cursor, label="side")
+    result = await session.submit(
+        _submission("a person, on a child cursor", "interactive"), cursor=child
+    )
+    assert result.accepted
+    written = ConversationTree(session.session_log.entries(), child.leaf).path()
+    assert written[-1]["id"] == child.leaf
+    assert "source" not in written[-1] and "source" not in written[-2]

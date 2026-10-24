@@ -76,7 +76,6 @@ from tau_agent_core.extensions.runner import (
 )
 from tau_agent_core.session import SessionState
 from tau_agent_core.session_log import (
-    AGENT_SOURCE,
     SessionLog,
     config_at,
     config_entry_at,
@@ -3778,11 +3777,8 @@ class AgentSession:
             else:
                 result = await self._submit_seeded(sub, cursor, stored_seed, prompt is not None)
         except Exception as exc:  # noqa: BLE001 — containment is the point (§9.2/5)
-            await cursor.append(
-                "customEntry",
-                customType="branch_error",
-                data={"label": cursor.label, "error": str(exc)},
-                source=AGENT_SOURCE,
+            await cursor.append_custom_entry(
+                "branch_error", {"label": cursor.label, "error": str(exc)}
             )
             return BranchResult(
                 ok=False,
