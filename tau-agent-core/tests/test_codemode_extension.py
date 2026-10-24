@@ -223,13 +223,17 @@ def test_output_cap_writes_full_text() -> None:
     os.unlink(path)
 
 
+async def _unused_execute(name: str, args: dict[str, Any]) -> Any:
+    raise AssertionError(f"no tool should run: {name}")
+
+
 async def test_typescript_provider_refuses_to_run(tmp_path: Any) -> None:
     from tau_agent_core.codemode.extension import CodeMode
 
     mode = CodeMode(CodeModeConfig.from_mapping({"provider": "typescript"}))
     assert "declare const tools" in mode.section([])
     out = await mode.run(
-        "console.log(1)", [], cursor_id="c", call_id="x", signal=None, cwd=str(tmp_path)
+        "console.log(1)", [], _unused_execute, cursor_id="c", signal=None, cwd=str(tmp_path)
     )
     assert out["is_error"] and "no runtime" in out["content"][0]["text"]
 
@@ -462,3 +466,80 @@ async def test_a_late_exclusion_notice_reaches_a_headless_head_not_captured_outp
     results = [m for m in seen[-1]["messages"] if field(m, "role") == "toolResult"]
     details = field(results[-1], "details") or {}
     assert notice not in json.dumps(details.get("captured_output", {}))
+
+
+# ── issue #94: a script's calls pass through the hooks ───────────────────────
+
+HOOKED_SCRIPT = """\
+try:
+    print("read:", await tools.read(path="a.txt"))
+except Exception as exc:
+    print("refused:", exc)
+"""
+
+
+async def _run_hooked_script(tmp_path: Any, hooks: Any, events: list[Any]) -> str:
+    """Run ``HOOKED_SCRIPT`` through codemode with ``hooks`` registered; return the script's output."""
+    (tmp_path / "a.txt").write_text("secret")
+    seen: list[Any] = []
+
+    async def fake_stream_simple(model: Any, context: Any, options: Any = None) -> _Stream:
+        seen.append(context)
+        if len(seen) == 1:
+            call = TauToolCall(id="c1", name="codemode", arguments={"code": HOOKED_SCRIPT})
+            return _Stream(_assistant([call], "toolUse"))
+        return _Stream(_assistant([TextContent(text="done")], "stop"))
+
+    session = create_agent_session(
+        model="gpt-4o",
+        tools=["read"],
+        cwd=str(tmp_path),
+        no_context_files=True,
+        extensions=[hooks, lambda api: register(api, {"provider": "cpython"})],
+    )
+    session.subscribe(events.append)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=fake_stream_simple):
+        try:
+            await session.prompt("go")
+        finally:
+            await session.emit_session_shutdown()
+
+    def field(m: Any, key: str) -> Any:
+        return m.get(key) if isinstance(m, dict) else getattr(m, key, None)
+
+    results = [m for m in seen[1]["messages"] if field(m, "role") == "toolResult"]
+    return str(field(field(results[0], "content")[0], "text"))
+
+
+async def test_a_tool_call_veto_blocks_a_call_a_script_makes(tmp_path: Any) -> None:
+    gated: list[dict[str, Any]] = []
+
+    def veto_read(event: Any, ctx: Any) -> dict[str, Any] | None:
+        gated.append(dict(event))
+        if event["tool_name"] == "read":
+            return {"block": True, "reason": "read is gated"}
+        return None
+
+    events: list[Any] = []
+    text = await _run_hooked_script(tmp_path, lambda api: api.on("tool_call", veto_read), events)
+
+    assert "refused: read is gated" in text, text
+    assert "secret" not in text
+    nested = [e for e in gated if e["tool_name"] == "read"]
+    assert [e.get("parent_tool_call_id") for e in nested] == ["c1"]
+    ends = [e for e in events if e.type == "tool_execution_end" and e.tool_name == "read"]
+    assert [(e.parent_tool_call_id, e.blocked) for e in ends] == [("c1", True)]
+
+
+async def test_a_tool_result_rewrite_reaches_the_script(tmp_path: Any) -> None:
+    def rewrite(event: Any, ctx: Any) -> dict[str, Any] | None:
+        if event["tool_name"] != "read":
+            return None
+        return {"content": [{"type": "text", "text": "rewritten by a hook"}]}
+
+    events: list[Any] = []
+    text = await _run_hooked_script(tmp_path, lambda api: api.on("tool_result", rewrite), events)
+
+    assert text.startswith("read: rewritten by a hook"), text
+    starts = [e for e in events if e.type == "tool_execution_start" and e.tool_name == "read"]
+    assert [e.parent_tool_call_id for e in starts] == ["c1"]

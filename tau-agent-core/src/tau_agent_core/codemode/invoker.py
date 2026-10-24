@@ -1,53 +1,33 @@
 """The bridge from a script's ``tools.<name>(...)`` to τ's real tools.
 
-:class:`DirectToolInvoker` calls a tool's ``execute`` directly. That BYPASSES the
-hook pipeline: no ``tool_call`` veto, no ``tool_result`` rewrite, no
-``tool_execution_*`` events, so a permission gate written as a hook does not see
-script calls. It is a stand-in until ``ctx.execute_tool`` (docs/CODE-MODE.md
-§5.1) lands; swapping it is one class behind the :class:`ToolInvoker` protocol.
+:class:`PipelineToolInvoker` sends every script call through ``ctx.execute_tool``,
+so it takes the path a model-issued call takes: argument validation, the
+``tool_call`` veto, the ``tool_result`` rewrite, and ``tool_execution_*`` events
+carrying ``parent_tool_call_id``. A permission gate written as a hook covers
+script calls (docs/CODE-MODE.md §3, §5.1).
 """
 
 from __future__ import annotations
 
-import inspect
 import json
 import math
 import re
 import time
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any
-
-from tau_llm.tools import validate_tool_arguments
 
 from tau_agent_core.codemode.prompt import describe_stub
 from tau_agent_core.codemode.protocol import NestedCall, ToolOutcome, ToolStub, elapsed_ms
+from tau_agent_core.tool_pipeline import NestedToolResult
 from tau_agent_core.tool_schema import stub_name, stub_names
-from tau_agent_core.tools.base import AgentTool, AgentToolResult
+from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolError
+
+ExecuteTool = Callable[[str, dict[str, Any]], Awaitable[NestedToolResult]]
+"""One nested call: the signature of ``ctx.execute_tool`` without its keyword."""
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 _ARGS_CAP = 2048
-
-
-def _text_of(content: Any) -> str:
-    """The joined text blocks of a tool result's content."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = [
-            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-        ]
-        return "\n".join(parts)
-    return str(content)
-
-
-def _outcome(result: Any) -> ToolOutcome:
-    """Normalize whatever ``execute`` returned, as ``AgentLoop._execute_tool`` does."""
-    if isinstance(result, AgentToolResult):
-        return ToolOutcome(_text_of(result.content), result.is_error)
-    if isinstance(result, dict):
-        return ToolOutcome(_text_of(result.get("content", "")), bool(result.get("is_error")))
-    return ToolOutcome(_text_of(result))
 
 
 def _tokens(text: str) -> list[str]:
@@ -94,23 +74,25 @@ class _Bm25:
         return [self._stubs[i] for _, i in scored[:limit]]
 
 
-class DirectToolInvoker:
-    """A :class:`~tau_agent_core.codemode.protocol.ToolInvoker` over ``AgentTool`` objects.
+class PipelineToolInvoker:
+    """A :class:`~tau_agent_core.codemode.protocol.ToolInvoker` over ``ctx.execute_tool``.
 
-    Validates arguments against the tool's schema, then awaits its ``execute``.
-    Hooks are not run (see the module docstring). A script reaches each tool as
-    ``tools.<stub name>`` (``my-tool`` as ``tools.my_tool``); :meth:`invoke`
-    and :meth:`describe` take that name or the real one.
+    ``tools`` only supplies the stubs and discovery. Every call runs through
+    ``execute``, which validates, runs the hooks and the tool, and raises on any
+    failure. A failure becomes an error outcome the script reads, never a raise.
+    A script reaches each tool as ``tools.<stub name>`` (``my-tool`` as
+    ``tools.my_tool``); :meth:`invoke` and :meth:`describe` take that name or the
+    real one.
 
     Args:
         tools: The tools a script may call, e.g. the turn's tool list.
+        execute: Runs one nested call, normally ``ctx.execute_tool``. Its parent
+            is the running ``codemode`` call, which ``execute`` finds itself.
         exclude: Names never callable from a script (``codemode`` itself).
         unavailable: Excluded tools a script may name, each with the text a
             call or :meth:`describe` answers instead of ``Unknown tool``.
         language: Stub language for :meth:`describe`.
         max_calls: Calls answered before every further call fails.
-        signal: The turn's abort signal, handed to each tool.
-        parent_call_id: The ``codemode`` call's id; nested ids extend it.
 
     Raises:
         ValueError: two tools share a stub name
@@ -120,13 +102,12 @@ class DirectToolInvoker:
     def __init__(
         self,
         tools: Iterable[AgentTool],
+        execute: ExecuteTool,
         *,
         exclude: Iterable[str] = ("codemode",),
         unavailable: Mapping[str, str] | None = None,
         language: str = "python",
         max_calls: int = 1000,
-        signal: Any = None,
-        parent_call_id: str = "codemode",
     ) -> None:
         excluded = set(exclude)
         self._tools = {t.name: t for t in tools if t.name not in excluded}
@@ -136,10 +117,9 @@ class DirectToolInvoker:
         self._stubs = [
             ToolStub(t.name, t.description, dict(t.parameters)) for t in self._tools.values()
         ]
+        self._execute = execute
         self._language = language
         self._max_calls = max_calls
-        self._signal = signal
-        self._parent = parent_call_id
         self._calls: list[NestedCall] = []
         self._started = 0
         self._index: _Bm25 | None = None
@@ -174,20 +154,12 @@ class DirectToolInvoker:
             return self._record(name, args, start, ToolOutcome(refusal, True))
         name = tool.name
         try:
-            validated = validate_tool_arguments(tool, args)
-        except ValueError as exc:
-            return self._record(
-                name, args, start, ToolOutcome(f"Invalid arguments for {name}: {exc}", True)
-            )
-        try:
-            result = tool.execute(
-                tool_call_id=f"{self._parent}.{self._started}", args=validated, signal=self._signal
-            )
-            if inspect.isawaitable(result):
-                result = await result
-            outcome = _outcome(result)
+            outcome = ToolOutcome((await self._execute(name, args)).text)
+        except ToolError as exc:
+            outcome = ToolOutcome(str(exc), True)
         except Exception as exc:
-            outcome = ToolOutcome(_text_of(AgentToolResult.from_exception(name, exc).content), True)
+            blocks = AgentToolResult.from_exception(name, exc).content
+            outcome = ToolOutcome("\n".join(str(b.get("text", "")) for b in blocks), True)
         return self._record(name, args, start, outcome)
 
     def _record(
