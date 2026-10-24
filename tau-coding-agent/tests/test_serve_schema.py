@@ -644,7 +644,7 @@ async def test_dash_d_that_loses_the_bind_reports_the_winner(daemon, capsys):
     assert (resolve_tau_home() / serve_cli.LOG_FILE).is_relative_to(os.environ["HOME"])
 
 
-async def test_dash_d_child_keeps_the_interpreter_flags(capsys):
+async def test_dash_d_child_keeps_the_interpreter_flags(capsys, tau_home):
     """A bundled runtime started with ``-I`` must not lose it in the detached daemon."""
     exited = MagicMock()
     exited.poll.return_value = 1
