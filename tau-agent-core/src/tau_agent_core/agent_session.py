@@ -3377,6 +3377,15 @@ class AgentSession:
             )
         return event.model_copy(update=update)
 
+    async def _emit_compaction_bracket(self, kind: Literal["agent_start", "agent_end"]) -> None:
+        """Emit a compaction's ``agent_start``/``agent_end``, naming the acting cursor only.
+
+        No submission fields: a host keys a turn's end on its ``submission_id``, and a
+        compaction bracket after that turn must not read as a second end (#27).
+        """
+        event = AgentEvent(type=kind, timestamp=self._timestamp())
+        await self._events.emit(event.model_copy(update={"cursor_id": self.acting_cursor.id}))
+
     async def _emit_stamped(self, event: AgentEvent) -> None:
         """The ``emit=`` callable a submission-driven turn's :class:`AgentLoop` gets.
 
@@ -4818,11 +4827,11 @@ class AgentSession:
                 fabricated summary is written.
         """
         self._require_writable()
-        await self._emit_stamped(AgentEvent(type="agent_start", timestamp=self._timestamp()))
+        await self._emit_compaction_bracket("agent_start")
         try:
             return await self._perform_compaction("manual", custom_instructions=custom_instructions)
         finally:
-            await self._emit_stamped(AgentEvent(type="agent_end", timestamp=self._timestamp()))
+            await self._emit_compaction_bracket("agent_end")
 
     async def compact_messages(
         self, messages: list[dict[str, Any]], custom_instructions: str | None = None
@@ -5062,11 +5071,11 @@ class AgentSession:
                 "compact, because compaction writes to the tree and this turn writes nothing"
             )
 
-        await self._emit_stamped(AgentEvent(type="agent_start", timestamp=self._timestamp()))
+        await self._emit_compaction_bracket("agent_start")
         try:
             await self._perform_compaction("threshold")
         finally:
-            await self._emit_stamped(AgentEvent(type="agent_end", timestamp=self._timestamp()))
+            await self._emit_compaction_bracket("agent_end")
         compacted = list(self.messages)
         self.acting_cursor.in_flight_context = compacted
         return compacted
@@ -5106,11 +5115,11 @@ class AgentSession:
         if not should_compact(estimate.tokens, context_window, settings):
             return
 
-        await self._emit_stamped(AgentEvent(type="agent_start", timestamp=self._timestamp()))
+        await self._emit_compaction_bracket("agent_start")
         try:
             await self._perform_compaction("threshold")
         finally:
-            await self._emit_stamped(AgentEvent(type="agent_end", timestamp=self._timestamp()))
+            await self._emit_compaction_bracket("agent_end")
 
     def _queue_message(self, content: str, deliver_as: str = "followUp") -> None:
         """Queue a user message for injection (the seam ``send_user_message`` calls).
