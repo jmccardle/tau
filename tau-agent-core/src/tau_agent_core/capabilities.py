@@ -1072,18 +1072,31 @@ _COMPLETE_MESSAGE_ID_RETURNS: dict[str, Any] = {
     "required": ["matches", "total"],
 }
 
+_SIDE_MARK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entry_id": {"type": "string"},
+        "kind": {"type": "string"},
+        "status": {"type": "string", "enum": ["incomplete", "final"]},
+        "preview": {"type": "string", "description": "The kind and (open) or (closed)."},
+    },
+    "required": ["entry_id", "kind", "status", "preview"],
+}
+"""One side entry as ``get_tree`` sends it (``projections.side_rows``)."""
+
 _GET_TREE_RETURNS: dict[str, Any] = {
     "type": "object",
     "properties": {
         "nodes": {
             "type": "array",
             "description": (
-                "Every entry in the log, in the order a browser draws them — "
+                "Every path entry in the log, in the order a browser draws them — "
                 "preorder over the parent/child tree, roots in load order, children "
                 "oldest first. FLAT, with `parent_id` carrying the shape: a nested "
                 "projection of a long linear conversation is one nesting level per "
                 "message, which is a serializer's recursion limit rather than a tree "
-                "anyone wanted. Nothing is filtered out — which rows a browser "
+                "anyone wanted. A side entry is not a node: it rides in its parent's "
+                "`side`. Nothing else is filtered out — which rows a browser "
                 "declines to draw (a `navigate` with one child) is the reader's rule, "
                 "not the log's."
             ),
@@ -1209,6 +1222,15 @@ _GET_TREE_RETURNS: dict[str, Any] = {
                             "as the TUI's browser does."
                         ),
                     },
+                    "side": {
+                        "type": "array",
+                        "description": (
+                            "The side entries parented here, oldest first: a "
+                            "suspension, drawn as a mark on this row, never as a child "
+                            "or a branch (docs/STEP-DEBUGGER.md §3.7.2)."
+                        ),
+                        "items": _SIDE_MARK_SCHEMA,
+                    },
                 },
                 "required": [
                     "entry_id",
@@ -1225,6 +1247,7 @@ _GET_TREE_RETURNS: dict[str, Any] = {
                     "tool_call_id",
                     "copyable",
                     "estimated_tokens",
+                    "side",
                 ],
             },
         },
@@ -1246,8 +1269,16 @@ _GET_TREE_RETURNS: dict[str, Any] = {
                 "is a pull and is never pushed (G3)."
             ),
         },
+        "side": {
+            "type": "array",
+            "description": (
+                "Session-level side entries: ones opened before the first entry, so "
+                "with no parent to mark. Never a root row (docs/STEP-DEBUGGER.md §3.7.2)."
+            ),
+            "items": _SIDE_MARK_SCHEMA,
+        },
     },
-    "required": ["nodes", "leaf", "count"],
+    "required": ["nodes", "side", "leaf", "count"],
 }
 
 _GET_PENDING_REQUEST_RETURNS: dict[str, Any] = {

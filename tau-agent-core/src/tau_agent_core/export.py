@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from tau_agent_core.conversation_tree import ConversationTree, TreeNode
+from tau_agent_core.conversation_tree import ConversationTree, SideMark, TreeNode
 from tau_agent_core.session_log import default_leaf, is_incomplete, session_name
 from tau_llm.docs import agent_facing
 
@@ -608,7 +608,8 @@ def render_session_html(
 
     Every entry appears once. The path to ``leaf`` is the main thread; at each
     fork the other children fold in place as ``<details>`` branches, each laid out
-    by the same rule with its newest-written child continuing. Images are inline
+    by the same rule with its newest-written child continuing. A side entry is
+    drawn right after its parent and is never a branch or a tip. Images are inline
     ``data:`` URIs, there is no script, and a Content-Security-Policy forbids
     every fetch. Message text is preformatted, not rendered Markdown.
 
@@ -674,6 +675,19 @@ def render_session_html(
                 f'<details class="branch"><summary>{_branch_label(side, size[side.id])}</summary>'
             )
 
+    def side_html(parent: str | None, marks: list[SideMark]) -> list[str]:
+        """Each side mark under ``parent`` (``None``: the session) as its entry's HTML."""
+        return [
+            _entry_html(
+                tree.entry(m.entry_id),
+                TreeNode(m.entry_id, parent, m.kind, None, m.preview, False),
+                config,
+                False,
+            )
+            for m in marks
+        ]
+
+    body.extend(side_html(None, tree.side_marks(None)))
     schedule(*split(roots, False))
     while work:
         item = work.pop()
@@ -684,6 +698,7 @@ def render_session_html(
         rendered = _entry_html(tree.entry(item.id), item, config, is_leaf)
         if rendered:
             body.append(rendered)
+        body.extend(side_html(item.id, item.side))
         schedule(*split(item.children, is_leaf))
 
     tips = sum(1 for node in preorder if not node.children)

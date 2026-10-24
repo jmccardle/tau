@@ -241,6 +241,7 @@ async def test_a_failing_sub_agent_is_contained_and_marks_its_branch():
     marks = [e for e in log.entries() if e.get("customType") == "branch_error"]
     assert len(marks) == 1, "the branch is marked, so the failure is visible in the tree"
     assert marks[0]["data"] == {"label": result.label, "error": result.error}
+    assert marks[0]["source"] == "agent", "written through the child cursor, so stamped"
 
 
 async def test_the_sub_agents_work_never_reaches_the_spawners_context():

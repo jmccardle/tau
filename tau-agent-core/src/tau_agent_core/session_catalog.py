@@ -276,13 +276,15 @@ class SessionCatalog(ABC):
             source: The session to copy from.
             cwd: Working directory the new session belongs to.
             at: Entry id to fork at: only the path to it is copied, so the fork
-                continues from there. ``None`` copies every entry.
+                continues from there. ``None`` copies every entry. Either way the
+                copy set is ``session_log.entries_for_fork``.
 
         Returns:
             The new session.
 
         Raises:
             ValueError: ``at`` names no entry of ``source``.
+            session_log.OpenSideEntryError: the fork point has an open side entry.
         """
 
     @abstractmethod

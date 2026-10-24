@@ -235,6 +235,7 @@ ctx.set_model(name: str) -> dict
 ctx.get_usage() -> dict | None
 await ctx.compact(custom_instructions: str | None = None, defer: bool = False)
 ctx.entries() -> list[dict]
+ctx.leaf_id() -> str | None      # the acting cursor's leaf; never infer it from entries()
 ctx.resolve_model(model: Any = None) -> Any
 await ctx.complete(...)          # constrained-decoding completion
 await ctx.spawn_branch(...)

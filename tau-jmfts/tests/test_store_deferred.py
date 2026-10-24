@@ -13,7 +13,11 @@ from typing import Any
 import pytest
 
 from tau_agent_core.cursor import Cursor
-from tau_agent_core.session_log import session_log_is_addressable
+from tau_agent_core.session_log import (
+    OpenSideEntryError,
+    default_leaf,
+    session_log_is_addressable,
+)
 from tau_jmfts.catalog import JmftsSessionCatalog
 from tau_jmfts.store import JmftsSessionLog
 
@@ -142,3 +146,46 @@ def test_an_unwritten_conversation_is_not_addressable():
         log.entries()[-1]["id"], "message", {"message": {"role": "user", "content": "x"}}
     )
     assert session_log_is_addressable(log) is True
+
+
+async def test_a_fork_copies_finalized_side_entries_and_refuses_an_open_one():
+    client = _Client()
+    log = _deferred(client)
+    catalog = JmftsSessionCatalog(client)  # type: ignore[arg-type]
+    cursor = Cursor.newest(log)
+    leaf = await cursor.append_message({"role": "user", "content": "hi"})
+    verdict = await cursor.open_side("suspension", site="turn_end")
+    await cursor.finalize_side(verdict, site="turn_end", resolution={"action": "step"})
+    pending = await cursor.open_side("suspension", site="turn_end")
+
+    with pytest.raises(OpenSideEntryError, match=pending):
+        catalog.fork(log, ".", at=leaf)
+    with pytest.raises(OpenSideEntryError, match=pending):
+        catalog.fork(log, ".")
+
+    await cursor.finalize_side(pending, site="turn_end", resolution={"action": "abort"})
+    for at in (leaf, None):
+        fork = catalog.fork(log, ".", at=at)
+        kinds = [e["type"] for e in fork.entries()]
+        assert kinds.count("suspension") == 2, at
+        assert all("status" not in e for e in fork.entries() if e["type"] == "suspension")
+        assert fork.entries()[-1]["type"] == "suspension"
+        assert default_leaf(fork.entries()) == fork.entries()[-3]["id"]
+
+
+async def test_a_fork_reads_the_mirror_and_the_subtree_with_no_append_between():
+    """An append or finalize landing between the two reads could copy an open side entry."""
+    client = _Client()
+    log = _deferred(client)
+    cursor = Cursor.newest(log)
+    await cursor.append_message({"role": "user", "content": "hi"})
+    reads: list[bool] = []
+    get_subtree = client.get_subtree
+
+    def watched(root_id: int, max_depth: Any = None) -> dict[str, Any]:
+        reads.append(log._append_lock.locked())
+        return get_subtree(root_id, max_depth)
+
+    client.get_subtree = watched  # type: ignore[method-assign]
+    JmftsSessionCatalog(client).fork(log, ".")  # type: ignore[arg-type]
+    assert reads[0] is True, "the source's subtree is read under its append lock"

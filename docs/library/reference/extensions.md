@@ -1251,6 +1251,27 @@ sub-agent's cursor streams (docs/SILENT-DEFAULTS.md §2).
 
 - `RuntimeError` — if no session is bound.
 
+### leaf_id
+
+```python
+leaf_id() -> str | None
+```
+
+`tau_agent_core.extension_types.ExtensionContext.leaf_id` · since 0.15.0
+
+The acting cursor's leaf: where this handler's next write lands.
+
+Read this rather than the last entry of :meth:`entries`, which may be
+another cursor's write or a side entry (docs/STEP-DEBUGGER.md §3.7.2).
+
+**Returns**
+
+``ctx.cursor.leaf``; ``None`` before the root.
+
+**Raises**
+
+- `RuntimeError` — no session is bound.
+
 ### list_extensions
 
 ```python

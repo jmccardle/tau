@@ -37,6 +37,7 @@ from tau_agent_core.session_log import (
     CONFIG_ENTRY_TYPE,
     config_at,
     default_leaf,
+    entries_for_fork,
     session_name,
 )
 
@@ -459,14 +460,17 @@ class Session:
         """Fork ``source`` into a new file whose header ``parent`` is the source id.
 
         Copies every entry, or with ``at`` only the path to that entry, so the
-        fork's default leaf is ``at`` (docs/CURSORS.md §4). The copy is
-        self-contained and a written source file is never touched (§5.5). An
-        unwritten deferred source is written first, so the fork's ``parent``
-        names a session on disk: forking is real activity on it.
+        fork's default leaf is ``at`` (docs/CURSORS.md §4); either way the copy
+        set is ``session_log.entries_for_fork``. The copy is self-contained and a
+        written source file is never touched (§5.5). An unwritten deferred source
+        is written first, so the fork's ``parent`` names a session on disk:
+        forking is real activity on it.
 
         Raises:
             ValueError: ``at`` names no entry of ``source``.
+            session_log.OpenSideEntryError: the fork point has an open side entry.
         """
+        copied = [dict(e) for e in entries_for_fork(source._entries, at)]
         _emit_session_event(SESSION_BEFORE_FORK, source, cwd=cwd)
         if source._unwritten:
             source._write_held()
@@ -476,13 +480,6 @@ class Session:
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / _session_filename(timestamp, session_id)
         header = cls._build_header(session_id, timestamp, os.path.abspath(cwd), parent=source.id)
-        if at is None:
-            copied = [dict(e) for e in source._entries]
-        else:
-            if at not in source._ids:
-                raise ValueError(f"fork point {at!r} not found")
-            on_path = {e["id"] for e in ConversationTree(source._entries, at).path()}
-            copied = [dict(e) for e in source._entries if e.get("id") in on_path]
         session = cls(path, header, copied)
         session._persist_header()
         for entry in copied:

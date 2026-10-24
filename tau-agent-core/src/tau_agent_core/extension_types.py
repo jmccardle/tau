@@ -1330,6 +1330,22 @@ class ExtensionContext:
         """
         return self._require_session().acting_cursor
 
+    @agent_facing(topic="extensions", since="0.15.0")
+    def leaf_id(self) -> str | None:
+        """The acting cursor's leaf: where this handler's next write lands.
+
+        Read this rather than the last entry of :meth:`entries`, which may be
+        another cursor's write or a side entry (docs/STEP-DEBUGGER.md §3.7.2).
+
+        Returns:
+            ``ctx.cursor.leaf``; ``None`` before the root.
+
+        Raises:
+            RuntimeError: no session is bound.
+        """
+        leaf: str | None = self._require_session().acting_cursor.leaf
+        return leaf
+
     @property
     def cursors(self) -> tuple[Any, ...]:
         """Every live cursor on the bound session, the head's included, oldest first.

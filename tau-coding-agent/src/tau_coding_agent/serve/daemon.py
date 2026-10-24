@@ -18,7 +18,6 @@ import uuid
 from collections.abc import Callable
 from typing import Any, TextIO, cast
 
-from tau_agent_core.conversation_tree import ConversationTree
 from websockets.exceptions import ConnectionClosedError
 
 from tau_agent_core.cursor import TURN_CURSOR, Cursor
@@ -38,7 +37,13 @@ from tau_agent_core.rpc import dialect, records
 from tau_agent_core.rpc.wire_events import WireEventProjector
 from tau_agent_core.sdk import LoadExtensionsResult, load_failure_notice, withheld_notices
 from tau_agent_core.session_catalog import ConversationSession, SessionCatalog
-from tau_agent_core.session_log import SessionLog, is_incomplete
+from tau_agent_core.session_log import (
+    OpenSideEntryError,
+    SessionLog,
+    entries_for_fork,
+    is_incomplete,
+    is_side_entry,
+)
 
 from tau_coding_agent import __version__
 from tau_coding_agent.store_factory import resolve_backend_name
@@ -532,7 +537,8 @@ class SessionHost:
             opened = self._open_entries.pop(entry["id"], None)
             if opened is not None:
                 cursor_id = opened[1]
-        self.publish(kind, p.to_wire(p.EntryEventData(entry=entry, cursor_id=cursor_id)))
+        data = p.EntryEventData(entry=entry, cursor_id=cursor_id, side=is_side_entry(entry))
+        self.publish(kind, p.to_wire(data))
 
     def _on_agent_event(self, event: Any) -> None:
         for data in self.wire.project(event):
@@ -1149,14 +1155,17 @@ class Daemon:
         """Copy the path to ``request.at``, or to the cursor's leaf, into a new session in its cwd.
 
         Raises:
-            RequestError: ``at`` names no entry, or the copy would carry an entry a
-                turn is still writing.
+            RequestError: ``at`` names no entry, the copy would carry an entry a
+                turn is still writing, or ``at`` has an open side entry.
         """
         at = request.at if request.at is not None else host.cursor(request.cursor_id).leaf
         entries = host.log.entries()
         if at is not None and not any(e["id"] == at for e in entries):
             raise RequestError(dialect.NOT_FOUND, f"{host.tag} has no entry {at!r}")
-        copied = ConversationTree(entries, at).path() if at is not None else entries
+        try:
+            copied = entries_for_fork(entries, at)
+        except OpenSideEntryError as exc:
+            raise RequestError(dialect.TURN_STILL_RUNNING, str(exc)) from exc
         writing = [e["id"] for e in copied if is_incomplete(e)]
         if writing:
             raise RequestError(

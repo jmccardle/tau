@@ -180,7 +180,8 @@ A whole session tree as one HTML page that loads nothing from the network.
 
 Every entry appears once. The path to ``leaf`` is the main thread; at each
 fork the other children fold in place as ``<details>`` branches, each laid out
-by the same rule with its newest-written child continuing. Images are inline
+by the same rule with its newest-written child continuing. A side entry is
+drawn right after its parent and is never a branch or a tip. Images are inline
 ``data:`` URIs, there is no script, and a Content-Security-Policy forbids
 every fetch. Message text is preformatted, not rendered Markdown.
 

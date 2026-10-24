@@ -8,7 +8,7 @@
 
 - **Protocol version:** `0.11`
 - **Default port:** `8256`
-- **Counts:** 52 requests (37 of them RPC verbs), 10 event kinds, 206 schema definitions. Cite this line; never copy the numbers into hand-written prose.
+- **Counts:** 52 requests (37 of them RPC verbs), 10 event kinds, 207 schema definitions. Cite this line; never copy the numbers into hand-written prose.
 - **Schema:** `docs/serve-protocol.schema.json` (JSON Schema 2020-12), also printed by `tau serve --schema` from an installed τ.
 
 ## Framing
@@ -683,6 +683,7 @@ A summary of the branch left at `fromId`, in the path where it was appended.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"branch_summary"` | yes |  |
 | `summary` | string | yes |  |
 | `fromId` | string \| null | yes |  |
@@ -783,6 +784,7 @@ A summary that replaces the path before `firstKeptId` in the context.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"compaction"` | yes |  |
 | `summary` | string | yes |  |
 | `firstKeptId` | string | yes |  |
@@ -933,6 +935,7 @@ Durable data the model never sees.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"customEntry"` | yes |  |
 | `customType` | string | yes |  |
 | `data` | object | yes |  |
@@ -957,6 +960,7 @@ An extension's message, which reaches the model unless `visibleToModel` is false
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"customMessage"` | yes |  |
 | `customType` | string | yes |  |
 | `message` | [CustomRoleMessage](#customrolemessage) | yes |  |
@@ -1034,6 +1038,7 @@ A splice anchor with no summary: the path before `firstKeptId` leaves the contex
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"elide"` | yes |  |
 | `firstKeptId` | string | yes |  |
 | `coveredEntries` | integer | no |  |
@@ -1061,7 +1066,7 @@ A splice anchor with no summary: the path before `firstKeptId` leaves the contex
 
 One session-log entry, told apart by `type`; an unfinished one carries `status: "incomplete"`. Apply by `id`, last write wins (docs/TAU-SERVE.md §4.1).
 
-One of: [MessageEntry](#messageentry), [CustomMessageEntry](#custommessageentry), [CustomEntryEntry](#customentryentry), [CompactionEntry](#compactionentry), [ElideEntry](#elideentry), [BranchSummaryEntry](#branchsummaryentry), [SessionInfoEntry](#sessioninfoentry), [NavigateEntry](#navigateentry), [ModelChangeEntry](#modelchangeentry), [ThinkingChangeEntry](#thinkingchangeentry), [ForeignEntry](#foreignentry), [IncompleteEntry](#incompleteentry).
+One of: [MessageEntry](#messageentry), [CustomMessageEntry](#custommessageentry), [CustomEntryEntry](#customentryentry), [CompactionEntry](#compactionentry), [ElideEntry](#elideentry), [BranchSummaryEntry](#branchsummaryentry), [SessionInfoEntry](#sessioninfoentry), [NavigateEntry](#navigateentry), [ModelChangeEntry](#modelchangeentry), [ThinkingChangeEntry](#thinkingchangeentry), [SuspensionEntry](#suspensionentry), [ForeignEntry](#foreignentry), [IncompleteEntry](#incompleteentry).
 
 ### EntryAppendEvent
 
@@ -1083,6 +1088,7 @@ An `entry_open`, `entry_final` or `entry_append`: one log write.
 |---|---|---|---|
 | `entry` | [Entry](#entry) | yes | The entry as the log now holds it. |
 | `cursor_id` | string \| null | no | The cursor whose turn or request wrote it; an `entry_final` names the cursor that opened the entry. Null for a write no cursor made. A client joins `agent_event` to the entries a turn writes by it. |
+| `side` | boolean | no | Whether `entry` is a side entry (`session_log.is_side_entry`): a mark on its parent, never a branch, a tip or a leaf (docs/STEP-DEBUGGER.md §3.7.2). |
 
 ### EntryFinalEvent
 
@@ -1260,6 +1266,7 @@ A document another system's store put in the tree, typed `system:kind` (`jmfts:d
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | string matching `^[^:]+:.+$` | yes |  |
 
 ### FormField
@@ -1376,9 +1383,10 @@ An extension's `ui.form` spec, as the extension passed it (docs/EXTENSION-LOCKS.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `nodes` | list of object | yes | Every entry in the log, in the order a browser draws them — preorder over the parent/child tree, roots in load order, children oldest first. FLAT, with `parent_id` carrying the shape: a nested projection of a long linear conversation is one nesting level per message, which is a serializer's recursion limit rather than a tree anyone wanted. Nothing is filtered out — which rows a browser declines to draw (a `navigate` with one child) is the reader's rule, not the log's. |
+| `nodes` | list of object | yes | Every path entry in the log, in the order a browser draws them — preorder over the parent/child tree, roots in load order, children oldest first. FLAT, with `parent_id` carrying the shape: a nested projection of a long linear conversation is one nesting level per message, which is a serializer's recursion limit rather than a tree anyone wanted. A side entry is not a node: it rides in its parent's `side`. Nothing else is filtered out — which rows a browser declines to draw (a `navigate` with one child) is the reader's rule, not the log's. |
 | `leaf` | string \| `null` | yes | cursor.leaf at the moment of the read, duplicated out of `nodes` so a host finds it without scanning. Null on a session whose cursor names no entry, which is also the one case in which no node carries is_leaf: true. |
 | `count` | integer | yes | len(nodes). Present so a host can check it read a whole tree rather than a truncated one: this read is UNBOUNDED by design — the shape IS the answer and a bounded shape is a different tree — which is why it is a pull and is never pushed (G3). |
+| `side` | list of object | yes | Session-level side entries: ones opened before the first entry, so with no parent to mark. Never a root row (docs/STEP-DEBUGGER.md §3.7.2). |
 
 ### HelloResult
 
@@ -1474,6 +1482,7 @@ A message on the conversation path.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"message"` | yes |  |
 | `message` | [Message](#message) | yes |  |
 | `ext` | object | no |  |
@@ -1498,6 +1507,7 @@ Legacy: the config model from here on, before config entries.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"model_change"` | yes |  |
 | `model` | string \| null | yes |  |
 | `backend` | string \| null | no |  |
@@ -1534,6 +1544,7 @@ Legacy: a recorded move to `targetId`, written before cursors (docs/CURSORS.md �
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"navigate"` | yes |  |
 | `targetId` | string \| null | yes |  |
 
@@ -1758,6 +1769,7 @@ The session's display name from here on; the model never sees it.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"session_info"` | yes |  |
 | `name` | string | yes |  |
 
@@ -1970,6 +1982,20 @@ What a session answers beyond its tree, which a head reads without a round trip.
 | `load_errors` | list of list of string | yes | `[path, error]` per extension file that failed to load. |
 | `warnings` | list of [ExtensionWarning](#extensionwarning) | yes | The session's current extension warnings (#60); a `ui` event with op `warnings` carries each change. |
 
+### SuspensionEntry
+
+A side entry: a mark on its parent, never a branch, tip or leaf (docs/STEP-DEBUGGER.md §3.7).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `parentId` | string \| null | yes |  |
+| `timestamp` | string | yes |  |
+| `status` | absent | no |  |
+| `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
+| `type` | `"suspension"` | yes |  |
+
 ### SystemMessage
 
 The system prompt, which a session stores as its first message entry.
@@ -1999,6 +2025,7 @@ Legacy: the reasoning level from here on, before config entries.
 | `timestamp` | string | yes |  |
 | `status` | absent | no |  |
 | `copiedFrom` | string | no |  |
+| `source` | `"agent"` | no |  |
 | `type` | `"thinking_change"` | yes |  |
 | `level` | string \| null | yes |  |
 

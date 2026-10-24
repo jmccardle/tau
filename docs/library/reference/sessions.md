@@ -2178,7 +2178,7 @@ Last update timestamp (ms since epoch)
 <!-- agent: yes -->
 
 ```python
-class BrowseNode(entry_id: str, parent_id: str | None, kind: str, role: str | None, preview: str, is_leaf: bool, timestamp: int | None, first_kept_id: str | None, from_id: str | None, is_system: bool, tool_call_ids: tuple[str, ...], tool_call_id: str | None, copyable: bool, estimated_tokens: int)
+class BrowseNode(entry_id: str, parent_id: str | None, kind: str, role: str | None, preview: str, is_leaf: bool, timestamp: int | None, first_kept_id: str | None, from_id: str | None, is_system: bool, tool_call_ids: tuple[str, ...], tool_call_id: str | None, copyable: bool, estimated_tokens: int, side: tuple[SideMark, ...] = ())
 ```
 
 `tau_agent_core.conversation_tree.BrowseNode`
@@ -2213,6 +2213,7 @@ A body is fetched per node, the way the TUI's detail pane calls
 - `tool_call_id: str | None` — The call a ``toolResult`` answers; ``None`` elsewhere. With ``tool_call_ids`` this is the whole of the pairing rule a mark expands over (docs/TREE-EDITOR-MANUAL.md §6).
 - `copyable: bool` — Whether ``paste_subtree`` can take this entry as a source root.
 - `estimated_tokens: int` — ``compaction.estimate_tokens`` over this entry's message, or 0 for an entry carrying none. An ESTIMATE — a 4-chars-per-token heuristic — and the only token figure available for an arbitrary set of entries, so a caller showing a total says "estimate" beside it.
+- `side: tuple[SideMark, ...] = ()` — The side entries parented here; a side entry gets no row of its own.
 
 ## Capability
 <!-- agent: yes -->
@@ -2518,7 +2519,7 @@ browse() -> tuple[BrowseNode, ...]
 
 `tau_agent_core.conversation_tree.ConversationTree.browse`
 
-Every entry as a :class:`BrowseNode`, in the order a browser draws them.
+Every path entry as a :class:`BrowseNode`, in the order a browser draws them.
 
 Preorder over :meth:`tree` — roots in load order, children oldest first —
 which is the same walk ``tree_surgery`` orders a selection by, so a caller
@@ -2531,7 +2532,7 @@ rather than a tree anybody wanted.
 
 **Returns**
 
-One node per entry, including the kinds a browser then declines to draw (a ``navigate`` with one child). Which rows are hidden is the reader's rule, not the log's, so nothing is filtered out here.
+One node per :meth:`tree` node, including the kinds a browser then declines to draw (a ``navigate`` with one child). A side entry is no it rides in its parent's ``side``.
 
 ### children_of
 
@@ -2554,7 +2555,7 @@ from re-scanning every entry per node.
 
 **Returns**
 
-The child ids sorted by timestamp, the same order :meth:`tree` puts them in. An unknown id has no children, which is the same answer as a leaf — this is a graph reader, not a validator (see :meth:`contains`).
+The child ids sorted by timestamp, the same order :meth:`tree` puts them in; never a side entry (:meth:`side_of`). An unknown id has no children, which is the same answer as a leaf — this is a graph reader, not a validator (see :meth:`contains`).
 
 ### complete_message_id
 
@@ -2590,7 +2591,7 @@ a prefix of the answer rather than silently shown one (the G3 rule
 
 **Parameters**
 
-- `scope: MessageIdScope = 'in_session'` — Which entries are candidates. ``"in_session"`` is every entry; ``"ancestors_of_leaf"`` is the parent chain from the root to ``leaf`` inclusive; ``"descendants_of_leaf"`` is the subtree below it, excluding ``leaf`` itself.
+- `scope: MessageIdScope = 'in_session'` — Which entries are candidates. ``"in_session"`` is every entry but a side entry; ``"ancestors_of_leaf"`` is the parent chain from the root to ``leaf`` inclusive; ``"descendants_of_leaf"`` is the subtree below it, excluding ``leaf`` itself.
 - `leaf: str | None = None` — The entry the two scoped variants are relative to. ``None`` uses this tree's leaf. Passed rather than always read, so a caller enumerating for a sub-agent can scope to THAT agent's leaf.
 - `query: str = ''` — The typed text. ``""`` matches everything in scope.
 - `limit: int = _COMPLETION_LIMIT` — How many matches to return at most.
@@ -2735,13 +2736,16 @@ no assistant ``toolCall`` on the raw path (:meth:`path`) up to it lacks
 its ``toolResult``. A result appended later cannot rescue it, since a
 cursor reads ancestors only (NODE-ADDRESSABLE-AGENTS.md §2).
 
+A side entry is no fork point, and neither is an entry with an open side
+child, which both cursors could resume (docs/STEP-DEBUGGER.md §3.7.2).
+
 **Parameters**
 
 - `target_id: str | None` — The proposed fork point; ``None`` (before the root) is trivially safe.
 
 **Returns**
 
-A human-readable rejection naming the outstanding calls, or ``None`` if ``target_id`` is a safe fork point.
+A human-readable rejection naming the outstanding calls or the side entry, or ``None`` if ``target_id`` is a safe fork point.
 
 **Raises**
 
@@ -2792,6 +2796,42 @@ No splicing — every entry on the chain, all kinds, with a cycle guard.
 
 The entries root→leaf; empty when the leaf is ``None`` or unknown.
 
+### side_marks
+
+```python
+side_marks(entry_id: str | None) -> list[SideMark]
+```
+
+`tau_agent_core.conversation_tree.ConversationTree.side_marks`
+
+:meth:`side_of` as :class:`SideMark` records, the shape a head draws.
+
+**Parameters**
+
+- `entry_id: str | None` — The parent id; ``None`` gives the session-level marks, side entries opened before the first entry, which are never roots.
+
+**Returns**
+
+One mark per side entry, oldest first.
+
+### side_of
+
+```python
+side_of(entry_id: str | None) -> list[str]
+```
+
+`tau_agent_core.conversation_tree.ConversationTree.side_of`
+
+The side entries parented at ``entry_id``, oldest first; :meth:`children_of` omits them.
+
+**Parameters**
+
+- `entry_id: str | None` — The parent id.
+
+**Returns**
+
+The side entry ids sorted by timestamp; empty for an unknown id.
+
 ### subtree_text
 
 ```python
@@ -2832,7 +2872,9 @@ Parent/child ``TreeNode`` roots for the browser (pi ``getTree``).
 A well-formed session has one root (first entry with ``parentId is None``);
 orphaned entries (broken parent chain) are also returned as roots. Each
 node's children are sorted by timestamp (oldest first); ``is_leaf`` marks
-this tree's leaf.
+this tree's leaf. A side entry is no node: it is a :class:`SideMark` in
+its parent's ``side``, or in ``side_marks(None)`` when it has no parent.
+Only a side entry naming a parent that is missing is drawn, as an orphan.
 
 **Returns**
 
@@ -3324,6 +3366,23 @@ A model name that cannot be used as configured; the message says why.
 extension catches it without importing a head. An unknown name raises
 ``KeyError`` instead.
 
+## OpenSideEntryError
+<!-- agent: yes -->
+
+```python
+class OpenSideEntryError(at: str | None, entry_id: str, kind: str)
+```
+
+`tau_agent_core.session_log.OpenSideEntryError` · since 0.15.0
+
+A fork was asked for at a point with an open side entry, which both copies could resume.
+
+**Constructor parameters**
+
+- `at: str | None` — The fork point.
+- `entry_id: str` — The open side entry.
+- `kind: str` — Its ``type``.
+
 ## PasteMint
 <!-- agent: yes -->
 
@@ -3550,7 +3609,7 @@ A new session carrying ``source``'s history; ``source`` is untouched.
 
 - `source: ConversationSession` — The session to copy from.
 - `cwd: str` — Working directory the new session belongs to.
-- `at: str | None = None` — Entry id to fork at: only the path to it is copied, so the fork continues from there. ``None`` copies every entry.
+- `at: str | None = None` — Entry id to fork at: only the path to it is copied, so the fork continues from there. ``None`` copies every entry. Either way the copy set is ``session_log.entries_for_fork``.
 
 **Returns**
 
@@ -3559,6 +3618,7 @@ The new session.
 **Raises**
 
 - `ValueError` — ``at`` names no entry of ``source``.
+- `session_log.OpenSideEntryError` — the fork point has an open side entry.
 
 ### list
 
@@ -4324,6 +4384,24 @@ which covers messages appended since that completion.
 - `last_compaction: CompactionRecord | None` — The newest compaction entry, or ``None`` if this session has never compacted.
 - `usage: dict[str, Any] | None` — :meth:`AgentSession.get_usage` — ``None`` before the first completion.
 
+## SideMark
+<!-- agent: yes -->
+
+```python
+class SideMark(entry_id: str, kind: str, status: Literal['incomplete', 'final'], preview: str)
+```
+
+`tau_agent_core.conversation_tree.SideMark` · since 0.15.0
+
+A side entry, drawn as a mark on its parent rather than as a child (docs/STEP-DEBUGGER.md §3.7.2).
+
+**Constructor parameters**
+
+- `entry_id: str` — The side entry's id.
+- `kind: str` — Its ``type``, a member of ``session_log.SIDE_KINDS``.
+- `status: Literal['incomplete', 'final']` — ``"incomplete"`` while open, ``"final"`` once finalized.
+- `preview: str` — Its label: the kind and ``(open)`` or ``(closed)``.
+
 ## ToolBlockChange
 <!-- agent: yes -->
 
@@ -4413,7 +4491,7 @@ The entry kind discriminator, fixed for this class.
 <!-- agent: yes -->
 
 ```python
-class TreeNode(id: str, parent_id: str | None, kind: str, role: str | None, preview: str, is_leaf: bool, children: list[TreeNode] = list())
+class TreeNode(id: str, parent_id: str | None, kind: str, role: str | None, preview: str, is_leaf: bool, children: list[TreeNode] = list(), side: list[SideMark] = list())
 ```
 
 `tau_agent_core.conversation_tree.TreeNode`
@@ -4428,7 +4506,8 @@ A node in the browsable session tree (pi ``SessionTreeNode``).
 - `role: str | None` — The message's role on a ``message``/``customMessage`` entry; ``None`` on every other kind.
 - `preview: str` — The entry's first line of text, ``[interrupted]``-prefixed when the entry is incomplete.
 - `is_leaf: bool` — Whether this entry is the tree's leaf.
-- `children: list[TreeNode] = list()` — The nodes parented here, oldest first by timestamp.
+- `children: list[TreeNode] = list()` — The nodes parented here, oldest first by timestamp; never a side entry.
+- `side: list[SideMark] = list()` — The side entries parented here, oldest first.
 
 ## TurnFrame
 <!-- agent: yes -->
@@ -4798,12 +4877,18 @@ default_leaf(entries: list[dict[str, Any]]) -> str | None
 
 `tau_agent_core.session_log.default_leaf`
 
-Where a reopened tree continues: the newest finished entry a cursor wrote.
+Where a reopened tree continues: the newest finished entry a person's turn wrote.
+
+An entry carrying ``source: "agent"`` (:data:`AGENT_SOURCE`), which a
+sub-agent wrote, is passed over, so a session a child wrote last
+reopens in the main conversation. When nothing else qualifies, the newest
+finished entry of any source is the answer (docs/STEP-DEBUGGER.md §3.7.2).
 
 Skipped: an incomplete entry, so a session interrupted mid-message reopens at
 the entry before it and the interrupted branch stays beside the retry
 (docs/TAU-SERVE.md §4.3); a legacy ``navigate``, which names a different
-position (docs/CURSORS.md §1.1, §4); and a namespaced kind (``system:kind``),
+position (docs/CURSORS.md §1.1, §4); a side entry (:func:`is_side_entry`),
+which no cursor continues from; and a namespaced kind (``system:kind``),
 which a store synthesizes for a document another system put in the tree — the
 JMFTS store's ``jmfts:document``. τ's own entry kinds are bare words.
 
@@ -4870,6 +4955,34 @@ the fold now skips is still in ``entries()`` (Decision 7 / T5).
 **Raises**
 
 - `ValueError` — An unknown anchor or resume point, a resume point that is not on the anchor's path, or a span that would hide nothing. All three are checked before the first append, so a refusal leaves the log byte-identical.
+
+## entries_for_fork
+<!-- agent: yes -->
+
+```python
+entries_for_fork(entries: list[dict[str, Any]], at: str | None) -> list[dict[str, Any]]
+```
+
+`tau_agent_core.session_log.entries_for_fork` · since 0.15.0
+
+What a fork copies: the path to ``at`` and each path entry's finalized side children.
+
+An open side entry is never copied (docs/STEP-DEBUGGER.md §3.7.2). Every
+store's ``fork`` reads its copy set from here.
+
+**Parameters**
+
+- `entries: list[dict[str, Any]]` — The source log's entries in append order.
+- `at: str | None` — The fork point; ``None`` copies every entry, and the point checked for an open side child is then :func:`default_leaf`.
+
+**Returns**
+
+The entries to copy, in append order; the dicts are ``entries``' own.
+
+**Raises**
+
+- `ValueError` — ``at`` names no entry.
+- `OpenSideEntryError` — the fork point has an open side child.
 
 ## entries_to_messages
 <!-- agent: yes -->
@@ -5095,6 +5208,29 @@ Whether ``entry`` was opened and never finalized: an interrupted message.
 **Returns**
 
 True when its ``status`` is :data:`INCOMPLETE`.
+
+## is_side_entry
+<!-- agent: yes -->
+
+```python
+is_side_entry(entry: dict[str, Any]) -> bool
+```
+
+`tau_agent_core.session_log.is_side_entry` · since 0.15.0
+
+Whether ``entry`` hangs beside its parent rather than continuing from it.
+
+A side entry is never an ancestor of a later entry, so it is no branch, no
+tip and no leaf. Every walker that counts or follows children asks this
+(docs/STEP-DEBUGGER.md §3.7.2).
+
+**Parameters**
+
+- `entry: dict[str, Any]` — A log entry.
+
+**Returns**
+
+True when its ``type`` is in :data:`SIDE_KINDS`.
 
 ## last_assistant_text
 <!-- agent: yes -->
