@@ -356,13 +356,13 @@ does the same for tau-jmfts's `at=` fork.
 #### 3.7.3 Resuming from the tree
 
 A pending suspension with no live Future is one whose process died or exited.
-Answering it starts a resume. Core takes the cursor's turn lock, finalizes the
+Answering it starts a resume. Core claims the suspension (below), finalizes the
 side entry, and enters the loop at the point that the site and the leaf
 determine:
 
 | site of the suspension | leaf | resume does |
 |---|---|---|
-| `tool_call`, call *k* of a batch | the assistant entry, or call *k−1*'s result | run calls *k…n* through the normal tool path. Their `tool_call` hooks run again with `event["resumed"] = {suspension_id, resolution}`, and the suspending handler uses that to avoid suspending twice. On `abort`, calls *k…n* get aborted results. Then the turn continues: `turn_end`, then sample |
+| `tool_call`, call *k* of a batch | the assistant entry, or the newest result in the batch | run every call of the batch that has **no result in the tree**, from the first such call, through the normal tool path. Each of their `tool_call` hooks runs again with `event["resumed"] = {suspension_id, resolution}`. In sequential mode those calls are *k…n*. In parallel mode, calls *1…k−1* were also prepared before call *k* suspended (`agent_loop.py:1371-1374`), but their hook outcomes (patched arguments, a block) existed only in memory, so they are dispatched again too (tau-search, round 3). On `abort`, every call without a result gets an aborted result. Then the turn continues: `turn_end`, then sample |
 | `entry_written` of a user entry | the user entry | sample |
 | `entry_written` of an assistant entry with calls | the assistant entry | run its calls, as above from call 1 |
 | `entry_written` of an assistant entry with text only | the assistant entry | `turn_end`, then the end of the prompt (follow-ups, `user_turn_end`, `agent_end`) |
@@ -371,6 +371,37 @@ determine:
 | mutating `turn_end` | the turn's last entry | dispatch `turn_end` again in full, with `event["resumed"]`, then sample or end |
 | `user_turn_end` | the prompt's last entry | dispatch `user_turn_end` again, then `agent_end` |
 | a command handler (form) | — | **not resumable across processes.** A pending form whose process died is closed with `action: "abandoned"` and a session warning. The user runs the command again. A command is a flow in a coroutine, and its state is not in the tree |
+
+**A pending suspension blocks new prompts at its cursor, on every head.** After
+a crash or a `-p` exit 3, the leaf can be an assistant entry with unanswered
+calls. A new prompt there would send an unanswered tool call to the provider,
+which rejects it. So `submit` at a cursor whose leaf has an open `suspension`
+side child is refused, naming the suspension, in the TUI, the REPL, RPC, serve
+and `-p` alike (tau-search, round 3). This is the same refusal a lock gives
+(`agent_session.py:3592-3600`). It ends when the suspension is answered. To
+abandon a suspension, answer it with `abort`: every pending call then gets an
+aborted result, and the tree is valid again.
+
+**A claim is atomic, across processes too.** In-process, first-answer-wins
+rests on the Future. Across processes it rests on the store:
+
+- **File store.** The answering process takes an exclusive lock on the session
+  file (`fcntl.flock`), then re-reads the log. If the side entry is still
+  incomplete, it finalizes it and releases the lock; that process owns the
+  resume. Otherwise it gets `already resolved`, exactly as in-process. Today
+  nothing locks the file store across processes (`session_store.py`,
+  `session_log.py` and `headless.py` have no `flock`, `fcntl` or `O_EXCL`).
+  `finalized_entry`'s refusal (`session_log.py:118`) sees only lines already
+  loaded. Without the lock, two `-p --answer` runs would both finalize, and both
+  would run the pending calls, so tools would execute twice.
+- **A session that `tau serve` hosts.** The daemon holds the same lock for as
+  long as it hosts the session. So a `-p --answer` against it fails the claim,
+  and the error names the daemon's socket: answer through serve. The daemon
+  stays the single writer.
+- **JMFTS store.** It offers no cross-process lock, and John ruled out schema
+  changes. So in v1 a JMFTS-backed session is resumed only through a single
+  writer: serve, or the one process that holds it. A `-p --answer` from a
+  second process is refused with that reason.
 
 **A re-dispatch replays the answer; it never asks twice.** A resume re-runs
 the hooks of the site that suspended, and those hooks may emit the same hit
@@ -746,7 +777,16 @@ Every head must produce the same tree: the same entries, the same finalized
   debugger carries the hit to the next `entry_written`;
 - kill the daemon at each §3.7.3 site, reload, and answer: the turn resumes as
   the table says, and the tree matches an uninterrupted run with the same
-  answers;
+  answers. The `tool_call` case runs in both sequential and parallel mode, and
+  in parallel mode calls *1…k−1* are dispatched again;
+- a session with an open suspension, reopened in the TUI, the REPL, RPC and
+  serve: a new prompt is refused, naming the suspension; answering it with
+  `abort` makes the tree valid and prompts work again;
+- two `tau -p --session X --answer …` processes race on one orphaned
+  suspension: one claims it and resumes, the other gets `already resolved`, and
+  every pending tool runs exactly once;
+- `-p --answer` against a session that `tau serve` hosts: the claim fails and
+  names the daemon;
 - `-p` exits 3 at each site; `--answer` resumes it; `-p` without `--answer`
   refuses and names the suspension;
 - a `-p` suspension answered from the TUI instead: it resumes in the TUI;
@@ -797,7 +837,9 @@ matrix runs in the container matrix with the rest of the suite.
 *Milestone 2, across processes (about 3 days):*
 
 - resume from the tree at every §3.7.3 site, for both restarts and answers to
-  orphaned suspensions;
+  orphaned suspensions, with the atomic claim (a `flock` on the file store, held
+  by serve while it hosts) and the refusal of new prompts over a pending
+  suspension;
 - the `-p` deferred responder: `TurnSuspended`, exit 3, the printed suspension,
   `--answer` and `--field`, and refusal without `--answer`.
 
@@ -852,3 +894,6 @@ as milestone 2 (§7).
 | design change in this revision: no suspension may hold an unwritten entry, so `input`, `tool_result` and `annotate` are no longer sites, and `entry_written` is added | §3.2 |
 | round 3, tau-router: a relayed hit replays on resume and suspends twice | §3.7.3 idempotent replay, `api.resumed()` |
 | round 3, tectum: the control lane could reorder `abort` and `get_state` against a steer | §3.6 the lane opens only while a suspension is open |
+| round 3, tau-search: a parallel `tool_call` resume misses calls prepared only in memory | §3.7.3 resume from the first call with no result |
+| round 3, tau-search: nothing stops a new prompt over a pending suspension | §3.7.3 refused on every head until answered |
+| round 3, tau-search: two processes can both claim an orphaned suspension | §3.7.3 atomic claim: `flock` and a re-read; serve holds the lock; JMFTS resumes only through a single writer |
