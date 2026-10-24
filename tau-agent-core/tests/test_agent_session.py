@@ -1658,6 +1658,9 @@ class TestEventBus:
             "side_completion_end",
             "provider_retry",
             "follow_ups_dropped",
+            "suspension_open",
+            "suspension_closed",
+            "lock_changed",
         }
         assert set(bus._listeners.keys()) == expected_types
 

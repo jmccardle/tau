@@ -387,6 +387,44 @@ or ``send_user_message``.
 - `RuntimeError` — no session with ``_append_custom_entry`` is bound (e.g. a bare ``ExtensionAPI()``); the entry is not dropped silently.
 - `ValueError` — propagated from ``_append_custom_entry`` when ``custom_type`` is empty or ``data`` is not a dict.
 
+### can_suspend
+
+```python
+can_suspend() -> bool
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.can_suspend` · since 0.15.0
+
+Whether a suspension raised in this turn could be answered (§3.8, §3.9).
+
+A turn is running here with ``store_history`` on and a writable
+session, a live responder is registered, and the driving submission
+set ``allow_user_input`` (a child turn reads its root turn's). The
+debugger refuses an armed turn at ``input`` when this is false.
+
+**Returns**
+
+True when :meth:`suspend` would not raise for want of a responder.
+
+### can_suspend_here
+
+```python
+can_suspend_here() -> bool
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.can_suspend_here` · since 0.15.0
+
+Whether :meth:`suspend` may be called from the code running now (§3.2).
+
+:meth:`can_suspend`, and the current hook dispatch is a suspension
+site: not a notify event, a tool, ``input``, ``tool_result``,
+``annotate``, a nested tool call or a task a hook spawned. A producer
+that reads false carries its hit to the next site.
+
+**Returns**
+
+True when :meth:`suspend` would raise a suspension here.
+
 ### clear_warning
 
 ```python
@@ -724,6 +762,23 @@ The appended entry's id — the request id an action is dispatched with, and wha
 - `RuntimeError` — this api is bound to no runner bucket, so it has no extension identity to append under (Fail-Early: the identity is stored in the entry, and the case this exists for is a reload where nobody can be asked for it).
 - `ValueError` — from :func:`validate_ask_spec` on a malformed ask, or from :func:`~tau_agent_core.extension_locks.build_request_data` on an entry that neither locks nor asks.
 
+### resumed
+
+```python
+resumed() -> dict[str, Any] | None
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.resumed` · since 0.15.0
+
+The suspension whose resume is re-dispatching the hook running now, or ``None`` (§3.7.3).
+
+``{id, site, extension, resolution}``. Milestone 1 never resumes from
+the tree, so this is ``None`` throughout; a resume (milestone 2) sets it.
+
+**Returns**
+
+The resumed suspension's record, or ``None``.
+
 ### run_command
 
 ```python
@@ -930,6 +985,40 @@ class:`concurrent.futures.Future` resolving to the class:`~tau_agent_core.submis
 
 - `RuntimeError` — No runner bucket or no ``AgentSession`` is bound; the session is not bound to a running loop yet; or this is called from the session's own loop, where blocking on the future deadlocks.
 - `ValueError` — ``correlation`` carries a non-JSON value.
+
+### suspend
+
+```python
+async suspend(spec: dict[str, Any]) -> dict[str, Any]
+```
+
+`tau_agent_core.extension_types.ExtensionAPI.suspend` · since 0.15.0
+
+Stop the running turn until a responder answers ``spec`` (docs/STEP-DEBUGGER.md §3).
+
+Permitted only where everything the turn produced is already in the
+tree: a top-level ``tool_call``, ``entry_written``, ``turn_end`` and
+``user_turn_end``, and an ``ext:`` handler reached from one of them
+(:meth:`can_suspend_here`). A durable ``suspension`` side entry is
+written under the cursor's leaf, ``suspension_open`` reaches every head,
+and every enclosing policy deadline pauses until this returns, time
+queued behind another suspension on the cursor included. Picking
+``abort`` also aborts the turn; the turn's abort resolves it, and every
+suspension queued behind it, as ``abort``.
+
+**Parameters**
+
+- `spec: dict[str, Any]` — :func:`validate_ask_spec`'s spec (``title``, a body, ``fields``, ``actions``) plus ``evidence``, a list of ``{label, text}``, and ``targetId``, the entry it is about.
+
+**Returns**
+
+``{id, action, values, answered_by, at_ms}``. ``id`` is ``None`` when the turn was already aborted, and nothing was raised.
+
+**Raises**
+
+- `ValueError` — a malformed spec.
+- `SuspensionRefused` — not a suspension site, or a turn that cannot be stepped (``store_history`` off, a read-only session).
+- `NoResponderError` — nothing can answer it (§3.8).
 
 ### ui
 
@@ -1726,6 +1815,34 @@ The re-rendered active-path messages (``ConversationTree.context_for``).
 - `ValueError` — ``from_entry`` names no entry (checked before the model call), or the summarizer returned nothing usable.
 - `ModelUnavailableError` — the session's model is unavailable.
 
+### suspend
+
+```python
+async suspend(spec: dict[str, Any]) -> dict[str, Any]
+```
+
+`tau_agent_core.extension_types.ExtensionContext.suspend` · since 0.15.0
+
+``api.suspend``, from a handler that has ``ctx`` (docs/STEP-DEBUGGER.md §3.1).
+
+The suspension is raised under the extension whose hook handler is
+running.
+
+**Parameters**
+
+- `spec: dict[str, Any]` — As for :meth:`ExtensionAPI.suspend`.
+
+**Returns**
+
+As for :meth:`ExtensionAPI.suspend`.
+
+**Raises**
+
+- `RuntimeError` — no session is bound.
+- `ValueError` — a malformed spec.
+- `SuspensionRefused` — not a suspension site, or an unsteppable turn.
+- `NoResponderError` — nothing can answer it.
+
 ### ui
 
 `tau_agent_core.extension_types.ExtensionContext.ui: ExtensionUI`
@@ -2332,6 +2449,17 @@ The hash and bus fields are H7/H8's addition (SIM_SPEC_v2 §16.6/§16.10).
 - `source: ExtensionSource | None = None` — Where it came from (docs/EXTENSION-PACKAGES.md §2); ``None`` for a record built outside the loader, read as a file path.
 - `explicit: bool = False` — Whether it was named with ``-e``, which authorizes it (§5).
 
+## NoResponderError
+<!-- agent: yes -->
+
+`tau_agent_core.suspensions.NoResponderError` · since 0.15.0
+
+Nothing could answer the suspension, so it was not raised (§3.8).
+
+No live responder is registered with the session, or the submission
+driving the turn did not set ``allow_user_input`` (for a child turn, its
+root turn's submission).
+
 ## PausableDeadline
 <!-- agent: yes -->
 
@@ -2512,6 +2640,61 @@ The handler finished; the site uses ``value`` as the handler's return.
 **Constructor parameters**
 
 - `value: Any` — What the handler returned.
+
+## Suspension
+<!-- agent: yes -->
+
+```python
+class Suspension(id: str, cursor: Cursor, spec: dict[str, Any], site: str, extension: str, call: dict[str, Any] | None, entry_id: str | None, queued: bool, opened_at_ms: int, signal: AbortSignal, payload: dict[str, Any], future: asyncio.Future[dict[str, Any]], ready: asyncio.Future[None], closed: asyncio.Event = asyncio.Event())
+```
+
+`tau_agent_core.suspensions.Suspension` · since 0.15.0
+
+One raised suspension, open or queued, as the broker holds it.
+
+**Constructor parameters**
+
+- `id: str` — The suspension's id, which is its side entry's id.
+- `cursor: Cursor` — The cursor whose turn waits on it.
+- `spec: dict[str, Any]` — The normalized spec (:func:`validate_suspension_spec`).
+- `site: str` — The hook it was raised from.
+- `extension: str` — The extension that raised it.
+- `call: dict[str, Any] | None` — At a ``tool_call`` site, ``{id, effective_args}``; else ``None``.
+- `entry_id: str | None` — At an ``entry_written`` site, the entry written; else ``None``.
+- `queued: bool` — Whether another suspension on its cursor is open ahead of it.
+- `opened_at_ms: int` — When it was raised.
+- `signal: AbortSignal` — *(no description)*
+- `payload: dict[str, Any]` — *(no description)*
+- `future: asyncio.Future[dict[str, Any]]` — *(no description)*
+- `ready: asyncio.Future[None]` — *(no description)*
+- `closed: asyncio.Event = asyncio.Event()` — *(no description)*
+
+### state
+
+```python
+state() -> dict[str, Any]
+```
+
+`tau_agent_core.suspensions.Suspension.state` · since 0.15.0
+
+What a head renders and an attach snapshot carries: ``SuspensionState`` on the wire.
+
+**Returns**
+
+``{id, session_id, cursor_id, parent_cursor_id, depth, spawned_from, spec, site, extension, target_id, call, entry_id, queued, opened_at_ms}``. ``depth`` is the cursor's owner-chain length; ``spawned_from`` the entry a child cursor was opened at.
+
+## SuspensionRefused
+<!-- agent: yes -->
+
+`tau_agent_core.suspensions.SuspensionRefused` · since 0.15.0
+
+``api.suspend`` was called where a suspension may not be raised (§3.2, §3.9).
+
+Not a site (a notify event, a tool, ``input``, ``tool_result``,
+``annotate``, a nested tool call, a task a hook spawned), or a turn that
+cannot be stepped (no turn, ``store_history`` off, a read-only session).
+An ``Exception``: at ``tool_call`` it blocks the call, elsewhere it is
+surfaced like any handler error.
 
 ## ToolDescription
 <!-- agent: yes -->
@@ -3567,6 +3750,34 @@ Shared by :meth:`ExtensionUI.panel` and the TUI's ``ExtensionPanel`` widget.
 **Raises**
 
 - `ValueError` — a non-dict spec, a non-string title, zero or several body keys, or any malformed body or action.
+
+## validate_suspension_spec
+<!-- agent: yes -->
+
+```python
+validate_suspension_spec(spec: Any) -> dict[str, Any]
+```
+
+`tau_agent_core.suspensions.validate_suspension_spec` · since 0.15.0
+
+Validate and normalize an ``api.suspend`` spec: the ask spec's shape, plus ``evidence`` and ``targetId``.
+
+``title``, the optional body (``text``, ``list`` or ``table``) and
+``fields`` are the ask spec's (:func:`~tau_agent_core.extension_types.validate_ask_spec`).
+An action is ``{label}`` alone: a suspension's answer is returned to the
+code that raised it, so no action names a command, unlike an ask's.
+
+**Parameters**
+
+- `spec: Any` — ``{title?, text|list|table?, fields?, actions, evidence?, targetId?}``. ``evidence`` is a list of ``{label, text}`` strings; ``targetId`` the id of the entry the suspension is about.
+
+**Returns**
+
+``{title, body, fields, actions, evidence, targetId}``; ``body`` and ``targetId`` are ``None`` and ``evidence`` ``[]`` when absent.
+
+**Raises**
+
+- `ValueError` — a malformed body or field (as for an ask), no actions, an action that is not exactly ``{label}``, a repeated label, or a malformed ``evidence`` or ``targetId``.
 
 ## warnings_marker
 <!-- agent: yes -->

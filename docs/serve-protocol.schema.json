@@ -7202,6 +7202,19 @@
           "default": null,
           "description": "The emitting cursor's resulting leaf, on agent_end (E5/F3). Filled in by rpc/transport.py's writer immediately before this line is serialized \u2014 not by rpc/wire_events.py at event-projection time \u2014 because persistence happens strictly AFTER agent_end fires; reading it any earlier reproduces the exact stale-tip bug this field exists to close. None for all other event types."
         },
+        "lock_holder": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On lock_changed, the process holding the session's write lock ({pid, host, head, started, detail}), or null. None for all other event types."
+        },
         "max_retries": {
           "anyOf": [
             {
@@ -7254,6 +7267,18 @@
           "default": null,
           "description": "Which side completion a side_completion_* event reports: 'compaction' or 'branch_summary'. Side work spends tokens and produces text outside any turn, so it stamps no submission_id and a host keys on this instead. The summary TEXT and what it cost are deliberately not on the wire \u2014 both land in the session log as a compaction or branch_summary entry, which get_entry serves with tokens_before, covered_tokens and summary_usage attached. Pushing unbounded content through an event is what WireEvent exists to avoid. None for all other event types. See docs/STREAMING-SIDE-WORK.md."
         },
+        "read_only": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On lock_changed, whether this process may no longer write the session: another process holds its write lock. None for all other event types."
+        },
         "reason": {
           "anyOf": [
             {
@@ -7265,11 +7290,20 @@
               "type": "string"
             },
             {
+              "enum": [
+                "answered",
+                "aborted",
+                "cursor_closed",
+                "abandoned"
+              ],
+              "type": "string"
+            },
+            {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. None for all other event types."
+          "description": "What asked for a side completion: 'manual' (a person or this host), 'threshold' (the auto-trigger, which nobody asked for) or 'navigate' (the tree browser's summarising move). On all three side_completion_* events, so a host that attached mid-summary still learns whether the work was requested or imposed. On suspension_closed, why the suspension closed: 'answered', 'aborted' (its turn's abort, an `abort` answer to an earlier one included), 'cursor_closed' (the session shut down) or 'abandoned' (its task was cancelled). None for all other event types."
         },
         "reasoning_level": {
           "anyOf": [
@@ -7295,6 +7329,19 @@
           "default": false,
           "description": "Only meaningful when delta is set. False (the common case): delta is an incremental suffix \u2014 append it to whatever was already accumulated for this block_type this turn. True: the provider replaced rather than extended the block's content \u2014 delta is the block's ENTIRE new value, and the receiver must RESET its accumulator to delta rather than appending. Mirrors event_projection.BlockDelta.replace exactly.",
           "type": "boolean"
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On suspension_closed, how it was resolved: {id, action, values, answered_by, at_ms}; `answered_by` is null when the turn's abort resolved it. None for all other event types."
         },
         "response_headers": {
           "anyOf": [
@@ -7376,6 +7423,19 @@
           "default": null,
           "description": "WHO submitted (E4). None alongside submission_id."
         },
+        "suspension": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "On suspension_open and suspension_closed, the suspension (SuspensionState): `id` (what answer_suspension names), `session_id`, `cursor_id`, `parent_cursor_id`, `depth` (owner-chain length), `spawned_from` (a child cursor's origin entry), `spec` ({title, body, fields, actions, evidence, targetId}), `site`, `extension`, `target_id`, `call` ({id, effective_args} at a tool_call), `entry_id` (at an entry_written), `queued` and `opened_at_ms`. suspension_open is sent again with `queued` false when a queued one reaches the front of its cursor's queue. See docs/STEP-DEBUGGER.md \u00a73.4. None for all other event types."
+        },
         "timestamp": {
           "description": "Milliseconds since epoch.",
           "minimum": 0,
@@ -7434,7 +7494,10 @@
             "side_completion_update",
             "side_completion_end",
             "provider_retry",
-            "follow_ups_dropped"
+            "follow_ups_dropped",
+            "suspension_open",
+            "suspension_closed",
+            "lock_changed"
           ],
           "type": "string"
         }

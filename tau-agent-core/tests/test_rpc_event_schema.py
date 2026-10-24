@@ -102,6 +102,9 @@ class TestEventTypesReflectAgentEvent:
             "side_completion_end",
             "provider_retry",
             "follow_ups_dropped",
+            "suspension_open",
+            "suspension_closed",
+            "lock_changed",
         }
 
     def test_raises_if_agent_event_type_is_no_longer_a_literal(self, monkeypatch):

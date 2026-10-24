@@ -97,9 +97,22 @@ from tau_agent_core.session_lock import (
 )
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.entry_annotations import AnnotationError
-from tau_agent_core.policies import HandlerPolicyError, runs_on_behalf_of
+from tau_agent_core.policies import (
+    HandlerPolicyError,
+    pause_enclosing_deadlines,
+    runs_on_behalf_of,
+)
 from tau_agent_core.seed import check_seed, normalise_seed
 from tau_agent_core.suspension import TurnSuspended
+from tau_agent_core.suspensions import (
+    NoResponderError,
+    PendingScope,
+    Suspension,
+    SuspensionBroker,
+    SuspensionRefused,
+    suspension_site,
+    validate_suspension_spec,
+)
 from tau_agent_core.agent_loop import AgentLoop, TurnFailure
 from tau_agent_core.agent_loop_types import AgentLoopConfig, TurnSettings
 from tau_agent_core.capabilities import BUILTIN, CAPABILITIES, Vocabulary
@@ -779,6 +792,9 @@ class AgentSession:
         self._quiet_runner = ExtensionRunner(context=self._extension_api.context)
         self._events.on_error(self._surface_notify_error)
         self._events.on("message_end", self._record_completion_usage)
+        self._suspensions = SuspensionBroker(self._emit_suspension, self.abort)
+        self._suspension_responders: list[str] = []
+        self._lock_seen: tuple[bool, dict[str, Any] | None] | None = None
         self._write_locks: dict[int, tuple[SessionLog, SessionWriteLock]] = {}
         weakref.finalize(self, _release_held, self._write_locks)
         self._sync_write_locks()
@@ -1052,13 +1068,29 @@ class AgentSession:
         return access.reason if access.read_only else None
 
     def _show_write_access(self) -> None:
-        """Mirror the head tree's lock state into the warnings store, keyed ``session-lock:*``."""
+        """Mirror the head tree's lock state into the warnings store, keyed ``session-lock:*``.
+
+        A change of read-only state or holder after the first look is also a
+        ``lock_changed`` event, so a head's banner clears without a reattach
+        (docs/STEP-DEBUGGER.md §3.4).
+        """
         held = self._write_locks.get(id(self._cursor.log))
         access = WRITABLE if held is None else held[1].access()
         read_only = access.reason if access.read_only else None
         with self._warnings.batch():
             self._set_tau_warning(READ_ONLY_WARNING_KEY, read_only, "error")
             self._set_tau_warning(UNLOCKED_FS_WARNING_KEY, access.warning, "warning")
+        seen = (access.read_only, None if access.holder is None else access.holder.to_dict())
+        if self._lock_seen is not None and seen != self._lock_seen:
+            self._emit_soon(
+                AgentEvent(
+                    type="lock_changed",
+                    timestamp=self._timestamp(),
+                    read_only=seen[0],
+                    lock_holder=seen[1],
+                )
+            )
+        self._lock_seen = seen
 
     def _set_tau_warning(
         self, key: str, message: str | None, severity: Literal["warning", "error"]
@@ -2007,15 +2039,17 @@ class AgentSession:
         the runner (error-surfaced, not swallowed). The frontends fire it on TUI
         quit, headless completion and SIGINT/SIGTERM.
 
-        First, and whether or not any extension listens, it cancels and awaits
-        every forked branch, :meth:`deliver_queued` delivery and marshalled
-        submission: none has an awaiting caller, and none may outlive the
-        session (docs/SUBMISSION-LIFECYCLE.md "fork").
+        First, and whether or not any extension listens, it closes every open
+        suspension as ``abort`` (reason ``cursor_closed``), then cancels and
+        awaits every forked branch, :meth:`deliver_queued` delivery and
+        marshalled submission: none has an awaiting caller, and none may outlive
+        the session (docs/SUBMISSION-LIFECYCLE.md "fork").
 
         Args:
             reason: As pi's ``SessionShutdownEvent.reason``: ``"quit"``,
                 ``"reload"``, ``"new"``, ``"resume"`` or ``"fork"``.
         """
+        await self._suspensions.close_all("cursor_closed")
         await self._cancel_forked_tasks()
         await self._cancel_task_registry(self._delivery_tasks)
         await self._cancel_task_registry(self._threadsafe_tasks)
@@ -5303,6 +5337,25 @@ class AgentSession:
         self._session_event_tasks.add(task)
         task.add_done_callback(self._session_event_tasks.discard)
 
+    def _emit_soon(self, event: AgentEvent) -> None:
+        """Emit ``event`` on the bus from synchronous code, as a task on the running loop.
+
+        With no running loop it is dropped only when nothing listens for it;
+        otherwise it raises, for the reason :meth:`_announce_append` gives.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if self._events.has_listeners(event.type) or self._events.has_listeners("all"):
+                raise RuntimeError(
+                    f"a {event.type!r} event was raised outside the event loop, and it has "
+                    "subscribers that can never be told"
+                ) from None
+            return
+        task = loop.create_task(self._events.emit(event))
+        self._session_event_tasks.add(task)
+        task.add_done_callback(self._session_event_tasks.discard)
+
     async def _append_custom_entry(self, custom_type: str, data: dict[str, Any]) -> str:
         """Append a durable, NON-message ``customEntry`` node (``api.append_entry``).
 
@@ -5390,6 +5443,218 @@ class AgentSession:
             build_response_data(request_id, request.extension, answered, action),
         )
         return await self.run_extension_command(actions[action], request_id)
+
+    @agent_facing(topic="sessions", since="0.15.0")
+    def add_suspension_responder(self, name: str) -> Callable[[], None]:
+        """Register a live responder: a head that renders suspensions and sends their answers (§3.8).
+
+        ``tau serve`` registers one per hosted session, so a suspension there
+        waits for a client to attach; an RPC host registers one with
+        ``declare_capabilities``. With none registered, ``api.suspend`` raises
+        :class:`~tau_agent_core.suspensions.NoResponderError`.
+
+        Args:
+            name: What the responder is, for the refusal and the record, e.g. ``"rpc"``.
+
+        Returns:
+            A callable that removes this registration; calling it twice is harmless.
+        """
+        token = str(name)
+        self._suspension_responders.append(token)
+        removed = False
+
+        def remove() -> None:
+            nonlocal removed
+            if not removed:
+                removed = True
+                self._suspension_responders.remove(token)
+
+        return remove
+
+    @property
+    def suspension_responders(self) -> tuple[str, ...]:
+        """The live responders registered now, in registration order."""
+        return tuple(self._suspension_responders)
+
+    def suspend_refusal(self) -> str | None:
+        """Why a suspension raised now could not be answered, or ``None`` (§3.8, §3.9).
+
+        Checked against the acting cursor's turn: it must exist, persist
+        (``store_history``), and be writable; a live responder must be
+        registered; and the driving submission must allow user input. A child
+        cursor's ``agent`` turn reads that permission from its root turn, the
+        top of its owner chain (§3.12.3).
+
+        Returns:
+            The reason, or ``None`` when a suspension could be raised.
+        """
+        refused = self._suspend_refused()
+        return None if refused is None else str(refused)
+
+    def _suspend_refused(self) -> SuspensionRefused | None:
+        """:meth:`suspend_refusal` as the error ``api.suspend`` raises, or ``None``."""
+        cursor = self.acting_cursor
+        sub = cursor.submission
+        if sub is None or not cursor.busy:
+            return SuspensionRefused("no turn is running on this cursor")
+        if not sub.store_history:
+            return SuspensionRefused(
+                "the turn runs with store_history off: nothing it produces is persisted, so a "
+                "suspension has no entry to hang from"
+            )
+        access = self.write_access
+        if access.read_only:
+            return SuspensionRefused(access.reason or "the session is open read-only")
+        if not self._suspension_responders:
+            return NoResponderError(
+                "no live responder can answer a suspension in this process: attach through "
+                "`tau serve`, or have the RPC host send declare_capabilities {suspensions: true}"
+            )
+        if not self._root_allows_user_input(cursor):
+            source = "its root turn's submission" if cursor.owner is not None else "its submission"
+            return NoResponderError(
+                f"the turn may not ask a person: {source} did not set allow_user_input "
+                "(a timer, bus or extension submission has no live responder)"
+            )
+        return None
+
+    @staticmethod
+    def _root_allows_user_input(cursor: Cursor) -> bool:
+        """``allow_user_input`` of the submission driving ``cursor``, or of its root turn for a child's agent turn."""
+        sub = cursor.submission
+        if sub is None:
+            return False
+        if sub.source != AGENT_SOURCE or cursor.owner is None:
+            return bool(sub.allow_user_input)
+        root = cursor
+        while root.owner is not None:
+            root = root.owner
+        return root.submission is not None and bool(root.submission.allow_user_input)
+
+    async def suspend(
+        self, spec: dict[str, Any], *, extension: str | None = None
+    ) -> dict[str, Any]:
+        """``api.suspend``: stop the acting cursor's turn until a responder answers (§3.3).
+
+        Every enclosing policy deadline is paused for the whole call, queue
+        time included (§4.3).
+
+        Args:
+            spec: The suspension spec (:func:`~tau_agent_core.suspensions.validate_suspension_spec`).
+            extension: The extension raising it; ``None`` is the extension whose
+                hook handler is running (``ctx.suspend``).
+
+        Returns:
+            The resolution, ``{id, action, values, answered_by, at_ms}``.
+
+        Raises:
+            ValueError: a malformed spec.
+            SuspensionRefused: not a suspension site, or an unsteppable turn.
+            NoResponderError: nothing can answer it.
+        """
+        with pause_enclosing_deadlines():
+            normalized = validate_suspension_spec(spec)
+            mark = suspension_site()
+            refused = self._suspend_refused()
+            if refused is not None:
+                raise type(refused)(f"api.suspend refused: {refused}")
+            cursor = self.acting_cursor
+            event = mark.event or {}
+            call = None
+            if mark.hook == "tool_call":
+                call = {
+                    "id": event.get("tool_call_id"),
+                    "effective_args": copy.deepcopy(event.get("input")),
+                }
+            return await self._suspensions.raise_and_wait(
+                cursor=cursor,
+                signal=cursor.abort_signal,
+                spec=normalized,
+                site=str(mark.hook),
+                extension=extension or str(mark.extension),
+                call=call,
+                entry_id=event.get("entry_id") if mark.hook == "entry_written" else None,
+                continuation=self._continuation(mark),
+            )
+
+    def _continuation(self, mark: Any) -> dict[str, Any]:
+        """Where the loop stands at a suspension, for milestone 2's resume (§3.7.3)."""
+        return {"phase": f"dispatch:{mark.hook}", "handler": mark.handler}
+
+    @agent_facing(topic="sessions", since="0.15.0")
+    def answer_suspension(
+        self,
+        suspension_id: str,
+        action: str,
+        values: dict[str, Any] | None = None,
+        answered_by: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Answer an open suspension, from any cursor and any head; the first valid answer wins (§3.3).
+
+        Takes no turn lock. A later answer to a closed suspension is not an
+        error: it reports ``already resolved`` with the winning resolution, so
+        two racing clients converge.
+
+        Args:
+            suspension_id: The suspension's id.
+            action: One of its actions' labels; ``abort`` also aborts its turn.
+            values: Every declared field's value; ``None`` is ``{}``.
+            answered_by: Who answered, recorded on the resolution, e.g.
+                ``{"client_id": "c3", "client": "tau-code/0.9"}``.
+
+        Returns:
+            ``{"accepted": True, "resolution": …}`` or ``{"accepted": False,
+            "reason": "already resolved", "resolution": …}``.
+
+        Raises:
+            ValueError: no such suspension, one still queued, an undeclared
+                action, or values its fields reject. Nothing is recorded.
+        """
+        return self._suspensions.answer(suspension_id, action, values, answered_by)
+
+    @agent_facing(topic="sessions", since="0.15.0")
+    def pending_suspensions(
+        self, cursor: Cursor | None = None, scope: PendingScope = "cursor"
+    ) -> list[dict[str, Any]]:
+        """The suspensions open or queued now, as heads render them (§3.4, §3.12.4).
+
+        Args:
+            cursor: The cursor ``scope`` is relative to; ``None`` is :attr:`acting_cursor`.
+            scope: ``"cursor"``, that cursor's own; ``"tree"``, it and every
+                cursor it owns; ``"session"``, every cursor's.
+
+        Returns:
+            Each suspension's state (``Suspension.state``), oldest first.
+
+        Raises:
+            ValueError: an unknown ``scope``.
+        """
+        target = self.acting_cursor if cursor is None else cursor
+        return [s.state() for s in self._suspensions.pending(target, scope)]
+
+    async def _emit_suspension(
+        self, event_type: str, suspension: Suspension, extra: dict[str, Any]
+    ) -> None:
+        """Emit ``suspension_open`` or ``suspension_closed``, stamped with its cursor's turn."""
+        cursor = suspension.cursor
+        stamp: dict[str, Any] = {"cursor_id": cursor.id}
+        sub = cursor.submission
+        if sub is not None:
+            stamp.update(
+                submission_id=sub.submission_id,
+                source=sub.source,
+                submitter=sub.submitter,
+                correlation=dict(sub.correlation),
+            )
+        await self._events.emit(
+            AgentEvent(
+                type=event_type,  # type: ignore[arg-type]
+                timestamp=self._timestamp(),
+                suspension=suspension.state(),
+                **stamp,
+                **extra,
+            )
+        )
 
     def _build_turn_tools(self) -> list[AgentTool]:
         """Merge the built-in tools with the active extension tools for a turn.

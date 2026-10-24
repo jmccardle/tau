@@ -1,19 +1,22 @@
-"""The unwind a suspended turn takes, and core's check that nothing swallowed it.
+"""The dispatch mark ``api.suspend`` reads, the unwind a suspended turn takes, and its check.
 
-docs/STEP-DEBUGGER.md §3.2.2. Milestone 1 lands the type, the loop's mapping
-and the runtime check; nothing raises :class:`TurnSuspended` until
-``api.suspend`` (slice M1e) does, by calling :func:`mark_suspension_raised` and
-then raising it.
+docs/STEP-DEBUGGER.md §3.2 and §3.2.2. In milestone 1 a suspension waits for a
+live responder and never raises :class:`TurnSuspended`; the deferred responder
+(milestone 2) will, by calling :func:`mark_suspension_raised` and then raising.
+The suspensions themselves live in :mod:`tau_agent_core.suspensions`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator
 
 from tau_llm.docs import agent_facing
+
+from tau_agent_core.policies import runs_on_behalf_of
 
 
 @agent_facing(topic="agent-loop")
@@ -70,15 +73,32 @@ class SuspensionSwallowedError(BaseException):
 
 @dataclass
 class _DispatchMark:
-    """One hook handler's dispatch: who, if anyone, raised a suspension inside it.
+    """One hook handler's dispatch: where it runs, and who, if anyone, raised a suspension in it.
 
-    ``closed`` is set once the handler's dispatch returns, so a task the handler
-    spawned, whose context still holds the mark, can tell it has nothing to
-    unwind to.
+    It is also the dispatch-scoped permission ``api.suspend`` reads (§3.2): a
+    context variable holds it for exactly one handler call. ``closed`` is set
+    once the handler's dispatch returns, so a task the handler spawned, whose
+    context still holds the mark, can tell it has nothing to unwind to.
+
+    Attributes:
+        raised_by: Who raised a suspension inside the dispatch, or ``None``.
+        closed: Whether the dispatch has returned.
+        hook: The hook being dispatched, or ``None`` for a bare mark.
+        extension: The extension whose handler is running.
+        handler: The handler's position in the dispatch, in load and
+            registration order, from 0.
+        event: The event the handler was given.
+        task: The task the dispatch runs on; another task acts for it only
+            through :func:`~tau_agent_core.policies.runs_on_behalf_of`.
     """
 
     raised_by: str | None = None
     closed: bool = False
+    hook: str | None = None
+    extension: str | None = None
+    handler: int = 0
+    event: dict[str, Any] | None = None
+    task: asyncio.Task[Any] | None = None
 
 
 _DISPATCH_MARK: contextvars.ContextVar[_DispatchMark | None] = contextvars.ContextVar(
@@ -92,13 +112,30 @@ def current_dispatch_mark() -> _DispatchMark | None:
 
 
 @contextmanager
-def dispatch_mark() -> Iterator[_DispatchMark]:
+def dispatch_mark(
+    hook: str | None = None,
+    extension: str | None = None,
+    event: dict[str, Any] | None = None,
+    handler: int = 0,
+) -> Iterator[_DispatchMark]:
     """Open a fresh mark for one hook handler's call; the runner wraps each handler in one.
+
+    Args:
+        hook: The hook being dispatched.
+        extension: The handler's extension.
+        event: The event the handler is given.
+        handler: The handler's position in the dispatch.
 
     Yields:
         The mark, which the runner reads once the handler has finished.
     """
-    mark = _DispatchMark()
+    mark = _DispatchMark(
+        hook=hook,
+        extension=extension,
+        handler=handler,
+        event=event,
+        task=asyncio.current_task(),
+    )
     token = _DISPATCH_MARK.set(mark)
     try:
         yield mark
@@ -107,19 +144,54 @@ def dispatch_mark() -> Iterator[_DispatchMark]:
         _DISPATCH_MARK.reset(token)
 
 
+@contextmanager
+def outside_dispatch() -> Iterator[None]:
+    """Run the body with no dispatch mark: a notify handler inherits no suspension permission (§3.2)."""
+    token = _DISPATCH_MARK.set(None)
+    try:
+        yield
+    finally:
+        _DISPATCH_MARK.reset(token)
+
+
+def dispatch_refusal(mark: _DispatchMark | None) -> str | None:
+    """Why the code running now cannot act for ``mark``'s dispatch, or ``None`` when it can.
+
+    Args:
+        mark: The mark this context holds.
+
+    Returns:
+        No dispatch, one that has returned, or a task that is not the
+        dispatch's own (a task the handler spawned); a policed handler's task
+        acts for its dispatch.
+    """
+    if mark is None:
+        return "no hook dispatch is open here (a notify event, a tool, a command, or a task)"
+    if mark.closed:
+        return f"the {mark.hook!r} dispatch this context came from has returned"
+    if mark.task is not None and not runs_on_behalf_of(mark.task):
+        return (
+            f"this runs on a task the {mark.hook!r} handler spawned, not on the dispatch's own task"
+        )
+    return None
+
+
 def mark_suspension_raised(raised_by: str) -> None:
     """Record, on the open dispatch, that a suspension is about to raise :class:`TurnSuspended`.
 
-    The hook for ``api.suspend`` (M1e), which calls it just before raising.
+    The deferred path of ``api.suspend`` (milestone 2) calls it once the spec is
+    validated, just before raising.
 
     Args:
         raised_by: Who is suspending, named in the error if the unwind is swallowed.
 
     Raises:
-        RuntimeError: no hook dispatch is open, or the one this context holds has
-            returned, so there is nothing to unwind to.
+        RuntimeError: no hook dispatch is open, the one this context holds has
+            returned, or this is a task other than the dispatch's own, so there
+            is nothing to unwind to.
     """
     mark = _DISPATCH_MARK.get()
-    if mark is None or mark.closed:
-        raise RuntimeError("mark_suspension_raised: no hook dispatch is open")
+    refusal = dispatch_refusal(mark)
+    if refusal is not None or mark is None:
+        raise RuntimeError(f"mark_suspension_raised: {refusal}")
     mark.raised_by = raised_by

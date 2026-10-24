@@ -235,5 +235,9 @@ def _wire_event(event: AgentEvent, **extra: Any) -> WireEvent:
         max_retries=event.max_retries,
         delay_seconds=event.delay_seconds,
         dropped=event.dropped,
+        suspension=event.suspension,
+        resolution=event.resolution,
+        read_only=event.read_only,
+        lock_holder=event.lock_holder,
         **extra,
     )

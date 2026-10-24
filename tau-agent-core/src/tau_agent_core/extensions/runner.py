@@ -385,6 +385,16 @@ class ExtensionRunner:
             return None
         return outcome.value
 
+    def _handler_index(self, hook: str, handler: HookHandler | PolicedHandler) -> int:
+        """``handler``'s position among ``hook``'s handlers, in load and registration order."""
+        index = 0
+        for ext in self._extensions:
+            for candidate in ext.handlers.get(hook, ()):
+                if candidate is handler:
+                    return index
+                index += 1
+        return index
+
     async def _call(
         self,
         ext: ExtensionHandlers,
@@ -405,7 +415,7 @@ class ExtensionRunner:
                 §3.2.2).
             HandlerPolicyError: a policed handler's outcome was ``Failed``.
         """
-        with dispatch_mark() as mark:
+        with dispatch_mark(hook, ext.name, event, self._handler_index(hook, handler)) as mark:
             try:
                 if isinstance(handler, PolicedHandler):
                     result = await self._call_policed(ext, hook, handler, event)

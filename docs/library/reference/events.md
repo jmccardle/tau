@@ -126,6 +126,13 @@ instead of parsing the string.
 
 Whether this event represents an error
 
+### lock_holder
+
+`tau_agent_core.events.AgentEvent.lock_holder: dict[str, Any] | None`
+
+On ``lock_changed``, the process holding the tree's lock
+(``LockHolder.to_dict``), or ``None``.
+
 ### max_retries
 
 `tau_agent_core.events.AgentEvent.max_retries: int | None`
@@ -161,14 +168,29 @@ Which side completion a ``side_completion_*`` event reports —
 type. Side work belongs to no turn and stamps no ``submission_id``,
 so this is what a renderer keys on instead.
 
+### read_only
+
+`tau_agent_core.events.AgentEvent.read_only: bool | None`
+
+On ``lock_changed``, whether this process may no longer
+write the head cursor's tree.
+
 ### reason
 
-`tau_agent_core.events.AgentEvent.reason: SideCompletionReason | None`
+`tau_agent_core.events.AgentEvent.reason: SideCompletionReason | SuspensionCloseReason | None`
 
 What asked for it — ``"manual"``, ``"threshold"`` or
 ``"navigate"``. Set on all three ``side_completion_*`` events, so a
 reader that joins late still learns whether the compaction it is
-watching was requested or imposed. ``None`` on every other type.
+watching was requested or imposed. On ``suspension_closed``, why it
+closed (:data:`SuspensionCloseReason`). ``None`` on every other type.
+
+### resolution
+
+`tau_agent_core.events.AgentEvent.resolution: dict[str, Any] | None`
+
+On ``suspension_closed``, what ``api.suspend`` returned:
+``{id, action, values, answered_by, at_ms}``.
 
 ### response_headers
 
@@ -212,6 +234,16 @@ contract) — an honest "no submission", never a fabricated id.
 WHO submitted — an extension name, ``"human"``, a channel id.
 ``None`` alongside ``submission_id``.
 
+### suspension
+
+`tau_agent_core.events.AgentEvent.suspension: dict[str, Any] | None`
+
+On ``suspension_open`` and ``suspension_closed``, the
+suspension's state (:meth:`~tau_agent_core.suspensions.Suspension.state`):
+its id, cursor and owner linkage, spec, site and whether it is
+queued. ``suspension_open`` is sent again, ``queued`` false, when a
+queued one reaches the front of its cursor's queue.
+
 ### text
 
 `tau_agent_core.events.AgentEvent.text: str | None`
@@ -254,7 +286,7 @@ Turn number (turn_*)
 
 ### type
 
-`tau_agent_core.events.AgentEvent.type: Literal['agent_start', 'agent_end', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'side_completion_start', 'side_completion_update', 'side_completion_end', 'provider_retry', 'follow_ups_dropped']`
+`tau_agent_core.events.AgentEvent.type: Literal['agent_start', 'agent_end', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end', 'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'side_completion_start', 'side_completion_update', 'side_completion_end', 'provider_retry', 'follow_ups_dropped', 'suspension_open', 'suspension_closed', 'lock_changed']`
 
 Event type discriminator
 
@@ -381,9 +413,10 @@ async emit(event: AgentEvent) -> None
 
 Emit an event to all matching handlers.
 
-Handlers subscribed to the specific event type AND to 'all'
-will receive the event. Handlers are called synchronously.
-This is an async method to be compatible with async consumers.
+Handlers subscribed to the specific event type, then those on 'all',
+receive the event, each awaited in turn. They run outside any hook
+dispatch, so none inherits ``api.suspend``'s permission
+(docs/STEP-DEBUGGER.md §3.2).
 
 **Parameters**
 
@@ -401,7 +434,9 @@ Emit to all handlers on a specific channel.
 
 A handler that raises is surfaced and the rest still run, except for a
 :class:`~tau_agent_core.policies.HandlerPolicyError` (a policed ``ext:``
-handler's ``Failed``), which propagates to the emitter at once.
+handler's ``Failed``), which propagates to the emitter at once. An
+``ext:`` channel's handlers run in the emitter's hook dispatch, so they
+may ``api.suspend`` where it may; every other channel's run outside it.
 
 **Parameters**
 

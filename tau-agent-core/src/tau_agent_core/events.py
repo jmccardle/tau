@@ -14,6 +14,8 @@ Event types:
 - tool_execution_start, tool_execution_update, tool_execution_end
 - provider_retry
 - follow_ups_dropped
+- suspension_open, suspension_closed (docs/STEP-DEBUGGER.md §3.4)
+- lock_changed
 
 Constraint: "fire-and-forget" here means FAILURE ISOLATION, never scheduling.
 A handler that raises does not kill its siblings or its emitter; it is surfaced
@@ -28,6 +30,7 @@ docs/REMOTE-CONTROL.md, which records getting this exact distinction wrong).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from typing import Any, Callable, Literal
 
@@ -35,6 +38,7 @@ from pydantic import BaseModel, Field
 
 from tau_agent_core.policies import HandlerPolicyError
 from tau_agent_core.submission import SubmissionSource
+from tau_agent_core.suspension import outside_dispatch
 from tau_llm.docs import agent_facing
 from tau_llm.errors import ProviderConnectionError, ProviderHttpError, ProviderStreamError
 from tau_llm.retry import DEFAULT_RETRY_POLICY
@@ -71,6 +75,14 @@ pi's equivalent has a third compaction reason, ``overflow`` — compact and retr
 after a request came back over the window. τ has no such recovery path
 (``_perform_compaction`` has exactly two callers), so declaring the value would
 put a branch on the wire that nothing can reach.
+"""
+
+SuspensionCloseReason = Literal["answered", "aborted", "cursor_closed", "abandoned"]
+"""Why a ``suspension_closed`` closed (docs/STEP-DEBUGGER.md §3.4).
+
+``answered``: a responder answered it. ``aborted``: its turn's abort signal
+tripped, an ``abort`` answer to an earlier one included. ``cursor_closed``: the
+session shut down under it. ``abandoned``: its task was cancelled.
 """
 
 
@@ -218,7 +230,8 @@ class AgentEvent(BaseModel):
         reason: What asked for it — ``"manual"``, ``"threshold"`` or
             ``"navigate"``. Set on all three ``side_completion_*`` events, so a
             reader that joins late still learns whether the compaction it is
-            watching was requested or imposed. ``None`` on every other type.
+            watching was requested or imposed. On ``suspension_closed``, why it
+            closed (:data:`SuspensionCloseReason`). ``None`` on every other type.
         delta: One text fragment of a side completion, on
             ``side_completion_update``. ``None`` elsewhere.
         text: The finished side-completion text, on ``side_completion_end``.
@@ -236,6 +249,17 @@ class AgentEvent(BaseModel):
         dropped: The texts a user abort discarded, on ``follow_ups_dropped``
             only: queued followUps, then waiting ``enqueue`` submissions
             (docs/TURN-SETTINGS.md §5, §5.1). Written nowhere else.
+        suspension: On ``suspension_open`` and ``suspension_closed``, the
+            suspension's state (:meth:`~tau_agent_core.suspensions.Suspension.state`):
+            its id, cursor and owner linkage, spec, site and whether it is
+            queued. ``suspension_open`` is sent again, ``queued`` false, when a
+            queued one reaches the front of its cursor's queue.
+        resolution: On ``suspension_closed``, what ``api.suspend`` returned:
+            ``{id, action, values, answered_by, at_ms}``.
+        read_only: On ``lock_changed``, whether this process may no longer
+            write the head cursor's tree.
+        lock_holder: On ``lock_changed``, the process holding the tree's lock
+            (``LockHolder.to_dict``), or ``None``.
     """
 
     type: Literal[
@@ -254,6 +278,9 @@ class AgentEvent(BaseModel):
         "side_completion_end",
         "provider_retry",
         "follow_ups_dropped",
+        "suspension_open",
+        "suspension_closed",
+        "lock_changed",
     ]
 
     timestamp: int = Field(ge=0)
@@ -284,7 +311,7 @@ class AgentEvent(BaseModel):
     correlation: dict[str, Any] | None = None
 
     purpose: SideCompletionPurpose | None = None
-    reason: SideCompletionReason | None = None
+    reason: SideCompletionReason | SuspensionCloseReason | None = None
     delta: str | None = None
     text: str | None = None
     usage: dict[str, int] | None = None
@@ -294,6 +321,11 @@ class AgentEvent(BaseModel):
     delay_seconds: float | None = None
 
     dropped: list[str] | None = None
+
+    suspension: dict[str, Any] | None = None
+    resolution: dict[str, Any] | None = None
+    read_only: bool | None = None
+    lock_holder: dict[str, Any] | None = None
 
 
 @agent_facing(topic="events")
@@ -344,6 +376,9 @@ class EventBus:
             "side_completion_end": [],
             "provider_retry": [],
             "follow_ups_dropped": [],
+            "suspension_open": [],
+            "suspension_closed": [],
+            "lock_changed": [],
         }
         self._error_listeners: list[ErrorListener] = []
 
@@ -457,38 +492,32 @@ class EventBus:
     async def emit(self, event: AgentEvent) -> None:
         """Emit an event to all matching handlers.
 
-        Handlers subscribed to the specific event type AND to 'all'
-        will receive the event. Handlers are called synchronously.
-        This is an async method to be compatible with async consumers.
+        Handlers subscribed to the specific event type, then those on 'all',
+        receive the event, each awaited in turn. They run outside any hook
+        dispatch, so none inherits ``api.suspend``'s permission
+        (docs/STEP-DEBUGGER.md §3.2).
 
         Args:
             event: The AgentEvent to emit.
         """
-        # Call handlers subscribed to the specific event type
-        for handler in list(self._listeners.get(event.type, [])):
-            try:
-                result = handler(event)
-                # If handler is a coroutine, run it
-                if asyncio.iscoroutine(result):
-                    await result
-            except Exception as err:  # noqa: BLE001 — surfaced (S44), not swallowed
-                self._surface_handler_error(err, event.type)
-
-        # Call handlers subscribed to 'all'
-        for handler in list(self._listeners.get("all", [])):
-            try:
-                result = handler(event)
-                if asyncio.iscoroutine(result):
-                    await result
-            except Exception as err:  # noqa: BLE001 — surfaced (S44), not swallowed
-                self._surface_handler_error(err, event.type)
+        with outside_dispatch():
+            for channel in (event.type, "all"):
+                for handler in list(self._listeners.get(channel, [])):
+                    try:
+                        result = handler(event)
+                        if asyncio.iscoroutine(result):
+                            await result
+                    except Exception as err:  # noqa: BLE001 — surfaced (S44), not swallowed
+                        self._surface_handler_error(err, event.type)
 
     async def emit_channel(self, channel: str, *args: Any, **kwargs: Any) -> None:
         """Emit to all handlers on a specific channel.
 
         A handler that raises is surfaced and the rest still run, except for a
         :class:`~tau_agent_core.policies.HandlerPolicyError` (a policed ``ext:``
-        handler's ``Failed``), which propagates to the emitter at once.
+        handler's ``Failed``), which propagates to the emitter at once. An
+        ``ext:`` channel's handlers run in the emitter's hook dispatch, so they
+        may ``api.suspend`` where it may; every other channel's run outside it.
 
         Args:
             channel: Channel name.
@@ -498,12 +527,14 @@ class EventBus:
         Raises:
             HandlerPolicyError: a policed handler failed.
         """
-        for handler in list(self._listeners.get(channel, [])):
-            try:
-                result = handler(*args, **kwargs)
-                if asyncio.iscoroutine(result):
-                    await result
-            except HandlerPolicyError:
-                raise
-            except Exception as err:  # noqa: BLE001 — surfaced (S44), not swallowed
-                self._surface_handler_error(err, channel)
+        scope = contextlib.nullcontext() if channel.startswith("ext:") else outside_dispatch()
+        with scope:
+            for handler in list(self._listeners.get(channel, [])):
+                try:
+                    result = handler(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except HandlerPolicyError:
+                    raise
+                except Exception as err:  # noqa: BLE001 — surfaced (S44), not swallowed
+                    self._surface_handler_error(err, channel)

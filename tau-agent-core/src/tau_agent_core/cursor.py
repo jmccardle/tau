@@ -136,6 +136,8 @@ class Cursor:
             are written (docs/ASYNC-SESSION-LOG.md §3.3).
         frame: The :class:`TurnFrame` this cursor's turns run under, or ``None``
             for the session's own.
+        opened_at: The leaf it was placed at, which a child cursor's
+            suspension reports as where it was spawned from.
     """
 
     def __init__(
@@ -163,6 +165,7 @@ class Cursor:
         self.owner = owner
         self.label = label
         self._leaf = leaf
+        self.opened_at = leaf
         self._open: dict[str, str | None] = {}
         self.turn_lock = asyncio.Lock()
         self.abort_signal = AbortSignal()
