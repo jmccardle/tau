@@ -320,6 +320,9 @@ class _FieldForm(TauDialog[_T]):
             self.call_after_refresh(self._focus_first_field)
 
     def _focus_first_field(self) -> None:
+        if not self.is_current:
+            # Dismissed or covered before the refresh came round: there is nothing to focus.
+            return
         first = self.query_one(f"#{self._field_widget_id(0)}")
         (first.focus_target() if isinstance(first, ChoiceField) else first).focus()
 
