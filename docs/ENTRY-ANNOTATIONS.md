@@ -1,6 +1,6 @@
 # An extension annotates an entry in the same write that records it
 
-Built 2026-10-24 (#82), except the tau-jmfts `at=` fork copy of §5.4 (#84) and
+Built 2026-10-24 (#82) and the tau-jmfts `at=` fork copy of §5.4 (#84), except
 the timeout of §8.1 (#83). An extension's `annotate` hook returns
 JSON for each entry the loop writes. τ stores that JSON on the entry as
 `ext[<extension name>]`, in the one write that records the entry, and never sends

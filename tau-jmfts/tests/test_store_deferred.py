@@ -189,3 +189,45 @@ async def test_a_fork_reads_the_mirror_and_the_subtree_with_no_append_between():
     client.get_subtree = watched  # type: ignore[method-assign]
     JmftsSessionCatalog(client).fork(log, ".")  # type: ignore[arg-type]
     assert reads[0] is True, "the source's subtree is read under its append lock"
+
+
+async def _annotated_session() -> tuple[_Client, JmftsSessionLog, list[str]]:
+    """Three message entries; a non-τ child (empty, unordered) under entries 2 and 3."""
+    client = _Client()
+    log = _deferred(client)
+    cursor = Cursor.newest(log)
+    ids = [await cursor.append_message({"role": "user", "content": f"m{i}"}) for i in range(3)]
+    for entry_id in ids[1:]:
+        doc = client.create_document(
+            title="a",
+            content="",
+            parent_id=log._doc_id(entry_id),
+            usetype="horopter:annotations",
+            structured_content={"n": entry_id},
+            auto_embed=False,
+            sequential=False,
+        )
+        doc["position"] = None
+    return client, log, ids
+
+
+def _notes(client: _Client, fork: JmftsSessionLog) -> list[dict[str, Any]]:
+    sub = client.get_subtree(fork._root_doc_id)["descendants"]  # type: ignore[arg-type]
+    return [d for d in sub if d.get("usetype") == "horopter:annotations"]
+
+
+async def test_a_fork_copies_non_tau_children_of_copied_entries_only():
+    client, log, ids = await _annotated_session()
+    catalog = JmftsSessionCatalog(client)  # type: ignore[arg-type]
+    for at, expect in ((ids[2], ids[1:]), (ids[1], ids[1:2]), (None, ids[1:])):
+        fork = catalog.fork(log, ".", at=at)
+        notes = _notes(client, fork)
+        assert [n["structured_content"]["n"] for n in notes] == expect, at
+        by_text = {
+            e["message"]["content"]: fork._doc_id(e["id"])
+            for e in fork.entries()
+            if e["type"] == "message" and e["message"]["role"] == "user"
+        }
+        assert [n["parent_id"] for n in notes] == [by_text[f"m{ids.index(e)}"] for e in expect], at
+        assert all(n["sequential"] is False and n["content"] == "" for n in notes), at
+    assert not any(d.get("dedup") for d in client.docs.values())

@@ -511,7 +511,10 @@ class JmftsSessionLog:
         title, content, structured_content unchanged) so the fork's tree looks
         exactly like the source's, foreign nodes included. ``source`` is untouched.
         With ``at``, only the documents on the path to that entry are copied, so the
-        fork continues from it (docs/CURSORS.md §4). Either way the copy set is
+        fork continues from it (docs/CURSORS.md §4), plus every non-τ document under
+        a copied entry or under another such child (docs/ENTRY-ANNOTATIONS.md §5.4),
+        re-parented onto the copy. A non-τ copy keeps its source's ordering: it is
+        created ``sequential`` only if the source has a ``position``. Either way the copy set is
         ``session_log.entries_for_fork``: finalized side entries ride along, an open
         one is dropped, and an open one at the fork point refuses the fork. The
         mirror snapshot and the server subtree are read under ``_append_lock``, so
@@ -561,7 +564,13 @@ class JmftsSessionLog:
         descendants = sorted(subtree["descendants"], key=lambda d: d["id"])
         if at is not None:
             on_path = {source._doc_id(entry_id) for entry_id in kept}
-            descendants = [d for d in descendants if d["id"] in on_path]
+            copied_ids = set(on_path)
+            for d in descendants:
+                if d["id"] in copied_ids or _is_tau_doc(d):
+                    continue
+                if d["parent_id"] in copied_ids:
+                    copied_ids.add(d["id"])
+            descendants = [d for d in descendants if d["id"] in copied_ids]
         else:
             dropped = {source._doc_id(e["id"]) for e in source_entries if e["id"] not in kept}
             descendants = [d for d in descendants if d["id"] not in dropped]
@@ -580,7 +589,7 @@ class JmftsSessionLog:
                     doc.get("structured_content") or {}, old_to_new
                 ),
                 auto_embed=False,
-                sequential=True,
+                sequential=_is_tau_doc(doc) or doc.get("position") is not None,
             )
             old_to_new[doc["id"]] = copied["id"]
 
