@@ -276,7 +276,9 @@ and each could swallow or rewrite it (independent review, round 2, N6). So:
   `TurnSuspended`, and under `-p` the turn would then run tools the human never
   stepped through. So `api.suspend` marks the dispatch when it raises. If that
   dispatch returns normally anyway, core raises a loud error naming the
-  extension that swallowed it, and the turn ends in error.
+  extension that swallowed it, and the turn ends in error. The suspension's side
+  entry is finalized as `abandoned`, and its pending calls get aborted results,
+  so the pending-prompt refusal lifts and the tree is valid.
 - **`except Exception` sites need nothing,** and `asyncio.gather` in the
   parallel batch is not reached, because results' `entry_written` runs after
   the batch (§3.2).
@@ -464,6 +466,7 @@ loop stands:
 | `phase` | the dispatch that suspended: `dispatch:tool_call`, `dispatch:entry_written`, `dispatch:turn_end`, `dispatch:user_turn_end` |
 | `group`, `index`, `handler` | for `entry_written`: the write group, the entry within it, and how far the dispatch had got |
 | `pending_calls` | the batch's calls with no result in the tree, in order. Each is `{id, prepared, effective_args, blocked}`: whether its `tool_call` hooks had all run, its arguments after them, and a block reason if one blocked it |
+| `gates` | the loaded `tool_call` handlers, as `[extension name, version]`, in load order. A prepared call is never re-vetted, so its stored verdict is valid only under the same gates |
 | `returned` | for `turn_end` and `user_turn_end`: the messages already returned by the handlers that ran. Those are appended only after every handler returns (`agent_loop.py:810-814`), so they are not yet in the tree |
 | `turn_index` | the loop's own counter, which the tree cannot rebuild, because steer and follow-up user entries look alike there (N9) |
 | `repeat` | `prev_batch` and `repeat_count` (`agent_loop.py:~385-397`), the repeat-tool-call limit's state (N9) |
@@ -486,7 +489,13 @@ loop stands:
    never lets a vetoed call run (N5). `entry_written` therefore runs before that
    abort takes effect, in-process too.
 4. **Then `then`:**
-   - `tools`: run `pending_calls`. A call marked `prepared` is not dispatched
+   - `tools`: if the loaded `tool_call` handlers differ from the stored `gates`
+     (a new deny rule, an upgraded gate, a disabled extension while a `-p` exit
+     sat for days), the resume is refused, naming the difference. The human
+     answers `abort`, or resumes with `--redispatch`, which drops the stored
+     verdicts and dispatches every pending call's `tool_call` hooks again
+     (coordinator confirmation pass, item 1). Otherwise: run `pending_calls`. A
+     call marked `prepared` is not dispatched
      again. It runs with its stored `effective_args`, or stays blocked with its
      stored reason, so it runs exactly what the human was shown. In parallel
      mode those are calls *1…k−1*. The suspended call *k* resumes its
@@ -500,6 +509,9 @@ loop stands:
      have done next. `raise` raises the stored error, so a break on a stream
      failure's write group still ends the turn in that error (M2-1).
 5. On `abort` at any phase, every call in `pending_calls` gets an aborted result.
+   Stored `returned` messages are **dropped** on `abort`: they were
+   continuations of a turn the human chose to end, and appending them would
+   feed the next prompt context the turn never finished.
 
 | site | `then`, by case |
 |---|---|
@@ -660,8 +672,11 @@ rests on the Future. Across processes it rests on a lock:
   matters only for a process's lifetime, so persistence buys nothing. And
   `-p --answer` on a JMFTS-backed session is **refused** with that reason,
   because a deferred responder is exactly the cross-process case the host-local
-  lock cannot vouch for. A live suspension in serve or the TUI is answered
-  in-process as usual. This default comes from the final review (M2-4) and is
+  lock cannot vouch for. To avoid a dead end, stepping under `-p` on a
+  JMFTS-backed session is refused **up front**, at the §3.9 `input` check,
+  naming the serve or TUI route, before any work is done. A `-p` run never exits
+  3 into an answer that would then be refused. A live suspension in serve or
+  the TUI is answered in-process as usual. This default comes from the final review (M2-4) and is
   flagged to John, who may lift it.
 
 **A re-dispatch replays the answer; it never asks twice.** A resume re-runs
@@ -780,7 +795,8 @@ check happens before admission:
   whose submission source is `"agent"` (`spawn_branch`, a delegate), is
   submitted with `allow_user_input=False` (`agent_session.py:3744-3750`). Under
   the rule above, every spawn would then be refused. So the debugger runs child
-  cursors unstepped by default, with one session warning per child. Stepping
+  cursors unstepped by default, with one session warning per session, not per
+  child, so memory_reflex's lanes cannot flood it. Stepping
   children is deferred (§7). This default is flagged to John (final review,
   M1-4).
 - **`store_history` off is unsteppable too.** With nothing persisted,
@@ -1157,7 +1173,15 @@ Every head must produce the same tree: the same entries, the same finalized
   works and raises the exclusion warning; claiming an orphaned suspension,
   `-p --answer`, and arming stepping under `-p` are refused, naming the
   filesystem, unless `sessions.allow_unlocked_fs` is set;
-- `-p --answer` on a JMFTS-backed session: refused, naming the reason;
+- stepping armed under `-p` on a JMFTS-backed session: refused at `input`,
+  naming the serve or TUI route, before any request;
+- a `tool_call` gate changes between a `-p` exit and its resume: the resume is
+  refused, naming the difference; `--redispatch` re-vets every pending call;
+- a swallowed unwind: the side entry is finalized `abandoned`, pending calls get
+  aborted results, and prompts work afterwards;
+- `abort` at a `turn_end` suspension with stored `returned` messages: they are
+  not appended;
+- three `spawn_branch` lanes while stepping is armed: one warning;
 - after `new_session` in a warm process on the file store, a second process can
   open the previous session for writing;
 - a code-mode program calls `web_search` with stepping in `every` mode: no
@@ -1302,4 +1326,6 @@ as milestone 2 (§7).
 | round 6, tau-search: the lint must allow cleanup-then-reraise | §3.2.2 bare `raise` is compliant |
 | round 6, tau-search: the `statfs` refusal manufactures a failure for users who never step | §3.7.3 writing works with a warning; only exclusion-dependent operations are refused |
 | round 6, tectum: the JMFTS sidecar under `$TAU_HOME` grows without limit | §3.7.3 runtime directory |
+| coordinator confirmation pass: a prepared call is never re-vetted when gates change | §3.7.3 `gates`, refusal and `--redispatch` |
+| coordinator confirmation pass: a swallowed unwind leaves the side entry open; `returned` on abort; the JMFTS `-p` dead end; per-child warnings | §3.2.2 finalize `abandoned`; §3.7.3 dropped on abort; JMFTS refused up front; §3.9 once per session |
 | independent round 2 minors | resume as a submission; forms under `-p` take the headless policy; pending hits combined (§5.2); effective-argument check; `store_history` off refused (§3.9); the session lock held while hosting; `-p` without `--answer` exits 3 |
