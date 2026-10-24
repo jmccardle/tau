@@ -2055,6 +2055,8 @@ What a session answers beyond its tree, which a head reads without a round trip.
 | `loaded` | list of [ExtensionInfo](#extensioninfo) | yes | Every loaded extension and what it registered. |
 | `load_errors` | list of list of string | yes | `[path, error]` per extension file that failed to load. |
 | `warnings` | list of [ExtensionWarning](#extensionwarning) | yes | The session's current extension warnings (#60); a `ui` event with op `warnings` carries each change. |
+| `panels` | object of [PanelSpec](#panelspec) | yes | Every panel open now, by key (#90); a `ui` event with op `panel` opens, replaces or (with a `None` spec) closes one. |
+| `statuses` | object of string | yes | Every status-line text set now, by key (#90); a `ui` event with op `status` sets one or (with `None`) clears it. |
 
 ### SuspensionAction
 

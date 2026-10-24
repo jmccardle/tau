@@ -793,6 +793,27 @@ because RPC 3.0 and serve 0.11 are unreleased.
   does. #55's exclusion notice and #58's load-failure text move onto the
   store once their branches merge.
 
+### 7.6 Panels and statuses reach a late attach (#90)
+
+`ui.panel` and `ui.set_status` also published one-off events, so a client that
+attached after the call, or after its event left the replay window, never saw
+them. Tau Code kept them in a 20-event ring, which 20 notifies could push out.
+
+- **Serve:** `Surface` gains `panels` (`{key: PanelSpec}`) and `statuses`
+  (`{key: text}`). Both are required, and an empty map means none. `ServeUI`
+  keeps them by key as it publishes: a `ui` event with a `None` spec or text
+  removes the key. `Attached.surface` and `describe` both carry them. The `ui`
+  events are unchanged and still arrive live. `ServeClient`'s replica folds them
+  into `surface["panels"]` and `surface["statuses"]`.
+- **Protocol version:** the field is additive, but serve 0.12 is unreleased
+  (`origin/master` still says 0.11), so 0.12 absorbs it and nothing bumps. A
+  client built on the earlier 0.12 schema would not know the two keys. Serve
+  still needs the lockstep tau-code release (§7.3), because `hello` refuses a
+  different `PROTOCOL_VERSION`. Tau Code should seed its panels and statuses
+  from `surface` on attach and drop the 20-event ring for them.
+- **Not done here:** `--connect`'s `RemoteSession` still shows only live `ui`
+  events, so the TUI head does not yet render the attach-time state.
+
 ## 8. The demo: comparing cursors from one leaf
 
 From any leaf, the user starts N cursors. Each one first writes a `config` entry

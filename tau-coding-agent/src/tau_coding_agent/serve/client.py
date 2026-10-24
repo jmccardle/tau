@@ -115,7 +115,7 @@ class Replica:
         return replica
 
     def apply(self, event: dict[str, Any]) -> None:
-        """Fold one event in: an entry write, the cursor set, or the warnings.
+        """Fold one event in: an entry write, the cursor set, the warnings, a panel or a status.
 
         Raises:
             ValueError: the event skips a number; the client must reattach.
@@ -136,11 +136,23 @@ class Replica:
             self.cursors = {c["cursor_id"]: c for c in event["data"]["cursors"]}
         elif kind == "ui" and event["data"]["op"] == "warnings":
             self.surface["warnings"] = event["data"]["warnings"]
+        elif kind == "ui" and event["data"]["op"] in ("panel", "status"):
+            self._apply_keyed_ui(event["data"])
         elif kind == "agent_event" and event["data"]["type"] == "suspension_open":
             suspension = event["data"]["suspension"]
             self.suspensions[suspension["id"]] = suspension
         elif kind == "agent_event" and event["data"]["type"] == "suspension_closed":
             self.suspensions.pop(event["data"]["suspension"]["id"], None)
+
+    def _apply_keyed_ui(self, data: dict[str, Any]) -> None:
+        """Set or remove one key of ``surface["panels"]`` or ``surface["statuses"]``."""
+        op = data["op"]
+        keyed = self.surface["panels" if op == "panel" else "statuses"]
+        value = data["spec" if op == "panel" else "text"]
+        if value is None:
+            keyed.pop(data["key"], None)
+        else:
+            keyed[data["key"]] = value
 
 
 class ServeError(Exception):
