@@ -31,6 +31,7 @@ import pytest
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.cursor import Cursor
@@ -369,6 +370,24 @@ async def test_session_before_switch_veto_leaves_everything_untouched(
     assert result == {"cancelled": True}
     assert session.session_log is old_log
     assert seen == [{"type": "session_before_switch", "reason": "new", "target": None}]
+
+
+async def test_a_raising_veto_check_stops_the_swap(session: AgentSession, runtime):
+    """A failed ``session_before_switch`` handler leaves its veto unknown, so nothing swaps (#29)."""
+    errors: list[Any] = []
+    session._extension_runner.on_error(errors.append)
+
+    def _broken(event, ctx):
+        raise RuntimeError("veto check broke")
+
+    session._extension_runner.register_extension("test-ext").on("session_before_switch", _broken)
+
+    old_log = session.session_log
+    with pytest.raises(HookHandlerError, match="'session_before_switch' handler raised"):
+        await runtime.new_session(persist=False)
+
+    assert session.session_log is old_log
+    assert [e.event for e in errors] == ["session_before_switch"]
 
 
 async def test_switch_session_veto_carries_the_target(session: AgentSession, catalog, runtime):

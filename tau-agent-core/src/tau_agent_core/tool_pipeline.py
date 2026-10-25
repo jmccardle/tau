@@ -27,6 +27,7 @@ from tau_llm.types import ToolCall
 
 from tau_agent_core.agent_loop_types import PreparedToolCall
 from tau_agent_core.events import AgentEvent
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.tool_output import capture_tool_output, suspend_capture
 from tau_agent_core.tools.base import AgentTool, AgentToolResult, ToolError, ToolHalt
 
@@ -66,16 +67,23 @@ class BlockedCall:
         error: Why it was blocked; becomes the call's error result text.
         blocked_by_extension: The extension that vetoed the call via a
             ``tool_call`` hook (S50, anchor G11). ``None`` for any other block
-            (argument-validation failure, fail-closed handler throw), which
+            (argument-validation failure, a failed handler), which
             renders as a generic errored result, not "⛔ blocked by <ext>".
+        failure: The ``tool_call`` handler failure that blocked it, which ends
+            the turn once the call is answered (docs/HOOK-ERRORS.md §3).
     """
 
     def __init__(
-        self, call: PreparedToolCall, error: str, blocked_by_extension: str | None = None
+        self,
+        call: PreparedToolCall,
+        error: str,
+        blocked_by_extension: str | None = None,
+        failure: HookHandlerError | None = None,
     ) -> None:
         self.call = call
         self.error = error
         self.blocked_by_extension = blocked_by_extension
+        self.failure = failure
 
 
 @agent_facing(topic="agent-loop")
@@ -270,7 +278,8 @@ async def prepare_tool_call(
 
     Returns:
         The prepared call, a :class:`BlockedCall` (validation failed, a handler
-        vetoed, or a handler raised: fail-closed), or an :class:`ErrorCall`.
+        vetoed, or a handler failed, carried as its ``failure``), or an
+        :class:`ErrorCall`.
     """
     try:
         call_name = tool_call.name
@@ -293,8 +302,10 @@ async def prepare_tool_call(
                 event["parent_tool_call_id"] = parent_tool_call_id
             try:
                 hook_result = await dispatcher.emit_tool_call(event)
-            except Exception as hook_err:
-                return _blocked(tool_call, f"Extension failed, blocking execution: {hook_err}")
+            except HookHandlerError as hook_err:
+                blocked = _blocked(tool_call, f"Extension failed, blocking execution: {hook_err}")
+                blocked.failure = hook_err
+                return blocked
             if hook_result and hook_result.get("block"):
                 return _blocked(
                     tool_call,
@@ -477,6 +488,7 @@ async def run_nested_call(
 
     Raises:
         ToolCallBlocked: a ``tool_call`` hook vetoed it.
+        HookHandlerError: a ``tool_call`` or ``tool_result`` handler failed.
         ToolHalt: the tool asked to stop the turn.
         NestedCallError: the tool is not reachable from here, its arguments
             failed validation, nesting is too deep, or it reported an error.
@@ -548,6 +560,8 @@ async def run_nested_call(
             ),
         )
         record("blocked", error=prepared.error, blocked_by=blocked_by)
+        if prepared.failure is not None:
+            raise prepared.failure
         if blocked_by is not None:
             raise ToolCallBlocked(prepared.error, blocked_by)
         raise NestedCallError(prepared.error)

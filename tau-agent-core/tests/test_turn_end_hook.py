@@ -46,6 +46,7 @@ from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extensions.runner import ExtensionError, ExtensionRunner
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.session_log import InMemorySessionLog
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
@@ -216,8 +217,8 @@ async def test_emit_turn_end_observer_returns_nothing() -> None:
     ]
 
 
-async def test_emit_turn_end_surfaces_handler_error_and_continues() -> None:
-    """A throwing handler is surfaced via on_error; the next handler still runs."""
+async def test_emit_turn_end_surfaces_handler_error_and_raises() -> None:
+    """A throwing handler is surfaced via on_error, then raised; the next handler does not run."""
     runner = ExtensionRunner()
     errors: list[ExtensionError] = []
     runner.on_error(errors.append)
@@ -230,9 +231,9 @@ async def test_emit_turn_end_surfaces_handler_error_and_continues() -> None:
     b = runner.register_extension("good")
     b.on("turn_end", lambda e, ctx: {"message": {"customType": "note", "content": "ok"}})
 
-    injected = await runner.emit_turn_end(turn_index=0, usage=None, messages=[])
+    with pytest.raises(HookHandlerError, match="'bad' 'turn_end' handler raised"):
+        await runner.emit_turn_end(turn_index=0, usage=None, messages=[])
 
-    assert [m["content"] for m in injected] == ["ok"]
     assert len(errors) == 1
     assert errors[0].event == "turn_end"
     assert errors[0].extension_path == "bad"

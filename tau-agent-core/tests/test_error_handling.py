@@ -83,6 +83,7 @@ from tau_agent_core.agent_loop import AgentLoop
 from tau_agent_core.agent_loop_types import AgentLoopConfig
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.tools.base import INTERNAL_TOOL_ERROR, AgentTool, ToolDefinition
 
@@ -556,15 +557,11 @@ def test_failing_tool_result_is_persisted_to_the_session_log_as_an_error():
     assert persisted_tool_results == tool_results
 
 
-def test_a_raising_tool_call_hook_blocks_the_call_fail_closed():
-    """The ``tool_call`` veto hook is fail-CLOSED: a raising handler blocks execution.
+def test_a_raising_tool_call_hook_blocks_the_call_and_ends_the_turn():
+    """A raising ``tool_call`` handler blocks the call, answers it, and ends the turn.
 
-    ``agent_loop.py``'s ``_prepare_tool_call`` catches the handler's exception and
-    returns a ``BlockedCall`` with "Extension failed, blocking execution: …" — a
-    code path with, per a repo-wide grep, no test anywhere before this one. It
-    sits right next to the fail-OPEN ``tool_result`` hook
-    ``test_extension_error_visibility.py`` already covers; the two are opposite
-    policies and neither is obvious from reading the event dispatch alone.
+    docs/HOOK-ERRORS.md §3: the call gets "Extension failed, blocking execution: …"
+    as its error result, so the tree stays valid, and ``prompt`` raises.
     """
     tool_ran: list = []
 
@@ -581,9 +578,10 @@ def test_a_raising_tool_call_hook_blocks_the_call_fail_closed():
         session = _session(
             tools=[_succeeding_tool("real_tool", ran=tool_ran)], extensions=[_bad_ext]
         )
-        messages = asyncio.run(session.prompt("run it"))
+        with pytest.raises(HookHandlerError, match="policy engine unavailable"):
+            asyncio.run(session.prompt("run it"))
 
-    tool_results = [m for m in messages if m.get("role") == "toolResult"]
+    tool_results = [m for m in session.messages if m.get("role") == "toolResult"]
     assert len(tool_results) == 1
     assert tool_results[0]["is_error"] is True
     assert "blocking execution" in tool_results[0]["content"][0]["text"]
@@ -591,15 +589,11 @@ def test_a_raising_tool_call_hook_blocks_the_call_fail_closed():
     assert tool_ran == []  # the tool itself never executed
 
 
-def test_a_raising_tool_result_hook_does_not_discard_the_tool_that_already_succeeded():
-    """The ``tool_result`` hook is fail-OPEN: the original result survives.
+def test_a_raising_tool_result_hook_writes_an_error_result_and_ends_the_turn():
+    """A raising ``tool_result`` handler ends the turn, and the unpatched output is not written.
 
-    ``test_extension_error_visibility.py::test_session_routes_mutating_hook_error_to_tui_delegate``
-    already proves the runner surfaces this via ``ctx.ui.notify`` by calling
-    ``emit_tool_result`` directly. This is the layer that test does not reach:
-    a full turn, through ``_apply_after_hooks``, with a tool that actually ran
-    and produced real output — confirming the output is not silently lost
-    underneath the exploding hook.
+    docs/HOOK-ERRORS.md §2: the handler may be a redactor, so the tool's own
+    output is replaced by an error result rather than passed through unredacted.
     """
 
     def _bad_ext(api):
@@ -616,12 +610,13 @@ def test_a_raising_tool_result_hook_does_not_discard_the_tool_that_already_succe
             tools=[_succeeding_tool("real_tool", result="the real answer")],
             extensions=[_bad_ext],
         )
-        messages = asyncio.run(session.prompt("run it"))
+        with pytest.raises(HookHandlerError, match="logging sink down"):
+            asyncio.run(session.prompt("run it"))
 
-    tool_results = [m for m in messages if m.get("role") == "toolResult"]
+    tool_results = [m for m in session.messages if m.get("role") == "toolResult"]
     assert len(tool_results) == 1
-    assert tool_results[0]["is_error"] is False
-    assert tool_results[0]["content"][0]["text"] == "the real answer"
+    assert tool_results[0]["is_error"] is True
+    assert "the real answer" not in tool_results[0]["content"][0]["text"]
 
 
 @pytest.mark.usefixtures("fake_llm")

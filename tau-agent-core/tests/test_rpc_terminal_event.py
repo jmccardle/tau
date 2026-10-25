@@ -100,3 +100,57 @@ async def test_a_failure_before_the_turn_starts_still_ends_the_submission() -> N
     ]
     assert [e["end_reason"] for e in ends] == ["error"]
     assert len(ended) == 1
+
+
+def _raising_tool_call_hook(api: Any) -> None:
+    def gate(event: Any, ctx: Any) -> None:
+        raise RuntimeError("gate broke")
+
+    api.on("tool_call", gate)
+
+
+async def test_a_raising_tool_call_hook_ends_on_agent_end_naming_the_hook() -> None:
+    """#29: the turn-ending failure reaches the host as the turn's ``agent_end``."""
+    from test_handler_policies import _calls, _tool
+
+    session = AgentSession(
+        session_log=InMemorySessionLog(),
+        model=_model(),
+        extensions=[_raising_tool_call_hook],
+        tools=[_tool("probe", [])],
+    )
+    handler = RPCHandler(session)
+    script = _script(_calls("probe"), _text("never sent"))
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=script):
+        items = await _wire_events(handler, {"text": "hi"})
+
+    assert items[0]["result"]["accepted"] is True
+    [end] = [
+        i["params"]
+        for i in items
+        if i.get("method") == "event" and i["params"]["type"] == "agent_end"
+    ]
+    assert end["end_reason"] == "error"
+    assert "'tool_call' handler raised RuntimeError: gate broke" in end["error"]
+    assert end["error_detail"]["type"] == "HookHandlerError"
+
+
+def _raising_input_hook(api: Any) -> None:
+    def gate(event: Any, ctx: Any) -> None:
+        raise RuntimeError("gate broke")
+
+    api.on("input", gate)
+
+
+async def test_a_raising_input_hook_is_the_prompt_requests_error_response() -> None:
+    """#29: ``input`` runs before admission, so its failure answers the request itself."""
+    session = AgentSession(
+        session_log=InMemorySessionLog(), model=_model(), extensions=[_raising_input_hook]
+    )
+    handler = RPCHandler(session)
+    with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("never"))):
+        items = await _wire_events(handler, {"text": "hi"})
+
+    assert "result" not in items[0]
+    assert "'input' handler raised RuntimeError: gate broke" in items[0]["error"]["message"]
+    assert not [i for i in items if i.get("method") == "event"]

@@ -28,6 +28,7 @@ from tau_agent_core.policies import (
     DeadlineExpired,
     Failed,
     HandlerPolicyError,
+    HookHandlerError,
     PausableDeadline,
     PolicySite,
     Proceeded,
@@ -368,15 +369,17 @@ def test_a_handler_with_no_policy_is_stored_unwrapped_and_unsubscribes() -> None
     assert bucket.handlers["tool_call"] == []
 
 
-async def test_no_policy_keeps_todays_isolation() -> None:
+async def test_no_policy_isolates_a_subscriber_and_an_observing_hook() -> None:
+    """Unpoliced, an ``ext:`` subscriber and an observing hook stay isolated (docs/HOOK-ERRORS.md §2)."""
+
     def isolated(api: Any) -> None:
-        def on_turn_end(event: Any, ctx: Any) -> None:
+        def on_written(event: Any, ctx: Any) -> None:
             raise RuntimeError("observer broke")
 
         async def on_hit(payload: Any) -> None:
             raise RuntimeError("subscriber broke")
 
-        api.on("turn_end", on_turn_end)
+        api.on("entry_written", on_written)
         api.on(PRODUCER_CHANNEL, on_hit)
 
     ran: list[str] = []
@@ -449,13 +452,21 @@ def _ext_name(session: AgentSession, index: int) -> str:
 @pytest.mark.parametrize(("policy", "cause", "mode"), CASES)
 async def test_tool_call(policy: str, cause: str, mode: str) -> None:
     ran: list[str] = []
-    session = _session(_policed("tool_call", policy, cause), tools=[_tool("probe", ran)])
+    ends: list[Any] = []
+    session = _session(
+        _policed("tool_call", policy, cause), _agent_ends(ends), tools=[_tool("probe", ran)]
+    )
     with patch(
         "tau_agent_core.agent_loop.stream_simple", side_effect=_script(_calls("probe"), _text("ok"))
     ):
-        await session.prompt("go")
+        if mode == "fail":
+            with pytest.raises(HandlerPolicyError):
+                await session.prompt("go")
+        else:
+            await session.prompt("go")
     result = _messages(session)[2]["message"]
     if mode == "fail":
+        assert [e.end_reason for e in ends] == ["error"]
         assert ran == []
         assert result["is_error"] is True
         assert "Extension failed, blocking execution" in result["content"][0]["text"]
@@ -556,7 +567,11 @@ async def test_ext_channel(policy: str, cause: str, mode: str) -> None:
     with patch(
         "tau_agent_core.agent_loop.stream_simple", side_effect=_script(_calls("probe"), _text("ok"))
     ):
-        await session.prompt("go")
+        if mode == "fail":
+            with pytest.raises(HandlerPolicyError):
+                await session.prompt("go")
+        else:
+            await session.prompt("go")
     if mode == "fail":
         assert _producer_saw == [_detail(cause)]
         assert ran == []
@@ -595,7 +610,8 @@ async def test_a_nested_timeout_is_the_outer_policys() -> None:
     with patch(
         "tau_agent_core.agent_loop.stream_simple", side_effect=_script(_calls("probe"), _text("ok"))
     ):
-        await session.prompt("go")
+        with pytest.raises(HandlerPolicyError, match="outer_fast"):
+            await session.prompt("go")
     assert time.monotonic() - started < 2
     assert ran == []
     assert "timed out after 0.05s" in _messages(session)[2]["message"]["content"][0]["text"]
@@ -727,12 +743,10 @@ async def test_a_tool_result_handler_calling_prompt_hits_the_reentrant_guard(
     session._extension_runner.on_error(errors.append)
     script = _script(_calls("one", "two"), _text("ok"))
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=script):
-        if policy is None:
+        with pytest.raises(HookHandlerError) as raised:
             await asyncio.wait_for(session.prompt("go"), timeout=2)
-        else:
-            with pytest.raises(HandlerPolicyError) as raised:
-                await asyncio.wait_for(session.prompt("go"), timeout=2)
-            assert "reentrant self-submission" in raised.value.detail
+    assert "reentrant self-submission" in raised.value.detail
+    assert isinstance(raised.value, HandlerPolicyError) is (policy is not None)
     assert errors and all("reentrant self-submission" in e.error for e in errors)
 
 

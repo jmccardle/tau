@@ -827,6 +827,7 @@ The tool's structured value, content and details.
 **Raises**
 
 - `ToolCallBlocked` — a ``tool_call`` hook vetoed it.
+- `HookHandlerError` — a ``tool_call`` or ``tool_result`` handler failed.
 - `ToolHalt` — the tool asked to stop the turn.
 - `NestedCallError` — the tool is not reachable from here, its arguments failed validation, nesting is too deep, or it reported an error.
 - `ValueError` — ``parent_tool_call_id`` contradicts the running tool.

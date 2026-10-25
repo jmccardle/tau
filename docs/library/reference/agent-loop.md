@@ -183,7 +183,7 @@ How tools are executed
 <!-- agent: yes -->
 
 ```python
-class BlockedCall(call: PreparedToolCall, error: str, blocked_by_extension: str | None = None)
+class BlockedCall(call: PreparedToolCall, error: str, blocked_by_extension: str | None = None, failure: HookHandlerError | None = None)
 ```
 
 `tau_agent_core.tool_pipeline.BlockedCall`
@@ -194,7 +194,8 @@ A tool call that was blocked (e.g., argument validation failed).
 
 - `call: PreparedToolCall` — The prepared call that will not run.
 - `error: str` — Why it was blocked; becomes the call's error result text.
-- `blocked_by_extension: str | None = None` — The extension that vetoed the call via a ``tool_call`` hook (S50, anchor G11). ``None`` for any other block (argument-validation failure, fail-closed handler throw), which renders as a generic errored result, not "⛔ blocked by <ext>".
+- `blocked_by_extension: str | None = None` — The extension that vetoed the call via a ``tool_call`` hook (S50, anchor G11). ``None`` for any other block (argument-validation failure, a failed handler), which renders as a generic errored result, not "⛔ blocked by <ext>".
+- `failure: HookHandlerError | None = None` — The ``tool_call`` handler failure that blocked it, which ends the turn once the call is answered (docs/HOOK-ERRORS.md §3).
 
 ## ErrorCall
 <!-- agent: yes -->
@@ -542,4 +543,4 @@ A name not in ``tools`` is not validated and passes; execution reports it.
 
 **Returns**
 
-The prepared call, a :class:`BlockedCall` (validation failed, a handler vetoed, or a handler raised: fail-closed), or an :class:`ErrorCall`.
+The prepared call, a :class:`BlockedCall` (validation failed, a handler vetoed, or a handler failed, carried as its ``failure``), or an class:`ErrorCall`.
