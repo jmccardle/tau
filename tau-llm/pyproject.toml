@@ -38,7 +38,8 @@ dependencies = [
 # lazily, on first request, so `import tau_llm` works without this extra and the
 # error for a missing one names the extra.
 anthropic = [
-    "anthropic>=1.0",
+    # 2.x auto-discovers profile credentials when no key is given, past the keyless Omit().
+    "anthropic>=1.0,<2",
 ]
 # The google-generative-ai wire protocol, on the official SDK for the same
 # reason (docs/ANTHROPIC-GOOGLE-CLIENTS.md O6) — and here the drift argument is
