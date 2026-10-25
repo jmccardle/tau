@@ -499,3 +499,10 @@ def test_the_tui_model_override_carries_only_an_entrys_own_block(make_app, monke
     expected = {"auto": False} if own else {"reserve_tokens": 2048}
     assert app._apply_run_config(entry)["compaction"] == expected
     assert app._configured_max_tokens() is not None
+
+
+def test_every_compaction_key_type_has_a_wording():
+    """A new key type without a ``_JSON_TYPE_NAMES`` entry fails here, not as a KeyError."""
+    from tau_coding_agent.config import _JSON_TYPE_NAMES, COMPACTION_KEYS
+
+    assert set(COMPACTION_KEYS.values()) <= set(_JSON_TYPE_NAMES)
