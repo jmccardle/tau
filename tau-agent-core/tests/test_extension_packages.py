@@ -17,8 +17,10 @@ import base64
 import hashlib
 import itertools
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from importlib import metadata
 from pathlib import Path
@@ -163,6 +165,26 @@ def _require_setuptools() -> None:
         )
 
 
+@pytest.fixture(autouse=True)
+def _only_this_tests_entry_points(tmp_path, monkeypatch):
+    """Hide every ``tau.extensions`` entry point that is not installed under ``tmp_path`` (#61).
+
+    ``discover_packages`` reads the whole environment, so an installed
+    ``ffwf-tau-router`` would otherwise show up as an extra package.
+    """
+    real = metadata.entry_points
+    root = tmp_path.resolve()
+
+    def own(**select):
+        return metadata.EntryPoints(
+            ep
+            for ep in real(**select)
+            if ep.dist is not None and root in Path(ep.dist.locate_file("")).resolve().parents
+        )
+
+    monkeypatch.setattr(metadata, "entry_points", own)
+
+
 @pytest.fixture
 def site(tmp_path, monkeypatch):
     """A fresh ``sys.path`` entry, and a unique top-level package name for this test."""
@@ -173,6 +195,21 @@ def site(tmp_path, monkeypatch):
     yield root, top
     for name in [m for m in sys.modules if m == top or m.startswith(top + ".")]:
         del sys.modules[name]
+
+
+def test_a_foreign_installed_entry_point_is_invisible_to_discovery(site, monkeypatch):
+    """An entry point installed outside ``tmp_path`` never reaches ``discover_packages`` (#61)."""
+    foreign = Path(tempfile.mkdtemp(prefix="tau-foreign-"))
+    try:
+        info = foreign / "tau_foreign-9.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text("Metadata-Version: 2.1\nName: tau-foreign\nVersion: 9\n")
+        (info / "entry_points.txt").write_text(f"[{ENTRY_POINT_GROUP}]\nx = tau_foreign.planner\n")
+        monkeypatch.syspath_prepend(str(foreign))
+        assert metadata.distribution("tau-foreign").version == "9"
+        assert discover_packages() == []
+    finally:
+        shutil.rmtree(foreign)
 
 
 @pytest.fixture
