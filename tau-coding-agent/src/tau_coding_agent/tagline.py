@@ -53,6 +53,9 @@ TAGLINES: tuple[str, ...] = (
     "RTFM? I generated the FM",
     "What did Ilya see? We'll never know",
     "20 new models this month. Still a 401.",
+    "before enlightenment: chop wood, carry water",
+    "after enlightenment: chop wood, carry water",
+    "No agent steps in the same context twice",
 )
 
 FUN_DEFAULT = True
