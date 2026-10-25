@@ -2,7 +2,8 @@
 
 τ next, codename **Trusty**: τ's agent harness rewritten as a sans-IO Rust core
 (`crates/`) under a Python driver, hooks, providers, tools, and frontends
-(`python/tau_next/`). Ships as τ 0.16.0.
+(`python/tau_next/`). The τ repository absorbs this one as τ 0.16.0: `tests/`
+replaces the 0.15 suite, `parity/` is deleted.
 
 `docs/plan.md` is the source of truth for design decisions until
 `docs/design/` exists; after Phase 1 those files supersede it. Read its §1
@@ -39,20 +40,21 @@ holds it to the built module.
 | `crates/tau-store` | The only Rust crate that touches the filesystem. |
 | `crates/tau-py` | PyO3 bindings, built as `tau_next._core`. Conversion and error mapping only. |
 | `python/tau_next` | Python package. `_core.pyi` is the hand-written stub for the native module. |
-| `tests/behavior` | Phase 2: behavior suite through the `Harness` protocol. |
-| `tests/oracle` | Harness adapter over τ 0.15; tests marked `oracle` need it installed. |
+| `tests/behavior` | Phase 2: behavior suite through the `Harness` protocol. Carried into τ 0.16 as its test suite. |
 | `tests/scaffold` | Phase 0 boundary probes. Deleted with `tau_core::scaffold` in Phase 3. |
-| `scripts/` | Gates: `check.sh` runs everything, in CI order. |
+| `parity/` | The API diff against τ 0.15 (the oracle). Migration tooling: deleted when τ absorbs this repo. See `parity/README.md`. |
+| `scripts/` | Gates: `check.sh` (everything except parity, in CI order), `parity.sh`. |
 
 ## Commands
 
 ```bash
 source ~/.cargo/env                       # cargo is not on the default PATH here
-# venv: Python 3.12 is the floor (matches τ 0.15, which the oracle needs)
+# venv: Python 3.12 is the floor (matches τ 0.15, which parity/ imports alongside)
 ~/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/bin/python3.12 -m venv .venv
-.venv/bin/pip install --group dev --group oracle      # pip >= 25.1
+.venv/bin/pip install --group dev --group parity      # pip >= 25.1; parity is optional
 VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop --release   # rebuild after any Rust change
-scripts/check.sh                          # the whole gate
+scripts/check.sh                          # the gate; passes without τ 0.15
+scripts/parity.sh                         # the API diff; needs --group parity
 ```
 
 ## Python versions and wheels

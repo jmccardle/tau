@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The whole gate, in the order CI runs it. Local and CI run this same file.
 #
-# Requires the in-repo venv (.venv) with the dev and oracle groups installed;
-# see CLAUDE.md "Commands". Uses no tool from PATH except cargo.
+# Requires the in-repo venv (.venv) with the dev group installed; see
+# CLAUDE.md "Commands". Does not need τ 0.15: parity is scripts/parity.sh. Uses no tool from PATH except cargo.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,4 +27,4 @@ step "rules";        "$PY" scripts/check_rules.py
 step "stubtest";     "$PY" -m mypy.stubtest tau_next._core
 step "ruff";         "$BIN/ruff" check . && "$BIN/ruff" format --check .
 step "pyright";      "$BIN/pyright"
-step "pytest";       "$PY" -m pytest -q
+step "pytest";       "$PY" -m pytest -q tests

@@ -1,11 +1,10 @@
-"""Free-threading: importing tau_next (alone, and beside τ 0.15) must not
-re-enable the GIL, and the native module must be safe to call from many
-threads at once.
+"""Free-threading: importing tau_next must not re-enable the GIL, and the
+native module must be safe to call from many threads at once.
 
 τ 0.15 ships on free-threaded 3.14t/3.15t; the rewrite may not regress that.
+The same check with τ 0.15 imported alongside is in parity/.
 """
 
-import importlib
 import sys
 import sysconfig
 from concurrent.futures import ThreadPoolExecutor
@@ -23,14 +22,6 @@ def gil_enabled() -> bool:
 
 @pytest.mark.skipif(not FREE_THREADED, reason="GIL build: nothing to re-enable")
 def test_import_keeps_gil_disabled() -> None:
-    assert not gil_enabled()
-
-
-@pytest.mark.oracle
-@pytest.mark.skipif(not FREE_THREADED, reason="GIL build: nothing to re-enable")
-def test_import_beside_015_keeps_gil_disabled() -> None:
-    for name in ["tau_llm", "tau_agent_core", "tau_coding_agent", "tau_meta"]:
-        importlib.import_module(name)
     assert not gil_enabled()
 
 

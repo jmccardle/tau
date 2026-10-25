@@ -3,11 +3,19 @@
 > **Amendments (2026-10-25, Phase 0).** The plan below is kept as handed off.
 > Where these notes conflict with it, these notes win.
 >
-> - **Release identity.** The rewrite ships as **τ 0.16.0, codename "Trusty"**,
->   not `ffwf-tau` 1.0. Development distribution: `ffwf-tau-next`, import
->   `tau_next` (D10). Final names at release are an open question for Phase 7.
-> - **Python floor 3.12**, matching τ 0.15 (the oracle must import in the same
->   venv). PyO3 0.30.1 / maturin 1.15.
+> - **Destiny.** The rewrite ships as **τ 0.16.0, codename "Trusty"**, not
+>   `ffwf-tau` 1.0, and the τ repository absorbs this one rather than being
+>   archived (§0). At that point `tests/` replaces the 0.15 suite wholesale and
+>   `parity/` is deleted, its purpose complete. Development distribution:
+>   `ffwf-tau-next`, import `tau_next` (D10); final names are settled at absorption.
+> - **Parity is not the test suite** (supersedes `tests/oracle/` in §0 and
+>   Phase 2). 0.16 is incompatible on purpose; the oracle tests are an API diff
+>   (keep / change / drop / new), not a spec. They live in top-level `parity/`
+>   with the `parity` dependency group and `scripts/parity.sh`. `tests/` must
+>   pass with no τ 0.15 installed. The `Harness` protocol and the `tau_next`
+>   adapter live in `tests/behavior/` (they carry over); the 0.15 adapter lives
+>   in `parity/`.
+> - **Python floor 3.12**, matching τ 0.15 (parity/ imports both in one venv). PyO3 0.30.1 / maturin 1.15.
 > - **"abi3 wheels"** holds only for GIL builds: one `cp312-abi3` wheel. Free-threaded
 >   builds have no stable ABI before 3.15 (`abi3t`, PEP 803), so 3.14t ships a
 >   version-specific `cp314t` wheel. τ 0.15 is tested on 3.14t/3.15t, so this

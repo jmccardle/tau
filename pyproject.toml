@@ -22,8 +22,8 @@ dev = [
     "pyright>=1.1.400",
     "mypy>=2.4",  # stubtest only; pyright is the type checker
 ]
-# Phase 0 exit criterion and Phase 2 oracle: τ 0.15 imports in the same venv.
-oracle = ["ffwf-tau==0.15.0"]
+# parity/ only: τ 0.15 as the oracle for the API diff. Never needed by tests/.
+parity = ["ffwf-tau==0.15.0"]
 
 [tool.maturin]
 manifest-path = "crates/tau-py/Cargo.toml"
@@ -34,9 +34,6 @@ features = ["abi3"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--strict-markers"]
-markers = [
-    "oracle: needs ffwf-tau 0.15 importable (the `oracle` dependency group)",
-]
 
 [tool.ruff]
 line-length = 100
@@ -59,7 +56,7 @@ max-complexity = 15
 "tests/**" = ["PLR2004"]
 
 [tool.pyright]
-include = ["python", "tests"]
+include = ["python", "tests", "parity"]
 strict = ["python"]
 pythonVersion = "3.12"
 venvPath = "."

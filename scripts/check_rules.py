@@ -1,7 +1,7 @@
 """Mechanical enforcement of CLAUDE.md rules 3 and 4.
 
 Rule 3: banned 0.15 vocabulary in identifiers, comments, and docstrings.
-Rule 4: tests reach code only through the public API. This script catches
+Rule 4: tests (tests/ and parity/) reach code only through the public API. This script catches
 imports of private tau_next names; ruff SLF001 catches private attribute
 access, ruff banned-api catches `unittest.mock`, and tests/conftest.py
 refuses the `monkeypatch` fixture.
@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-SCANNED = ["crates", "python", "tests", "scripts"]
+SCANNED = ["crates", "python", "tests", "parity", "scripts"]
 SUFFIXES = {".rs", ".py", ".pyi", ".toml"}
 SELF = Path(__file__).resolve()
 BUILD_DIR = ROOT / "target"
@@ -96,7 +96,7 @@ def violations(path: Path) -> list[str]:
         for n, line in enumerate(source.splitlines(), 1)
         for term in banned_terms(line)
     ]
-    if rel.parts[0] == "tests" and path.suffix == ".py":
+    if rel.parts[0] in {"tests", "parity"} and path.suffix == ".py":
         found += [
             f"{rel}:{n}: test imports a private tau_next name" for n in private_imports(source)
         ]
