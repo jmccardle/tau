@@ -16,9 +16,9 @@ create_exception!(
 /// Python view of [`scaffold::Probe`].
 ///
 /// `frozen`: no interior mutability, so instances are shareable across
-/// threads on free-threaded builds without locking.
-#[pyclass(frozen, eq, module = "tau_next._core", name = "Probe")]
-#[derive(Debug, PartialEq, Eq)]
+/// threads on free-threaded builds without locking, and hashable.
+#[pyclass(frozen, eq, hash, module = "tau_next._core", name = "Probe")]
+#[derive(Debug, PartialEq, Eq, Hash)]
 struct PyProbe(scaffold::Probe);
 
 #[pymethods]

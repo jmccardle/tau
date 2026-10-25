@@ -13,7 +13,8 @@
 >   version-specific `cp314t` wheel. τ 0.15 is tested on 3.14t/3.15t, so this
 >   is not optional.
 > - **0.15 import names** are `tau_llm`, `tau_agent_core`, `tau_coding_agent`,
->   `tau_jmfts`, `tau_meta`; there is no `tau` package to collide with.
+>   `tau_meta` (what `ffwf-tau==0.15.0` installs), plus the optional `tau_jmfts`;
+>   there is no `tau` package to collide with.
 > - **The as-built review** (§7–§11 cited below) is at the 0.15 tag
 >   (`v0.15.0`, which the review's merge commit landed on).
 

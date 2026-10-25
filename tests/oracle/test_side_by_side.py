@@ -11,7 +11,9 @@ import pytest
 
 import tau_next
 
-TAU_015 = ["tau_llm", "tau_agent_core", "tau_coding_agent"]
+# Everything `ffwf-tau==0.15.0` installs. tau_jmfts is a separate, optional
+# distribution and not part of the oracle.
+TAU_015 = ["tau_llm", "tau_agent_core", "tau_coding_agent", "tau_meta"]
 
 
 @pytest.mark.oracle

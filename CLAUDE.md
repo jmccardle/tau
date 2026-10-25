@@ -21,10 +21,15 @@ behavior. Never copy from it.
 6. Diagrams are generated from code after Phase 3. Hand-drawn diagrams exist only in Phase 1.
 7. Ratchet in CI from Phase 3: max function CC ≤ 15, no class over 25 methods, no file over 800 lines, banned-term count 0, I7 property test green.
 
-Rule 3 is enforced by `scripts/check_rules.py`, except `head` and `fork`,
-which have legitimate uses that a regex cannot tell apart. Rule 4 is enforced
-by `scripts/check_rules.py` (private names) and ruff's banned-api
-(`unittest.mock`).
+Rule 3 is enforced by `scripts/check_rules.py` (snake, kebab, and CamelCase),
+except `head` and `fork`, which have legitimate uses a regex cannot tell apart.
+An unrelated use of a banned word is allowed only with a reason on the same line:
+`# rules: allow(entry): Python packaging API`. Rule 4 is enforced by
+`scripts/check_rules.py` (private imports), ruff SLF001 (private attributes),
+ruff banned-api (`unittest.mock`), and `tests/conftest.py` (`monkeypatch`).
+
+`python/tau_next/_core.pyi` is hand-written; `mypy.stubtest` (in `check.sh`)
+holds it to the built module.
 
 ## Layout
 
@@ -45,7 +50,7 @@ by `scripts/check_rules.py` (private names) and ruff's banned-api
 source ~/.cargo/env                       # cargo is not on the default PATH here
 # venv: Python 3.12 is the floor (matches τ 0.15, which the oracle needs)
 ~/.local/share/uv/python/cpython-3.12-linux-x86_64-gnu/bin/python3.12 -m venv .venv
-.venv/bin/pip install maturin pytest ruff pyright "ffwf-tau==0.15.0"
+.venv/bin/pip install --group dev --group oracle      # pip >= 25.1
 VIRTUAL_ENV=$PWD/.venv .venv/bin/maturin develop --release   # rebuild after any Rust change
 scripts/check.sh                          # the whole gate
 ```
@@ -56,9 +61,10 @@ scripts/check.sh                          # the whole gate
 - Free-threaded: no stable ABI before 3.15 (`abi3t`), so 3.14t gets a
   version-specific `cp314t` wheel. maturin does this automatically from the
   same config.
-- The module declares `gil_used = false`. `tests/scaffold/test_threads.py`
-  fails on a free-threaded build if importing us (or τ 0.15 beside us) turns the
-  GIL back on. Every `#[pyclass]` is `frozen` unless a glossary entry and an ADR
+- `gil_used = false` is PyO3 0.30's default; the module states it anyway, as a
+  claim the tests hold it to. `tests/scaffold/test_threads.py` fails on a
+  free-threaded build if importing us (alone or beside τ 0.15) turns the GIL
+  back on. Every `#[pyclass]` is `frozen` unless a glossary entry and an ADR
   argue otherwise.
 
 ## Writing code here

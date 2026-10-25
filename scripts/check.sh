@@ -13,6 +13,9 @@ if [ ! -x "$PY" ]; then
     exit 1
 fi
 BIN="$(dirname "$PY")"
+# PyO3 build scripts otherwise pick `python3` from PATH, which may be a
+# different interpreter (or below the floor) for clippy and cargo test.
+export PYO3_PYTHON="$(cd "$BIN" && pwd)/python"
 
 step() { printf '\n== %s\n' "$*"; }
 
@@ -21,7 +24,7 @@ step "clippy";       cargo clippy --workspace --all-targets --locked -- -D warni
 step "cargo test";   cargo test --workspace --locked
 step "build";        VIRTUAL_ENV="$(cd "$BIN/.." && pwd)" "$BIN/maturin" develop --release --locked
 step "rules";        "$PY" scripts/check_rules.py
-step "stubs";        "$PY" scripts/check_stubs.py
+step "stubtest";     "$PY" -m mypy.stubtest tau_next._core
 step "ruff";         "$BIN/ruff" check . && "$BIN/ruff" format --check .
 step "pyright";      "$BIN/pyright"
 step "pytest";       "$PY" -m pytest -q

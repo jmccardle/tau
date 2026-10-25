@@ -44,7 +44,7 @@ jobs:
           set -euo pipefail
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install "maturin>=1.15,<2" pytest ruff pyright "ffwf-tau==0.15.0"
+          .venv/bin/pip install --group dev --group oracle
       - name: scripts/check.sh
         shell: bash
         run: scripts/check.sh

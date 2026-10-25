@@ -40,6 +40,10 @@ def test_round_trip_preserves_fields() -> None:
     assert (q.id, q.label, q.parts) == (7, "seven", ["a", "b"])
 
 
+def test_equal_probes_hash_equal() -> None:
+    assert len({Probe(1, "x", ["a"]), echo(Probe(1, "x", ["a"])), Probe(2, "x")}) == 2
+
+
 def test_digest_matches_independent_implementation() -> None:
     p = Probe(7, "seven", ["a", "b"])
     assert p.digest() == fnv1a(p) == 0xF5C4FE255F721547
@@ -64,7 +68,9 @@ def test_core_error_maps_to_typed_exception() -> None:
     assert isinstance(info.value, ValueError)
 
 
-def test_probe_is_immutable() -> None:
+def test_probe_has_no_setters_and_copies_out() -> None:
+    # Not a test of `frozen` itself (a missing setter raises the same
+    # AttributeError); that is a declaration in crates/tau-py.
     p = Probe(1, "x")
     with pytest.raises(AttributeError):
         p.label = "y"  # type: ignore[misc]

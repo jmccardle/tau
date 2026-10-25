@@ -1,10 +1,12 @@
 """Type stubs for the native module built from crates/tau-py.
 
-Hand-written in Phase 0. Kept in sync by scripts/check_stubs.py, which fails
-when this file and the native module's exports differ.
+Hand-written in Phase 0. `python -m mypy.stubtest tau_next._core` (run by
+scripts/check.sh) fails when this file and the built module disagree.
 """
 
 from typing import final
+
+__all__ = ["Probe", "ProbeError", "echo"]
 
 class ProbeError(ValueError): ...
 

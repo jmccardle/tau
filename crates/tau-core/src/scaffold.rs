@@ -7,7 +7,7 @@
 use std::fmt;
 
 /// A value that round-trips through the Python bindings.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Probe {
     pub id: u64,
     pub label: String,
