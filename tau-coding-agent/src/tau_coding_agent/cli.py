@@ -25,6 +25,7 @@ from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_llm.errors import ProviderConnectionError, ProviderHttpError, ProviderStreamError
 from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.extension_sources import ExplicitExtensionError
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.resources import ResourceError
 from tau_agent_core.sdk import BusDependencyError, require_bus_dependency
 from tau_agent_core.session_lock import set_head_label
@@ -960,7 +961,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.print_mode:
             try:
                 return asyncio.run(run_print(args, load_config()))
-            except (ProviderHttpError, ProviderConnectionError, ProviderStreamError) as exc:
+            except (
+                ProviderHttpError,
+                ProviderConnectionError,
+                ProviderStreamError,
+                HookHandlerError,
+            ) as exc:
                 print(f"tau: error: {exc}", file=sys.stderr)
                 return 1
         if args.messages:

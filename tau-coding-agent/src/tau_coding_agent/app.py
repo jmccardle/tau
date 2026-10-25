@@ -41,6 +41,7 @@ from tau_agent_core.agent_session_runtime import AgentSessionRuntime
 from tau_agent_core.compare import COMPARE_KEY
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.extension_warnings import ExtensionWarning, warnings_marker
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.session_lock import read_only_banner
 from tau_agent_core.session_log import config_at
 from tau_agent_core.setting_sources import restored_keys, source_keys
@@ -3586,9 +3587,13 @@ class TauApp(App):
             else None
         )
         if self._session_runtime is not None:
-            result = await self._session_runtime.new_session(
-                persist=True, deferred=True, system_prompt=system_prompt
-            )
+            try:
+                result = await self._session_runtime.new_session(
+                    persist=True, deferred=True, system_prompt=system_prompt
+                )
+            except HookHandlerError as exc:
+                self.notify(f"Clear chat stopped: {exc}", severity="error")
+                return
             if result.get("blocked"):
                 self.notify(result["reason"], severity="warning")
                 return
@@ -3683,7 +3688,7 @@ class TauApp(App):
             return
         try:
             result = await self._session_runtime.fork()
-        except RuntimeError as exc:
+        except (RuntimeError, HookHandlerError) as exc:
             self.notify(f"Cannot fork: {exc}", severity="error")
             return
         if result.get("blocked"):
