@@ -706,6 +706,7 @@ takes.
 | 0.13.0 | There was no choice but to be pioneers. |
 | 0.14.0 | What did Ilya see? We'll never know |
 | 0.14.1 | 20 new models this month. Still a 401. (stock, from 0.14.0) |
+| 0.15.0 | before enlightenment: chop wood, carry water / after enlightenment: chop wood, carry water |
 
 Create it as a **draft** while the publisher registration is still outstanding:
 
@@ -1022,3 +1023,51 @@ is #70, and it held even with `TAU_HOME` unset by the runner. Seven
 artifacts.** The PyPI JSON API listed all ten files at once, while
 `pip download` still found none. The first `pip download` poll after that got
 all five distributions.
+
+## What 0.15.0 learned
+
+**The matrix resolves dependencies fresh, and the local venv does not.** The
+first matrix, on `8e7420b`, read `1 failed` on all four versions:
+`test_keyless_model.py::test_print_mode_sends_without_a_key_and_reports_the_401_in_one_line`,
+which expects one stderr line and got two. The in-repo venv had `anthropic`
+1.0.0 and passed. Every container resolved 2.3.0, because the extra said only
+`anthropic>=1.0`. The extra line was the SDK's own `log.warning`,
+`Anthropic: ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN are both set. Using ANTHROPIC_API_KEY.`
+A failure on every version at once is a dependency or a tree, not a race.
+
+**The warning was a symptom; the defect was a new credential path.** With
+`api_key` and `auth_token` both `None` — τ's keyless custom-endpoint case —
+anthropic 2.x runs `default_credentials()` and, if a profile, config directory
+or federation variables are present, attaches the result as an httpx `auth`.
+That runs after the per-request `Omit()` of `X-Api-Key` and `Authorization`, so
+the omission cannot strip it (read in the 2.3.0 source, not run). A keyless
+model on a non-Anthropic endpoint could be sent an Anthropic bearer token. The
+probe that was run showed no key header under 2.3.0 with only env keys set.
+`33f11c3` pins `anthropic>=1.0,<2`; 2.x support is its own change. A fresh
+install now resolves 1.17.0.
+
+**A dependency pin was re-gated by the tests that load the dependency.** The
+pin changes no source and no test, so the 13 files that import the SDK or the
+anthropic provider, plus `test_packaging.py`, ran on all four versions under
+1.17.0: `454 passed`, about 50 s each. The rest of the suite had already run in
+full under 2.3.0 and cannot observe the SDK. CI run 40192514505 ran the whole
+suite on the tag (8027 passed / 159 skipped on 3.12 and 3.13, 8028 / 158 on
+3.14t and 3.15t) and uploaded all ten artifacts. Fail-fast stops before the
+upload, so a CI failure there would have cost a tag move, not a version.
+
+**The matrix printed pytest's exit code, and the summary line alone is not
+enough.** Each container ended with `echo PYTEST_EXIT=$?`. The root conftest's
+#70 guard can fail a session that reports `0 failed`, so the exit code is the
+gate and the counts are the evidence.
+
+**The host `python3` is 3.11, which 0.15.0 no longer supports.** The smoke
+venvs were built on uv's 3.14t, the interpreter the in-repo venv uses. A smoke
+on 3.11 would refuse every wheel on `requires-python`.
+
+**A worktree has no `venv`, so the pre-commit hook refuses there.** A symlink
+to the main checkout's `venv` (gitignored) lets the hook run for real instead of
+`--no-verify`.
+
+The four-version matrix took 49 minutes one container at a time, 07:14 to
+08:03, 632–808 s of tests each. All five distributions resolved on the first
+`pip download` poll after the run.
