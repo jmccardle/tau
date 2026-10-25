@@ -214,7 +214,7 @@ _DOCSTRING_LOADER = re.compile(
 
 
 @pytest.mark.parametrize("path", PATHS, ids=IDS)
-def test_docstring_usage_block_actually_runs(path: Path) -> None:
+def test_docstring_usage_block_actually_runs(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The "## Usage" block loads the file, and the names it then uses exist.
 
     Every one of these docstrings used to open with
@@ -229,6 +229,9 @@ def test_docstring_usage_block_actually_runs(path: Path) -> None:
     annotations`` (``37_inline_bash.py``) dies inside ``dataclasses``, because
     annotation resolution looks the module up in ``sys.modules`` and does not
     find it. Reading the snippet does not tell you that; running it does.
+
+    The snippets use repo-relative ``examples/…`` paths, so the test runs from
+    the repo root whatever the invoking cwd.
     """
     doc = ast.get_docstring(ast.parse(path.read_text()))
     if not doc:
@@ -237,6 +240,7 @@ def test_docstring_usage_block_actually_runs(path: Path) -> None:
     if not match:
         pytest.skip(f"{path.name}'s docstring has no loader snippet")
 
+    monkeypatch.chdir(_REPO_ROOT)
     namespace: dict[str, Any] = {"importlib": importlib, "sys": sys}
     exec(match.group(1), namespace)  # noqa: S102 - executing the doc is the point
     loaded = namespace["ext"]
