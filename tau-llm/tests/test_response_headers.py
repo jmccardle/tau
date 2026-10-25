@@ -129,6 +129,7 @@ async def test_anthropic_done_event_carries_the_stream_response_headers():
         def __aiter__(self) -> Any:
             async def gen() -> Any:
                 yield SimpleNamespace(type="text", text="hi")
+                yield SimpleNamespace(type="message_stop")
 
             return gen()
 

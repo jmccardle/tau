@@ -214,6 +214,17 @@ class TestAnthropicMessagesContract(ProviderContract):
         )
         return provider
 
+    def test_a_stream_cut_before_message_stop_is_an_error_not_a_done(self) -> None:
+        cassette = _load(self.api, "truncated")
+        events = self._run(_Replay(cassette))
+        kinds = [e.type for e in events]
+        assert kinds[-1] == "error" and "done" not in kinds, (
+            f"a stream with no message_stop ended as {kinds}: a cut answer is reported complete"
+        )
+        assert "message_stop" in events[-1].message
+        deltas = "".join(e.delta for e in events if e.type == "text_delta")
+        assert deltas == cassette["expect"]["partial_text"]
+
 
 class TestGoogleGenerativeAIContract(ProviderContract):
     api = "google-generative-ai"

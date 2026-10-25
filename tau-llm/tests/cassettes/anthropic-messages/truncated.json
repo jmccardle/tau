@@ -1,0 +1,62 @@
+{
+ "meta": {
+  "provenance": "synthetic",
+  "written": "2026-10-12",
+  "source": "https://platform.claude.com/docs/en/build-with-claude/streaming",
+  "note": "Hand-written: the 'text' stream cut after its first text delta, so no message_delta and no message_stop. NOT captured."
+ },
+ "expect": {
+  "partial_text": "Hello"
+ },
+ "response": {
+  "status": 200,
+  "headers": {
+   "content-type": "text/event-stream"
+  },
+  "sse": [
+   {
+    "event": "message_start",
+    "data": {
+     "type": "message_start",
+     "message": {
+      "id": "msg_x",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-test",
+      "content": [],
+      "stop_reason": null,
+      "stop_sequence": null,
+      "usage": {
+       "input_tokens": 24,
+       "cache_creation_input_tokens": 1000,
+       "cache_read_input_tokens": 1024,
+       "output_tokens": 1
+      }
+     }
+    }
+   },
+   {
+    "event": "content_block_start",
+    "data": {
+     "type": "content_block_start",
+     "index": 0,
+     "content_block": {
+      "type": "text",
+      "text": ""
+     }
+    }
+   },
+   {
+    "event": "content_block_delta",
+    "data": {
+     "type": "content_block_delta",
+     "index": 0,
+     "delta": {
+      "type": "text_delta",
+      "text": "Hello"
+     }
+    }
+   }
+  ]
+ }
+}

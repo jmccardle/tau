@@ -642,12 +642,15 @@ class AnthropicMessagesProvider(Provider):
         async def event_generator() -> AsyncIterator[Any]:
             state = _StreamState(model=model, provider=self, reasoning_level=reasoning_level)
             started = False
+            saw_stop = False
             try:
                 async with client.messages.stream(**request) as stream:
                     headers = response_headers_of(stream.response)
                     async for event in iterate_until_aborted(stream, abort_signal):
                         started = True
-                        if event.type == "text":
+                        if event.type == "message_stop":
+                            saw_stop = True
+                        elif event.type == "text":
                             state.text_parts.append(event.text)
                             yield TextDeltaEvent(delta=event.text, partial=state.build_message())
                         elif event.type == "thinking":
@@ -665,6 +668,14 @@ class AnthropicMessagesProvider(Provider):
                             final=state.build_message(stop_reason="aborted"),
                             usage=state.usage,
                             response_headers=headers,
+                        )
+                        return
+                    if not saw_stop:
+                        yield ErrorEvent(
+                            message=(
+                                f"the stream from model {model.id!r} at {self.base_url!r} "
+                                "closed with no message_stop, so the response is cut short"
+                            )
                         )
                         return
                     final = await stream.get_final_message()
