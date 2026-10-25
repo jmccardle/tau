@@ -29,6 +29,7 @@ import functools
 import json
 import os
 import signal
+import stat
 import sys
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TextIO, TypeAlias
 
@@ -250,18 +251,42 @@ lane while that request is still in flight.
 """
 
 
+def _stdin_is_pollable() -> bool:
+    """Whether stdin can be registered with the event loop's selector."""
+    mode = os.fstat(sys.stdin.buffer.fileno()).st_mode
+    return not (
+        stat.S_ISREG(mode) or (stat.S_ISCHR(mode) and not os.isatty(sys.stdin.buffer.fileno()))
+    )
+
+
 async def _pump_stdin(self: "RPCHandler", queue: "asyncio.Queue[QueuedLine]") -> None:
-    """Frame stdin into ``queue``: lines and refusals in arrival order, then ``None``."""
+    """Frame stdin into ``queue``: lines and refusals in arrival order, then ``None``.
+
+    A pipe or socket is read through the event loop; a regular file or a
+    non-terminal character device (``/dev/null``) cannot be registered with
+    epoll and never blocks, so it is read in the default executor. Both end at
+    EOF the same way.
+    """
     loop = asyncio.get_event_loop()
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+    transport: asyncio.ReadTransport | None = None
+    read_chunk: Callable[[int], Awaitable[bytes]]
+    if _stdin_is_pollable():
+        reader = asyncio.StreamReader()
+        protocol = asyncio.StreamReaderProtocol(reader)
+        transport, _ = await loop.connect_read_pipe(lambda: protocol, sys.stdin.buffer)
+        read_chunk = reader.read
+    else:
+        fd = sys.stdin.buffer.fileno()
+
+        def read_chunk(size: int) -> Awaitable[bytes]:
+            return loop.run_in_executor(None, os.read, fd, size)
+
     pending = bytearray()
     discarding = False
     eof = False
     try:
         while True:
-            read_task = asyncio.ensure_future(reader.read(_READ_CHUNK_BYTES))
+            read_task = asyncio.ensure_future(read_chunk(_READ_CHUNK_BYTES))
             shutdown_task = asyncio.ensure_future(self._shutdown_signal.wait())
             done, _pending = await asyncio.wait(
                 {read_task, shutdown_task}, return_when=asyncio.FIRST_COMPLETED
@@ -329,7 +354,8 @@ async def _pump_stdin(self: "RPCHandler", queue: "asyncio.Queue[QueuedLine]") ->
             if eof:
                 break
     finally:
-        transport.close()
+        if transport is not None:
+            transport.close()
         queue.put_nowait(None)
         if eof:
             self._input_ended.set()
