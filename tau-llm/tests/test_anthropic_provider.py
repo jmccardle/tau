@@ -118,6 +118,7 @@ class _FakeStream:
         async def gen():
             for event in self._events:
                 yield event
+            yield SimpleNamespace(type="message_stop")
 
         return gen()
 
