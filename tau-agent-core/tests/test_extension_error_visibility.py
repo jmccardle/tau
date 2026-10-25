@@ -28,6 +28,7 @@ import pytest
 from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.events import AgentEvent, EventBus
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.session_log import InMemorySessionLog
 
 
@@ -131,7 +132,7 @@ def test_bus_on_error_unsubscribe_stops_delivery():
 
 
 def test_session_routes_mutating_hook_error_to_tui_delegate():
-    """A raising ``tool_result`` hook paints a TUI warning notice (G12)."""
+    """A raising ``tool_result`` hook paints a TUI warning notice (G12), then raises."""
 
     def ext(api):
         api.on("tool_result", _raise(ValueError("hook boom")))
@@ -140,8 +141,8 @@ def test_session_routes_mutating_hook_error_to_tui_delegate():
     delegate = _CapturingDelegate()
     session.set_ui_delegate(delegate)
 
-    result = asyncio.run(session._extension_runner.emit_tool_result({"content": "x"}))
-    assert result is None
+    with pytest.raises(HookHandlerError):
+        asyncio.run(session._extension_runner.emit_tool_result({"content": "x"}))
 
     assert len(delegate.notifications) == 1
     message, level = delegate.notifications[0]
@@ -158,7 +159,8 @@ def test_session_routes_mutating_hook_error_to_headless_stderr(capsys):
 
     session = AgentSession(session_log=InMemorySessionLog(), model=_make_model(), extensions=[ext])
     # No set_ui_delegate → ctx.ui stays in headless (stderr) mode.
-    asyncio.run(session._extension_runner.emit_before_agent_start("hi", None, "SYS"))
+    with pytest.raises(HookHandlerError):
+        asyncio.run(session._extension_runner.emit_before_agent_start("hi", None, "SYS"))
 
     err = capsys.readouterr().err
     assert "warning" in err
@@ -221,6 +223,7 @@ def test_error_surface_is_ephemeral():
     session = AgentSession(session_log=log, model=_make_model(), extensions=[ext])
     before = list(log.entries())
 
-    asyncio.run(session._extension_runner.emit_tool_result({"content": "x"}))
+    with pytest.raises(HookHandlerError):
+        asyncio.run(session._extension_runner.emit_tool_result({"content": "x"}))
 
     assert list(log.entries()) == before

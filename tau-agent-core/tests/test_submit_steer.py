@@ -29,10 +29,12 @@ import asyncio
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
 from tau_agent_core.tools.base import AgentTool, ToolDefinition
@@ -461,14 +463,15 @@ class TestReentrancy:
         provider = _Scripted([_assistant("done")])
 
         with patch("tau_agent_core.agent_loop.stream_simple", side_effect=provider.stream):
-            await asyncio.wait_for(
-                session.submit(_sub("go", "a-1", multitask_strategy="enqueue")), timeout=2.0
-            )
+            with pytest.raises(HookHandlerError, match="reentrant self-submission"):
+                await asyncio.wait_for(
+                    session.submit(_sub("go", "a-1", multitask_strategy="enqueue")), timeout=2.0
+                )
 
         assert len(surfaced) == 1
         assert "reentrant self-submission" in surfaced[0].error
         assert session.cursor.steer_queue == [], "a refused steer queues nothing"
-        assert "mid-turn" not in _joined(provider.calls[0])
+        assert provider.calls == [], "the failed input hook ends the submission (#29)"
 
 
 class TestInputPipeline:

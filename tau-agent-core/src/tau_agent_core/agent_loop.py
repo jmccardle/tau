@@ -46,7 +46,7 @@ from tau_agent_core.agent_loop_types import (
 )
 from tau_agent_core.continuation import LoopPosition, positioned
 from tau_agent_core.entry_annotations import AnnotationError
-from tau_agent_core.policies import HandlerPolicyError, acting_for, describe
+from tau_agent_core.policies import HookHandlerError, acting_for, describe
 from tau_agent_core.events import AgentEndReason, AgentEvent, ErrorDetail
 from tau_agent_core.provider_retry import provider_retry_event
 from tau_agent_core.suspension import TurnSuspended
@@ -69,7 +69,7 @@ from tau_llm.docs import agent_facing
 if TYPE_CHECKING:
     from tau_agent_core.extensions.runner import ExtensionRunner
 
-TurnFailure = AnnotationError | HandlerPolicyError
+TurnFailure = AnnotationError | HookHandlerError
 """A failure the loop notes once its entry is written and ends the turn on at the next checkpoint."""
 
 MidTurnCompactor = Callable[[list[Any], list[Any]], Awaitable[list[Any] | None]]
@@ -901,7 +901,7 @@ class AgentLoop:
         if self._writer is not None:
             try:
                 await self._writer.close_group()
-            except HandlerPolicyError as err:
+            except HookHandlerError as err:
                 self._note_turn_failure(err)
 
     def _note_turn_failure(self, err: TurnFailure) -> None:
@@ -919,7 +919,7 @@ class AgentLoop:
 
         Raises:
             AnnotationError: an ``annotate`` failure was noted.
-            HandlerPolicyError: a policed handler's failure was noted.
+            HookHandlerError: a hook handler's failure was noted.
         """
         if self._turn_failure is not None:
             raise self._turn_failure
@@ -934,7 +934,7 @@ class AgentLoop:
 
         Raises:
             AnnotationError: an ``annotate`` failure was noted.
-            HandlerPolicyError: a policed handler's failure was noted.
+            HookHandlerError: a hook handler's failure was noted.
         """
         failure = self._turn_failure
         if failure is None:
@@ -1594,7 +1594,7 @@ class AgentLoop:
             result = await self._execute_tool(prepared)
             try:
                 result = await self._apply_after_hooks(result, prepared.arguments)
-            except HandlerPolicyError as err:
+            except HookHandlerError as err:
                 self._note_turn_failure(err)
                 result = AgentToolResult.from_exception(result.tool_name, err, result.tool_call_id)
 
@@ -1638,7 +1638,8 @@ class AgentLoop:
             self._position.then = "tools"
             prepared_calls.append(await self._prepare_tool_call(tc))
             self._note_prepared(tc, prepared_calls[-1])
-            if self._abort_signal is not None and self._abort_signal.is_aborted():
+            aborted = self._abort_signal is not None and self._abort_signal.is_aborted()
+            if aborted or self._turn_failure is not None:
                 return await self._abort_prepared(tool_calls, prepared_calls)
 
         for tc in tool_calls:
@@ -1684,7 +1685,7 @@ class AgentLoop:
                     result = await self._execute_tool(pc)
                     result = await self._apply_after_hooks(result, pc.arguments)
                 except Exception as exc:
-                    if isinstance(exc, HandlerPolicyError):
+                    if isinstance(exc, HookHandlerError):
                         self._note_turn_failure(exc)
                     finished[index] = _raised(pc, exc)
                     await _flush_prefix()
@@ -1749,11 +1750,11 @@ class AgentLoop:
         tool_calls: list[ToolCall],
         prepared_calls: list[PreparedToolCall | BlockedCall | ErrorCall],
     ) -> ToolBatchResult:
-        """Answer a parallel batch whose abort tripped in a ``tool_call`` dispatch; run nothing.
+        """Answer a parallel batch whose ``tool_call`` dispatch aborted or failed; run nothing.
 
         Each call prepared so far keeps its block or error reason; one that would
         have run, and every call not yet prepared, gets ``ABORTED_TOOL_RESULT``
-        (docs/STEP-DEBUGGER.md §3.6).
+        (docs/STEP-DEBUGGER.md §3.6, docs/HOOK-ERRORS.md §3).
         """
         prior: list[AgentToolResult] = []
         for tc, prepared in zip(tool_calls, prepared_calls):
@@ -1825,10 +1826,16 @@ class AgentLoop:
     async def _prepare_tool_call(
         self, tool_call: ToolCall
     ) -> PreparedToolCall | BlockedCall | ErrorCall:
-        """Validate args and run the ``tool_call`` hook (:func:`prepare_tool_call`)."""
-        return await prepare_tool_call(
+        """Validate args and run the ``tool_call`` hook (:func:`prepare_tool_call`).
+
+        A handler's failure is noted, so the turn ends once the batch is answered.
+        """
+        prepared = await prepare_tool_call(
             self._tools, self._hook_dispatcher, tool_call, gate=self._call_gate
         )
+        if isinstance(prepared, BlockedCall) and prepared.failure is not None:
+            self._note_turn_failure(prepared.failure)
+        return prepared
 
     async def _execute_tool(self, call: PreparedToolCall) -> AgentToolResult:
         """Execute one prepared call (:func:`execute_prepared_call`)."""

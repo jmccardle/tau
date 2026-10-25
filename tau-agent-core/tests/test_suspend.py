@@ -21,7 +21,7 @@ from tau_agent_core.agent_loop import ABORTED_TOOL_RESULT
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.cursor import Cursor
 from tau_agent_core.events import AgentEvent
-from tau_agent_core.policies import Bounded
+from tau_agent_core.policies import Bounded, HookHandlerError
 from tau_agent_core.session_log import InMemorySessionLog, is_incomplete
 from tau_agent_core.submission import Submission
 from tau_agent_core.suspensions import (
@@ -486,7 +486,8 @@ async def test_with_no_live_responder_it_raises_no_responder() -> None:
     results: list[Any] = []
     session = _session(_suspender("turn_end", results), responder=False)
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
-        await asyncio.wait_for(session.prompt("go"), timeout=2)
+        with pytest.raises(HookHandlerError, match="NoResponderError"):
+            await asyncio.wait_for(session.prompt("go"), timeout=2)
     assert isinstance(results[0], NoResponderError)
     assert _suspensions(session) == []
 
@@ -501,7 +502,8 @@ async def test_a_submission_without_allow_user_input_has_no_live_responder() -> 
     session = _session(probe, _suspender("turn_end", results))
     sub = Submission(text="go", source="extension", submitter="cron", submission_id="s1")
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
-        await asyncio.wait_for(session.submit(sub), timeout=2)
+        with pytest.raises(HookHandlerError, match="NoResponderError"):
+            await asyncio.wait_for(session.submit(sub), timeout=2)
     assert isinstance(results[0], NoResponderError)
     assert "allow_user_input" in str(results[0])
     assert can == [False]
@@ -519,18 +521,20 @@ async def test_store_history_off_is_unsteppable() -> None:
         store_history=False,
     )
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=_script(_text("ok"))):
-        await asyncio.wait_for(session.submit(sub), timeout=2)
+        with pytest.raises(HookHandlerError, match="SuspensionRefused"):
+            await asyncio.wait_for(session.submit(sub), timeout=2)
     assert type(results[0]) is SuspensionRefused
     assert "store_history" in str(results[0])
 
 
-async def test_a_refusal_at_tool_call_blocks_the_call() -> None:
+async def test_a_refusal_at_tool_call_blocks_the_call_and_ends_the_turn() -> None:
     results: list[Any] = []
     ran: list[str] = []
     session = _session(_suspender("tool_call", results), responder=False, tools=[_tool("one", ran)])
     script = _script(_calls("one"), _text("ok"))
     with patch("tau_agent_core.agent_loop.stream_simple", side_effect=script):
-        await asyncio.wait_for(session.prompt("go"), timeout=2)
+        with pytest.raises(HookHandlerError, match="NoResponderError"):
+            await asyncio.wait_for(session.prompt("go"), timeout=2)
     assert ran == []
     result = next(m for m in _messages(session) if m["role"] == "toolResult")
     assert "NoResponderError" in result["content"][0]["text"] or "responder" in str(

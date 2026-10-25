@@ -2429,9 +2429,10 @@ class Failed(error: Exception)
 
 The handler failed, and the failure means what failure means at the site.
 
-``tool_call`` blocks the call; ``annotate`` records the error and aborts the
-turn; every other site raises :class:`HandlerPolicyError`, which ends the turn
-(or, on an ``ext:`` channel, raises into the emitter's ``api.emit``).
+``annotate`` records the error and aborts the turn; every other site raises
+:class:`HandlerPolicyError`, which ends the turn (``tool_call`` answers its
+call with an error result first), or, on an ``ext:`` channel, raises into the
+emitter's ``api.emit``. The lifecycle hooks only surface it.
 
 **Constructor parameters**
 
@@ -2543,22 +2544,16 @@ class HandlerPolicyError(extension: str, event: str, policy: str, error: Excepti
 
 A policed handler's ``Failed`` outcome, raised where the site does not isolate it.
 
-Raised out of ``turn_end``, ``tool_result``, ``entry_written`` and the other
-isolating hooks, which ends the turn with it, and into the emitter's
-``await api.emit(...)`` for an ``ext:`` channel handler.
+Raised out of every turn-ending hook, and out of ``entry_written`` and
+``turn_setting_changed``, whose unpoliced raise does not end the turn; and
+into the emitter's ``await api.emit(...)`` for an ``ext:`` channel handler.
 
 **Constructor parameters**
 
 - `extension: str` — The extension whose handler failed.
 - `event: str` — The hook or ``ext:`` channel being dispatched.
 - `policy: str` — The policy's registered name.
-- `error: Exception` — *(no description)*
-
-### detail
-
-`tau_agent_core.policies.HandlerPolicyError.detail` · since 0.15.0
-
-``"<ExceptionType>: <message>"`` of the underlying failure.
+- `error: Exception` — The ``Failed`` outcome's error; it becomes ``__cause__``.
 
 ## HeadlessDialogError
 <!-- agent: yes -->
@@ -2583,6 +2578,34 @@ this one exception covers both because the consequence is identical:
 Either way, silently auto-answering would fabricate consent for whatever the
 dialog was gating — so Fail-Early: raise, naming the opt-in that restores an
 explicit auto-answer.
+
+## HookHandlerError
+<!-- agent: yes -->
+
+```python
+class HookHandlerError(extension: str, event: str, error: Exception)
+```
+
+`tau_agent_core.policies.HookHandlerError` · since 0.15.0
+
+A handler at a turn-ending hook failed, so the turn ends with this error.
+
+Raised out of every hook in
+:data:`~tau_agent_core.extensions.runner.TURN_ENDING_HOOKS` after the error
+listeners have been told (docs/HOOK-ERRORS.md). The turn's ``agent_end``
+carries ``end_reason="error"`` and this message.
+
+**Constructor parameters**
+
+- `extension: str` — The extension whose handler failed.
+- `event: str` — The hook or ``ext:`` channel being dispatched.
+- `error: Exception` — The handler's exception; it becomes ``__cause__``.
+
+### detail
+
+`tau_agent_core.policies.HookHandlerError.detail` · since 0.15.0
+
+``"<ExceptionType>: <message>"`` of ``error``.
 
 ## LoadExtensionsResult
 <!-- agent: yes -->

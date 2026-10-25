@@ -57,9 +57,10 @@ class Returned:
 class Failed:
     """The handler failed, and the failure means what failure means at the site.
 
-    ``tool_call`` blocks the call; ``annotate`` records the error and aborts the
-    turn; every other site raises :class:`HandlerPolicyError`, which ends the turn
-    (or, on an ``ext:`` channel, raises into the emitter's ``api.emit``).
+    ``annotate`` records the error and aborts the turn; every other site raises
+    :class:`HandlerPolicyError`, which ends the turn (``tool_call`` answers its
+    call with an error result first), or, on an ``ext:`` channel, raises into the
+    emitter's ``api.emit``. The lifecycle hooks only surface it.
 
     Attributes:
         error: Why: the handler's exception, or :class:`DeadlineExpired`.
@@ -99,31 +100,67 @@ Outcome: TypeAlias = Returned | Failed | Proceeded
 
 
 @agent_facing(topic="extensions", since="0.15.0")
-class HandlerPolicyError(Exception):
-    """A policed handler's ``Failed`` outcome, raised where the site does not isolate it.
+class HookHandlerError(Exception):
+    """A handler at a turn-ending hook failed, so the turn ends with this error.
 
-    Raised out of ``turn_end``, ``tool_result``, ``entry_written`` and the other
-    isolating hooks, which ends the turn with it, and into the emitter's
-    ``await api.emit(...)`` for an ``ext:`` channel handler.
+    Raised out of every hook in
+    :data:`~tau_agent_core.extensions.runner.TURN_ENDING_HOOKS` after the error
+    listeners have been told (docs/HOOK-ERRORS.md). The turn's ``agent_end``
+    carries ``end_reason="error"`` and this message.
 
-    Attributes:
+    Args:
         extension: The extension whose handler failed.
         event: The hook or ``ext:`` channel being dispatched.
-        policy: The policy's registered name.
-        detail: ``"<ExceptionType>: <message>"`` of the underlying failure.
+        error: The handler's exception; it becomes ``__cause__``.
+
+    Attributes:
+        extension: As given.
+        event: As given.
+        detail: ``"<ExceptionType>: <message>"`` of ``error``.
     """
 
-    def __init__(self, extension: str, event: str, policy: str, error: Exception) -> None:
+    def __init__(self, extension: str, event: str, error: Exception) -> None:
         """Name the handler and wrap ``error``, which also becomes ``__cause__``."""
         self.extension = extension
         self.event = event
-        self.policy = policy
         self.detail = describe(error)
-        super().__init__(
-            f"extension {extension!r} {event!r} handler failed under policy {policy!r}: "
-            f"{self.detail}"
-        )
+        super().__init__(self._message())
         self.__cause__ = error
+
+    def _message(self) -> str:
+        """The one-line message, naming the extension and the hook."""
+        return f"extension {self.extension!r} {self.event!r} handler raised {self.detail}"
+
+
+@agent_facing(topic="extensions", since="0.15.0")
+class HandlerPolicyError(HookHandlerError):
+    """A policed handler's ``Failed`` outcome, raised where the site does not isolate it.
+
+    Raised out of every turn-ending hook, and out of ``entry_written`` and
+    ``turn_setting_changed``, whose unpoliced raise does not end the turn; and
+    into the emitter's ``await api.emit(...)`` for an ``ext:`` channel handler.
+
+    Args:
+        extension: The extension whose handler failed.
+        event: The hook or ``ext:`` channel being dispatched.
+        policy: The policy's registered name.
+        error: The ``Failed`` outcome's error; it becomes ``__cause__``.
+
+    Attributes:
+        policy: As given.
+    """
+
+    def __init__(self, extension: str, event: str, policy: str, error: Exception) -> None:
+        """Name the handler and its policy, and wrap ``error`` as ``__cause__``."""
+        self.policy = policy
+        super().__init__(extension, event, error)
+
+    def _message(self) -> str:
+        """The one-line message, naming the extension, the hook and the policy."""
+        return (
+            f"extension {self.extension!r} {self.event!r} handler failed under policy "
+            f"{self.policy!r}: {self.detail}"
+        )
 
 
 @agent_facing(topic="extensions", since="0.15.0")

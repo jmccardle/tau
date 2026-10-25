@@ -39,8 +39,8 @@ tree node, so it survives a restart, every head renders it, and nothing is
 parked on a lock while nobody answers.
 
 The veto itself is unchanged and still Fail-CLOSED: the hook returns
-``{"block": True}``, and the ``tool_call`` call-site blocks on any handler
-exception too (``agent_loop.py`` ``_prepare_tool_call``). What the lock adds is
+``{"block": True}``, and a handler exception blocks the call and ends the
+turn (docs/HOOK-ERRORS.md). What the lock adds is
 the half a veto cannot do — "deny and tell the model" is not "stop and ask a
 human", and the loop would otherwise carry straight on with an error result.
 

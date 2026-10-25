@@ -32,12 +32,14 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, Usage
 
 from tau_agent_core.agent_session import AgentSession
 from tau_agent_core.conversation_tree import ConversationTree
 from tau_agent_core.extensions.runner import ExtensionError
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.session_log import InMemorySessionLog
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
@@ -273,9 +275,8 @@ async def test_handled_stops_chain_immediately() -> None:
     assert later_ran == []
 
 
-async def test_input_handler_error_surfaced_not_swallowed() -> None:
-    """A throwing input handler is reported via the runner's on_error and dispatch
-    continues to the next handler (Fail-Early: no silent drop)."""
+async def test_input_handler_error_is_surfaced_and_raised() -> None:
+    """A throwing input handler is reported via on_error, then raised; later handlers do not run."""
     errors: list[ExtensionError] = []
     second_ran: list[str] = []
 
@@ -291,13 +292,13 @@ async def test_input_handler_error_surfaced_not_swallowed() -> None:
     session = _session(first, second)
     session._extension_runner.on_error(errors.append)
 
-    result = await session._extension_runner.emit_input("hi", None)
+    with pytest.raises(HookHandlerError, match="'input' handler raised RuntimeError"):
+        await session._extension_runner.emit_input("hi", None)
 
     assert len(errors) == 1
     assert errors[0].event == "input"
     assert "expansion failed" in errors[0].error
-    assert second_ran == ["hi"]  # dispatch continued past the failure
-    assert result == {"handled": False, "prompt": "hi", "images": None}
+    assert second_ran == []
 
 
 async def test_caller_echoed_turn_stripped_against_pre_transform_text() -> None:

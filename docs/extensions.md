@@ -121,9 +121,17 @@ name, so the name you subscribe to decides which contract you owe:
 
 A one-argument handler on a hook raises `TypeError` the first time that hook
 fires, which for `session_shutdown` is at the very end of a session and for
-`tool_call` is in the fail-closed path, where a raising handler blocks the
-call. `tau-agent-core/tests/test_examples_contract.py` holds every shipped
-example to this.
+`tool_call` ends the turn. `tau-agent-core/tests/test_examples_contract.py`
+holds every shipped example to this.
+
+**A raising handler ends the turn at a hook that can change it**: `input`,
+`before_agent_start`, `tool_call`, `tool_result`, `turn_end`, `user_turn_end`,
+`session_before_switch` and `annotate`. The error goes to the error listeners
+first, and `agent_end` then carries `end_reason: "error"` naming your extension
+and the hook. A raise at `entry_written`, `turn_setting_changed` or a lifecycle
+hook is reported and the turn goes on. Catch what your handler can recover from;
+anything else stops the turn rather than letting it run without your check
+(docs/HOOK-ERRORS.md).
 
 **Choose the turn-boundary hook by cadence.** `turn_end` fires once per
 *agent-loop* turn, so one user request resolved in six tool round-trips fires

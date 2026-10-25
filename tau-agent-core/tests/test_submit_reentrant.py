@@ -24,6 +24,7 @@ import pytest
 
 from tau_llm.types import Model
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.session_log import InMemorySessionLog
 from tau_agent_core.submission import Submission
 
@@ -71,13 +72,10 @@ class TestReentrantSubmissionRaises:
     @pytest.mark.usefixtures("fake_llm")
     async def test_input_hook_calling_ctx_prompt_is_surfaced_not_hung(self):
         """The literal reported shape: an extension's ``input`` handler calls
-        ``ctx.prompt()``. emit_input's own contract (established, unrelated to
-        this fix) is Fail-Closed: a handler exception is SURFACED via
-        on_error and dispatch continues — it does not propagate raw out of
-        submit(). So the outer prompt() still completes normally; what this
-        pins is that it completes AT ALL (no hang) and that the surfaced
-        error names the reentrancy, rather than the coroutine just stopping
-        forever with nothing to see."""
+        ``ctx.prompt()``. What this pins is that the outer prompt() ends AT ALL
+        (no hang) and that the error names the reentrancy. Since #29 a raising
+        ``input`` handler ends the submission, so the outer prompt() raises
+        ``HookHandlerError`` (docs/HOOK-ERRORS.md §2)."""
 
         def ext(api):
             async def on_input(event, ctx):
@@ -91,9 +89,9 @@ class TestReentrantSubmissionRaises:
         surfaced: list = []
         session._extension_runner.on_error(lambda err: surfaced.append(err))
 
-        messages = await asyncio.wait_for(session.prompt("outer"), timeout=2.0)
+        with pytest.raises(HookHandlerError, match="reentrant"):
+            await asyncio.wait_for(session.prompt("outer"), timeout=2.0)
 
-        assert messages, "the outer turn must still complete once the reentrant call is refused"
         assert len(surfaced) == 1
         assert "reentrant" in surfaced[0].error
 

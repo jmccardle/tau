@@ -35,6 +35,7 @@ from tau_agent_core.policies import (
     Failed,
     HandlerCall,
     HandlerPolicyError,
+    HookHandlerError,
     PolicedHandler,
     PolicySite,
     Proceeded,
@@ -54,11 +55,10 @@ WarningSink = Callable[[str, str, str], None]
 
 @dataclass
 class ExtensionError:
-    """A non-fatal error raised by an extension hook handler.
+    """A hook handler's failure, as :meth:`ExtensionRunner.on_error` listeners receive it.
 
-    Mirrors pi's ``ExtensionError`` (``types.ts``): the offending extension's
-    path, the event that was being dispatched, and the error message. Surfaced
-    via :meth:`ExtensionRunner.on_error` so nothing is dropped silently.
+    Every failure reaches the listeners, whether or not it then ends the turn
+    (:data:`TURN_ENDING_HOOKS`).
     """
 
     extension_path: str
@@ -125,6 +125,35 @@ MESSAGE_POSITIONS = (MESSAGE_POSITION_BEFORE_USER, MESSAGE_POSITION_AFTER_USER)
 FIRING_UNIT_AGENT_LOOP_TURN = "agent_loop_turn"
 FIRING_UNIT_USER_TURN = "user_turn"
 
+TURN_ENDING_HOOKS: frozenset[str] = frozenset(
+    {
+        "input",
+        "before_agent_start",
+        "tool_call",
+        "tool_result",
+        "turn_end",
+        "user_turn_end",
+        "session_before_switch",
+        "annotate",
+    }
+)
+"""Hooks whose handler can change what the turn does, so its failure ends the turn.
+
+A raise is surfaced through :meth:`ExtensionRunner.on_error`, then raised as
+:class:`~tau_agent_core.policies.HookHandlerError`; ``annotate`` records it on
+the entry and ends the turn with ``AnnotationError`` instead
+(docs/HOOK-ERRORS.md §2).
+"""
+
+OBSERVING_HOOKS: frozenset[str] = frozenset(
+    {"entry_written", "turn_setting_changed", "session_start", "session_shutdown"}
+)
+"""Hooks whose return is ignored: a raise is surfaced and the remaining handlers run.
+
+A policy's ``Failed`` still raises at ``entry_written`` and
+``turn_setting_changed`` (docs/STEP-DEBUGGER.md §4).
+"""
+
 
 def _note_returned(message: Any) -> None:
     """Record a ``turn_end``/``user_turn_end`` return on the turn's position, for a suspension's continuation."""
@@ -138,8 +167,7 @@ class ExtensionRunner:
 
     The dispatched events (§8, E2 wires the call-sites):
 
-    - ``tool_call``          — veto / in-place arg patch (fail-CLOSED: a throwing
-                               handler propagates so the call-site can block).
+    - ``tool_call``          — veto / in-place arg patch.
     - ``tool_result``        — field-patch the shared result event (later handlers
                                see earlier patches).
     - ``before_agent_start`` — ``system_prompt`` chains (last wins, live to later
@@ -199,20 +227,17 @@ class ExtensionRunner:
     session-lifecycle hooks** (E6 §2 / S41): ``session_start`` and
     ``session_shutdown``. These collect **no** return value — they exist for
     setup/teardown side effects (watchers, state reconstruction from
-    ``ctx.entries()``, exit commits) — but their handler exceptions are still
-    SURFACED via :meth:`on_error` (the S44 regime), *not* swallowed like the
-    fire-and-forget notify ``EventBus`` path. Routing them through the runner (not
-    the bus) is exactly what buys the error surfacing. The frontends drive the
-    lifecycle moments: ``session_start`` after extensions load; ``session_shutdown``
-    on TUI quit, headless completion, and SIGINT/SIGTERM.
+    ``ctx.entries()``, exit commits). The frontends drive the lifecycle moments:
+    ``session_start`` after extensions load; ``session_shutdown`` on TUI quit,
+    headless completion, and SIGINT/SIGTERM.
 
-    A handler registered with a policy (docs/STEP-DEBUGGER.md §4) runs through
-    it. Its ``Failed`` outcome raises
-    :class:`~tau_agent_core.policies.HandlerPolicyError`: ``tool_call`` blocks on
-    it and ``annotate`` records it, as for any raise; every mutating hook that
-    isolates handler errors surfaces it and re-raises it instead, which ends the
-    turn. The lifecycle hooks have no turn to end, so they surface it, set a
-    warning, and run the remaining handlers.
+    **A handler's failure** is always surfaced through :meth:`on_error`. At a hook
+    in :data:`TURN_ENDING_HOOKS` it then ends the turn as
+    :class:`~tau_agent_core.policies.HookHandlerError`; at a hook in
+    :data:`OBSERVING_HOOKS` the remaining handlers run (docs/HOOK-ERRORS.md). A
+    policy's ``Failed`` (docs/STEP-DEBUGGER.md §4) is the same failure, and also
+    raises at ``entry_written`` and ``turn_setting_changed``; the lifecycle hooks
+    have no turn to end, so they set a warning instead.
 
     ``has_handlers(event)`` gives call-sites the zero-extension fast path
     (pi ``agent-session.ts:405-411``): when it returns ``False`` the caller skips
@@ -462,19 +487,49 @@ class ExtensionRunner:
                 raise SuspensionSwallowedError(ext.name, hook, mark.raised_by)
         return result
 
+    async def _dispatch(
+        self,
+        ext: ExtensionHandlers,
+        hook: str,
+        handler: HookHandler | PolicedHandler,
+        event: dict[str, Any],
+    ) -> Any:
+        """:meth:`_call` ``handler``; a failure is surfaced, then handled as ``hook``'s class says.
+
+        At a hook in :data:`TURN_ENDING_HOOKS` it is raised, so the turn ends. At
+        any other hook only a policy's ``Failed`` is raised.
+
+        Returns:
+            The handler's return, or ``None`` after a failure that was not raised.
+
+        Raises:
+            HookHandlerError: at a turn-ending hook; one the handler itself raised
+                (a nested hook's, or a policy's) is raised unchanged.
+            HandlerPolicyError: a policed handler's outcome was ``Failed``.
+        """
+        try:
+            return await self._call(ext, hook, handler, event)
+        except Exception as err:  # noqa: BLE001 — surfaced, then raised or isolated by class
+            self._emit_error(ExtensionError(ext.path, hook, str(err)))
+            if hook in TURN_ENDING_HOOKS:
+                if isinstance(err, HookHandlerError):
+                    raise
+                raise HookHandlerError(ext.name, hook, err) from err
+            if isinstance(err, HandlerPolicyError):
+                raise
+            return None
+
     async def emit_tool_call(self, event: dict[str, Any]) -> dict[str, Any] | None:
         """Dispatch ``tool_call``; first ``block: true`` short-circuits.
 
-        A policed handler's ``Failed`` raises :class:`HandlerPolicyError`, which
-        the call-site turns into a block like any raise.
+        Handlers may mutate ``event["input"]`` in place (later handlers see the
+        mutation — no re-validation). The threaded result is the last truthy
+        handler result; a ``block`` result returns immediately.
 
-        pi ``runner.ts:862-883``. Handlers may mutate ``event["input"]`` in place
-        (later handlers see the mutation — no re-validation). The threaded result
-        is the last truthy handler result; a ``block`` result returns immediately.
-
-        Fail-CLOSED: handler exceptions are **not** caught here — they propagate so
-        the E2 call-site can convert a throw into a block (pi does the same:
-        ``emitToolCall`` has no try/except).
+        Raises:
+            HookHandlerError: a handler failed. The call-site answers the call
+                with an error result, runs none of the batch, and ends the turn
+                (docs/HOOK-ERRORS.md §3).
         """
         result: dict[str, Any] | None = None
         for ext in self._extensions:
@@ -482,7 +537,7 @@ class ExtensionRunner:
             if not handlers:
                 continue
             for handler in handlers:
-                handler_result = await self._call(ext, "tool_call", handler, event)
+                handler_result = await self._dispatch(ext, "tool_call", handler, event)
                 if handler_result:
                     result = handler_result
                     if result.get("block"):
@@ -501,6 +556,10 @@ class ExtensionRunner:
         (the structured result, when the event carries one) is patchable too, and
         ``patched`` names the keys a handler set, so the call-site can tell a
         rewritten ``content`` from an untouched ``value``.
+
+        Raises:
+            HookHandlerError: a handler failed; the call's result is written as an
+                error result, since the handler may be a redactor.
         """
         current = dict(event)
         patched: set[str] = set()
@@ -509,14 +568,7 @@ class ExtensionRunner:
             if not handlers:
                 continue
             for handler in handlers:
-                try:
-                    handler_result = await self._call(ext, "tool_result", handler, current)
-                except HandlerPolicyError as err:
-                    self._emit_error(ExtensionError(ext.path, "tool_result", str(err)))
-                    raise
-                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
-                    self._emit_error(ExtensionError(ext.path, "tool_result", str(err)))
-                    continue
+                handler_result = await self._dispatch(ext, "tool_result", handler, current)
                 if not handler_result:
                     continue
                 for key in ("content", "details", "is_error", "value"):
@@ -574,6 +626,8 @@ class ExtensionRunner:
                 an unrecognised position is not silently resolved to a plausible
                 default, because "silently plausible" is exactly the failure this
                 key exists to remove.
+            HookHandlerError: a handler failed; the turn ends before its user
+                message is written.
         """
         current_system_prompt = system_prompt
         messages: list[Any] = []
@@ -589,14 +643,7 @@ class ExtensionRunner:
                     "images": images,
                     "system_prompt": current_system_prompt,
                 }
-                try:
-                    result = await self._call(ext, "before_agent_start", handler, event)
-                except HandlerPolicyError as err:
-                    self._emit_error(ExtensionError(ext.path, "before_agent_start", str(err)))
-                    raise
-                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
-                    self._emit_error(ExtensionError(ext.path, "before_agent_start", str(err)))
-                    continue
+                result = await self._dispatch(ext, "before_agent_start", handler, event)
                 if not result:
                     continue
                 if result.get("message") is not None:
@@ -673,10 +720,8 @@ class ExtensionRunner:
 
         Raises:
             ValueError: a ``refuse`` value that is not a non-empty string.
-
-        Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime) and
-        dispatch continues to the next handler — pi's ``emitInput`` wraps each
-        handler in try/catch and continues likewise.
+            HookHandlerError: a handler failed; later handlers do not run and
+                ``submit`` raises it before anything is written.
         """
         current_prompt = prompt
         current_images = images
@@ -692,14 +737,7 @@ class ExtensionRunner:
                     "source": source,
                     "submitter": submitter,
                 }
-                try:
-                    result = await self._call(ext, "input", handler, event)
-                except HandlerPolicyError as err:
-                    self._emit_error(ExtensionError(ext.path, "input", str(err)))
-                    raise
-                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
-                    self._emit_error(ExtensionError(ext.path, "input", str(err)))
-                    continue
+                result = await self._dispatch(ext, "input", handler, event)
                 if not result:
                     continue
                 if "refuse" in result:
@@ -768,9 +806,10 @@ class ExtensionRunner:
         is returned to the call-site (empty when nothing was returned, so the caller
         skips the append entirely).
 
-        Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime) and
-        dispatch continues to the next handler — an observing handler must neither
-        abort a mutating one nor be swallowed (Fail-Early: no silent drop).
+        Raises:
+            HookHandlerError: a handler failed, including one that only observes,
+                since the hook cannot tell which kind it is calling
+                (docs/HOOK-ERRORS.md §2).
         """
         injected: list[Any] = []
         for ext in self._extensions:
@@ -785,14 +824,7 @@ class ExtensionRunner:
                     "usage": usage,
                     "messages": messages,
                 }
-                try:
-                    result = await self._call(ext, "turn_end", handler, event)
-                except HandlerPolicyError as err:
-                    self._emit_error(ExtensionError(ext.path, "turn_end", str(err)))
-                    raise
-                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
-                    self._emit_error(ExtensionError(ext.path, "turn_end", str(err)))
-                    continue
+                result = await self._dispatch(ext, "turn_end", handler, event)
                 if not result:
                     continue
                 if result.get("message") is not None:
@@ -845,8 +877,9 @@ class ExtensionRunner:
         node (same power and limits as ``before_agent_start``: append-only, never a
         rewrite); returning nothing is a pure observer.
 
-        Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime) and
-        dispatch continues to the next handler.
+        Raises:
+            HookHandlerError: a handler failed. The loop's ``agent_end`` has
+                already gone out, so ``submit`` raises it (docs/HOOK-ERRORS.md §4).
         """
         injected: list[Any] = []
         for ext in self._extensions:
@@ -860,14 +893,7 @@ class ExtensionRunner:
                     "loop_turns": loop_turns,
                     "messages": messages,
                 }
-                try:
-                    result = await self._call(ext, "user_turn_end", handler, event)
-                except HandlerPolicyError as err:
-                    self._emit_error(ExtensionError(ext.path, "user_turn_end", str(err)))
-                    raise
-                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
-                    self._emit_error(ExtensionError(ext.path, "user_turn_end", str(err)))
-                    continue
+                result = await self._dispatch(ext, "user_turn_end", handler, event)
                 if not result:
                     continue
                 if result.get("message") is not None:
@@ -884,8 +910,8 @@ class ExtensionRunner:
         "message", "blocks"}``, so it cannot change the entry or what a later
         handler sees. The return value is ignored.
 
-        Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime, as
-        for ``turn_end``) and dispatch continues to the next handler.
+        An observing hook: a handler's exception is surfaced via :meth:`on_error`
+        and dispatch continues; a policy's ``Failed`` raises.
 
         Args:
             kind: ``"user"``, ``"assistant"``, ``"toolResult"`` or ``"custom"``.
@@ -919,13 +945,7 @@ class ExtensionRunner:
         }
         for ext in writing:
             for handler in ext.handlers["entry_written"]:
-                try:
-                    await self._call(ext, "entry_written", handler, copy.deepcopy(base))
-                except HandlerPolicyError as err:
-                    self._emit_error(ExtensionError(ext.path, "entry_written", str(err)))
-                    raise
-                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
-                    self._emit_error(ExtensionError(ext.path, "entry_written", str(err)))
+                await self._dispatch(ext, "entry_written", handler, copy.deepcopy(base))
 
     async def emit_turn_setting_changed(self, event: dict[str, Any]) -> None:
         """Dispatch ``turn_setting_changed``: a model or thinking change was recorded.
@@ -942,13 +962,7 @@ class ExtensionRunner:
         base = {"type": "turn_setting_changed", **event}
         for ext in list(self._extensions):
             for handler in ext.handlers.get("turn_setting_changed", []):
-                try:
-                    await self._call(ext, "turn_setting_changed", handler, dict(base))
-                except HandlerPolicyError as err:
-                    self._emit_error(ExtensionError(ext.path, "turn_setting_changed", str(err)))
-                    raise
-                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
-                    self._emit_error(ExtensionError(ext.path, "turn_setting_changed", str(err)))
+                await self._dispatch(ext, "turn_setting_changed", handler, dict(base))
 
     async def emit_annotate(
         self, kind: str, message: dict[str, Any]
@@ -1030,10 +1044,9 @@ class ExtensionRunner:
         is "stop or continue", and threading a dict through would invite a
         second consumer to read fields this hook does not promise.
 
-        Handler exceptions are SURFACED via :meth:`on_error` (the S44 regime)
-        and dispatch continues to the next handler — one extension's failing
-        veto check must not silently block (or silently fail to block) another
-        extension's.
+        Raises:
+            HookHandlerError: a handler failed, so its veto is unknown; the switch
+                does not happen and the runtime verb raises it.
         """
         for ext in self._extensions:
             handlers = ext.handlers.get("session_before_switch")
@@ -1041,14 +1054,7 @@ class ExtensionRunner:
                 continue
             for handler in handlers:
                 event = {"type": "session_before_switch", "reason": reason, "target": target}
-                try:
-                    result = await self._call(ext, "session_before_switch", handler, event)
-                except HandlerPolicyError as err:
-                    self._emit_error(ExtensionError(ext.path, "session_before_switch", str(err)))
-                    raise
-                except Exception as err:  # noqa: BLE001 — surfaced, not dropped
-                    self._emit_error(ExtensionError(ext.path, "session_before_switch", str(err)))
-                    continue
+                result = await self._dispatch(ext, "session_before_switch", handler, event)
                 if result and result.get("cancel"):
                     return True
         return False

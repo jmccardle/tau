@@ -21,6 +21,7 @@ from tau_agent_core.extensions.runner import (
     ExtensionHandlers,
     ExtensionRunner,
 )
+from tau_agent_core.policies import HookHandlerError
 
 
 async def test_has_handlers_false_when_no_extensions() -> None:
@@ -85,9 +86,11 @@ async def test_tool_call_in_place_input_patch_is_visible_to_later_handlers() -> 
     assert later_saw["path"] == "/patched"  # later handler saw the mutation
 
 
-async def test_tool_call_exception_propagates_fail_closed() -> None:
-    """tool_call does NOT swallow — the throw propagates for the call-site to block."""
+async def test_tool_call_exception_raises_naming_extension_and_hook() -> None:
+    """A tool_call raise is surfaced, then raised as HookHandlerError (docs/HOOK-ERRORS.md)."""
     runner = ExtensionRunner()
+    errors: list[ExtensionError] = []
+    runner.on_error(errors.append)
 
     def boom(event: dict, ctx: object) -> None:
         raise RuntimeError("kaboom")
@@ -95,8 +98,9 @@ async def test_tool_call_exception_propagates_fail_closed() -> None:
     ext = runner.register_extension("/ext/a.py")
     ext.on("tool_call", boom)
 
-    with pytest.raises(RuntimeError, match="kaboom"):
+    with pytest.raises(HookHandlerError, match="'a' 'tool_call' handler raised RuntimeError: kaboom"):
         await runner.emit_tool_call({"type": "tool_call", "input": {}})
+    assert [(e.extension_path, e.event) for e in errors] == [("/ext/a.py", "tool_call")]
 
 
 async def test_tool_call_last_truthy_result_wins_without_block() -> None:
@@ -148,10 +152,11 @@ async def test_tool_result_no_patch_returns_none() -> None:
     assert result is None
 
 
-async def test_tool_result_handler_error_is_surfaced_not_dropped() -> None:
+async def test_tool_result_handler_error_is_surfaced_and_ends_the_dispatch() -> None:
     runner = ExtensionRunner()
     errors: list[ExtensionError] = []
     runner.on_error(errors.append)
+    later: list[str] = []
 
     def boom(event: dict, ctx: object) -> None:
         raise ValueError("bad")
@@ -159,16 +164,14 @@ async def test_tool_result_handler_error_is_surfaced_not_dropped() -> None:
     a = runner.register_extension("/ext/a.py")
     a.on("tool_result", boom)
     b = runner.register_extension("/ext/b.py")
-    b.on("tool_result", lambda event, ctx: {"content": "recovered"})
+    b.on("tool_result", lambda event, ctx: later.append("b"))
 
-    result = await runner.emit_tool_result({"type": "tool_result", "content": "orig"})
+    with pytest.raises(HookHandlerError) as raised:
+        await runner.emit_tool_result({"type": "tool_result", "content": "orig"})
 
-    assert result == {
-        "content": "recovered",
-        "details": None,
-        "is_error": None,
-        "patched": ["content"],
-    }
+    assert (raised.value.extension, raised.value.event) == ("a", "tool_result")
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert later == []
     assert len(errors) == 1
     assert errors[0].extension_path == "/ext/a.py"
     assert errors[0].event == "tool_result"

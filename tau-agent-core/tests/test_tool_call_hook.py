@@ -8,8 +8,8 @@ Verifies the E2 wiring (docs/EXTENSIONS-IMPLEMENTATION.md §E2, step S11) at the
   agent-loop.ts:597-602);
 - a handler mutating ``event["input"]`` IN PLACE patches the args the tool
   actually executes with — with NO re-validation (pi parity, §7 decision E2-a);
-- a THROWING handler is fail-CLOSED: it blocks execution (pi
-  agent-session.ts:419-424) rather than letting the tool run unguarded.
+- a THROWING handler ends the turn: the tool does not run, its call is
+  answered with an error result, and ``prompt`` raises (docs/HOOK-ERRORS.md §3).
 
 These run the FULL loop; only the network boundary (``stream_simple``) is faked,
 and the fake emits a real tool call so the hook fires on a real prepared call.
@@ -26,7 +26,10 @@ from unittest.mock import patch
 from tau_llm.streaming import DoneEvent, TextDeltaEvent
 from tau_llm.types import AssistantMessage, Model, TextContent, ToolCall, Usage
 
+import pytest
+
 from tau_agent_core.agent_session import AgentSession
+from tau_agent_core.policies import HookHandlerError
 from tau_agent_core.session_log import InMemorySessionLog
 
 #: A fixed epoch-ms stamp for fixtures — never 0 (docs/MESSAGE-TIMESTAMPS.md §2).
@@ -220,8 +223,8 @@ async def test_in_place_arg_patch_reaches_the_tool() -> None:
     assert _tool_result_text(messages, "patchable") == "ok:patched"
 
 
-async def test_throwing_tool_call_handler_blocks() -> None:
-    """A tool_call handler that raises is fail-CLOSED: the tool does not run."""
+async def test_throwing_tool_call_handler_ends_the_turn() -> None:
+    """A tool_call handler that raises ends the turn; the tool does not run."""
     executed: list[dict[str, Any]] = []
 
     async def probe_execute(tool_call_id, params, signal, on_update, ctx):
@@ -248,8 +251,8 @@ async def test_throwing_tool_call_handler_blocks() -> None:
         "tau_agent_core.agent_loop.stream_simple",
         side_effect=_fake_stream_calling("risky", {}),
     ):
-        messages = await session.prompt("call the risky tool")
+        with pytest.raises(HookHandlerError, match="handler exploded"):
+            await session.prompt("call the risky tool")
 
-    # Fail-CLOSED: the tool never executed and the block surfaced as an error result.
     assert executed == []
-    assert "handler exploded" in _tool_result_text(messages, "risky")
+    assert "handler exploded" in _tool_result_text(session.messages, "risky")
