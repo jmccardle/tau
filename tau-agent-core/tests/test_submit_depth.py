@@ -253,24 +253,23 @@ class TestDepthPropagation:
 
 
 class TestForkInheritsDepth:
-    async def test_the_branch_task_is_spawned_inside_the_depth_context(self, monkeypatch):
-        """``fork`` never touches ``_turn_lock``, so the depth cap is the ONLY
-        bound on a fork chain. The branch's task must therefore be created while
-        the fork submission's depth is published, so the branch's own first
-        ``prompt()`` is admitted one deeper."""
+    async def test_the_fork_turn_is_driven_at_the_fork_submissions_depth(self, monkeypatch):
+        """``fork`` never touches the head's turn lock, so the depth cap is the ONLY
+        bound on a fork chain. The fork's turn is driven by its own submission at
+        that submission's depth, so anything the turn submits is admitted one deeper."""
         log = InMemorySessionLog()
         await Cursor.newest(log).append_message(
             {"role": "user", "content": [{"type": "text", "text": "hi"}]}
         )
         session = AgentSession(session_log=log, model=_model(), tools=[])
 
-        seen: list[int | None] = []
+        seen: list[int] = []
 
-        async def _recording_spawn(at, prompt, **kwargs):
-            seen.append(DRIVING_SUBMISSION_DEPTH.get())
-            return None
+        async def _recording_drive(sub, cur, **kwargs):
+            seen.append(sub.depth)
+            cur.turn_lock.release()
 
-        monkeypatch.setattr(session, "spawn", _recording_spawn)
+        monkeypatch.setattr(session, "_drive_turn", _recording_drive)
 
         result = await session.submit(
             Submission(
@@ -285,11 +284,8 @@ class TestForkInheritsDepth:
         assert result.accepted is True
         await asyncio.wait_for(session._forked_tasks["fork-depth-1"], timeout=10.0)
 
-        # The branch inherits 4, so its own prompt() is admitted at 5.
         assert seen == [4]
         assert next_submission_depth_in(seen[0]) == 5
-
-        # And the context does not leak past the (non-blocking) fork submission.
         assert DRIVING_SUBMISSION_DEPTH.get() is None
 
 

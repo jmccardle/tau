@@ -290,8 +290,11 @@ is written.
 the last writer, a reopened tree places its cursor on the sub-agent's newest entry.
 That entry is a real leaf of the conversation, and §4 is the agreed rule.
 
-`fork` as a `multitask_strategy` is the same operation started by a submission,
-rather than by a tool.
+`fork` as a `multitask_strategy` is not a sub-agent (2026-10-24, #102). It opens
+an independent cursor at the submitting cursor's leaf, with no owner and no frame,
+and the fork submission drives its turn: every tool, extension hooks, and its own
+`allow_user_input`. It inherits nothing from the cursor it branched from, the way
+two top-level cursors share one hook runner without depending on each other (§7).
 
 ## 7. An extension sees the cursor its event happened on
 

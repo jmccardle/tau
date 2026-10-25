@@ -387,8 +387,7 @@ class Cursor:
     def _stamped(self, payload: dict[str, Any]) -> dict[str, Any]:
         """``payload`` with ``source: "agent"`` during an ``agent`` submission's turn on a child cursor.
 
-        A child cursor has an :attr:`owner`; ``spawn`` and the fork strategy
-        submit as ``agent``. Every other write (the head's, a person's or a
+        A child cursor has an :attr:`owner`; ``spawn`` submits as ``agent``. Every other write (the head's, a person's or a
         client's turn, an idle write) is returned unchanged and stays
         byte-identical; ``session_log.default_leaf`` reads the field.
         """

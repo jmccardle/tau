@@ -1171,7 +1171,11 @@ agents can be stepped from their start.
 - **An in-process child cursor** (`spawn_branch`, `AgentSession.spawn`, any
   cursor whose `owner` is another cursor, `cursor.py:107`) is a branch of the
   same session tree, run by the same process. It is steppable.
-- **A fork** is a new session whose header names its source. It is not a child
+- **A `multitask_strategy="fork"` submission** opens an independent cursor with no
+  owner (`docs/CURSORS.md` §6). It is not a child: it is stepped like any
+  top-level turn, and its own submission's `allow_user_input` decides whether it
+  can suspend (#102).
+- **A session fork** is a new session whose header names its source. It is not a child
   turn: it is stepped like any session, by its own arming, which the config fold
   copies with the path.
 - **A separate-process delegate** (`examples/20_delegate.py` spawns `tau -p`
