@@ -1,0 +1,2 @@
+# Rule 7 ratchet (docs/plan.md §2): max function complexity 15.
+cognitive-complexity-threshold = 15

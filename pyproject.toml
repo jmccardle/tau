@@ -1,0 +1,65 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "ffwf-tau-next"
+description = "τ next (\"Trusty\"): Rust core, Python extensions."
+requires-python = ">=3.12"
+license = "MIT"
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
+]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.15,<2",
+    "pytest>=8",
+    "ruff>=0.14",
+    "pyright>=1.1.400",
+]
+# Phase 0 exit criterion and Phase 2 oracle: τ 0.15 imports in the same venv.
+oracle = ["ffwf-tau==0.15.0"]
+
+[tool.maturin]
+manifest-path = "crates/tau-py/Cargo.toml"
+module-name = "tau_next._core"
+python-source = "python"
+features = ["abi3"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers"]
+markers = [
+    "oracle: needs ffwf-tau 0.15 importable (the `oracle` dependency group)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["target", ".venv*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "C90", "PL", "PT", "TID"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tau_next"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"unittest.mock".msg = "Rule 4: fakes live at the effect boundary (FakeProvider, FakeTool), not in patches."
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004"]
+
+[tool.pyright]
+include = ["python", "tests"]
+strict = ["python"]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"

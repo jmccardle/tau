@@ -1,0 +1,84 @@
+# CI for τ next. Fail early: no continue-on-error, no `|| true`.
+#
+# `gate` runs scripts/check.sh, the same file developers run locally, on each
+# platform in the plan's matrix. `wheels` builds the distributable artifacts
+# and installs each into a clean venv beside ffwf-tau 0.15 (Phase 0 exit).
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: gate (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14]
+        python: ["3.12", "3.14t"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install "maturin>=1.15,<2" pytest ruff pyright "ffwf-tau==0.15.0"
+      - name: scripts/check.sh
+        shell: bash
+        run: scripts/check.sh
+
+  wheels:
+    name: wheel (${{ matrix.os }}, ${{ matrix.python }})
+    needs: gate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14]
+        # 3.12 yields the cp312-abi3 wheel; 3.14t the version-specific one.
+        python: ["3.12", "3.14t"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --locked --out dist --interpreter python${{ matrix.python }}
+          manylinux: auto
+      - name: clean-venv install beside ffwf-tau 0.15
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install pytest "ffwf-tau==0.15.0" dist/*.whl
+          cd /tmp
+          /tmp/clean/bin/python -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.python }}
+          path: dist/*.whl
+          if-no-files-found: error
