@@ -2861,7 +2861,7 @@ class TauApp(App):
             if authorizer is None:
                 self.notify("This backend cannot authorize extensions", severity="error")
                 return
-            outcome = await authorizer(record.identifier)
+            outcome = await authorizer(record.identifier, target=record.target)
             self.notify(outcome.message, severity="information" if outcome.ok else "error")
 
         self.push_screen(modals.ExtensionAuthorizationDialog(title, body), _answered)

@@ -616,6 +616,59 @@ class TestCollisions:
         [record] = result.withheld
         assert (record.kind, record.state) == ("package", "collision")
 
+    async def test_approving_the_drop_in_authorizes_the_drop_in_not_the_package(self, site, home):
+        """Both unauthorized sources share an identifier; the approval names the one shown (#106)."""
+        root, top = site
+        module = _install(root, top=top)
+        pkg_dir = home / "extensions" / module
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text(_DROPIN)
+        AuthorizationStore.load(home / STORE_FILENAME).save()
+        session = _session()
+        await session.load_extensions(None, user_dir=str(home / "extensions"))
+        assert sorted(r.kind for r in session.extension_records()) == ["dropin", "package"]
+
+        outcome = await session.authorize_extension(module, target=str(pkg_dir))
+        assert outcome.ok, outcome.message
+        store = AuthorizationStore.load(home / STORE_FILENAME)
+        [package] = [s for s in discover_packages() if s.identifier == module]
+        [dropin] = discover_dropins(home / "extensions")
+        assert store.verdict(dropin).verdict == "authorized"
+        assert store.verdict(package).verdict == "new"
+        assert [(r.kind, r.state) for r in session.extension_records()] == [
+            ("dropin", "loaded"),
+            ("package", "unauthorized"),
+        ]
+
+    async def test_a_bare_identifier_naming_two_withheld_sources_raises(self, site, home):
+        root, top = site
+        module = _install(root, top=top)
+        pkg_dir = home / "extensions" / module
+        pkg_dir.mkdir()
+        (pkg_dir / "__init__.py").write_text(_DROPIN)
+        AuthorizationStore.load(home / STORE_FILENAME).save()
+        session = _session()
+        await session.load_extensions(None, user_dir=str(home / "extensions"))
+        with pytest.raises(ValueError, match="more than one") as err:
+            await session.authorize_extension(module)
+        assert str(pkg_dir) in str(err.value) and "package" in str(err.value)
+
+    async def test_approval_refuses_a_package_whose_version_moved_since_the_prompt(
+        self, site, home
+    ):
+        root, top = site
+        module = _install(root, top=top, version="1.0")
+        AuthorizationStore.load(home / STORE_FILENAME).save()
+        session = _session()
+        await session.load_extensions(None, user_dir=str(home / "extensions"))
+        [shown] = session.extension_records()
+        assert shown.version == "1.0"
+        for info in root.glob("*.dist-info"):
+            (info / "METADATA").write_text("Metadata-Version: 2.1\nName: tau-fake\nVersion: 2.0\n")
+        outcome = await session.authorize_extension(module, target=module)
+        assert not outcome.ok and "1.0" in outcome.message and "2.0" in outcome.message
+        assert [r.state for r in session.extension_records()] == ["unauthorized"]
+
     async def test_an_explicit_name_claims_its_identifier_over_a_discovered_one(
         self, home, tmp_path
     ):

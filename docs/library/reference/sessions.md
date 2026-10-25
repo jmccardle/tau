@@ -174,7 +174,7 @@ two racing clients converge.
 ### authorize_extension
 
 ```python
-async authorize_extension(token: str) -> ExtensionActionResult
+async authorize_extension(token: str, *, target: str | None = None) -> ExtensionActionResult
 ```
 
 `tau_agent_core.agent_session.AgentSession.authorize_extension`
@@ -184,11 +184,13 @@ Authorize a withheld, discovered extension and load it into this session.
 Writes the authorization record (docs/EXTENSION-PACKAGES.md §5), loads
 the source, and fires its ``session_start`` (reason ``"enable"``). A
 discovered extension that fails to load is reported, not raised, as at
-startup.
+startup. A package whose installed version is no longer the one that
+was withheld is refused: the approval covers what the prompt showed.
 
 **Parameters**
 
 - `token: str` — The withheld extension's identifier, or its last dotted segment.
+- `target: str | None = None` — The withheld record's ``target`` (module name or drop-in path); required when a drop-in and a package share the identifier.
 
 **Returns**
 
@@ -196,6 +198,7 @@ The outcome, with ``action`` ``"authorize"``.
 
 **Raises**
 
+- `ValueError` — More than one withheld record matches; the message names each.
 - `AuthorizationStoreError` — The store cannot be read.
 
 ### check_tool_filters

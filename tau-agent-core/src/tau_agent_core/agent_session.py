@@ -2532,45 +2532,73 @@ class AgentSession:
                 found[bucket.path] = tuple(orphans)
         return found
 
-    async def authorize_extension(self, token: str) -> ExtensionActionResult:
+    async def authorize_extension(
+        self, token: str, *, target: str | None = None
+    ) -> ExtensionActionResult:
         """Authorize a withheld, discovered extension and load it into this session.
 
         Writes the authorization record (docs/EXTENSION-PACKAGES.md §5), loads
         the source, and fires its ``session_start`` (reason ``"enable"``). A
         discovered extension that fails to load is reported, not raised, as at
-        startup.
+        startup. A package whose installed version is no longer the one that
+        was withheld is refused: the approval covers what the prompt showed.
 
         Args:
             token: The withheld extension's identifier, or its last dotted segment.
+            target: The withheld record's ``target`` (module name or drop-in
+                path); required when a drop-in and a package share the identifier.
 
         Returns:
             The outcome, with ``action`` ``"authorize"``.
 
         Raises:
+            ValueError: More than one withheld record matches; the message names each.
             AuthorizationStoreError: The store cannot be read.
         """
         from tau_agent_core.extension_auth import AuthorizationStore, store_path_for
         from tau_agent_core.extension_sources import default_extensions_dir
         from tau_agent_core.sdk import ExtensionLoadError, _load_source, find_discovered_extension
 
-        pending = {r.identifier: r for r in self._extension_withheld if r.state == "unauthorized"}
+        pending = [r for r in self._extension_withheld if r.state == "unauthorized"]
         try:
-            ident = resolve_shorthand(token, list(pending))
+            ident = resolve_shorthand(token, sorted({r.identifier for r in pending}))
         except ValueError as err:
             return ExtensionActionResult("authorize", token, False, str(err))
         if ident is None:
             return ExtensionActionResult(
                 "authorize", token, False, f"no extension awaiting authorization is named {token!r}"
             )
-        record = pending[ident]
+        matches = [
+            r for r in pending if r.identifier == ident and (target is None or r.target == target)
+        ]
+        if not matches:
+            return ExtensionActionResult(
+                "authorize",
+                ident,
+                False,
+                f"{ident!r} awaiting authorization has no target {target!r}",
+            )
+        if len(matches) > 1:
+            names = "; ".join(f"{r.kind} {r.target}" for r in matches)
+            raise ValueError(
+                f"{token!r} names more than one withheld extension ({names}); pass target="
+            )
+        record = matches[0]
         user_dir, store_path = self._extension_dirs
         directory = Path(user_dir) if user_dir is not None else default_extensions_dir()
         kind: Literal["package", "dropin"] = "dropin" if record.kind == "dropin" else "package"
-        target = record.target if record.kind == "dropin" else ident
         try:
-            source = find_discovered_extension(target, extensions_dir=directory, kind=kind)
+            source = find_discovered_extension(record.target, extensions_dir=directory, kind=kind)
         except ValueError as err:
             return ExtensionActionResult("authorize", ident, False, str(err))
+        if source.version != record.version:
+            return ExtensionActionResult(
+                "authorize",
+                ident,
+                False,
+                f"{ident} was withheld at version {record.version} but "
+                f"{source.version} is installed now; restart to review it again",
+            )
         store = AuthorizationStore.load(store_path or store_path_for(directory))
         store.authorize(source)
         store.save()

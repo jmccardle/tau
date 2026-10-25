@@ -1808,9 +1808,11 @@ class TauBackend(Backend):
         """Every extension the session knows of and its state; :meth:`AgentSession.extension_records`."""
         return self.agent_session.extension_records()
 
-    async def authorize_extension(self, token: str) -> ExtensionActionResult:
+    async def authorize_extension(
+        self, token: str, *, target: str | None = None
+    ) -> ExtensionActionResult:
         """Authorize and load a withheld extension; :meth:`AgentSession.authorize_extension`."""
-        return await self.agent_session.authorize_extension(token)
+        return await self.agent_session.authorize_extension(token, target=target)
 
     def list_managed_extensions(self) -> list[tuple[str, bool]]:
         """Every managed file extension as ``(path, enabled)`` (E10 §6 / S70).
