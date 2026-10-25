@@ -101,7 +101,7 @@ class JmftsVersionError(Exception):
     """
 
 
-_PEP440 = re.compile(
+_VERSION_SUBSET = re.compile(
     r"^v?(\d+)\.(\d+)(?:\.(\d+))?"
     r"(?P<pre>[-_.]?(?:a|b|c|rc|alpha|beta|pre|preview)[-_.]?\d*)?"
     r"(?:[-_.]?post[-_.]?\d*)?"
@@ -112,15 +112,22 @@ _PEP440 = re.compile(
 
 
 def _server_version_at_least(version: Any, minimum: tuple[int, int, int]) -> bool:
-    """Whether a ``HealthResponse.version`` is at least ``minimum`` under PEP 440.
+    """Whether a ``HealthResponse.version`` is at least ``minimum``.
+
+    Reads a subset of the PyPA version specifiers
+    (packaging.python.org/en/latest/specifications/version-specifiers/): no epoch,
+    two or three release segments (a missing third is 0), an optional leading ``v``,
+    then optional pre (``a``/``b``/``c``/``rc``/``alpha``/``beta``/``pre``/``preview``),
+    post, dev and ``+local`` parts. Only the release triple and the presence of a
+    pre or dev part are compared; post and local parts are accepted and ignored.
 
     A pre-release or dev release of ``minimum`` itself (``0.7.0rc1``, ``0.7.0.dev0``)
     sorts before it, so it does not qualify; one of a later release (``0.8.0rc1``) does.
 
     Raises:
-        JmftsVersionError: ``version`` is not a PEP 440 version.
+        JmftsVersionError: ``version`` is outside the subset above.
     """
-    match = _PEP440.match(str(version))
+    match = _VERSION_SUBSET.match(str(version))
     if match is None:
         raise JmftsVersionError(f"JMFTS reported an unreadable version {version!r}")
     release = (int(match[1]), int(match[2]), int(match[3] or 0))
