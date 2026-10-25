@@ -132,6 +132,52 @@ def clamp_thinking_level(model: Model, level: ModelThinkingLevel) -> ModelThinki
     return available[0] if available else "off"
 
 
+class ThinkingRefused(ValueError):
+    """A thinking level the model's wire cannot honour; the request is not sent."""
+
+
+@agent_facing(topic="messages")
+def check_thinking_request(model: Model, requested: str | None) -> ModelThinkingLevel | None:
+    """:func:`requested_wire_level`, plus the refusals that depend on the wire's off form.
+
+    Pure, so a head or session can refuse before any request is sent and the
+    provider applies the same rule (docs/REASONING-WIRE.md §4).
+
+    Args:
+        model: Reads ``api``, ``name``, ``reasoning`` and ``thinking_level_map``.
+        requested: The ``reasoning`` option as the caller passed it.
+
+    Returns:
+        What :func:`requested_wire_level` returns.
+
+    Raises:
+        ThinkingRefused: ``requested`` is not a level, ``"off"`` is mapped to null,
+            or ``"off"`` on an ``openai-completions`` model that neither declares
+            reasoning nor maps ``"off"``: τ cannot know this endpoint's off form,
+            and sending nothing would leave its default reasoning on.
+    """
+    try:
+        level = requested_wire_level(model, requested)
+    except ValueError as exc:
+        raise ThinkingRefused(str(exc)) from exc
+    if (
+        level == "off"
+        and model.api == "openai-completions"
+        and "off" not in (model.thinking_level_map or {})
+        and not model.reasoning
+    ):
+        raise ThinkingRefused(
+            f"Model {model.id!r}: thinking 'off' was requested, but this "
+            "OpenAI-compatible model neither declares reasoning nor maps 'off', so τ "
+            "does not know what turns reasoning off on this endpoint. Set "
+            f"models.{model.name}.thinking_level_map.off in τ's config.json: "
+            '{"chat_template_kwargs": {"enable_thinking": false}} for a llama.cpp chat '
+            'template, "none" for OpenAI\'s reasoning_effort, or {} if this model never '
+            "reasons; or pass --thinking LEVEL (docs/REASONING-WIRE.md §4)."
+        )
+    return level
+
+
 @agent_facing(topic="messages")
 def requested_wire_level(model: Model, requested: str | None) -> ModelThinkingLevel | None:
     """The level whose wire form a provider sends for ``requested``, or ``None``.

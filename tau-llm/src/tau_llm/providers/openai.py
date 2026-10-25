@@ -49,7 +49,7 @@ from tau_llm.json_parse import (
     parse_json_with_repair_info,
     parse_streaming_json,
 )
-from tau_llm.models import ModelThinkingLevel, requested_wire_level
+from tau_llm.models import ModelThinkingLevel, check_thinking_request
 from tau_llm.once import OnceSet
 from tau_llm.streaming import (
     DoneEvent,
@@ -321,33 +321,21 @@ def _apply_reasoning(
 ) -> ModelThinkingLevel | None:
     """Write the requested thinking level's wire form into ``payload``; return the level sent.
 
-    :func:`~tau_llm.models.requested_wire_level` picks the level. A map string
+    :func:`~tau_llm.models.check_thinking_request` picks the level. A map string
     becomes ``reasoning_effort``, a map dict is merged
     (:func:`_merge_thinking_fragment`), and an unmapped level is sent under its
     own name. Unmapped ``"off"`` is ``reasoning_effort: "none"`` on a model that
     declares reasoning (docs/REASONING-WIRE.md §4).
 
     Raises:
-        ValueError: ``"off"`` on a model that neither declares reasoning nor maps
-            ``"off"``: τ cannot know this endpoint's off form, and sending nothing
-            would leave its default reasoning on.
+        ThinkingRefused: Per :func:`~tau_llm.models.check_thinking_request`.
     """
-    level = requested_wire_level(model, requested)
+    level = check_thinking_request(model, requested)
     if level is None:
         return None
     tlm = model.thinking_level_map or {}
     mapped: Any = tlm.get(level, level)
     if level == "off" and "off" not in tlm:
-        if not model.reasoning:
-            raise ValueError(
-                f"Model {model.id!r}: thinking 'off' was requested, but this "
-                "OpenAI-compatible model neither declares reasoning nor maps 'off', so τ "
-                "does not know what turns reasoning off on this endpoint. Set "
-                f"models.{model.name}.thinking_level_map.off in τ's config.json: "
-                '{"chat_template_kwargs": {"enable_thinking": false}} for a llama.cpp chat '
-                'template, "none" for OpenAI\'s reasoning_effort, or {} if this model never '
-                "reasons (docs/REASONING-WIRE.md §4)."
-            )
         mapped = "none"
     if isinstance(mapped, dict):
         _merge_thinking_fragment(payload, mapped, model_id=model.id)

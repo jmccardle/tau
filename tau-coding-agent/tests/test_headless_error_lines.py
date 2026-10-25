@@ -1,4 +1,4 @@
-"""#73: each retry is one line, and a headless failure is one `tau: error:` line."""
+"""#73 and #74: a headless failure is one `tau: error:` line, and a retry is one line."""
 
 from __future__ import annotations
 
@@ -51,3 +51,14 @@ def test_each_retry_is_printed_once_and_the_failure_is_one_line(tmp_path):
     assert all(ln.startswith("[τ] ") and "model 'm'" in ln for ln in retries), proc.stderr
     assert len(lines) == 4, proc.stderr
     assert lines[-1].startswith("tau: error: ") and "127.0.0.1" in lines[-1]
+
+
+def test_thinking_off_on_a_model_that_cannot_honour_it_is_one_line(tmp_path):
+    """#74: the refusal is one `tau: error:` line, not a ValueError traceback."""
+    models = {"noreason": {"backend": "openai", "model": "m", "api_key": "k"}}
+    proc = _run_print(tmp_path, models, "--no-session", "--thinking", "off", "hi")
+    assert proc.returncode == 2, proc.stderr
+    assert "Traceback" not in proc.stderr
+    [line] = proc.stderr.strip().splitlines()
+    assert line.startswith("tau: error: ")
+    assert "off" in line and "noreason" in line

@@ -23,6 +23,7 @@ from typing import Any, Callable, Sequence
 
 from tau_llm.models import EXTENDED_THINKING_LEVELS
 from tau_llm.errors import ProviderConnectionError, ProviderHttpError, ProviderStreamError
+from tau_llm.models import ThinkingRefused
 from tau_llm.retry import mute_retry_log
 from tau_agent_core.commands import UnsupportedCommandError
 from tau_agent_core.extension_sources import ExplicitExtensionError
@@ -965,6 +966,9 @@ def main(argv: list[str] | None = None) -> int:
             except (ProviderHttpError, ProviderConnectionError, ProviderStreamError) as exc:
                 print(f"tau: error: {exc}", file=sys.stderr)
                 return 1
+            except ThinkingRefused as exc:
+                print(f"tau: error: {exc}", file=sys.stderr)
+                return 2
         if args.messages:
             raise CLIError(
                 "messages were given without --print; add -p to run headlessly "
