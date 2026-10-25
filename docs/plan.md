@@ -20,6 +20,12 @@
 >   builds have no stable ABI before 3.15 (`abi3t`, PEP 803), so 3.14t ships a
 >   version-specific `cp314t` wheel. τ 0.15 is tested on 3.14t/3.15t, so this
 >   is not optional.
+> - **CI is Linux x86_64 only** (supersedes the Phase 0 matrix). It runs on
+>   forge.goblincorps.com's single Ubuntu runner (`.forgejo/workflows/ci.yml`);
+>   dev.ffwf.net has no runner. Wheels are manylinux2014 (glibc ≥ 2.17), built
+>   with zig as the linker. Nothing builds or tests aarch64 or macOS, so we
+>   claim neither. Revisit before release: those need runners we don't have
+>   (or a release-time GitHub mirror).
 > - **0.15 import names** are `tau_llm`, `tau_agent_core`, `tau_coding_agent`,
 >   `tau_meta` (what `ffwf-tau==0.15.0` installs), plus the optional `tau_jmfts`;
 >   there is no `tau` package to collide with.

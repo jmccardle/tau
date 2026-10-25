@@ -57,6 +57,15 @@ scripts/check.sh                          # the gate; passes without τ 0.15
 scripts/parity.sh                         # the API diff; needs --group parity
 ```
 
+## Remotes and CI
+
+- `origin`: dev.ffwf.net (private). `goblin`: forge.goblincorps.com, which runs
+  CI. Push to both.
+- CI (`.forgejo/workflows/ci.yml`) has one Linux x86_64 runner, label
+  `ubuntu`. `scripts/ci-toolchain.sh` installs everything a job needs; to
+  reproduce a CI job, run it in a bare `ubuntu:24.04` container.
+- Forgejo, not GitHub: `runs-on` is a single string; use `upload-artifact@v3`.
+
 ## Python versions and wheels
 
 - Floor: CPython 3.12. One `cp312-abi3` wheel covers every GIL build ≥ 3.12.

@@ -1,0 +1,75 @@
+# CI for τ next on forge.goblincorps.com. Fail early: no continue-on-error,
+# no `|| true`.
+#
+# One runner, Linux x86_64. Nothing here builds or tests aarch64 or macOS,
+# and nothing claims to (docs/plan.md amendments).
+#
+# `gate` runs scripts/check.sh, the same file developers run locally, with
+# only the dev group installed: the test suite must pass without τ 0.15.
+# `wheels` builds portable manylinux2014 wheels (zig as the linker; no
+# docker), tests each installed in a clean venv, then adds ffwf-tau 0.15 to
+# the same venv and runs parity/ (see parity/README.md).
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu
+    strategy:
+      fail-fast: true
+      matrix:
+        python: ["3.12", "3.14t"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: scripts/ci-toolchain.sh ${{ matrix.python }}
+      - name: dev group
+        run: .venv/bin/pip install --group dev
+      - name: scripts/check.sh
+        run: scripts/check.sh
+
+  wheels:
+    runs-on: ubuntu
+    needs: gate
+    strategy:
+      fail-fast: true
+      matrix:
+        # 3.12 yields the cp312-abi3 wheel; 3.14t the version-specific one.
+        python: ["3.12", "3.14t"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: scripts/ci-toolchain.sh ${{ matrix.python }}
+      - name: build
+        run: |
+          set -euo pipefail
+          .venv/bin/pip install "maturin>=1.15,<2" "ziglang==0.17.0"
+          PATH="$PWD/.venv/bin:$PATH" .venv/bin/maturin build --release --locked \
+            --zig --compatibility manylinux2014 --out dist --interpreter .venv/bin/python
+      # Both test steps run from /tmp so the installed wheel, not the
+      # checkout's python/ tree, is what gets imported.
+      - name: tests/ against the installed wheel, no τ 0.15
+        run: |
+          set -euo pipefail
+          uv venv --seed --python ${{ matrix.python }} /tmp/clean
+          /tmp/clean/bin/pip install pytest dist/*.whl
+          cd /tmp
+          /tmp/clean/bin/python -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/tests"
+      - name: parity/ with ffwf-tau 0.15 added to the same venv
+        run: |
+          set -euo pipefail
+          /tmp/clean/bin/pip install "ffwf-tau==0.15.0"
+          cd /tmp
+          /tmp/clean/bin/python -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/parity"
+      # v3: Forgejo's artifact server does not implement the v4 protocol.
+      - uses: actions/upload-artifact@v3
+        with:
+          name: wheel-${{ matrix.python }}
+          path: dist/*.whl
+          if-no-files-found: error
