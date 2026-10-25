@@ -30,6 +30,7 @@ class _Client:
         self._next_id = 100
         self.fail_on_post: int | None = None
         self.posts = 0
+        self.fail_on_update = False
 
     def create_document(self, **kwargs: Any) -> dict[str, Any]:
         self.posts += 1
@@ -41,6 +42,8 @@ class _Client:
         return doc
 
     def update_document(self, doc_id: int, **kwargs: Any) -> None:
+        if self.fail_on_update:
+            raise ConnectionError("retitle refused")
         assert doc_id in self.docs, f"update of unknown document {doc_id}"
         self.docs[doc_id].update({k: v for k, v in kwargs.items() if k != "re_embed"})
 
@@ -140,6 +143,32 @@ async def test_a_post_failing_partway_resumes_on_the_next_append():
     ]
     assert reloaded.entries()[-1]["id"] == leaf
     assert reloaded.context == log.context
+
+
+async def test_a_failed_retitle_stays_held_and_is_retried_without_a_second_post():
+    client = _Client()
+    log = _deferred(client)
+    held = log.entries()
+    cursor = Cursor.newest(log)
+    client.fail_on_update = True
+    with pytest.raises(ConnectionError):
+        await cursor.append_message({"role": "user", "content": "first try"})
+    assert log._held[0] == held[1]["id"], "the session_info entry is still held"
+    posted = client.posts
+
+    client.fail_on_update = False
+    await cursor.append_message({"role": "user", "content": "second try"})
+    assert log._held == []
+    assert client.posts == posted + 2, "system message and the new entry only; no re-post"
+    root = log.root_doc_id
+    assert root is not None and client.docs[root]["title"] == "N"
+    reloaded = JmftsSessionLog.load(client, root)  # type: ignore[arg-type]
+    assert [e["type"] for e in reloaded.entries()] == [
+        "customEntry",
+        "session_info",
+        "message",
+        "message",
+    ]
 
 
 def test_an_unwritten_conversation_is_not_addressable():
