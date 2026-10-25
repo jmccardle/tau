@@ -1,0 +1,26 @@
+digraph serve_attach {
+  graph [fontname="Courier", rankdir=LR, label="tau serve: one WebSocket connection (daemon side, serve/daemon.py)", labelloc=t];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier", fontsize=10];
+
+  Connected  [label="Connected\nClient(ws, n); not in Daemon.clients"];
+  Greeted    [label="Greeted\nin Daemon.clients; Client.attached == {}"];
+  Attached   [label="Attached\nClient.attached != {}; client in SessionHost.clients"];
+  Flagged    [label="Flagged\nClient.dropped=True, still in Daemon.clients\n(push overflow on a response frame)"];
+  Dropped    [label="Dropped\n_forget(); ws.close(4000)"];
+  Closed     [label="Closed\nhandle() finally: _forget()"];
+
+  Connected -> Connected [label="non-hello request\n(error 'send hello first')"];
+  Connected -> Greeted   [label="_hello() ok"];
+  Connected -> Closed    [label="_hello() refused\n(PROTOCOL_MISMATCH / UNAUTHORIZED)", class="soft"];
+  Greeted   -> Attached  [label="attach -> SessionHost.attach()"];
+  Attached  -> Attached  [label="attach (another session)\nor detach (not last)"];
+  Attached  -> Greeted   [label="detach (last) -> SessionHost.detach()"];
+  Greeted   -> Flagged   [label="Client.push() QueueFull\n(answer frame)", class="soft"];
+  Attached  -> Dropped   [label="publish()/replay() push fails\n-> Daemon.drop()", class="soft"];
+  Flagged   -> Dropped   [label="publish() to an attached session\n-> Daemon.drop()", class="soft"];
+  Dropped   -> Closed    [label="socket closes"];
+  Greeted   -> Closed    [label="socket closes / ConnectionClosedError"];
+  Attached  -> Closed    [label="socket closes / ConnectionClosedError"];
+  Flagged   -> Closed    [label="socket closes"];
+}

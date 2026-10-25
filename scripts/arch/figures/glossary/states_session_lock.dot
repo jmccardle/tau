@@ -1,0 +1,30 @@
+digraph session_lock {
+  graph [fontname="Courier", rankdir=TB];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier"];
+
+  unretained [label="unretained\n_retains==0\nguard() is a no-op"];
+  deferred   [label="retained, deferred\n_retains>0, no _entry/_holder/_refusal\n(ready() False)"];
+  held       [label="held (writable)\n_entry set, entry.lost None\nflock held via _REGISTRY fd"];
+  replica    [label="replica (read-only)\n_holder set\nanother process holds flock"];
+  lost       [label="lost (read-only)\nentry.lost set\nsidecar replaced, other process took it"];
+  refused    [label="refused (read-only)\n_refusal set, no holder"];
+  free       [label="on disk after exit\nsidecar file keeps dead holder record\nflock released by kernel"];
+
+  unretained -> held      [label="retain() -> _take(): _acquire() ok"];
+  unretained -> replica   [label="retain() -> _take(): _acquire() -> LockHolder"];
+  unretained -> refused   [label="retain() -> _take(): OSError", class="soft"];
+  unretained -> deferred  [label="retain(): ready() False"];
+  deferred -> held        [label="attach()"];
+  deferred -> replica     [label="attach()"];
+  held -> refused         [label="_refresh(): on_acquire raised", class="soft"];
+  held -> held            [label="check(): _verify() re-takes replaced sidecar"];
+  held -> lost            [label="check(): _verify(), other process has new file", class="soft"];
+  held -> refused         [label="check(): _verify() OSError", class="soft"];
+  held -> unretained      [label="release() last: _release() closes fd"];
+  replica -> unretained   [label="release() last"];
+  lost -> unretained      [label="release() last"];
+  refused -> unretained   [label="release() last"];
+  held -> free            [label="process exit", class="soft"];
+  free -> held            [label="new process retain(): flock ok, _write_holder()"];
+}

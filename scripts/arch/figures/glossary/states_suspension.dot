@@ -1,0 +1,35 @@
+digraph suspension {
+  graph [fontname="Courier", rankdir=TB];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier"];
+
+  call       [label="api.suspend(spec) called\n(AgentSession.suspend)"];
+  refused    [label="refused\nSuspensionRefused / NoResponderError\nnothing written, nothing emitted"];
+  preabort   [label="pre-aborted\nsignal already aborted\nresolution id=None, nothing written"];
+  written    [label="written\nside entry status=\"incomplete\"\nnot yet in broker"];
+  queued     [label="queued\nin _open, queued=True\nready not done"];
+  open       [label="open (front of cursor queue)\nready done, future not done"];
+  resolved   [label="resolved\nfuture done\n(_forced[id] may hold a reason)"];
+  closed     [label="closed\n_closed[id]=resolution\nside entry finalized\nsuspension_closed emitted"];
+  forgotten  [label="forgotten\nevicted from _closed (>256)\nanswer -> unknown_id"];
+  orphan     [label="orphaned (persisted)\nside entry stays \"incomplete\"\nno broker holds it"];
+
+  call -> refused    [label="validate/site/_suspend_refused()", class="soft"];
+  call -> preabort   [label="raise_and_wait(): signal.is_aborted()", class="soft"];
+  call -> written    [label="cursor.open_side()"];
+  written -> open    [label="queue empty: ready.set_result()"];
+  written -> queued  [label="queue non-empty"];
+  queued -> open     [label="predecessor _close(): queue[0].ready.set_result();\n_wait() re-emits suspension_open"];
+  queued -> resolved [label="signal abort in _wait()", class="soft"];
+  queued -> resolved [label="close_all(reason)", class="soft"];
+  open -> resolved   [label="answer(): future.set_result()"];
+  open -> resolved   [label="answer() after abort / signal in _wait()", class="soft"];
+  open -> resolved   [label="close_all(\"cursor_closed\")", class="soft"];
+  queued -> closed   [label="task cancelled: finally (abandoned)", class="soft"];
+  open -> closed     [label="task cancelled: finally (abandoned)", class="soft"];
+  resolved -> closed [label="_close() -> finalize_side()"];
+  closed -> forgotten [label="_close(): popitem(last=False)"];
+  written -> orphan  [label="process exit", class="soft"];
+  queued -> orphan   [label="process exit", class="soft"];
+  open -> orphan     [label="process exit", class="soft"];
+}

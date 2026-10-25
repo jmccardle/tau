@@ -1,0 +1,299 @@
+<div class="part">Part 1 · code hygiene and analysis</div>
+
+<h2 id="s1">1. Module separation</h2>
+<p>Default status: <span class="ev ev-ran">ran</span> <code>deps.py</code>. Edges are import statements read by grimp and classified by the AST: module-level, lazy (inside a function) or <code>TYPE_CHECKING</code>. "Runtime" is module-level plus lazy. Instability is <code>I = Ce/(Ca+Ce)</code>; propagation cost (PC) is the density of the transitive closure, identity included.</p>
+
+<div class="tablewrap"><table>
+<caption>Distributions — ran deps.py</caption>
+<thead><tr><th>distribution</th><th class="num">modules</th><th class="num">units (depth-1)</th><th>declared base deps (pyproject)</th></tr></thead>
+<tbody>
+<tr><td><code>tau_llm</code></td><td class="num">22</td><td class="num">18</td><td>none</td></tr>
+<tr><td><code>tau_agent_core</code></td><td class="num">105</td><td class="num">69</td><td><code>tau_llm</code></td></tr>
+<tr><td><code>tau_coding_agent</code></td><td class="num">39</td><td class="num">29</td><td><code>tau_agent_core</code>; extra <code>tau_jmfts</code></td></tr>
+<tr><td><code>tau_jmfts</code></td><td class="num">9</td><td class="num">6</td><td><code>tau_agent_core</code></td></tr>
+<tr><td><code>tau_meta</code></td><td class="num">1</td><td class="num">1</td><td><code>tau_agent_core</code>, <code>tau_coding_agent</code>, <code>tau_llm</code>; imports nothing</td></tr>
+</tbody></table></div>
+
+<figure class="dia">
+<!--svg:deps/package_graph.themed.svg-->
+<figcaption>Import statements between the five distributions, one edge per kind (solid module-level, dashed lazy, soft <code>TYPE_CHECKING</code>) with its statement count. Regenerate: <code>$PY -I scripts/arch/deps.py --out DIR</code> → <code>DIR/package_graph.themed.svg</code>.</figcaption>
+</figure>
+
+<div class="tablewrap"><table>
+<caption>Import statements, rows import columns, module / lazy / TYPE_CHECKING — ran deps.py (870 internal statements: 686 / 152 / 32)</caption>
+<thead><tr><th>from \ to</th><th>tau_llm</th><th>tau_agent_core</th><th>tau_coding_agent</th><th>tau_jmfts</th></tr></thead>
+<tbody>
+<tr><td><code>tau_llm</code></td><td class="num">69 / 4 / 3</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+<tr><td><code>tau_agent_core</code></td><td class="num">86 / 3 / 0</td><td class="num">274 / 64 / 22</td><td class="num">—</td><td class="num">—</td></tr>
+<tr><td><code>tau_coding_agent</code></td><td class="num">10 / 5 / 0</td><td class="num">162 / 12 / 1</td><td class="num">66 / 56 / 5</td><td class="num">0 / 5 / 1</td></tr>
+<tr><td><code>tau_jmfts</code></td><td class="num">—</td><td class="num">5 / 2 / 0</td><td class="num">—</td><td class="num">14 / 1 / 0</td></tr>
+</tbody></table></div>
+<ul>
+<li>No edge points upward and no cross-distribution edge is undeclared.</li>
+<li><code>tau_coding_agent → tau_jmfts</code> exists only as lazy and <code>TYPE_CHECKING</code> imports behind the optional <code>[jmfts]</code> extra (<code>cli.py:710,727,728</code>; <code>store_factory.py:31,140,269</code>).</li>
+<li><code>tau_coding_agent</code> imports <code>tau_llm</code> in 15 statements; its pyproject declares <code>tau_llm</code> only transitively, through <code>tau_agent_core</code>.</li>
+<li>No import cycle crosses a distribution boundary.</li>
+</ul>
+
+<h3>Cycles and propagation cost</h3>
+<div class="tablewrap"><table>
+<caption>Strongly connected components and propagation cost per edge set — ran deps.py</caption>
+<thead><tr><th>distribution</th><th>edge set</th><th class="num">SCCs &gt; 1</th><th class="num">largest</th><th class="num">PC</th></tr></thead>
+<tbody>
+<tr><td rowspan="3"><code>tau_llm</code></td><td>all</td><td class="num">1</td><td class="num">2</td><td class="num">0.298</td></tr>
+<tr><td>runtime</td><td class="num">0</td><td class="num">—</td><td class="num">0.281</td></tr>
+<tr><td>module</td><td class="num">0</td><td class="num">—</td><td class="num">0.217</td></tr>
+<tr><td rowspan="3"><code>tau_agent_core</code></td><td>all</td><td class="num">2</td><td class="num">9</td><td class="num">0.170</td></tr>
+<tr><td>runtime</td><td class="num">3</td><td class="num">3</td><td class="num">0.126</td></tr>
+<tr><td>module</td><td class="num">0</td><td class="num">—</td><td class="num">0.087</td></tr>
+<tr><td rowspan="3"><code>tau_coding_agent</code></td><td>all</td><td class="num">1</td><td class="num">12</td><td class="num">0.379</td></tr>
+<tr><td>runtime</td><td class="num">1</td><td class="num">3</td><td class="num">0.197</td></tr>
+<tr><td>module</td><td class="num">0</td><td class="num">—</td><td class="num">0.089</td></tr>
+<tr><td><code>tau_jmfts</code></td><td>any</td><td class="num">0</td><td class="num">—</td><td class="num">0.259</td></tr>
+<tr><td>whole graph</td><td>all / runtime / module</td><td class="num"></td><td class="num"></td><td class="num">0.209 / 0.172 / 0.110</td></tr>
+</tbody></table></div>
+<p>The module-level graph has no cycle in any distribution; every cycle needs a lazy or <code>TYPE_CHECKING</code> edge. That result depends on the edge convention. Under grimp's convention (a <code>from pkg import submod</code> is an edge to the submodule) an independent AST pass found 176 modules and no SCC larger than one module. Counting <code>from tau_agent_core import rpc_event_schema</code> (<code>rpc/capabilities.py:31</code>) as an edge to the package <code>__init__</code> gives one SCC through <code>__init__.py:93,101</code>; counting every <code>a.b → a</code> parent edge gives three SCCs, one per package <code>__init__</code>.</p>
+
+<div class="tablewrap"><table class="compact">
+<caption>The cycles and the edges that close them — ran deps.py; read for the line numbers it reports</caption>
+<thead><tr><th>distribution</th><th>members</th><th>closing edges</th></tr></thead>
+<tbody>
+<tr><td><code>tau_llm</code> (2)</td><td><code>compat</code>, <code>types</code></td><td><code>TYPE_CHECKING</code> import at <code>compat.py:71</code></td></tr>
+<tr><td><code>tau_agent_core</code> (9)</td><td><code>agent_loop</code>, <code>agent_session</code>, <code>commands</code>, <code>compare</code>, <code>extension_types</code>, <code>extensions.runner</code>, <code>sdk</code>, <code>suspensions</code>, <code>tool_pipeline</code></td><td><code>agent_session → sdk</code>: 9 lazy + 1 <code>TYPE_CHECKING</code> (<code>agent_session.py:193,2233,2323,2373,2500,2560,2858,2914,6114</code>); <code>agent_session → extension_types</code>: 4 lazy (<code>:1632,1645,2521,2715</code>); <code>extension_types → suspensions</code> lazy (<code>:2919,2933</code>); back-edges <code>sdk.py:526,583</code>, <code>extension_types.py:65,2011</code>, <code>runner.py:48,279</code>, <code>agent_loop.py:70</code>, <code>compare.py:23</code>, <code>tool_pipeline.py:35</code>. Under runtime edges it splits into <code>{extension_types, extensions.runner, suspensions}</code> and <code>{agent_session, sdk}</code>.</td></tr>
+<tr><td><code>tau_agent_core</code> (4)</td><td><code>rpc.capabilities</code>, <code>rpc.commands</code>, <code>rpc.handler</code>, <code>rpc.transport</code></td><td>lazy <code>rpc/capabilities.py:77,89,100,130</code>; <code>TYPE_CHECKING</code> <code>rpc/commands.py:236</code>, <code>rpc/transport.py:39</code></td></tr>
+<tr><td><code>tau_coding_agent</code> (12)</td><td><code>app</code>, <code>cli</code>, <code>extension_ui</code>, <code>headless</code>, <code>repl</code>, <code>repl_input</code>, <code>rpc_mode</code>, <code>serve.cli</code>, <code>serve.daemon</code>, <code>suspension_ui</code>, <code>transcript</code>, <code>tree_browser</code></td><td><code>cli</code> reaches <code>app</code>/<code>repl</code>/<code>rpc_mode</code>/<code>serve.cli</code> lazily (<code>cli.py:572,649,669,793,910,940</code>); <code>serve.daemon</code> back to <code>cli</code>/<code>headless</code> lazily (<code>serve/daemon.py:711,924,926,1067,1069</code>); <code>headless.py:63</code>, <code>repl.py:125</code>, <code>rpc_mode.py:168</code> import <code>cli</code> under <code>TYPE_CHECKING</code>. Runtime SCC: <code>{cli, serve.cli, serve.daemon}</code>.</td></tr>
+</tbody></table></div>
+
+<figure class="dia xwide">
+<!--svg:deps/modules_tau_agent_core_condensed.themed.svg-->
+<figcaption><code>tau_agent_core</code> with cycles and subpackages collapsed to 63 nodes; edge labels are module / lazy / <code>TYPE_CHECKING</code> statement counts. Regenerate: <code>$PY -I scripts/arch/deps.py --out DIR</code> → <code>DIR/modules_tau_agent_core_condensed.themed.svg</code>.</figcaption>
+</figure>
+
+<details>
+<summary>Per-distribution module graphs (uncondensed)</summary>
+<figure class="dia wide">
+<!--svg:deps/modules_tau_llm.themed.svg-->
+<figcaption><code>tau_llm</code> module graph. Regenerate: <code>deps.py</code> → <code>modules_tau_llm.themed.svg</code>.</figcaption>
+</figure>
+<figure class="dia xwide">
+<!--svg:deps/modules_tau_coding_agent.themed.svg-->
+<figcaption><code>tau_coding_agent</code> module graph. Regenerate: <code>deps.py</code> → <code>modules_tau_coding_agent.themed.svg</code>.</figcaption>
+</figure>
+<figure class="dia">
+<!--svg:deps/modules_tau_jmfts.themed.svg-->
+<figcaption><code>tau_jmfts</code> module graph. Regenerate: <code>deps.py</code> → <code>modules_tau_jmfts.themed.svg</code>.</figcaption>
+</figure>
+<figure class="dia xwide">
+<!--svg:deps/modules_tau_agent_core.themed.svg-->
+<figcaption><code>tau_agent_core</code>, every module (105). Regenerate: <code>deps.py</code> → <code>modules_tau_agent_core.themed.svg</code>.</figcaption>
+</figure>
+</details>
+
+<h3>Hubs</h3>
+<div class="tablewrap"><table class="compact">
+<caption>Top modules by distinct neighbouring modules, all edges — ran deps.py</caption>
+<thead><tr><th>rank</th><th>fan-in</th><th class="num">n</th><th>fan-out</th><th class="num">n</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>tau_llm.docs</code></td><td class="num">65</td><td><code>agent_session</code></td><td class="num">46</td></tr>
+<tr><td>2</td><td><code>tau_llm.types</code></td><td class="num">24</td><td><code>app</code></td><td class="num">44</td></tr>
+<tr><td>3</td><td><code>session_log</code></td><td class="num">19</td><td><code>backends</code></td><td class="num">33</td></tr>
+<tr><td>4</td><td><code>tools.base</code></td><td class="num">19</td><td><code>repl</code></td><td class="num">27</td></tr>
+<tr><td>5</td><td><code>conversation_tree</code></td><td class="num">18</td><td><code>cli</code></td><td class="num">25</td></tr>
+<tr><td>6</td><td><code>compaction</code></td><td class="num">15</td><td><code>extension_types</code></td><td class="num">23</td></tr>
+<tr><td>7</td><td><code>tau_home</code></td><td class="num">15</td><td><code>sdk</code></td><td class="num">23</td></tr>
+<tr><td>8</td><td><code>events</code></td><td class="num">13</td><td><code>serve.daemon</code></td><td class="num">22</td></tr>
+<tr><td>9</td><td><code>flows</code></td><td class="num">13</td><td><code>tau_agent_core</code> (package)</td><td class="num">18</td></tr>
+<tr><td>10</td><td><code>session_catalog</code></td><td class="num">13</td><td><code>agent_loop</code></td><td class="num">18</td></tr>
+<tr><td>11</td><td><code>submission</code></td><td class="num">13</td><td><code>headless</code></td><td class="num">17</td></tr>
+<tr><td>12</td><td><code>cursor</code></td><td class="num">12</td><td><code>serve.remote</code></td><td class="num">17</td></tr>
+<tr><td>13</td><td><code>extension_locks</code></td><td class="num">12</td><td><code>rpc.commands</code></td><td class="num">14</td></tr>
+<tr><td>14</td><td><code>extension_sources</code></td><td class="num">12</td><td><code>tau_llm</code> (package)</td><td class="num">13</td></tr>
+<tr><td>15</td><td><code>agent_session</code></td><td class="num">11</td><td><code>providers.openai</code></td><td class="num">12</td></tr>
+</tbody></table></div>
+<p><code>tau_llm.docs</code> has 149 transitive dependents and fan-out 0. Twelve <code>tau_llm</code> and 53 <code>tau_agent_core</code> modules import it, each for one name, <code>agent_facing</code>.</p>
+
+<h3><code>tau_llm</code> isolation</h3>
+<ul>
+<li><code>tau_llm</code> has 0 import edges to any other τ distribution.</li>
+<li>Third-party: <code>pydantic</code> in 4 modules, <code>httpx</code> in 2 (+1 lazy), <code>pydantic_core</code> in 1 (<code>json_parse.py:31</code>), which <code>tau-llm/pyproject.toml:28-31</code> does not declare. <code>anthropic</code> and <code>google.genai</code> are lazy or <code>TYPE_CHECKING</code>; <code>tokenizers</code> is lazy.</li>
+<li><code>__init__.__all__</code> binds 49 names plus 13 submodules. No other distribution's src imports a name from the root module (<code>from tau_llm import X</code> occurs 0 times). Through submodule paths, other distributions' src imports 29 of the 49 names, among them <code>Model</code>, <code>AbortSignal</code>, <code>stream_simple</code> and <code>complete_simple</code>; in total 45 names come from 13 submodules. Tests import <code>AbortSignal</code> and <code>RetryPolicy</code> from the root.</li>
+<li>jmfts consumes <code>tau_llm</code> from one file, <code>jmfts_core/llm_client.py:81-91</code>: <code>Model</code>, <code>ProviderConnectionError</code>, <code>ProviderHttpError</code>, <code>ProviderStreamError</code>, <code>TextContent</code>, <code>ThinkingContent</code>, <code>aclose_providers</code>, <code>complete_simple</code> from the root, plus <code>tau_llm.types.AssistantMessage</code>.</li>
+<li>tectum imports no τ module.</li>
+</ul>
+<h3>Third-party imports vs pyproject</h3>
+<p>Every third-party import other than <code>pydantic</code> and <code>httpx</code> is declared only in an extra. The installed distribution names differ from the pyproject names for two packages: <code>griffelib</code> vs <code>griffe</code>, <code>pydantic-monty-client</code> vs <code>pydantic-monty</code>.</p>
+
+<h2 id="s2">2. Test isolation and mocking</h2>
+<p>Default status: <span class="ev ev-ran">ran</span> <code>mocks.py</code> (AST over every <code>tau-*/tests</code> tree; no test executed).</p>
+<div class="tablewrap"><table>
+<caption>Test trees — ran mocks.py</caption>
+<thead><tr><th>tests of</th><th class="num">.py files</th><th class="num">test functions</th></tr></thead>
+<tbody>
+<tr><td><code>tau-llm</code></td><td class="num">40</td><td class="num">814</td></tr>
+<tr><td><code>tau-agent-core</code></td><td class="num">188</td><td class="num">3482</td></tr>
+<tr><td><code>tau-coding-agent</code></td><td class="num">170</td><td class="num">2065</td></tr>
+<tr><td><code>tau-jmfts</code></td><td class="num">17</td><td class="num">109</td></tr>
+<tr><td><code>tau-meta</code></td><td class="num">0</td><td class="num">0</td></tr>
+</tbody></table></div>
+<p>The tests contain 948 patch sites. 804 resolve to a source module; 668 of those patch an imported name at its import site rather than at its definition.</p>
+<div class="tablewrap"><table class="compact">
+<caption>Patch sites by source module (top seven) — ran mocks.py</caption>
+<thead><tr><th>source module</th><th class="num">sites</th><th class="num">attrs</th><th class="num">test files</th><th>dominant attribute</th></tr></thead>
+<tbody>
+<tr><td><code>tau_agent_core.agent_loop</code></td><td class="num">505</td><td class="num">2</td><td class="num">108</td><td><code>stream_simple</code> ×504, at the import site</td></tr>
+<tr><td><code>tau_agent_core.compaction</code></td><td class="num">63</td><td class="num">1</td><td class="num">16</td><td><code>complete_simple</code></td></tr>
+<tr><td><code>tau_agent_core.agent_session</code></td><td class="num">49</td><td class="num">12</td><td class="num">13</td><td><code>AgentSession.compact</code> ×16, <code>should_compact</code> ×12, <code>AgentLoop</code> ×5</td></tr>
+<tr><td><code>tau_llm.providers.openai</code></td><td class="num">42</td><td class="num">2</td><td class="num">18</td><td><code>httpx.AsyncClient</code> ×38</td></tr>
+<tr><td><code>tau_coding_agent.cli</code></td><td class="num">26</td><td class="num">4</td><td class="num">4</td><td><code>load_config</code> ×21</td></tr>
+<tr><td><code>tau_llm.client</code></td><td class="num">21</td><td class="num">1</td><td class="num">10</td><td><code>complete_simple</code></td></tr>
+<tr><td><code>tau_agent_core.session_lock</code></td><td class="num">17</td><td class="num">5</td><td class="num">4</td><td></td></tr>
+</tbody></table></div>
+<p>The tests construct <code>Mock</code>/<code>MagicMock</code>/<code>AsyncMock</code> 67 times; none passes <code>spec</code>, <code>spec_set</code> or <code>autospec</code>.</p>
+<div class="tablewrap"><table class="compact">
+<caption>Fakes defined in more than one test file (selection) — ran mocks.py</caption>
+<thead><tr><th>stands for</th><th>matched by</th><th class="num">test files</th><th class="num">definitions</th></tr></thead>
+<tbody>
+<tr><td><code>*stream_calling</code> functions</td><td>name</td><td class="num">15</td><td class="num">15</td></tr>
+<tr><td><code>Client</code> classes (same name as <code>serve.daemon.Client</code>)</td><td>name</td><td class="num">12</td><td class="num">16</td></tr>
+<tr><td><code>InMemorySessionLog</code></td><td>subclass</td><td class="num">11</td><td class="num">16</td></tr>
+<tr><td><code>*stream_simple</code> functions</td><td>name</td><td class="num">11</td><td class="num">16</td></tr>
+<tr><td><code>Backend</code> classes</td><td>name</td><td class="num">6</td><td class="num">6</td></tr>
+<tr><td><code>complete_simple</code>, <code>text_reply</code></td><td>name</td><td class="num">6 each</td><td class="num">6 each</td></tr>
+<tr><td><code>SessionCatalog</code></td><td>subclass</td><td class="num">3</td><td class="num">3</td></tr>
+</tbody></table></div>
+<p>No src <code>testing</code> module ships a fake class. Shared fakes do exist in test trees: core <code>tests/conftest.py:398</code> <code>fake_llm</code> and <code>:447</code> <code>fake_stream_simple</code>; ca <code>tests/repl_fakes.py:123</code> <code>FakeBackend</code>.</p>
+<h3>Cross-package and private reach</h3>
+<p>Core tests import <code>tau_llm</code> in 248 statements; ca tests import <code>tau_agent_core</code> in 337. 53 imports name an underscore symbol, including <code>sdk._resolve_tools</code> ×9, <code>sdk._load_extensions</code> ×5, <code>sdk._build_system_prompt</code> ×4 and <code>rpc.commands._handle_get_state</code> from a ca test.</p>
+<div class="tablewrap"><table class="compact">
+<caption>obj._private sites in tests, receiver resolved to a source class or module (1999 sites total) — ran mocks.py</caption>
+<thead><tr><th>receiver</th><th class="num">sites</th><th class="num">distinct attrs</th><th class="num">files</th><th class="num">writes</th><th>top attributes</th></tr></thead>
+<tbody>
+<tr><td><code>AgentSession</code></td><td class="num">152</td><td class="num">27</td><td class="num">54</td><td class="num">6</td><td><code>_bind_extension_api</code> ×36, <code>_extension_runner</code> ×23, <code>_extension_api</code> ×14, <code>_events</code> ×8</td></tr>
+<tr><td><code>SessionManager</code></td><td class="num">58</td><td class="num">4</td><td class="num">3</td><td class="num">28</td><td><code>_active_session_path</code> ×30, <code>_read_file</code> ×21</td></tr>
+<tr><td>module <code>rpc.commands</code></td><td class="num">38</td><td class="num">13</td><td class="num">10</td><td class="num">0</td><td><code>_handle_compact</code> ×16, <code>_handle_abort</code> ×6</td></tr>
+<tr><td><code>AgentLoop</code></td><td class="num">19</td><td class="num">5</td><td class="num">3</td><td class="num">0</td><td><code>_execute_tool_calls</code> ×8</td></tr>
+<tr><td><code>ExtensionAPI</code></td><td class="num">17</td><td class="num">5</td><td class="num">3</td><td class="num">2</td><td><code>_registry</code> ×8</td></tr>
+<tr><td><code>OpenAICompletionsProvider</code></td><td class="num">17</td><td class="num">6</td><td class="num">9</td><td class="num">10</td><td><code>_get_client</code> ×11</td></tr>
+<tr><td><code>RPCHandler</code></td><td class="num">16</td><td class="num">2</td><td class="num">6</td><td class="num">0</td><td><code>_handle_request</code> ×8, <code>_output_queue</code> ×8</td></tr>
+<tr><td><code>TauApp</code></td><td class="num">16</td><td class="num">5</td><td class="num">7</td><td class="num">0</td><td><code>_stream_role</code> ×5</td></tr>
+</tbody></table></div>
+<p>Unresolved receivers, by attribute name: <code>_output_queue</code> 78, <code>_extension_runner</code> 68, <code>_handle_request</code> 67, <code>_extension_api</code> 59, <code>_convert_messages_to_openai</code> 52, <code>_registry</code> 48.</p>
+
+<h2 id="s3">3. Dead code, unused fields and parameters</h2>
+<p>Default status: <span class="ev ev-ran">ran</span> <code>deadcode.py</code>. vulture 2.16 at min-confidence 60 reports 379 candidates over the five src trees. The script classifies each by a name-based reference scan across src, tests, examples and scripts, excluding references inside the definition's own span.</p>
+<div class="tablewrap"><table>
+<caption>vulture candidates by category — ran deadcode.py</caption>
+<thead><tr><th>category</th><th>meaning</th><th class="num">count</th><th class="num">at 100%</th><th>examples</th></tr></thead>
+<tbody>
+<tr><td>a</td><td>no reference anywhere</td><td class="num">46</td><td class="num">3</td><td><code>default_counter</code> (<code>compaction.py:278</code>), <code>head_label</code> (<code>session_lock.py:77</code>), <code>ExtensionRegistry.get_pins</code> (<code>extensions/registry.py:328</code>), <code>Vocabulary.extension_vocabulary</code> (<code>capabilities.py:2383</code>), five <code>JmftsClient</code> methods (<code>client.py:413,573,579,593,688</code>), <code>CLIArgs.is_verbose</code>/<code>is_json_output</code> (<code>cli.py:104,108</code>), <code>ToolDescription.model_may_call</code> (<code>tool_catalog.py:93</code>), <code>RemoteConnection.is_local</code> (<code>serve/remote.py:123</code>), <code>TauApp.generating</code> (<code>app.py:2073</code>)</td></tr>
+<tr><td>b</td><td>referenced only from tests</td><td class="num">110</td><td class="num">1</td><td><code>completed_messages</code>, <code>seed_tool_call</code>, <code>held_descriptor_count</code>, <code>mark_suspension_raised</code>, <code>split_markdown_blocks</code>, <code>MemoryReader</code>, <code>render_markdown</code>, <code>StrategyStore</code>, <code>sequence</code>, <code>clear_counter_cache</code></td></tr>
+<tr><td>c</td><td>referenced only from examples or scripts</td><td class="num">1</td><td class="num">0</td><td><code>ExtensionAPI.run_command</code> (<code>extension_types.py:2576</code>, one example)</td></tr>
+<tr><td>d</td><td>string or convention only</td><td class="num">188</td><td class="num">0</td><td>convention name 111 (Textual <code>on_*</code>/<code>action_*</code>/<code>compose</code>/<code>BINDINGS</code>, <code>test_*</code> in contract classes); registering decorator 51 (45 <code>@command</code>); exact string literal 21 (<code>jsonrpc</code>, <code>targetId</code>, <code>parentId</code>); pyproject token 5; <code>__all__</code> 1</td></tr>
+<tr><td>e</td><td>referenced from src by name (vulture still reports)</td><td class="num">34</td><td class="num">0</td><td></td></tr>
+</tbody></table></div>
+<p>By kind: method 163, variable 104, function 57, attribute 32, property 21, class 2. Per distribution (a/b/c/d/e): tau-llm 9/6/0/1/4; tau-agent-core 14/73/1/69/23; tau-coding-agent 15/26/0/118/6; tau-jmfts 8/5/0/0/1. Of the 46 category-a rows, 19 belong to classes with bases; most of those override an external class (Textual <code>App</code>/<code>Static</code>, prompt_toolkit <code>Completer</code>, <code>FlowControlMixin</code>).</p>
+<h3>Fields</h3>
+<ul>
+<li>Written, never read by name anywhere: 33. Of these, 21 have an exact-string hit (wire or TypedDict keys such as <code>RPCRequest.jsonrpc</code>, <code>_EntryBase.parentId</code>) and 5 are Textual class conventions. Examples with neither: <code>BackgroundCall.finished_at_ms</code> (<code>background.py:112</code>), <code>RPCHandler._request_id</code> and <code>_pending_requests</code> (<code>rpc/handler.py:157-158</code>), <code>SessionManager._memory_active_path</code> (<code>session_manager.py:107</code>), <code>ExtensionPanel._key</code> (<code>extension_ui.py:218</code>), <code>_Accumulator.has_text</code>/<code>has_thinking</code> (<code>openai.py:195-196</code>), <code>PipelineToolInvoker.budget_exhausted</code> (<code>codemode/invoker.py:126</code>).</li>
+<li>Written, read only from tests, examples or scripts: 37.</li>
+<li><code>self.x</code> read but never written: 0, over classes whose bases all resolve in-tree; 182 classes were excluded because a base is external or the class defines <code>__slots__</code>/<code>__getattr__</code>.</li>
+</ul>
+<h3>Parameters</h3>
+<p>ruff <code>ARG</code> reports 197 findings (ARG001 103, ARG002 91, ARG004 3); F401 and F841 report none. The script's own check (a parameter that never appears as a <code>Name</code> in the body) reports 293 rows over 175 functions.</p>
+<div class="tablewrap"><table>
+<caption>Unused parameters by function category — ran deadcode.py</caption>
+<thead><tr><th>category</th><th class="num">rows</th><th class="num">public, non-nested</th></tr></thead>
+<tbody>
+<tr><td>free function</td><td class="num">43</td><td class="num">3</td></tr>
+<tr><td>method, no base</td><td class="num">51</td><td class="num">39</td></tr>
+<tr><td>override of an in-tree base</td><td class="num">30</td><td class="num">21</td></tr>
+<tr><td>method on a Protocol or ABC base</td><td class="num">12</td><td class="num">6</td></tr>
+<tr><td>method on an external base</td><td class="num">5</td><td class="num">2</td></tr>
+<tr><td>decorated <code>@command</code></td><td class="num">59</td><td class="num">0</td></tr>
+<tr><td>stub body</td><td class="num">93</td><td class="num">83</td></tr>
+</tbody></table></div>
+<p>30 rows sit in nested closures; 97 rows belong to functions passed by name as a call argument somewhere (callback-shaped). Public free-function rows: <code>agent_facing(topic, since)</code> (<code>tau_llm/docs.py:64</code>), <code>detect_compat(provider)</code> (<code>tau_llm/compat.py:120</code>). The <code>execute(…, signal, on_update)</code> signatures of <code>EditTool</code>, <code>LsTool</code>, <code>WriteTool</code>, <code>ReadTool</code>, <code>GrepTool</code>, <code>FindTool</code> and <code>BashTool</code> appear in the method-no-base category.</p>
+<div class="admonition"><p class="admonition-title">What these numbers bound</p><p>Both vulture and the reference scan match names. A name shared with any attribute elsewhere counts as referenced, so categories b and e are upper bounds on "used". <code>getattr</code> with a formatted name, <code>asdict</code>, <code>__dict__</code> and <code>model_dump</code> are invisible; hook handlers registered by <code>api.on("name", fn)</code> show up only through the "passed as call argument" flag.</p></div>
+
+<h2 id="s4">4. Coverage and complexity</h2>
+<p>Default status: <span class="ev ev-ran">ran</span> <code>coverage_report.py</code> and <code>complexity.py</code>.</p>
+<div class="tablewrap"><table>
+<caption>Test run under coverage (pytest -m "not llama", serial) — ran coverage_report.py</caption>
+<thead><tr><th>item</th><th>value</th></tr></thead>
+<tbody>
+<tr><td>passed / failed / errors</td><td>8025 / 0 / 0</td></tr>
+<tr><td>skipped</td><td>158 (125 <code>no JMFTS server configured -- set JMFTS_TEST_URL</code>; 5 "no durable form"; 2 "ANSI palette"; the rest example-docstring "no loader snippet")</td></tr>
+<tr><td>deselected</td><td>6 (<code>-m "not llama"</code>)</td></tr>
+<tr><td>warnings</td><td>3: google-genai <code>FinishReason</code>; <code>coroutine 'EventBus.emit' was never awaited</code> at <code>events.py:554</code> via <code>test_event_bus_is_reentrant_safe</code>; a never-awaited griffe/<code>connect_tcp</code> coroutine in <code>test_site_export.py</code></td></tr>
+<tr><td>wall time</td><td>1212.91 s pytest; 1221.4 s with process start</td></tr>
+<tr><td>pytest exit code</td><td>1, with zero failing tests</td></tr>
+</tbody></table></div>
+<p>The exit code comes from <code>pytest_sessionfinish</code> (<code>conftest.py:140-157</code>, <span class="ev ev-read">read</span>). It found <code>new .tau/config.json</code> and <code>new .tau/settings.json</code> in the scratch <code>HOME</code>, which was empty at session start, printed a section titled <code>tests wrote into the real ~/.tau (#70)</code>, and set <code>exitstatus = TESTS_FAILED</code>. With a populated home the function compares differently (it skips "live" trees), so this exit code may not reproduce there <span class="ev ev-inferred">inferred</span>.</p>
+<div class="tablewrap"><table>
+<caption>Coverage totals, src trees (tau-meta has no statements) — ran coverage_report.py</caption>
+<thead><tr><th>distribution</th><th class="num">modules</th><th class="num">stmts</th><th class="num">missing</th><th class="num">line %</th><th class="num">branches</th><th class="num">missing br.</th><th class="num">line+branch %</th></tr></thead>
+<tbody>
+<tr><td>tau-llm</td><td class="num">22</td><td class="num">3233</td><td class="num">172</td><td class="num">94.7</td><td class="num">1296</td><td class="num">159</td><td class="num">92.7</td></tr>
+<tr><td>tau-agent-core</td><td class="num">105</td><td class="num">18225</td><td class="num">813</td><td class="num">95.5</td><td class="num">5620</td><td class="num">585</td><td class="num">94.1</td></tr>
+<tr><td>tau-coding-agent</td><td class="num">39</td><td class="num">11849</td><td class="num">1342</td><td class="num">88.7</td><td class="num">3692</td><td class="num">772</td><td class="num">86.4</td></tr>
+<tr><td>tau-jmfts</td><td class="num">9</td><td class="num">1036</td><td class="num">383</td><td class="num">63.0</td><td class="num">314</td><td class="num">180</td><td class="num">58.3</td></tr>
+<tr><td>all four</td><td class="num">175</td><td class="num">34343</td><td class="num">2710</td><td class="num">92.1</td><td class="num">10922</td><td class="num">1696</td><td class="num">90.3</td></tr>
+</tbody></table></div>
+<p>47 of 175 modules reach 100% line coverage; 70 are under 95%; 27 are under 90%.</p>
+<div class="tablewrap"><table class="compact">
+<caption>Modules at 0% and under 50% line coverage — ran coverage_report.py</caption>
+<thead><tr><th>module</th><th class="num">stmts</th><th class="num">line %</th><th>largest uncovered range</th></tr></thead>
+<tbody>
+<tr><td><code>core/codemode/_cpython_child.py</code></td><td class="num">122</td><td class="num">0.0</td><td>12–208, module body; runs as a subprocess of <code>cpython.py:34</code>, which coverage does not follow</td></tr>
+<tr><td><code>ca/devshot.py</code></td><td class="num">52</td><td class="num">0.0</td><td>17–134, a <code>python -m</code> entry point no test imports</td></tr>
+<tr><td><code>ca/rpc_mode.py</code></td><td class="num">72</td><td class="num">13.9</td><td>225–315 <code>run_rpc</code> (54 stmts)</td></tr>
+<tr><td><code>tau_jmfts/ext/enrich.py</code></td><td class="num">81</td><td class="num">14.8</td><td>112–138 <code>enrich_conversation</code></td></tr>
+<tr><td><code>tau_jmfts/importer.py</code></td><td class="num">63</td><td class="num">19.0</td><td>124–168 <code>import_session</code></td></tr>
+<tr><td><code>ca/testing/render.py</code></td><td class="num">99</td><td class="num">30.3</td><td>139–159 <code>save_render</code></td></tr>
+<tr><td><code>tau_jmfts/ext/tools.py</code></td><td class="num">89</td><td class="num">38.2</td><td>168–196 <code>register.search</code></td></tr>
+<tr><td><code>tau_jmfts/catalog.py</code></td><td class="num">154</td><td class="num">44.8</td><td>446–474 <code>JmftsSessionCatalog._session_info_for</code></td></tr>
+</tbody></table></div>
+<p>Between 50% and 70%: <code>tau_jmfts/client.py</code> 55.4, <code>ca/serve/cli.py</code> 64.7, <code>ca/serve/remote.py</code> 68.8. Largest absolute misses: <code>app.py</code> 266 statements (85.2%), <code>serve/remote.py</code> 188, <code>_cpython_child.py</code> 122, <code>repl.py</code> 103, <code>serve/cli.py</code> 103. 125 of the 158 skips remove the live-JMFTS paths, which is where most of tau-jmfts's 63% comes from. 62 of the 379 dead-code candidates contain an uncovered statement; 3 are entirely uncovered (<code>MessageBox.border_title</code>, <code>JmftsTextTooLongError.token_count</code>, <code>JmftsTextTooLongError.chars_total</code>).</p>
+
+<h3>Complexity</h3>
+<div class="tablewrap"><table>
+<caption>radon per distribution — ran complexity.py</caption>
+<thead><tr><th>distribution</th><th class="num">files</th><th class="num">LOC</th><th class="num">LLOC</th><th class="num">functions</th><th class="num">mean CC</th><th class="num">CC&gt;10</th><th class="num">CC&gt;20</th><th class="num">CC&gt;40</th></tr></thead>
+<tbody>
+<tr><td>tau-llm</td><td class="num">22</td><td class="num">9383</td><td class="num">3991</td><td class="num">257</td><td class="num">5.04</td><td class="num">30</td><td class="num">6</td><td class="num">0</td></tr>
+<tr><td>tau-agent-core</td><td class="num">105</td><td class="num">57544</td><td class="num">22827</td><td class="num">1669</td><td class="num">4.00</td><td class="num">119</td><td class="num">20</td><td class="num">1</td></tr>
+<tr><td>tau-coding-agent</td><td class="num">39</td><td class="num">29161</td><td class="num">14109</td><td class="num">1252</td><td class="num">3.52</td><td class="num">69</td><td class="num">9</td><td class="num">4</td></tr>
+<tr><td>tau-jmfts</td><td class="num">9</td><td class="num">3130</td><td class="num">1274</td><td class="num">123</td><td class="num">3.11</td><td class="num">4</td><td class="num">0</td><td class="num">0</td></tr>
+<tr><td>tau-meta</td><td class="num">1</td><td class="num">12</td><td class="num">2</td><td class="num">0</td><td class="num">—</td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+</tbody></table></div>
+<div class="tablewrap"><table class="compact">
+<caption>Top 10 functions by cyclomatic complexity (top 30 in complexity/summary.md) — ran complexity.py</caption>
+<thead><tr><th class="num">CC</th><th>function</th><th class="num">lines</th></tr></thead>
+<tbody>
+<tr><td class="num">73</td><td><code>ca/cli.py:776</code> <code>main</code></td><td class="num">229</td></tr>
+<tr><td class="num">49</td><td><code>core/testing/schema_check.py:47</code> <code>_errors</code></td><td class="num">77</td></tr>
+<tr><td class="num">49</td><td><code>ca/headless.py:1031</code> <code>run_print</code></td><td class="num">226</td></tr>
+<tr><td class="num">45</td><td><code>ca/backends.py:1050</code> <code>build_model_from_config</code></td><td class="num">183</td></tr>
+<tr><td class="num">43</td><td><code>ca/repl.py:1451</code> <code>run_repl</code></td><td class="num">191</td></tr>
+<tr><td class="num">39</td><td><code>tau_llm/providers/openai.py:1811</code> <code>OpenAICompletionsProvider._stream_transport</code></td><td class="num">150</td></tr>
+<tr><td class="num">33</td><td><code>core/agent_loop.py:1083</code> <code>AgentLoop._stream_response</code></td><td class="num">212</td></tr>
+<tr><td class="num">33</td><td><code>tau_llm/providers/openai.py:1962</code> <code>OpenAICompletionsProvider._complete_transport</code></td><td class="num">150</td></tr>
+<tr><td class="num">30</td><td><code>core/export.py:407</code> <code>_message_html</code></td><td class="num">67</td></tr>
+<tr><td class="num">28</td><td><code>core/agent_session.py:722</code> <code>AgentSession.__init__</code></td><td class="num">144</td></tr>
+</tbody></table></div>
+<p>Longest functions: <code>cli.py:132</code> <code>build_parser</code> 336 lines (CC 2); <code>extensions_builtin/nats_bus.py:421</code> <code>register</code> 325 (CC 11); <code>rpc/protocol_doc.py:187</code> <code>render</code> 250; <code>cli.py:776</code> <code>main</code> 229; <code>headless.py:1031</code> <code>run_print</code> 226; <code>sdk.py:2130</code> <code>create_agent_session</code> 221.</p>
+<div class="tablewrap"><table class="compact">
+<caption>Largest classes by method count — ran complexity.py</caption>
+<thead><tr><th>class</th><th class="num">methods</th><th class="num">line span</th></tr></thead>
+<tbody>
+<tr><td><code>core/agent_session.py:652</code> <code>AgentSession</code></td><td class="num">216</td><td class="num">5842</td></tr>
+<tr><td><code>ca/app.py:194</code> <code>TauApp</code></td><td class="num">143</td><td class="num">4041</td></tr>
+<tr><td><code>ca/transcript.py:570</code> <code>ChatDisplay</code></td><td class="num">60</td><td class="num">1372</td></tr>
+<tr><td><code>core/testing/session_log_contract.py:65</code> <code>SessionLogContractTests</code></td><td class="num">51</td><td class="num">892</td></tr>
+<tr><td><code>ca/serve/remote.py:669</code> <code>RemoteBackend</code></td><td class="num">49</td><td class="num">420</td></tr>
+<tr><td><code>ca/backends.py:1605</code> <code>TauBackend</code></td><td class="num">47</td><td class="num">988</td></tr>
+<tr><td><code>ca/tree_browser.py:628</code> <code>SessionTreeModal</code></td><td class="num">47</td><td class="num">1098</td></tr>
+<tr><td><code>core/agent_loop.py:213</code> <code>AgentLoop</code></td><td class="num">42</td><td class="num">1638</td></tr>
+<tr><td><code>core/extension_types.py:1906</code> <code>ExtensionAPI</code></td><td class="num">42</td><td class="num">1200</td></tr>
+</tbody></table></div>
+<p>Largest files and their share of the distribution's LOC: <code>agent_session.py</code> 6510 (11.3% of tau-agent-core, MI 0.0), <code>rpc/commands.py</code> 4280 (7.4%, MI 16.4), <code>app.py</code> 4239 (14.5% of tau-coding-agent, MI 0.0), <code>extension_types.py</code> 3201 (5.6%), <code>repl.py</code> 2682 (9.2%), <code>backends.py</code> 2598 (8.9%), <code>capabilities.py</code> 2515 (4.4%, MI 36.4; 291 LLOC), <code>sdk.py</code> 2351 (4.1%), <code>providers/openai.py</code> 2111 (22.5% of tau-llm). radon MI is 0.0 for nine files: <code>agent_session</code>, <code>extension_types</code>, <code>app</code>, <code>backends</code>, <code>repl</code>, <code>serve/daemon</code>, <code>serve/remote</code>, <code>transcript</code>, <code>providers/openai</code>.</p>

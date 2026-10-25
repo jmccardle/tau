@@ -1,0 +1,15 @@
+digraph G {
+  rankdir=TB; node [shape=box, fontsize=10]; edge [fontsize=9];
+  subgraph cluster_S1 { label="S1.jsonl (append-only)"; class="durable";
+    e02 [label="e02 system SYS"]; e03 [label="e03 config"];
+    e04 [label="e04 q1"]; e05 [label="e05 answer 1"]; e06 [label="e06 q2"]; e07 [label="e07 answer 2"];
+    e08 [label="e08 q3"]; e09 [label="e09 answer 3"];
+    e10 [label="e10 compaction (summary + split-turn prefix)", class="mark"];
+    e11 [label="e11 q4"]; e12 [label="e12 answer 4"];
+  }
+  e02 -> e03 -> e04 -> e05 -> e06 -> e07 -> e08 -> e09 -> e10 -> e11 -> e12;
+  e10 -> e09 [label="firstKeptId", class="lazy", constraint=false];
+  e10 -> e03 [label="configId", class="lazy", constraint=false];
+  sent [shape=plaintext, label="next request: [SYS, summary-as-user, answer 3, q4]"];
+  e12 -> sent [class="soft"];
+}

@@ -1,0 +1,79 @@
+<header>
+<div class="axis">Architecture review · as built</div>
+<h1>τ as built: one session class carries the most coupling</h1>
+<p class="standfirst">This page measures the τ tree at one commit with thirteen scripts and the stock Python analysis tools, then describes the agent model those measures sit on: its vocabulary, its state machines, six executed scenarios, one traced turn and the configuration surface. Every figure and table names the script and command that regenerates it. The page describes the tree; it does not recommend changes.</p>
+<div class="facts">
+<span><b>snapshot</b> <code>test/merge-all-2026-10-24 @ dde8cdeb</code> (0.15.0 candidate; includes the step-debugger branch)</span>
+<span><b>date</b> 2026-10-24</span>
+<span><b>scope</b> five distributions · 99,230 src lines (radon LOC) · 409 <code>test_*.py</code> files (415 <code>.py</code> files in the four test trees)</span>
+<span><b>evidence</b> <span class="ev ev-ran">ran</span> executed, command given · <span class="ev ev-read">read</span> seen at <code>path:line</code> · <span class="ev ev-inferred">inferred</span> evidence plus a stated step</span>
+</div>
+<div class="admonition">
+<p class="admonition-title">Verification</p>
+<p>An independent pass re-checked 40 headline claims from the seven evidence reports against the code: 29 confirmed, 8 corrected, 3 wrong. The corrections are applied in place on this page; the three wrong claims are restated with the verified value (<code>Model.tokenizer</code> is read, <code>AgentSession</code> public member count, <code>tau_llm.__all__</code> import count).</p>
+</div>
+<p>Paths are relative to the analysed worktree (<code>WT</code>). <code>core/</code> abbreviates <code>tau-agent-core/src/tau_agent_core/</code>; <code>ca/</code> abbreviates <code>tau-coding-agent/src/tau_coding_agent/</code>. A section's default evidence status is stated under its heading; pills inside the text mark only exceptions.</p>
+<nav class="toc" aria-label="Sections">
+<a class="chip" href="#s0">0 toolkit</a>
+<a class="chip" href="#s1">1 modules</a>
+<a class="chip" href="#s2">2 test isolation</a>
+<a class="chip" href="#s3">3 dead code</a>
+<a class="chip" href="#s4">4 coverage, complexity</a>
+<a class="chip" href="#s5">5 UML</a>
+<a class="chip" href="#s6">6 rename, refs</a>
+<a class="chip" href="#s7">7 glossary</a>
+<a class="chip" href="#s8">8 scenarios</a>
+<a class="chip" href="#s9">9 one turn</a>
+<a class="chip" href="#s10">10 config, providers</a>
+<a class="chip" href="#s11">11 docs vs code</a>
+<a class="chip" href="#s12">complexity index</a>
+</nav>
+</header>
+
+<h2 id="s0">0. The toolkit</h2>
+<p>Default status: <span class="ev ev-ran">ran</span>. The scripts live in <code>scripts/arch/</code> of the analysis worktree <code>.claude/worktrees/arch-review</code>. They are uncommitted: no branch carries them yet. Each takes <code>--out DIR</code> (default <code>build/arch/&lt;name&gt;</code> under the repo root) and writes JSON plus a Markdown or text summary.</p>
+<pre><code>WT=.claude/worktrees/arch-review          (in the repo checkout)
+PY=venv/bin/python                         (the repo venv, Python 3.14.9)
+export PYTHONPATH=$WT/tau-llm/src:$WT/tau-agent-core/src:$WT/tau-coding-agent/src:$WT/tau-jmfts/src
+export HOME=&lt;scratch&gt; TAU_HOME=&lt;scratch&gt;/.tau
+cd $WT</code></pre>
+<p>The venv's editable installs point at a different checkout, so <code>PYTHONPATH</code> selects the snapshot. A scratch <code>HOME</code> keeps the test suite and the probes away from the real <code>~/.tau</code>.</p>
+
+<div class="tablewrap"><table class="compact">
+<caption>scripts/arch/ — status ran; runtimes from the evidence reports, "not recorded" where none was given</caption>
+<thead><tr><th>script</th><th>measures</th><th>command</th><th>runtime</th><th>outputs</th></tr></thead>
+<tbody>
+<tr><td><code>deps.py</code></td><td>grimp import edges classified module-level / lazy / <code>TYPE_CHECKING</code>; 5×5 distribution matrix; fan-in, fan-out, instability, SCCs, propagation cost under three edge sets; hubs; <code>tau_llm</code> public surface and sibling-project consumers; third-party imports vs pyproject</td><td><code>$PY -I scripts/arch/deps.py --out DIR --sibling ../jmfts --sibling ../tectum</code></td><td>not recorded</td><td><code>deps.json</code>, <code>deps_summary.md</code>, <code>package_graph.*</code>, <code>modules_&lt;dist&gt;.*</code> (dot, svg, themed svg)</td></tr>
+<tr><td><code>mocks.py</code></td><td>patch sites resolved to source module and attribute; test-defined fakes; cross-package test imports; <code>obj._private</code> reach per class (AST only, no test runs)</td><td><code>$PY -I scripts/arch/mocks.py --out DIR</code></td><td>not recorded</td><td><code>mocks.json</code>, <code>mocks_summary.md</code></td></tr>
+<tr><td><code>deadcode.py</code></td><td>vulture candidates classified a–e by a reference scan over src, tests, examples, scripts; ruff <code>ARG,F401,F841</code>; fields written-never-read; unused parameters</td><td><code>$PY scripts/arch/deadcode.py --out DIR [--ruff-select ARG,F401,F841]</code></td><td>~50 s</td><td><code>deadcode.json</code>, <code>deadcode.md</code>, <code>vulture_raw.txt</code>, <code>ruff_raw.json</code></td></tr>
+<tr><td><code>coverage_report.py</code></td><td>full suite under coverage.py: per-module line and branch coverage, largest uncovered runs, overlap with dead-code candidates</td><td><code>$PY scripts/arch/coverage_report.py --out DIR [--skip-run] [--deadcode FILE]</code></td><td>1221.4 s full run; seconds with <code>--skip-run</code></td><td><code>coverage.json</code>, <code>run.json</code>, <code>modules.json</code>, <code>summary.md</code>, <code>pytest.log</code></td></tr>
+<tr><td><code>complexity.py</code></td><td>radon CC, length, MI, LOC/LLOC, class method counts and spans</td><td><code>$PY scripts/arch/complexity.py --out DIR</code></td><td>seconds</td><td><code>functions.json</code>, <code>classes.json</code>, <code>modules.json</code>, <code>summary.*</code></td></tr>
+<tr><td><code>hyg_common.py</code></td><td>helper for the three hygiene scripts: distribution table, file discovery, repo-root lookup</td><td>not a CLI</td><td>—</td><td>—</td></tr>
+<tr><td><code>uml.py</code></td><td>AST-only class diagrams (no imports): bases, fields, constructs, parameters; selection by class or module, depth, edge kinds; JSON diff against an earlier dump</td><td><code>$PY scripts/arch/uml.py --classes A,B --depth 1 --members none --themed-svg --name X --out DIR [--diff-against OLD.json]</code></td><td>not recorded</td><td><code>X.json</code>, <code>X.dot</code>, <code>X.mmd</code>, <code>X.svg</code>, <code>X.themed.svg</code></td></tr>
+<tr><td><code>refactor.py</code></td><td>rope find-references and rename dry-run over src, tests, examples, scripts; optional grep comparison</td><td><code>$PY scripts/arch/refactor.py refs SYMBOL [--compare-grep]</code> · <code>… rename SYMBOL NEW [--unsure] [--apply]</code></td><td>8–11 s per query</td><td>text report, optional <code>--json F</code></td></tr>
+<tr><td><code>inventory.py</code></td><td>AST inventory: classes with stereotypes and fields, <code>Literal</code> aliases, Enums, string vocabularies, discriminators, dict tags, duplicate class names, per-term file counts</td><td><code>$PY scripts/arch/inventory.py --out DIR</code></td><td>not recorded</td><td><code>inventory.json</code>, <code>inventory.md</code></td></tr>
+<tr><td><code>trace_turn.py</code></td><td>runs <code>cli.main(-p --mode json …)</code> against a scripted <code>httpx.MockTransport</code>; records calls (<code>sys.monitoring</code>), hook firings, bus emissions, log writes, cursor fields, task creation; 11 variants</td><td><code>$PY scripts/arch/trace_turn.py --variant all --out DIR</code></td><td>~27 s</td><td>per variant <code>trace.json</code>, <code>calltree.txt</code>, <code>sequence.mmd</code>, <code>outcome.json</code>, <code>session_log.jsonl</code>; <code>errors.md</code>, <code>summary.md</code></td></tr>
+<tr><td><code>scenarios.py</code></td><td>drives <code>AgentSession</code> on the file store with a fake <code>stream_simple</code> through nine scenarios; snapshots files, lines, cursors, suspensions per step; renders tree diagrams</td><td><code>$PY scripts/arch/scenarios.py --out DIR [--only NAME…] [--no-render]</code></td><td>not recorded; needs Python ≥ 3.12 (<code>scenarios.py:488</code> uses nested f-string quotes; ran: 3.11 <code>ast.parse</code> fails)</td><td><code>&lt;scenario&gt;.json</code>, <code>&lt;scenario&gt;-&lt;step&gt;.dot/.svg</code>, <code>-events.mmd/.svg</code>, <code>SUMMARY.md</code></td></tr>
+<tr><td><code>config_audit.py</code></td><td>config keys, CLI flags, env vars, RPC verbs, vocabularies, casing, provider field use, from the AST plus one import of <code>COMMAND_TABLE</code></td><td><code>$PY scripts/arch/config_audit.py --out DIR</code></td><td>not recorded; reruns byte-identical</td><td><code>config_keys.json</code>, <code>cli_flags.json</code>, <code>env_vars.json</code>, <code>rpc_verbs.json</code>, <code>vocabularies.json</code>, <code>providers.json</code>, <code>concepts.json</code>, <code>casing.json</code>, <code>summary.md</code></td></tr>
+<tr><td><code>svg_theme.py</code></td><td>strips graphviz colours and fonts, assigns the page's diagram classes, adds <code>role="img"</code>, title, desc, id prefix</td><td><code>dot -Tsvg x.dot | $PY scripts/arch/svg_theme.py - x.svg --title T --desc D</code></td><td>&lt; 1 s</td><td>one inline-ready <code>&lt;svg&gt;</code></td></tr>
+<tr><td><code>seq_svg.py</code></td><td>renders a mermaid <code>sequenceDiagram</code> subset as classed SVG; rejects unsupported lines with their line number</td><td><code>$PY scripts/arch/seq_svg.py in.mmd out.svg --title T --desc D</code></td><td>&lt; 1 s</td><td>one inline-ready <code>&lt;svg&gt;</code></td></tr>
+</tbody></table></div>
+
+<p>Three kinds of figure on this page are not produced by a script. The 18 glossary state diagrams, the concept map and the six scenario key diagrams are hand-written DOT files kept beside this page's evidence (<code>glossary/states_*.dot</code>, <code>glossary/concepts.dot</code>, <code>scenarios/key/key-*.dot</code>), not in <code>WT</code>; they render through <code>svg_theme.py</code>. <code>svg_theme.py</code> leaves a graph-level <code>label</code> with literal <code>font-family</code>/<code>font-size</code> attributes (ran: three state diagrams); <code>page/fig/make_figs.sh</code> re-renders those three and rewrites that one text element's attributes to <code>class="label-soft"</code>.</p>
+
+<h3>Third-party tools on this tree</h3>
+<div class="tablewrap"><table class="compact">
+<caption>Stock tools tried by the evidence agents — status ran, except pydeps (not run)</caption>
+<thead><tr><th>tool</th><th>used for</th><th>worked</th><th>caveat observed</th></tr></thead>
+<tbody>
+<tr><td>pyreverse (pylint 4.1.3)</td><td>class diagrams</td><td>yes: 5.5 s for one class; 12.7 s for all of <code>tau_agent_core</code> (373 boxes, 75 edges, 494 KB SVG)</td><td>needs the module on <code>PYTHONPATH</code>; attribute types are inferred (<code>Cursor.log</code> untyped, <code>owner : NoneType</code>); <code>-s1 -a1</code> on <code>AgentSession</code> gives 15 boxes and 1 edge</td></tr>
+<tr><td>rope 1.15</td><td>references, rename (<code>refactor.py</code>)</td><td>yes: 8–11 s per query</td><td>most attribute and method occurrences are "unsure" (receiver type not inferable); needs <code>ropefolder=None</code> to avoid writing <code>.ropeproject</code></td></tr>
+<tr><td>jedi 0.20.1</td><td>references</td><td>yes: 7.3 s and 3.6 s</td><td>7 references for each test symbol, against rope's 43 and 28</td></tr>
+<tr><td>pyright 1.1.408</td><td>type check, unused-symbol rules</td><td>yes, through <code>node …/index.js</code>; the PATH volta shim fails with <code>Could not find executable pyright</code>; 31.8 s</td><td>no CLI rename or find-references; with unused rules on: 50 errors, 63 warnings (61 <code>reportUnusedFunction</code>, 2 <code>reportUnusedClass</code>, underscore names only); reports unresolved attributes such as <code>errors.py:353</code> <code>BaseException.body</code>, <code>app.py:3786</code> <code>Backend.compact</code></td></tr>
+<tr><td>vulture 2.16</td><td>dead-code candidates (<code>deadcode.py</code>)</td><td>yes</td><td>name-based; 60%-confidence rows are mostly dataclass fields and signature parameters; dynamic dispatch (<code>getattr(obj, f"action_{x}")</code>) is invisible</td></tr>
+<tr><td>radon 6.0.1</td><td>CC, MI, raw counts (<code>complexity.py</code>)</td><td>yes, seconds</td><td><code>radon cc</code> lists methods twice (under the class and alone); the script de-duplicates; closures are not counted separately</td></tr>
+<tr><td>coverage.py + pytest-cov</td><td>line and branch coverage</td><td>yes, 1212.91 s serial (pytest-xdist not installed)</td><td>subprocess children are not measured (<code>codemode/_cpython_child.py</code> reads 0%)</td></tr>
+<tr><td>grimp 3.17</td><td>import graph (<code>deps.py</code>)</td><td>yes</td><td>one dynamic import is invisible: <code>sdk.py:713</code> <code>importlib.import_module(source.target)</code></td></tr>
+<tr><td>ruff 0.15.17 <code>ARG</code></td><td>unused arguments</td><td>yes, 197 findings</td><td><code>--select …,PLW0612</code> is rejected (<code>invalid value 'PLW0612'</code>); stub bodies and overrides are exempt, so the script's own parameter check finds 97 rows ruff does not</td></tr>
+<tr><td>pydeps</td><td>module graph</td><td>not run</td><td>—</td></tr>
+</tbody></table></div>

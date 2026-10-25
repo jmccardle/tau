@@ -1,0 +1,16 @@
+digraph G {
+  rankdir=TB; node [shape=box, fontsize=10]; edge [fontsize=9];
+  subgraph cluster_S1 { label="S1.jsonl: append order = line order"; class="durable";
+    e04 [label="L5 e04 assistant: ok (shared prefix)"];
+    e05 [label="L6 e05 config (c1)"]; e06 [label="L7 e06 user: head question"];
+    e07a [label="L8 e07 assistant (incomplete)", class="muted"];
+    e08 [label="L9 e08 config (c2)"]; e09 [label="L10 e09 user: side question"];
+    e10a [label="L11 e10 assistant (incomplete)", class="muted"]; e10 [label="L12 e10 side answer"];
+    e07 [label="L13 e07 head answer"];
+  }
+  c1 [shape=hexagon, label="HEAD c1", class="mark"]; c2 [shape=hexagon, label="c2 background"];
+  e04 -> e05 -> e06 -> e07a; e04 -> e08 -> e09 -> e10a;
+  e10a -> e10 [label="finalize: 2nd line same id", class="soft"];
+  e07a -> e07 [label="finalize", class="soft"];
+  c1 -> e07 [class="soft"]; c2 -> e10 [class="soft"];
+}

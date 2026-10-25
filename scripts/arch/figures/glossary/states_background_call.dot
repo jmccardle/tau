@@ -1,0 +1,21 @@
+digraph background_call {
+  graph [fontname="Courier", rankdir=TB, nodesep=0.5, ranksep=0.55];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier", fontsize=10];
+
+  running   [label="running\nBackgroundCall.state='running'"];
+  queued    [label="queued\nresult set, delivery under way"];
+  claimed   [label="claimed\nreturned to a bg wait"];
+  delivered [label="delivered"];
+  held_over [label="held_over\non cursor.next_turn_queue"];
+  parked    [label="parked"];
+  cancelled [label="cancelled"];
+
+  running -> queued    [label="_supervise()\nresult, no waiters"];
+  running -> claimed   [label="_supervise()\nresult, waiters>0"];
+  queued  -> delivered [label="_supervise()\ndeliver() returned, still queued"];
+  queued  -> delivered [label="CursorDelivery._route()\noutcome.messages\n_settle() on path"];
+  queued  -> held_over [label="CursorDelivery._settle()"];
+  queued  -> parked    [label="CursorDelivery._park()\n_supervise() on_error"];
+  running -> cancelled [label="cancel() / cancel_all()\n_supervise() CancelledError", class="soft"];
+}

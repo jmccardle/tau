@@ -1,0 +1,22 @@
+digraph extension_lock {
+  graph [fontname="Courier", rankdir=LR];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier"];
+
+  none     [label="no request at cursor\nrequest_at() -> None"];
+  ask      [label="ask only\nlock False, ask set\nsubmit admitted"];
+  locked   [label="locked, no ask\nlock True, ask None\nsubmit refused"];
+  lockask  [label="locked with ask\nlock True, ask set\nsubmit refused"];
+  note     [label="note\nlock False, ask None\n(hand-written entry only)"];
+
+  none -> ask      [label="request_user_action(ask=)"];
+  none -> locked   [label="request_user_action(lock=True)"];
+  none -> lockask  [label="request_user_action(lock=True, ask=)"];
+  none -> note     [label="foreign/hand-written entry"];
+  ask -> none      [label="any non-provenance append moves cursor\n(user turn, answer_request)"];
+  locked -> none   [label="command append / navigate / branch"];
+  lockask -> none  [label="answer_request(): RESPONSE append"];
+  lockask -> none  [label="command append / navigate / branch"];
+  note -> none     [label="any append / navigate"];
+  none -> locked   [label="navigate back onto the entry"];
+}

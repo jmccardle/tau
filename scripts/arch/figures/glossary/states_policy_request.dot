@@ -1,0 +1,27 @@
+digraph policy_request {
+  graph [fontname="Courier", rankdir=LR];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier"];
+
+  created  [label="created\n_task None, _left=seconds"];
+  running  [label="running\n_task set, _due set, _timer armed"];
+  paused   [label="paused\n_pauses>0, _due None"];
+  pausedrun [label="paused before start\n_pauses>0, _task set, no clock"];
+  expired  [label="expired\nexpired=True, task cancelled"];
+  finished [label="finished\ntask done, clock stopped"];
+  r_ret    [label="reply returned\nRequestReply(Returned)"];
+  r_exp    [label="reply expired\nRequestReply(Failed(DeadlineExpired))"];
+  r_raise  [label="reply raised\nRequestReply(Failed(err))"];
+
+  created -> running   [label="run(): _start_clock()"];
+  created -> pausedrun [label="run() while paused"];
+  pausedrun -> running [label="resume() last"];
+  running -> paused    [label="pause() (api.suspend wait)"];
+  paused -> running    [label="resume() last, _left>0"];
+  paused -> expired    [label="resume() last, _left<=0: _fire()", class="soft"];
+  running -> expired   [label="timer: _fire()", class="soft"];
+  running -> finished  [label="task returns/raises"];
+  finished -> r_ret    [label="_reply(): value"];
+  finished -> r_raise  [label="_reply(): Exception", class="soft"];
+  expired -> r_exp     [label="_reply(): own DeadlineExpired", class="soft"];
+}

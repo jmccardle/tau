@@ -1,0 +1,13 @@
+digraph G {
+  rankdir=TB; node [shape=box, fontsize=10]; edge [fontsize=9];
+  subgraph cluster_S1 { label="S1.jsonl"; class="durable";
+    e05 [label="e05 assistant [call probe, write_x]"];
+    s06 [label="e06 suspension (incomplete) -> finalized: step", class="mark"];
+    s07 [label="e07 suspension (incomplete) -> finalized: skip"];
+    e08 [label="e08 toolResult probe ok"];
+    e09 [label="e09 toolResult skipped at a step by the human"];
+  }
+  e05 -> s06 [label="side child (never a parent)", class="soft"];
+  e05 -> s07 [class="soft"];
+  e05 -> e08 -> e09;
+}

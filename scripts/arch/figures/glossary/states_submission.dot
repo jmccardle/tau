@@ -1,0 +1,40 @@
+digraph submission {
+  graph [fontname="Courier", rankdir=TB, nodesep=0.45, ranksep=0.55];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier", fontsize=10];
+
+  built      [label="built\nSubmission.__post_init__\n(silent => store_history=False)"];
+  checked    [label="checked\nloop bound, depth derived,\nnot reentrant, not silent"];
+  raised     [label="raised\nRuntimeError / NotImplementedError\n/ ValueError (no result)"];
+  waiting    [label="waiting (enqueue)\nEnqueuedWait in cursor.enqueued"];
+  steered    [label="queued on steer_queue\naccepted, messages=[]"];
+  forked     [label="forked\naccepted, messages=[]\ntask in _forked_tasks"];
+  refused    [label="refused\nSubmissionResult(accepted=False)"];
+  admitted   [label="admitted\nturn_lock held"];
+  handled    [label="handled without turn\naccepted; messages=[] or command"];
+  running    [label="running\nsubmission_start emitted\ncursor.submission = sub"];
+  done       [label="done\naccepted, messages\nsubmission_end emitted"];
+  failed     [label="failed\nexception propagates\nsubmission_end emitted"];
+  suspended  [label="suspended\nTurnSuspended propagates\n(threadsafe: end_reason='suspended')"];
+
+  built -> checked     [label="submit()"];
+  built -> raised      [label="submit(): foreign loop,\ndepth>10, reentrant, silent", class="soft"];
+  checked -> refused   [label="reject: lock held", class="soft"];
+  checked -> admitted  [label="reject/steer: lock free"];
+  checked -> waiting   [label="enqueue"];
+  waiting -> admitted  [label="turn_lock.acquire()"];
+  waiting -> refused   [label="abort(): _drop_enqueued()", class="soft"];
+  checked -> steered   [label="steer: lock held,\n_apply_input_pipeline()"];
+  checked -> handled   [label="steer: pipeline early"];
+  checked -> refused   [label="rollback: stale token\nfork: fork_admission_reason()", class="soft"];
+  checked -> admitted  [label="rollback: abort + acquire()\n+ move(pre_turn_leaf)"];
+  checked -> forked    [label="fork: _spawn_fork()"];
+  checked -> raised    [label="unknown strategy", class="soft"];
+  admitted -> refused  [label="_drive_turn(): write refusal,\nunavailable model, input refuse,\npending lock", class="soft"];
+  admitted -> handled  [label="input handled / command"];
+  admitted -> running  [label="emit_channel('submission_start')"];
+  running -> done      [label="_run_one_turn() +\n_end_of_prompt_drain() +\n_run_user_turn_end()"];
+  running -> failed    [label="exception", class="soft"];
+  running -> suspended [label="TurnSuspended", class="soft"];
+  forked -> admitted   [label="_run_fork(): new cursor,\nacquire()", style=dashed];
+}

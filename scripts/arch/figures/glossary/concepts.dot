@@ -1,0 +1,97 @@
+digraph concepts {
+  graph [fontname="Courier", rankdir=LR, nodesep=0.35, ranksep=0.6];
+  node  [fontname="Courier", shape=box, style=rounded, fontsize=11];
+  edge  [fontname="Courier", fontsize=9];
+
+  subgraph cluster_heads {
+    label="heads (tau-coding-agent)"; fontname="Courier";
+    TauApp; run_print [label="run_print\n(tau -p)"]; run_rpc [label="run_rpc\n(--mode rpc)"]; run_repl [label="run_repl\n(--mode repl)"];
+    Daemon [label="Daemon\n(tau serve)"]; SessionHost; RemoteBackend [label="RemoteBackend\n(--connect)"];
+    TauBackend; Backend [label="Backend (ABC)"];
+  }
+
+  subgraph cluster_exec {
+    label="execution (tau-agent-core)"; fontname="Courier";
+    AgentSessionRuntime; AgentSession [class="mark"]; Cursor [class="mark"]; Submission; AgentLoop; TurnFrame; EventBus; AgentEvent;
+    SuspensionBroker; Suspension; RPCHandler;
+  }
+
+  subgraph cluster_ext {
+    label="extensions (tau-agent-core)"; fontname="Courier";
+    ExtensionRunner; ExtensionHandlers [label="ExtensionHandlers\n(bucket)"]; ExtensionRegistry; ExtensionAPI [label="ExtensionAPI (api)"];
+    ExtensionContext [label="ExtensionContext (ctx)"]; ExtensionUI [label="ExtensionUI (ui)"]; HandlerPolicy;
+  }
+
+  subgraph cluster_store {
+    label="storage"; fontname="Courier";
+    SessionCatalog [label="SessionCatalog (ABC)"]; SessionLog [label="SessionLog (Protocol)"]; ConversationSession [label="ConversationSession\n(Protocol)"];
+    InMemorySessionLog; Session [label="Session\n(file store)"]; JmftsSessionLog; ConversationTree; Entry [label="entry (dict)\ntype=message|customMessage|\ncustomEntry|compaction|elide|\nbranch_summary|session_info|\nsuspension"];
+    SessionWriteLock;
+    jsonl [label="<tau home>/sessions/\n<dashed-cwd>/<ts>_<id>.jsonl", class="durable"];
+    jmfts [label="JMFTS documents\nusetype tau:<kind>", class="durable"];
+    lockfile [label="<file>.lock /\nprivate_lock_dir()/jmfts-<id>.lock", class="durable"];
+  }
+
+  subgraph cluster_llm {
+    label="models (tau-llm)"; fontname="Courier";
+    Model; Provider; StreamEvent [label="AssistantMessageEventStream\n(StreamEvent)"]; AgentTool [label="AgentTool\n(tau-agent-core)"]; ToolDefinition [label="ToolDefinition\n(tau-llm)"];
+  }
+
+  TauApp -> Backend [label="create_backend()"];
+  run_print -> Backend [label="create_backend()"];
+  run_repl -> Backend [label="create_backend()"];
+  TauBackend -> Backend [label="is-a"];
+  RemoteBackend -> Backend [label="is-a"];
+  TauBackend -> AgentSession [label="has-a"];
+  RemoteBackend -> Daemon [label="talks-to (WebSocket)", class="lazy"];
+  run_rpc -> RPCHandler [label="has-a"];
+  run_rpc -> Backend [label="create_backend()"];
+  SessionHost -> Backend [label="create_backend()"];
+  RPCHandler -> AgentSessionRuntime [label="has-a"];
+  Daemon -> SessionHost [label="has-many"];
+  SessionHost -> AgentSession [label="has-a (backend.agent_session)"];
+  AgentSessionRuntime -> AgentSession [label="has-a"];
+  AgentSessionRuntime -> SessionCatalog [label="has-a"];
+
+  AgentSession -> Cursor [label="has-many\n(head + opened)"];
+  AgentSession -> EventBus [label="has-a"];
+  AgentSession -> ExtensionRunner [label="has-a (x2)"];
+  AgentSession -> ExtensionRegistry [label="has-a"];
+  AgentSession -> SuspensionBroker [label="has-a"];
+  AgentSession -> Model [label="has-a"];
+  SuspensionBroker -> Suspension [label="has-many"];
+  Suspension -> Entry [label="persisted-in\n(side entry)"];
+  Submission -> Cursor [label="admitted-on"];
+  Cursor -> SessionLog [label="appends-to"];
+  Cursor -> AgentLoop [label="runs (per turn)"];
+  AgentLoop -> TurnFrame [label="reads"];
+  AgentLoop -> StreamEvent [label="consumes"];
+  AgentLoop -> AgentTool [label="executes"];
+  AgentLoop -> AgentEvent [label="emits"];
+  EventBus -> AgentEvent [label="delivers"];
+
+  ExtensionRunner -> ExtensionHandlers [label="has-many"];
+  ExtensionHandlers -> HandlerPolicy [label="handlers carry"];
+  ExtensionAPI -> ExtensionHandlers [label="registers-into"];
+  ExtensionAPI -> ExtensionContext [label="has-a"];
+  ExtensionAPI -> ExtensionUI [label="has-a"];
+  ExtensionRegistry -> AgentTool [label="has-many"];
+  AgentTool -> ToolDefinition [label="has-a"];
+
+  SessionCatalog -> ConversationSession [label="creates/loads"];
+  ConversationSession -> SessionLog [label="is-a"];
+  InMemorySessionLog -> SessionLog [label="is-a"];
+  Session -> ConversationSession [label="is-a"];
+  JmftsSessionLog -> ConversationSession [label="is-a"];
+  SessionLog -> Entry [label="has-many"];
+  ConversationTree -> Entry [label="folds"];
+  Session -> jsonl [label="persisted-in"];
+  JmftsSessionLog -> jmfts [label="persisted-in"];
+  Session -> SessionWriteLock [label="has-a"];
+  JmftsSessionLog -> SessionWriteLock [label="has-a"];
+  SessionWriteLock -> lockfile [label="persisted-in (flock)"];
+  InMemorySessionLog -> Entry [label="memory only", class="soft"];
+
+  Model -> Provider [label="resolved via api"];
+  Provider -> StreamEvent [label="produces"];
+}

@@ -1,0 +1,27 @@
+digraph tool_call {
+  graph [fontname="Courier", rankdir=TB, nodesep=0.5, ranksep=0.55];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier", fontsize=10];
+
+  requested [label="requested\nLoopPosition.calls[i].prepared=False"];
+  prepared  [label="prepared\nprepared=True, blocked=None"];
+  blocked   [label="blocked\nprepared=True, blocked=<reason>\n(BlockedCall)"];
+  errored   [label="errored\nprepared=True, blocked=<text>\n(ErrorCall)"];
+  executing [label="executing\n(implicit: prepared, not answered)"];
+  hooked    [label="result_hooks\n(implicit: result built)"];
+  unrun     [label="unrun\n(synthesized error result)"];
+  answered  [label="answered\ncalls[i] removed; toolResult written"];
+
+  requested -> prepared  [label="prepare_tool_call()\nvalidate + tool_call hook pass"];
+  requested -> blocked   [label="prepare_tool_call()\ngate / ValueError / veto / HookHandlerError"];
+  requested -> errored   [label="prepare_tool_call()\nother Exception"];
+  requested -> unrun     [label="_refuse_cut_off_calls()\n_aborted_batch()", class="soft"];
+  prepared  -> unrun     [label="_abort_prepared()\n_answer_unrun()", class="soft"];
+  prepared  -> executing [label="execute_prepared_call()"];
+  executing -> hooked    [label="_wrap_raw() / from_exception()"];
+  hooked    -> answered  [label="apply_tool_result_hooks()\n_record()"];
+  blocked   -> answered  [label="_answer_refused()\n_record()"];
+  errored   -> answered  [label="_answer_refused()\n_record()"];
+  unrun     -> answered  [label="_answer_unrun()\n_record()", class="soft"];
+  hooked    -> answered  [label="HookHandlerError ->\nfrom_exception()", class="soft"];
+}

@@ -1,0 +1,12 @@
+digraph G {
+  rankdir=TB; node [shape=box, fontsize=10]; edge [fontsize=9];
+  subgraph cluster_S1 { label="S1.jsonl after os._exit mid-stream, then reload + retry"; class="durable";
+    e04 [label="e04 user: first question"];
+    e05 [label="e05 assistant status=incomplete\n(no partial text; never finalized)", class="muted"];
+    e06 [label="e06 user: second question"];
+    e07 [label="e07 assistant: retry answer"];
+  }
+  c [shape=hexagon, label="HEAD after reload\nCursor.newest -> default_leaf = e04", class="mark"];
+  e04 -> e05; e04 -> e06 -> e07;
+  c -> e04 [class="soft", label="leaf at reload"];
+}

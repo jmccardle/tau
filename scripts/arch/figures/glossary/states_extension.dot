@@ -1,0 +1,32 @@
+digraph extension_state {
+  graph [fontname="Courier", rankdir=LR, label="ExtensionState (extension_sources.py:31) as derived by sdk.plan_extensions / session_extension_records"];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier", fontsize=10];
+
+  found        [label="found\n(ExtensionSource,\nnot a Literal value)", shape=ellipse];
+  unusable     [label="unusable\n(withheld)"];
+  collision    [label="collision\n(withheld)"];
+  unauthorized [label="unauthorized\n(withheld)"];
+  store_disabled [label="disabled\n(withheld: store record)"];
+  authorized   [label="authorized\n(no-session listing only)"];
+  loaded       [label="loaded\n(_loaded_extensions,\nnot _disabled_paths,\nnot _extension_start_errors)"];
+  failed_load  [label="failed\n(_extension_load_errors;\nbucket + partial registrations\nmay remain live)"];
+  failed_start [label="failed\n(_extension_start_errors;\nregistrations stand)"];
+  rt_disabled  [label="disabled\n(_disabled_paths;\nbucket removed)"];
+
+  found -> unusable       [label="plan_extensions()\nsource.unusable", class="soft"];
+  found -> collision      [label="plan_extensions()\nidentifier claimed", class="soft"];
+  found -> unauthorized   [label="plan_extensions()\nverdict != authorized", class="soft"];
+  found -> store_disabled [label="plan_extensions()\nstore.is_disabled()", class="soft"];
+  found -> authorized     [label="extension_records()\n(write=False)"];
+  found -> loaded         [label="_load_extensions()\nregister() returns"];
+  found -> failed_load    [label="_load_extensions()\nimport/register raises", class="soft"];
+  unauthorized -> loaded  [label="authorize_extension()"];
+  unauthorized -> failed_load [label="authorize_extension()\n_load_source raises", class="soft"];
+  loaded -> failed_start  [label="emit_session_start()\nhandler raises", class="soft"];
+  loaded -> rt_disabled   [label="disable_extension()"];
+  failed_start -> rt_disabled [label="disable_extension()"];
+  rt_disabled -> loaded   [label="enable_extension()\n/ reload_extension()"];
+  loaded -> loaded        [label="reload_extension()\n(also when register raises:\nlabel stays, bucket empty)"];
+  failed_start -> failed_start [label="reload_extension() /\nenable_extension()\n(start error never cleared)"];
+}

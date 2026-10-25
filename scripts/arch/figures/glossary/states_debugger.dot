@@ -1,0 +1,32 @@
+digraph debugger {
+  graph [fontname="Courier", rankdir=TB];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier"];
+
+  idle      [label="idle\ncursor.is_streaming False"];
+  running   [label="turn running\nis_streaming True\nget_state status=\"running\""];
+  refusedin [label="turn refused at input\n(80_step_mode: can_suspend() False)"];
+  errored   [label="turn ends in error\nHookHandlerError / HandlerPolicyError\nraised out of submit()", class="soft"];
+  tui_modal [label="TUI: SuspensionScreen up\nanswerable (buttons enabled)"];
+  tui_q     [label="TUI: SuspensionScreen up\nqueued (buttons disabled)"];
+  serve_w   [label="serve: waiting\nwarning suspension:waiting\nif no hello suspensions:true client"];
+  rpc_w     [label="rpc: waiting\ncontrol lane open if a request\nin flight started the turn"];
+  aborted   [label="turn aborted\nagent_end end_reason=\"aborted\""];
+
+  idle -> running      [label="submit()"];
+  idle -> refusedin    [label="input hook {refuse}", class="soft"];
+  running -> errored   [label="api.suspend, no responder\n(REPL, -p, rpc undeclared)", class="soft"];
+  running -> tui_modal [label="suspension_open -> refresh()"];
+  running -> tui_q     [label="suspension_open queued=True"];
+  tui_q -> tui_modal   [label="suspension_open queued=False"];
+  running -> serve_w   [label="suspension_open (responder \"serve\")"];
+  running -> rpc_w     [label="suspension_open (declare_capabilities)"];
+  tui_modal -> running [label="action button: answer_suspension()"];
+  serve_w -> running   [label="answer_suspension verb"];
+  rpc_w -> running     [label="answer_suspension verb"];
+  tui_modal -> aborted [label="\"abort\" action / Abort turn button", class="soft"];
+  serve_w -> aborted   [label="abort answer / abort / shutdown", class="soft"];
+  rpc_w -> aborted     [label="abort answer / abort / stdin EOF", class="soft"];
+  running -> idle      [label="agent_end"];
+  aborted -> idle      [label="agent_end"];
+}

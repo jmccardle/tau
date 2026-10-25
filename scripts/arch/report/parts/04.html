@@ -1,0 +1,258 @@
+<h2 id="s8">8. Scenarios, executed</h2>
+<p>Default status: <span class="ev ev-ran">ran</span> <code>scenarios.py</code>. Each scenario builds the CLI's default store (<code>build_session_catalog</code> → <code>FileSessionCatalog</code>, <code>ca/store_factory.py:242-252</code>), constructs the <code>AgentSession</code> the way <code>TauBackend</code> does, binds <code>Cursor.newest(file_session)</code> as the head, and patches the model at <code>tau_agent_core.agent_loop.stream_simple</code> (the summarizer at <code>tau_agent_core.compaction.complete_simple</code>). Because the fake replaces <code>stream_simple</code>, no provider wire conversion runs in these scenarios. A "process exit" is a child process calling <code>os._exit(0)</code> at a pause point. Each snapshot classifies every file line as original, finalize rewrite of line N, or copy of another file's line.</p>
+<p>Diagram key for every scenario figure: clusters are session files (hatched = durable); solid edges are <code>parentId</code>; an edge labelled <code>copy</code> is the same id copied into a fork; dashed edges are by-id references (<code>firstKeptId</code>, <code>configId</code>, <code>copiedFrom</code>, header <code>parent</code>); soft edges are finalize rewrites or cursor → leaf; the red mark is the head cursor.</p>
+
+<div class="tablewrap"><table class="compact">
+<caption>Facts that hold across all scenarios — ran scenarios.py; read at the cited lines</caption>
+<thead><tr><th>#</th><th>fact</th><th>evidence</th></tr></thead>
+<tbody>
+<tr><td>X1</td><td>A new file session starts config → (session_info) → system message. Each cursor's first turn writes a config entry before its user message, and another whenever the folded config along its path differs from the frame.</td><td><code>ca/session_store.py:580-598</code>; <code>core/agent_session.py:896-930</code></td></tr>
+<tr><td>X2</td><td>Each assistant message is written first as <code>status:"incomplete"</code> with an empty payload, then as a second line with the same id and the final payload. The loader keeps the last line per id. Streamed partial text is never written.</td><td><code>core/cursor.py:296-347</code>; <code>ca/session_store.py:647-661</code></td></tr>
+<tr><td>X3</td><td>All cursors of a session append to one file; line order is append order; the tree is defined only by <code>parentId</code>.</td><td><code>ca/session_store.py:600-645</code></td></tr>
+<tr><td>X4</td><td>In one process no append lock exists (<code>_append_at_now</code> is synchronous). Across processes, <code>fcntl.flock</code> on the sidecar <code>&lt;file&gt;.jsonl.lock</code>, retained once per tree.</td><td><code>core/session_lock.py:504-622</code>; <code>core/agent_session.py:1105-1125</code></td></tr>
+<tr><td>X5</td><td>Cursor ids are never written. The only per-cursor mark on disk is <code>source:"agent"</code> on an owned cursor's entries during an agent submission.</td><td><code>core/cursor.py:387-397</code></td></tr>
+<tr><td>X6</td><td>Every reload places the head at <code>default_leaf</code> (§7).</td><td><code>core/session_log.py:247-282</code></td></tr>
+</tbody></table></div>
+
+<h3>Spawn a sub-agent</h3>
+<p>Route: <code>ctx.spawn_branch</code> (<code>core/extension_types.py:1627</code>) → <code>AgentSession.spawn</code> (<code>core/agent_session.py:4161-4316</code>). The scenario's <code>delegate</code> tool calls <code>ctx.spawn_branch(&lt;parent of the calling assistant&gt;, "child task…", tools=[])</code>. No RPC verb calls <code>spawn</code>. <code>examples/20_delegate.py</code> and <code>examples/51_delegate_fleet.py</code> do not use it: they run separate <code>tau -p --mode json --no-session --no-extensions</code> processes (<code>examples/ext_kit/spawn.py:264,285,319</code>), so the parent's store gets no child session, entry or cursor <span class="ev ev-read">read</span>.</p>
+<figure class="dia wide">
+<!--svg:scenarios/key/key-1-spawn.svg-->
+<figcaption>Spawn: one file; the child branch e06→e08 hangs from the parent's user message e04 as a sibling of the calling assistant e05; the child's answer reaches e09 only through the tool's return value; head cursor c1 marked. Hand-drawn DOT <code>scenarios/key/key-1-spawn.dot</code> from <code>1-spawn.json</code>; render with <code>dot -Tsvg … | svg_theme.py</code>.</figcaption>
+</figure>
+<div class="tablewrap"><table class="compact">
+<caption>1-spawn steps — ran scenarios.py --only 1-spawn</caption>
+<thead><tr><th>step</th><th class="num">lines in S1</th><th>cursors</th><th>notes</th></tr></thead>
+<tbody>
+<tr><td>before</td><td class="num">2</td><td>c1 head @e02</td><td></td></tr>
+<tr><td>in tool, before spawn</td><td class="num">6</td><td>c1 busy @e05</td><td></td></tr>
+<tr><td>during child request</td><td class="num">8</td><td>c1 @e05; c2 owner=c1, <code>tools=[]</code> @e07</td><td>e06 config and e07 user (<code>source:"agent"</code>) hang from e04</td></tr>
+<tr><td>in tool, after spawn</td><td class="num">10</td><td>c1 @e05</td><td>c2 closed; <code>ok=True</code>, <code>end_reason=done</code></td></tr>
+<tr><td>after</td><td class="num">13</td><td>c1 @e10</td><td>e09 toolResult <code>child said: …</code>, e10 final answer; 3 finalize rewrites</td></tr>
+</tbody></table></div>
+<ul>
+<li>No new session: <code>open_cursor</code> uses <code>self._cursor.log</code> (<code>core/agent_session.py:1080</code>).</li>
+<li>The child's model request was <code>[system, user, user]</code>: system, the parent's user message, the child prompt. The child frame is recorded as config entry e06.</li>
+<li><code>cursor_open c2</code> and <code>cursor_close c2</code> arrive between c1's <code>tool_execution_start</code> and <code>tool_execution_end</code>.</li>
+<li>No entry links e09 to e08. The head context after the turn is <code>[system, user, assistant, toolResult, assistant]</code>, without the branch; a reload lands on e10.</li>
+<li>A failing child appends a <code>customEntry</code> <code>branch_error</code> and <code>spawn</code> returns <code>ok=False</code> (<code>:4276-4291</code>) <span class="ev ev-read">read</span>.</li>
+</ul>
+<div class="tablewrap"><table class="compact">
+<caption>Which cursor each head shows during a spawn — ran for the TUI (1b-spawn-tui); read for the others</caption>
+<thead><tr><th>head</th><th>child events</th><th>during</th><th>after</th><th>evidence</th></tr></thead>
+<tbody>
+<tr><td>TUI</td><td>routed by <code>submission_id</code>, no cursor filter</td><td>head exchange open; child bubble <code>agent · fork:child task</code> and its <code>ExchangeBox</code> appended; the stream strip lists the child</td><td>head answer in the head exchange; child blocks stay below it until a transcript reload, which draws only the head path. <code>app._cursor is session.cursor</code> at every sample</td><td><code>ca/app.py:2372-2416</code>; <code>ca/backends.py:647-689</code></td></tr>
+<tr><td>RPC</td><td>dropped unless <code>suspension_open</code>/<code>closed</code></td><td>parent only</td><td>parent only</td><td><code>core/rpc/handler.py:457-461</code></td></tr>
+<tr><td><code>tau -p</code></td><td>dropped (head captured at entry)</td><td>parent only</td><td>parent only</td><td><code>ca/backends.py:2512,2527-2528</code></td></tr>
+<tr><td>TUI tree browser</td><td>—</td><td>branch visible as a sibling</td><td>same</td><td><code>ca/app.py:3857-3875</code></td></tr>
+</tbody></table></div>
+<p><code>spawn</code> never assigns <code>AgentSession.cursor</code>, so no head switches cursor; no head receives a switch event.</p>
+<details>
+<summary>1-spawn and 1b-spawn-tui, step by step (8 figures)</summary>
+<figure class="dia"><!--svg:scenarios/1-spawn-before.svg--><figcaption>1-spawn, step before. Regenerate: <code>scenarios.py --only 1-spawn</code>.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/1-spawn-in-tool-before-spawn.svg--><figcaption>1-spawn, inside the tool before <code>spawn_branch</code>.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/1-spawn-during-child-request.svg--><figcaption>1-spawn, while the child's model request is in flight.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/1-spawn-in-tool-after-spawn.svg--><figcaption>1-spawn, inside the tool after <code>spawn_branch</code> returned.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/1-spawn-after.svg--><figcaption>1-spawn, after the parent's final answer.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/1-spawn-events.svg--><figcaption>1-spawn bus events per cursor, as seen by the head subscriber. Rendered by <code>scenarios.py</code> through <code>seq_svg.py</code>.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/1b-spawn-tui-after.svg--><figcaption>1b-spawn-tui, tree after the TUI-driven spawn. Regenerate: <code>scenarios.py --only 1b-spawn-tui</code>.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/1b-spawn-tui-events.svg--><figcaption>1b-spawn-tui events.</figcaption></figure>
+</details>
+
+<h3>Fork a conversation</h3>
+<p>The scenario's source S1 holds a user message with an image block and an extension annotation, the session name <code>main-name</code>, a compaction, and a side branch from e04 (user <code>side q</code> plus a rename to <code>renamed-on-side</code>).</p>
+<figure class="dia xwide">
+<!--svg:scenarios/key/key-2-fork.svg-->
+<figcaption>Fork: S1 untouched; S2 (runtime fork) copies S1's path with the same ids, byte-identical, header <code>parent=S1</code>; the side branch e12/e13 is not copied; S3 (<code>ctx.fork</code> export) lands under <code>$TAU_HOME/sessions</code> with header <code>parent=S2</code>; <code>paste_subtree</code> copies get new ids with <code>copiedFrom</code>. Hand-drawn DOT <code>scenarios/key/key-2-fork.dot</code> from <code>2-fork.json</code>.</figcaption>
+</figure>
+<div class="tablewrap"><table class="compact">
+<caption>Every route that forks, copies or re-branches — ran where marked ran, else read (scenario report's route list; 13 rows)</caption>
+<thead><tr><th>route</th><th>entry points</th><th>mechanism</th><th>effect</th><th>ev</th></tr></thead>
+<tbody>
+<tr><td>runtime fork</td><td>TUI <code>/fork</code> (<code>ca/app.py:3664,3690</code>), REPL <code>/fork</code> (<code>ca/repl.py:2356</code>), RPC <code>fork</code> (<code>core/rpc/commands.py:1463-1467</code>)</td><td><code>AgentSessionRuntime.fork</code> → <code>catalog.fork(at=cursor.leaf)</code> → <code>Session.fork</code></td><td>new file; path copied; head rebound to <code>Cursor.newest(new_log)</code>, old cursor closed</td><td><span class="ev ev-ran">ran</span></td></tr>
+<tr><td>serve fork</td><td><code>--connect</code> → <code>ca/serve/daemon.py:1237-1258</code></td><td>daemon-side catalog fork</td><td>creates a session and stays attached</td><td><span class="ev ev-read">read</span></td></tr>
+<tr><td><code>tau -p --fork</code></td><td><code>ca/headless.py:1131</code></td><td><code>catalog.fork(at=None)</code></td><td>copies every entry except open side entries</td><td><span class="ev ev-read">read</span></td></tr>
+<tr><td><code>ctx.fork</code> export</td><td><code>core/extension_types.py:1800-1807</code></td><td><code>type(log).fork(log, cwd, at=)</code>, no <code>base_dir</code>, no <code>allow_unlocked_fs</code></td><td>file under <code>$TAU_HOME/sessions</code>, not <code>--session-dir</code>; no sidecar</td><td><span class="ev ev-ran">ran</span></td></tr>
+<tr><td><code>ctx.fork</code> in place</td><td><code>:1796-1798</code></td><td><code>cursor.move</code> on the head</td><td>nothing written</td><td><span class="ev ev-ran">ran</span></td></tr>
+<tr><td><code>ctx.fork(defer=True)</code></td><td><code>core/agent_session.py:5412-5435</code></td><td>intent applied at the prompt tail through <code>ctx.fork</code></td><td>as export or in place</td><td><span class="ev ev-read">read</span></td></tr>
+<tr><td><code>multitask_strategy="fork"</code></td><td><code>core/agent_session.py:3990-3998,4377-4400</code>; refused on core RPC</td><td>new un-owned cursor at the leaf, background turn</td><td>same file; a new cursor writes and closes</td><td><span class="ev ev-ran">ran</span></td></tr>
+<tr><td><code>commit_branch</code></td><td><code>core/tree_ops.py:227</code>; RPC <code>:3913</code>; TUI <code>ca/backends.py:2183</code></td><td>one <code>elide</code> entry</td><td>no copies</td><td><span class="ev ev-ran">ran</span></td></tr>
+<tr><td><code>paste_subtree</code></td><td><code>core/tree_ops.py:298</code>; RPC <code>:3965</code>; TUI <code>ca/backends.py:2203</code></td><td><code>copy_of</code> per entry</td><td>new ids, <code>copiedFrom</code>; cursor unmoved</td><td><span class="ev ev-ran">ran</span></td></tr>
+<tr><td><code>elide_span</code></td><td><code>core/tree_ops.py:137</code>; RPC <code>:3856</code></td><td>one <code>elide</code> entry</td><td>no copies</td><td><span class="ev ev-read">read</span></td></tr>
+<tr><td><code>RemoteBackend.fork(at)</code></td><td><code>ca/serve/remote.py:747-752</code></td><td>serve request <code>fork</code></td><td>daemon-side</td><td><span class="ev ev-read">read</span></td></tr>
+<tr><td><code>SessionManager.fork</code></td><td><code>core/session_manager.py:420</code>; no src caller</td><td>own writer slices append order, rewrites <code>parent_id</code> into a chain</td><td>own format</td><td><span class="ev ev-read">read</span></td></tr>
+<tr><td><code>SessionManager.clone</code></td><td><code>:490</code>; no src caller</td><td>copies only <code>message</code>/<code>compaction</code> on a path</td><td>own format</td><td><span class="ev ev-read">read</span></td></tr>
+</tbody></table></div>
+<p>The evidence reports count these differently: the scenario report says "7+ fork routes", the glossary's execution section names "five operations named fork", and its collision log lists eleven senses of the word. The table above lists 13 rows: every route the scenario report names, one row per distinct call path.</p>
+<div class="tablewrap"><table class="compact">
+<caption>2-fork steps — ran scenarios.py --only 2-fork</caption>
+<thead><tr><th>step</th><th class="num">S1</th><th>S2</th><th>S3</th><th>head</th><th>effect</th></tr></thead>
+<tbody>
+<tr><td>before</td><td class="num">15</td><td>–</td><td>–</td><td>c1@S1:e11</td><td></td></tr>
+<tr><td>runtime fork</td><td class="num">15</td><td>11 copied from S1</td><td>–</td><td>c2@S2:e11 (c1 closed)</td><td>path copied</td></tr>
+<tr><td><code>ctx.fork</code> export @e04</td><td class="num">15</td><td>11</td><td>4 copied from S2</td><td>c2@S2:e11</td><td>file under <code>$TAU_HOME/sessions</code>; no sidecar</td></tr>
+<tr><td><code>ctx.fork</code> in place @e04</td><td class="num">15</td><td>11</td><td>4</td><td>c2@S2:e04</td><td>nothing written</td></tr>
+<tr><td>turn after in place</td><td class="num">15</td><td>15</td><td>4</td><td>c2@S2:e16</td><td>e14 config, e15/e16 siblings</td></tr>
+<tr><td><code>commit_branch</code> (e15, e16, <code>drop_context</code>)</td><td class="num">15</td><td>16</td><td>4</td><td>c2@S2:e17</td><td>one elide e17 (<code>firstKeptId=e15</code>)</td></tr>
+<tr><td><code>paste_subtree</code> (e15 under e03)</td><td class="num">15</td><td>18</td><td>4</td><td>c2@S2:e17</td><td>e18/e19 new ids, <code>copiedFrom=e15/e16</code></td></tr>
+<tr><td>multitask fork</td><td class="num">15</td><td>21</td><td>4</td><td>c2@S2:e17</td><td>a new cursor wrote e20/e21 and closed</td></tr>
+</tbody></table></div>
+<h4>What a fork copies and what it references</h4>
+<ul>
+<li><code>Session.fork</code> makes one-level <code>dict(e)</code> copies of the entries <code>entries_for_fork</code> selects, ids and <code>parentId</code>s unchanged (<code>ca/session_store.py:544-557</code>). With <code>at</code>, the selection is the path to <code>at</code> plus finalized side entries whose parent is on the path or <code>None</code>; with <code>at=None</code>, every entry except open side entries (<code>core/session_log.py:190-202</code>).</li>
+<li>Each copied line equals the source's final line for that id; first (incomplete) lines are not copied (S2 lines 8 and 12 copy S1 lines 9 and 14). The side branch e12/e13 is not copied.</li>
+<li>The nested <code>message</code> dicts of the copies are the same objects as the source <code>Session</code>'s in-memory entries <span class="ev ev-inferred">inferred</span>: <code>entries_for_fork</code> returns the log's own dicts and <code>dict()</code> is shallow.</li>
+<li>The only cross-file link is the header <code>parent</code> (S2 → S1, S3 → S2). <code>firstKeptId</code> and <code>configId</code> keep resolving inside the new file; compaction, image blocks and <code>ext</code> annotations are copied byte-identically; the system prompt is entry e02, copied with its id.</li>
+<li>In the JMFTS store, <code>fork</code> remaps <code>navigate.targetId</code>, <code>compaction.firstKeptId</code> and <code>branch_summary.fromId</code> but not <code>compaction.configId</code>, <code>elide.configId</code> or <code>suspension.entryId</code>: after a JMFTS fork the compaction's <code>configId</code> names a document of the source conversation (<span class="ev ev-ran">ran</span> glossary storage probe).</li>
+<li><code>copy_of</code> (branch and paste) keeps <code>message</code>, <code>summary</code> and <code>copiedFrom</code>, keeps <code>customType</code> only for a <code>customMessage</code>, gives a <code>branch_summary</code> copy <code>fromId: None</code>, and drops <code>ext</code> and every other field (<code>core/tree_surgery.py:449-485</code>).</li>
+<li>Names: the fork's name is <code>main-name</code>; the source's reads <code>renamed-on-side</code>, because <code>session_name</code> takes the newest <code>session_info</code> in append order. No <code>label</code> entry kind exists.</li>
+</ul>
+<details>
+<summary>2-fork, step by step (9 figures)</summary>
+<figure class="dia wide"><!--svg:scenarios/2-fork-before.svg--><figcaption>2-fork, before. Regenerate: <code>scenarios.py --only 2-fork</code>.</figcaption></figure>
+<figure class="dia xwide"><!--svg:scenarios/2-fork-runtime-fork.svg--><figcaption>2-fork, after <code>AgentSessionRuntime.fork</code>.</figcaption></figure>
+<figure class="dia xwide"><!--svg:scenarios/2-fork-ctx-fork-export.svg--><figcaption>2-fork, after <code>ctx.fork</code> export at e04.</figcaption></figure>
+<figure class="dia xwide"><!--svg:scenarios/2-fork-ctx-fork-in-place.svg--><figcaption>2-fork, after <code>ctx.fork</code> in place at e04.</figcaption></figure>
+<figure class="dia xwide"><!--svg:scenarios/2-fork-after-in-place-turn.svg--><figcaption>2-fork, after the turn that follows the in-place fork.</figcaption></figure>
+<figure class="dia xwide"><!--svg:scenarios/2-fork-commit-branch.svg--><figcaption>2-fork, after <code>commit_branch</code>.</figcaption></figure>
+<figure class="dia xwide"><!--svg:scenarios/2-fork-paste-subtree.svg--><figcaption>2-fork, after <code>paste_subtree</code>.</figcaption></figure>
+<figure class="dia xwide"><!--svg:scenarios/2-fork-multitask-fork.svg--><figcaption>2-fork, after a <code>multitask_strategy="fork"</code> submission.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/2-fork-events.svg--><figcaption>2-fork events.</figcaption></figure>
+</details>
+
+<h3>Two cursors at once</h3>
+<figure class="dia wide">
+<!--svg:scenarios/key/key-3-concurrent.svg-->
+<figcaption>Concurrent cursors: c1 (head) and c2 write interleaved lines into one file; each writes its own config entry. Hand-drawn DOT <code>scenarios/key/key-3-concurrent.dot</code> from <code>3-concurrent.json</code>.</figcaption>
+</figure>
+<div class="tablewrap"><table class="compact">
+<caption>3-concurrent — ran scenarios.py --only 3-concurrent</caption>
+<thead><tr><th>step</th><th class="num">lines</th><th>c1 (head)</th><th>c2</th></tr></thead>
+<tbody>
+<tr><td>before</td><td class="num">4</td><td>e04</td><td>–</td></tr>
+<tr><td>head streaming</td><td class="num">7</td><td>busy, leaf e06 (e07 open)</td><td>e04</td></tr>
+<tr><td>side finished</td><td class="num">11</td><td>busy, e06</td><td>e10</td></tr>
+<tr><td>after</td><td class="num">12</td><td>e07</td><td>e10</td></tr>
+<tr><td>after close</td><td class="num">12</td><td>e07</td><td>closed</td></tr>
+</tbody></table></div>
+<p>c1 wrote lines 6–8, c2 lines 9–12, then c1 its finalize line 13. Only each cursor's own <code>turn_lock</code> applies; no lock spans cursors. The head subscriber received both cursors' events tagged with <code>cursor_id</code>; RPC and <code>-p</code> would drop c2's <span class="ev ev-read">read</span>.</p>
+<details>
+<summary>3-concurrent, step by step (6 figures)</summary>
+<figure class="dia"><!--svg:scenarios/3-concurrent-before.svg--><figcaption>3-concurrent, before. Regenerate: <code>scenarios.py --only 3-concurrent</code>.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/3-concurrent-head-streaming.svg--><figcaption>3-concurrent, head streaming.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/3-concurrent-side-finished.svg--><figcaption>3-concurrent, side cursor finished.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/3-concurrent-after.svg--><figcaption>3-concurrent, after.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/3-concurrent-after-close.svg--><figcaption>3-concurrent, after closing c2.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/3-concurrent-events.svg--><figcaption>3-concurrent events.</figcaption></figure>
+</details>
+
+<h3>Cross-process lock</h3>
+<div class="tablewrap"><table class="compact">
+<caption>3b-locks — ran scenarios.py --only 3b-locks</caption>
+<thead><tr><th>step</th><th>write access</th><th>effect of a turn</th></tr></thead>
+<tbody>
+<tr><td>child process holds the lock</td><td>–</td><td>–</td></tr>
+<tr><td>this process loads the file</td><td><code>read_only=True</code>, reason <code>session is open read-only: pid &lt;pid&gt; (sdk) on &lt;host&gt; since &lt;time&gt; holds it for writing (…jsonl.lock)</code></td><td><code>prompt()</code> returns <code>[]</code> with no event; <code>submit()</code> returns <code>accepted=False</code> with that reason; nothing written</td></tr>
+<tr><td>holder exits</td><td>still <code>read_only=True</code></td><td><code>prompt()</code> returns <code>[]</code> again</td></tr>
+<tr><td><code>release_write_locks()</code>, then rebind the cursor</td><td>writable</td><td>turn written</td></tr>
+</tbody></table></div>
+<p>The sidecar keeps the dead holder's record; <code>check()</code> re-verifies only a lock this object holds and never re-acquires (<code>core/session_lock.py:648-697</code>). <code>prompt()</code> returns <code>result.messages</code> without checking <code>accepted</code> (<code>core/agent_session.py:4609-4630</code>), and <code>messages</code> defaults to <code>[]</code>. Binding a new cursor on the same log leaves the old one in <code>session.cursors</code>; the setter drops it only when the log differs (<code>:1030-1032</code>).</p>
+<details>
+<summary>3b-locks, step by step (6 figures)</summary>
+<figure class="dia"><!--svg:scenarios/3b-locks-held-by-other-process.svg--><figcaption>3b-locks, held by another process. Regenerate: <code>scenarios.py --only 3b-locks</code>.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/3b-locks-second-process-refused.svg--><figcaption>3b-locks, second process refused.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/3b-locks-holder-exited.svg--><figcaption>3b-locks, holder exited.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/3b-locks-prompt-after-holder-exit.svg--><figcaption>3b-locks, prompt after the holder exited.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/3b-locks-written-after-rebind.svg--><figcaption>3b-locks, written after release and rebind.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/3b-locks-events.svg--><figcaption>3b-locks events.</figcaption></figure>
+</details>
+
+<h3>Step debugger</h3>
+<p>Route: a hook calls <code>ctx.suspend</code>/<code>api.suspend</code> (<code>core/extension_types.py:2841-2873</code>) → <code>AgentSession.suspend</code> (<code>core/agent_session.py:5878</code>) → <code>SuspensionBroker.raise_and_wait</code> (<code>core/suspensions.py:408-450</code>). Answers: SDK <code>answer_suspension</code> (<code>:5971</code>); RPC <code>answer_suspension</code>/<code>get_pending_suspensions</code>/<code>declare_capabilities</code> (<code>core/rpc/commands.py:3443-3574</code>); TUI <code>SuspensionResponder</code> (<code>ca/suspension_ui.py:266-341</code>). The scenario uses <code>examples/80_step_mode.py</code>; without a responder its <code>input</code> hook refuses the turn and <code>prompt()</code> returned <code>[]</code>.</p>
+<figure class="dia wide">
+<!--svg:scenarios/key/key-4-debugger.svg-->
+<figcaption>Step debugger: suspension side entries under the assistant entry, finalized on answer; after a crash while paused one stays incomplete and a new turn appends after the unanswered call. Hand-drawn DOT <code>scenarios/key/key-4-debugger.dot</code> from <code>4-debugger.json</code>.</figcaption>
+</figure>
+<div class="tablewrap"><table class="compact">
+<caption>4-debugger transitions — ran scenarios.py --only 4-debugger</caption>
+<thead><tr><th>from</th><th>trigger</th><th>to</th><th>log effect</th><th>events / result</th></tr></thead>
+<tbody>
+<tr><td>running</td><td><code>tool_call</code> hook suspends</td><td>open</td><td><code>suspension</code> side entry, incomplete, under the assistant entry; leaf unchanged</td><td><code>suspension_open</code></td></tr>
+<tr><td>open</td><td>answer <code>step</code></td><td>closed, <code>answered</code></td><td>second line, same id, <code>resolution</code> + <code>close_reason</code></td><td><code>suspension_closed</code>; <code>accepted=True</code></td></tr>
+<tr><td>open</td><td>answer <code>skip</code></td><td>closed, <code>answered</code></td><td>plus toolResult <code>skipped at a step by the human</code></td><td><code>accepted=True</code></td></tr>
+<tr><td>open</td><td>answer <code>abort</code></td><td>closed, <code>answered</code></td><td>plus toolResult <code>Operation aborted</code>; no assistant follow-up</td><td><code>agent_end</code> <code>aborted</code></td></tr>
+<tr><td>open</td><td><code>emit_session_shutdown</code></td><td>closed, <code>cursor_closed</code></td><td>finalized as abort; lock released</td><td><code>agent_end</code> <code>aborted</code></td></tr>
+<tr><td>closed</td><td>same id answered again</td><td>–</td><td>none</td><td><code>accepted=False</code>, <code>already_resolved</code></td></tr>
+<tr><td>open</td><td><code>os._exit</code></td><td>orphaned</td><td>entry stays incomplete</td><td>—</td></tr>
+</tbody></table></div>
+<p>Both calls of one response were suspended and answered before either tool ran. While paused, the hook awaits a future raced against the abort signal; the cursor stays busy on the assistant entry and the lock stays retained (<code>held_trees=1</code>).</p>
+<div class="admonition warning">
+<p class="admonition-title">Crash while paused</p>
+<p>After <code>os._exit</code> while paused and a reload: <code>pending_suspensions()</code> returns <code>[]</code>; answering the entry's id raises <code>SuspensionAnswerError: unknown_id</code>; a whole-session <code>catalog.fork</code> raises <code>OpenSideEntryError</code>; the head sits on the assistant entry with an unanswered call. A new <code>submit</code> is accepted and the model is sent <code>[system, user, assistant-with-call, user]</code>. No code in <code>tau-llm/src</code> or <code>convert_to_llm</code> synthesizes the missing tool result; this run used the fake at <code>stream_simple</code>, so what a provider's wire conversion does with it was not exercised.</p>
+</div>
+<details>
+<summary>4-debugger, step by step (12 figures)</summary>
+<figure class="dia"><!--svg:scenarios/4-debugger-before.svg--><figcaption>4-debugger, before. Regenerate: <code>scenarios.py --only 4-debugger</code>.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/4-debugger-after-turn-1.svg--><figcaption>4-debugger, after turn 1.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/4-debugger-paused-before-step.svg--><figcaption>4-debugger, paused before the <code>step</code> answer.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/4-debugger-paused-before-skip.svg--><figcaption>4-debugger, paused before the <code>skip</code> answer.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/4-debugger-paused-before-abort.svg--><figcaption>4-debugger, paused before the <code>abort</code> answer.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/4-debugger-after-abort.svg--><figcaption>4-debugger, after the <code>abort</code> answer.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/4-debugger-paused-before-shutdown.svg--><figcaption>4-debugger, paused before session shutdown.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/4-debugger-after-shutdown.svg--><figcaption>4-debugger, after session shutdown.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/4-debugger-after-child-exit-while-paused.svg--><figcaption>4-debugger, after the child process exited while paused.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/4-debugger-reloaded-after-crash.svg--><figcaption>4-debugger, reloaded after the crash.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/4-debugger-prompt-after-crash.svg--><figcaption>4-debugger, after a prompt on the reloaded session.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/4-debugger-events.svg--><figcaption>4-debugger events.</figcaption></figure>
+</details>
+
+<h3>Resume after an interrupted turn</h3>
+<figure class="dia">
+<!--svg:scenarios/key/key-5-resume.svg-->
+<figcaption>Resume: the interrupted assistant entry stays incomplete and empty; the retry's user message is parented on the previous user message. Hand-drawn DOT <code>scenarios/key/key-5-resume.dot</code> from <code>5-resume-cancel.json</code> and <code>5b-resume-hard-exit.json</code>.</figcaption>
+</figure>
+<div class="tablewrap"><table class="compact">
+<caption>5b-resume-hard-exit — ran scenarios.py --only 5b-resume-hard-exit</caption>
+<thead><tr><th>step</th><th class="num">lines</th><th>head</th><th>notes</th></tr></thead>
+<tbody>
+<tr><td>child exited mid-stream</td><td class="num">5</td><td>–</td><td>e05 assistant incomplete, empty</td></tr>
+<tr><td>reloaded</td><td class="num">5</td><td>c1@e04</td><td>writable (the exit released the flock)</td></tr>
+<tr><td>retry</td><td class="num">8</td><td>c1@e07</td><td>e06 user parented on e04</td></tr>
+</tbody></table></div>
+<p>Nothing finalizes or marks e05. An in-process cancel (5-resume-cancel) emitted <code>agent_end</code> with <code>end_reason=error</code>, raised <code>CancelledError</code>, and wrote no error entry. In both variants the retry context was <code>[SYS, "first question", "second question"]</code>: two consecutive user messages. <code>Cursor.finalize</code> refuses an id the cursor did not open (<code>core/cursor.py:335-336</code>).</p>
+<details>
+<summary>5-resume-cancel and 5b-resume-hard-exit, step by step (9 figures)</summary>
+<figure class="dia"><!--svg:scenarios/5-resume-cancel-before.svg--><figcaption>5-resume-cancel, before. Regenerate: <code>scenarios.py --only 5-resume-cancel</code>.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/5-resume-cancel-mid-stream.svg--><figcaption>5-resume-cancel, mid-stream.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/5-resume-cancel-after-cancel.svg--><figcaption>5-resume-cancel, after the cancel.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/5-resume-cancel-reloaded.svg--><figcaption>5-resume-cancel, reloaded.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/5-resume-cancel-after-retry.svg--><figcaption>5-resume-cancel, after the retry.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/5-resume-cancel-events.svg--><figcaption>5-resume-cancel events.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/5b-resume-hard-exit-after-child-exit.svg--><figcaption>5b-resume-hard-exit, after the child exit. Regenerate: <code>scenarios.py --only 5b-resume-hard-exit</code>.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/5b-resume-hard-exit-reloaded.svg--><figcaption>5b-resume-hard-exit, reloaded.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/5b-resume-hard-exit-after-retry.svg--><figcaption>5b-resume-hard-exit, after the retry.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/5b-resume-hard-exit-events.svg--><figcaption>5b-resume-hard-exit events.</figcaption></figure>
+</details>
+
+<h3>Compaction</h3>
+<figure class="dia wide">
+<!--svg:scenarios/key/key-6-compaction.svg-->
+<figcaption>Compaction: one appended entry e10 with <code>firstKeptId=e09</code> and <code>configId=e03</code>; no rewrite, no re-parenting; the fold splices at read time. Hand-drawn DOT <code>scenarios/key/key-6-compaction.dot</code> from <code>6-compaction.json</code>.</figcaption>
+</figure>
+<div class="tablewrap"><table class="compact">
+<caption>6-compaction (keep_recent_tokens=1) — ran scenarios.py --only 6-compaction</caption>
+<thead><tr><th>step</th><th class="num">lines</th><th>new entries</th><th>leaf</th></tr></thead>
+<tbody>
+<tr><td>before</td><td class="num">12</td><td>–</td><td>e09</td></tr>
+<tr><td><code>compact()</code></td><td class="num">13</td><td>e10 compaction (<code>firstKeptId=e09</code>, <code>configId=e03</code>), parent e09</td><td>e10</td></tr>
+<tr><td>next turn</td><td class="num">16</td><td>e11, e12</td><td>e12</td></tr>
+</tbody></table></div>
+<p>The request before compaction was <code>[SYS, q1, answer 1, q2, answer 2, q3]</code>; after, <code>[SYS, "[[Compaction summary: ## Goal…", "answer 3", "q4"]</code> with roles <code>[system, user, assistant, user]</code>. The turn was split, so the summarizer ran twice and <code>q3</code> was appended after <code>**Turn Context (split turn):**</code> (<code>core/compaction.py:1270-1301</code>). <code>compact()</code> emits <code>agent_start</code>/<code>agent_end</code> around <code>side_completion_*</code> events whose <code>cursor_id</code> is <code>None</code>. Other routes <span class="ev ev-read">read</span>: TUI <code>/compact</code> (<code>ca/app.py:3737,3786</code>), RPC <code>compact</code> (<code>core/rpc/commands.py:1928-2015</code>), <code>ctx.compact</code> (<code>core/extension_types.py:1242-1267</code>), automatic (<code>core/agent_session.py:5281-5370</code>).</p>
+<details>
+<summary>6-compaction, step by step (4 figures)</summary>
+<figure class="dia wide"><!--svg:scenarios/6-compaction-before.svg--><figcaption>6-compaction, before. Regenerate: <code>scenarios.py --only 6-compaction</code>.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/6-compaction-after-compact.svg--><figcaption>6-compaction, after <code>compact()</code>.</figcaption></figure>
+<figure class="dia wide"><!--svg:scenarios/6-compaction-after-next-turn.svg--><figcaption>6-compaction, after the next turn.</figcaption></figure>
+<figure class="dia"><!--svg:scenarios/6-compaction-events.svg--><figcaption>6-compaction events.</figcaption></figure>
+</details>
+<p>Not run by the scenarios: the delegate examples, RPC verbs, <code>tau serve</code>/<code>--connect</code>, the JMFTS store, seeded branches, the deferred fork, auto-compaction, <code>SessionManager.fork</code>. The TUI scenario drove <code>_get_assistant_response</code>, not the input widget.</p>

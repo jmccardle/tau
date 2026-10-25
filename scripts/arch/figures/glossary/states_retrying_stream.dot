@@ -1,0 +1,22 @@
+digraph retrying_stream {
+  graph [fontname="Courier", rankdir=TB];
+  node [fontname="Courier", shape=box];
+  edge [fontname="Courier"];
+  attempt [label="attempt\nproduced=False\nstream=first|reopen()"];
+  streaming [label="streaming\nproduced=True"];
+  deciding [label="deciding\nexception caught, produced=False"];
+  waiting [label="waiting\nRetryEvent yielded\nretries+=1"];
+  finished [label="finished\nstream exhausted"];
+  raised [label="raised\nexception propagates"];
+  aborted [label="aborted\nDoneEvent(stop_reason='aborted')"];
+  attempt -> streaming [label="first event"];
+  streaming -> finished [label="stream ends"];
+  streaming -> raised [label="Exception", class="soft"];
+  attempt -> finished [label="stream ends empty"];
+  attempt -> deciding [label="Exception", class="soft"];
+  deciding -> raised [label="retries>=max | not retryable | delay None", class="soft"];
+  deciding -> aborted [label="abort_signal.is_aborted()", class="soft"];
+  deciding -> waiting [label="retryable, within budget"];
+  waiting -> aborted [label="_wait_unless_aborted() True", class="soft"];
+  waiting -> attempt [label="reopen()"];
+}

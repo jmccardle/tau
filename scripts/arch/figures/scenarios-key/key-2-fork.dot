@@ -1,0 +1,28 @@
+digraph G {
+  rankdir=LR; node [shape=box, fontsize=10]; edge [fontsize=9];
+  subgraph cluster_S1 { label="S1.jsonl (source, untouched)"; class="durable";
+    a1 [label="e01..e07 root chain + q1(image, ext) + a1 + q2 + answer1"];
+    a8 [label="e08 session_info 'main-name'"];
+    a9 [label="e09 compaction firstKeptId=e07"];
+    a10 [label="e10 q3 / e11 answer2"];
+    s12 [label="e12 user: side q\n e13 session_info 'renamed-on-side'", class="muted"];
+    a1 -> a8 -> a9 -> a10; a1 -> s12;
+  }
+  subgraph cluster_S2 { label="S2.jsonl header parent=S1 (runtime fork)"; class="durable";
+    b1 [label="e01..e07 same ids, byte-identical"];
+    b8 [label="e08 session_info 'main-name'"];
+    b9 [label="e09 compaction firstKeptId=e07"];
+    b10 [label="e10 / e11"];
+    b1 -> b8 -> b9 -> b10;
+    p18 [label="e18 user: q4 in place  copiedFrom=e15\ne19 copiedFrom=e16 (paste_subtree, new ids)"];
+  }
+  subgraph cluster_S3 { label="$TAU_HOME/sessions/..S3.jsonl parent=S2 (ctx.fork export)"; class="durable";
+    c1 [label="e01..e04 same ids"];
+  }
+  a1 -> b1 [label="copy (path only)", class="mark"];
+  a8 -> b8 [label="copy"]; a9 -> b9 [label="copy"]; a10 -> b10 [label="copy"];
+  b1 -> c1 [label="copy"];
+  b9 -> b1 [label="firstKeptId", class="lazy"];
+  S1h [shape=plaintext, label="side branch e12/e13 not copied"];
+  s12 -> S1h [class="soft"];
+}

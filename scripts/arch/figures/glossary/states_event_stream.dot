@@ -1,0 +1,18 @@
+digraph event_stream {
+  graph [fontname="Courier", rankdir=TB];
+  node [fontname="Courier", shape=box];
+  edge [fontname="Courier"];
+  created [label="created\n_collector_task=None\n_done=False"];
+  collecting [label="collecting\ncollector task running\n_done=False"];
+  done [label="done\n_done=True\n_final set"];
+  failed [label="failed\n_done=True\n_error / _error_exc set"];
+  cancelled [label="cancelled\ncollector task cancelled\n_done=False"];
+  created -> collecting [label="__anext__() / result()"];
+  collecting -> done [label="DoneEvent chunk"];
+  collecting -> done [label="provider ends, no DoneEvent\n(synthetic DoneEvent)"];
+  collecting -> failed [label="ErrorEvent chunk", class="soft"];
+  collecting -> failed [label="provider raises Exception", class="soft"];
+  collecting -> failed [label="non-event chunk TypeError", class="soft"];
+  collecting -> cancelled [label="abort()", class="soft"];
+  cancelled -> collecting [label="result() via _ensure_collector()"];
+}

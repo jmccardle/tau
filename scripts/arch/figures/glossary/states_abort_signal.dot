@@ -1,0 +1,14 @@
+digraph abort_signal {
+  graph [fontname="Courier", rankdir=LR];
+  node [fontname="Courier", shape=box];
+  edge [fontname="Courier"];
+  untripped [label="untripped\n_aborted=False\n_reason=None"];
+  ext [label="aborted/extension\n_aborted=True\n_reason='extension'"];
+  usr [label="aborted/user\n_aborted=True\n_reason='user'"];
+  untripped -> ext [label="abort('extension')"];
+  untripped -> usr [label="abort('user')"];
+  ext -> usr [label="abort('user')"];
+  ext -> ext [label="abort('extension')"];
+  usr -> usr [label="abort(any valid)"];
+  untripped -> untripped [label="abort(invalid) ValueError", class="soft"];
+}

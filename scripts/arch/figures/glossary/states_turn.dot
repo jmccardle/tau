@@ -1,0 +1,46 @@
+digraph turn {
+  graph [fontname="Courier", rankdir=TB, nodesep=0.4, ranksep=0.5];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier", fontsize=10];
+
+  inputs      [label="inputs written\n_run_one_turn(): seed, pre-user,\nuser, nextTurn, post-user\nLoopPosition(then='sample')"];
+  started     [label="agent_start emitted\nAgentLoop.run()/run_continue()"];
+  top         [label="loop top\nceiling + abort checks"];
+  turn_start  [label="turn_start emitted\nthen='sample'; steers delivered"];
+  sampling    [label="sampling\n_stream_response()\nmessage_start/update/end"];
+  text_end    [label="text-only turn_end\nturn_end event + hook"];
+  tools       [label="tools\nthen='tools'\ntool_execution_start/end"];
+  tool_end    [label="tool turn_end\nthen='turn_end'\nturn_end event + hook"];
+  midcompact  [label="mid-turn compaction offer\n_compact_if_needed()"];
+  end_ok      [label="agent_end\ndone | terminate | aborted |\nmax_turns | repeat_tool_calls"];
+  end_err     [label="agent_end error\nturn_error node written,\nexception re-raised"];
+  end_susp    [label="agent_end suspended\nTurnSuspended re-raised"];
+  tail        [label="prompt tail\n_maybe_auto_compact(),\n_drain_deferred_ops()"];
+  follow_up   [label="follow-up re-entry\nfollow_up_queue.pop(0)"];
+  utend       [label="user_turn_end hook\nthen='end_prompt' -> 'nothing'"];
+  finished    [label="submission returns"];
+
+  inputs -> started      [label="loop.run()"];
+  started -> top;
+  top -> end_ok          [label="max_turns / abort"];
+  top -> turn_start      [label="emit turn_start"];
+  turn_start -> sampling [label="_deliver_steer()"];
+  sampling -> text_end   [label="no tool calls"];
+  sampling -> tools      [label="tool calls"];
+  sampling -> end_err    [label="stream error / turn failure", class="soft"];
+  text_end -> top        [label="steer_queue non-empty"];
+  text_end -> end_ok     [label="done / aborted"];
+  tools -> tool_end      [label="_execute_tool_calls()\n/_refuse_cut_off_calls()"];
+  tools -> end_err       [label="turn failure", class="soft"];
+  tools -> end_susp      [label="api.suspend()", class="soft"];
+  tool_end -> end_ok     [label="terminate / repeat /\ncut-off w/o steer"];
+  tool_end -> midcompact [label="continue"];
+  midcompact -> top      [label="turn_index += 1"];
+  sampling -> end_susp   [label="hook suspends", class="soft"];
+  end_ok -> tail         [label="store_history=True"];
+  end_ok -> finished     [label="store_history=False"];
+  tail -> follow_up      [label="follow_up_queue non-empty\n(extension abort: fresh signal)"];
+  follow_up -> inputs    [label="_run_one_turn(follow_up)"];
+  tail -> utend          [label="queue empty / user abort\n(follow_ups_dropped)"];
+  utend -> finished;
+}

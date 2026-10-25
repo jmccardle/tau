@@ -1,0 +1,40 @@
+digraph rpc_transport {
+  graph [fontname="Courier", rankdir=TB, label="tau --mode rpc: RPCHandler.run() lifecycle (rpc/handler.py, rpc/transport.py)", labelloc=t];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier", fontsize=10];
+
+  Setup        [label="Setup\nrun_rpc: _take_over_stdout(), backend, extensions,\nagent_session.start()"];
+  Constructed  [label="Constructed\nRPCHandler(); _running False; _stdout_task None"];
+  Idle         [label="Idle\n_dispatch_lines awaiting queue.get()"];
+  InFlight     [label="InFlight\n_serve_in_flight: one request task"];
+  ControlLane  [label="ControlLane\nlane_open(marker): suspension raised\nunder the in-flight request"];
+  InputEnded   [label="InputEnded\n_input_ended set; responder withdrawn,\nsuspensions closed cursor_closed"];
+  Teardown     [label="Teardown\n_shutting_down True; _cancel_background_tasks()"];
+  Flushing     [label="Flushing\n_flush_stdout_with_deadline()\n(5 s no-progress deadline)"];
+  WriterCancel [label="WriterCancelled\nSIGTERM: _stdout_task.cancel()"];
+  WriteFailed  [label="WriteFailed\nwriter finished first (T6)"];
+  Stopped      [label="Stopped\nfinally: unregister signals, _release_stdout(),\n_stopped_event set; exit 0 / 143 / 129"];
+
+  Setup       -> Constructed [label="RPCHandler(session, runtime)"];
+  Constructed -> Idle        [label="run()"];
+  Idle        -> InFlight    [label="line / refusal queued"];
+  InFlight    -> Idle        [label="task done"];
+  InFlight    -> ControlLane [label="suspension_open under marker\n(_track_lane)"];
+  ControlLane -> ControlLane [label="CONTROL_VERBS line served;\nother lines held"];
+  ControlLane -> InFlight    [label="suspension_closed (_track_lane)"];
+  Idle        -> InputEnded  [label="stdin EOF (_pump_stdin)"];
+  InFlight    -> InputEnded  [label="stdin EOF (_on_input_end runs at once)"];
+  InputEnded  -> Teardown    [label="queue drained -> None"];
+  Idle        -> Teardown    [label="shutdown_requested\n(_shutdown_signal / after dispatch)"];
+  Idle        -> Teardown    [label="SIGHUP: _on_signal() exit_code=129", class="soft"];
+  InFlight    -> Teardown    [label="SIGTERM/SIGHUP: _on_signal()\ncancels _stdin_task", class="soft"];
+  Idle        -> Teardown    [label="stop() cancels _stdin_task"];
+  Teardown    -> Flushing    [label="exit signal != SIGTERM"];
+  Teardown    -> WriterCancel[label="exit signal == SIGTERM (143)", class="soft"];
+  Flushing    -> Stopped     [label="writer drained"];
+  Flushing    -> Stopped     [label="no progress 5 s: cancel writer", class="soft"];
+  WriterCancel-> Stopped     [label="queued items discarded (stderr)", class="soft"];
+  Idle        -> WriteFailed [label="writer raises (broken pipe)", class="soft"];
+  InFlight    -> WriteFailed [label="writer raises (broken pipe)", class="soft"];
+  WriteFailed -> Stopped     [label="cancel reader; re-raise", class="soft"];
+}

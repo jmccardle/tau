@@ -1,0 +1,71 @@
+<h2 id="s5">5. UML for evaluating API changes</h2>
+<p>Default status: <span class="ev ev-ran">ran</span> <code>uml.py</code>. <code>uml.py</code> reads the AST only, so it needs no <code>PYTHONPATH</code> and runs no import side effect. It resolves names through imports, package re-exports and module-level aliases, so <code>tau_llm.Model</code> and <code>tau_llm.types.Model</code> are one node.</p>
+<div class="tablewrap"><table>
+<caption>Demo selections and whether the rendered diagram is readable at page width — ran uml.py</caption>
+<thead><tr><th>demo</th><th class="num">nodes / edges</th><th class="num">px</th><th>readable</th></tr></thead>
+<tbody>
+<tr><td><code>agentsession_cursor</code> (public members)</td><td class="num">25 / 37</td><td class="num">3520×2648</td><td>no: <code>AgentSession</code> alone lists 107 public methods (uml.py's JSON: 214 methods, 58 fields, no public field)</td></tr>
+<tr><td><code>agentsession_cursor_names</code> (<code>--members none</code>)</td><td class="num">25 / 26</td><td class="num">3036×392</td><td>yes</td></tr>
+<tr><td><code>storage_filtered</code></td><td class="num">19 / 18</td><td class="num">2011×392</td><td>yes</td></tr>
+<tr><td><code>storage_all</code></td><td class="num">20 / 35</td><td class="num">4065×1332</td><td>marginal</td></tr>
+<tr><td><code>ext_core</code></td><td class="num">11 / 12</td><td class="num">788×392</td><td>yes</td></tr>
+<tr><td><code>ext_all</code></td><td class="num">15 / 18</td><td class="num">3337×1649</td><td>no</td></tr>
+<tr><td><code>llm_names</code></td><td class="num">20 / 15</td><td class="num">1717×281</td><td>yes</td></tr>
+<tr><td><code>llm_all</code></td><td class="num">20 / 15</td><td class="num">4693×996</td><td>no</td></tr>
+<tr><td><code>llm_model</code></td><td class="num">3 / 1</td><td class="num">1360×536</td><td>yes</td></tr>
+</tbody></table></div>
+<p>Three settings made the readable diagrams readable: <code>--members none</code> (names only), an explicit seed list instead of a whole module, and <code>--depth 1</code> or 0. The seed lists and depths below come from each diagram's JSON <code>meta</code>; the edge-kind and prune options used were not recorded there.</p>
+
+<figure class="dia xwide">
+<!--svg:uml/agentsession_cursor_names.themed.svg-->
+<figcaption><code>AgentSession</code> and <code>Cursor</code> with every class one association hop away, names only; <code>AgentSession</code> marked. Regenerate: <code>$PY scripts/arch/uml.py --classes AgentSession,Cursor --depth 1 --members none --edges inherits,has-field,constructs --mark AgentSession --themed-svg --name agentsession_cursor_names --out DIR</code>.</figcaption>
+</figure>
+<figure class="dia xwide">
+<!--svg:uml/storage_filtered.themed.svg-->
+<figcaption>Storage seams: seeds <code>ConversationTree</code>, <code>ConversationSession</code>, <code>SessionCatalog</code>, <code>InMemorySessionLog</code>, <code>SessionLog</code>, <code>SessionManager</code>, depth 1. <code>InMemorySessionLog</code> implements <code>SessionLog</code> structurally and gets no edge (see limits). Regenerate: <code>uml.py --classes ConversationTree,ConversationSession,SessionCatalog,InMemorySessionLog,SessionLog,SessionManager --depth 1 --members none --themed-svg --name storage_filtered</code>.</figcaption>
+</figure>
+<figure class="dia">
+<!--svg:uml/ext_core.themed.svg-->
+<figcaption>Extension core: seeds <code>ExtensionAPI</code>, <code>ExtensionContext</code>, <code>ExtensionUI</code>, <code>ExtensionRegistry</code>, <code>ExtensionHandlers</code>, <code>ExtensionRunner</code>, depth 1. Regenerate: <code>uml.py --classes ExtensionAPI,ExtensionContext,ExtensionUI,ExtensionRegistry,ExtensionHandlers,ExtensionRunner --depth 1 --members none --themed-svg --name ext_core</code>.</figcaption>
+</figure>
+<figure class="dia wide">
+<!--svg:uml/llm_names.themed.svg-->
+<figcaption><code>tau_llm</code> provider, stream-event and message types, depth 0, names only (20 seeds from <code>providers.base</code>, <code>streaming</code>, <code>types</code>). Regenerate: <code>uml.py --module tau_llm.types --module tau_llm.streaming --module tau_llm.providers.base --members none --themed-svg --name llm_names</code> (selection reconstructed from the JSON seed list).</figcaption>
+</figure>
+
+<h3>Diffing a proposed change</h3>
+<p><code>--diff-against OLD.json</code> compares the current selection with an earlier JSON dump and prints added (<code>+</code>), removed (<code>-</code>) and changed (<code>~</code>) classes and members. The demo diffed the <code>agentsession_cursor</code> selection against a hand-edited "old" dump (<code>uml/simulated_old.json</code>):</p>
+<pre><code>x: 25 nodes, 37 edges
+diff vs simulated_old.json: 4 change(s)
++ class tau_agent_core.events.EventBus
++ tau_agent_core.cursor.Cursor.label (field) str
+- tau_agent_core.cursor.Cursor.priority (field) int
+~ tau_agent_core.cursor.Cursor.newest (method) classmethod (x: int) -&gt; Cursor  -&gt;  classmethod (log: SessionLog, *, owner: Cursor | None=…, label: str=…) -&gt; Cursor</code></pre>
+<p>The workflow: dump the selection on the base commit with <code>uml.py … --name before</code>, apply the change, run the same selection with <code>--diff-against before.json</code>.</p>
+<h3>Limits observed</h3>
+<ul>
+<li>A structural <code>Protocol</code> implementation gets no edge (<code>InMemorySessionLog</code> → <code>SessionLog</code>).</li>
+<li>Unions and type aliases are not expanded; nested classes are skipped.</li>
+<li>Fields assigned outside <code>__init__</code>/<code>__post_init__</code> are not listed.</li>
+<li>Duplicate class names (<code>SessionInfo</code> ×3, <code>SessionState</code> ×2) need qualified names in <code>--classes</code>.</li>
+</ul>
+
+<h2 id="s6">6. Rename and find-references</h2>
+<p>Default status: <span class="ev ev-ran">ran</span> <code>refactor.py</code>, dry-run only (no file was changed). A symbol is a dotted path or <code>file.py:LINE:COL</code>.</p>
+<div class="tablewrap"><table>
+<caption>Two rename dry-runs — ran refactor.py refs / rename</caption>
+<thead><tr><th>symbol</th><th>references</th><th>default rename</th><th>missed or wrong</th><th>text hits left alone</th></tr></thead>
+<tbody>
+<tr><td><code>tau_agent_core.agent_session.AgentSession.set_model</code> → <code>set_active_model</code></td><td>43: 22 certain, 21 unsure</td><td>changes 9 files</td><td>misses two real src callers whose receiver type rope cannot infer: <code>rpc/commands.py:2635</code>, <code>extension_types.py:1140</code>. Unsure hits include the unrelated <code>ExtensionContext.set_model</code> and <code>Backend.set_model</code>. <code>app.py:3648</code> reaches it through <code>getattr(…, "set_model")</code>.</td><td>429: 183 docs, 114 docstring, 106 string literal, 13 code, 5 comment, 8 other</td></tr>
+<tr><td><code>tau_llm.streaming.DoneEvent.response_headers</code></td><td>28: 1 certain (the definition), 27 unsure</td><td>changes only the definition</td><td><code>--unsure</code> changes 10 files, including unrelated same-name fields at <code>events.py:309</code>, <code>rpc_event_schema.py:145</code>, <code>openai.py:221</code></td><td>40, including wire-dict keys <code>"response_headers"</code> in <code>rpc/wire_events.py</code></td></tr>
+</tbody></table></div>
+<p>Every grep-only hit was a string literal, docstring, comment, <code>.md</code> file or an unrelated attribute of the same name. Every rope-unsure hit was an attribute access on a receiver rope could not type. For an attribute or method on this tree, neither list alone equals the set of real call sites: the certain set under-reaches (two src callers of <code>set_model</code>) and the unsure set over-reaches (three unrelated <code>response_headers</code> fields) <span class="ev ev-inferred">inferred</span> from the two dry-runs.</p>
+<p>Excerpt of <code>refs</code> output (<code>?</code> marks unsure):</p>
+<pre><code># set_model: 43 occurrences (22 certain, 21 unsure ?)
+examples/53_router_ledger.py:418:12 ?
+tau-agent-core/src/tau_agent_core/agent_session.py:1649:8 [def]
+tau-agent-core/src/tau_agent_core/extension_types.py:1140:40 ?
+tau-agent-core/src/tau_agent_core/rpc/commands.py:2635:28 ?
+tau-agent-core/tests/test_abort_follow_ups.py:158:16 ?
+tau-agent-core/tests/test_agent_spec_preview.py:134:12
+…</code></pre>

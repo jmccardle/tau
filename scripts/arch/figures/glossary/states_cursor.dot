@@ -1,0 +1,22 @@
+digraph cursor {
+  graph [fontname="Courier", rankdir=TB, nodesep=0.5, ranksep=0.6];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier", fontsize=10];
+
+  unregistered [label="unregistered\nCursor() built; id not in\nAgentSession._cursors"];
+  idle         [label="open / idle\nin _cursors\nturn_lock unlocked\nis_streaming=False"];
+  admitting    [label="open / lock held, not streaming\nturn_lock locked\nis_streaming=False\n(admission, swap, settle probe)"];
+  running      [label="open / running\nturn_lock locked\nis_streaming=True"];
+  aborted      [label="open / aborting\nturn_lock locked\nis_streaming=False (target only)\nabort_signal aborted('user')"];
+  closed       [label="closed\nremoved from _cursors\n(object may still be referenced)"];
+
+  unregistered -> idle      [label="open_cursor() / __init__ / cursor= setter"];
+  idle -> admitting         [label="_reserve_turn_or_reject()\nturn_lock.acquire()"];
+  admitting -> idle         [label="early return: release()\n(write refusal, unavailable model,\ninput refuse/handled, command,\nlock refusal, dropped enqueue,\nstale rollback, swap done)"];
+  admitting -> running      [label="_drive_turn(): is_streaming=True\ncontinue_conversation()"];
+  running -> idle           [label="_drive_turn() finally\nrelease()"];
+  running -> aborted        [label="abort() / _abort_cursor_tree()", class="soft"];
+  aborted -> idle           [label="_drive_turn() finally\nrelease()", class="soft"];
+  idle -> closed            [label="close_cursor()\ncursor= setter (other log)"];
+  admitting -> closed       [label="close_cursor() raises\nRuntimeError (busy)", class="soft", style=dashed];
+}

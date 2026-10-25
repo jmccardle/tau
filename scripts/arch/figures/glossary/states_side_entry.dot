@@ -1,0 +1,20 @@
+digraph side_entry {
+  graph [fontname="Courier", rankdir=LR];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier"];
+
+  absent       [label="absent\n(no entry)"];
+  open         [label="incomplete\nstatus=\"incomplete\"\n+ live Suspension in\nSuspensionBroker._open"];
+  stranded     [label="incomplete, stranded\nstatus=\"incomplete\"\nno live Suspension\n(implicit)"];
+  answered     [label="final\nclose_reason=\"answered\""];
+  aborted      [label="final\nclose_reason=\"aborted\""];
+  closed       [label="final\nclose_reason=\"cursor_closed\""];
+  abandoned    [label="final\nclose_reason=\"abandoned\""];
+
+  absent -> open        [label="open_side()"];
+  open -> answered      [label="answer() -> finalize_side()"];
+  open -> aborted       [label="signal abort -> finalize_side()", class="soft"];
+  open -> closed        [label="close_all(\"cursor_closed\") -> finalize_side()", class="soft"];
+  open -> abandoned     [label="task cancelled -> finalize_side()", class="soft"];
+  open -> stranded      [label="process exit / reload", class="soft"];
+}

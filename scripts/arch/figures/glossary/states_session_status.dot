@@ -1,0 +1,14 @@
+digraph session_status {
+  graph [fontname="Courier", rankdir=LR, nodesep=0.6];
+  node  [fontname="Courier", shape=box, style=rounded];
+  edge  [fontname="Courier", fontsize=10];
+
+  idle     [label="idle\nhead cursor.is_streaming=False"];
+  running  [label="running\nhead cursor.is_streaming=True"];
+  aborting [label="aborting\ndeclared in Literal,\nnever constructed", style="rounded,dashed"];
+  error    [label="error\ndeclared in Literal,\nnever constructed", style="rounded,dashed"];
+
+  idle -> running    [label="_drive_turn() / continue_conversation()\non the head cursor"];
+  running -> idle    [label="turn finally"];
+  running -> idle    [label="abort() (turn still holds lock)", class="soft"];
+}
