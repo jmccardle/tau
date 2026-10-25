@@ -7,7 +7,7 @@ Providers: Provider ABC
 Client: stream_simple() / complete_simple() / aclose_providers()
 """
 
-__version__ = "0.14.1"
+__version__ = "0.15.0"
 
 from tau_llm.types import (
     UserMessage,
