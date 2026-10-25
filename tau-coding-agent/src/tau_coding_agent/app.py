@@ -2877,11 +2877,17 @@ class TauApp(App):
         Args:
             backend: The new backend.
             reason: The shutdown reason, ``"new"`` or ``"resume"``.
+
+        Raises:
+            Exception: Whatever ``emit_session_shutdown`` raises, after ``backend``
+                is already current, because the replaced one is shut down either way.
         """
         emit_shutdown = getattr(self.current_backend, "emit_session_shutdown", None)
-        if emit_shutdown is not None:
-            await emit_shutdown(reason)
-        self.current_backend = backend
+        try:
+            if emit_shutdown is not None:
+                await emit_shutdown(reason)
+        finally:
+            self.current_backend = backend
 
     async def _open_new_session(self, model: Optional[str]) -> bool:
         """Build a backend for ``model``, open a deferred session on it, load extensions.

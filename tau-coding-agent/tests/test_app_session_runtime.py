@@ -167,3 +167,20 @@ async def test_fork_without_a_runtime_says_so_rather_than_appearing_to_work(make
         await pilot.pause()
 
         assert notes == [("Forking needs a persistent session", "warning")]
+
+
+async def test_a_raising_shutdown_still_swaps_the_backend_and_propagates():
+    """Fail-Early: the error surfaces, and the app is not left on the shut-down backend."""
+    from types import SimpleNamespace
+
+    from tau_coding_agent.app import TauApp
+
+    class _Old:
+        async def emit_session_shutdown(self, reason: str) -> None:
+            raise RuntimeError(f"shutdown hook failed ({reason})")
+
+    host = SimpleNamespace(current_backend=_Old())
+    new = object()
+    with pytest.raises(RuntimeError, match="shutdown hook failed \\(new\\)"):
+        await TauApp._replace_backend(host, new, "new")  # type: ignore[arg-type]
+    assert host.current_backend is new

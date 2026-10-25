@@ -694,20 +694,23 @@ class JmftsSessionLog:
         the rest held, and the next write resumes where this one stopped. The
         server has no transaction to roll back, so this is resumable rather than
         all-or-nothing: until a retry succeeds, the server holds the root and a
-        prefix of the opening chain.
+        prefix of the opening chain. An entry leaves ``_held`` only after its
+        ``session_info`` retitle lands, so a failed retitle is retried alone: an
+        entry already in ``_alias`` is not posted again.
         """
         if self._root_doc_id is None:
             self._root_doc_id = self._post_root()
         while self._held:
             held_id = self._held[0]
             entry = next(e for e in self._snapshot() if e["id"] == held_id)
-            tau_payload = {k: v for k, v in entry.items() if k not in ("id", "parentId")}
-            doc_id = self._post_locked(entry["parentId"], entry["type"], tau_payload)
-            self._alias[held_id] = doc_id
-            self._seqs[held_id] = self._seqs.pop(doc_id)
-            self._held.pop(0)
+            if held_id not in self._alias:
+                tau_payload = {k: v for k, v in entry.items() if k not in ("id", "parentId")}
+                doc_id = self._post_locked(entry["parentId"], entry["type"], tau_payload)
+                self._alias[held_id] = doc_id
+                self._seqs[held_id] = self._seqs.pop(doc_id)
             if entry["type"] == "session_info":
                 self._client.update_document(self._root_doc_id, title=entry["name"], re_embed=False)
+            self._held.pop(0)
 
     def _doc_id(self, entry_id: str) -> int:
         """The JMFTS document id behind a mirror id (a held id maps through ``_alias``).
