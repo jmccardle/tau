@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Awaitable, Callable, Liter
 from uuid import uuid4
 
 from tau_llm.abort import AbortSignal
-from tau_llm.models import EXTENDED_THINKING_LEVELS
+from tau_llm.models import EXTENDED_THINKING_LEVELS, check_thinking_request
 from tau_llm.types import Model, UserMessage
 
 from tau_agent_core.events import (
@@ -4689,6 +4689,7 @@ class AgentSession:
         seed = seed or []
 
         async with self._turn_failure_on_the_wire():
+            check_thinking_request(self._turn_model(), self._turn_reasoning())
             user_msg: UserMessage | None = None
             if text is not None:
                 content: list[dict[str, Any]] = [{"type": "text", "text": text}]

@@ -139,7 +139,9 @@ This respects the rule that τ never busts the prompt cache on its own.
 Each retry produces a `tau_llm.RetryEvent` (`attempt`, `max_retries`,
 `delay_seconds`, `error`). It goes out before the wait, so a head can show the wait
 while it happens. It is also logged as a warning on `tau_llm.retry`. That log is
-the only signal a `complete_simple` caller gets.
+the only signal a `complete_simple` caller gets. `tau` calls
+`tau_llm.retry.mute_retry_log()` at startup, because every head renders the event
+and the log line would print beside it (#73).
 
 The agent loop turns the event into an `AgentEvent` of the new type
 `provider_retry`. That event carries `attempt`, `max_retries`, `delay_seconds`,

@@ -20,6 +20,26 @@ from tau_llm.streaming import DoneEvent, RetryEvent
 from tau_llm.types import AssistantMessage, Usage
 
 _logger = logging.getLogger(__name__)
+_ATTEMPT_RECORD = "tau_retry_attempt"
+
+
+class _DropAttemptRecords(logging.Filter):
+    """Drops the per-retry warning, which a ``RetryEvent`` consumer already reports."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """False for a record :func:`retrying_stream` marked as a retry attempt."""
+        return not hasattr(record, _ATTEMPT_RECORD)
+
+
+def mute_retry_log() -> None:
+    """Stop logging each retry, for a head that renders every ``RetryEvent`` itself.
+
+    Without it the root logger's last-resort handler prints the warning to stderr
+    beside the head's own line. A caller of ``complete_simple`` sees no event and
+    keeps the log. Idempotent.
+    """
+    if not any(isinstance(f, _DropAttemptRecords) for f in _logger.filters):
+        _logger.addFilter(_DropAttemptRecords())
 
 
 RETRYABLE_STATUSES = frozenset({408, 429, 502, 503, 504, 529})
@@ -205,7 +225,14 @@ async def retrying_stream(
             yield DoneEvent(final=message, usage=message.usage)
             return
         retries += 1
-        _logger.warning("retry %d of %d in %.1fs: %s", retries, policy.max_retries, wait, failure)
+        _logger.warning(
+            "retry %d of %d in %.1fs: %s",
+            retries,
+            policy.max_retries,
+            wait,
+            failure,
+            extra={_ATTEMPT_RECORD: True},
+        )
         yield RetryEvent(
             attempt=retries, max_retries=policy.max_retries, delay_seconds=wait, error=failure
         )
