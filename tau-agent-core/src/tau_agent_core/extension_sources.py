@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path, PurePath
@@ -160,6 +161,8 @@ class ExtensionSource:
             the install is editable (§5).
         editable_path: For an editable install, the source directory
             ``direct_url.json`` names.
+        metadata_path: The ``.dist-info`` or ``.egg-info`` directory the entry
+            point was read from; packages only.
         unusable: Why it cannot load at all, or ``None``.
     """
 
@@ -171,6 +174,7 @@ class ExtensionSource:
     entry_point: str | None = None
     digest: str | None = None
     editable_path: str | None = None
+    metadata_path: str | None = None
     unusable: str | None = None
 
     @property
@@ -290,10 +294,14 @@ def discover_packages() -> list[ExtensionSource]:
     ``direct_url.json`` (§5). An entry point must name a module; one naming
     ``module:attr`` is listed as unusable.
 
+    Two entry points with the same distribution name, version and module are
+    one installed package seen twice (a stale ``*.egg-info`` beside a
+    ``.dist-info``); the ``.dist-info`` one is kept.
+
     Returns:
-        One source per entry point, sorted by identifier.
+        One source per distinct package entry point, sorted by identifier.
     """
-    found: list[ExtensionSource] = []
+    found: dict[tuple[str | None, str | None, str], ExtensionSource] = {}
     for ep in metadata.entry_points(group=ENTRY_POINT_GROUP):
         dist = ep.dist
         unusable = None
@@ -306,20 +314,40 @@ def discover_packages() -> list[ExtensionSource]:
             unusable = f"entry point {ep.name} = {ep.value!r} has no distribution metadata"
         editable = None if dist is None else _editable_path(dist)
         digest = None if dist is None or editable else _package_digest(dist, ep.module)
-        found.append(
-            ExtensionSource(
-                identifier=ep.module,
-                kind="package",
-                target=ep.module,
-                distribution=None if dist is None else dist.metadata["Name"],
-                version=None if dist is None else dist.version,
-                entry_point=ep.name,
-                digest=digest,
-                editable_path=editable,
-                unusable=unusable,
-            )
+        source = ExtensionSource(
+            identifier=ep.module,
+            kind="package",
+            target=ep.module,
+            distribution=None if dist is None else dist.metadata["Name"],
+            version=None if dist is None else dist.version,
+            entry_point=ep.name,
+            digest=digest,
+            editable_path=editable,
+            metadata_path=_metadata_path(dist),
+            unusable=unusable,
         )
-    return sorted(found, key=lambda source: source.identifier)
+        key = (_normalized_name(source.distribution), source.version, ep.module)
+        kept = found.get(key)
+        if kept is None or (_is_egg_info(kept) and not _is_egg_info(source)):
+            found[key] = source
+    return sorted(found.values(), key=lambda source: source.identifier)
+
+
+def _metadata_path(dist: metadata.Distribution | None) -> str | None:
+    """The metadata directory of a path-based distribution, else ``None``."""
+    if isinstance(dist, metadata.PathDistribution):
+        return str(dist._path)
+    return None
+
+
+def _normalized_name(name: str | None) -> str | None:
+    """PEP 503 normalization of a distribution name."""
+    return None if name is None else re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _is_egg_info(source: ExtensionSource) -> bool:
+    """Whether the source's metadata directory is a legacy ``*.egg-info``."""
+    return source.metadata_path is not None and source.metadata_path.endswith(".egg-info")
 
 
 class _UnreadableLayout(Exception):

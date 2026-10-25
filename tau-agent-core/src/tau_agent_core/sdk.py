@@ -1198,12 +1198,24 @@ def find_discovered_extension(
     if not matches:
         raise ValueError(f"no discovered extension is named {token!r}; see `tau ext list`")
     if len(matches) > 1:
-        names = "; ".join(f"{m.kind} {m.target}" for m in matches)
+        names = "; ".join(_describe_match(m) for m in matches)
+        hint = (
+            " A stale *.egg-info beside a source checkout is a common cause; remove it."
+            if any(m.metadata_path and m.metadata_path.endswith(".egg-info") for m in matches)
+            else ""
+        )
         raise ValueError(
             f"{token!r} names more than one discovered extension ({names}). Pass the "
-            "drop-in's path, or --package for the installed one."
+            f"drop-in's path, or --package for the installed one.{hint}"
         )
     return matches[0]
+
+
+def _describe_match(source: ExtensionSource) -> str:
+    """One candidate for an ambiguity error: kind, target, and what tells it apart."""
+    if source.kind != "package":
+        return f"{source.kind} {source.target}"
+    return f"package {source.target} {source.version} from {source.metadata_path}"
 
 
 @agent_facing(topic="extensions")

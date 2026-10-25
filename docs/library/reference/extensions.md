@@ -2077,7 +2077,7 @@ One row of ``tau ext list``: an extension and its state (§7).
 <!-- agent: yes -->
 
 ```python
-class ExtensionSource(identifier: str, kind: SourceKind, target: str, distribution: str | None = None, version: str | None = None, entry_point: str | None = None, digest: str | None = None, editable_path: str | None = None, unusable: str | None = None)
+class ExtensionSource(identifier: str, kind: SourceKind, target: str, distribution: str | None = None, version: str | None = None, entry_point: str | None = None, digest: str | None = None, editable_path: str | None = None, metadata_path: str | None = None, unusable: str | None = None)
 ```
 
 `tau_agent_core.extension_sources.ExtensionSource`
@@ -2094,6 +2094,7 @@ One extension τ found or was told about, before anything is imported.
 - `entry_point: str | None = None` — The entry point's name; packages only.
 - `digest: str | None = None` — ``sha256:`` over the distribution's RECORD hashes for the module's top-level package; ``None`` when RECORD carries none or the install is editable (§5).
 - `editable_path: str | None = None` — For an editable install, the source directory ``direct_url.json`` names.
+- `metadata_path: str | None = None` — The ``.dist-info`` or ``.egg-info`` directory the entry point was read from; packages only.
 - `unusable: str | None = None` — Why it cannot load at all, or ``None``.
 
 ### label
@@ -3173,9 +3174,13 @@ Reads distribution metadata only: the entry points, RECORD and
 ``direct_url.json`` (§5). An entry point must name a module; one naming
 ``module:attr`` is listed as unusable.
 
+Two entry points with the same distribution name, version and module are
+one installed package seen twice (a stale ``*.egg-info`` beside a
+``.dist-info``); the ``.dist-info`` one is kept.
+
 **Returns**
 
-One source per entry point, sorted by identifier.
+One source per distinct package entry point, sorted by identifier.
 
 ## enable_discovered_extension
 <!-- agent: yes -->

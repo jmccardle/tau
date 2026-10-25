@@ -789,3 +789,61 @@ class TestTheListingAndTheCli:
             .verdict
             == "authorized"
         )
+
+
+class TestOnePackageSeenTwice:
+    """A ``.dist-info`` plus a stale ``.egg-info`` for one distribution (#63)."""
+
+    @staticmethod
+    def _metadata_dir(parent: Path, name: str, version: str, module: str) -> Path:
+        info = parent / name
+        info.mkdir(parents=True)
+        (info / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: tau-twice\nVersion: {version}\n"
+        )
+        (info / "entry_points.txt").write_text(f"[{ENTRY_POINT_GROUP}]\next = {module}\n")
+        return info
+
+    @staticmethod
+    def _see_every_distribution(monkeypatch, *dirs: Path) -> None:
+        """Bypass the stdlib's own same-name dedupe, which newer Pythons apply."""
+        dists = list(metadata.distributions(path=[str(d) for d in dirs]))
+        monkeypatch.setattr(
+            metadata,
+            "entry_points",
+            lambda **_: metadata.EntryPoints(
+                ep for dist in dists for ep in dist.entry_points if ep.group == ENTRY_POINT_GROUP
+            ),
+        )
+
+    def test_the_same_name_version_and_module_is_one_package(self, tmp_path, monkeypatch):
+        site, tree = tmp_path / "site", tmp_path / "src"
+        self._metadata_dir(tree, "tau_twice.egg-info", "1.0", "tau_twice.ext")
+        self._metadata_dir(site, "tau_twice-1.0.dist-info", "1.0", "tau_twice.ext")
+        self._see_every_distribution(monkeypatch, tree, site)
+        [source] = discover_packages()
+        assert source.metadata_path == str(site / "tau_twice-1.0.dist-info")
+
+    def test_authorizing_a_doubly_seen_package_is_not_ambiguous(self, tmp_path, home, monkeypatch):
+        site, tree = tmp_path / "site", tmp_path / "src"
+        self._metadata_dir(site, "tau_twice-1.0.dist-info", "1.0", "tau_twice.ext")
+        self._metadata_dir(tree, "tau_twice.egg-info", "1.0", "tau_twice.ext")
+        self._see_every_distribution(monkeypatch, site, tree)
+        AuthorizationStore.load(home / STORE_FILENAME).save()
+        found = authorize_discovered_extension("tau_twice.ext", extensions_dir=home / "extensions")
+        assert found.identifier == "tau_twice.ext"
+
+    def test_differing_versions_are_refused_naming_each_metadata_path(
+        self, tmp_path, home, monkeypatch
+    ):
+        site, tree = tmp_path / "site", tmp_path / "src"
+        new = self._metadata_dir(site, "tau_twice-2.0.dist-info", "2.0", "tau_twice.ext")
+        stale = self._metadata_dir(tree, "tau_twice.egg-info", "1.0", "tau_twice.ext")
+        self._see_every_distribution(monkeypatch, site, tree)
+        assert len(discover_packages()) == 2
+        with pytest.raises(ValueError, match="more than one discovered extension") as err:
+            authorize_discovered_extension("tau_twice.ext", extensions_dir=home / "extensions")
+        message = str(err.value)
+        assert str(new) in message and str(stale) in message
+        assert "1.0" in message and "2.0" in message
+        assert "stale *.egg-info" in message
