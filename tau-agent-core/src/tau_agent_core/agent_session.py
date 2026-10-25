@@ -3957,11 +3957,7 @@ class AgentSession:
                 return SubmissionResult(
                     accepted=False, submission_id=sub.submission_id, rejection_reason=reason
                 )
-            fork_depth_token = DRIVING_SUBMISSION_DEPTH.set(sub.depth)
-            try:
-                self._spawn_fork(sub, fork_point, cur)
-            finally:
-                DRIVING_SUBMISSION_DEPTH.reset(fork_depth_token)
+            self._spawn_fork(sub, fork_point)
             return SubmissionResult(accepted=True, submission_id=sub.submission_id, messages=[])
         else:
             raise NotImplementedError(
@@ -4341,31 +4337,30 @@ class AgentSession:
         await cur.turn_lock.acquire()
         return await self._drive_turn(sub, cur, seed=seed, user_turn=prompted)
 
-    def _spawn_fork(self, sub: Submission, fork_point: str | None, owner: Cursor) -> None:
-        """Run a ``multitask_strategy="fork"`` submission as a supervised :meth:`spawn`.
+    def _spawn_fork(self, sub: Submission, fork_point: str | None) -> None:
+        """Run a ``multitask_strategy="fork"`` submission on a new cursor at ``fork_point``.
 
-        docs/SUBMISSION-LIFECYCLE.md "fork": a fork is a sub-agent nobody awaits, so
-        this wraps :meth:`spawn` in a task tracked in :attr:`_forked_tasks`, keyed by
-        ``sub.submission_id`` (known now; the cursor is not opened until the task runs).
-        It offers every tool a turn of ``owner``'s would — a fork continues the same
-        job — under ``owner``'s turn cap, with ``hooks=False`` (NODE-ADDRESSABLE-AGENTS.md
-        decision 4). An exception the task should never raise is surfaced through
-        :meth:`_surface_extension_error` (:meth:`_on_fork_task_done`), not left to
-        asyncio's "never retrieved" warning.
+        docs/SUBMISSION-LIFECYCLE.md "fork": the cursor is independent, with no owner
+        and no frame, so ``sub`` itself drives its turn with every tool, the session's
+        turn cap, extension hooks, and its own ``allow_user_input`` (docs/CURSORS.md §6).
+        Nobody awaits it, so the task is tracked in :attr:`_forked_tasks` by
+        ``sub.submission_id``; an exception it raises is surfaced through
+        :meth:`_surface_extension_error` (:meth:`_on_fork_task_done`).
         """
         submission_id = sub.submission_id
-        task = asyncio.get_running_loop().create_task(
-            self.spawn(
-                fork_point,
-                sub.text,
-                tools=[t.name for t in self._turn_tools()],
-                max_turns=self._max_turns,
-                hooks=False,
-                owner=owner,
-            )
-        )
+        task = asyncio.get_running_loop().create_task(self._run_fork(sub, fork_point))
         self._forked_tasks[submission_id] = task
         task.add_done_callback(lambda t: self._on_fork_task_done(submission_id, t))
+
+    async def _run_fork(self, sub: Submission, fork_point: str | None) -> SubmissionResult:
+        """Open the fork's cursor, drive ``sub`` on it, and close it once idle."""
+        cursor = await self.open_cursor(fork_point, label=f"fork:{sub.text[:60]}")
+        try:
+            await cursor.turn_lock.acquire()
+            return await self._drive_turn(sub, cursor)
+        finally:
+            if not cursor.busy:
+                await self.close_cursor(cursor)
 
     def _on_fork_task_done(self, submission_id: str, task: asyncio.Task[Any]) -> None:
         """Untrack a finished forked task; surface an unexpected exception (Fail-Early).

@@ -379,3 +379,57 @@ async def test_the_cursor_scoped_abort_reaches_owned_cursors_and_no_fork() -> No
     assert not sleeper.cancelled()
     sleeper.cancel()
     session._forked_tasks.clear()
+
+
+
+async def _fork_suspension(allow_user_input: bool) -> tuple[Any, list[AgentEvent]]:
+    """Submit a fork after the head's turn ended; return what its ``entry_written`` suspend got."""
+    got: list[Any] = []
+
+    def fork_stepper(api: Any) -> None:
+        async def on_written(event: Any, ctx: Any) -> None:
+            if event["kind"] == "user" and ctx.cursor is not _sessions[-1].cursor:
+                try:
+                    got.append(await api.suspend(SPEC))
+                except Exception as err:
+                    got.append(err)
+
+        api.on("entry_written", on_written)
+
+    session = AgentSession(session_log=InMemorySessionLog(), model=_model(), extensions=[fork_stepper])
+    session.add_suspension_responder("test")
+    _sessions.append(session)
+    seen: list[AgentEvent] = []
+    _answer_with(session, "step", seen)
+    with patch(
+        "tau_agent_core.agent_loop.stream_simple",
+        side_effect=_script(_text("first"), _text("fork done")),
+    ):
+        await asyncio.wait_for(session.prompt("first"), timeout=2)
+        fork = Submission(
+            text="FORK",
+            source="interactive",
+            submitter="human",
+            submission_id="f1",
+            multitask_strategy="fork",
+            allow_user_input=allow_user_input,
+        )
+        assert (await session.submit(fork)).accepted
+        [fork_task] = session._forked_tasks.values()
+        await asyncio.wait_for(fork_task, timeout=2)
+    [result] = got
+    return result, seen
+
+
+async def test_a_fork_is_an_independent_cursor_that_suspends_on_its_own_permission() -> None:
+    """#102: a fork runs hooks, and its own submission's ``allow_user_input`` decides."""
+    result, seen = await _fork_suspension(allow_user_input=True)
+    assert result["action"] == "step"
+    [opened] = [e for e in seen if e.type == "suspension_open"]
+    assert (opened.suspension or {})["parent_cursor_id"] is None
+
+
+async def test_a_fork_without_allow_user_input_has_no_responder() -> None:
+    result, _ = await _fork_suspension(allow_user_input=False)
+    assert isinstance(result, NoResponderError)
+    assert "its submission" in str(result)

@@ -12,7 +12,7 @@ see `ROADMAP.md`'s "Node-addressable agents" entry for the compressed
 shipped-state summary. Depends on nothing; `SUBMISSION-LIFECYCLE.md`'s
 `fork` strategy depends on §2 and §5 of this document.
 
-> **Amended 2026-10-02.** `docs/CURSORS.md` §5 reverses I2 (the frame is now recorded in the tree as `config` entries), decision 1 (config is reconstructable by ancestry) and decision 3 (`agent_spec` is a legacy kind, read as config). Decision 4 holds as `TurnFrame(hooks=False)`. Decision 6 holds, and its "concurrency inside a process" is now concurrent cursors on one log, each store safe under concurrent `append_at`. `resolve_cursor` is now `default_leaf`. I1 is unchanged.
+> **Amended 2026-10-02.** `docs/CURSORS.md` §5 reverses I2 (the frame is now recorded in the tree as `config` entries), decision 1 (config is reconstructable by ancestry) and decision 3 (`agent_spec` is a legacy kind, read as config). Decision 4 held as `TurnFrame(hooks=False)` until 2026-10-24, when #102 reversed it: a sub-agent runs extension hooks by default, and a `fork` submission is an independent cursor with no owner that runs them like any top-level turn. Concurrent cursors already share one hook runner (`docs/CURSORS.md` §6–7), so W4's re-entrancy cost was already paid. Decision 6 holds, and its "concurrency inside a process" is now concurrent cursors on one log, each store safe under concurrent `append_at`. `resolve_cursor` is now `default_leaf`. I1 is unchanged.
 
 **Relationship to existing docs.** `SESSION-TREE-IMPLEMENTATION.md` records how the
 tree was built. This document states what the built tree *guarantees*, and what
@@ -307,7 +307,7 @@ from *a fold*, never from the log.
 2. **Exclusion is encoded in tree shape, not per-node flags.** §3, with `LANE_KEY`'s
    retrofit history as the evidence.
 3. **`agent_spec` is a record, never a contract.** W2.
-4. **Forks start extension-free.** W4.
+4. **Forks start extension-free.** W4. *Reversed 2026-10-24 (#102); see the amendment note at the top.*
 5. **`fork(mode="export")` stays file-only and raises elsewhere.** §4.
 
 6. **A conversation has exactly one writing process.** Concurrency *inside* a

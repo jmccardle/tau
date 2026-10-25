@@ -4,9 +4,8 @@ Reference: docs/SUBMISSION-LIFECYCLE.md, "fork" / decision 2 (phase 2, parts 2-3
 Reference: docs/NODE-ADDRESSABLE-AGENTS.md §2 (I1), decision 7 / T5 (entries() is
 total).
 
-fork's sub-agent machinery (AgentSession.spawn, a Cursor owned by the session's)
-is covered by test_spawn_branch.py; these tests pin submit()'s OWN
-responsibilities: the turn-complete admission check, scheduling a SUPERVISED
+A fork is an independent cursor its own submission drives (no owner, no frame);
+these tests pin submit()'s OWN responsibilities: the turn-complete admission check, scheduling a SUPERVISED
 background task rather than awaiting one, and not touching the in-flight turn.
 rollback is exercised end-to-end (real _turn_lock contention, a real abort, a
 real cursor move) because its correctness is entirely about that interleaving.
@@ -256,8 +255,7 @@ class TestForkTaskRegistry:
         assert session._forked_tasks == {}
 
     async def test_a_raising_fork_surfaces_through_the_extension_error_sink(self, monkeypatch):
-        """Fail-Early: an unmodelled exception from the fork task (``spawn`` itself
-        contains modelled failures as BranchResult(ok=False)) must not vanish as an
+        """Fail-Early: an exception from the fork's turn must not vanish as an
         untraced asyncio 'Task exception was never retrieved'."""
         log = InMemorySessionLog()
         session = AgentSession(session_log=log, model=_model(), tools=[])
@@ -265,10 +263,11 @@ class TestForkTaskRegistry:
         surfaced: list = []
         session._surface_extension_error = lambda err: surfaced.append(err)  # type: ignore[method-assign]
 
-        async def _boom(at, prompt, **kwargs):
-            raise RuntimeError("spawn itself blew up")
+        async def _boom(sub, cur, **kwargs):
+            cur.turn_lock.release()
+            raise RuntimeError("the fork's turn blew up")
 
-        monkeypatch.setattr(session, "spawn", _boom)
+        monkeypatch.setattr(session, "_drive_turn", _boom)
 
         result = await session.submit(_sub("go", "fork-7", multitask_strategy="fork"))
         assert result.accepted is True
