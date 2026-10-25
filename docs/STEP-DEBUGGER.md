@@ -1388,6 +1388,10 @@ api.on("tool_call", handler, policy="gating")
     the call (it already fails closed, `tool_pipeline.py:297`). `annotate`
     writes the error ext and aborts the turn (ENTRY-ANNOTATIONS.md §4.3).
     `turn_end`, `tool_result` and `entry_written` end the turn with the error.
+    **Amended by #29 (2026-10-24):** a `tool_call` `Failed` now answers its call
+    with an error result and also ends the turn, as an unpoliced exception at
+    every turn-ending hook does. `HandlerPolicyError` is a subclass of
+    `HookHandlerError` (docs/HOOK-ERRORS.md §2-§3).
   - **`Proceeded`** continues as if the handler returned nothing, and its
     `record` is kept where the site has a place for it. At `annotate` that is
     `ext[name] = {"error": …, "proceeded": true}`, so a proceeded failure is never
@@ -1452,7 +1456,8 @@ spec left open:
   `before_agent_start`, `user_turn_end` and `session_before_switch`), a
   `Failed` is surfaced through `on_error` and `HandlerPolicyError` is raised out
   of the dispatch. `tool_call` blocks on it and `annotate` records it, as for
-  any raise.
+  any raise. Since #29, `tool_call` ends the turn too, and an unpoliced raise
+  takes the same path at every turn-ending hook (docs/HOOK-ERRORS.md).
 - **At the lifecycle hooks `Failed` is surfaced, never raised.**
   `session_start` and `session_shutdown` have no turn to end, and one
   extension's failing start or teardown must not stop another's. So each
