@@ -67,9 +67,8 @@ jobs:
           /tmp/clean/bin/pip install "ffwf-tau==0.15.0"
           cd /tmp
           /tmp/clean/bin/python -m pytest -q -p no:cacheprovider "$GITHUB_WORKSPACE/parity"
-      # v3: Forgejo's artifact server does not implement the v4 protocol.
-      - uses: actions/upload-artifact@v3
-        with:
-          name: wheel-${{ matrix.python }}
-          path: dist/*.whl
-          if-no-files-found: error
+      # No artifact upload. Job containers on this runner cannot reach the
+      # forge's public URL, which is where Forgejo points the artifact
+      # service (ECONNREFUSED on forge.goblincorps.com:443), and nothing
+      # consumes the wheels before release. Restore it when release needs
+      # CI-built wheels and the runner can route to the forge.

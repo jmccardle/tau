@@ -64,7 +64,9 @@ scripts/parity.sh                         # the API diff; needs --group parity
 - CI (`.forgejo/workflows/ci.yml`) has one Linux x86_64 runner, label
   `ubuntu`. `scripts/ci-toolchain.sh` installs everything a job needs; to
   reproduce a CI job, run it in a bare `ubuntu:24.04` container.
-- Forgejo, not GitHub: `runs-on` is a single string; use `upload-artifact@v3`.
+- Forgejo, not GitHub: `runs-on` is a single string. Job containers cannot
+  reach the forge's public URL, so anything that calls back to it (artifact
+  upload, cache) fails with ECONNREFUSED; checkout works.
 
 ## Python versions and wheels
 
