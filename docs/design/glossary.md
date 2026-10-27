@@ -250,11 +250,12 @@ Every write a step makes is followed by a move of its cursor onto it.
 - Cursors do not close (Q12).
 
 ### open_cursor
-**Rust** `Session::open_cursor(at, opened_by?)` · **Python**
-`Session.open_cursor(at, opened_by=None)` · **retires** `spawn`, `newest`,
-cursor registration
+**Rust** `Session::open_cursor(at, opened_by?)` (internal) · **Python**
+`Session.open_cursor(at)` · **retires** `spawn`, `newest`, cursor registration
 
-Creates a cursor and appends its opening move. The node must be committed and
+Creates a cursor and appends its opening move. The driver fills in
+`opened_by` from the caller, as it fills in `by`: a hook on cursor A that
+opens a cursor records A; a frontend leaves it empty. The node must be committed and
 its walk must validate. A node on a batch or inside one of its runs
 fast-forwards to the end of the run, as a move does (I3). Opening a cursor
 never starts a step.

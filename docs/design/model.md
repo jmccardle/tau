@@ -118,7 +118,8 @@ generation ended. `stop_raw` keeps the provider's own string (`end_turn`,
 A **session** is the set of its nodes and moves. A **cursor** is `{id, at}`.
 `at` is the `to` of the cursor's latest move. A move with no `from` opens a
 cursor (Q5). A move's `by` says who asked for it (Q28). `opened_by` names a
-cursor, not a node: the one that opened this one (Q6).
+cursor, not a node: the one that opened this one (Q6). The driver fills in
+both from the caller; no API caller supplies them.
 
 Every root is a `Config` node (Q5), so every walk starts with one and
 `config_at` is always defined.
