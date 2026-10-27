@@ -180,7 +180,7 @@ One `flock` lease per session file. Second process is read-only. Keep 0.15's lea
 - **`settle()`**: run until every cursor rests or holds only jobs a fake has not released. D11 makes this well defined, so no test sleeps.
 - `FakeProvider` (scripted replies, including calls, errors, and stream deltas) and `FakeTool`, both with **gates**: a test holds a sample or a tool open, acts (esc, go-to, input), then releases it. A fake clock for cache TTLs and the 250 ms throttle.
 - Scenarios mined from the as-built review §8/§9 and the 0.15 test suite (read for scenarios only; 0.15's design is not a template). Each test is tagged `keep`, `change` (cite the review row), `drop`, or `new`.
-- `tests/oracle/`: adapter over τ 0.15, limited to `keep` tests: plain turn, tool batch, tool error, unknown tool, bad args, HTTP error. τ 0.15 is read from a read-only clone of `jmccardle/tau` at `v0.15.0`.
+- `parity/`: the `Harness` adapter over τ 0.15 (amendments: an API diff, not the spec; run by `scripts/parity.sh`, never by `check.sh`), limited to `keep` tests: plain turn, tool batch, tool error, unknown tool, bad args, HTTP error. τ 0.15 is read from a read-only clone of `jmccardle/tau` at `v0.15.0`.
 - Required scenario coverage:
   - plain turn; tool batch (one `Results` node, outcomes in call order); tool error; unknown tool; bad args; HTTP error; mid-stream error;
   - abort during sample (with and without parts); abort during tools (running calls `Interrupted`, `post_result` once);
@@ -195,7 +195,7 @@ One `flock` lease per session file. Second process is read-only. Keep 0.15's lea
   - agent-to-agent items wake an idle cursor; a sub-agent tool waits for its cursor to rest;
   - two cursors at one batch both run it; re-run by going to the `Assistant` node and stepping writes a sibling `Results`;
   - branch across a config node (the destination line's config applies); detached-root one-off call; labels set, moved, and removed across a reload; `max_steps` stops a "continue" loop; reload equals pre-save state (I7); a provider-illegal walk fails at the next sample (I5).
-- **Exit:** `keep` green on oracle; everything else collected and failing for the right reason. Sign-off.
+- **Exit:** `keep` green on the oracle through `parity/`; everything else collected and failing for the right reason. Sign-off.
 
 ### Phase 3: Rust core
 Three parts, each ending with a review stop.
