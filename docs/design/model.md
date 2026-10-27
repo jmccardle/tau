@@ -29,7 +29,14 @@ the documents assume the recommendation.
   each walk answers each call once (I4). Avoiding an accidental second run is
   the driver's job: landing on a batch fast-forwards to the end of the
   existing run, and the claim stops concurrent runners. A deliberate re-run is
-  a go-to with fast-forward off (§5).
+  its own operation, `Session.rerun` (§5).
+- **Browsing runs nothing.** `Session.move` is browsing history: a go-to never
+  starts a step, even with auto-step on. `Session.rerun` is a move plus a
+  tools step. A hook's move happens inside a step, so the driver carries on
+  after it as usual (§7).
+- **Nobody passes `by`.** The driver fills in a move's `by` and a node's
+  author from the caller: hooks get a session handle bound to their
+  extension, and frontends call through the frontend API.
 - **Every write is followed by its move** (fourth revision). A cursor is
   `{id, at}`. The plan's `target`, draft, hold, and discard are gone, and D6
   becomes "a cursor is `{id, at}`; every write is followed by its move".
@@ -37,7 +44,7 @@ the documents assume the recommendation.
     each result as it is written.
   - Validation happens at append, so nothing invalid is written, and at move,
     for where a cursor lands.
-  - To reject a reply, go to its parent and sample again. The old reply stays
+  - To reject a reply, go to its parent and step again. The old reply stays
     in the tree as a committed sibling (Q2).
   - Auto-step off pauses a cursor *between* steps.
   - Core never writes a node and then abandons it. A node no move reaches is
@@ -147,7 +154,7 @@ On a given walk, a batch is in one of three states:
 - **complete**: every call answered exactly once.
 
 A batch may have more than one run. Running it again is a deliberate branch
-(a **re-run**, §5): a sibling run under the `Assistant` node, or one that
+(a **re-run**, `Session.rerun`, §5): a sibling run under the `Assistant` node, or one that
 branches partway, keeping `r5` and running `c3` again. Each run is its own
 line, and each line answers each call once (I4).
 
@@ -246,8 +253,8 @@ A process exit between the two left an orphan that nothing could repair.
 **Statement.** A cursor's `at` is always a committed node whose walk
 validates. The session's first cursor opens at the root it creates (Q5).
 
-Nothing lands partway through a run by accident. By default, a go-to, a
-hook's move, or `open_cursor` whose destination is a batch's `Assistant` node,
+Nothing lands partway through a run by accident. A go-to, a hook's move, or
+`open_cursor` whose destination is a batch's `Assistant` node,
 or a node inside one of its runs, **fast-forwards** to the end of the existing
 run. Where a node in the run has more than one child (an earlier re-run), it
 follows the most recently appended one.
@@ -256,9 +263,9 @@ follows the most recently appended one.
   resumes it (§8).
 - If another cursor holds that claim, the move is refused.
 
-A move with fast-forward off lands exactly where it was sent. That is a
-deliberate **re-run** (§5): the cursor takes the claim, and its next step
-runs every call still unanswered on its new line.
+Only `Session.rerun` lands exactly where it was sent inside a batch. That is
+a deliberate **re-run** (§5): the cursor takes the claim, and a tools step
+starts at once for every call still unanswered on its new line.
 
 **Why.** "Where is this cursor?" must never need a guess (0.15's
 `default_leaf` was a heuristic). And a cursor that landed mid-run by accident
@@ -268,7 +275,7 @@ which nobody chose.
 **Enforced by.**
 - Unit tests: `open_cursor` and go-to onto a batch or into its run
   fast-forward to the run's end, and are refused while another cursor holds
-  the batch's claim. With fast-forward off, a go-to lands where it was sent.
+  the batch's claim. `Session.rerun` lands where it was sent.
 - Proptest: after any operation sequence, every `cursor.at` is committed and
   `validate(walk(at))` passes. `at` is partway through a run only for the
   cursor holding that batch's claim, or for any cursor straight after a
@@ -394,44 +401,56 @@ roots. `state` here means nodes, moves, the committed set, and each cursor's
 
 ## 5. Move
 
-A move is the only way `at` changes. Every move comes from one of three
-places, and its `by` records which (Q28):
+A move is the only way `at` changes. Every move comes from one of four
+places, and its `by` records which (Q28). No caller supplies `by`: the driver
+fills it in from who is calling. Hooks get a session handle bound to their
+extension, and frontends call through the frontend API.
 - **a step's own move** onto what the step just wrote (`by: core`);
-- **a go-to** from a frontend (`by: frontend`, Q15);
-- **a post hook's move** (`by: extension(name)`, §7).
+- **a go-to**, `Session.move(cursor, to)`, from a frontend (`by: frontend`,
+  Q15);
+- **a post hook's move**, the same call through its `api`
+  (`by: extension(name)`, §7);
+- **a re-run**, `Session.rerun(cursor, node)`, from a frontend or a hook.
+
+**A go-to never starts a step**, even with auto-step on. Browsing old lines
+runs nothing and costs nothing: a cursor that lands on a `User` node or an
+unstarted batch sits there until the frontend steps it or gives input. A
+hook's move is different: it happens inside a step, so afterwards the driver
+evaluates `next` and continues per auto-step, as usual (§7). A re-run is a
+move plus a step.
 
 In order:
 
 1. If `to == at`, stop: there is nothing to do, and nothing is written.
 2. I3: if `to` is a batch's `Assistant` node, or a node inside one of its
    runs, and this cursor does not hold that batch's claim:
-   - with **fast-forward** on (the default), move `to` to the end of the
-     existing run. If that run is partial, take the batch's claim, so that the
-     cursor resumes it after landing (§8);
-   - with fast-forward off, keep `to` as given. This is a **re-run**: take the
-     batch's claim, and the cursor's next step runs every call still
-     unanswered on its new line, as a sibling run or a run that branches
-     partway;
+   - a move **fast-forwards**: `to` becomes the end of the existing run. If
+     that run is partial, take the batch's claim, so that the cursor resumes
+     it (§8) when it next steps;
+   - a re-run keeps `to` as given and takes the batch's claim;
    - either way, if another cursor holds the claim, refuse.
-3. For a go-to or a hook's move, apply I6 (§4). Refuse if `to` is an unstarted
+3. For a go-to, a hook's move, or a re-run, apply I6 (§4). Refuse if `to` is an unstarted
    batch and I6 would restate.
 4. Append the move `{cursor, from: at, to, by, time}`, set `at := to`, and
    emit `cursor_moved`.
+5. For a re-run only: start a tools step at once for every call still
+   unanswered on the new line. It makes a sibling run, or a run that branches
+   partway. Afterwards the cursor continues per its auto-step.
 
 A **refused** move changes nothing and raises to whoever asked for it: the
 frontend, or the hook. A hook that catches it has handled it, and auto-step
 stays as it was. A hook that does not catch it fails like any hook error
 (§7).
 
-A re-run is always explicit: a go-to (or a hook's move) with fast-forward
-off. Every call it runs passes through `pre_tool` as usual, so a hook may
+A re-run is always explicit: `Session.rerun`, available to frontends and to
+hooks through `api`. Every call it runs passes through `pre_tool` as usual, so a hook may
 still block one, or ask a person first (Q22). Resume after a crash never
 re-runs on purpose (§8).
 
 ```
 u1 ─ a1 ─ r5 ─ r3        the first run
-      │    └ r3'         go to r5, fast-forward off: keep c5's result, run c3 again
-      └ r3'' ─ r5''      go to a1, fast-forward off: run both calls again
+      │    └ r3'         rerun(r5): keep c5's result, run c3 again
+      └ r3'' ─ r5''      rerun(a1): run both calls again
 ```
 
 **A step's own move is never refused.** Its node passed append's checks, the
@@ -529,7 +548,9 @@ moved onto it, before `next` is evaluated.
   note under the node, or work on a detached root. These are scratch unless a
   move later reaches them.
 - It may **move the cursor**, through `api`. The move is checked like a go-to
-  (§5). Two examples:
+  (§5). Unlike a go-to, it happens inside a step, so afterwards the driver
+  evaluates `next` and continues per auto-step. It may also re-run a batch
+  (`rerun`, §5). Two examples:
   - `post_input` writes a sibling `u1'` of the typed input `u1`
     (`derived_from: u1`, `by: extension(name)`) and moves onto it. The typed
     original stays in the tree, committed. Use `pre_input` to change what is
@@ -577,9 +598,12 @@ hasn't either.
   (Q17).
 
 **Going somewhere without new input** (Q15). A frontend may give input under a
-named parent, or go to any node: a move, which runs no hooks. This is how a
-person branches, returns to an older line, or rejects a reply (go to its
-parent and step again).
+named parent, or go to any node with `Session.move`: a move, which runs no
+hooks and **never starts a step**, even with auto-step on. This is how a
+person branches, browses or returns to an older line, or rejects a reply (go
+to its parent, then step). A cursor that lands on a `User` node or an
+unstarted batch sits there until the frontend steps it or gives input.
+`Session.rerun` is the one frontend move that starts a step (§5).
 
 ## 8. Abort, failure, reload
 
@@ -617,19 +641,19 @@ parent and step again).
   automatically after `length` is an extension's choice, for example a
   `post_reply` hook that appends "continue" and moves onto it (Q20).
 - **Resume at a batch.** This happens after a reload, before taking input at
-  a batch a paused cursor sits on, and after a move fast-forwarded onto a
-  partial run (I3).
+  a batch a paused cursor sits on, and when a cursor that a move
+  fast-forwarded onto a partial run (I3) is next stepped.
   0. Take the batch's claim (§10). If another cursor holds it, wait for the
      batch to complete, then fast-forward to the end of its run (I3); there
      is nothing left to resume.
   1. With the claim held, re-read the run: if the tree holds results of this
      batch below `at`, fast-forward onto the end of that run (I3). The driver
      does this step before running any tool, whether or not it is resuming,
-     except for a re-run: a cursor that landed with fast-forward off runs the
-     calls unanswered where it is. The claim stops a second runner. After a
-     crash the re-run's intent is gone (it was in memory), so a re-run that
-     had not written its first result fast-forwards onto the existing run:
-     nobody re-chose it.
+     except in the tools step a `Session.rerun` starts, which runs the calls
+     unanswered where it landed. The claim stops a second runner. A re-run's
+     intent lives only in that step, so a re-run that crashed before its
+     first result fast-forwards onto the existing run on reload. Nobody
+     re-chose it; the user asks again.
   2. For each call still unanswered on that walk:
      - if its tool is idempotent, run it, with its pre hooks, the tool, and
        `pre_result`;
@@ -678,10 +702,10 @@ fourth kind (Q22).
   the claim before it runs any call, and re-reads the run once it has it (§8
   resume). Any other cursor that reaches the batch at rest, or resumes it,
   waits for the batch to complete, then fast-forwards to the end of the run
-  instead of running the calls again (Q13). A go-to, hook move, or
-  `open_cursor` onto the batch or into one of its runs while another cursor
-  holds the claim is refused (I3), so a deliberate re-run never runs
-  alongside another runner. The lease keeps every claim inside one process.
+  instead of running the calls again (Q13). A go-to, hook move,
+  `open_cursor`, or `Session.rerun` onto the batch or into one of its runs
+  while another cursor holds the claim is refused (I3), so a deliberate
+  re-run never runs alongside another runner. The lease keeps every claim inside one process.
 
 ## 11. Provider requirements
 
@@ -746,7 +770,7 @@ review decisions and Q20, and Q29 into the decision that only a
 | Q11 | Where does provider-specific legality live? | **In the provider's conversion**, which the driver runs before every sample. A rejection is a failed sample. Core stays provider-agnostic. |
 | Q12 | Do cursors close? | **Not in core for now.** Cursors are cheap, and frontends hide finished ones. Closing would need a new record and an ADR. |
 | Q13 | Two cursors at one batch both have `next == RunTools`. | **Run once**: an in-memory claim per batch (§10), and the second cursor moves onto the completed run. This becomes a Phase 2 scenario. |
-| Q15 | How does a person branch or go back? | **Two frontend operations.** Input under a named parent runs an input step there. "Go to" is a move, with no hooks. `Harness` exposes both. |
+| Q15 | How does a person branch or go back? | **Three frontend operations.** Input under a named parent runs an input step there. "Go to" (`Session.move`) is a move with no hooks, and it never starts a step. A re-run (`Session.rerun`) is a move plus a tools step. `Harness` exposes all three. |
 | Q16 | A go-to across a config change restates the `Config` *under* the node it goes to. A go-to to an unstarted batch is then refused, because I4 forbids appending there. | **As written.** No other placement keeps both I4 and I6, and going to an unanswered batch on another line is rare. |
 | Q17 | Input arrives while `at` is an unstarted or partial batch: a paused cursor, or after a reload. | **Answer the batch first, then take the input.** Calls the driver knows never started are answered `Skipped("superseded by input")`. Calls that might have started (after a reload) follow resume: idempotent calls run again, the rest are `Interrupted`. Refusing the input would raise an error the user didn't need. |
 | Q18 | Which hooks run after a pre hook answers, and what may `pre_result` change? | **The node's pre hooks run** (`pre_reply`, `pre_result`), so a cache hit still gets redacted. `pre_result` may change an outcome's content but not its kind: it cannot turn `Skipped` into `Ok`. The driver enforces that. |
@@ -758,4 +782,4 @@ review decisions and Q20, and Q29 into the decision that only a
 | Q25 | May `pre_sample` change the request only by returning a context tip, never by editing the request invisibly? | **Yes.** That is I1's guarantee. Reminders, model choices, and compaction are all visible in the tree. |
 | Q26 | A `pre_sample` hook that picks a cheaper model appends a `Config` node, and that choice persists on the line. Should one-off choices revert on their own? | **No automatic revert.** A routing hook that wants a one-off appends the restoring `Config` at its next `pre_sample`. The tree then shows exactly which model produced each reply, and nothing reverts behind anyone's back. |
 | Q27 | What does a call that was never run (its reply's `stop` was not `tools`) become when the walk is sent again, and what does τ's markup look like? | **`partial_calls: text` by default**, rendered as `[τ: interrupted while calling write_file; arguments so far: …]` after the reply's text. `partial_calls: omit` drops it. Stop notes use the same `[τ: …]` form. The exact markup is pinned in the Phase 4 provider ADR and tested byte for byte, because changing it later invalidates every cached prefix that contains it. |
-| Q28 | Hooks can now move a cursor. Should a move record say who asked for it? | **Yes: `{cursor, from?, to, by, time, opened_by?}`**, with `by` one of `frontend` (a go-to, an opening), `core` (a step's own move), or `extension(name)` (a hook's move). Like a node's author, it is recorded only, never used for control flow. |
+| Q28 | Hooks can now move a cursor. Should a move record say who asked for it? | **Yes: `{cursor, from?, to, by, time, opened_by?}`**, with `by` one of `frontend` (a go-to, a re-run, an opening), `core` (a step's own move), or `extension(name)` (a hook's move or re-run). No API caller supplies it: the driver fills it in from the caller, as it does a node's author. Like a node's author, it is recorded only, never used for control flow. |

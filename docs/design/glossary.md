@@ -107,8 +107,8 @@ in one of three states:
 - **complete**: every call answered exactly once (I4).
 
 Only the cursor holding a batch's claim has its `at` partway through a run.
-Any other move onto the batch or into a run fast-forwards to the run's end by
-default (I3).
+A move onto the batch or into a run fast-forwards to the run's end; only a
+re-run lands inside on purpose (I3).
 
 ### run
 **Python**: none (a view) · new
@@ -116,7 +116,7 @@ default (I3).
 A batch's result nodes on one line: one per call, each under the previous, in
 the order the calls finished. A batch may have several runs, and a run may
 branch partway; each line answers each call once (I4). A second run only ever
-comes from a deliberate **re-run**.
+comes from a deliberate **re-run** (`Session.rerun`).
 
 ### result
 **Rust** `Body::Result` · **Python** `Result` (body class) · **retires** tool
@@ -156,7 +156,10 @@ Who wrote a node:
 
 A node's author is whoever produced its content as written. A hook's answer or
 rewrite makes that hook's extension the author, and so does a copy. The author
-is recorded and never used for control flow (Q7).
+is recorded and never used for control flow (Q7). No API caller supplies it:
+the driver fills it in from the caller, because hooks get a session handle
+bound to their extension and frontends call through the frontend API. A move
+record's `by` works the same way.
 
 ### time
 **Rust** `Node::time` · **Python** `Node.time` · **retires** `timestamp`
@@ -253,7 +256,8 @@ cursor registration
 
 Creates a cursor and appends its opening move. The node must be committed and
 its walk must validate. A node on a batch or inside one of its runs
-fast-forwards to the end of the run, as a move does (I3).
+fast-forwards to the end of the run, as a move does (I3). Opening a cursor
+never starts a step.
 
 ### at
 **Rust** `Cursor::at` · **Python** `Cursor.at` · **retires** leaf,
@@ -293,7 +297,7 @@ later reaches it. Nothing marks it; "side" describes where it sits.
 
 ### append
 **Rust** `Session::append(parent?, by, body, …)` · **Python**
-`Session.append(...)` · **retires** `append_at`, `_CursorWriter`, write group
+`Session.append(parent, body, …)` · **retires** `append_at`, `_CursorWriter`, write group
 
 Writes one new node and emits `node_appended`. It checks the node first, so
 nothing invalid is written (I5):
@@ -302,24 +306,30 @@ nothing invalid is written (I5):
 - V2: a parentless node must be `Config`.
 
 Appending never moves a cursor. A step moves its cursor onto what it appended
-straight afterwards.
+straight afterwards. The node's author is filled in by the driver from the
+caller (see author); Rust's `by` argument is internal, never taken from user
+input.
 
 ### move
-**Rust** `Session::move_cursor(cursor, to, by, fast_forward)` · **Python**
-`Session.move(cursor, to, by, fast_forward=True)` · new (0.15 had no single
-point where a write became final)
+**Rust** `Session::move_cursor(cursor, to, by)` · **Python**
+`Session.move(cursor, to)` · new (0.15 had no single point where a write
+became final)
 
 The only way `at` changes. It checks where the cursor lands (I3, and I6 for a
-go-to or a hook's move, which may restate config). A destination on a batch or
-inside one of its runs **fast-forwards** unless told not to, taking the
-batch's claim if the run is partial; with fast-forward off it is a
-**re-run**. Either way it is refused if another cursor holds the claim. Then
+go-to, a hook's move, or a re-run, which may restate config). A destination on
+a batch or inside one of its runs **fast-forwards**, taking the batch's claim
+if the run is partial, and is refused if another cursor holds the claim. Then
 it appends one move record, sets `at := to`, and emits `cursor_moved`
-(`model.md` §5). A move comes from a
-step (onto what it wrote), a frontend's go-to, or a post hook. A refused move
-changes nothing and raises to whoever asked. A hook that catches its own
-refused move has handled it, and auto-step is unchanged. A step's own move is never
-refused.
+(`model.md` §5).
+
+A move comes from a step (onto what it wrote), a frontend's go-to, a post
+hook, or a re-run. Rust's `by` argument is internal: no caller supplies it.
+The driver fills it in from the caller, because hooks get a session handle
+bound to their extension and frontends call through the frontend API.
+
+A refused move changes nothing and raises to whoever asked. A hook that
+catches its own refused move has handled it, and auto-step is unchanged. A
+step's own move is never refused.
 
 ### move record
 **Rust** `Move` · **retires** navigate entry
@@ -327,38 +337,45 @@ refused.
 The persisted fact of one move, or of one cursor opening:
 `{cursor, from?, to, by, time, opened_by?}`. `from` is absent on an opening
 move. `by` says who asked: `frontend`, `core` (a step's own move), or
-`extension(name)` (a hook's move) (Q28). `opened_by` names the cursor that
-opened this one, such as a sub-agent's parent (Q6).
+`extension(name)` (a hook's move or re-run) (Q28). `opened_by` names the
+cursor that opened this one, such as a sub-agent's parent (Q6).
 
 ### fast-forward
-**Python** `fast_forward=True`, an argument of `Session.move` and
-`Session.open_cursor` · new
+**Python**: none (behavior of `Session.move` and `Session.open_cursor`) · new
 
-What a move or `open_cursor` does, by default, when its destination is a
-batch's `Assistant` node or a node inside one of its runs: it lands at the end
-of the existing run instead, following the most recently appended child where
-a run branches. If that run is partial, the cursor takes the batch's claim and
-resumes it. This is what keeps a cursor from landing mid-run by accident and
-running calls a second time (I3).
+What a move or `open_cursor` always does when its destination is a batch's
+`Assistant` node or a node inside one of its runs: it lands at the end of the
+existing run instead, following the most recently appended child where a run
+branches. If that run is partial, the cursor takes the batch's claim and
+resumes it when it next steps. This is what keeps a cursor from landing
+mid-run by accident and running calls a second time (I3). Only a re-run lands
+inside a batch on purpose.
 
 ### re-run
-**Python** `Session.move(cursor, to, by, fast_forward=False)` · new
+**Rust** `Session::rerun(cursor, node)` · **Python**
+`Session.rerun(cursor, node)` · new
 
-A deliberate second run of a batch: a go-to (or a hook's move) onto the
-batch's `Assistant` node, or a result inside a run, with fast-forward off. The
-cursor takes the claim, and its next step runs every call still unanswered on
-its new line, through `pre_tool` as usual. The result is a sibling run, or one
-that branches partway (keep `r5`, run `c3` again). Resume after a crash never
-re-runs on purpose (`model.md` §5, §8).
+A deliberate second run of a batch: a move that lands exactly on `node` (the
+batch's `Assistant` node, or a result partway through a run), takes the claim,
+and at once starts a tools step for every call still unanswered on its new
+line, through `pre_tool` as usual. The result is a sibling run, or one that
+branches partway (keep `r5`, run `c3` again). Afterwards the cursor continues
+per its auto-step. Frontends call it directly, and hooks through `api`.
+Resume after a crash never re-runs on purpose: a re-run that crashed before
+its first result fast-forwards on reload, and the user asks again
+(`model.md` §5, §8).
 
 ### go to
-**Python** `Session.move(cursor, to, by=frontend, fast_forward=True)` ·
-**retires**
+**Python** `Session.move(cursor, to)` from a frontend · **retires**
 `navigate_tree`
 
 A move a frontend asks for, with no new input and no hooks (Q15). It is how a
-person branches, returns to an older line, rejects a reply (go to its parent
-and step again), or re-runs a batch (fast-forward off).
+person browses, branches, returns to an older line, or rejects a reply (go to
+its parent, then step). **A go-to never starts a step**, even with auto-step
+on: browsing runs nothing and costs nothing. A cursor that lands on a `User`
+node or an unstarted batch sits there until the frontend steps it or gives
+input. A hook's move, by contrast, happens inside a step, and the driver
+carries on after it per auto-step. To run a batch again, use a re-run.
 
 ### branch
 **Rust/Python**: no type; a verb · **retires** fork (in-session),
@@ -444,7 +461,8 @@ partial batch, resume follows `model.md` §8:
 1. Take the batch's claim. If another cursor holds it, wait, then
    fast-forward to the end of the completed run; nothing is left to do.
 2. Re-read the run, and fast-forward onto its end if results lie below `at`
-   (not for a re-run, which runs the calls unanswered where it is).
+   (not in the step a re-run starts, which runs the calls unanswered where it
+   landed).
 3. Run unanswered idempotent calls again.
 4. Answer the rest `Interrupted` (D4).
 
@@ -534,10 +552,12 @@ receives what the previous one returned. There are three sorts:
 - A **post hook** (`post_input`, `post_reply`, `post_result`) sees the node
   after it is written and the cursor has moved onto it, before `next` is
   evaluated. It may append side nodes, and it may move the cursor (checked
-  like a go-to). A move ends that node's post hooks. `post_result` may move
-  only on the result that completes its batch, because the cursor holds the
-  batch's claim until then. In a tools step, post
-  hooks run one result at a time per cursor. Post hooks do not run after an
+  like a go-to) or re-run a batch. Because the move happens inside a step,
+  the driver then evaluates `next` and carries on per auto-step, unlike a
+  go-to. A move ends that node's post hooks. `post_result` may move only on
+  the result that completes its batch, because the cursor holds the batch's
+  claim until then. In a tools step, post hooks run one result at a time per
+  cursor. Post hooks do not run after an
   abort, and an abort during one cancels it and skips the rest.
 
 Any hook may also use `api` to append nodes elsewhere, for example on a
@@ -581,11 +601,12 @@ mocked or blocked outcome, so that the effect does not run.
 ### claim
 **Python**: driver memory · new
 
-The driver's in-memory mark that a cursor is running or resuming a batch. A
+The driver's in-memory mark that a cursor is running, resuming, or re-running
+a batch. A
 cursor takes it before running any call, then re-reads the run. Any other
 cursor that reaches the batch waits, then fast-forwards to the end of the
-completed run, so tools run once (Q13). A move that would land partway
-through a run while another cursor holds its claim is refused (I3). The lease
+completed run, so tools run once (Q13). A move, `open_cursor`, or re-run onto
+a batch or into its runs while another cursor holds its claim is refused (I3). The lease
 keeps claims within one process.
 
 ### event
@@ -601,7 +622,8 @@ Every wire format is a projection of this one type.
 
 Cancel a cursor's in-flight sample or tools, then turn its auto-step off. An
 aborted sample that had produced output is written with
-`stop: interrupted`, its calls owe no result, and the cursor moves onto it; one that had produced nothing writes nothing. Aborted tools keep the
+`stop: interrupted`, its calls owe no result, and the cursor moves onto it;
+one that had produced nothing writes nothing. Aborted tools keep the
 results already written, and answer each unanswered call `Interrupted`,
 moving onto each, which I4 requires. No post hooks run after an abort, and an
 abort while a post hook is running cancels it and skips the remaining post
@@ -661,7 +683,9 @@ Extensions have no special standing in core (D3, D8). The first three
 
 What a hook may do besides returning its value: read the session, append
 nodes (for example on a detached root), sample a walk, run a tool, open a
-cursor, and, from a post hook, move its cursor. A pre hook steers only through
+cursor, and, from a post hook, move its cursor or re-run a batch. The handle
+is bound to the hook's extension, so everything it writes is authored
+`extension(name)` without the hook saying so. A pre hook steers only through
 its return value. The exact surface is a Phase 4 decision. It is not the 0.15 `ExtensionAPI`.
 
 ### frontend
@@ -671,8 +695,8 @@ label
 A program that drives sessions and shows events: print/json, REPL, RPC, TUI,
 serve.
 - Input queues and "steer" behavior live here (D2).
-- A frontend may give input under a named parent, or go to any node, to
-  branch or go back (Q15).
+- A frontend may give input under a named parent, go to any node (which never
+  starts a step), or re-run a batch (Q15).
 - Every frontend sees every cursor.
 
 ### driver
@@ -708,7 +732,7 @@ tests
 
 The protocol every behavior test drives: create and load sessions, give input
 (optionally under a named parent), step, toggle auto-step, abort, open
-cursors, go to a node, snapshot the tree and cursors, and read events. It has
+cursors, go to a node, re-run a batch, snapshot the tree and cursors, and read events. It has
 one adapter for `tau_next` (in `tests/`) and one for τ 0.15 (in `parity/`).
 
 ### FakeProvider, FakeTool
