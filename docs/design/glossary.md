@@ -119,7 +119,7 @@ Its last node is its **tip**; seen as a path through the tree, it is a
 **line**.
 
 ### LCA
-not yet spiked · new
+*spike* `Session::lca` · new
 
 Lowest common ancestor of two nodes; none across trees.
 
@@ -138,8 +138,8 @@ whole walk, for tests. `append` checks each node (`Session::check`).
 ### Error
 *spike* `tree::Error`
 
-Core's refusals: `NoSuchNode`, `NoSuchCursor`, `RootNotConfig` (V1),
-`DuplicateCall` (V2). Each becomes a typed Python exception in `tau-py`.
+Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
+`RootNotConfig` (V1), `DuplicateCall` (V2). Each becomes a typed Python exception in `tau-py`.
 
 ## The scratchpad
 
@@ -219,10 +219,10 @@ items. Every commit, and a hook's `cursor.write`.
 A phase writing its draft with `Session::write`.
 
 ### cursor.moves
-not yet spiked
+*spike* `Session::moves_of`, `Step::moves` · new
 
-A cursor's move records; with `since_step=True`, only those since this
-step's `pre_step` began (Q44).
+A cursor's move records; with `since_step=True` (`Step::moves`), only those
+since the step woke (Q44).
 
 ### go to
 not yet spiked · retires `navigate_tree`, `Session.rerun`
@@ -247,10 +247,12 @@ retires `ctx.fork` and other senses
 A new session copying `walk(n)` from another. Never inside one session.
 
 ### label
-not yet spiked · new
+*spike* `Session::set_label`, `remove_label`, `label`, `labels_of`,
+`Record::Label` · new
 
 A unique string naming one cursor; a cursor may have several. Set, moved,
-and removed by **label records** `{label, cursor?}`.
+and removed by **label records** `{label, cursor?}`; setting a label already
+on that cursor writes nothing.
 
 ### busy, at rest
 a view · new
@@ -371,7 +373,7 @@ there is work. Off: a woken cursor runs only `pre_step` and `post_step`. Goes
 off on abort, halt, failure, go-to, `max_steps`, and load.
 
 ### max_steps
-not yet spiked · `Config` field
+`Config::max_steps`; the count is `Session::taken` · `Config` field
 
 The most committing steps a cursor takes without a frontend acting. Reaching
 it turns auto-step off (D1).
@@ -405,11 +407,13 @@ A **sample** is one provider request over the **context**, `walk(at)`, with
 `config_at(at)` (I1). A **message** is the provider's wire unit, never stored.
 
 ### config
-`Body::Config`, `config_at` · retires config entry, `CONFIG_KEYS`,
-`Settings`, model entry
+*spike* `tree::Config`, `Body::Config`, `Session::config_at` · retires config
+entry, `CONFIG_KEYS`, `Settings`, model entry
 
 A full snapshot of how a step runs. `config_at(n)` is the nearest `Config`
-on `walk(n)` (D5).
+on `walk(n)` (D5). Core reads only the typed fields it needs
+(`max_steps`); `data` holds the rest, opaque to core and typed by the
+driver.
 
 ## Hooks
 

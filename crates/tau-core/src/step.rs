@@ -103,6 +103,8 @@ pub struct Step {
     committed: bool,
     started: u64,
     seen: u64,
+    /// `Session::moves.len()` when this step woke.
+    first_move: usize,
     draft: Option<Draft>,
     error: Option<String>,
     ending: Ending,
@@ -122,6 +124,7 @@ impl Step {
             committed: false,
             started: now,
             seen,
+            first_move: s.moves.len(),
             draft: None,
             error: None,
             ending: Ending::Done,
@@ -312,6 +315,11 @@ impl Step {
 
     pub fn resting(&self) -> bool {
         self.pos == Pos::Rest
+    }
+
+    /// `cursor.moves(since_step=True)`: this cursor's moves since the step woke.
+    pub fn moves<'a>(&self, s: &'a Session) -> impl Iterator<Item = &'a crate::tree::Move> {
+        s.moves_of(self.cursor, self.first_move)
     }
 
     fn end(&mut self, s: &mut Session, ending: Ending) {

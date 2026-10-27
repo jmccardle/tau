@@ -1,5 +1,5 @@
-//! The session tree: nodes, cursors, the scratchpad, and the records a store
-//! writes. Spike: the shape of model.md §1, minus labels and copy relations.
+//! The session tree: nodes, cursors, labels, the scratchpad, and the records a
+//! store writes. The shape of model.md §1, minus copy relations.
 
 use std::collections::BTreeMap;
 
@@ -46,11 +46,28 @@ pub enum Body {
     /// One `(call id, outcome, by)` per call, in call order. `by` is who
     /// produced that outcome: `Tools`, or the extension that answered or edited it.
     Results(Vec<(String, Outcome, Author)>),
-    Config(String),
+    Config(Config),
     Custom {
         kind: String,
         data: String,
     },
+}
+
+/// A config snapshot. Core reads only its typed fields; `data` is the rest,
+/// opaque to core and typed by the driver.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Config {
+    pub max_steps: Option<u32>,
+    pub data: String,
+}
+
+impl From<&str> for Config {
+    fn from(data: &str) -> Self {
+        Self {
+            max_steps: None,
+            data: data.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,8 +116,16 @@ pub struct Item {
 /// log, then rewrites the scratchpad file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Record {
-    Write { node: Node, mv: Option<Move> },
+    Write {
+        node: Node,
+        mv: Option<Move>,
+    },
     Move(Move),
+    /// Set or move a label; no cursor removes it.
+    Label {
+        label: String,
+        cursor: Option<CursorId>,
+    },
     Scratchpad,
     Sync,
 }
@@ -109,6 +134,7 @@ pub enum Record {
 pub enum Error {
     NoSuchNode(NodeId),
     NoSuchCursor(CursorId),
+    NoSuchLabel(String),
     RootNotConfig,
     DuplicateCall,
 }
@@ -124,6 +150,7 @@ pub enum Next {
 pub struct Session {
     nodes: Vec<Node>,
     at: BTreeMap<CursorId, NodeId>,
+    labels: BTreeMap<String, CursorId>,
     pub auto: BTreeMap<CursorId, bool>,
     items: Vec<Item>,
     next_item: ItemId,
@@ -131,13 +158,15 @@ pub struct Session {
     pub changes: BTreeMap<CursorId, u64>,
     pub moves: Vec<Move>,
     pub outbox: Vec<Record>,
+    /// Per cursor: committing steps since a frontend last acted (`max_steps`).
+    pub taken: BTreeMap<CursorId, u32>,
     /// Records queued since the last `Sync`.
     unsynced: bool,
     pub notices: Vec<(String, String)>,
 }
 
 impl Session {
-    pub fn create(config: &str, system: &str, time: u64) -> (Self, CursorId) {
+    pub fn create(config: impl Into<Config>, system: &str, time: u64) -> (Self, CursorId) {
         let mut s = Self::default();
         let root = s
             .append(
@@ -293,6 +322,76 @@ impl Session {
 
     /// `next` from the end of the walk, without building it: only the last
     /// node that is not Config or Custom decides.
+    /// The nearest `Config` on `walk(n)`; always defined, since every root is one (V1).
+    pub fn config_at(&self, n: NodeId) -> Result<&Config, Error> {
+        let mut x = self.node(n)?;
+        loop {
+            if let Body::Config(c) = &x.body {
+                return Ok(c);
+            }
+            x = self.node(x.parent.expect("a root is Config (V1)"))?;
+        }
+    }
+
+    /// The deepest node on both walks; `None` across trees.
+    pub fn lca(&self, a: NodeId, b: NodeId) -> Result<Option<NodeId>, Error> {
+        self.node(b)?;
+        let on_a: std::collections::BTreeSet<NodeId> =
+            self.walk(self.node(a)?.id).iter().map(|n| n.id).collect();
+        Ok(self
+            .walk(b)
+            .iter()
+            .rev()
+            .map(|n| n.id)
+            .find(|id| on_a.contains(id)))
+    }
+
+    /// Set a label on a cursor; a label already set elsewhere moves.
+    pub fn set_label(&mut self, label: &str, cursor: CursorId) -> Result<(), Error> {
+        self.at(cursor)?;
+        if self.labels.get(label) != Some(&cursor) {
+            self.labels.insert(label.into(), cursor);
+            self.queue(Record::Label {
+                label: label.into(),
+                cursor: Some(cursor),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn remove_label(&mut self, label: &str) -> Result<(), Error> {
+        self.labels
+            .remove(label)
+            .ok_or_else(|| Error::NoSuchLabel(label.into()))?;
+        self.queue(Record::Label {
+            label: label.into(),
+            cursor: None,
+        });
+        Ok(())
+    }
+
+    pub fn label(&self, label: &str) -> Result<CursorId, Error> {
+        self.labels
+            .get(label)
+            .copied()
+            .ok_or_else(|| Error::NoSuchLabel(label.into()))
+    }
+
+    /// A cursor's labels, in string order.
+    pub fn labels_of(&self, cursor: CursorId) -> impl Iterator<Item = &str> {
+        self.labels
+            .iter()
+            .filter(move |(_, c)| **c == cursor)
+            .map(|(l, _)| l.as_str())
+    }
+
+    /// `cursor`'s moves from index `since` in `Session::moves` on.
+    pub fn moves_of(&self, cursor: CursorId, since: usize) -> impl Iterator<Item = &Move> {
+        self.moves[since.min(self.moves.len())..]
+            .iter()
+            .filter(move |m| m.cursor == cursor)
+    }
+
     pub fn next(&self, cursor: CursorId) -> Next {
         let last = self.at(cursor).ok().and_then(|a| {
             std::iter::successors(self.node(a).ok(), |x| {

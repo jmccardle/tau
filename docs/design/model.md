@@ -55,7 +55,7 @@ body   = System(text)
        | User(text, images*)
        | Assistant { parts, stop, stop_raw* }
        | Results(outcomes)                  [(call id, outcome, by)], in call order
-       | Config(snapshot)
+       | Config { max_steps?, data }      data: opaque to core
        | Custom { kind, data }
 
 part    = Text(text) | Thinking(text, signature*) | Call { id, tool, args_raw }
@@ -64,7 +64,7 @@ stop    = End | Tools | Length | Refused | Interrupted | Error
 by      = Frontend(client) | Provider | Tools | Core | Extension(name)
 
 Move   { cursor, from?, to, by, time, opened_by* }
-Label* { label, cursor? }                    no cursor: the label is removed
+Label  { label, cursor? }                    no cursor: the label is removed
 Item   { id, to, data }   data = Input { client, text } | Extension { name, data }
 ```
 
@@ -79,8 +79,7 @@ Item   { id, to, data }   data = Input { client, text } | Extension { name, data
   no `from` opens a cursor. Ids (node, cursor, item) are session-local
   integers, never reused (Q8).
 - A **label** maps a unique string to one cursor; a cursor may have several.
-  Label records set, move, and remove them; load replays them. Not yet
-  spiked.
+  Label records set, move, and remove them; load replays them.
 - An **item** is addressed to one cursor (`to`). Input items come from a
   frontend client; every other item belongs to the extensions. No item
   reaches the model (I1).
@@ -105,8 +104,8 @@ runnable; the provider renders them as text (§10).
 | view | definition |
 |---|---|
 | `walk(n)` | root → … → `n` by `parent`, inclusive |
-| `LCA(a, b)` | the deepest node on both walks; none across trees (not yet spiked) |
-| `config_at(n)` | the body of the nearest `Config` on `walk(n)` (not yet spiked) |
+| `LCA(a, b)` | the deepest node on both walks; none across trees (`Session::lca`) |
+| `config_at(n)` | the body of the nearest `Config` on `walk(n)` (`Session::config_at`) |
 | `next` | §6 |
 | a cursor's scratchpad | its items, in the order added (`Session::items`) |
 | pending input | the input items in it |
@@ -145,7 +144,7 @@ A move is the only way `at` changes, and it checks only that `to` is a node
 | a frontend's go-to | `Session.move(cursor, to)` | `Frontend(client)` |
 
 - **A hook's move applies at once**; later hooks see the new `at`. Each hook
-  sees the step's moves with `cursor.moves(since_step=True)`.
+  sees the step's moves with `cursor.moves(since_step=True)` (`Step::moves`).
 - **A go-to** turns auto-step off and wakes the cursor, whose step then runs
   only `pre_step` and `post_step` (Q39). **Not yet spiked:** on a busy cursor
   it is refused while a hook runs or a question is open, and otherwise it
