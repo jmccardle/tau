@@ -19,7 +19,7 @@ On resume (model.md §8), for each call still unanswered on the cursor's walk:
 | the call's tool | what resume does |
 |---|---|
 | `idempotent` | run it again like any call: `pre_tool`, the tool, `pre_result`, `post_result` |
-| anything else | answer it `Interrupted`, a core-written result that runs no hooks |
+| anything else | answer it `Interrupted`, a core-written result: no `pre_result`, but `post_result` runs |
 
 - `idempotent` is a flag on `Tool` (glossary): running twice has the same
   effect as once.
@@ -29,7 +29,13 @@ On resume (model.md §8), for each call still unanswered on the cursor's walk:
   already have results are not run again (I3, model.md §8, §10). A move
   never takes a claim.
 - Each result is written and moved onto as usual, so the batch completes.
-- The same rule serves input at a partial batch after a reload (Q17).
+- The same rule serves input at a partial batch after a reload: the base
+  extension holds the input pending and steps the cursor, and resume
+  answers the batch first (Q17).
+- Interrupting a resume (an abort, or a move of the busy cursor) answers its
+  remaining calls `Interrupted`, like any interrupted tools step (model.md
+  §8). The resume's fast-forward is the step's own move, so it is
+  compare-and-set: a move made while the step waited for the claim wins.
 - A call whose tool finished but whose result was not yet written is
   `Interrupted`, unless idempotent. The raw outcome is never written
   unredacted (model.md §8, abort during tools).

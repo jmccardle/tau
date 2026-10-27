@@ -21,15 +21,23 @@ reopen positions.
     step moves onto each result as it is written.
   - Validation is at append (V1, V2) and at move (I3, I6) (I5), so nothing
     invalid is written.
-  - A step's own move is never refused.
-- Core never writes a node and then abandons it. A node no move reaches is an
-  extension's side node, a detached root's work, or a record of a failure
-  (`sample_error`). Those are scratch.
+  - A step's own move is never refused. It is compare-and-set: a step
+    records the `at` it started from, and moves only if its cursor is still
+    where the step left it. Any other move of a busy cursor interrupts the
+    step and wins (model.md §5, §8).
+- Core never writes a node and then abandons it, except an unreached I6
+  restatement and the records an interrupted step writes after its cursor
+  was moved away. A node no move reaches is one of those, an extension's side
+  node, a detached root's work, or a record of a failure (`sample_error`).
+  Those are scratch.
 - `at` is the `to` of the cursor's latest move, so the only persisted
   position is the move log (I7). Nothing guesses a reopen point.
 - To reject a reply, go to its parent and step again. The old reply stays
   committed (Q2).
-- Auto-step is not persisted: every cursor loads with it off.
+- Auto-step and busy are not persisted: every cursor loads at rest with
+  auto-step off.
+- A cursor carries no queue. Input for a busy cursor is held as nodes by the
+  base extension (D2).
 
 ## Alternatives
 
@@ -37,7 +45,7 @@ reopen positions.
 |---|---|
 | Do not persist `target` (plan default): a crash leaves the draft as scratch | Needs a draft and a commit step to exist at all. Review removed both, so the crash case cannot arise. |
 | Persist `target` | Two persisted positions per cursor, and a rule for resuming from a draft. |
-| Hooks retarget a draft | Replaced by pre hooks that change what is written and post hooks that move the cursor (model.md §7). |
+| Hooks retarget a draft | Replaced by pre hooks that change what is written and hooks that move the cursor (model.md §7). |
 
 ## Consequences
 
@@ -50,7 +58,7 @@ reopen positions.
   remain in the tree.
 - Cost: the plan's scenario "hook drafts on scratch and retargets" is
   retired. Its replacements are "`pre_sample` builds the context it returns"
-  and "a post hook moves the cursor".
+  and "a hook moves the cursor".
 - Enforced by: I3 and I7 proptests (every `cursor.at` is committed and
   validates; `state == load(save(state))`) and I5's unit tests.
 
@@ -59,4 +67,6 @@ reopen positions.
 Plan default: no `target` persisted; crash mid-draft leaves the draft as
 scratch. Review (fourth revision) removed `target` entirely. The question
 this settled is in the "Decided in review" list of model.md; Q2 (committed is
-permanent) and Q28 (move records carry `by`) follow from it.
+permanent) and Q28 (move records carry `by`) follow from it. The fifth
+revision made a step's own move compare-and-set, so any hook may move a busy
+cursor, interrupting its step, instead of rules about when a hook may move.

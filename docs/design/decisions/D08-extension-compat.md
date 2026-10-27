@@ -11,8 +11,8 @@ waited for a person, which left state that a reload could not rebuild
 (glossary, "Retired 0.15 terms").
 
 The hook set here differs in meaning, not only in name. A hook now sits around
-a write (model.md §7), steers by returning a value, and receives `api` and
-`cursor` arguments.
+a write (model.md §7), steers by returning a value, and receives a cursor
+handle and its subject: `hook(cursor, subject)`.
 
 ## Decision
 
@@ -24,7 +24,7 @@ a write (model.md §7), steers by returning a value, and receives `api` and
 
   | 0.15 hook | here |
   |---|---|
-  | `input` | `pre_input` |
+  | `input` | `pre_input`, which handles, passes, or refuses (the base extension handles by default) |
   | `before_agent_start` | `pre_sample`, which appends what it adds (I1) |
   | `tool_call` | `pre_tool` |
   | `tool_result` | `pre_result` |
@@ -34,7 +34,7 @@ a write (model.md §7), steers by returning a value, and receives `api` and
 - Lifecycle hooks (`session_start` and the rest) do not exist until a
   Phase 5 extension needs one (Q23). Hook deadlines are not core's; a hook
   that needs one uses `asyncio.timeout` (Q9).
-- The exact `api` surface is a Phase 4 decision.
+- The exact cursor handle surface is a Phase 4 decision.
 
 ## Alternatives
 

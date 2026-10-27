@@ -1,4 +1,4 @@
-# 06 Crash, reload, resume; abort
+# 06 Crash, reload, resume; interrupt and abort
 
 Nothing is state unless it is a node or a move record, so a reload is a replay
 (I7). A crash in the middle of a tools run leaves the cursor at the last result
@@ -6,8 +6,10 @@ it moved onto; the in-memory claim, the auto-step flag and stream deltas are
 gone, and every cursor loads with auto-step off. When the frontend next steps
 the cursor, the driver resumes the batch: it answers each unanswered call
 either by running it again (the tool is idempotent) or with `Interrupted`
-(D4). Finished calls never run again. The second half shows abort during a
-sample, with and without output.
+(D4). Finished calls never run again. A pending input survives the crash as
+a node, and `post_open` delivers it after the reload. The second half shows
+an interrupt: abort (in place) during a sample, with and without output, and
+an interrupting move during tools.
 
 ## Crash mid tools run
 
@@ -32,13 +34,32 @@ sample, with and without output.
    next(walk(r5)) = RunTools(c3)       nearest message-bearing node is a result, batch partial
                                        (a cursor's `at` may be the end of a partial run; never
                                         a node above the end of a run, except where rerun put it, I3)
- nothing runs yet: a reload starts no step
+ every cursor loads at rest; nothing runs yet: a reload starts no step
+ post_open(cursor, r5) runs for every cursor
+```
+
+## A pending input across the crash
+
+```
+ before the crash: A busy running c3; the person typed "also b.rs"
+   k0 ─ ib ─ p1 Custom{kind: pending_input, cursor: A}      on disk: a node like any other
+
+ after reload, post_open(A, r5), the base extension:
+   p1 pending?   the reverse index of copied_from has no node copying p1  ──▶ yes
+   at = r5, a partial batch: no User node may go there (I4)  ──▶ leave it pending
+ the batch completes (below); post_result(r3) delivers:
+   cursor.write( User "also b.rs", copied_from: [p1] )       node and move durable together
+
+ crash before that write: p1 is still pending on the next load, and is delivered then
+ crash after it:          u2 copies p1, so p1 is not pending: never delivered twice
+ if at could take a User node, post_open would deliver at once; A then waits at u2,
+ auto-step off, for the frontend to step or resume it
 ```
 
 ## Claim, then resume
 
 ```
- frontend steps A (or switches auto-step on; or gives input, which answers the batch first, Q17)
+ frontend steps A (or switches auto-step on; input goes pending and the base extension steps A, Q17)
 
  0  the step takes the batch's claim on a1 (a move never takes one)
       another step holds it ──▶ that step is running the batch: wait for it to finish
@@ -58,7 +79,7 @@ sample, with and without output.
                                    the tool may or may not have run (D4)
 
  k0 ─ s ─ u1 ─ a1 ─ r5 ─ r3 ◀ A.at         r3 appended under r5, A moved onto it (by core)
- post_result(r3) runs if r3 came from the tool; an Interrupted r3 is core-written and runs no hooks
+ post_result(r3) runs either way; an Interrupted r3 is core-written and skips only pre_result
  next(walk(r3)) = Sample                    batch complete
 ```
 
@@ -71,6 +92,10 @@ move cannot happen: the two are durable together (§10), so a crash leaves both
 or neither.
 
 ## Abort during a sample
+
+Abort is an interrupt without a move. The step's own move is compare-and-set,
+and the cursor is still where the step left it, so it moves onto what the
+interrupt wrote.
 
 ```
  A.at = u1       next = Sample       pre_sample appended n1 (a reminder) under u1 and returned it as the tip
@@ -103,10 +128,29 @@ The tokens the user saw are stored, and the model sees them next time.
    no post hooks run, auto-step off     next(walk(r3)) = Sample
 ```
 
-Results core writes (`Interrupted`, `Err("invalid arguments")`,
-`Err("hook error")`, `Skipped("superseded by input")`) run no hooks: there is
-no tool output to rewrite (`model.md` §7).
+## An interrupting move during tools
 
-Reads with: `model.md` §3 (the mid-step example), §8 (abort, failure, reload,
-resume at a batch), §10 (durability, claim), I3, I4, I7, Q4, Q13, Q17, Q27, D4;
-`glossary.md` terms resume, idempotent, claim, abort, outcome, auto-step.
+```
+ a1 [c3, c5]        r5 Ok already written, A.at = r5         c3 still running
+ a frontend goes to u1 (or any hook moves A; post_result(r5) moving A is the same)
+
+ 1 cancel c3 and its hooks
+ 2 r3 Result Interrupted, by core, under r5          the run is complete on walk(r3)
+ 3 the step's own move r5 ──▶ r3: A was moved, compare-and-set fails ──▶ skipped
+ 4 release the claim; resolve to = u1; write the move  A.at = u1
+
+ u1 ◀ A.at
+ └ a1 ─ r5 ─ r3        r5 committed (A moved onto it earlier); r3 SCRATCH, a record of the interrupt
+ auto-step unchanged; a go-to starts no step. A later go-to a1 fast-forwards to r3: nothing runs twice.
+```
+
+Results core writes (`Interrupted`, `Err("invalid arguments")`,
+`Err("hook error")`) skip `pre_result`: there is no tool output to rewrite.
+Their `post_result` hooks run, except on records an interrupt writes, which
+run no hooks (`model.md` §7, §8).
+
+Reads with: `model.md` §3 (the mid-step example), §5 (compare-and-set), §7
+(the base extension), §8 (interrupt, abort, failure, reload, resume at a
+batch), §10 (durability, claim), I3, I4, I7, Q4, Q13, Q17, Q27, D2, D4;
+`glossary.md` terms resume, idempotent, claim, interrupt, abort, busy,
+pending input, post_open, outcome, auto-step.

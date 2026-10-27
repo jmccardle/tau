@@ -19,7 +19,8 @@ integer ids (Q8). `c3` is a call id, `r5` is the result that answers `c5`.
 │ time          supplied by the driver; core reads no clock
 │ by            frontend | provider | tools | core | extension(name)  (Q7)
 │ body          exactly one of the six kinds below
-│ copied_from?  the node whose body this repeats verbatim (new parent)
+│ copied_from   a list of nodes whose content this repeats verbatim, in order
+│               (new parent; empty for most nodes)
 │ derived_from  a list of nodes whose walks this content was computed from
 │               (empty for most nodes)
 └─────────────────────────────────────────────────────────────────────────
@@ -45,17 +46,17 @@ body
 │     └─ Interrupted
 ├─ Config      { snapshot }                               bookkeeping
 └─ Custom      { kind, data }                             bookkeeping
-      known kind: sample_error
+      known kinds: sample_error (core), inbox and pending_input (the base extension)
 ```
 
 | kind | reaches the model | typical `by` |
 |---|---|---|
 | `System` | yes | core (`Session.create`) |
-| `User` | yes | frontend, or extension(name) (also a summary or reminder, Q30) |
+| `User` | yes | frontend, or extension(name) (a rewritten input, a summary or reminder, Q30, or a delivered pending input) |
 | `Assistant` | yes | provider (extension(name) if a hook answered or rewrote it) |
-| `Result` | yes | tools (core for `Interrupted`, `Skipped("superseded by input")`, `Err("invalid arguments")`, `Err("hook error")`) |
+| `Result` | yes | tools (core for `Interrupted`, `Err("invalid arguments")`, `Err("hook error")`) |
 | `Config` | no | core (the session's first root, I6 restatement); frontend or extension(name) when explicit; extension(name) for a root a hook creates |
-| `Custom` | no | core (`sample_error`), extension(name) |
+| `Custom` | no | core (`sample_error`), extension(name) (`inbox` and `pending_input` are `extension(base)`) |
 
 `stop` and `stop_raw`:
 
@@ -89,7 +90,8 @@ e1  Custom     by core        { kind: sample_error, data: ... }   a node like an
 
 A `Result` names its call by id; the `Call` part is on `walk(r5.parent)` (I1).
 `copied_from` and `derived_from` appear only on nodes a hook wrote (see
-`05-compaction.md`): they record a relation, and are never a parent.
+`05-compaction.md`, and a delivered input in `04-scratch-and-detached-roots.md`):
+they record a relation, and are never a parent.
 
 ## The other stored object
 
@@ -106,4 +108,4 @@ Cursor = { id, at }      at = the `to` of the cursor's latest move
 Reads with: `model.md` §1 (stored objects), §3 (committed and scratch are
 derived, not stored), §4 I2 (immutability), I4 (a `stop == tools` reply owes
 results), Q3, Q7, Q8, Q27; `glossary.md` terms node, body, part, stop, call,
-result, outcome, author.
+result, outcome, author, copied_from.

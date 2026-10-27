@@ -1,18 +1,18 @@
 # Phase 1 diagrams
 
 Hand-drawn, plain text, and consistent with `../model.md` and `../glossary.md`
-(fourth revision). Rule 6: hand-drawn diagrams exist only in Phase 1; after
+(fifth revision). Rule 6: hand-drawn diagrams exist only in Phase 1; after
 Phase 3 diagrams are generated from code and these files are replaced.
 `model.md` and `glossary.md` win wherever a diagram and they differ.
 
 | file | shows |
 |---|---|
 | [01-nodes.md](01-nodes.md) | the node, the six body kinds, `Assistant` parts and `stop`, which kinds reach the model, the move record |
-| [02-step.md](02-step.md) | the three step kinds: pre hooks, effect, pre-write hooks, write and move, post hooks; what each hook may do; go to vs re-run vs a hook's move |
+| [02-step.md](02-step.md) | the three step kinds: pre hooks, effect, pre-write hooks, write and move, post hooks; input and the base extension's inbox; what a hook may do; moving a busy cursor; go to vs re-run vs a hook's move |
 | [03-move-and-branch.md](03-move-and-branch.md) | a move within a line, a branch with LCA and the I6 restatement, fast-forward, `Session.rerun` |
-| [04-scratch-and-detached-roots.md](04-scratch-and-detached-roots.md) | side nodes, a detached root, a `sample_error`, committed vs scratch |
+| [04-scratch-and-detached-roots.md](04-scratch-and-detached-roots.md) | side nodes, the inbox and pending inputs, a detached root, a `sample_error`, committed vs scratch |
 | [05-compaction.md](05-compaction.md) | compaction as branch-from-prefix, with `copied_from`, `derived_from`, and I6 at a sample |
-| [06-crash-and-resume.md](06-crash-and-resume.md) | crash mid tools run, reload, claim, resume; abort during a sample and during tools |
+| [06-crash-and-resume.md](06-crash-and-resume.md) | crash mid tools run, reload, `post_open` and a pending input, claim, resume; abort during a sample and during tools; an interrupting move |
 
 ## Reading conventions
 

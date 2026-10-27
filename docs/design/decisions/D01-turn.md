@@ -17,7 +17,9 @@ keeps sending "continue" (Q20).
 ## Decision
 
 - There is no turn in core. The unit is the **step** (model.md §7): one
-  cycle for one cursor, of kind `input`, `sample`, or `tools`.
+  cycle for one cursor, of kind `input`, `sample`, or `tools`. Every step
+  counts toward `max_steps`, including one a hook's move or re-run causes;
+  an interrupt is not a step.
 - Frontends that want to show "turns" count steps since the last input. That
   is a display choice, not core state.
 - Runaway loops are bounded by the `max_steps` field of `Config`: the most
@@ -30,8 +32,8 @@ keeps sending "continue" (Q20).
 - Nothing is stored. Every cursor loads with auto-step off (I7), so a
   runaway loop cannot survive a reload, and a fresh count after a reload
   loses nothing.
-- "Keep going" lives in a `post_reply` hook that appends a `User` node and
-  moves onto it (model.md §7). That is the cursor acting on its own, not the
+- "Keep going" lives in a `post_reply` hook that writes a `User` node and
+  moves onto it with `cursor.write` (model.md §7). That is the cursor acting on its own, not the
   frontend, so it does not reset the count.
 
 ## Alternatives

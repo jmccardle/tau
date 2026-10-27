@@ -9,7 +9,8 @@ config, I6 restates the cursor's own config as a `Config` node under `to`
 (or reuses one already there), and the cursor lands on that node. A move onto
 a batch or into its run fast-forwards to the run's current end, and only
 `Session.rerun` lands exactly where it was sent. A move does every check
-first, then writes; it never takes a claim.
+first, then writes; it never takes a claim. A move of a busy cursor, other
+than its step's own, interrupts that step first (`02-step.md`).
 
 Notation: `◀ A.at` marks a cursor's `at`. All nodes shown are committed unless
 marked.
@@ -125,7 +126,8 @@ that branches partway.
       a copied batch?                    refuse
    3  no to == at stop: rerun(a1) while at == a1 runs the batch again
    4  I6: refuse if a restatement would be needed (node is an unstarted or partial batch)
-   5  append move { cursor, from: at, to: node, by, time }; set at := node
+   5  if the cursor is busy, interrupt its step first (its records are written, not moved onto)
+      append move { cursor, from: at, to: node, by, time }; set at := node
    6  tools step now (takes the claim), for each call unanswered on walk(node), through pre_tool as usual
 ```
 
