@@ -1,6 +1,6 @@
 # Glossary
 
-Status: **draft for review (Phase 1).** On sign-off this file and `model.md`
+Status: **for review (Phase 1), fourth revision.** On sign-off this file and `model.md`
 supersede `docs/plan.md` §1.
 
 Rule 2: no type, field, or module-level concept exists without an entry here.
@@ -46,7 +46,7 @@ The first four kinds are **message-bearing**. `Config` and `Custom` are
 bookkeeping, and the provider never sees them.
 
 Known `Custom` kinds are listed here as they are introduced:
-- `sample_error`: written by the driver. It records, as scratch, a sample
+- `sample_error`: written by core (`by: core`). It records, as scratch, a sample
   that failed before any output arrived (`model.md` §8).
 
 ### part
@@ -78,7 +78,7 @@ own string is kept as `stop_raw`.
 | `error` | the stream failed after output had arrived |
 
 Only `tools` runs calls. On every other stop, core answers the reply's calls
-`Skipped(<stop>)` and `next` is `Wait`.
+`Skipped(<stop>)` and `next` is `Wait` (Q29).
 
 ### call
 **Rust** `Call`, `CallId` · **Python** `Call` · **retires** tool call,
@@ -104,15 +104,17 @@ states:
 - **partial**: some calls answered;
 - **complete**: every call answered exactly once (I4).
 
-A cursor's `at` is never at a partial batch (I3).
+Only the cursor holding a batch's claim has its `at` partway through its run.
+Any other move onto the batch or into its run fast-forwards to the run's end
+(I3).
 
 ### run
 **Python**: none (a view) · new
 
 A batch's result nodes: one per call, each under the previous, in the order
-the calls finished. A batch has at most one run (`model.md` §8). Within a run,
-nothing branches on committed nodes, except at the result that completes it
-(I4b).
+the calls finished. A batch has at most one run (`model.md` §8). Nothing
+branches inside a run: each of its nodes has at most one child, except the
+result that completes it (I4b).
 
 ### result
 **Rust** `Body::Result` · **Python** `Result` (body class) · **retires** tool
@@ -132,8 +134,8 @@ What a result says:
 | outcome | meaning |
 |---|---|
 | `Ok(value)` | the tool ran and returned a value, or a `pre_tool` hook supplied one (cache, mock) |
-| `Err(error)` | the tool ran and failed, or could not run (unknown tool; `args_raw` doesn't parse) |
-| `Skipped(reason)` | deliberately not run: a `pre_tool` hook declined it ("blocked by …"), or the reply stopped for a reason other than `tools` |
+| `Err(error)` | the tool ran and failed, or could not run (unknown tool; `args_raw` doesn't parse: `Err("invalid arguments")`), or a hook raised: `Err("hook error")`, with any raw output withheld (`model.md` §7) |
+| `Skipped(reason)` | deliberately not run: a `pre_tool` hook declined it ("blocked by …"); input arrived at an unstarted batch and the call never started (`Skipped("superseded by input")`, Q17); or the reply stopped for a reason other than `tools` (Q29) |
 | `Interrupted` | no result was written: the call was aborted, or a crash or abort came before its result was written. The tool may or may not have run (D4) |
 
 ### author
@@ -144,7 +146,9 @@ Who wrote a node:
 - `frontend`: a person's input.
 - `provider`: a sample.
 - `tools`: a result from running a call.
-- `core`: a root, I6's restated config, or an `Interrupted` result.
+- `core`: a root, I6's restated config, a `sample_error` record, and every
+  result core writes itself: `Skipped`, `Interrupted`,
+  `Err("invalid arguments")`, `Err("hook error")`.
 - `extension(name)`: a hook.
 
 A node's author is whoever produced its content as written. A hook's answer or
@@ -201,7 +205,7 @@ with the config in force (Q5). A session's first node is its first root.
 
 Any root after the first. It holds one-off work a hook does outside the
 conversation, such as a cold summary from a cheap model. Its `Config` records
-which model did the work. Its nodes are scratch unless a cursor commits onto
+which model did the work. Its nodes are scratch unless a cursor moves onto
 them.
 
 ### walk
@@ -232,8 +236,8 @@ when `a` and `b` are in different trees.
 **Rust** `Cursor`, `CursorId` · **Python** `Cursor` · **retires** head cursor,
 acting cursor, `TURN_CURSOR`, `TurnFrame`, `RemoteCursor`
 
-An insertion point: `{id, at, target}`, plus the driver's in-memory
-`auto_step` flag.
+An insertion point: `{id, at}`, plus the driver's in-memory `auto_step` flag.
+Every write a step makes is followed by a move of its cursor onto it.
 - Several cursors may share a session, and even a node.
 - A cursor carries no settings: those come from the walk (`config_at`).
 - A cursor carries no queues: those belong to frontends (D2).
@@ -244,8 +248,8 @@ An insertion point: `{id, at, target}`, plus the driver's in-memory
 `Session.open_cursor(at, opened_by=None)` · **retires** `spawn`, `newest`,
 cursor registration
 
-Creates a cursor and appends its opening move. The node must be committed and
-its walk must validate, so a cursor never opens partway through a batch (I3).
+Creates a cursor and appends its opening move. The node must be committed, its
+walk must validate, and it must not be partway through a run (I3).
 
 ### at
 **Rust** `Cursor::at` · **Python** `Cursor.at` · **retires** leaf,
@@ -253,21 +257,6 @@ its walk must validate, so a cursor never opens partway through a batch (I3).
 
 The cursor's committed node. Always valid and committed (I3). This is where
 the conversation *is*, for that cursor.
-
-### target
-**Rust** `Cursor::target` · **Python** `Cursor.target` · new (0.15 wrote at
-the leaf directly)
-
-The tip of the cursor's draft: where the conversation *will be* if the step
-commits. It equals `at` between steps. Not persisted (D6).
-
-### draft
-**Python** `Session.draft(cursor)` (a view) · new
-
-Derived, never stored. The uncommitted nodes on `walk(target)`, which are
-exactly what a commit would make permanent. Most were appended in the current
-step. A draft may also include older nodes on the way: the results a crash
-left behind, or a compaction candidate built ahead of time.
 
 ### committed
 **Python** `Session.is_committed(node_id)` (a view) · new
@@ -279,51 +268,77 @@ uncommit anything (Q2).
 ### scratch
 **Python**: a view · **retires** side entry, orphaned suspension
 
-Derived, never stored. Nodes that are neither committed nor in any cursor's
-current draft. That covers:
-- hook work that was not kept;
-- detached-root calls;
-- samples that failed before any output arrived;
-- refused or discarded drafts;
-- drafts orphaned by a crash (D6).
+Derived, never stored. Every node that is not committed: no move has landed on
+it or passed through it. That covers:
+- side nodes an extension appends off a line, or anywhere else;
+- detached-root work;
+- the nodes a `pre_sample` hook built for a sample that produced nothing;
+- `sample_error` records.
 
 Scratch is persisted like any node and stays inspectable. It is just not on
-anyone's conversation.
+anyone's conversation, until a move reaches it. Core never writes a node and
+then abandons it, so scratch is only ever an extension's work or a record of
+a failure.
+
+### side node
+**Python**: none (an ordinary node) · new
+
+A node a hook appends off the cursor's line: a `Custom` note under a written
+node, an alternative, or work on a detached root. It is scratch unless a move
+later reaches it. Nothing marks it; "side" describes where it sits.
 
 ### append
 **Rust** `Session::append(parent?, by, body, …)` · **Python**
 `Session.append(...)` · **retires** `append_at`, `_CursorWriter`, write group
 
-Writes one new node and emits `node_appended`. It checks two rules first:
+Writes one new node and emits `node_appended`. It checks the node first, so
+nothing invalid is written (I5):
 - I4a: under an unstarted or partial batch, only a result answering one of its
   unanswered calls may be appended.
+- I4b: inside a run, a node may have only one child, except the result that
+  completes the batch.
 - V2: a parentless node must be `Config`.
 
-Appending never moves a cursor.
+Appending never moves a cursor. A step moves its cursor onto what it appended
+straight afterwards.
 
-### commit
-**Rust** `Session::commit(cursor)` · **Python** `Session.commit(cursor)` · new
-(0.15 had no single point where a write became final)
+### move
+**Rust** `Session::move_cursor(cursor, to, by)` · **Python**
+`Session.move(cursor, to, by)` · new (0.15 had no single point where a write
+became final)
 
-The only way `at` changes. It validates `walk(target)` (I4, I5), restates
-config if I6 requires it, appends one move record, and sets `at := target`.
-A refused commit leaves `at` unchanged, sets `target := at`, and turns
-auto-step off (`model.md` §5). A tools commit is never refused: its effects
-already happened.
+The only way `at` changes. It checks where the cursor lands (I3, and I6 for a
+go-to or a hook's move, which may restate config). A destination on a batch or
+inside its run fast-forwards to the end of the run, taking the batch's claim
+if the run is partial, and is refused if another cursor holds it. Then it
+appends one move record,
+sets `at := to`, and emits `cursor_moved` (`model.md` §5). A move comes from a
+step (onto what it wrote), a frontend's go-to, or a post hook. A refused move
+changes nothing and raises to whoever asked. A step's own move is never
+refused.
 
 ### move record
 **Rust** `Move` · **retires** navigate entry
 
-The persisted fact of one commit, or of one cursor opening:
-`{cursor, from?, to, time, opened_by?}`. `from` is absent on an opening move.
-`opened_by` names the cursor that opened this one, such as a sub-agent's
-parent (Q6).
+The persisted fact of one move, or of one cursor opening:
+`{cursor, from?, to, by, time, opened_by?}`. `from` is absent on an opening
+move. `by` says who asked: `frontend`, `core` (a step's own move), or
+`extension(name)` (a hook's move) (Q28). `opened_by` names the cursor that
+opened this one, such as a sub-agent's parent (Q6).
+
+### go to
+**Python** `Session.move(cursor, to, by=frontend)` · **retires**
+`navigate_tree`
+
+A move a frontend asks for, with no new input and no hooks (Q15). It is how a
+person branches, returns to an older line, or rejects a reply (go to its
+parent and step again).
 
 ### branch
 **Rust/Python**: no type; a verb · **retires** fork (in-session),
 `commit_branch`, `BranchPlan`, `branch_summary`, `spawn_branch`
 
-To branch is to commit a target that is not a descendant of `at`. The cursor
+To branch is to move to a node that is not a descendant of `at`. The cursor
 leaves its old line at the LCA, or entirely if there is none. The old line
 stays committed.
 
@@ -359,56 +374,52 @@ node:
 senses, D1)
 
 One cycle for one cursor (`model.md` §7). Its phases run in order:
-1. pre hooks;
+1. pre hooks on the effect (`pre_sample`, `pre_tool`);
 2. the **effect**: a provider request, tools, or nothing for input;
-3. post hooks;
-4. **write** the produced node(s) as draft;
-5. **hold**;
-6. **commit**.
+3. pre hooks on the node (`pre_input`, `pre_reply`, `pre_result`);
+4. **write** the node and **move** the cursor onto it;
+5. post hooks on the written node (`post_input`, `post_reply`,
+   `post_result`).
+
+Then the driver evaluates `next` again.
 
 There are three **step kinds**:
 - `input`: a frontend gives input;
 - `sample`: `next` is `Sample`;
 - `tools`: `next` is `RunTools`. A tools step writes one result per call as
-  each call finishes, and commits once.
+  each call finishes, and moves onto each one.
 
-A step either commits or ends with `target := at`.
+A step either moves its cursor onto what it wrote, or (refused, or a sample
+that failed with no output) leaves `at` where it was and turns auto-step off.
 
 ### reply
 **Python** `Assistant` body, before it is written · **retires**
 `AssistantMessage` (as a mutable in-flight object)
 
-What a sample returns, as `pre_sample` (when it answers) and `post_sample` see
+What a sample returns, as `pre_sample` (when it answers) and `pre_reply` see
 it. A reply becomes an `Assistant` node when it is written.
-
-### hold
-The fifth phase of a step. If the cursor's auto-step is off, the driver waits
-here for the frontend to **resume**, or to **discard** (not available in a
-tools step).
-
-### discard
-Ends a held input or sample step without committing: `target := at`, and the
-draft becomes scratch. A tools step cannot be discarded. Its tools have
-already run, and discarding would leave `next == RunTools`, which would run
-them again.
 
 ### auto-step
 **Python** `Cursor.auto_step` (driver memory) · **retires** step mode,
 suspension, `api.suspend`, `PausableDeadline`, responder
 
-A per-cursor flag. When it is on, the driver commits each step without holding
-and keeps stepping until `next` is `Wait`. When it is off, every step holds.
-It goes off on its own when a step ends without committing (refused,
-discarded, failed, aborted), so a failure never repeats unattended. Every
-cursor loads with it off. To **pause** a cursor is to turn its auto-step off.
+A per-cursor flag. When it is on, the driver keeps stepping until `next` is
+`Wait`. When it is off, the cursor **pauses** after each step, already moved,
+until the frontend resumes it. It goes off on its own when a step ends without
+moving its cursor (refused, failed) and on abort, so a failure never repeats
+unattended. Every cursor loads with it off. To **pause** a cursor is to turn
+its auto-step off.
 
 ### resume
-Continue a held step, or turn auto-step back on. At an unstarted or partial
-batch, resume follows `model.md` §8:
-1. Continue the batch's run, if a crash left one.
-2. Re-run unanswered idempotent calls.
-3. Answer the rest `Interrupted` (D4).
-4. Commit.
+Step a paused cursor, or turn its auto-step back on. At an unstarted or
+partial batch, resume follows `model.md` §8:
+1. Take the batch's claim. If another cursor holds it, wait, then
+   fast-forward to the end of the completed run; nothing is left to do.
+2. Re-read the run, and move onto its end if results lie below `at`.
+3. Re-run unanswered idempotent calls.
+4. Answer the rest `Interrupted` (D4).
+
+Each result is written and moved onto as usual.
 
 ### idempotent
 **Python** `Tool.idempotent: bool` · new
@@ -457,7 +468,8 @@ it persists until another `Config` node replaces it (Q26).
 
 Fields named so far:
 - **`max_steps`** (Q20): the most `Assistant` nodes allowed on the walk since
-  the last `User` node authored by `frontend`. The count is computed from the
+  the last node an input step wrote, whoever its author. Once it is reached,
+  `next` is `Wait` where it would be `Sample`. The count is computed from the
   walk, not stored.
 - **`partial_calls`** (Q27): `text` (the default) or `omit`. It sets what a
   call with no run (truncated or skipped) becomes when the walk is sent again:
@@ -467,8 +479,11 @@ Fields named so far:
 ### validate
 **Rust** `validate(walk)`
 
-The structural check commit runs on `walk(target)`: rules V1 and V2 (I5).
-Provider legality is checked separately, by the provider's conversion (Q11).
+The structural checks (I5). `append` checks each new node (V1: I4a and I4b;
+V2: a parentless node is `Config`), so every walk is valid by construction.
+A move checks where it lands (I3, I6). `validate(walk)` re-checks a whole walk,
+for tests. Provider legality is checked separately, by the provider's
+conversion (Q11).
 
 ### hook
 **Python** `async def hook(api, cursor, …)`, one signature per hook point ·
@@ -478,14 +493,29 @@ handler policy, suspension site, chain
 
 A Python function an extension registers at one **hook point**. At each hook
 point, hooks run in the order their extensions are listed in the config. Each
-receives what the previous one returned:
-- A **pre** hook sees a request before its effect runs. It may rewrite the
-  request, or **answer** it: the effect and the remaining pre hooks are
-  skipped, but the post hooks still run (Q18).
-- A **post** hook sees a result before it is written, and may rewrite it.
+receives what the previous one returned. There are three sorts:
+- A **pre hook on an effect** (`pre_sample`, `pre_tool`) shapes a request
+  before the effect runs. It may rewrite the request, or **answer** it: the
+  effect and the remaining hooks at that point are skipped, but the node's pre
+  hooks still run (Q18).
+- A **pre hook on a node** (`pre_input`, `pre_reply`, `pre_result`) sees a
+  node before it is written, and may rewrite it. `pre_input` and `pre_reply`
+  may also refuse it.
+- A **post hook** (`post_input`, `post_reply`, `post_result`) sees the node
+  after it is written and the cursor has moved onto it, before `next` is
+  evaluated. It may append side nodes, and it may move the cursor (checked
+  like a go-to). A move ends that node's post hooks. `post_result` may move
+  only on the result that completes its batch (I4b). In a tools step, post
+  hooks run one result at a time per cursor. Post hooks do not run after an
+  abort, and an abort during one cancels it and skips the rest.
 
 Any hook may also use `api` to append nodes elsewhere, for example on a
-detached root. Hooks do not move `target`.
+detached root. Nodes and moves written by hooks trigger no hooks.
+
+An uncaught exception from a hook ends its hook point, turns auto-step off,
+and is shown to the frontend. If the effect has not run, it does not. A call
+whose hook raised is answered `Err("hook error")` by core, with any raw
+output withheld (`model.md` §7).
 
 ### hook point
 **Python** the registration name · new
@@ -495,20 +525,22 @@ One of:
 | hook point | receives | returns |
 |---|---|---|
 | `pre_input` | the input (a `User` body) | a body to write: the input, possibly rewritten, or another body when a command is **handled** (`/model fast` returns a `Config`). Or nothing: **refused**, and nothing is written |
+| `post_input` | the written input node | nothing; it may append, or move the cursor (a synthetic sibling) |
 | `pre_sample` | the context tip | a context tip (the same, or a node it appended: a reminder, a `Config`, a compacted line), or a reply (answered) |
-| `post_sample` | the reply | the reply, or nothing (refused, nothing written) |
+| `pre_reply` | the reply | the reply, possibly rewritten, or nothing (refused, nothing written) |
+| `post_reply` | the written `Assistant` node | nothing; it may append, or move the cursor ("continue", Q20, Q29) |
 | `pre_tool` | one call | the call (possibly rewritten), or an outcome (answered) |
-| `post_tool` | the call as it ran, and its outcome | an outcome of the same kind, with its content possibly rewritten (Q18). It cannot drop one: every call is owed a result (I4) |
-| `idle` (Q20) | the cursor, after a commit leaves `next == Wait` | nothing; it may give input |
+| `pre_result` | the call as it ran, and its outcome | an outcome of the same kind, with its content possibly rewritten (Q18). It cannot drop one: every call is owed a result (I4) |
+| `post_result` | the written result node | nothing; it may append, or, on the completing result only, move the cursor |
 
 ### refuse
-Ending a step from `pre_input` or `post_sample` by returning nothing. The
-remaining hooks do not run, nothing is committed, and auto-step goes off.
-`pre_tool` cannot refuse; it answers `Skipped` instead.
+Ending a step from `pre_input` or `pre_reply` by returning nothing. The
+remaining hooks do not run, nothing is written, the cursor does not move, and
+auto-step goes off. `pre_tool` cannot refuse; it answers `Skipped` instead.
 
 ### handled
 Input that `pre_input` turned into a different body, such as a command turned
-into a `Config` node. That body is written and committed in place of a `User`
+into a `Config` node. That body is written and moved onto in place of a `User`
 node.
 
 ### answer
@@ -518,9 +550,12 @@ mocked or blocked outcome, so that the effect does not run.
 ### claim
 **Python**: driver memory · new
 
-The driver's in-memory mark that a cursor is running a batch. Any other
-cursor that reaches the batch waits, then goes to the completed run, so tools
-run once (Q13). The lease keeps claims within one process.
+The driver's in-memory mark that a cursor is running or resuming a batch. A
+cursor takes it before running any call, then re-reads the run. Any other
+cursor that reaches the batch waits, then fast-forwards to the end of the
+completed run, so tools run once (Q13). A move that would land partway
+through a run while another cursor holds its claim is refused (I3). The lease
+keeps claims within one process.
 
 ### event
 **Rust** `Event` · **Python** `Event` · **retires** `AgentEvent`, `WireEvent`,
@@ -535,10 +570,12 @@ Every wire format is a projection of this one type.
 
 Cancel a cursor's in-flight sample or tools, then turn its auto-step off. An
 aborted sample that had produced output is written with
-`stop: interrupted`, its calls are `Skipped`, and it is committed; one that
-had produced nothing writes nothing. Aborted tools keep the results already
-written, answer each unanswered call `Interrupted`, and commit the batch,
-which I4 requires (`model.md` §8, Q4).
+`stop: interrupted`, its calls are `Skipped` (Q29), and the cursor moves onto
+it; one that had produced nothing writes nothing. Aborted tools keep the
+results already written, and answer each unanswered call `Interrupted`,
+moving onto each, which I4 requires. No post hooks run after an abort, and an
+abort while a post hook is running cancels it and skips the remaining post
+hooks (`model.md` §8, Q4).
 
 ---
 
@@ -594,9 +631,8 @@ Extensions have no special standing in core (D3, D8). The first three
 
 What a hook may do besides returning its value: read the session, append
 nodes (for example on a detached root), sample a walk, run a tool, open a
-cursor, and, at `idle`, give input. It cannot move `target`; the hook point's
-return value is how a hook steers the step. The exact surface is a Phase 4
-decision. It is not the 0.15 `ExtensionAPI`.
+cursor, and, from a post hook, move its cursor. A pre hook steers only through
+its return value. The exact surface is a Phase 4 decision. It is not the 0.15 `ExtensionAPI`.
 
 ### frontend
 **retires** head, backend (as `Backend`/`TauBackend`/`RemoteBackend`), head
@@ -605,15 +641,16 @@ label
 A program that drives sessions and shows events: print/json, REPL, RPC, TUI,
 serve.
 - Input queues and "steer" behavior live here (D2).
-- A frontend may give input under a named parent, or set `target` and commit,
-  to branch or go back (Q15).
+- A frontend may give input under a named parent, or go to any node, to
+  branch or go back (Q15).
 - Every frontend sees every cursor.
 
 ### driver
 **Python** `tau_next.driver`
 
 The asyncio loop that runs steps. It calls `next`, runs the hook points
-around each effect, writes, then holds or commits. It also keeps the per-batch
+around each effect, writes and moves, runs the post hooks, then steps again or
+pauses. It also keeps the per-batch
 claim, so tools run once (Q13). It is the only place that awaits.
 
 ### store
@@ -682,7 +719,7 @@ needs them.
 | turn frame, `TurnFrame` | the `Config` node on the walk |
 | turn (four senses) | step (D1); frontends count steps since last input |
 | submission, multitask strategy | input steps; queues and steering are a frontend's (D2) |
-| suspension, responder, `api.suspend` | hold: auto-step off, the frontend resumes or discards |
+| suspension, responder, `api.suspend` | auto-step off: the cursor pauses between steps. A hook that needs a person awaits the frontend (Q22) |
 | lane | nothing |
 | head | frontend |
 | backend | provider (model API) or frontend (driver of a session) |
@@ -692,8 +729,8 @@ needs them.
 | `input` hook | `pre_input` |
 | `before_agent_start` hook | `pre_sample` (appends what it adds, I1) |
 | `tool_call` hook | `pre_tool` |
-| `tool_result` hook | `post_tool` |
-| `turn_end`, `user_turn_end` hooks | `idle` (Q20) |
+| `tool_result` hook | `pre_result` |
+| `turn_end`, `user_turn_end` hooks | `post_reply` (Q20) |
 | `annotate`, `entry_written` hooks | event observers (`node_appended`) |
 | session write lock | lease |
 | `AgentSession`, runtime, catalog, `SessionManager` | session |
