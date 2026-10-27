@@ -278,9 +278,16 @@ impl Session {
         out
     }
 
+    /// `next` from the end of the walk, without building it: only the last
+    /// node that is not Config or Custom decides.
     pub fn next(&self, cursor: CursorId) -> Next {
-        let walk = self.at(cursor).map(|a| self.walk(a)).unwrap_or_default();
-        next(&walk)
+        let last = self.at(cursor).ok().and_then(|a| {
+            std::iter::successors(self.node(a).ok(), |x| {
+                x.parent.and_then(|p| self.node(p).ok())
+            })
+            .find(|n| !matches!(n.body, Body::Config(_) | Body::Custom { .. }))
+        });
+        decide(last)
     }
 
     pub fn add_item(&mut self, to: CursorId, data: ItemData) -> ItemId {
@@ -336,10 +343,15 @@ pub fn calls(body: &Body) -> Vec<(&str, &str, &str)> {
 }
 
 pub fn next(walk: &[&Node]) -> Next {
-    let last = walk
-        .iter()
-        .rev()
-        .find(|n| !matches!(n.body, Body::Config(_) | Body::Custom { .. }));
+    decide(
+        walk.iter()
+            .rev()
+            .find(|n| !matches!(n.body, Body::Config(_) | Body::Custom { .. }))
+            .copied(),
+    )
+}
+
+fn decide(last: Option<&Node>) -> Next {
     match last.map(|n| &n.body) {
         Some(Body::User(_) | Body::Results(_)) => Next::Sample,
         Some(b) if !calls(b).is_empty() => Next::RunTools,
