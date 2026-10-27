@@ -1,60 +1,35 @@
 # D8: No compatibility with 0.15 extensions
 
-Status: accepted (Phase 1, 2026-10-26; mapping updated in the seventh revision)
+Status: accepted (Phase 1)
 
 ## Context
 
-0.15 extensions registered handlers through a large API object, ran in a
-runner with its own state, and relied on hooks such as `input`,
-`before_agent_start`, `tool_call`, and `tool_result`. Some paused a turn and
-waited for a person, which left state that a reload could not rebuild
-(glossary, "Retired 0.15 terms").
-
-The hook set here differs in meaning, not only in name. A hook now sits at a
-fixed point of the step's phase loop (model.md §6, §7). It changes the
-machine's state through its handle (moving the cursor, editing a draft) and
-returns `None` to carry on or a string to stop. Cursor hooks are
-`hook(cursor, subject)`; tool hooks (`pre_tool`, `pre_result`) are
-`hook(node, call)` and cannot move the cursor.
+0.15 extensions registered handlers through a 42-method API object, ran in a
+runner with its own state, and some paused a turn to wait for a person. The
+hook set here differs in meaning: a hook sits at a fixed point of the phase
+loop, changes state through its handle, and returns `None` or a string.
 
 ## Decision
 
 - **No compatibility layer.** An extension is a Python module that registers
-  hooks and tools through the public API (glossary, extension). Extensions
-  have no special standing in core.
-- **A documented mapping** replaces a shim. The glossary's retirement table
-  is that mapping:
-
-  | 0.15 hook | here |
-  |---|---|
-  | `input` | `pre_input`, a cursor hook run on each pending input's draft in the step's input phase: it edits the draft, moves the cursor to prepend, or returns a string to refuse |
-  | `before_agent_start` | `pre_sample`, which appends what it adds and moves the cursor onto it (I1) |
-  | `tool_call` | `pre_tool`, a tool hook: edits the call draft, sets its outcome to skip the tool, or returns a string that becomes the call's `Err` |
-  | `tool_result` | `pre_result`, a tool hook, per call; `post_result` runs once, on the batch's `Results` node |
-  | `turn_end`, `user_turn_end` | `post_reply` (Q20), or `post_step` |
-  | the node-written and annotate hooks | event observers (`node_appended`) |
-
-- Lifecycle hooks (`session_start` and the rest) do not exist until a
-  Phase 5 extension needs one (Q23). Hook deadlines are not core's; a hook
-  that needs one uses `asyncio.timeout` (Q9).
-- The exact cursor handle surface is a Phase 4 decision.
+  hooks and tools through the public API.
+- **A documented mapping** replaces a shim (glossary, Retired terms):
+  `input` → `pre_input`; `before_agent_start` → `pre_sample`, moving onto
+  what it adds; `tool_call` → `pre_tool`; `tool_result` → `pre_result` per
+  call, `post_result` per batch; `turn_end`, `user_turn_end` → `post_reply`
+  or `post_step`; node-written and annotate hooks → event observers.
+- No lifecycle hooks until a Phase 5 extension needs one (Q23). No hook
+  deadlines in core (Q9). The handle surface is Phase 4's.
 
 ## Alternatives
 
 | option | why not |
 |---|---|
-| A shim that runs 0.15 extensions | The shim would have to fake 0.15's state: turns, per-turn state, a pausing broker. Each is something this design removed on purpose. It would also carry the 42-method API surface. |
-| Port the 0.15 extensions in the repo | Not a compatibility choice; each port is its own work, and rule 1 forbids copying code from 0.15. |
+| A shim that runs 0.15 extensions | It would fake the turns, per-turn state, and pausing broker this design removed. |
+| Port the 0.15 extensions | Separate work per extension; rule 1 forbids copying. |
 
 ## Consequences
 
-- The hook model stays small and its guarantees (I1, I2) stay true for every
-  extension.
-- Extension authors rewrite once, with a table to follow.
-- Cost: no 0.15 extension runs unchanged. τ 0.16 is incompatible on purpose
-  (plan amendments).
-- Cost: the table is only as good as its rows. Some 0.15 behaviors map to
-  nothing (handler policies), and the docs say so.
-- Enforced by: the Phase 5 exit criterion (each extension has behavior tests
-  and needs no core change) and rule 3's lint. No invariant tests
-  non-compatibility itself.
+- The hook model stays small, and I1 and I2 hold for every extension.
+- Cost: no 0.15 extension runs unchanged.
+- Enforced by the Phase 5 exit criterion and rule 3's lint.

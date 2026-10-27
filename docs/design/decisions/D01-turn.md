@@ -1,75 +1,40 @@
-# D1: No "turn"; steps, and `max_steps` as a pause
+# D1: No "turn"; the step, and `max_steps`
 
-Status: accepted, revised in review (Phase 1, 2026-10-26; sixth and seventh revisions 2026-10-27)
+Status: accepted (Phase 1)
 
 ## Context
 
-τ 0.15 used "turn" in four senses: loop turn, agent run, user turn, and
-submission. Each had its own state and its own hooks (`turn_end`,
-`user_turn_end`). A reload had to guess where a turn stood (glossary,
-"Retired 0.15 terms").
-
-Core needs one question answered: what does this cursor do next? That is
-`next(walk)` (model.md §6), a pure function. It does not need to know what
-a "turn" is. But something must stop a runaway loop, for example a hook that
-keeps sending "continue" (Q20).
+τ 0.15 used "turn" in four senses (loop turn, agent run, user turn,
+submission), each with its own state and hooks, and a reload had to guess
+where a turn stood. Core only needs to know what a cursor does next, which is
+`next(walk)`. Something must still stop a runaway loop, such as a hook that
+keeps writing "continue" (Q20).
 
 ## Decision
 
-- There is no turn in core. The unit is the **step** (model.md §6): one pass
-  of the phase loop for one cursor, from `pre_step` to `post_step`. The input,
-  sample, and tools phases each run if they apply, so one step may deliver
-  input, sample once, and run that reply's calls.
-- Each step that commits something counts toward `max_steps`. A step that
-  commits nothing (a go-to's wake, a `pre_step` that did nothing) does not.
-  An abort ends a step; it is not one.
-- Frontends that want to show "turns" count steps since the last input. That
-  is a display choice, not core state.
-- Runaway loops are bounded by the `max_steps` field of `Config`: the most
-  committing steps a cursor takes without a frontend acting on it (Q20). The
-  driver keeps an in-memory counter per cursor, reset only by actions
-  `by: frontend(client)`: giving input, stepping the cursor, turning
-  auto-step on. A cursor a hook or tool opens inherits its opener's count
-  and auto-step setting; a cursor a frontend opens starts at 0 with
-  auto-step off. When the count reaches `config_at(at).max_steps`,
-  auto-step turns off and the cursor rests.
+- No turn in core. The unit is the **step**: one pass of the phase loop,
+  `pre_step` to `post_step` (`step::Step`, model.md §6).
+- Frontends that show "turns" count steps since the last input.
+- **`max_steps`** in `Config` bounds committing steps taken without a
+  frontend acting. The driver counts in memory; only frontend actions
+  (input, step, auto-step on) reset it. A cursor a hook or tool opens
+  inherits its opener's count. At the limit, auto-step turns off.
 - `next` stays a pure function of the walk; `max_steps` never changes it.
-- Nothing is stored. Every cursor loads with auto-step off (I7), so a
-  runaway loop cannot survive a reload, and a fresh count after a reload
-  loses nothing.
-- "Keep going" lives in a `post_reply` hook that writes a `User` node and
-  moves onto it with `cursor.write` (model.md §7). That is the cursor acting
-  on its own, not the frontend, so it does not reset the count.
+- Nothing is stored: every cursor loads with auto-step off, so a runaway loop
+  cannot survive a reload.
 
 ## Alternatives
 
 | option | why not |
 |---|---|
-| Keep "turn" as the steps from input to `Wait` (plan option 2) | `Wait` is not an end: a `post_reply` hook may continue past it. A turn would need either a stored marker or a second definition of where it ends. 0.15 shows where that leads. |
-| A step as one sample or one tools run (sixth revision) | Two kinds of step, each with its own hook table, and a "cycle" above them to say when `pre_step` runs. The phase loop has one shape for all three phases, and the cycle and the step become one thing. |
-| A count computed from the walk (an earlier revision) | The walk cannot tell a delivered input's node from a hook's "continue" `User` node: both may be authored by an extension. The boundary would need a stored marker. |
-| `max_steps` reached makes `next` return `Wait` | `next` would depend on more than the walk. Turning auto-step off says the same thing without that. |
-| A persisted counter | State outside the stored records (I7), and pointless: auto-step loads off, so nothing runs away across a reload. |
+| "Turn" as the steps from input to `Wait` | `Wait` is not an end; a `post_reply` hook may continue. It needs a stored marker. |
+| A count computed from the walk | The walk cannot tell a delivered input from a hook's "continue" node. |
+| `max_steps` makes `next` return `Wait` | `next` would depend on more than the walk. |
+| A persisted counter | State outside the records (I7), and useless: auto-step loads off. |
 
 ## Consequences
 
-- One word, one meaning: `step`. The banned-term table maps all four turn
-  senses to it, and "cycle" is retired.
-- `max_steps` needs no persistence: a reload turns auto-step off, which is
-  what reaching `max_steps` would do.
-- Two cursors at the same node always agree on `next`. Their counters may
-  differ; that only decides when each rests.
-- Cost: a frontend's "turn" count may differ from another frontend's. Core
-  does not care.
-- Enforced by: a Phase 2 scenario (a `post_reply` "continue" hook stops at
-  `max_steps`; a frontend action resets the count). The I7 proptest covers
-  that the counter is not part of the stored state.
-
-## History
-
-Plan default: drop "turn"; frontends count steps since last input. Review
-kept the drop and added a core-side bound, `max_steps` (Q20). It was first
-computed from the walk; review found the walk could not mark where input
-began, so it became an in-memory count that pauses the cursor. The plan had
-no runaway guard once "continue" became a hook's job. The seventh revision
-made a step one pass of the phase loop, and counts only steps that commit.
+- One word, `step`; "cycle" is retired.
+- Two cursors at one node agree on `next`; their counts may differ.
+- Not yet spiked. Enforced by a Phase 2 scenario: a "continue" hook stops at
+  `max_steps`; a frontend action resets the count.
