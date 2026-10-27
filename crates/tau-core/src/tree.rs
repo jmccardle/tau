@@ -75,20 +75,8 @@ pub struct Move {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ItemData {
-    Input {
-        client: String,
-        text: String,
-    },
-    /// `outcome: None` means the call started and has not finished.
-    Journal {
-        batch: NodeId,
-        call: String,
-        outcome: Option<Outcome>,
-    },
-    Extension {
-        name: String,
-        data: String,
-    },
+    Input { client: String, text: String },
+    Extension { name: String, data: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -314,40 +302,6 @@ impl Session {
 
     pub fn items(&self, cursor: CursorId) -> impl Iterator<Item = &Item> {
         self.items.iter().filter(move |i| i.to == cursor)
-    }
-
-    /// Core's own journal writes: they do not count as a change (model.md §6).
-    pub(crate) fn journal(
-        &mut self,
-        cursor: CursorId,
-        batch: NodeId,
-        call: &str,
-        outcome: Option<Outcome>,
-    ) -> ItemId {
-        let found = self.items.iter_mut().find(|i| matches!(&i.data, ItemData::Journal { batch: b, call: c, .. } if *b == batch && c == call) && i.to == cursor);
-        let id = if let Some(item) = found {
-            item.data = ItemData::Journal {
-                batch,
-                call: call.into(),
-                outcome,
-            };
-            item.id
-        } else {
-            let id = self.next_item;
-            self.next_item += 1;
-            self.items.push(Item {
-                id,
-                to: cursor,
-                data: ItemData::Journal {
-                    batch,
-                    call: call.into(),
-                    outcome,
-                },
-            });
-            id
-        };
-        self.outbox.push(Record::Scratchpad);
-        id
     }
 
     /// What load does after replay (I7): every cursor at rest with auto-step

@@ -1,9 +1,7 @@
 //! One cursor's step: the phase loop of model.md §6 as a sans-IO machine.
 //! `next_job` says what to do; the driver does it and `feed`s the result.
 
-use crate::tree::{
-    Author, Body, CursorId, Error, ItemData, ItemId, Next, NodeId, Outcome, Session, calls,
-};
+use crate::tree::{Author, Body, CursorId, Error, ItemData, ItemId, Next, Outcome, Session, calls};
 
 pub const THROTTLE: u64 = 250;
 
@@ -39,7 +37,6 @@ pub struct RunCall {
     pub id: String,
     pub tool: String,
     pub args_raw: String,
-    pub resumed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,8 +47,7 @@ pub enum Job {
         ending: Option<Ending>,
     },
     Sample,
-    /// Each call: `pre_tool`, the tool, `pre_result`, in the driver. `resumed`: it
-    /// started before a crash and never finished, so only an idempotent tool reruns.
+    /// Each call: `pre_tool`, the tool, `pre_result`, in the driver.
     RunCalls(Vec<RunCall>),
     Pending,
     Wait {
@@ -107,7 +103,8 @@ pub struct Step {
     draft: Option<Draft>,
     error: Option<String>,
     ending: Ending,
-    batch: (NodeId, Vec<String>),
+    /// The running batch's calls in call order, each with its outcome once fed.
+    batch: Vec<(String, Option<Outcome>)>,
 }
 
 impl Step {
@@ -125,11 +122,11 @@ impl Step {
             draft: None,
             error: None,
             ending: Ending::Done,
-            batch: (0, vec![]),
+            batch: vec![],
         }
     }
 
-    pub fn next_job(&mut self, s: &mut Session, now: u64) -> Result<Job, Error> {
+    pub fn next_job(&mut self, s: &mut Session) -> Result<Job, Error> {
         loop {
             let on = !self.aborted && (self.asked || s.auto[&self.cursor]);
             let hooks = |point, draft| Job::Hooks {
@@ -182,16 +179,9 @@ impl Step {
                     None,
                 ),
                 Pos::Tools if on && s.next(self.cursor) == Next::RunTools => {
-                    match self.start_batch(s)? {
-                        run if run.is_empty() => {
-                            self.join(s, now)?;
-                            continue;
-                        }
-                        run => {
-                            self.pos = Pos::Calls;
-                            Job::RunCalls(run)
-                        }
-                    }
+                    let run = self.start_batch(s)?;
+                    self.pos = Pos::Calls;
+                    Job::RunCalls(run)
                 }
                 Pos::Tools => {
                     self.pos = Pos::PostStep;
@@ -285,8 +275,10 @@ impl Step {
                 None => self.pos = Pos::Tools,
             },
             (Pos::Calls, Fed::CallDone { call, outcome }) => {
-                s.journal(self.cursor, self.batch.0, &call, Some(outcome));
-                if self.journaled(s).len() == self.batch.1.len() {
+                if let Some(slot) = self.batch.iter_mut().find(|c| c.0 == call) {
+                    slot.1 = Some(outcome);
+                }
+                if self.batch.iter().all(|c| c.1.is_some()) {
                     self.join(s, now)?;
                 }
             }
@@ -336,78 +328,29 @@ impl Step {
         };
     }
 
-    fn journaled(&self, s: &Session) -> Vec<(ItemId, String, Outcome)> {
-        s.items(self.cursor)
-            .filter_map(|i| match &i.data {
-                ItemData::Journal {
-                    batch,
-                    call,
-                    outcome: Some(o),
-                } if *batch == self.batch.0 => Some((i.id, call.clone(), o.clone())),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn start_batch(&mut self, s: &mut Session) -> Result<Vec<RunCall>, Error> {
-        let at = s.at(self.cursor)?;
-        let all: Vec<(String, String, String)> = calls(&s.node(at)?.body)
+    fn start_batch(&mut self, s: &Session) -> Result<Vec<RunCall>, Error> {
+        let run: Vec<RunCall> = calls(&s.node(s.at(self.cursor)?)?.body)
             .into_iter()
-            .map(|(i, t, a)| (i.into(), t.into(), a.into()))
+            .map(|(id, tool, args_raw)| RunCall {
+                id: id.into(),
+                tool: tool.into(),
+                args_raw: args_raw.into(),
+            })
             .collect();
-        self.batch = (at, all.iter().map(|c| c.0.clone()).collect());
-        let mut run = vec![];
-        for (id, tool, args_raw) in all {
-            let prior = s.items(self.cursor).find_map(|i| match &i.data {
-                ItemData::Journal {
-                    batch,
-                    call,
-                    outcome,
-                } if *batch == at && *call == id => Some(outcome.is_some()),
-                _ => None,
-            });
-            if prior == Some(true) {
-                continue;
-            }
-            s.journal(self.cursor, at, &id, None);
-            run.push(RunCall {
-                id,
-                tool,
-                args_raw,
-                resumed: prior == Some(false),
-            });
-        }
+        self.batch = run.iter().map(|c| (c.id.clone(), None)).collect();
         Ok(run)
     }
 
-    /// The join: one `Results` node in call order, delivering the journal.
+    /// The join: one `Results` node, in call order.
     fn join(&mut self, s: &mut Session, now: u64) -> Result<(), Error> {
-        let done = self.journaled(s);
-        let outcomes = self
-            .batch
-            .1
-            .iter()
-            .map(|c| {
-                (
-                    c.clone(),
-                    done.iter()
-                        .find(|d| d.1 == *c)
-                        .map(|d| d.2.clone())
-                        .unwrap(),
-                )
-            })
-            .collect();
-        let started: Vec<ItemId> = s
-            .items(self.cursor)
-            .filter(
-                |i| matches!(&i.data, ItemData::Journal { batch, .. } if *batch == self.batch.0),
-            )
-            .map(|i| i.id)
+        let outcomes = std::mem::take(&mut self.batch)
+            .into_iter()
+            .map(|(c, o)| (c, o.expect("joined")))
             .collect();
         s.write(
             self.cursor,
             Body::Results(outcomes),
-            started,
+            vec![],
             Author::Core,
             now,
         )?;

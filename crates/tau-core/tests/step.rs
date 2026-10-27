@@ -38,7 +38,7 @@ fn drive(
 ) -> Vec<Job> {
     let mut seen = vec![];
     for _ in 0..100 {
-        let job = step.next_job(s, 0).unwrap();
+        let job = step.next_job(s).unwrap();
         seen.push(job.clone());
         if job == Job::Rest {
             return seen;
@@ -143,13 +143,14 @@ fn batch_answers_in_call_order_then_samples_again() {
     );
 }
 
-#[test]
-fn crash_mid_batch_keeps_finished_calls() {
+/// Runs until the batch is handed out, feeds one call's outcome, then drops
+/// everything a crash drops and reloads.
+fn crash_mid_batch() -> (Session, u64) {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "look");
     let mut step = Step::wake(&s, c, false, 0);
     loop {
-        match step.next_job(&mut s, 0).unwrap() {
+        match step.next_job(&mut s).unwrap() {
             Job::Sample => step
                 .feed(
                     &mut s,
@@ -165,48 +166,80 @@ fn crash_mid_batch_keeps_finished_calls() {
                     &mut s,
                     Fed::CallDone {
                         call: "a".into(),
-                        outcome: Outcome::Ok("ten minutes".into()),
+                        outcome: Outcome::Ok("done".into()),
                     },
                     0,
                 )
                 .unwrap();
-                break; // crash: b never finishes
+                break; // the power goes out: b never finishes
             }
             _ => step.feed(&mut s, ok(), 0).unwrap(),
         }
     }
     drop(step);
     s.reconcile();
+    (s, c)
+}
+
+#[test]
+fn after_a_crash_mid_batch_input_goes_under_the_unanswered_batch() {
+    let (mut s, c) = crash_mid_batch();
+    assert!(
+        matches!(bodies(&s, c).last(), Some(Body::Assistant { .. })),
+        "rests at the batch"
+    );
+    send(&mut s, c, "the power went out, check the files");
+    let mut step = Step::wake(&s, c, false, 0);
+    let jobs = drive(&mut s, &mut step, |job, _| match job {
+        Job::Sample => vec![Fed::Sampled {
+            reply: Some(reply(vec![text("checking")], Stop::End)),
+            error: None,
+        }],
+        _ => vec![ok()],
+    });
+    assert!(
+        !jobs.iter().any(|j| matches!(j, Job::RunCalls(_))),
+        "input first: nothing reruns"
+    );
+    let b = bodies(&s, c);
+    assert!(matches!(b[3], Body::Assistant { .. }));
+    assert_eq!(
+        b[4],
+        Body::User("the power went out, check the files".into())
+    );
+}
+
+#[test]
+fn after_a_crash_mid_batch_a_step_reruns_the_whole_batch() {
+    let (mut s, c) = crash_mid_batch();
     let mut step = Step::wake(&s, c, true, 0);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
         Job::RunCalls(run) => run
             .iter()
             .map(|r| Fed::CallDone {
                 call: r.id.clone(),
-                outcome: Outcome::Interrupted,
+                outcome: Outcome::Ok("again".into()),
             })
             .collect(),
         _ => vec![ok()],
     });
-    let run = jobs
+    let ran: Vec<String> = jobs
         .iter()
-        .find_map(|j| {
+        .filter_map(|j| {
             if let Job::RunCalls(r) = j {
-                Some(r.clone())
+                Some(r.iter().map(|c| c.id.clone()))
             } else {
                 None
             }
         })
-        .unwrap();
-    assert_eq!(
-        (run.len(), run[0].id.as_str(), run[0].resumed),
-        (1, "b", true)
-    );
+        .flatten()
+        .collect();
+    assert_eq!(ran, ["a", "b"]);
     assert_eq!(
         bodies(&s, c).last().unwrap(),
         &Body::Results(vec![
-            ("a".into(), Outcome::Ok("ten minutes".into())),
-            ("b".into(), Outcome::Interrupted)
+            ("a".into(), Outcome::Ok("again".into())),
+            ("b".into(), Outcome::Ok("again".into()))
         ])
     );
 }
@@ -288,7 +321,7 @@ fn abort_during_sample_commits_the_partial_reply() {
     let jobs = {
         let mut seen = vec![];
         loop {
-            let job = step.next_job(&mut s, 0).unwrap();
+            let job = step.next_job(&mut s).unwrap();
             seen.push(job.clone());
             match job {
                 Job::Rest => break seen,
