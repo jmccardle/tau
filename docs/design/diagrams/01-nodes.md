@@ -46,7 +46,7 @@ body
 │     └─ Interrupted
 ├─ Config      { snapshot }                               bookkeeping
 └─ Custom      { kind, data }                             bookkeeping
-      known kinds: sample_error (core), inbox and pending_input (the base extension)
+      known kinds: sample_error (core), pending_input (the base extension)
 ```
 
 | kind | reaches the model | typical `by` |
@@ -56,7 +56,7 @@ body
 | `Assistant` | yes | provider (extension(name) if a hook answered or rewrote it) |
 | `Result` | yes | tools (core for `Interrupted`, `Err("invalid arguments")`, `Err("hook error")`) |
 | `Config` | no | core (the session's first root, I6 restatement); frontend or extension(name) when explicit; extension(name) for a root a hook creates |
-| `Custom` | no | core (`sample_error`), extension(name) (`inbox` and `pending_input` are `extension(base)`) |
+| `Custom` | no | core (`sample_error`), extension(name) (`pending_input` is `extension(base)`) |
 
 `stop` and `stop_raw`:
 

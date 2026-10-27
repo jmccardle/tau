@@ -35,14 +35,15 @@ an interrupting move during tools.
                                        (a cursor's `at` may be the end of a partial run; never
                                         a node above the end of a run, except where rerun put it, I3)
  every cursor loads at rest; nothing runs yet: a reload starts no step
- post_open(cursor, r5) runs for every cursor
+ post_open(cursor, r5) runs for every cursor, in the lease holder only (a read-only
+ process never runs hooks)
 ```
 
 ## A pending input across the crash
 
 ```
  before the crash: A busy running c3; the person typed "also b.rs"
-   k0 ─ ib ─ p1 Custom{kind: pending_input, cursor: A}      on disk: a node like any other
+   k0 ─ p1 Custom{kind: pending_input, cursor: A}           on disk: a side node under the first root
 
  after reload, post_open(A, r5), the base extension:
    p1 pending?   the reverse index of copied_from has no node copying p1  ──▶ yes
@@ -93,8 +94,8 @@ or neither.
 
 ## Abort during a sample
 
-Abort is an interrupt without a move. The step's own move is compare-and-set,
-and the cursor is still where the step left it, so it moves onto what the
+Abort is an interrupt without a move, which also turns auto-step off. Like
+every interrupt, it is in place: the step's own move lands on what the
 interrupt wrote.
 
 ```
@@ -136,12 +137,16 @@ The tokens the user saw are stored, and the model sees them next time.
 
  1 cancel c3 and its hooks
  2 r3 Result Interrupted, by core, under r5          the run is complete on walk(r3)
- 3 the step's own move r5 ──▶ r3: A was moved, compare-and-set fails ──▶ skipped
- 4 release the claim; resolve to = u1; write the move  A.at = u1
+ 3 the step's own move r5 ──▶ r3, as usual           A.at = r3, committed
+ 4 the step ends, releasing the claim and A's lock
+ 5 resolve to = u1; write the move  r3 ──▶ u1        A.at = u1
 
  u1 ◀ A.at
- └ a1 ─ r5 ─ r3        r5 committed (A moved onto it earlier); r3 SCRATCH, a record of the interrupt
+ └ a1 ─ r5 ─ r3        all committed: the interrupt is on the line, then A went back
  auto-step unchanged; a go-to starts no step. A later go-to a1 fast-forwards to r3: nothing runs twice.
+
+ post_result(r5) moving A instead: the move is a request, applied when that hook returns,
+ the same way; the other post_result hooks on r5 still run.
 ```
 
 Results core writes (`Interrupted`, `Err("invalid arguments")`,
@@ -149,7 +154,7 @@ Results core writes (`Interrupted`, `Err("invalid arguments")`,
 Their `post_result` hooks run, except on records an interrupt writes, which
 run no hooks (`model.md` §7, §8).
 
-Reads with: `model.md` §3 (the mid-step example), §5 (compare-and-set), §7
+Reads with: `model.md` §3 (the mid-step example), §5 (moving a busy cursor), §7
 (the base extension), §8 (interrupt, abort, failure, reload, resume at a
 batch), §10 (durability, claim), I3, I4, I7, Q4, Q13, Q17, Q27, D2, D4;
 `glossary.md` terms resume, idempotent, claim, interrupt, abort, busy,

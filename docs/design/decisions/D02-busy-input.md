@@ -1,4 +1,4 @@
-# D2: Input is hook-driven; queueing is the base extension's inbox
+# D2: Input is hook-driven; queueing is the base extension's pending inputs
 
 Status: accepted, revised in review twice (Phase 1, 2026-10-27)
 
@@ -22,19 +22,23 @@ memory, is lost when that frontend goes away or the process dies.
 
 - **Input is entirely hook-driven** (model.md §7). `Session.input(cursor,
   text)` runs that cursor's `pre_input` hooks, busy or at rest. Each returns:
-  - **handled**, optionally with a body. A body is written under `at` and
-    moved onto, in an input step. On a busy cursor that deliberately
-    interrupts the step in place (§8);
+  - **handled**, optionally with a body and its `copied_from`. A body is
+    written under `at` and moved onto, in an input step. On a busy cursor
+    that deliberately interrupts the step in place (§8);
   - **pass**, with the input, possibly rewritten, to the next hook;
   - **refuse**, with a reason.
 - If no hook handles it, the input is refused: "no extension handled this
   input". The frontend keeps the text. **Core has no default input behavior
   and no queue.**
 - **The base extension** ships in the default config and can be replaced:
-  - at rest, it writes the `User` node;
+  - at rest, it writes the `User` node (together with any inputs still
+    pending for the cursor, as one node whose `copied_from` lists them);
   - busy, it holds the input as a **pending input**,
-    `Custom{kind: pending_input}`, under the session's **inbox**, a
-    `Custom{kind: inbox}` side node off the session's first root;
+    `Custom{kind: pending_input, cursor}`, a side node directly under the
+    session's first root;
+  - a cursor's input hooks and post hooks never run concurrently, so input
+    to a busy cursor is either written before its post hooks run, and they
+    deliver it, or seen once the cursor is at rest;
   - its post hooks deliver pending inputs: after the next batch completes
     or the next stop (`deliver`), one `User` node per input or all combined
     (`combine`);
@@ -86,6 +90,6 @@ Plan default: core offers `append` (inject at commit) and `open_cursor`;
 queueing is a frontend buffer. The fourth revision removed commit (D6) and
 had the driver keep one input until `next != RunTools`, refusing a second.
 The fifth revision made input hook-driven and moved queueing into the base
-extension's inbox, because under `tau serve` the frontend may switch cursors
+extension's pending inputs, because under `tau serve` the frontend may switch cursors
 or sessions while every active cursor keeps operating: no cursor ever waits
 on a particular frontend connection.

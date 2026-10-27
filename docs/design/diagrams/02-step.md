@@ -9,9 +9,11 @@ per call, moving onto each as it is written. After the step the driver
 evaluates `next(walk(at))` and, with auto-step on, keeps stepping until
 `next` is `Wait`. Pre hooks change what is written; post hooks change what
 happens around a written node. Every hook is `hook(cursor, subject)` and may
-act through its cursor at any hook point. A step records the `at` it started
-from, and its own move is compare-and-set: any other move of its busy cursor
-interrupts it.
+act through its cursor at any hook point. A step holds its cursor's **step
+lock** from start through its post hooks and the `next` that follows; that is
+what **busy** means. A move of a busy cursor from outside its step interrupts
+the step in place: its records are written and moved onto, then the move
+applies.
 
 ## The five phases
 
@@ -56,15 +58,14 @@ session loads.
    ▼
  append Assistant a2 under tip'     by provider   (extension(name) if answered or rewritten)
                                     (under I6's restating Config instead, if the driver appended one)
- move A: u1 ──▶ a2                  by core       only if A.at is still u1 (compare-and-set);
-                                                  commits tip''s line, then a2
+ move A: u1 ──▶ a2                  by core       commits tip''s line, then a2
    ▼
- post_reply(cursor, a2)   runs unless the step was interrupted
+ post_reply(cursor, a2)   runs unless the step was interrupted; A's lock is still held
    │  may append side nodes (scratch); may write "continue" (cursor.write)
-   │  may move or rerun any cursor; the later post_reply hooks still run on a2,
-   │  seeing cursor.at wherever this one left it
+   │  may move or rerun any cursor; a move of A here is inside the step and interrupts
+   │  nothing: the later post_reply hooks still run on a2, seeing cursor.at where it now is
    ▼
- next(walk(at))
+ next(walk(at))           still under A's lock; then the lock is released
 ```
 
 ## Tools step
@@ -89,8 +90,9 @@ session loads.
                           move A onto it                 by core
                           post_result(node) finishes     before the next outcome is written
                             │ may append side nodes, or act through its cursor
-                            │ a move before the batch is complete interrupts the calls still
-                            │ running: each is answered Interrupted under the run (scratch)
+                            │ moving A before the batch is complete: applied when the hook returns;
+                            │ the calls still running are answered Interrupted under the run and
+                            │ moved onto (not waiting behind post hooks), then the move
 ```
 
 ```mermaid
@@ -149,13 +151,13 @@ and none is owed a result.
  next(walk(at))
 ```
 
-## The base extension: busy input, the inbox, delivery
+## The base extension: busy input, pending inputs, delivery
 
 ```
  k0 Config ─ s ─ u1 ─ a1 [c3, c5] ─ r5 ◀ A.at        A is busy: c3 still running
- └ ib  Custom{kind: inbox}             by extension(base)   side node under the first root, scratch
-   └ p1  Custom{kind: pending_input,   by extension(base)   Session.input(A, "also check b.rs")
-           cursor: A, text: "also check b.rs"}               while busy: pending, handled, no body
+ └ p1  Custom{kind: pending_input,     by extension(base)   Session.input(A, "also check b.rs")
+         cursor: A, text: "also check b.rs"}                 while busy: pending, handled, no body
+                                                             (a side node directly under the first root)
 
  c3 finishes:  r3 written under r5, A moved onto it (by core); the batch is complete
  post_result(cursor, r3), the base extension's hook (deliver: after_batch):
@@ -167,8 +169,14 @@ and none is owed a result.
  p1 is delivered: u2 copies from it. No other marker; a crash cannot deliver it twice.
 ```
 
-- At rest, the base extension handles input with a `User` body, after
-  delivering anything still pending for the cursor, so order is kept.
+- A cursor's input hooks and post hooks never run concurrently. Input that
+  arrives while the post hooks run waits until the step releases its lock,
+  and then finds the cursor at rest. So a pending input is always written
+  before the post hooks that could deliver it, or not at all.
+- At rest, the base extension handles input with a `User` body. If inputs
+  are still pending for the cursor, it adds this one as pending and handles
+  it with one `User` body for all of them, `copied_from` listing them, so
+  order is kept and `post_input` runs.
 - At rest at an unstarted or partial batch, it writes a pending input and
   steps the cursor; the batch is answered first (Q17).
 - `deliver: after_stop` waits for a `post_reply` on a reply that is not a
@@ -184,6 +192,7 @@ Every hook point gets the same cursor handle, bound to the hook's extension:
  read   cursor.at   cursor.next   cursor.busy   cursor.auto_step   cursor.session (every node, every cursor)
  act    append side nodes      cursor.write(body)  (append under at + move, one durable write)
         move / rerun any cursor      set auto-step      step      abort      open cursors
+        sample a walk and run a tool, outside any step (a cold summary on a detached root)
 ```
 
 No hook point forbids any of these; the tree decides what each does:
@@ -191,8 +200,9 @@ No hook point forbids any of these; the tree decides what each does:
 | situation | what the action does |
 |---|---|
 | append or move breaks I3, I4, or I6 | refused; raises into the hook, which may catch it |
-| the moved cursor is busy | its step is interrupted, the move wins (below) |
-| a post hook moves after its step's last own move | the step is done, so nothing is interrupted; the other post hooks on the node still run, and see the new `cursor.at` |
+| another cursor is busy, or this cursor is moved from outside its step | its step is interrupted in place, then the move applies (below) |
+| a hook of the step moves its own cursor from a pre hook, or from `post_result` mid-batch | the move is a request, applied when the hook returns: interrupt in place, then move |
+| a post hook moves its own cursor after the step's own move | inside the step: nothing is interrupted; the other post hooks on the node still run, and see the new `cursor.at` |
 | two post hooks on one node both move | two real moves, in config order |
 | the moved cursor is at rest | the move lands; when the hook returns, the driver carries on per auto-step |
 | a hook writes a node or a move | no hooks run for it; a step it causes runs hooks as usual |
@@ -213,20 +223,30 @@ refuse, as before.
 ## Moving a busy cursor
 
 ```
- A is sampling: started at u1, context tip u1, parts streaming
- a hook (any point, any cursor) or a frontend moves A to b2
+ A is sampling: context tip u1, parts streaming, A holds its lock
+ a frontend, an input hook, or another cursor's hook moves A to b2
 
- 1 cancel the step's running parts (not the hook that asked)
- 2 write its records where they came from:   u1 ─ a2 Assistant "Let me…", stop interrupted   (pre_reply ran)
- 3 the step's own move to a2: compare-and-set fails (A was moved) ──▶ skipped; a2 is SCRATCH
+ 1 interrupt: cancel the step's running parts
+ 2 write its records where they came from, and move onto them as usual:
+      u1 ─ a2 Assistant "Let me…", stop interrupted   (pre_reply ran)     A.at = a2, committed
+ 3 the step ends without further hooks and releases its lock
  4 resolve to = b2 (fast-forward, I6), write the move; A.at = b2
  5 what follows is the mover's: a go-to sits; a hook's move carries on per auto-step
 
- in a tools step, the same: every call without a result gets Interrupted under its run (scratch),
- the claim is released, and then the move resolves, so it never lands above those results (I3)
+ in a tools step, the same: every call without a result gets Interrupted under its run, moved onto
+ in turn, without waiting behind post hooks; the claim is released, then the move resolves (I3)
 
- Session.abort(A) is the same interrupt without a move: step 3 succeeds, A moves onto a2,
- and auto-step goes off. Handled input with a body is also in place, then writes the body under a2.
+ a hook of A's own step asking to move A (pre_sample, pre_reply, pre_tool, pre_result,
+ post_result mid-batch): recorded, applied when the hook returns, the same way
+   pre_reply: the reply it returned finishes its pre_reply hooks, is written with its
+              sampled stop, and moved onto; then the move
+ an interrupt while pre_reply runs (from outside): pre_reply is cancelled, nothing is written,
+   A does not move; the unredacted text is withheld
+ two concurrent hooks of one step both moving A: the first interrupts; the second waits for
+   that, then moves A at rest
+
+ Session.abort(A) is the same interrupt without a move, and turns auto-step off.
+ Handled input with a body is also in place, then writes the body under a2.
 ```
 
 ## Go to, re-run, and a hook's move
@@ -243,25 +263,25 @@ refuse, as before.
                     auto-step on             call unanswered on the new  driver evaluates next and continues
                                              line (when the hook         per auto-step; counts to max_steps
                                              returns, if a hook asked)
- busy cursor        interrupts its step      interrupts its step         interrupts its step
+ busy cursor        interrupts its step      interrupts its step         interrupts its step; from its
+                                                                         own step, when the hook returns
  lands              fast-forwards onto a     exactly where sent          fast-forwards, checked like a go-to
                     batch or its run
  claim              never taken              taken by its tools step     never taken
  I6                 applies                  applies                     applies
- refused when       restatement needed under nothing unanswered there;   same as go-to; the hook may catch it
-                    an unstarted or partial  copied batch; restatement
-                    batch; a copied batch    needed
-                    that is not complete
+ refused when       a copied batch that is   nothing unanswered there;   same as go-to; the hook may catch it
+                    not complete             a copied batch
+ I6 at a batch      deferred to the completing result (`03-move-and-branch.md`)
 ```
 
 A step's own move (phase 4, and a fast-forward the step makes when it
-re-reads a run) is none of these: it is never refused, I6 does not apply to
-it, and it is compare-and-set, so it is skipped if the cursor was moved. A
-tool's handle cannot move or re-run.
+re-reads a run) is none of these: it is never refused or skipped, and I6
+applies only as a deferred restatement written with the move onto a
+completing result. A tool's handle cannot move or re-run.
 
-Reads with: `model.md` §5 (move, compare-and-set, re-run), §6 (next), §7
+Reads with: `model.md` §5 (move, moving a busy cursor, re-run), §6 (next), §7
 (hooks, hook points, steps, input, the base extension, what still holds),
 §8 (interrupt, abort); invariants I1, I3, I4, I5, I6, I7; Q15, Q17, Q18, Q20,
 Q21, Q25, Q31, Q32; `glossary.md` terms step, busy, hook, hook point, cursor
-handle, answer, refuse, handled, pass, interrupt, base extension, inbox,
-pending input, auto-step, claim, re-run, go to.
+handle, answer, refuse, handled, pass, interrupt, base extension,
+pending input, delivery, auto-step, claim, re-run, go to.

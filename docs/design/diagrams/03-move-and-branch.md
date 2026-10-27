@@ -65,12 +65,36 @@ silently switch the cursor back to model big, so the move restates A's config.
  next(walk(c)) skips Config, sees User b2: Sample (but a go-to starts nothing)
 ```
 
-If `b2` were an unstarted batch, I4 forbids appending under it and the move
-would be refused (Q16). If the B line held an explicit `Config` in
+If `b2` were an unstarted batch, I4 forbids appending under it, so the
+restatement is deferred (Q16): see below. If the B line held an explicit `Config` in
 (`u1`, `b2`] (any `Config` except a restatement core wrote, copies included),
 the cursor would take that line's config as chosen there, and nothing would
 be restated. Going back to `u2` and then to `b2` again reuses `c`: no second
 restatement is written.
+
+## I6 at a batch: the restatement is deferred
+
+```
+ k0 Config(big)
+ └ u1
+   ├ a1 ─ k1 Config(cheap) ─ u2  ◀ A.at                config_at(u2) = cheap
+   └ b1 Assistant [c7], stop tools   (unstarted)       config_at(b1) = big
+
+ go to b1: config differs, nothing explicit in (u1, b1], but I4 forbids a Config under b1
+   ──▶ A lands on b1, no restatement yet                 move { from: u2, to: b1, by: frontend }
+       owed: Config(cheap), read off the move log: config_at(from) != config_at(b1)
+ step A: the tools step runs c7 with config_at(walk(b1)) = big (its tools, its hooks)
+   r7 completes the batch ──▶ the step's own move writes, in one durable write:
+       r7 Result under b1,  c Config(cheap) under r7 (by core),  move A onto c
+
+ u1 ─ b1 ─ r7 ─ c ◀ A.at        next(walk(c)) skips Config, sees the complete batch: Sample, with cheap
+ a crash before r7: on reload the move log still shows the owed restatement
+ a go-to elsewhere before r7: the owed restatement is dropped (the latest move changed)
+```
+
+The same holds for a re-run after a config change: the re-run lands where it
+was sent, its tools step uses the walk's config, and the restatement follows
+the completing result.
 
 ## Fast-forward onto an existing run
 
@@ -125,13 +149,14 @@ that branches partway.
    2  nothing unanswered on walk(node)?  refuse        (e.g. rerun(r3), the completing result)
       a copied batch?                    refuse
    3  no to == at stop: rerun(a1) while at == a1 runs the batch again
-   4  I6: refuse if a restatement would be needed (node is an unstarted or partial batch)
-   5  if the cursor is busy, interrupt its step first (its records are written, not moved onto)
+   4  I6: a restatement that would land under node (an unstarted or partial batch) is
+      deferred to the completing result of the new run
+   5  if the cursor is busy, interrupt its step first (its records are written and moved onto)
       append move { cursor, from: at, to: node, by, time }; set at := node
    6  tools step now (takes the claim), for each call unanswered on walk(node), through pre_tool as usual
 ```
 
 Reads with: `model.md` §3 (committed, LCA), §5 (move, steps 1 to 5, branching,
-re-run), I3 (valid `at`, fast-forward), I4, I5, I6, Q2, Q10, Q15, Q16, Q28;
+re-run), I3 (valid `at`, fast-forward), I4, I5, I6 (deferred at a batch), Q2, Q10, Q15, Q16, Q28;
 `glossary.md` terms move, move record, go to, branch, LCA, fast-forward,
 re-run, claim, line.

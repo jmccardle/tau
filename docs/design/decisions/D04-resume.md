@@ -33,9 +33,9 @@ On resume (model.md §8), for each call still unanswered on the cursor's walk:
   extension holds the input pending and steps the cursor, and resume
   answers the batch first (Q17).
 - Interrupting a resume (an abort, or a move of the busy cursor) answers its
-  remaining calls `Interrupted`, like any interrupted tools step (model.md
-  §8). The resume's fast-forward is the step's own move, so it is
-  compare-and-set: a move made while the step waited for the claim wins.
+  remaining calls `Interrupted` and moves onto them, like any interrupted
+  tools step (model.md §8). A move made while the step waits for the claim
+  interrupts it before it has written anything, so it simply ends.
 - A call whose tool finished but whose result was not yet written is
   `Interrupted`, unless idempotent. The raw outcome is never written
   unredacted (model.md §8, abort during tools).

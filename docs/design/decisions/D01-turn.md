@@ -24,8 +24,11 @@ keeps sending "continue" (Q20).
   is a display choice, not core state.
 - Runaway loops are bounded by the `max_steps` field of `Config`: the most
   steps a cursor takes without the frontend acting on it (Q20). The driver
-  keeps an in-memory counter per cursor, reset whenever the frontend gives
-  input, steps the cursor, re-runs a batch, or turns auto-step on. When the
+  keeps an in-memory counter per cursor, reset only by actions
+  `by: frontend`: giving input, stepping the cursor, re-running a batch,
+  turning auto-step on. A cursor a hook or tool opens inherits its opener's
+  count and auto-step setting; a cursor a frontend opens starts at 0 with
+  auto-step off. When the
   count reaches `config_at(at).max_steps`, auto-step turns off and the
   cursor pauses.
 - `next` stays a pure function of the walk; `max_steps` never changes it.

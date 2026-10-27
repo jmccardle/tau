@@ -1,6 +1,6 @@
 # D5: Config follows the cursor, as full snapshots
 
-Status: accepted (Phase 1, 2026-10-26)
+Status: accepted, revised in review (Phase 1, 2026-10-27)
 
 ## Context
 
@@ -34,8 +34,12 @@ depended on which object a reader asked (glossary, `config`).
     config_at(at)` and no explicit `Config` lies in (LCA(at, to), to], the
     move restates the cursor's config under `to` and lands on it.
     `next` looks past it (model.md §6).
-  - If `to` is an unstarted batch, I4 forbids appending under it, so the
-    move is refused (Q16).
+  - If `to` is an unstarted or partial batch, I4 forbids appending under it.
+    The restatement is **deferred**: the move lands on the batch, the run
+    uses `config_at` of its own walk, and when a step's own move lands the
+    cursor on the result that completes the batch, the restating `Config` is
+    written under it and moved onto, in the same durable write (Q16). What
+    is owed is read off the move log, so it survives a reload.
 - A `Config` a hook or frontend appends on purpose is explicit and persists
   until replaced. There is no automatic revert (Q26).
 
@@ -53,11 +57,15 @@ depended on which object a reader asked (glossary, `config`).
 - A go-to across a config change may write one restating `Config` node
   (or reuse one already there). Browsing still runs nothing: no step, no
   hook, no provider call.
-- Cost: refused go-to onto an unstarted or partial batch on another line
-  (Q16). Rare; no other placement keeps both I4 and I6.
+- Cost: a batch reached on another line runs with that line's config (its
+  tools and hooks), and the cursor's own config returns only after the
+  batch completes (Q16). The fourth revision refused such moves instead; a
+  refusal for a choice that had an obvious answer was worse.
 - Enforced by: I6 proptest (`config_at(at)` changes only across a move whose
-  (LCA, to] contains an explicit `Config`, or which appends or reuses a
-  restatement), the reuse unit test, and scenarios "branch across a config
+  (LCA, to] contains an explicit `Config`, which appends or reuses a
+  restatement, or which lands in an unstarted or partial batch whose
+  completing result then carries the restatement), the reuse unit test,
+  the scenario "go-to an unstarted batch on a line with another config", and scenarios "branch across a config
   node" and "compaction across a model change".
 
 ## Note on the plan
