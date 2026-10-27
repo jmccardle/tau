@@ -161,8 +161,9 @@ up.
 
 A **scratchpad item** is addressed to one cursor (`to`). `from` names the
 cursor that added it, and the extension or the frontend client:
-- **with a `frontend` client, it is input** (§7). Its `data` is
-  `{text, images}`;
+- **with a `frontend` client, it is input** (§7), whatever else `from`
+  names. Its `data` is `{text, images}`. A frontend adds items only as
+  input, through `Session.input`;
 - **with an `extension`, it belongs to the extensions.** `data` is any JSON
   value;
 - **with neither, it is a journal item**, which core writes (§6). Its `data`
@@ -493,8 +494,10 @@ pre_step
 for phase in [input, sample, tools]:                      if the phase applies (below)
     pre_<effect>     pre_sample | pre_tool                hooks may answer, so the effect is skipped
     effect           sample walk(at) | run the calls      input has no effect
-    pre_<draft>      pre_input | pre_reply | pre_result   hooks edit the draft
+    pre_<draft>      pre_input | pre_reply | pre_result   hooks edit the draft; in tools, per call as
+                                                          each finishes, then its journal item
     commit           the draft under at, and the move onto it, as one record
+                                                          (in tools, once, at the join)
     post_<draft>     post_reply | post_result             input has no post hook
 post_step(ending)
 ```
@@ -517,7 +520,7 @@ batch is answered before input goes under it (Q40).
 |---|---|
 | `done` | the step ran its phases, or none applied |
 | `halted(reason)` | a cursor hook returned a string |
-| `failed(error)` | a sample failed, or a hook raised |
+| `failed(error)` | a sample failed, or a cursor hook raised (a raising `pre_input` leaves its input pending, Q43) |
 | `aborted` | an abort, or a frontend's move of the busy cursor |
 
 What the step did is in the move records: `cursor.moves(since_step=True)`.
