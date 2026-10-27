@@ -1,6 +1,6 @@
 # D4: Resume at calls without results
 
-Status: accepted (Phase 1, 2026-10-26)
+Status: accepted (Phase 1, 2026-10-26; updated in the sixth revision)
 
 ## Context
 
@@ -29,16 +29,19 @@ On resume (model.md §8), for each call still unanswered on the cursor's walk:
   already have results are not run again (I3, model.md §8, §10). A move
   never takes a claim.
 - Each result is written and moved onto as usual, so the batch completes.
-- The same rule serves input at a partial batch after a reload: the base
-  extension holds the input pending and steps the cursor, and resume
-  answers the batch first (Q17).
-- Interrupting a resume (an abort, or a move of the busy cursor) answers its
-  remaining calls `Interrupted` and moves onto them, like any interrupted
-  tools step (model.md §8). A move made while the step waits for the claim
-  interrupts it before it has written anything, so it simply ends.
-- A call whose tool finished but whose result was not yet written is
-  `Interrupted`, unless idempotent. The raw outcome is never written
-  unredacted (model.md §8, abort during tools).
+- The same rule serves input at a partial batch after a reload: the input
+  waits in the scratchpad, a send turns auto-step on, resume answers the
+  batch, and the base extension delivers the input before the next sample
+  (Q17).
+- Aborting a resume (esc, or a frontend's move of the busy cursor) answers
+  its remaining running calls `Interrupted` and moves onto them, like any
+  aborted tools step (model.md §8). An abort while the step waits for the
+  claim ends it before it has written anything.
+- After a crash, a call whose tool finished but whose result was not yet
+  written is `Interrupted`, unless idempotent. Its raw outcome was never
+  written, so nothing unredacted reaches the tree.
+- A question a `pre_tool` hook was waiting on is lost in a crash; resume
+  treats its call like any other unanswered call (Q22).
 - Resume never re-runs on purpose. A deliberate second run is
   `Session.rerun`, a separate operation.
 

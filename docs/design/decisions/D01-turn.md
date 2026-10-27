@@ -1,6 +1,6 @@
 # D1: No "turn"; steps, and `max_steps` as a pause
 
-Status: accepted, revised in review (Phase 1, 2026-10-26)
+Status: accepted, revised in review (Phase 1, 2026-10-26; sixth revision 2026-10-27)
 
 ## Context
 
@@ -17,15 +17,15 @@ keeps sending "continue" (Q20).
 ## Decision
 
 - There is no turn in core. The unit is the **step** (model.md §7): one
-  cycle for one cursor, of kind `input`, `sample`, or `tools`. Every step
-  counts toward `max_steps`, including one a hook's move or re-run causes;
-  an interrupt is not a step.
+  sample or one tools run for one cursor. Every step counts toward
+  `max_steps`, including one a hook's move or re-run causes; an abort is not
+  a step, and neither is `pre_step`.
 - Frontends that want to show "turns" count steps since the last input. That
   is a display choice, not core state.
 - Runaway loops are bounded by the `max_steps` field of `Config`: the most
   steps a cursor takes without the frontend acting on it (Q20). The driver
   keeps an in-memory counter per cursor, reset only by actions
-  `by: frontend`: giving input, stepping the cursor, re-running a batch,
+  `by: frontend(client)`: giving input, stepping the cursor, re-running a batch,
   turning auto-step on. A cursor a hook or tool opens inherits its opener's
   count and auto-step setting; a cursor a frontend opens starts at 0 with
   auto-step off. When the
@@ -44,7 +44,7 @@ keeps sending "continue" (Q20).
 | option | why not |
 |---|---|
 | Keep "turn" as the steps from input to `Wait` (plan option 2) | `Wait` is not an end: a `post_reply` hook may continue past it. A turn would need either a stored marker or a second definition of where it ends. 0.15 shows where that leads. |
-| A count computed from the walk (an earlier revision) | The walk cannot tell an input step's node from a hook's "continue" `User` node: both may be authored by an extension. The boundary would need a stored marker. |
+| A count computed from the walk (an earlier revision) | The walk cannot tell a delivered input's node from a hook's "continue" `User` node: both may be authored by an extension. The boundary would need a stored marker. |
 | `max_steps` reached makes `next` return `Wait` | `next` would depend on more than the walk. Pausing the cursor says the same thing without that. |
 | A persisted counter | State outside nodes and moves (I7), and pointless: auto-step loads off, so nothing runs away across a reload. |
 

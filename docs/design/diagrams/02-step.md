@@ -1,40 +1,50 @@
-# 02 The step
+# 02 The cycle and the step
 
-A step is one cycle for one cursor. It has five phases: pre hooks on the
-effect, the effect, pre hooks on the node, **write then move**, post hooks on
-the written node. There are three step kinds. `input` writes a body an input
-hook handled input with; `sample` makes one provider request and writes one
-`Assistant` node; `tools` runs every unanswered call and writes one `Result`
-per call, moving onto each as it is written. After the step the driver
-evaluates `next(walk(at))` and, with auto-step on, keeps stepping until
-`next` is `Wait`. Pre hooks change what is written; post hooks change what
-happens around a written node. Every hook is `hook(cursor, subject)` and may
-act through its cursor at any hook point. A step holds its cursor's **step
-lock** from start through its post hooks and the `next` that follows; that is
-what **busy** means. A move of a busy cursor from outside its step interrupts
-the step in place: its records are written and moved onto, then the move
-applies.
+A **cycle** is what a cursor does from the moment it wakes until it rests:
+`pre_step`, then steps, each followed by `post_step`. A **step** is one
+sample or one tools run. It has five phases: pre hooks on the effect, the
+effect, pre hooks on the node, **write then move**, post hooks on the written
+node; then `post_step`. Pre hooks change what is written; post hooks react
+to a written node. Every hook is `hook(cursor, subject)` and acts only on its
+own cursor, and on its cursor's line only at a **boundary**. Cursors talk
+through the scratchpad. A cursor is **busy** for its whole cycle.
 
-## The five phases
+## The cycle
 
 ```
- 1 pre hooks      2 effect         3 pre hooks       4 write + move       5 post hooks
-   on the effect                     on the node       (durable together)   on the written node
- ────────────────────────────────────────────────────────────────────────────────────────────
- input   (none)        (none)        (none)            append, move onto    post_input
-         (the body an input hook handled input with: pre_input runs before, outside the step)
- sample  pre_sample    provider      pre_reply         append, move onto    post_reply
- tools   pre_tool      run the tool  pre_result        append, move onto    post_result
-         (per call)    (per call)    (per call)        (per result)         (per result)
+ wake: an item added to its scratchpad · it opens · the session loads · a go-to lands
+       · a frontend steps it, re-runs on it, or turns auto-step on
 
- then: next(walk(at))  ──▶  Sample | RunTools | Wait
-       auto-step on: step again until Wait       auto-step off: cursor pauses, already moved
+ ┌▶ 1 pre_step                         boundary; reads the scratchpad (the base extension delivers here)
+ │  2 next(walk(at))  ──▶  Sample | RunTools | Wait
+ │  3 next != Wait and (auto-step on, or the cycle owes a step)?
+ │       yes: one step (below), then post_step(ending)
+ │            aborted ──────────────────────────────────────────────▶ rest
+ │            auto-step on and next != Wait ──▶ back to 1
+ │  4 scratchpad changed since the last pre_step started (and not aborted)?
+ └──── yes, throttled: ≥ 250 ms since the previous pre_step started
+    5 rest
+```
+
+Nothing polls. An item an extension leaves in place causes no further
+`pre_step` until the scratchpad changes again.
+
+## The five phases of a step
+
+```
+ 1 pre hooks      2 effect         3 pre hooks       4 write + move       5 post hooks       then
+   on the effect                     on the node       (one record)         on the node
+ ─────────────────────────────────────────────────────────────────────────────────────────────────
+ sample  pre_sample    provider      pre_reply         append, move onto    post_reply         post_step
+ tools   pre_tool      run the tool  pre_result        append, move onto    post_result        post_step
+         (per call)    (per call)    (per call)        (per result)         (per result)       (once)
+
+ boundaries (a hook may write under at, move, or re-run its own cursor):
+   pre_step · post_reply · post_result once the batch is complete · post_step
 ```
 
 Hooks at one point run in the order listed in `config_at(at)`; each gets what
-the previous one returned. A cursor is **busy** from the step's start to its
-last post hook. `post_open` runs outside steps, when a cursor opens or a
-session loads.
+the previous one returned.
 
 ## Sample step
 
@@ -60,12 +70,11 @@ session loads.
                                     (under I6's restating Config instead, if the driver appended one)
  move A: u1 ──▶ a2                  by core       commits tip''s line, then a2
    ▼
- post_reply(cursor, a2)   runs unless the step was interrupted; A's lock is still held
-   │  may append side nodes (scratch); may write "continue" (cursor.write)
-   │  may move or rerun any cursor; a move of A here is inside the step and interrupts
-   │  nothing: the later post_reply hooks still run on a2, seeing cursor.at where it now is
+ post_reply(cursor, a2)   a boundary
+   │  may append side nodes; may write "continue" (cursor.write) under a non-batch reply
+   │  may move A: later post_reply hooks still run on a2, seeing cursor.at where it now is
    ▼
- next(walk(at))           still under A's lock; then the lock is released
+ post_step(cursor, wrote a2)
 ```
 
 ## Tools step
@@ -78,6 +87,7 @@ session loads.
                             │ returns call'   rewritten (sandbox, remote host)
                             │ returns outcome ANSWER: Ok (cache, mock) or Skipped("blocked by ...")
                             │                 tool not run; pre_result still runs
+                            │ may ask a person (cursor.ask): A is locked until answered or declined
                             │ raises          the call is answered Err("hook error") by core
                             ▼
                           run the tool      c3 and c5 run concurrently unless a tool is exclusive
@@ -89,164 +99,145 @@ session loads.
  one at a time per cursor append Result under the previous node (a1 for the first)
                           move A onto it                 by core
                           post_result(node) finishes     before the next outcome is written
-                            │ may append side nodes, or act through its cursor
-                            │ moving A before the batch is complete: applied when the hook returns;
-                            │ the calls still running are answered Interrupted under the run and
-                            │ moved onto (not waiting behind post hooks), then the move
+                            │ not a boundary until the batch is complete: calls are still running,
+                            │ so a move or a write under at here is refused
+ after the last result    post_step(cursor, wrote r3)
 ```
 
 ```mermaid
 sequenceDiagram
+    participant C as core (cycle)
     participant D as driver
     participant H as hooks
     participant T as tools
-    participant S as session
-    Note over D,S: A.at = a1, claim held, next = RunTools(c3, c5)
-    D->>H: pre_tool(c3), pre_tool(c5)
-    H-->>D: call, or an outcome (answer)
+    Note over C,T: A.at = a1, claim held, next = RunTools(c3, c5)
+    C->>D: job: pre_tool(c3), pre_tool(c5)
+    D->>H: run
+    H-->>D: calls
+    D-->>C: results
+    C->>D: job: run c3, c5
     par concurrent unless exclusive
         D->>T: run c3
     and
         D->>T: run c5
     end
     T-->>D: c5 finishes first
-    D->>H: pre_result(c5, outcome)
-    H-->>D: outcome
-    D->>S: append r5 under a1
-    D->>S: move A to r5
-    D->>H: post_result(r5)
+    D-->>C: c5 done
+    C->>D: job: pre_result(c5)
+    D-->>C: outcome
+    C->>D: job: persist r5 under a1 + move A to r5
+    C->>D: job: post_result(r5)
     T-->>D: c3 finishes meanwhile
-    D->>H: pre_result(c3, outcome), concurrently with post_result(r5)
-    Note over D,H: r3 waits for r5's post hooks before it is written
-    D->>S: append r3 under r5
-    D->>S: move A to r3
-    D->>H: post_result(r3): it completes the batch (the base extension may deliver input here)
-    Note over D,S: batch complete, next = Sample
+    D-->>C: c3 done
+    C->>D: job: pre_result(c3), concurrently with post_result(r5)
+    Note over C,D: r3 waits for r5's post hooks before it is written
+    C->>D: job: persist r3 under r5 + move A to r3
+    C->>D: job: post_result(r3), a boundary: the batch is complete
+    C->>D: job: post_step(wrote r3)
+    Note over C,D: next = Sample; with auto-step on, pre_step runs before the sample
 ```
 
 A call whose `args_raw` does not parse is answered `Err("invalid arguments")`
 (by core) without running. Results core writes (`Err("invalid arguments")`,
 `Interrupted`, `Err("hook error")`) skip `pre_result`: there is nothing to
 rewrite. They are written and moved onto, and their `post_result` hooks run,
-so a hook that waits for the completing result always sees it. Under a reply with any other `stop`, no call runs
-and none is owed a result.
+so a hook that waits for the completing result always sees it. Under a reply
+with any other `stop`, no call runs and none is owed a result.
 
-## Input
+## Input, the scratchpad, and delivery
 
 ```
- frontend: Session.input(A, "fix it too")       A busy or at rest; nothing else in core looks at input
+ client laptop: Session.input(A, "also check b.rs")       A busy or at rest; refused if A is locked
    ▼
- pre_input(cursor, input)   each hook, in config order
-   │  HANDLED, with a body ...... an input step writes it under at and moves onto it (by core),
-   │                             then post_input; on a busy cursor the step is interrupted in place first
-   │  HANDLED, no body .......... the hook did all it meant to (e.g. wrote a pending input)
+ pre_input(cursor, input)   each hook, in config order, outside A's cycle
+   │  HANDLED ................... the hook did what it meant to (the base extension: added an item)
    │  PASS (input') ............. the next hook gets input', possibly rewritten
    │  REFUSE (reason) ........... nothing written; Session.input raises; the frontend keeps the text
    │  every hook passes ......... REFUSED: "no extension handled this input"
    ▼
- input step: append (by frontend if it is the input as given, else extension(name)); move A onto it
-   ▼
- post_input(cursor, node)   e.g. write a sibling u1' with derived_from [u1] and move onto it;
-   ▼                        the typed u1 stays, committed
- next(walk(at))
+ scratchpad:  item 4 { from: {frontend: laptop, extension: base, cursor: A},
+                       to: A, data: {text: "also check b.rs"} }          adding it wakes A
 ```
 
-## The base extension: busy input, pending inputs, delivery
-
 ```
- k0 Config ─ s ─ u1 ─ a1 [c3, c5] ─ r5 ◀ A.at        A is busy: c3 still running
- └ p1  Custom{kind: pending_input,     by extension(base)   Session.input(A, "also check b.rs")
-         cursor: A, text: "also check b.rs"}                 while busy: pending, handled, no body
-                                                             (a side node directly under the first root)
+ k0 Config ─ s ─ u1 ─ a1 [c3, c5] ─ r5 ◀ A.at        A is busy: c3 still running; item 4 waits
 
  c3 finishes:  r3 written under r5, A moved onto it (by core); the batch is complete
- post_result(cursor, r3), the base extension's hook (deliver: after_batch):
-   pending for A = pending_input nodes for A that no node copies from = [p1]   (reverse index: one lookup)
-   cursor.write( User "also check b.rs", copied_from: [p1] )               one durable write: node + move
-   other post_result hooks on r3 run too, before or after it, whatever the config order
+ post_step(wrote r3); auto-step on and next = Sample, so the cycle goes back to pre_step:
+ pre_step, the base extension's hook (deliver: after_batch):
+   open base items for A = [4]; at = r3 can take a User node
+   cursor.deliver([4])      one record: u2 User "also check b.rs", by frontend(laptop),
+                            delivers [4], and the move r3 ──▶ u2; then item 4 is removed
 
- k0 ─ s ─ u1 ─ a1 ─ r5 ─ r3 ─ u2 ◀ A.at      u2 by extension(base), copied_from [p1]    next = Sample
- p1 is delivered: u2 copies from it. No other marker; a crash cannot deliver it twice.
+ k0 ─ s ─ u1 ─ a1 ─ r5 ─ r3 ─ u2 ◀ A.at      next = Sample: the sample step follows
+ a crash after the record but before the removal: load drops item 4, because u2 delivers it
 ```
 
-- A cursor's input hooks and post hooks never run concurrently. Input that
-  arrives while the post hooks run waits until the step releases its lock,
-  and then finds the cursor at rest. So a pending input is always written
-  before the post hooks that could deliver it, or not at all.
-- At rest, the base extension handles input with a `User` body. If inputs
-  are still pending for the cursor, it adds this one as pending and handles
-  it with one `User` body for all of them, `copied_from` listing them, so
-  order is kept and `post_input` runs.
-- At rest at an unstarted or partial batch, it writes a pending input and
-  steps the cursor; the batch is answered first (Q17).
-- `deliver: after_stop` waits for a `post_reply` on a reply that is not a
-  batch. `combine: false` writes one `User` node per pending input.
-- After a reload, its `post_open` delivers what is still pending, if `at` can
-  take a `User` node (`06-crash-and-resume.md`).
+- Every input takes this path, busy or at rest. At rest, adding the item
+  wakes the cursor and its `pre_step` delivers at once; with auto-step on (a
+  send), the sample follows.
+- At an unstarted or partial batch, `pre_step` delivers nothing (I4). A send
+  turns auto-step on, the tools step answers the batch, and the `pre_step`
+  before the next sample delivers (Q17).
+- `deliver: after_stop` delivers only at a `pre_step` where `next` is `Wait`.
+  `combine: false` writes one `User` node per item; `combine: true` joins
+  consecutive items from one client.
 
 ## What a hook may do
 
-Every hook point gets the same cursor handle, bound to the hook's extension:
-
 ```
- read   cursor.at   cursor.next   cursor.busy   cursor.auto_step   cursor.session (every node, every cursor)
- act    append side nodes      cursor.write(body)  (append under at + move, one durable write)
-        move / rerun any cursor      set auto-step      step      abort      open cursors
-        sample a walk and run a tool, outside any step (a cold summary on a detached root)
+ any hook point   read     cursor.at  cursor.next  cursor.busy  cursor.auto_step  cursor.session
+                  append   side nodes, detached roots
+                  items    add / update / remove, in any cursor's scratchpad
+                  people   cursor.ask (locks the cursor)  cursor.show  cursor.tell
+                  also     set its own auto-step · open cursors · sample a walk · run a tool
+ boundaries only  cursor.write(body)  cursor.deliver(items)  move or re-run its own cursor
+ pre_step and post_step only   read its own cursor's scratchpad
+ never            act on another cursor's line (write an item to it instead)
 ```
-
-No hook point forbids any of these; the tree decides what each does:
 
 | situation | what the action does |
 |---|---|
 | append or move breaks I3, I4, or I6 | refused; raises into the hook, which may catch it |
-| another cursor is busy, or this cursor is moved from outside its step | its step is interrupted in place, then the move applies (below) |
-| a hook of the step moves its own cursor from a pre hook, or from `post_result` mid-batch | the move is a request, applied when the hook returns: interrupt in place, then move |
-| a post hook moves its own cursor after the step's own move | inside the step: nothing is interrupted; the other post hooks on the node still run, and see the new `cursor.at` |
-| two post hooks on one node both move | two real moves, in config order |
-| the moved cursor is at rest | the move lands; when the hook returns, the driver carries on per auto-step |
+| a move or a write under `at` outside a boundary | refused |
+| a move of another cursor | refused; add an item to its scratchpad instead |
+| a hook at a boundary moves its own cursor | applies at once; later hooks at that point see the new `cursor.at` |
+| two hooks at one point both move | two real moves, in config order |
 | a hook writes a node or a move | no hooks run for it; a step it causes runs hooks as usual |
-| a hook opens a cursor | the new cursor's `post_open` runs (Q32) |
+| a hook opens a cursor, or adds an item to one | that cursor wakes and runs its own cycle |
 
-What a hook *returns* still steers its own hook point: rewrite, answer, or
-refuse, as before.
+What a hook *returns* still steers its own hook point:
 
 | hook point | rewrite | answer | refuse |
 |---|---|---|---|
-| `pre_input` | pass a rewritten input | handled (optionally with a body) | refuse (a reason) |
+| `pre_input` | pass a rewritten input | handled | refuse (a reason) |
 | `pre_sample` | return a different tip | yes: a reply | no |
 | `pre_reply` | yes, never `stop` | n/a | yes |
 | `pre_tool` | yes | yes: `Ok` or `Skipped` | no: answers `Skipped` instead |
 | `pre_result` | content only, never the kind (Q18) | n/a | no |
-| post hooks, `post_open` | n/a | n/a | n/a |
+| post hooks, `pre_step`, `post_step` | n/a | n/a | n/a |
 
-## Moving a busy cursor
+## A frontend moves a busy cursor
 
 ```
- A is sampling: context tip u1, parts streaming, A holds its lock
- a frontend, an input hook, or another cursor's hook moves A to b2
+ A is sampling: context tip u1, parts streaming, no hook running
+ client laptop: go to b2
 
- 1 interrupt: cancel the step's running parts
- 2 write its records where they came from, and move onto them as usual:
-      u1 ─ a2 Assistant "Let me…", stop interrupted   (pre_reply ran)     A.at = a2, committed
- 3 the step ends without further hooks and releases its lock
- 4 resolve to = b2 (fast-forward, I6), write the move; A.at = b2
- 5 what follows is the mover's: a go-to sits; a hook's move carries on per auto-step
+ 0 refused instead if a hook of A is running, or a question on A is open
+ 1 abort: auto-step off; cancel the stream (no hook is cancelled)
+ 2 pre_reply runs on the parts so far; write and move onto them as usual:
+      u1 ─ a2 Assistant "Let me…", stop interrupted                    A.at = a2, committed
+ 3 post_reply(a2), then post_step(aborted): hooks act on the aborted reply, may even move A;
+   the base extension returns pending inputs to their clients
+ 4 resolve to = b2 (fast-forward, I6), write the move; A.at = b2       the go-to wins
+ 5 the go-to wakes A at b2: pre_step runs; a step follows only if an extension turns
+   auto-step on
 
- in a tools step, the same: every call without a result gets Interrupted under its run, moved onto
- in turn, without waiting behind post hooks; the claim is released, then the move resolves (I3)
+ in a tools step, the same: each running call is answered Interrupted under its run, moved
+ onto in turn, its post_result hooks run; a call whose pre_tool or pre_result is running
+ finishes normally; then the claim is released, post_step(aborted), and the move resolves (I3)
 
- a hook of A's own step asking to move A (pre_sample, pre_reply, pre_tool, pre_result,
- post_result mid-batch): recorded, applied when the hook returns, the same way
-   pre_reply: the reply it returned finishes its pre_reply hooks, is written with its
-              sampled stop, and moved onto; then the move
- an interrupt while pre_reply runs (from outside): pre_reply is cancelled, nothing is written,
-   A does not move; the unredacted text is withheld
- two concurrent hooks of one step both moving A: the first interrupts; the second waits for
-   that, then moves A at rest
-
- Session.abort(A) is the same interrupt without a move, and turns auto-step off.
- Handled input with a body is also in place, then writes the body under a2.
+ Session.abort(A) is the same without the move: A rests after post_step.
 ```
 
 ## Go to, re-run, and a hook's move
@@ -254,23 +245,25 @@ refuse, as before.
 ```
                     go to                     re-run                      hook's move
  call               Session.move             Session.rerun               cursor handle: move
- caller             frontend                 frontend, or any hook       any hook, on any cursor
- move `by`          frontend                 frontend / extension(name)  extension(name)
- runs hooks         none                     its tools step runs hooks   none for the move; the step that
-                                             as usual (pre_tool,         follows runs hooks as usual
-                                             pre_result, post_result)
- starts a step      never, even with         yes: a tools step for each  no; when the hook returns, the
-                    auto-step on             call unanswered on the new  driver evaluates next and continues
-                                             line (when the hook         per auto-step; counts to max_steps
-                                             returns, if a hook asked)
- busy cursor        interrupts its step      interrupts its step         interrupts its step; from its
-                                                                         own step, when the hook returns
- lands              fast-forwards onto a     exactly where sent          fast-forwards, checked like a go-to
+ caller             a frontend client        a client, or a hook on its  a hook, on its own cursor,
+                                             own cursor at a boundary    at a boundary
+ move `by`          frontend(client)         frontend(client) /          extension(name)
+                                             extension(name)
+ auto-step          turned off               unchanged                   unchanged
+ then               wakes the cursor:        a tools step for each call  the hook point finishes; the
+                    pre_step at the          unanswered on the new line  cycle carries on from the new
+                    destination; a step      (pre_step first, as before  at, per auto-step
+                    only if an extension     every step)
+                    starts one
+ busy cursor        refused while a hook     like a go-to                n/a: a hook moves its own
+                    runs or a question is                                cursor only at a boundary
+                    open; else abort first
+ lands              fast-forwards onto a     exactly where sent          fast-forwards, like a go-to
                     batch or its run
  claim              never taken              taken by its tools step     never taken
  I6                 applies                  applies                     applies
- refused when       a copied batch that is   nothing unanswered there;   same as go-to; the hook may catch it
-                    not complete             a copied batch
+ refused when       a copied batch that is   nothing unanswered there;   as go-to, plus outside a
+                    not complete             a copied batch              boundary or on another cursor
  I6 at a batch      deferred to the completing result (`03-move-and-branch.md`)
 ```
 
@@ -279,9 +272,12 @@ re-reads a run) is none of these: it is never refused or skipped, and I6
 applies only as a deferred restatement written with the move onto a
 completing result. A tool's handle cannot move or re-run.
 
-Reads with: `model.md` §5 (move, moving a busy cursor, re-run), §6 (next), §7
-(hooks, hook points, steps, input, the base extension, what still holds),
-§8 (interrupt, abort); invariants I1, I3, I4, I5, I6, I7; Q15, Q17, Q18, Q20,
-Q21, Q25, Q31, Q32; `glossary.md` terms step, busy, hook, hook point, cursor
-handle, answer, refuse, handled, pass, interrupt, base extension,
-pending input, delivery, auto-step, claim, re-run, go to.
+Reads with: `model.md` §5 (move, a frontend's move of a busy cursor, re-run),
+§6 (next), §7 (the cycle, hooks, boundaries, hook points, steps, between
+cursors, input, the base extension, questions), §8 (abort); §12 (core and
+driver); invariants I1, I3, I4, I5, I6, I7; Q15, Q17, Q18, Q20, Q21, Q25,
+Q31, Q32, Q34, Q38; `glossary.md` terms cycle, wake, throttle, boundary,
+step, busy, locked, hook, hook point, pre_step, post_step, ending, cursor
+handle, answer, refuse, handled, pass, abort, base extension, scratchpad,
+item, pending input, delivery, delivers, auto-step, claim, re-run, go to,
+question.

@@ -24,11 +24,11 @@ handle and its subject: `hook(cursor, subject)`.
 
   | 0.15 hook | here |
   |---|---|
-  | `input` | `pre_input`, which handles, passes, or refuses (the base extension handles by default) |
+  | `input` | `pre_input`, which handles, passes, or refuses (the base extension handles by default), and `pre_step`, where what the input causes is written |
   | `before_agent_start` | `pre_sample`, which appends what it adds (I1) |
   | `tool_call` | `pre_tool` |
   | `tool_result` | `pre_result` |
-  | `turn_end`, `user_turn_end` | `post_reply` (Q20) |
+  | `turn_end`, `user_turn_end` | `post_reply` (Q20), or `post_step` |
   | the node-written and annotate hooks | event observers (`node_appended`) |
 
 - Lifecycle hooks (`session_start` and the rest) do not exist until a

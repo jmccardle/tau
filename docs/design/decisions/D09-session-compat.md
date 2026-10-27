@@ -30,8 +30,8 @@ a move.
   - what happens to 0.15 content with no counterpart (side nodes, paused
     hook waits, hook state), and what `copied_from` or `derived_from`
     records;
-  - the on-disk store format, which is a Phase 3 ADR (model.md §10), and
-    which the converter must target.
+  - the on-disk store format (D12; the record encoding is a Phase 3
+    choice), which the converter must target.
   These need a question and an ADR before Phase 7. Do not assume answers.
 
 ## Alternatives

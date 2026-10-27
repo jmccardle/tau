@@ -29,7 +29,7 @@ did the model see?" had no direct answer (I1, Why).
     (`by: core`) under the tip so the sample runs with the cursor's own
     config. The reply goes under that `Config`.
   - To move the cursor itself onto the shorter line, an extension uses a
-    move, as any hook does.
+    move at a boundary (`pre_step`, or a post hook), as any hook does.
 - The compaction extension is built in Phase 5. Its algorithm (warm and cold
   summaries, the deepest verbatim prefix, speculative candidates) is not
   designed here. That is open until Phase 5.
@@ -52,7 +52,7 @@ did the model see?" had no direct answer (I1, Why).
   authored by the extension (Q30).
 - A copied batch must be copied with all its results: a move onto a copied
   batch that is not complete on the walk is refused, and the driver never
-  runs a copied call (I3). A hook that crashes partway leaves an unlanded
-  scratch copy.
+  runs a copied call (I3). A hook that crashes partway leaves an unlanded,
+  uncommitted copy.
 - Enforced by: I1's behavior test (`FakeProvider` records each context) and
   the scenario "compaction across a model change" (I6).

@@ -8,7 +8,7 @@ returns the copy of `at` as the new context tip (Q25). The driver applies I6,
 samples `walk(tip)`, and appends the reply under the tip (or under I6's
 restating `Config`); the
 step's move onto that reply commits the whole new line. Until then every node
-the hook built is scratch. The old line stays committed and untouched.
+the hook built is uncommitted. The old line stays committed and untouched.
 
 `model.md` decides the mechanism (a returned tip, `copied_from`,
 `derived_from`, I1, I6) but not the compaction extension's internals. What
@@ -25,7 +25,7 @@ those internals leave open is labelled **OPEN** below; nothing is guessed.
  next(walk(u3)) = Sample, and the hook decides the context is too long
 ```
 
-## The hook builds the new line (all scratch until the sample's move)
+## The hook builds the new line (all uncommitted until the sample's move)
 
 ```
  k0 ─ s ─ u1 ─ a1 ─ r1 ─ a2 ─ u2 ─ a3 ─ u3 ◀ A.at         the old line, committed, unchanged
@@ -51,9 +51,9 @@ Notes on what is drawn:
 - A copied batch (an `Assistant` with calls) must be followed by copies of
   all its results. A move onto a copied batch that is not complete on the
   walk is refused, so the driver never runs a copied call (I3). If the hook
-  crashes partway through the copy, the copy is left unlanded, as scratch.
+  crashes partway through the copy, the copy is left unlanded, uncommitted.
 - The summary may be computed in context, or on a detached root by a cheap
-  model (`04-scratch-and-detached-roots.md`); `σ`'s `derived_from` then
+  model (`04-uncommitted-and-detached-roots.md`); `σ`'s `derived_from` then
   points at that root's reply.
 - The tail copies `Config` nodes too, verbatim. None sits in this tail. A
   copied `Config` counts as explicit under I6.
@@ -72,7 +72,7 @@ Notes on what is drawn:
 ```
 
 If the sample produces nothing (a 401, an abort before the first part),
-no reply is written, `A.at` stays `u3`, and `σ u2' a3' u3'` remain scratch.
+no reply is written, `A.at` stays `u3`, and `σ u2' a3' u3'` remain uncommitted.
 
 ## Compaction across a model change (I6 at a sample)
 
@@ -95,13 +95,13 @@ be cheap, and nothing would be restated.
 ## Open points, labelled with the question or section that leaves them open
 
 - **OPEN, Phase 5 (`plan.md`), not in `model.md`:** the warm in-context
-  summary built on scratch under `at`, and the speculative candidate built
+  summary built on uncommitted nodes under `at`, and the speculative candidate built
   ahead of time and committed only if the cache has expired. Neither is drawn.
 - **OPEN, Q25:** the choice of the verbatim prefix's tip. The plan says "the
   deepest verbatim prefix"; `model.md` does not define how the extension picks
   it, only that the result is a node.
 
-Reads with: `model.md` §1 (copied_from, derived_from), §3 (scratch: nodes built
+Reads with: `model.md` §1 (copied_from, derived_from), §3 (uncommitted: nodes built
 for a sample that produced nothing), §4 I1 (parent is context), I4, I6 (config
 follows the cursor at a sample), §7 (`pre_sample` returns a context tip), Q7,
 Q25, Q26, Q30; `glossary.md` terms copied_from, derived_from, context, tip, LCA,

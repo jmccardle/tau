@@ -21,27 +21,30 @@ reopen positions.
     step moves onto each result as it is written.
   - Validation is at append (V1, V2) and at move (I3, I6) (I5), so nothing
     invalid is written.
-  - A step's own move is never refused and never skipped. A move of a busy
-    cursor from outside its step interrupts the step in place: its records
-    are written and moved onto, and then the move applies (model.md §5, §8).
+  - A step's own move is never refused and never skipped. A frontend's move
+    of a busy cursor aborts the step first: its records are written and
+    moved onto, their hooks run, and then the move applies (model.md §5, §8).
+    A hook moves only its own cursor, and only at a boundary.
 - Core never writes a node and then abandons it, except an unreached I6
   restatement. A node no move reaches is one of those, an extension's side
   node, a detached root's work, or a record of a failure (`sample_error`).
-  Those are scratch.
+  Those are uncommitted.
 - `at` is the `to` of the cursor's latest move, so the only persisted
   position is the move log (I7). Nothing guesses a reopen point.
 - To reject a reply, go to its parent and step again. The old reply stays
   committed (Q2).
 - Auto-step and busy (the step lock) are not persisted: every cursor loads
   at rest with auto-step off.
-- A cursor carries no queue. Input for a busy cursor is held as nodes by the
-  base extension (D2).
+- A cursor carries no queue. Input for a busy cursor waits in its
+  scratchpad (D2).
+- A cursor id is a session-local integer assigned by its opening move, with
+  an optional immutable label (Q33).
 
 ## Alternatives
 
 | option | why not |
 |---|---|
-| Do not persist `target` (plan default): a crash leaves the draft as scratch | Needs a draft and a commit step to exist at all. Review removed both, so the crash case cannot arise. |
+| Do not persist `target` (plan default): a crash leaves the draft as uncommitted nodes | Needs a draft and a commit step to exist at all. Review removed both, so the crash case cannot arise. |
 | Persist `target` | Two persisted positions per cursor, and a rule for resuming from a draft. |
 | Hooks retarget a draft | Replaced by pre hooks that change what is written and hooks that move the cursor (model.md §7). |
 
@@ -49,8 +52,7 @@ reopen positions.
 
 - One position per cursor, one record per move, so I7 is a plain replay.
 - A crash after a write but before its move cannot leave a half-state:
-  node and move are durable together (model.md §10; the on-disk form is open
-  until the Phase 3 store ADR).
+  node and move are one record (model.md §10, D12).
 - Cost: a reply cannot be inspected and then discarded before it is
   committed. It is written, then the person goes elsewhere. Rejected replies
   remain in the tree.
@@ -70,4 +72,6 @@ revision let any hook move a busy cursor, interrupting its step in place,
 instead of rules about when a hook may move. Its first draft made the step's
 own move compare-and-set, leaving an interrupted step's records as scratch;
 review replaced that with in-place interrupts, so every write a step makes
-is still followed by its move.
+is still followed by its move. The sixth revision limited hooks to their own
+cursor, at boundaries, and made a frontend's move of a busy cursor an abort
+then the move, with hooks never cancelled.

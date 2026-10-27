@@ -9,8 +9,9 @@ config, I6 restates the cursor's own config as a `Config` node under `to`
 (or reuses one already there), and the cursor lands on that node. A move onto
 a batch or into its run fast-forwards to the run's current end, and only
 `Session.rerun` lands exactly where it was sent. A move does every check
-first, then writes; it never takes a claim. A move of a busy cursor, other
-than its step's own, interrupts that step first (`02-step.md`).
+first, then writes; it never takes a claim. A frontend's move of a busy
+cursor aborts its step first, and is refused while a hook of it runs; a hook
+moves only its own cursor, at a boundary (`02-step.md`).
 
 Notation: `◀ A.at` marks a cursor's `at`. All nodes shown are committed unless
 marked.
@@ -25,8 +26,9 @@ on the line it is already on. A step's own move is always this shape (`by: core`
  k0 ─ u1 ─ a1 ◀ A.at ─ u2 ─ a3             k0 ─ u1 ─ a1 ─ u2 ─ a3 ◀ A.at
 
  LCA(a1, a3) = a1 = at          no branch
- move record appended: { cursor: A, from: a1, to: a3, by: frontend, time }
- a go-to never starts a step, even with auto-step on
+ move record appended: { cursor: A, from: a1, to: a3, by: frontend(laptop), time }
+ the go-to turns auto-step off and wakes A: pre_step runs at a3; a step follows only if an
+ extension turns auto-step on
 ```
 
 ## Going back, and rejecting a reply
@@ -50,7 +52,7 @@ cursor visited before, has the original config. A go-to onto `b2` would
 silently switch the cursor back to model big, so the move restates A's config.
 
 ```
- before                                                     after  go to b2  (by frontend)
+ before                                                     after  go to b2  (by frontend(laptop))
  k0 Config(model: big)                                      k0 Config(big)
  └ u1 User                                                  └ u1
    ├ a1 Assistant (end)                                       ├ a1 ─ k1 Config(cheap) ─ u2 User
@@ -61,8 +63,8 @@ silently switch the cursor back to model big, so the move restates A's config.
 
  LCA(u2, b2) = u1
  config_at(u2) = cheap     config_at(b2) = big     no explicit Config in (u1, b2] = b1 b2
- move record: { cursor: A, from: u2, to: c, by: frontend }     (`to` is the restating node)
- next(walk(c)) skips Config, sees User b2: Sample (but a go-to starts nothing)
+ move record: { cursor: A, from: u2, to: c, by: frontend(laptop) }     (`to` is the restating node)
+ next(walk(c)) skips Config, sees User b2: Sample (auto-step is off after the go-to, so A waits)
 ```
 
 If `b2` were an unstarted batch, I4 forbids appending under it, so the
@@ -81,7 +83,7 @@ restatement is written.
    └ b1 Assistant [c7], stop tools   (unstarted)       config_at(b1) = big
 
  go to b1: config differs, nothing explicit in (u1, b1], but I4 forbids a Config under b1
-   ──▶ A lands on b1, no restatement yet                 move { from: u2, to: b1, by: frontend }
+   ──▶ A lands on b1, no restatement yet                 move { from: u2, to: b1, by: frontend(laptop) }
        owed: Config(cheap), read off the move log: config_at(from) != config_at(b1)
  step A: the tools step runs c7 with config_at(walk(b1)) = big (its tools, its hooks)
    r7 completes the batch ──▶ the step's own move writes, in one durable write:
@@ -108,7 +110,7 @@ onto a later reply.
 ```
  u1 ─ a1 ─ r5 ─ r3 ─ a2 ...                 the batch of a1 is complete; a2 is a later reply
  B: go to a1  (or open_cursor at r5)        ──▶  B.at = r3     stops at r3, never on to a2
-                                                               no step starts, nothing runs again
+                                                               nothing runs again
 
  the run is partial:   u1 ─ a1 ─ r5         c3 unanswered, A may be running it
    B: go to a1 ──▶ B.at = r5                B sits at the run's current end; no claim taken,
@@ -151,9 +153,11 @@ that branches partway.
    3  no to == at stop: rerun(a1) while at == a1 runs the batch again
    4  I6: a restatement that would land under node (an unstarted or partial batch) is
       deferred to the completing result of the new run
-   5  if the cursor is busy, interrupt its step first (its records are written and moved onto)
+   5  if the cursor is busy (a frontend's re-run): refused while a hook runs; else abort its step
+      first (its records are written and moved onto, their hooks run)
       append move { cursor, from: at, to: node, by, time }; set at := node
-   6  tools step now (takes the claim), for each call unanswered on walk(node), through pre_tool as usual
+   6  tools step now (pre_step first; takes the claim), for each call unanswered on walk(node),
+      through pre_tool as usual
 ```
 
 Reads with: `model.md` §3 (committed, LCA), §5 (move, steps 1 to 5, branching,

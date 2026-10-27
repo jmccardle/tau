@@ -55,8 +55,9 @@ depended on which object a reader asked (glossary, `config`).
 
 - Every reply's config is readable: `config_at(parent)` (I1 test).
 - A go-to across a config change may write one restating `Config` node
-  (or reuse one already there). Browsing still runs nothing: no step, no
-  hook, no provider call.
+  (or reuse one already there). A go-to starts no step on its own: it turns
+  auto-step off and wakes the cursor, and a step follows only if an
+  extension's `pre_step` starts one.
 - Cost: a batch reached on another line runs with that line's config (its
   tools and hooks), and the cursor's own config returns only after the
   batch completes (Q16). The fourth revision refused such moves instead; a
