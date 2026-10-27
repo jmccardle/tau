@@ -16,7 +16,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 |---|---|
 | 0 scaffold | **done.** Workspace, maturin, `cp312-abi3` + `cp314t` wheels, CI on forge.goblincorps.com, rule lint. |
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
-| 2 behavior spec | **folded into 3** (order below). No `Harness`, no fakes yet; 8 required scenarios exist as Rust tests (`crates/tau-core/tests/step.rs`). |
+| 2 behavior spec | **folded into 3** (order below). No `Harness`, no fakes yet; 21 required scenarios exist as Rust tests (`crates/tau-core/tests/step.rs`). |
 | 3 Rust core | **in progress**, growing the spike. |
 | 4–7 | not started. |
 
@@ -88,31 +88,31 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
   turn, tool batch, tool error, unknown tool, bad args, HTTP error). An API
   diff, not the spec; run by `scripts/parity.sh`, never by `check.sh`.
 - Required coverage (✓ = covered in `crates/tau-core/tests/step.rs`):
-  - ✓ plain turn; ✓ tool batch (one `Results`, call order); tool error;
-    unknown tool; bad args; HTTP error; mid-stream error;
-  - ✓ abort during sample with parts; abort during sample without parts;
-    abort during tools (running calls `Interrupted`, `post_result` once);
+  - ✓ plain turn; ✓ tool batch (one `Results`, call order); ✓ tool error;
+    unknown tool; bad args; ✓ HTTP error; ✓ mid-stream error;
+  - ✓ abort during sample with parts; ✓ abort during sample without parts;
+    ✓ abort during tools (running calls `Interrupted`, `post_result` once);
   - crash during sample (the next step samples again); ✓ crash mid-batch:
     rests at the batch, input goes under it, a step re-runs it; crash between
     a delivering record and the items' removal (delivered once);
-  - input while busy is delivered by the next step, after the batch; input at
+  - ✓ input while busy is delivered by the next step, after the batch; input at
     rest; ✓ refused input (notice, item removed); abort leaves pending input
-    pending; abort then send;
+    pending (✓); abort then send (✓);
   - a frontend's go-to refused while a hook runs or a question is open; go-to
     on a busy cursor aborts, runs post hooks and `post_step`, then moves; a
     go-to wakes with no phase;
   - a question locks the cursor; esc does not close it; a single-client
     question is declined when that client detaches; abort during a `pre_tool`
     awaiting approval, then approval, gives `Interrupted`;
-  - hook strings: `pre_tool` → `Err(reason)`; a cursor hook halts the step;
+  - hook strings: `pre_tool` → `Err(reason)`; ✓ a cursor hook halts the step;
     ✓ `pre_input` refuses;
-  - a `pre_sample` hook moves the cursor; ✓ a `pre_reply` move chooses where
-    the reply lands; a `post_reply` move changes where tools look;
+  - ✓ a `pre_sample` hook moves the cursor; ✓ a `pre_reply` move chooses where
+    the reply lands; ✓ a `post_reply` move changes where tools look;
   - `cursor.moves(since_step=True)` shows other hooks' moves;
   - ✓ the throttle, and an item left in place does not spin;
   - agent-to-agent items wake an idle cursor; a sub-agent tool waits for its
     cursor to rest;
-  - two cursors at one batch both run it; re-run from the `Assistant` node
+  - ✓ two cursors at one batch both run it; ✓ re-run from the `Assistant` node
     writes a sibling `Results`;
   - branch across a config node; detached-root one-off call; labels across a
     reload; `max_steps` stops a "continue" loop; reload equals pre-save state

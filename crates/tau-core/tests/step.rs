@@ -504,3 +504,479 @@ fn a_step_that_committed_nothing_is_throttled() {
         "the item left in place does not spin"
     );
 }
+
+/// Samples `replies` in order; answers every call `Ok(call id)` by `Tools`;
+/// every hook passes.
+fn scripted(mut replies: Vec<Draft>) -> impl FnMut(&Job, &mut Session) -> Vec<Fed> {
+    replies.reverse();
+    move |job, _| match job {
+        Job::Sample => vec![Fed::Sampled {
+            reply: Some(replies.pop().expect("a scripted reply")),
+            error: None,
+        }],
+        Job::RunCalls(run) => run
+            .iter()
+            .map(|r| Fed::CallDone {
+                call: r.id.clone(),
+                outcome: Outcome::Ok(r.id.clone()),
+                by: Author::Tools,
+            })
+            .collect(),
+        Job::Wait { .. } => vec![Fed::Waited],
+        _ => vec![ok()],
+    }
+}
+
+fn ending(jobs: &[Job]) -> Ending {
+    jobs.iter()
+        .find_map(|j| match j {
+            Job::Hooks {
+                point: Hook::PostStep,
+                ending: Some(e),
+                ..
+            } => Some(e.clone()),
+            _ => None,
+        })
+        .expect("a post_step")
+}
+
+#[test]
+fn a_tool_error_is_an_outcome_and_the_model_sees_it() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "look");
+    let mut samples = 0;
+    let mut step = Step::wake(&s, c, false, 0);
+    drive(&mut s, &mut step, |job, _| match job {
+        Job::Sample => {
+            samples += 1;
+            let r = if samples == 1 {
+                reply(vec![call("a")], Stop::Tools)
+            } else {
+                reply(vec![text("it failed")], Stop::End)
+            };
+            vec![Fed::Sampled {
+                reply: Some(r),
+                error: None,
+            }]
+        }
+        Job::RunCalls(_) => vec![Fed::CallDone {
+            call: "a".into(),
+            outcome: Outcome::Err("no such file".into()),
+            by: Author::Tools,
+        }],
+        _ => vec![ok()],
+    });
+    let b = bodies(&s, c);
+    assert_eq!(
+        b[4],
+        Body::Results(vec![(
+            "a".into(),
+            Outcome::Err("no such file".into()),
+            Author::Tools
+        )])
+    );
+    assert!(matches!(b[5], Body::Assistant { .. }));
+}
+
+#[test]
+fn an_http_error_leaves_a_side_node_and_the_cursor_where_it_was() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    let jobs = drive(&mut s, &mut step, |job, _| match job {
+        Job::Sample => vec![Fed::Sampled {
+            reply: None,
+            error: Some("HTTP 500".into()),
+        }],
+        _ => vec![ok()],
+    });
+    assert_eq!(ending(&jobs), Ending::Failed("HTTP 500".into()));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    let side = s.node(s.at(c).unwrap() + 1).unwrap();
+    assert_eq!(side.parent, Some(s.at(c).unwrap()));
+    assert!(matches!(&side.body, Body::Custom { kind, .. } if kind == "sample_error"));
+    assert!(!s.auto[&c]);
+}
+
+#[test]
+fn a_mid_stream_error_commits_the_partial_reply_and_fails() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    let jobs = drive(&mut s, &mut step, |job, _| match job {
+        Job::Sample => vec![Fed::Sampled {
+            reply: Some(reply(vec![text("hel")], Stop::Error)),
+            error: Some("connection reset".into()),
+        }],
+        _ => vec![ok()],
+    });
+    assert!(jobs.contains(&Job::Hooks {
+        point: Hook::PostReply,
+        draft: None,
+        ending: None
+    }));
+    assert_eq!(ending(&jobs), Ending::Failed("connection reset".into()));
+    assert_eq!(
+        bodies(&s, c).last().unwrap(),
+        &Body::Assistant {
+            parts: vec![text("hel")],
+            stop: Stop::Error
+        }
+    );
+}
+
+#[test]
+fn abort_during_sample_with_no_parts_commits_nothing() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    let mut jobs = vec![];
+    loop {
+        let job = step.next_job(&mut s).unwrap();
+        jobs.push(job.clone());
+        match job {
+            Job::Rest => break,
+            Job::Sample => {
+                assert!(step.abort(&mut s));
+                step.feed(
+                    &mut s,
+                    Fed::Sampled {
+                        reply: None,
+                        error: None,
+                    },
+                    0,
+                )
+                .unwrap();
+            }
+            _ => step.feed(&mut s, ok(), 0).unwrap(),
+        }
+    }
+    assert_eq!(ending(&jobs), Ending::Aborted);
+    assert!(!jobs.iter().any(|j| matches!(
+        j,
+        Job::Hooks {
+            point: Hook::PostReply,
+            ..
+        }
+    )));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+}
+
+#[test]
+fn abort_during_tools_interrupts_unfinished_calls_and_runs_post_result_once() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "look");
+    let mut step = Step::wake(&s, c, false, 0);
+    let mut jobs = vec![];
+    loop {
+        let job = step.next_job(&mut s).unwrap();
+        jobs.push(job.clone());
+        match job {
+            Job::Rest => break,
+            Job::Sample => step
+                .feed(
+                    &mut s,
+                    Fed::Sampled {
+                        reply: Some(reply(vec![call("a"), call("b")], Stop::Tools)),
+                        error: None,
+                    },
+                    0,
+                )
+                .unwrap(),
+            Job::RunCalls(_) => {
+                let done = |call: &str, outcome| Fed::CallDone {
+                    call: call.into(),
+                    outcome,
+                    by: Author::Tools,
+                };
+                step.feed(&mut s, done("a", Outcome::Ok("a".into())), 0)
+                    .unwrap();
+                assert!(step.abort(&mut s), "calls are in flight");
+                step.feed(&mut s, done("b", Outcome::Interrupted), 0)
+                    .unwrap();
+            }
+            _ => step.feed(&mut s, ok(), 0).unwrap(),
+        }
+    }
+    let post_results = jobs
+        .iter()
+        .filter(|j| {
+            matches!(
+                j,
+                Job::Hooks {
+                    point: Hook::PostResult,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(post_results, 1);
+    assert_eq!(ending(&jobs), Ending::Aborted);
+    assert_eq!(
+        bodies(&s, c).last().unwrap(),
+        &Body::Results(vec![
+            ("a".into(), Outcome::Ok("a".into()), Author::Tools),
+            ("b".into(), Outcome::Interrupted, Author::Tools)
+        ]),
+        "no sample after the abort"
+    );
+}
+
+#[test]
+fn input_while_busy_waits_and_the_next_step_delivers_it_after_the_batch() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "look");
+    let mut step = Step::wake(&s, c, false, 0);
+    let mut script = scripted(vec![
+        reply(vec![call("a")], Stop::Tools),
+        reply(vec![text("seen both")], Stop::End),
+    ]);
+    drive(&mut s, &mut step, |job, s| {
+        if matches!(job, Job::RunCalls(_)) {
+            send(s, c, "also this");
+        }
+        script(job, s)
+    });
+    let b = bodies(&s, c);
+    assert!(matches!(b[4], Body::Results(_)));
+    assert_eq!(b[5], Body::User("also this".into()));
+    assert!(matches!(b[6], Body::Assistant { .. }));
+    assert_eq!(b.len(), 7);
+}
+
+#[test]
+fn abort_leaves_pending_input_pending_and_a_send_then_delivers_it() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    loop {
+        match step.next_job(&mut s).unwrap() {
+            Job::Rest => break,
+            Job::Sample => {
+                send(&mut s, c, "wait, also");
+                step.abort(&mut s);
+                step.feed(
+                    &mut s,
+                    Fed::Sampled {
+                        reply: None,
+                        error: None,
+                    },
+                    0,
+                )
+                .unwrap();
+            }
+            _ => step.feed(&mut s, ok(), 0).unwrap(),
+        }
+    }
+    assert_eq!(s.items(c).count(), 1, "still pending");
+    assert!(!s.auto[&c]);
+    send(&mut s, c, "go on");
+    let mut step = Step::wake(&s, c, false, 0);
+    drive(
+        &mut s,
+        &mut step,
+        scripted(vec![
+            reply(vec![text("one")], Stop::End),
+            reply(vec![text("two")], Stop::End),
+        ]),
+    );
+    let users: Vec<Body> = bodies(&s, c)
+        .into_iter()
+        .filter(|b| matches!(b, Body::User(_)))
+        .collect();
+    assert_eq!(
+        users,
+        [
+            Body::User("hi".into()),
+            Body::User("wait, also".into()),
+            Body::User("go on".into())
+        ]
+    );
+    assert_eq!(s.items(c).count(), 0);
+}
+
+#[test]
+fn a_cursor_hook_string_halts_the_step() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    let jobs = drive(&mut s, &mut step, |job, _| match job {
+        Job::Hooks {
+            point: Hook::PreSample,
+            ..
+        } => vec![Fed::Hooks {
+            stop: Some("over budget".into()),
+            draft: None,
+        }],
+        _ => vec![ok()],
+    });
+    assert!(!jobs.contains(&Job::Sample));
+    assert_eq!(ending(&jobs), Ending::Halted("over budget".into()));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert!(!s.auto[&c]);
+}
+
+#[test]
+fn a_pre_sample_move_chooses_what_is_sampled_and_where_the_reply_lands() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    let mut script = scripted(vec![reply(vec![text("hello")], Stop::End)]);
+    drive(&mut s, &mut step, |job, s| {
+        if let Job::Hooks {
+            point: Hook::PreSample,
+            ..
+        } = job
+        {
+            let by = Author::Extension("remind".into());
+            s.write(c, Body::User("(be brief)".into()), vec![], by, 0)
+                .unwrap();
+        }
+        script(job, s)
+    });
+    assert_eq!(
+        bodies(&s, c)[3..],
+        [
+            Body::User("(be brief)".into()),
+            Body::Assistant {
+                parts: vec![text("hello")],
+                stop: Stop::End
+            }
+        ]
+    );
+}
+
+#[test]
+fn a_post_reply_move_changes_where_the_tools_phase_looks() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    // An older batch elsewhere in the tree.
+    let sys = s.at(c).unwrap();
+    let old = s
+        .append(
+            Some(sys),
+            Author::Provider,
+            Body::Assistant {
+                parts: vec![call("old")],
+                stop: Stop::Tools,
+            },
+            vec![],
+            0,
+        )
+        .unwrap();
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    let mut script = scripted(vec![
+        reply(vec![text("hello")], Stop::End),
+        reply(vec![text("after old")], Stop::End),
+    ]);
+    let mut moved = false;
+    let jobs = drive(&mut s, &mut step, |job, s| {
+        if let Job::Hooks {
+            point: Hook::PostReply,
+            ..
+        } = job
+        {
+            if !moved {
+                moved = true;
+                s.move_to(c, old, Author::Extension("nav".into()), 0)
+                    .unwrap();
+            }
+        }
+        script(job, s)
+    });
+    let ran: Vec<&str> = jobs
+        .iter()
+        .filter_map(|j| match j {
+            Job::RunCalls(r) => Some(r[0].id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ran, ["old"]);
+    let b = bodies(&s, c);
+    assert_eq!(b.len(), 5, "sys, old batch, its Results, the reply");
+    assert!(matches!(b[2], Body::Assistant { .. }));
+    assert!(matches!(b[3], Body::Results(_)));
+}
+
+/// A session resting at a one-call batch, answered once.
+fn answered_batch() -> (Session, u64, u64) {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "look");
+    let mut step = Step::wake(&s, c, false, 0);
+    let mut first = true;
+    drive(&mut s, &mut step, |job, s| {
+        if let Job::Hooks {
+            point: Hook::PostResult,
+            ..
+        } = job
+        {
+            s.auto.insert(c, false); // stop after the batch
+        }
+        match job {
+            Job::Sample if first => {
+                first = false;
+                vec![Fed::Sampled {
+                    reply: Some(reply(vec![call("a")], Stop::Tools)),
+                    error: None,
+                }]
+            }
+            Job::RunCalls(_) => vec![Fed::CallDone {
+                call: "a".into(),
+                outcome: Outcome::Ok("first".into()),
+                by: Author::Tools,
+            }],
+            _ => vec![ok()],
+        }
+    });
+    let batch = s.node(s.at(c).unwrap()).unwrap().parent.unwrap();
+    (s, c, batch)
+}
+
+fn results_under(s: &Session, batch: u64, cursors: &[u64]) -> Vec<Body> {
+    let mut seen: Vec<u64> = cursors
+        .iter()
+        .map(|&c| s.at(c).unwrap())
+        .filter(|&n| s.node(n).unwrap().parent == Some(batch))
+        .collect();
+    seen.sort_unstable();
+    seen.dedup();
+    seen.into_iter()
+        .map(|n| s.node(n).unwrap().body.clone())
+        .collect()
+}
+
+#[test]
+fn going_to_a_batch_and_stepping_writes_a_sibling_results() {
+    let (mut s, c, batch) = answered_batch();
+    let first = s.at(c).unwrap();
+    s.move_to(c, batch, Author::Frontend("term".into()), 0)
+        .unwrap();
+    let mut step = Step::wake(&s, c, true, 0);
+    drive(&mut s, &mut step, scripted(vec![]));
+    let second = s.at(c).unwrap();
+    assert_ne!(first, second);
+    assert_eq!(s.node(second).unwrap().parent, Some(batch));
+    assert_eq!(
+        s.node(first).unwrap().body,
+        Body::Results(vec![(
+            "a".into(),
+            Outcome::Ok("first".into()),
+            Author::Tools
+        )]),
+        "the first answer is final"
+    );
+}
+
+#[test]
+fn two_cursors_at_one_batch_both_run_it() {
+    let (mut s, c, batch) = answered_batch();
+    s.move_to(c, batch, Author::Frontend("term".into()), 0)
+        .unwrap();
+    let d = s.open(batch, Author::Frontend("term".into()), 0).unwrap();
+    for cur in [c, d] {
+        let mut step = Step::wake(&s, cur, true, 0);
+        drive(&mut s, &mut step, scripted(vec![]));
+    }
+    assert_ne!(s.at(c).unwrap(), s.at(d).unwrap());
+    assert_eq!(results_under(&s, batch, &[c, d]).len(), 2);
+}
