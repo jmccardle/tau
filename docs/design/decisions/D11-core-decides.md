@@ -28,8 +28,9 @@ question is where the decisions live.
   `post_step`) and when the step ends. A phase's writes, pre hooks'
   included, share one sync. Calls outside a step sync on return.
 - A hook job's result is only the edited draft and the return value.
-- Frontend calls (input, go-to, step, abort, auto-step, answer) are inputs
-  to the same machine.
+- Frontend calls (input, go-to, step, abort, auto-step) are inputs to the
+  session machine (`machine::Machine`), which holds every cursor's step and
+  refuses a call with a typed error (`Busy`, `Locked`, `HookRunning`).
 - No async runtime in Rust.
 
 ## Alternatives

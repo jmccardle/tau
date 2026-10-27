@@ -139,7 +139,9 @@ whole walk, for tests. `append` checks each node (`Session::check`).
 *spike* `tree::Error`
 
 Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
-`RootNotConfig` (V1), `DuplicateCall` (V2). Each becomes a typed Python exception in `tau-py`.
+`RootNotConfig` (V1), `DuplicateCall` (V2); and a frontend call's: `Busy`
+(step on a busy cursor), `Locked` (input, go-to, or step with a question
+open), `HookRunning` (go-to while a cursor hook runs). Each becomes a typed Python exception in `tau-py`.
 
 ## The scratchpad
 
@@ -254,16 +256,28 @@ A unique string naming one cursor; a cursor may have several. Set, moved,
 and removed by **label records** `{label, cursor?}`; setting a label already
 on that cursor writes nothing.
 
+### machine
+*spike* `machine::Machine` · new
+
+The session plus every cursor's step: the frontend calls (`input`, `send`,
+`step`, `go_to`, `set_auto`, `abort`), the extension calls that wake a
+cursor (`open`, `add_item`), the question lock (`ask`, `answered`), and
+`next_job`/`feed` per cursor. Holds a busy go-to until its aborted step
+rests (`going`). Each frontend call resets `max_steps` and syncs on return.
+What `tau-py` exposes; `Session`'s own mutators are for core and tests.
+
 ### busy, at rest
-a view · new
+*spike* `Machine::busy`, `Step::resting` · new
 
 A cursor is busy while a `Step` exists for it that is not `resting()`.
 Never stored; every cursor loads at rest.
 
 ### locked
-not yet spiked · new
+*spike* `Machine::locked`, `ask`, `answered` · new
 
-A cursor with an open question. Input, go-to, and step on it are refused.
+A cursor with an open question. Input, go-to, and step on it are refused
+(`Error::Locked`); abort is allowed and leaves the question open. Core
+counts open questions per cursor; the driver holds their content.
 
 ## The step
 
@@ -373,7 +387,7 @@ there is work. Off: a woken cursor runs only `pre_step` and `post_step`. Goes
 off on abort, halt, failure, go-to, `max_steps`, and load.
 
 ### max_steps
-`Config::max_steps`; the count is `Session::taken` · `Config` field
+*spike* `Config::max_steps`; the count is `Session::taken` · `Config` field
 
 The most committing steps a cursor takes without a frontend acting. Reaching
 it turns auto-step off (D1).
@@ -389,6 +403,12 @@ not yet spiked · `Config` field
 Esc. Auto-step off, no later phase; returns whether the driver must cancel
 the effect in flight. Never cancels a hook.
 
+
+### in_hook
+*spike* `Step::in_hook` · new
+
+True while a cursor hook job is out and not yet fed. Core cannot see tool
+hooks inside `RunCalls`; a go-to then aborts and the hook finishes (Q34).
 ### resume
 What a crash mid-batch leaves: the cursor at rest at the unanswered batch,
 every outcome lost (D4). Input goes under it; a step re-runs it.
@@ -448,7 +468,8 @@ node handle is a cursor handle without the cursor's own operations. Every
 call goes into Rust at once. Surface is Phase 4's.
 
 ### question
-not yet spiked · retires `request_user_action`
+the lock is *spike* (`Machine::ask`); the rest is the driver's · retires
+`request_user_action`
 
 `await cursor.ask(target, question)`; the cursor is locked until it is
 answered or declined.

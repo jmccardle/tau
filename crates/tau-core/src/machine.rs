@@ -1,0 +1,227 @@
+//! The session machine: every cursor's step, plus the calls a frontend makes
+//! (model.md §5–§7). Frontend calls are inputs here, as jobs and results are
+//! for a step (D11). Still sans-IO: the driver asks for each cursor's jobs.
+
+use std::collections::BTreeMap;
+
+use crate::step::{Fed, Job, Step};
+use crate::tree::{Author, CursorId, Error, ItemData, ItemId, Move, NodeId, Session};
+
+#[derive(Debug)]
+pub struct Machine {
+    pub session: Session,
+    steps: BTreeMap<CursorId, Step>,
+    /// Open questions per cursor; any open question locks the cursor.
+    asking: BTreeMap<CursorId, u32>,
+    /// A go-to on a busy cursor, applied once its aborted step rests.
+    going: BTreeMap<CursorId, (NodeId, Author, u64)>,
+}
+
+impl Machine {
+    pub fn new(session: Session) -> Self {
+        Self {
+            session,
+            steps: BTreeMap::new(),
+            asking: BTreeMap::new(),
+            going: BTreeMap::new(),
+        }
+    }
+
+    pub fn busy(&self, cursor: CursorId) -> bool {
+        self.steps.get(&cursor).is_some_and(|s| !s.resting())
+    }
+
+    pub fn locked(&self, cursor: CursorId) -> bool {
+        self.asking.get(&cursor).is_some_and(|n| *n > 0)
+    }
+
+    // Frontend calls. Each resets the cursor's `max_steps` count and syncs on return.
+
+    /// Add an input item; wakes the cursor. Waits for the next input phase if busy.
+    pub fn input(
+        &mut self,
+        cursor: CursorId,
+        client: String,
+        text: &str,
+        now: u64,
+    ) -> Result<ItemId, Error> {
+        self.frontend(cursor)?;
+        let data = ItemData::Input {
+            client,
+            text: text.into(),
+        };
+        let id = self.add_item(cursor, data, now)?;
+        self.session.sync();
+        Ok(id)
+    }
+
+    /// Input plus auto-step on.
+    pub fn send(
+        &mut self,
+        cursor: CursorId,
+        client: String,
+        text: &str,
+        now: u64,
+    ) -> Result<ItemId, Error> {
+        self.frontend(cursor)?;
+        self.session.auto.insert(cursor, true);
+        self.input(cursor, client, text, now)
+    }
+
+    /// `Session.step`: run the phases once with auto-step off.
+    pub fn step(&mut self, cursor: CursorId, _client: String, now: u64) -> Result<(), Error> {
+        self.frontend(cursor)?;
+        if self.busy(cursor) {
+            return Err(Error::Busy(cursor));
+        }
+        self.wake(cursor, true, now);
+        self.session.sync();
+        Ok(())
+    }
+
+    /// Go to `to`: auto-step off, then a wake. On a busy cursor the step is
+    /// aborted and the move applies after its `post_step`; returns whether the
+    /// driver must cancel the effect in flight.
+    pub fn go_to(
+        &mut self,
+        cursor: CursorId,
+        to: NodeId,
+        client: String,
+        now: u64,
+    ) -> Result<bool, Error> {
+        self.frontend(cursor)?;
+        self.session.node(to)?;
+        let by = Author::Frontend(client);
+        let cancel = if let Some(step) = self.steps.get_mut(&cursor).filter(|s| !s.resting()) {
+            if step.in_hook() {
+                return Err(Error::HookRunning(cursor));
+            }
+            self.going.insert(cursor, (to, by, now));
+            step.abort(&mut self.session)
+        } else {
+            self.session.move_to(cursor, to, by, now)?;
+            self.session.auto.insert(cursor, false);
+            self.wake(cursor, false, now);
+            false
+        };
+        self.session.sync();
+        Ok(cancel)
+    }
+
+    /// Turn auto-step on or off; on wakes the cursor.
+    pub fn set_auto(
+        &mut self,
+        cursor: CursorId,
+        on: bool,
+        _client: String,
+        now: u64,
+    ) -> Result<(), Error> {
+        self.session.at(cursor)?;
+        self.session.taken.remove(&cursor);
+        self.session.auto.insert(cursor, on);
+        if on {
+            self.wake(cursor, false, now);
+        }
+        self.session.sync();
+        Ok(())
+    }
+
+    /// Esc. Allowed while locked; the question stays open. Returns whether the
+    /// driver must cancel the effect in flight.
+    pub fn abort(&mut self, cursor: CursorId) -> bool {
+        match self.steps.get_mut(&cursor).filter(|s| !s.resting()) {
+            Some(step) => step.abort(&mut self.session),
+            None => {
+                self.session.auto.insert(cursor, false);
+                false
+            }
+        }
+    }
+
+    // Extension and driver calls.
+
+    /// Open a cursor at `at`; opening wakes it (Q32).
+    pub fn open(&mut self, at: NodeId, by: Author, now: u64) -> Result<CursorId, Error> {
+        let cursor = self.session.open(at, by, now)?;
+        self.wake(cursor, false, now);
+        Ok(cursor)
+    }
+
+    /// Add an item to `to`'s scratchpad; wakes `to`.
+    pub fn add_item(&mut self, to: CursorId, data: ItemData, now: u64) -> Result<ItemId, Error> {
+        self.session.at(to)?;
+        let id = self.session.add_item(to, data);
+        self.wake(to, false, now);
+        Ok(id)
+    }
+
+    /// A hook asked a question on `cursor`: it is locked until answered.
+    pub fn ask(&mut self, cursor: CursorId) {
+        *self.asking.entry(cursor).or_default() += 1; // rules: allow(entry): BTreeMap API
+    }
+
+    /// A question on `cursor` was answered or declined.
+    pub fn answered(&mut self, cursor: CursorId) {
+        if let Some(n) = self.asking.get_mut(&cursor) {
+            *n = n.saturating_sub(1);
+        }
+    }
+
+    /// `cursor.moves(since_step=True)` for the cursor's current step.
+    pub fn moves_since_step(&self, cursor: CursorId) -> impl Iterator<Item = &Move> {
+        self.steps
+            .get(&cursor)
+            .into_iter()
+            .flat_map(move |st| st.moves(&self.session))
+    }
+
+    // Driving.
+
+    /// The cursor's next job; `Rest` when it has no step. A go-to waiting on an
+    /// aborted step applies here, once that step rests, and wakes the cursor.
+    pub fn next_job(&mut self, cursor: CursorId) -> Result<Job, Error> {
+        let Some(step) = self.steps.get_mut(&cursor) else {
+            return Ok(Job::Rest);
+        };
+        let job = step.next_job(&mut self.session)?;
+        match (job, self.going.remove(&cursor)) {
+            (Job::Rest, Some((to, by, time))) => {
+                self.session.move_to(cursor, to, by, time)?;
+                self.session.auto.insert(cursor, false);
+                self.session.sync();
+                self.wake(cursor, false, time);
+                self.next_job(cursor)
+            }
+            (job, going) => {
+                if let Some(g) = going {
+                    self.going.insert(cursor, g);
+                }
+                Ok(job)
+            }
+        }
+    }
+
+    pub fn feed(&mut self, cursor: CursorId, fed: Fed, now: u64) -> Result<(), Error> {
+        let step = self.steps.get_mut(&cursor).expect("a job was handed out");
+        step.feed(&mut self.session, fed, now)
+    }
+
+    /// A frontend call's checks: the cursor exists and is not locked; then
+    /// its `max_steps` count resets.
+    fn frontend(&mut self, cursor: CursorId) -> Result<(), Error> {
+        self.session.at(cursor)?;
+        if self.locked(cursor) {
+            return Err(Error::Locked(cursor));
+        }
+        self.session.taken.remove(&cursor);
+        Ok(())
+    }
+
+    /// Start a step unless one is running; a wake while busy joins it.
+    fn wake(&mut self, cursor: CursorId, asked: bool, now: u64) {
+        if !self.busy(cursor) {
+            self.steps
+                .insert(cursor, Step::wake(&self.session, cursor, asked, now));
+        }
+    }
+}

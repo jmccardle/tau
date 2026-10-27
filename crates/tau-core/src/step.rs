@@ -105,6 +105,8 @@ pub struct Step {
     seen: u64,
     /// `Session::moves.len()` when this step woke.
     first_move: usize,
+    /// A `Hooks` job is out and not yet fed.
+    in_hook: bool,
     draft: Option<Draft>,
     error: Option<String>,
     ending: Ending,
@@ -125,6 +127,7 @@ impl Step {
             started: now,
             seen,
             first_move: s.moves.len(),
+            in_hook: false,
             draft: None,
             error: None,
             ending: Ending::Done,
@@ -133,6 +136,12 @@ impl Step {
     }
 
     pub fn next_job(&mut self, s: &mut Session) -> Result<Job, Error> {
+        let job = self.job(s)?;
+        self.in_hook = matches!(job, Job::Hooks { .. });
+        Ok(job)
+    }
+
+    fn job(&mut self, s: &mut Session) -> Result<Job, Error> {
         loop {
             let on = !self.aborted && (self.asked || s.auto[&self.cursor]);
             let hooks = |point, draft| Job::Hooks {
@@ -215,6 +224,7 @@ impl Step {
     }
 
     pub fn feed(&mut self, s: &mut Session, fed: Fed, now: u64) -> Result<(), Error> {
+        self.in_hook = false;
         match (self.pos, fed) {
             (Pos::PostStep, Fed::Hooks { stop, .. }) => {
                 if stop.is_some() {
@@ -310,7 +320,15 @@ impl Step {
         if self.ending == Ending::Done {
             self.ending = Ending::Aborted;
         }
+        if self.pos == Pos::Throttle {
+            self.pos = Pos::Rest; // the scheduled restart is cancelled
+        }
         matches!(self.pos, Pos::Sample | Pos::Calls)
+    }
+
+    /// True while a cursor hook job is out: a frontend's go-to is refused.
+    pub fn in_hook(&self) -> bool {
+        self.in_hook
     }
 
     pub fn resting(&self) -> bool {
@@ -333,6 +351,18 @@ impl Step {
     /// After `post_step`: sync what it wrote, then rest, throttle, or restart.
     fn after(&mut self, s: &mut Session, now: u64) {
         s.sync();
+        if self.committed {
+            let max = s
+                .at(self.cursor)
+                .and_then(|a| s.config_at(a))
+                .ok()
+                .and_then(|c| c.max_steps);
+            let taken = s.taken.entry(self.cursor).or_default(); // rules: allow(entry): BTreeMap API
+            *taken += 1;
+            if max.is_some_and(|m| *taken >= m) {
+                s.auto.insert(self.cursor, false);
+            }
+        }
         let work = s.next(self.cursor) != Next::Wait
             || s.items(self.cursor)
                 .any(|i| matches!(i.data, ItemData::Input { .. }));

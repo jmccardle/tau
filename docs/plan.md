@@ -16,7 +16,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 |---|---|
 | 0 scaffold | **done.** Workspace, maturin, `cp312-abi3` + `cp314t` wheels, CI on forge.goblincorps.com, rule lint. |
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
-| 2 behavior spec | **folded into 3** (order below). No `Harness`, no fakes yet; 21 required scenarios exist as Rust tests (`crates/tau-core/tests/step.rs`). |
+| 2 behavior spec | **folded into 3** (order below). No `Harness`, no fakes yet; the required scenarios marked ✓ below exist as Rust tests (`crates/tau-core/tests/`). |
 | 3 Rust core | **in progress**, growing the spike. |
 | 4–7 | not started. |
 
@@ -30,15 +30,14 @@ Rulings since revision 7 (recorded in `model.md` and the ADRs):
   step ends, not one per write (D11);
 - `Results` is `by: Tools`, and each outcome carries its own `by` (D7).
 
-**The step spike** (`crates/tau-core/src/{tree,step}.rs`, ~700 lines, plus
-~400 lines of tests) is the phase loop of D11 as a sans-IO machine:
-`next_job` / `feed`, the cursor hooks, one `Results` node per batch, the
-throttle, abort, reload with auto-step off. A turn costs ~15–30 µs at any
-session depth. It covers part of 3a (`Node`, `Body`, `Move`, `Item`, `walk`,
-`next`, V1, V2) and the core of 3c. Missing: labels, `config_at`, LCA,
-questions, go-to on a busy cursor, `max_steps`, proptests, the store (3b),
-the bindings, and the clippy gate (pedantic lints; deferred to the Phase 3
-closeout).
+**The core so far** (`crates/tau-core/src/{tree,step,machine}.rs`, ~1,100
+lines, plus ~1,400 lines of tests): the tree with labels, `config_at`, and
+LCA (3a, minus proptests); one cursor's step as a sans-IO machine (D11); and
+the session machine over every cursor, taking frontend calls (go-to on a busy
+cursor, `Session.step`, the question lock, wakes, `max_steps`). A turn costs
+~15–30 µs at any session depth. Missing: replay (`load(records)`), the
+proptests, the store (3b), the bindings, and the clippy gate (pedantic
+lints; deferred to the Phase 3 closeout).
 
 ### Order from here (approved 2026-10-27; bends rule 5)
 
@@ -87,7 +86,7 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
 - `parity/`: a `Harness` adapter over τ 0.15 for the `keep` tests (plain
   turn, tool batch, tool error, unknown tool, bad args, HTTP error). An API
   diff, not the spec; run by `scripts/parity.sh`, never by `check.sh`.
-- Required coverage (✓ = covered in `crates/tau-core/tests/step.rs`):
+- Required coverage (✓ = covered in `crates/tau-core/tests/`):
   - ✓ plain turn; ✓ tool batch (one `Results`, call order); ✓ tool error;
     unknown tool; bad args; ✓ HTTP error; ✓ mid-stream error;
   - ✓ abort during sample with parts; ✓ abort during sample without parts;
@@ -98,24 +97,24 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
   - ✓ input while busy is delivered by the next step, after the batch; input at
     rest; ✓ refused input (notice, item removed); abort leaves pending input
     pending (✓); abort then send (✓);
-  - a frontend's go-to refused while a hook runs or a question is open; go-to
-    on a busy cursor aborts, runs post hooks and `post_step`, then moves; a
+  - ✓ a frontend's go-to refused while a hook runs or a question is open; ✓ go-to
+    on a busy cursor aborts, runs post hooks and `post_step`, then moves; ✓ a
     go-to wakes with no phase;
-  - a question locks the cursor; esc does not close it; a single-client
+  - ✓ a question locks the cursor; ✓ esc does not close it; a single-client
     question is declined when that client detaches; abort during a `pre_tool`
     awaiting approval, then approval, gives `Interrupted`;
   - hook strings: `pre_tool` → `Err(reason)`; ✓ a cursor hook halts the step;
     ✓ `pre_input` refuses;
   - ✓ a `pre_sample` hook moves the cursor; ✓ a `pre_reply` move chooses where
     the reply lands; ✓ a `post_reply` move changes where tools look;
-  - `cursor.moves(since_step=True)` shows other hooks' moves;
+  - ✓ `cursor.moves(since_step=True)` shows other hooks' moves;
   - ✓ the throttle, and an item left in place does not spin;
-  - agent-to-agent items wake an idle cursor; a sub-agent tool waits for its
+  - ✓ agent-to-agent items wake an idle cursor; a sub-agent tool waits for its
     cursor to rest;
   - ✓ two cursors at one batch both run it; ✓ re-run from the `Assistant` node
     writes a sibling `Results`;
   - branch across a config node; detached-root one-off call; labels across a
-    reload; `max_steps` stops a "continue" loop; reload equals pre-save state
+    reload (records ✓, reload needs replay); ✓ `max_steps` stops a "continue" loop; reload equals pre-save state
     (I7); a provider-illegal walk fails at the next sample (I5).
 - **Exit:** `keep` green through `parity/`; everything else collected and
   failing for the right reason. Sign-off.

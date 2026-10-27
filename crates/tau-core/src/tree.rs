@@ -135,6 +135,12 @@ pub enum Error {
     NoSuchNode(NodeId),
     NoSuchCursor(CursorId),
     NoSuchLabel(String),
+    /// A frontend's `Session.step` on a busy cursor.
+    Busy(CursorId),
+    /// A frontend's input, go-to, or step on a cursor with an open question.
+    Locked(CursorId),
+    /// A frontend's go-to while a cursor hook runs.
+    HookRunning(CursorId),
     RootNotConfig,
     DuplicateCall,
 }

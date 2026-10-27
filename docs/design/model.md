@@ -146,9 +146,11 @@ A move is the only way `at` changes, and it checks only that `to` is a node
 - **A hook's move applies at once**; later hooks see the new `at`. Each hook
   sees the step's moves with `cursor.moves(since_step=True)` (`Step::moves`).
 - **A go-to** turns auto-step off and wakes the cursor, whose step then runs
-  only `pre_step` and `post_step` (Q39). **Not yet spiked:** on a busy cursor
-  it is refused while a hook runs or a question is open, and otherwise it
-  aborts the step and applies after `post_step`.
+  only `pre_step` and `post_step` (Q39). On a busy cursor it is refused while
+  a cursor hook runs (`Error::HookRunning`) or a question is open
+  (`Error::Locked`); otherwise it aborts the step and applies after
+  `post_step` (`Machine::go_to`). A tool hook inside `RunCalls` is not
+  visible to core, so a go-to then aborts and the hook finishes (Q34).
 - **Re-run** is go-to the batch's `Assistant` node, then step. **Branching**
   is moving off `walk(at)` and not below it; the branch forms at the next
   commit. Going to an ancestor is going back.
@@ -225,12 +227,13 @@ item left in place does not cause another step. Otherwise `Job::Rest`.
 
 **Wakes:** an item added to its scratchpad, opening, load (lease holder
 only), a go-to, `Session.step`, auto-step turned on. Busy means a step exists
-and is not resting. **Not yet spiked:** the driver's wake bookkeeping, a wake
-during the throttle joining the scheduled step, `Session.step` refused on a
-busy cursor.
+and is not resting. `machine::Machine` holds every cursor's step and starts
+one on a wake; a wake while busy, the throttle included, joins the step
+already there. `Session.step` on a busy cursor is refused (`Error::Busy`).
+Abort during the throttle cancels the restart.
 
-**`max_steps` (not yet spiked).** Each committing step counts; only actions
-by a frontend reset the count. At `config_at(at).max_steps`, auto-step turns
+**`max_steps`.** Each committing step counts (`Session::taken`); only
+frontend calls reset the count. At `config_at(at).max_steps`, auto-step turns
 off (D1).
 
 ## 7. Hooks
@@ -284,13 +287,14 @@ spike's `Session::add_item`). A **send** is input plus auto-step on. On a
 busy cursor the item waits for the next step's input phase. After an abort it
 stays pending (Q42). Commands and gates are `pre_input` hooks.
 
-### Questions (not yet spiked)
+### Questions (the lock is spiked)
 
 `await cursor.ask(target, question)` returns the answer, or `None` if
 declined. While a question is open the cursor is **locked**: a frontend's
 input, go-to, and step are refused; abort is allowed and leaves the question
-open. A question for one client is declined if it detaches. Questions are
-driver memory.
+open. A question for one client is declined if it detaches. Core counts
+open questions per cursor (`Machine::ask`, `answered`) to enforce the lock;
+the questions themselves are driver memory.
 
 ### Between cursors
 
