@@ -258,7 +258,7 @@ anyone's conversation.
 `Session.append(...)` · **retires** `append_at`, `_CursorWriter`, write group
 
 Writes one new node and emits `node_appended`. It checks two rules first:
-- I4a: under an open batch, only a result answering one of that batch's
+- I4a: under an unstarted or partial batch, only a result answering one of its
   unanswered calls may be appended.
 - V2: a parentless node must be `Config`.
 
@@ -314,7 +314,7 @@ node:
 | nearest message-bearing node | `Next` |
 |---|---|
 | `User`, or a result completing its batch | `Sample` |
-| `Assistant` with calls, or a result in an open batch | `RunTools(unanswered ids)` |
+| `Assistant` with calls, or a result in a partial batch | `RunTools(unanswered ids)` |
 | `Assistant` without calls, `System`, or none | `Wait` |
 
 ### step
