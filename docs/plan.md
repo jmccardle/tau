@@ -52,10 +52,27 @@ directly, so:
 2. **Grow the spike into 3a + 3c** with a Rust scenario test per item in the
    Phase 2 coverage list, written before the code that passes it. These are
    the behavior spec at the core level.
-3. **3b store**, then **`tau-py` + a minimal driver**, then the `Harness`,
-   `FakeProvider`, `FakeTool` (Phase 2's Python half), and port the scenarios
-   to `tests/behavior/`, which is what carries into τ 0.16.
-4. `parity/` keep-tests over τ 0.15 can be written any time; they block
+3. **3b store** (done), then **`tau-py` + a minimal driver**.
+4. **Config overhaul** (approved 2026-10-27), in Python: the config file
+   parser and `tau config check`. Written up as D13 when it starts. Agreed so far:
+   - the flat `{"model": {...}}` file stays valid; an object with `models` is
+     a group whose keys apply to every model inside; groups may nest;
+   - nearer wins; nested objects merge by key; lists and scalars replace;
+     `null` drops an inherited key; model names are unique file-wide;
+   - `api_key_env` names the variable, read at sample time; a literal
+     `api_key` still works but the checker warns; no key reaches a `Config`
+     node or the log (tested);
+   - a `Config` node stores the resolved snapshot, so editing the file never
+     changes a session; an explicit reload appends a `Config`;
+   - the checker: JSON errors with line and column, unknown keys with their
+     path and a suggestion, duplicates, unset variables, wrong types;
+     `--show <model>` prints each resolved value and where it came from.
+   Open for D13: layering (user, project, CLI), a schema version for stored
+   `Config` nodes, and `Job::Sample` naming the `Config` it resolved (I1).
+   The model schema grows with the Phase 4 provider.
+5. The `Harness`, `FakeProvider`, `FakeTool` (Phase 2's Python half), and the
+   scenarios ported to `tests/behavior/`, which is what carries into τ 0.16.
+6. `parity/` keep-tests over τ 0.15 can be written any time; they block
    nothing.
 
 ## Rules
@@ -155,7 +172,8 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
 - OpenAI-compatible provider first (covers llama.cpp), including `Results`
   expansion and rendering unanswered calls as text. Typed request settings
   from `Config`.
-- Typed config file schema (pydantic); unknown keys are errors.
+- Typed config file schema (pydantic); unknown keys are errors. The parser
+  and checker land earlier (order step 4); here the provider's keys fill in.
 - Built-in tools as one `Tool` type. Rust tools ship as their own PyO3
   wheels, called by the driver with the GIL released; core has no plugin ABI.
 - **Exit:** behavior suite green except tests that need later phases. The
