@@ -86,8 +86,8 @@ fast-forward, and no claim.
  every call of the re-run passes through pre_tool as usual: a hook may still refuse one
 ```
 
-Two cursors at one batch each run it, and each commits its own `Results`: the
-journal is per cursor (Q13). An extension that wants "run once" coordinates
+Two cursors at one batch each run it, and each commits its own `Results`: a
+batch's outcomes are held in each cursor's own step (Q13). An extension that wants "run once" coordinates
 through the scratchpad.
 
 ```
@@ -99,14 +99,14 @@ through the scratchpad.
 ## A go-to on a busy cursor
 
 ```
- A.at = a1 [c3, c5], tools phase running, c5 finished (journal item), c3 running
+ A.at = a1 [c3, c5], tools phase running, c5 finished (outcome held in memory), c3 running
  client laptop: go to u1
 
  refused if a hook of A is running, or a question on A is open: nothing queued
  otherwise:
    1 abort: auto-step off; cancel c3 (its tool, never a hook)
-   2 c3: Interrupted; the join commits r1 Results {c3: Interrupted, c5: Ok} under a1,
-     delivers c5's journal item; A moves onto r1 (by core)
+   2 c3: Interrupted; the join commits r1 Results {c3: Interrupted, c5: Ok} under a1;
+     A moves onto r1 (by core)
    3 post_result(r1), post_step(aborted): hooks may even move A
    4 the move: A.at = u1, by frontend(laptop)                         the frontend's move wins
    5 the go-to wakes A at u1: pre_step, post_step, no phase (auto-step off)

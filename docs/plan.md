@@ -184,7 +184,7 @@ One `flock` lease per session file. Second process is read-only. Keep 0.15's lea
 - Required scenario coverage:
   - plain turn; tool batch (one `Results` node, outcomes in call order); tool error; unknown tool; bad args; HTTP error; mid-stream error;
   - abort during sample (with and without parts); abort during tools (running calls `Interrupted`, `post_result` once);
-  - crash during sample (the next step samples again); crash mid-batch (journal outcomes kept, finished calls not run again; idempotent unfinished calls run, others `Interrupted`); crash between a delivering record and the items' removal (delivered once);
+  - crash during sample (the next step samples again); crash mid-batch: rests at the batch; input goes under it; a step reruns it; crash between a delivering record and the items' removal (delivered once);
   - input while busy waits as an item and is delivered by the next step, after the batch; input at rest; refused input (notice, item removed); abort leaves pending input pending; abort then send;
   - a frontend's go-to refused while a hook runs or a question is open; go-to on a busy cursor aborts, runs post hooks and `post_step`, then moves; a go-to wakes with no phase (auto-step off);
   - a question locks the cursor (input, go-to, step refused); esc does not close it; a single-client question is declined when that client detaches; abort during a `pre_tool` waiting for approval, then approval, gives `Interrupted`;
@@ -200,12 +200,12 @@ One `flock` lease per session file. Second process is read-only. Keep 0.15's lea
 ### Phase 3: Rust core
 Three parts, each ending with a review stop.
 - **3a, types and views.** `tau-core` types (`Node`, `Body`, `Results`, `Move`, `Label`, `Item`), `walk`, `next`, `config_at`, LCA, the append checks (V1, V2). Proptest I1–I5 over random op sequences.
-- **3b, store.** `tau-store` per D12: one record log (length-prefixed, checksummed records), the scratchpad file rewritten atomically, the lease, load with the `delivers` reconciliation, a trait for JMFTS later. Proptest I7, including torn tails and crashes between a delivering record and removal.
+- **3b, store.** `tau-store` per D12: one record log (length-prefixed, checksummed records), the scratchpad file rewritten atomically, the lease, load with the `delivers` reconciliation, a trait for JMFTS later (a replica fed from the record log, D12). Proptest I7, including torn tails and crashes between a delivering record and removal.
 - **3c, the step machine.** The phase loop as a sans-IO state machine (D11): jobs out, results in, frontend calls as inputs. Proptests over scripted results and frontend calls. Transition tables emitted as DOT; CI fails if the committed diagram differs. `tau-py` bindings: Python sees `Session`, `Cursor`, `Node`, handles, plain functions.
 - **Exit:** property tests green; ratchet on.
 
 ### Phase 4: Python driver, one provider, built-in tools
-- The driver performs the machine's jobs: hook calls, samples, tool runs, store writes, waits; it cancels what the machine says to cancel. `hooks.py` registers hooks; events.
+- The driver performs the machine's jobs: hook calls, samples, tool runs (each call's `pre_tool`, tool, `pre_result`), waits. Store writes happen inside the Rust calls, never as jobs (D11); it cancels what the machine says to cancel. `hooks.py` registers hooks; events.
 - OpenAI-compatible provider first (covers local llama.cpp), including `Results` expansion and `partial_calls` rendering. Typed request settings from `Config`; no pass-through dicts.
 - Typed config file schema (pydantic). Unknown keys are errors.
 - Built-in tools as one `Tool` type.
@@ -224,7 +224,7 @@ Three parts, each ending with a review stop.
 `tau serve` first: many clients over the network, sessions and cursors multiplexed, status, questions, and scratchpads replayed on connect. Then print/json, REPL, RPC, TUI, each a client of the same model (a local frontend serves one client). One event projector per wire; all cursors visible on every wire.
 
 ### Phase 7: release
-Anthropic and Google providers with `cache_state`; JMFTS store; one-way converter from 0.15 session files; docs site; `ffwf-tau` 1.0.
+Anthropic and Google providers with `cache_state`; JMFTS replica; one-way converter from 0.15 session files; docs site; `ffwf-tau` 1.0.
 
 ---
 

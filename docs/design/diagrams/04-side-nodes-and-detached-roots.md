@@ -19,7 +19,7 @@ part of it.
    └ u1  User      by frontend(laptop)  "fix the bug"           delivers: [2]
      ├ n1  Custom    by extension(note)   {kind: note}          side node, appended by post_step
      └ a1  Assistant by provider  calls [c3, c5], stop tools
-       └ r1  Results   c3: Ok, c5: Ok    by tools               delivers: [5, 6] (journal)
+       └ r1  Results   c3: Ok, c5: Ok    by tools               written at the join
          └ u2  User      by frontend(laptop)  "and b.rs"        delivers: [7]
            └ n2  User      by extension(remind)  "reminder ..."  appended by pre_sample, which
              │                                                   moved A onto it  ◀ A.at
@@ -35,7 +35,7 @@ part of it.
          pending: A's next step with auto-step on (a send) delivers it in its input phase
  item 9  { from: {extension: note, cursor: B}, to: A, data: {kind: "review-request"} }  extension's
          A's extensions read it in pre_step; adding it woke A
- items 2, 5, 6, 7   removed when the nodes that deliver them were written; `delivers` is the
+ items 2, 7         removed when the nodes that deliver them were written; `delivers` is the
                     only record they existed
 
  A's move records:   open ──▶ s,  s ──▶ u1,  u1 ──▶ a1,  a1 ──▶ r1,  r1 ──▶ u2,
@@ -61,8 +61,8 @@ on the wire is the provider's conversion (I5, §10).
 ```
  u1 ─ n1   (Custom)       a side node anywhere; never reaches the model (Q3)
  a1 ─ u3   (User)         legal: input under a batch with no Results. The provider renders the
-                          calls as text (partial_calls, Q27). The input phase itself waits while
-                          next == RunTools (Q40), so this happens only by a hook or a go-to + write
+                          calls as text (partial_calls, Q27). Input pending at an unanswered
+                          batch goes here: after a crash mid-batch, "the power went out" (D4)
  u3 ─ r9   (Results)      legal: a Results node a hook wrote under a User node. The provider turns
                           it into a User message
  u1 ─ u4 ─ u5             two User nodes in a row: two inputs, or two clients; the provider merges
@@ -91,5 +91,5 @@ Reads with: `model.md` §1 (stored objects, the scratchpad, `delivers`), §3
 (derived views, the two-tree example), §4 I3, I5, §6 (where things are
 committed), §7 (handles, between cursors), §8 (a sample that fails with
 nothing arrived), §10 (expand `Results`, render calls as text), §11 (the
-scratchpad file), Q3, Q5, Q27, Q30, Q40; `glossary.md` terms side node,
-detached root, root, scratchpad, item, input, journal, delivers.
+scratchpad file), Q3, Q5, Q27, Q30; `glossary.md` terms side node,
+detached root, root, scratchpad, item, input, delivers.

@@ -25,8 +25,8 @@ batch.
 │               (new parent; empty for most nodes)
 │ derived_from  a list of nodes whose walks this content was computed from
 │               (empty for most nodes)
-│ delivers      a list of scratchpad item ids this node consumed: inputs on a User,
-│               journal items on a Results (empty for most nodes; ids, never content)
+│ delivers      a list of scratchpad item ids this node consumed: inputs on a User
+│               (empty for most nodes; ids, never content)
 └─────────────────────────────────────────────────────────────────────────
 ```
 
@@ -87,14 +87,14 @@ k0  Config     by core        { snapshot: model big, tools, hooks, max_steps ...
         (a batch: c3 and c5)
       └ r1  Results    by tools     { outcomes: [ {c3, Ok(...)},
                                                   {c5, Err("invalid arguments")} ] }
-                                    delivers: [7]   (c3's journal item)
+                                    written at the join; outcomes were in memory until then
 
 e1  Custom     by core        { kind: sample_error, data: ... }   a side node under the
                               cursor's at; on no cursor's walk; never reaches the model
 ```
 
-`c5`'s outcome is core-written (its `args_raw` did not parse), so it never had
-a journal item. `copied_from` and `derived_from` appear only on nodes a hook
+`c5`'s outcome is core-written: its `args_raw` did not parse, so the tool
+never ran. `copied_from` and `derived_from` appear only on nodes a hook
 wrote (see `05-compaction.md`). They record a relation, and are never a
 parent.
 
@@ -124,13 +124,12 @@ Item { id, from: { frontend?, extension?, cursor }, to, data }      in the scrat
   from has         kind         data                         consumed by
   ─────────────────────────────────────────────────────────────────────────────────────
   frontend client  input        { text, images }             the input phase: a User node delivers it
-  extension        extension's  any JSON                     whoever reads it; a node may deliver it
-  neither          journal      { batch, call, outcome }     the join: the Results node delivers it
+  otherwise        extension's  any JSON                     whoever reads it; a node may deliver it
 
 anyone may add, update, or remove an item; load drops an item some node delivers
 ```
 
 Reads with: `model.md` §1 (stored objects, labels, items), §2 (batches and
-results, the journal), §3 (derived views), §4 I2, I4, I5 (V1, V2), Q3, Q7,
+results), §3 (derived views), §4 I2, I4, I5 (V1, V2), Q3, Q7,
 Q8, Q27, Q33; `glossary.md` terms node, body, part, stop, call, results,
-outcome, author, copied_from, delivers, label, scratchpad, item, journal.
+outcome, author, copied_from, delivers, label, scratchpad, item.

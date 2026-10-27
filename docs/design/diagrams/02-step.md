@@ -33,9 +33,9 @@ from the start of a step until it rests.
 
 | phase | applies when (and auto-step on, or `Session.step`) | pre hook on the effect | effect | pre hook on the draft | commits | post hook |
 |---|---|---|---|---|---|---|
-| input | input pending, and `next != RunTools` | — | — | `pre_input`, per item | one `User` per item, each `delivers` its item | — |
+| input | input pending | — | — | `pre_input`, per item | one `User` per item, each `delivers` its item | — |
 | sample | `next == Sample` | `pre_sample` | provider request | `pre_reply` | one `Assistant` | `post_reply` |
-| tools | `next == RunTools` | `pre_tool`, per call | the calls, in parallel | `pre_result`, per call; then a journal item | one `Results` at the join, `delivers` the journal items | `post_result` |
+| tools | `next == RunTools` | `pre_tool`, per call | the calls, in parallel | `pre_result`, per call | one `Results` at the join | `post_result` |
 
 `next(walk(at))`: `User` or `Results` → `Sample`; `Assistant` with
 `stop == tools` and calls → `RunTools`; anything else → `Wait`. It never looks
@@ -52,8 +52,7 @@ below `at`.
 ```
 
 Nothing polls. An item an extension leaves in place causes no further step
-until the scratchpad changes again. Journal items the step wrote and
-delivered do not count as a change.
+until the scratchpad changes again.
 
 ## Two hook shapes, one return rule
 
@@ -130,7 +129,7 @@ mutable; a hook edits one in place.
  a hook's choice, in the move records
 ```
 
-## Tools phase: journal items, then one `Results` at the join
+## Tools phase: outcomes in memory, then one `Results` at the join
 
 ```
  A.at = a1 (Assistant, stop = tools, calls c3 and c5)     next = RunTools(c3, c5)
@@ -147,17 +146,18 @@ mutable; a hook edits one in place.
                             │ may edit the outcome's content, not its kind
                             │ "why" ................ outcome replaced by Err(why)
                             ▼
-                          journal item  { from: {cursor: A}, to: A,
-                                          data: {batch: a1, call, outcome} }   durable first
+                          the outcome is fed to core, which holds it in memory
 
  join (every call has an outcome)
-   commit  r1 Results { c3: …, c5: … } in call order, delivers [journal ids], under a1
-           + move A: a1 ──▶ r1 (by core)            one record; then the journal items go
+   commit  r1 Results { c3: …, c5: … } in call order, under a1
+           + move A: a1 ──▶ r1 (by core)            one record
    post_result(cursor, r1)                          once, with the cursor
  post_step(done)
 ```
 
-`at` cannot move during the tools phase: tool hooks have no cursor. A call
+`at` cannot move during the tools phase: tool hooks have no cursor. Nothing
+about a running batch is stored, so a crash before the join loses its
+outcomes (`06-crash-and-resume.md`). A call
 whose `args_raw` does not parse is `Err("invalid arguments")` (by core)
 without running. Core-written outcomes (`Err("invalid arguments")`,
 `Interrupted`, `Err("hook error")`) skip `pre_result`. Under a reply with any
@@ -170,28 +170,21 @@ sequenceDiagram
     participant H as hooks
     participant T as tools
     Note over C,T: A.at = a1, next = RunTools(c3, c5)
-    C->>D: job: pre_tool(c3), pre_tool(c5)
-    D->>H: run, one chain per call
-    H-->>D: None, None
-    D-->>C: results
-    C->>D: job: run c3, c5
-    par concurrent unless exclusive
+    C->>D: job: run calls c3, c5
+    par one unit per call, concurrent unless exclusive
+        D->>H: pre_tool(c3)
         D->>T: run c3
+        D->>H: pre_result(c3)
     and
+        D->>H: pre_tool(c5)
         D->>T: run c5
+        D->>H: pre_result(c5)
     end
-    T-->>D: c5 finishes first
-    D-->>C: c5 done
-    C->>D: job: pre_result(c5)
-    D-->>C: outcome
-    C->>D: job: add journal item (c5)
-    T-->>D: c3 finishes
-    D-->>C: c3 done
-    C->>D: job: pre_result(c3), then add journal item (c3)
-    Note over C,D: the join: every call has an outcome
-    C->>D: job: persist r1 Results under a1 + move A to r1 (delivers both journal items)
-    C->>D: job: remove the journal items
+    D-->>C: c5's outcome (it finished first)
+    D-->>C: c3's outcome
+    Note over C,D: the join: core writes r1 Results under a1 + move A to r1, one record, inside the call
     C->>D: job: post_result(r1)
+    D-->>C: None
     C->>D: job: post_step(done)
     Note over C,D: next = Sample; with auto-step on, another step starts at pre_step
 ```
@@ -261,7 +254,7 @@ Reads with: `model.md` §5 (move, a frontend's move of a busy cursor), §6
 `max_steps`, where things are committed), §7 (two shapes, the return value,
 hook points, handles, input, questions, between cursors), §8 (abort), §12
 (core and driver); invariants I1, I3, I4, I7; Q15, Q18, Q20, Q21, Q25, Q34,
-Q39, Q40, Q43, Q44; `glossary.md` terms step, phase, draft, effect, commit,
+Q39, Q43, Q44; `glossary.md` terms step, phase, draft, effect, commit,
 busy, locked, hook, hook point, cursor hook, tool hook, halt, pre_step,
 post_step, ending, cursor handle, node handle, abort, scratchpad, item,
-input, journal, delivers, auto-step, go to, question.
+input, delivers, auto-step, go to, question.

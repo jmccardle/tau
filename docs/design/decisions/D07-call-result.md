@@ -12,7 +12,7 @@ The plan's default was calls on the `Assistant` node and one `Results` node
 per batch. That node could only be written when the slowest call finished,
 so a crash lost every finished call (D4). Revisions one to six answered with
 one `Result` node per call; the seventh returns to the plan's shape and
-solves the crash cost with the journal.
+accepts the crash cost (D4).
 
 ## Decision
 
@@ -24,8 +24,9 @@ solves the crash cost with the journal.
 - **One `Results` node per batch**, `{outcomes: [{call, outcome}]}` in call
   order, committed under the batch at the **join**, when every call has an
   outcome (model.md §2, §6). `outcome` is `Ok`, `Err`, or `Interrupted`.
-- **The journal** keeps finished calls across a crash: each call's outcome is
-  a scratchpad item until the `Results` node delivers it (D4).
+- Until the join, the outcomes are held in the step machine's memory. A
+  crash before the join loses them all, and the cursor rests at the
+  unanswered batch (D4).
 - **I4 holds by construction**: the join writes one outcome per call, and
   nothing writes half a `Results` node. Core's only append check is that a
   `Results` node's outcomes name distinct calls (I5).
@@ -45,7 +46,8 @@ solves the crash cost with the journal.
 | option | why not |
 |---|---|
 | One `Result` node per call, moved onto as each finishes (revisions one to six) | Needed runs, batch states (unstarted, partial, complete), per-line I4 checks at append, fast-forward on landing, and a claim so two steps would not run one batch. Each existed only because a batch's answer was spread over several nodes. |
-| One `Results` node per batch with nothing saved before the join (plan default) | Loses finished calls on a crash. The journal fixes that without changing the node. |
+| One `Results` node per batch, with outcomes saved in the scratchpad until the join (the journal, the seventh revision's first draft) | Plumbing in core (journal items, start markers, an `idempotent` flag) for a crash a person can explain in one message. An extension can do the same with `pre_result`, `pre_tool`, and `post_result`. |
+| One `Results` node per batch with nothing saved before the join (plan default) | Chosen. It loses finished calls on a crash; an extension can keep them (D4). |
 | A node per call, before the reply | Calls are not separate events; one sample made them. It would also split one reply across nodes. |
 | A merged call-and-result node | Breaks I2: the call exists before the result does, and nodes are written once. |
 | Parse `args_raw` and store the object | The reply is stored as streamed. Re-serialising breaks byte-for-byte replay, and with it the provider's prefix cache (model.md §10). |
@@ -54,12 +56,12 @@ solves the crash cost with the journal.
 
 - A batch is answered or not, by one node. `next` reads only the walk, and
   the cursor never looks at children.
-- A ten-minute call that finished is not lost because a sibling was still
-  running: its journal item survives.
+- A crash mid-batch loses every outcome of the batch, finished ones
+  included. A person tells the agent ("the power went out, check the
+  files"), or steps to re-run the batch (D4).
 - Tree order no longer records completion order; outcomes are in call order.
 - Cost: no outcome is in the tree until the slowest call finishes. A frontend
-  shows finished calls from the journal items.
-- Cost: one scratchpad rewrite per finished call (D12).
+  shows finished calls from `pre_result` events or an extension's `status`.
 - Enforced by: I4's unit tests and proptest (every `Results` node the tools
   phase wrote answers each call of its parent exactly once), and the batch
   scenarios: tool batch, unknown tool, bad arguments, `pre_tool` blocks one
@@ -73,5 +75,6 @@ Review reversed the second half: one result node per call, so each is
 durable when it finishes. The seventh revision reversed it back. In review:
 "we don't need the invariant of '1 node = 1 chat message submitted over the
 API'; we can have one result node and expand it to 3 tool calls and 3 tool
-responses when we walk the tree." The journal in the scratchpad keeps the
-durability that per-call nodes had bought.
+responses when we walk the tree." A first draft kept finished outcomes in a
+scratchpad journal; it was dropped as too much plumbing for a pulled power
+cord (D4).

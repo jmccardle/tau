@@ -7,12 +7,12 @@ Phase 3 diagrams are generated from code and these files are replaced.
 
 | file | shows |
 |---|---|
-| [01-nodes.md](01-nodes.md) | the node, the six body kinds, `Assistant` parts and `stop`, the `Results` body, which kinds reach the model, the move record, the label record, the three kinds of scratchpad item |
-| [02-step.md](02-step.md) | the step loop and its wakes; the three phases (input, sample, tools) and their shared shape; endings; the two hook shapes and the `None`/string return; journal items and the join; hooks moving the cursor before a commit; a frontend moving a busy cursor; go-to vs `Session.step` vs a hook's move |
+| [01-nodes.md](01-nodes.md) | the node, the six body kinds, `Assistant` parts and `stop`, the `Results` body, which kinds reach the model, the move record, the label record, the two kinds of scratchpad item |
+| [02-step.md](02-step.md) | the step loop and its wakes; the three phases (input, sample, tools) and their shared shape; endings; the two hook shapes and the `None`/string return; outcomes held until the join; hooks moving the cursor before a commit; a frontend moving a busy cursor; go-to vs `Session.step` vs a hook's move |
 | [03-move-and-branch.md](03-move-and-branch.md) | a move within a line, going back, a branch with LCA across a config change, re-run as go-to plus step, two cursors at one batch, a go-to on a busy cursor |
 | [04-side-nodes-and-detached-roots.md](04-side-nodes-and-detached-roots.md) | side nodes, a detached root, a `sample_error`, what may sit where, the scratchpad beside the tree |
 | [05-compaction.md](05-compaction.md) | compaction as branch-from-prefix, with `copied_from`, `derived_from`, the hook's move, and config across lines |
-| [06-crash-and-resume.md](06-crash-and-resume.md) | a crash mid tools phase, reload, the journal, idempotent calls and `Interrupted`; a pending input across a crash; abort during a sample, during tools, and during an approval; a frontend's go-to during tools |
+| [06-crash-and-resume.md](06-crash-and-resume.md) | a crash mid tools phase and reload: the cursor rests at the unanswered batch, input goes under it, a step re-runs it; a pending input across a crash; abort during a sample, during tools, and during an approval; a frontend's go-to during tools |
 
 ## Reading conventions
 
@@ -23,7 +23,7 @@ Phase 3 diagrams are generated from code and these files are replaced.
  ◀ A.at  the `at` of cursor A
  a1'     a new node (its own id) that repeats the role of a1, for example a sibling reply
  ─ └ ├   parent to child; a node sits under its parent
- item 4  a scratchpad item (off the tree): input, an extension's, or journal
+ item 4  a scratchpad item (off the tree): input, or an extension's
  ▶  ──▶  an arrow of time or of a move
 ```
 

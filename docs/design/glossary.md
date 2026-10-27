@@ -114,8 +114,9 @@ glossary's own earlier revisions)
 
 A node answering a batch: `{outcomes: [{call, outcome}]}`, one outcome per
 call, in call order. The tools phase writes it at the join, under the batch's
-`Assistant` node, delivering the batch's journal items, and moves the cursor
-onto it. Every call of the batch has exactly one outcome (I4), even when it
+`Assistant` node, and moves the cursor onto it. Until the join, the
+outcomes are held in the step machine's memory; a crash before the join
+loses them all (D4). Every call of the batch has exactly one outcome (I4), even when it
 did not run or its output was redacted. A written `Results` node is final;
 another answer is a sibling `Results` (Q10).
 
@@ -134,7 +135,7 @@ What a `Results` node says for one call:
 |---|---|
 | `Ok(value)` | the tool ran and returned a value, or a `pre_tool` hook set one (cache, mock) |
 | `Err(error)` | the tool ran and failed, or could not run (unknown tool; `Err("invalid arguments")`), or a tool hook returned a string (the string is the error, in the extension's words), or a hook raised: `Err("hook error")`, with any raw output withheld |
-| `Interrupted` | an abort stopped the call or kept it from starting, or a crash came before it finished and its tool is not idempotent. The tool may or may not have run (D4) |
+| `Interrupted` | an abort stopped the call or kept it from starting. The tool may or may not have run |
 
 ### author
 **Rust** `Author` · **Python** `Node.by` · **retires** `source:"agent"`,
@@ -197,8 +198,8 @@ One id per input is enough, because the walk to each id is that input.
 **Rust** `Node::delivers` · **Python** `Node.delivers` · new
 
 A list of the scratchpad item ids a node consumed. Most nodes have none. It
-holds ids, never content. Core sets it on a delivered input's `User` node and
-on a `Results` node (its journal items); a hook's `cursor.write` may set it.
+holds ids, never content. Core sets it on a delivered input's `User` node; a
+hook's `cursor.write` may set it.
 It is the only record that an item was consumed: load drops any item a node
 delivers (I7), so a crash between the delivering record and the item's
 removal neither loses nor repeats it, and the content is stored once, in the
@@ -279,8 +280,7 @@ queue, follow-up queue
 
 A session's persistent, modifiable list of **items**, off the tree. A
 **cursor's scratchpad** is the items addressed to it, in the order they were
-added. It is where input waits, where a batch's finished outcomes wait for
-the join (the journal), and how one cursor leaves word for another.
+added. It is where input waits, and how one cursor leaves word for another.
 - **Anyone may add, update, or remove any item**: any hook, through its
   handle, on any cursor's scratchpad; a tool, through its handle; a frontend,
   through its client handle.
@@ -301,9 +301,7 @@ to, data}`.
 - `from`: the cursor that added it, and who added it. What `from` names
   decides the item's kind:
   - a `frontend` client: **input**, `data: {text, images}`;
-  - an `extension`: the extensions', `data` any JSON value;
-  - neither: a **journal item**, which core writes,
-    `data: {batch, call, outcome}`.
+  - otherwise the extensions', `data` any JSON value.
 - `to`: the cursor it is addressed to. It names no extension: extensions on
   that cursor decide among themselves, checking `from` where it matters.
 
@@ -339,24 +337,6 @@ first, the input phase runs `pre_input` on its input draft, then commits a
 `frontend(client)`, and moves onto it, as one record. The item is removed
 after. Two inputs from two clients are two `User` nodes in a row. `delivers`
 is the only delivery record, so a crash cannot deliver an input twice.
-
-### journal
-**Python**: none (core behavior) · new
-
-The cursor's journal items for a batch: each call's outcome, kept in the
-scratchpad as soon as its `pre_result` hooks finish, until the join commits
-the `Results` node that delivers them. A crash before the join loses no
-finished call: the next tools phase at that batch on that cursor uses the
-journal's outcomes and runs only the rest (Q41, D4). The journal is per
-cursor, so two cursors at one batch each run it (Q13). Journal items a step
-wrote and delivered do not count as a scratchpad change for re-stepping.
-
-### journal item
-**Rust** `Item` (with neither `frontend` nor `extension` in `from`) · new
-
-One call's outcome in the journal: `{from: {cursor}, to: cursor, data:
-{batch, call, outcome}}`. Core writes it, and a call counts as finished once
-it is durable. A frontend may remove one, for a clean re-run.
 
 ---
 
@@ -508,9 +488,8 @@ makes the sibling, and that is the branch).
 
 Running a batch again: go to its `Assistant` node and step. The cursor never
 looks at children, so the tools phase runs every call and writes a sibling
-`Results`. It needs no method. Journal items left by a crash at that batch on
-that cursor are used (Q41); a frontend that wants a clean re-run removes
-them first.
+`Results`. It needs no method. After a crash mid-batch it is how the batch
+runs again (D4).
 
 ### branch
 **Rust/Python**: no type; a verb · **retires** fork (in-session),
@@ -582,12 +561,13 @@ effect, effect, pre hook on the draft, commit under `at`, post hook.
 
 | phase | applies when | effect | pre hooks | commits | post hook |
 |---|---|---|---|---|---|
-| input | there is pending input, and `next != RunTools` | none | `pre_input`, per item | one `User` node per item, each delivering it | none |
+| input | there is pending input | none | `pre_input`, per item | one `User` node per item, each delivering it | none |
 | sample | `next == Sample` | the provider request | `pre_sample`, then `pre_reply` | one `Assistant` node | `post_reply` |
-| tools | `next == RunTools` | the calls, in parallel (Q21) | per call: `pre_tool`, then `pre_result`, then a journal item | one `Results` node at the join | `post_result` |
+| tools | `next == RunTools` | the calls, in parallel (Q21) | per call, in the driver: `pre_tool`, the tool, then `pre_result` | one `Results` node at the join | `post_result` |
 
-The input phase waits while `next == RunTools`, so a batch is answered
-before input goes under it (Q40).
+Input applies whenever it is pending, even at an unanswered batch: the
+`User` node goes under the batch, and the provider renders its calls as text.
+Holding input behind a batch is an extension's choice.
 
 ### draft
 **Rust** `Draft` · **Python** the drafts below · **retires** the plan's
@@ -691,17 +671,14 @@ and wakes a cursor at rest. To **pause** a cursor is to turn its auto-step
 off.
 
 ### resume
-Continuing a batch after a crash. The cursor loads at the batch's
-`Assistant` node, so the next tools phase runs it: each call with a journal
-item uses that outcome; each other call runs again if its tool is idempotent,
-and is otherwise `Interrupted` (D4). The join delivers the journal items.
-
-### idempotent
-**Python** `Tool.idempotent: bool` · new
-
-A tool flag meaning that running the tool twice has the same effect as running
-it once. Only idempotent calls without a journal item run again on resume
-(D4).
+What happens to a batch after a crash. Core recovers nothing: every outcome
+of the batch was in memory and is lost. The cursor loads at rest at the
+batch's `Assistant` node (D4). Input goes under the unanswered batch, and the
+provider renders its calls as text, so the model sees them as interrupted
+("the power went out, check the files"). A step without input re-runs the
+whole batch. An extension may keep finished outcomes across a crash: its
+`pre_result` saves each as a scratchpad item, its `pre_tool` answers a call
+from a saved item, and its `post_result` removes them.
 
 ### sample
 **Rust**: none (an effect) · **Python** `Provider.sample` · **retires**
@@ -954,7 +931,6 @@ not to the model.
 One type for every tool, built-in or extension. A tool has:
 - a name;
 - an argument schema;
-- an `idempotent` flag;
 - an `exclusive` flag: it runs alone, never concurrently with the batch's
   other calls (Q21);
 - an async function from arguments to an outcome. It may also receive a
@@ -1038,17 +1014,22 @@ decides nothing: which phase applies, hook order, halts, aborts, and
 **Rust** `Job` · new
 
 One thing a step machine asks the driver to do: run a hook point, sample,
-run a set of calls, persist a record, update the scratchpad, wait (the
-throttle), or rest. The driver performs it and feeds back its result, or each
-call's completion in any order. A hook job's result is what the hook changed
-and what it returned. A job never decides anything (D11).
+run a set of calls, wait (the throttle), or rest. Only things that wait are
+jobs: writes happen inside the Rust call that makes them, never as a job. A
+run-calls job runs each call's `pre_tool`, tool, and `pre_result` in the
+driver, and feeds back each call's outcome in any order. A hook's changes
+(moves, writes, items) are handle calls into core while it runs; a hook
+job's result is the edited draft and the hook's return value. A job never
+decides anything (D11).
 
 ### store
 **Rust** `tau_store` · **retires** session store, `SessionCatalog`, JMFTS
 session log (until Phase 7)
 
 The only Rust code that touches the filesystem. It keeps, per session, one
-append-only record log and one scratchpad file, behind a trait (D12).
+append-only record log and one scratchpad file, behind a trait (D12). The
+local record log is always the store of record. JMFTS (Phase 7) is a
+replica fed from it, outside any step, so a JMFTS outage never stops one.
 
 ### record
 **Rust** `tau_store::Record` · new
@@ -1157,7 +1138,11 @@ Terms this glossary retired in its own earlier revisions:
     `cursor.deliver`: core delivers input in the input phase.
   - **returned input**: pending input stays pending after an abort (Q42).
   - **run**, and the batch states **unstarted**, **partial**, **complete**:
-    one `Results` node per batch, and the journal holds what finished.
+    one `Results` node per batch, written at the join.
+  - **journal**, **journal item**: core keeps no outcomes across a crash;
+    a batch's outcomes are in memory until the join (D4).
+  - **`idempotent`** (a tool flag): nothing reruns on its own after a
+    crash, so nothing needs to know.
   - **`Result`** (one node per call): replaced by `Results`.
   - **fast-forward**: a move never looks below `to`.
   - **claim**: two cursors at one batch each run it (Q13).

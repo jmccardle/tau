@@ -26,15 +26,21 @@ is Python's. The question is where the decisions live.
   sample, and tools phases that applies, pre hook on the effect, effect, pre
   hook on the draft, commit under `at`, post hook; then `post_step`. Every
   rule is a row of the machine's tables.
-- It never waits and performs nothing. It hands out **jobs**: run a hook
-  point, sample, run a set of calls, persist a record, update the
-  scratchpad (an input's removal, a journal item), wait (the throttle),
-  rest.
+- It never waits and performs nothing. It hands out **jobs**, and only
+  things that wait are jobs: run a hook point, sample, run a set of calls,
+  wait (the throttle), rest.
+- **Writes are not jobs.** Every append, move, label change, and scratchpad
+  change happens inside the Rust call that makes it, and is durable before
+  that call returns: the store is Rust, so nothing comes back through Python.
+  A hook's `cursor.write` is therefore a plain call, not an awaitable.
 - **The Python driver performs jobs and feeds back results**, with the time.
-  A hook job's result is what the hook changed (its moves, draft edits, the
-  auto-step flag) and its return value, `None` or a string. For a set of
-  calls the driver feeds back each completion as it happens, in any order;
-  core journals each and commits the `Results` node at the join.
+  While a hook runs, its changes (moves, writes, items, the auto-step flag)
+  are handle calls into core that apply at once; a hook job's result is the
+  edited draft and the return value, `None` or a string. A run-calls job runs
+  each call's `pre_tool`, tool, and `pre_result` in the driver (tool hooks
+  never touch the cursor), and feeds back each call's outcome as it happens,
+  in any order; core holds the outcomes and commits the `Results` node at
+  the join.
 - **Frontend calls are inputs to the same machine**: input, go-to, step,
   abort, set auto-step, answer, decline. The machine decides whether each is
   refused, aborts a step, or applies, and which running jobs the driver must
@@ -63,6 +69,12 @@ is Python's. The question is where the decisions live.
   plumbing for streams and tools.
 - The behavior suite still runs through Python (`Harness`), so the same rules
   are held from both sides.
+- `tau-core` stays pure: it queues the records each change produces, and a
+  Rust layer composing core with `tau-store` writes them before the call
+  returns. `tau-py` binds that layer and stays conversion only.
+- Cost: a write blocks the Python thread that made it for one fsync. That
+  is milliseconds on a local disk; JMFTS is a replica and never on this
+  path (D12).
 - Cost: one FFI crossing per job and per result. A stream's deltas are
   events the driver emits without feeding each one back; only the sample's
   end is a result.
