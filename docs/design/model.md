@@ -19,6 +19,16 @@ the documents assume the recommendation.
   - This retires the plan's Phase 2 scenario "hook drafts on scratch and
     retargets". Its replacement is "`pre_sample` builds the context it
     returns": a reminder, a model choice, or a compacted line.
+- **A reply is stored as it streamed, with a stop reason.** An `Assistant`
+  body is an ordered list of parts (text, thinking, calls) with each call's
+  arguments kept as the raw string the model produced. Runnable calls are a
+  view, never a reorganisation. The plan's "streamed partials are never nodes"
+  becomes: partials are never written token by token, but a sample's
+  accumulated parts are written once, whatever stopped it. If the user saw
+  tokens, they are stored.
+  - What a truncated call becomes on resubmission is a config option
+    (`partial_calls`).
+  - Replaying parts faithfully is a provider requirement (§11).
 
 The whole design rests on one idea: **the conversation is a tree of immutable
 nodes, and everything else is either a pointer into that tree or a function of
@@ -37,14 +47,32 @@ Node  { id, parent?, time, by, body, copied_from?, derived_from? }
 
 body  = System    { text }
       | User      { text, images }
-      | Assistant { text, thinking, calls }      each call = { id, tool, args }
+      | Assistant { parts, stop, stop_raw? }
       | Result    { call, outcome }              outcome = Ok(value) | Err(error)
                                                          | Skipped(reason) | Interrupted
       | Config    { snapshot }
       | Custom    { kind, data }
 
+part  = Text(text) | Thinking(text, signature?) | Call { id, tool, args_raw }
+stop  = end | tools | length | refused | interrupted | error
+
 Move  { cursor, from?, to, time, opened_by? }
 ```
+
+Parts are kept in the order they streamed. `args_raw` is the argument text
+exactly as the model produced it, which may be incomplete or malformed. It is
+never parsed and re-serialised for storage. `stop` is the normalised reason
+generation ended. `stop_raw` keeps the provider's own string (`end_turn`,
+`length`, …) for debugging.
+
+| `stop` | meaning |
+|---|---|
+| `end` | the model chose to stop |
+| `tools` | the model handed off to tool execution |
+| `length` | the output limit was reached |
+| `refused` | the provider's filter or refusal |
+| `interrupted` | we cancelled it (abort) |
+| `error` | the stream failed after output had arrived |
 
 A **session** is the set of its nodes and moves. A **cursor** is
 `{id, at, target}`. `at` is the `to` of the cursor's latest move. `target`
@@ -59,9 +87,17 @@ The core is pure. The driver passes `time` in, and core assigns ids at append
 
 ## 2. Batches
 
-An `Assistant` node's calls form a **batch**. The batch's results follow it in
-a **run**: one result per call, each under the previous, in the order the
-calls finished.
+An `Assistant` node's `Call` parts form a **batch**. The batch's results
+follow it in a **run**: one result per call, each under the previous, in the
+order the calls finished.
+
+Every call gets a result. Only a reply that handed off runs anything:
+
+| reply's `stop` | call's `args_raw` | result |
+|---|---|---|
+| `tools` | parses | the tool runs, through `pre_tool` and `post_tool` |
+| `tools` | doesn't parse | `Err("invalid arguments")`, without running. The model sees its own malformed output. |
+| anything else | either | `Skipped(<stop>)`, written by core together with the reply. A truncated plan is not half-run. |
 
 ```
 u1  User          "fix the bug"
@@ -319,10 +355,11 @@ message-bearing node:
 | nearest message-bearing node | `next` |
 |---|---|
 | `User` | `Sample` |
-| `Assistant` with calls (unstarted batch) | `RunTools` (all its calls) |
+| `Assistant` with `stop == tools` (unstarted batch) | `RunTools` (all its calls) |
 | a result, batch partial | `RunTools` (the calls not yet answered on the walk) |
-| a result, batch complete | `Sample` |
-| `Assistant` without calls, `System`, or none | `Wait` |
+| a result, batch complete, and the batch's reply had `stop == tools` | `Sample` |
+| a result, batch complete, any other `stop` (the calls were `Skipped`) | `Wait` |
+| any other `Assistant`, `System`, or none | `Wait` |
 
 Two cursors at the same node always agree on `next`. The "partial" row never
 arises at a cursor's `at` (I3). It arises only when resume continues a run.
@@ -336,7 +373,7 @@ side. At each hook point, hooks run in the order their extensions are listed in
 | step | starts when | pre hook | effect | post hook | writes |
 |---|---|---|---|---|---|
 | input | a frontend gives input | `pre_input(user)` → a body to write, or nothing | none | none | that body |
-| sample | `next == Sample` | `pre_sample(tip)` → a context tip, or a reply | provider request | `post_sample(reply)` → a reply, or nothing | one `Assistant` node |
+| sample | `next == Sample` | `pre_sample(tip)` → a context tip, or a reply | provider request | `post_sample(reply)` → a reply, or nothing | one `Assistant` node, plus `Skipped` results for its calls if `stop != tools` |
 | tools | `next == RunTools` | per call: `pre_tool(call)` → a call, or an outcome | run the tool | per call: `post_tool(call, outcome)` → an outcome | one result per call |
 
 What each hook point may do:
@@ -394,20 +431,37 @@ no hooks. This is how a person branches, or returns to an older line.
 
 ## 8. Abort, failure, reload
 
-- **Abort during a sample.** Cancel the request. Partial output is discarded,
-  since streamed text was only ever events. Set `target := at` and turn
-  auto-step off. `next` is still `Sample`, so the frontend may retry, or the
-  user may type.
+- **Abort during a sample.** Cancel the request. Then:
+  - **If no parts had arrived:** write nothing, set `target := at`, and turn
+    auto-step off. `next` is still `Sample`.
+  - **Otherwise:** write the reply with the parts so far and
+    `stop: interrupted`, after `post_sample` (redaction still applies). Core
+    answers any calls `Skipped(interrupted)`, including a call cut off
+    mid-arguments. Commit at once, without holding, and turn auto-step off.
+    `next` is `Wait`.
+
+  The user saw those tokens, so they are stored and the model sees them next
+  time (§11).
 - **Abort during tools.** Cancel the running calls and their hooks. Results
   already written stay. Each call without a written result gets an
   `Interrupted` result (`by: core`). That includes a call whose tool finished
   while its `post_tool` was still running: its raw outcome is never written
   unredacted. The batch commits, and auto-step goes off (Q4).
-- **A sample fails.** This covers HTTP errors, mid-stream errors, and the
-  provider conversion rejecting the walk. The driver records the error as a
-  scratch `Custom {kind: sample_error}` node under the context tip. The
-  failure is persisted and visible but is not part of the conversation.
-  Nothing is committed, and auto-step goes off (Q4).
+- **A sample fails.** This covers HTTP errors, a stream that breaks partway,
+  and the provider's conversion rejecting the walk. Auto-step goes off either
+  way (Q4).
+  - **Output had arrived:** the reply is written and committed like an
+    aborted one, but with `stop: error`. `stop_raw` and the error text are
+    kept.
+  - **Nothing arrived** (for example a 401 or 429 before the first token):
+    there is no reply. The driver records the error as a scratch
+    `Custom {kind: sample_error}` node under the context tip. It is persisted
+    and visible, but it is not part of the conversation, and nothing is
+    committed.
+- **Length, refusal.** These are ordinary replies with `stop: length` or
+  `stop: refused`. Their calls are `Skipped` and `next` is `Wait`. Continuing
+  automatically after `length` is an extension's choice, for example an
+  `idle` hook that answers "continue" (Q20).
 - **Resume at a batch.** This happens after a reload, or before taking input
   at an unstarted batch.
   1. If a run exists under the batch's `Assistant` node, target its end. A
@@ -454,6 +508,45 @@ fourth kind (Q22).
   running the calls again (Q13). The lease keeps every claim inside one
   process.
 
+## 11. Provider requirements
+
+Core knows no provider. Each provider is a Python adapter for one API family,
+and it owes the driver the following. The behavior suite holds every provider
+to these through `FakeProvider` and a recorded-wire test per provider.
+
+1. **Stream parts in order.** Text, thinking, and calls arrive as `stream_delta`
+   events. The driver accumulates them into the reply's parts, and each
+   call's argument text into its `args_raw`.
+2. **Normalise the stop reason** into `stop`, and keep the raw string in
+   `stop_raw`. For example: OpenAI `tool_calls`, Anthropic `tool_use` → `tools`;
+   `length`, `max_tokens`, `MAX_TOKENS` → `length`; `content_filter`,
+   `refusal`, `SAFETY` → `refused`.
+3. **Replay faithfully.** Converting a walk sends earlier parts back as they
+   were produced:
+   - text verbatim;
+   - `args_raw` byte-for-byte where the wire takes a string (OpenAI). Where it
+     requires an object (Anthropic), parse it there and nowhere else.
+
+   This is what lets a provider's prefix cache reuse a partial reply.
+4. **Reasoning follows the API's rules, not ours.** Send thinking back exactly
+   as the API requires: signed blocks unmodified, encrypted reasoning as it
+   was received. Omit it where the API or the server's chat template drops it.
+   A cut-off thinking part with no signature is stored and shown, but it is
+   never sent back.
+5. **Render what isn't a call as text.** Two things are rendered after the
+   reply's text, using τ's markup (Q27):
+   - a `Call` part that is not answered by a run (a truncated or skipped call),
+     rendered according to `config.partial_calls`;
+   - a stop note for `length`, `interrupted`, and `error`.
+6. **Legality is the conversion's.** A walk the API would reject is a
+   conversion error, and the sample fails before any request is sent (Q11).
+7. **Report cache use.** Each sample reports how many prompt tokens came from
+   the provider's cache: llama.cpp `cache_n`, and the hosted APIs' usage
+   fields. Phase 4's exit criteria include a llama.cpp test: interrupt a reply
+   mid-text, send input, and assert that the cached count covers the old
+   prompt plus the partial text. Phase 5's `cache_state` builds on the same
+   numbers.
+
 ## Open questions
 
 Each one has a recommendation, which is what the documents assume. A "no"
@@ -465,7 +558,7 @@ review decisions and Q20.
 | Q1 | The plan names the node timestamp `at`, the same as `Cursor.at`. Rename? | **`time`.** One word, one meaning. |
 | Q2 | Is "committed" permanent, or does a node stop being committed once every cursor has moved off it? May a commit pick up old scratch, such as a rejected alternative? | **Permanent, and yes.** Committed is derivable from moves, cursors can reopen on old lines, and I4b depends on permanence. Validation still guards every commit. |
 | Q3 | Does a `Custom` node ever reach the model? | **No.** To show the model something, append a message-bearing node. That keeps `walk` honest (I1) and the provider conversion small. |
-| Q4 | Failure and abort. The plan says "`target := at`", but abort during tools must commit, or I4 breaks. | **As in §8.** A failed sample leaves a scratch `Custom` node. Abort during tools answers unwritten calls `Interrupted` and commits. |
+| Q4 | Failure and abort. The plan says "`target := at`", but abort during tools must commit or I4 breaks, and tokens the user saw should not vanish. | **As in §8.** A sample that produced output is written with its `stop` (`interrupted` or `error`) and committed. A sample that produced nothing leaves at most a scratch `sample_error` node. Abort during tools answers unwritten calls `Interrupted` and commits. |
 | Q5 | Roots and opening. I3 says cursors open at committed nodes, but an empty session has none. | **Every root is a `Config` node.** Creating a session appends the root, and an opening move (a move with no `from`, which the plan doesn't have) commits it. Detached roots are `Config` too, so each records the model it used. |
 | Q6 | What does `opened_by` name? | **The opening cursor.** A sub-agent's answer carries `derived_from`. |
 | Q7 | What is the set of authors? | **`frontend`, `provider`, `tools`, `core`, `extension(name)`.** A node's author is whoever produced its content as written. A hook's answer or rewrite makes its extension the author, and so does a copy. Authors are recorded only, never used for control flow. |
@@ -486,3 +579,4 @@ review decisions and Q20.
 | Q24 | When `pre_tool` rewrites a call (a sandbox, say), is the executed call recorded? | **Not by core.** The `Assistant` node keeps the call as the model made it, and the result answers it. A hook that wants an audit trail writes a `Custom` node on a detached root, because nothing but results may hang off a batch (I4a). |
 | Q25 | May `pre_sample` change the request only by returning a context tip, never by editing the request invisibly? | **Yes.** That is I1's guarantee. Reminders, model choices, and compaction are all visible in the tree. |
 | Q26 | A `pre_sample` hook that picks a cheaper model appends a `Config` node, and that choice persists on the line. Should one-off choices revert on their own? | **No automatic revert.** A routing hook that wants a one-off appends the restoring `Config` at its next `pre_sample`. The tree then shows exactly which model produced each reply, and nothing reverts behind anyone's back. |
+| Q27 | What does a truncated or skipped call become when the walk is sent again, and what does τ's markup look like? | **`partial_calls: text` by default**, rendered as `[τ: interrupted while calling write_file; arguments so far: …]` after the reply's text. `partial_calls: omit` drops it. Stop notes use the same `[τ: …]` form. The exact markup is pinned in the Phase 4 provider ADR and tested byte for byte, because changing it later invalidates every cached prefix that contains it. |

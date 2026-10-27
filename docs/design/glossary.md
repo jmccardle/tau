@@ -37,7 +37,7 @@ What a node holds. A body is exactly one of six kinds:
 |---|---|---|
 | `System` | the system prompt text | yes |
 | `User` | text and images from a person, or written on their behalf | yes |
-| `Assistant` | text, thinking, and zero or more calls | yes |
+| `Assistant` | parts (text, thinking, calls) in the order they streamed, and a stop reason | yes |
 | `Result` | one call's id and its outcome | yes |
 | `Config` | a full snapshot of the config in force | no |
 | `Custom` | `{kind, data}`, owned by an extension or the driver | no (Q3) |
@@ -46,17 +46,54 @@ The first four kinds are **message-bearing**. `Config` and `Custom` are
 bookkeeping, and the provider never sees them.
 
 Known `Custom` kinds are listed here as they are introduced:
-- `sample_error`: written by the driver. It records a failed sample as
-  scratch (`model.md` §8).
+- `sample_error`: written by the driver. It records, as scratch, a sample
+  that failed before any output arrived (`model.md` §8).
+
+### part
+**Rust** `Part` · **Python** `Part` (one class per kind) · **retires** content
+block (as a mutable list)
+
+One piece of a reply, in the order it streamed:
+- `Text(text)`;
+- `Thinking(text, signature?)`;
+- `Call{id, tool, args_raw}`.
+
+Parts are stored as they arrived and never reorganised. Every structured view,
+such as runnable calls, is derived from them.
+
+### stop
+**Rust** `Stop` · **Python** `Stop` · **retires** `stopReason`,
+`AgentEndReason` (as a reply property)
+
+Why a reply's generation ended, normalised across providers. The provider's
+own string is kept as `stop_raw`.
+
+| `stop` | means |
+|---|---|
+| `end` | the model chose to stop |
+| `tools` | the model handed off to tool execution |
+| `length` | the output limit was reached |
+| `refused` | the provider's filter or refusal |
+| `interrupted` | we cancelled it (abort) |
+| `error` | the stream failed after output had arrived |
+
+Only `tools` runs calls. On every other stop, core answers the reply's calls
+`Skipped(<stop>)` and `next` is `Wait`.
 
 ### call
 **Rust** `Call`, `CallId` · **Python** `Call` · **retires** tool call,
 toolCall block, `BlockedCall`
 
-A request inside an `Assistant` body to run one tool: `{id, tool, args}`.
-`CallId` is the provider's id, unique within its node. A call is never a node
-of its own: one sample produced all of a reply's calls at once, so they live
-in the node that holds the reply.
+A part of an `Assistant` body that requests one tool: `{id, tool, args_raw}`.
+- `CallId` is the provider's id, unique within its node.
+- **`args_raw`** is the argument text exactly as the model produced it, which
+  may be incomplete or malformed. It is parsed when the call runs and never
+  re-serialised for storage.
+- A call is **runnable** when its reply's `stop` is `tools` and its `args_raw`
+  parses.
+
+A call is never a node of its own, because one sample produced all of a
+reply's calls at once.
 
 ### batch
 **Python**: none (a view) · new
@@ -95,8 +132,8 @@ What a result says:
 | outcome | meaning |
 |---|---|
 | `Ok(value)` | the tool ran and returned a value, or a `pre_tool` hook supplied one (cache, mock) |
-| `Err(error)` | the tool ran and failed, or could not run (unknown tool, bad arguments) |
-| `Skipped(reason)` | deliberately not run: a `pre_tool` hook declined it, e.g. "blocked by …" |
+| `Err(error)` | the tool ran and failed, or could not run (unknown tool; `args_raw` doesn't parse) |
+| `Skipped(reason)` | deliberately not run: a `pre_tool` hook declined it ("blocked by …"), or the reply stopped for a reason other than `tools` |
 | `Interrupted` | no result was written: the call was aborted, or a crash or abort came before its result was written. The tool may or may not have run (D4) |
 
 ### author
@@ -246,7 +283,7 @@ Derived, never stored. Nodes that are neither committed nor in any cursor's
 current draft. That covers:
 - hook work that was not kept;
 - detached-root calls;
-- failed samples;
+- samples that failed before any output arrived;
 - refused or discarded drafts;
 - drafts orphaned by a crash (D6).
 
@@ -313,9 +350,9 @@ node:
 
 | nearest message-bearing node | `Next` |
 |---|---|
-| `User`, or a result completing its batch | `Sample` |
-| `Assistant` with calls, or a result in a partial batch | `RunTools(unanswered ids)` |
-| `Assistant` without calls, `System`, or none | `Wait` |
+| `User`, or a result completing a batch whose reply had `stop == tools` | `Sample` |
+| `Assistant` with `stop == tools`, or a result in a partial batch | `RunTools(unanswered ids)` |
+| any other `Assistant` or completed batch, `System`, or none | `Wait` |
 
 ### step
 **retires** loop turn, agent run, user turn, submission, turn (all four
@@ -384,8 +421,10 @@ it once. Only idempotent calls are re-run on resume (D4).
 completion, stream (as a noun), model call
 
 One provider request over a walk. It produces one `Assistant` node, appended
-under that walk's tip. Streamed text arrives as `stream_delta` events, and
-partial output is never a node.
+under that walk's tip. Parts arrive as `stream_delta` events and are never
+written token by token. Whatever stops the sample (an end, a handoff, a limit,
+an abort, an error), the accumulated parts are written once, provided any
+arrived.
 
 ### context
 **retires** `ExtensionContext`/`ctx`, the `context` hook, `context=` parameter
@@ -420,6 +459,10 @@ Fields named so far:
 - **`max_steps`** (Q20): the most `Assistant` nodes allowed on the walk since
   the last `User` node authored by `frontend`. The count is computed from the
   walk, not stored.
+- **`partial_calls`** (Q27): `text` (the default) or `omit`. It sets what a
+  call with no run (truncated or skipped) becomes when the walk is sent again:
+  `text` renders it after the reply in τ's `[τ: …]` markup, so the model sees
+  what it was writing, and `omit` drops it.
 
 ### validate
 **Rust** `validate(walk)`
@@ -491,7 +534,9 @@ Every wire format is a projection of this one type.
 **retires** `AbortSignal`, `AbortReason`, abort-tree, `rollback`
 
 Cancel a cursor's in-flight sample or tools, then turn its auto-step off. An
-aborted sample commits nothing. Aborted tools keep the results already
+aborted sample that had produced output is written with
+`stop: interrupted`, its calls are `Skipped`, and it is committed; one that
+had produced nothing writes nothing. Aborted tools keep the results already
 written, answer each unanswered call `Interrupted`, and commit the batch,
 which I4 requires (`model.md` §8, Q4).
 
@@ -505,8 +550,10 @@ which I4 requires (`model.md` §8, Q4).
 
 The Python object that turns a context into a sample, for one API family
 (OpenAI-compatible first). It also converts walks to messages, and that
-conversion is where provider-specific legality lives (Q11). In 0.15 this word
-had four meanings; here it means only this adapter.
+conversion is where provider-specific legality lives (Q11). What every
+provider owes the driver (stop mapping, faithful replay, reasoning rules,
+cache reporting) is listed in `model.md` §11. In 0.15 this word had four
+meanings; here it means only this adapter.
 
 ### model
 **Python** `Config.model` · **retires** `Model` (pydantic endpoint
