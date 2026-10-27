@@ -1,6 +1,6 @@
 # D12: One record log, plus a scratchpad file
 
-Status: proposed (Phase 1); not yet spiked beyond `Session::outbox`
+Status: accepted (Phase 1); not yet spiked beyond `Session::outbox`
 
 ## Context
 
@@ -17,8 +17,11 @@ input's text twice.
   ignored on load.
 - **One scratchpad file per session** holding the current items and the next
   item id, rewritten atomically (write, sync, rename, sync the directory).
+- **Sync points** (D11): records are buffered up to a `Sync`; at a `Sync`
+  the log is synced first, then the scratchpad rewritten.
 - **Order:** an added item is durable before its cursor wakes; a delivering
-  record is durable before its items are removed; nothing about a running
+  record is durable before its items are removed (the log sync precedes the
+  scratchpad rewrite); nothing about a running
   batch is written (D4).
 - **Load** replays the log, reads the scratchpad, and drops delivered items
   (`Session::reconcile`).

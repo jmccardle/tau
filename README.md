@@ -7,7 +7,7 @@ sans-IO Rust core holding the session tree and the step algorithm, driven from
 Python, where providers, tools, hooks, extensions, and frontends live. It will
 ship as τ 0.16.0.
 
-Status: **Phase 1 sign-off; step machine spiked.** Nothing here runs an agent
+Status: **Phase 3, Rust core in progress.** Nothing here runs an agent
 yet. See [`docs/design/`](docs/design/) for the model and invariants,
 [`docs/plan.md`](docs/plan.md) for the phases and status;
 [`CLAUDE.md`](CLAUDE.md) for the rules and commands.

@@ -39,10 +39,18 @@ pub enum Outcome {
 pub enum Body {
     System(String),
     User(String),
-    Assistant { parts: Vec<Part>, stop: Stop },
-    Results(Vec<(String, Outcome)>),
+    Assistant {
+        parts: Vec<Part>,
+        stop: Stop,
+    },
+    /// One `(call id, outcome, by)` per call, in call order. `by` is who
+    /// produced that outcome: `Tools`, or the extension that answered or edited it.
+    Results(Vec<(String, Outcome, Author)>),
     Config(String),
-    Custom { kind: String, data: String },
+    Custom {
+        kind: String,
+        data: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,11 +95,14 @@ pub struct Item {
 }
 
 /// What the store must make durable, in order. Core never writes; it queues.
+/// The store may buffer everything up to a `Sync`; at a `Sync` it syncs the
+/// log, then rewrites the scratchpad file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Record {
     Write { node: Node, mv: Option<Move> },
     Move(Move),
     Scratchpad,
+    Sync,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -120,6 +131,8 @@ pub struct Session {
     pub changes: BTreeMap<CursorId, u64>,
     pub moves: Vec<Move>,
     pub outbox: Vec<Record>,
+    /// Records queued since the last `Sync`.
+    unsynced: bool,
     pub notices: Vec<(String, String)>,
 }
 
@@ -167,7 +180,7 @@ impl Session {
         let node = self.check(parent, by, body, delivers, time)?;
         let id = node.id;
         self.nodes.push(node.clone());
-        self.outbox.push(Record::Write { node, mv: None });
+        self.queue(Record::Write { node, mv: None });
         Ok(id)
     }
 
@@ -192,10 +205,10 @@ impl Session {
         self.nodes.push(node.clone());
         self.at.insert(cursor, node.id);
         self.moves.push(mv.clone());
-        self.outbox.push(Record::Write { node, mv: Some(mv) });
+        self.queue(Record::Write { node, mv: Some(mv) });
         if !delivers.is_empty() {
             self.items.retain(|i| !delivers.contains(&i.id));
-            self.outbox.push(Record::Scratchpad);
+            self.queue(Record::Scratchpad);
         }
         Ok(*self.at.get(&cursor).unwrap())
     }
@@ -225,7 +238,7 @@ impl Session {
         };
         self.at.insert(cursor, to);
         self.moves.push(mv.clone());
-        self.outbox.push(Record::Move(mv));
+        self.queue(Record::Move(mv));
     }
 
     fn check(
@@ -242,7 +255,7 @@ impl Session {
             (Some(p), _) => drop(self.node(p)?),
         }
         if let Body::Results(out) = &body {
-            if (1..out.len()).any(|i| out[..i].iter().any(|(c, _)| *c == out[i].0)) {
+            if (1..out.len()).any(|i| out[..i].iter().any(|(c, ..)| *c == out[i].0)) {
                 return Err(Error::DuplicateCall); // V2
             }
         }
@@ -294,7 +307,7 @@ impl Session {
         let id = self.next_item;
         self.next_item += 1;
         self.items.push(Item { id, to, data });
-        self.outbox.push(Record::Scratchpad);
+        self.queue(Record::Scratchpad);
         *self.changes.entry(to).or_default() += 1; // rules: allow(entry): BTreeMap API
         id
     }
@@ -302,9 +315,27 @@ impl Session {
     pub fn remove_item(&mut self, id: ItemId) {
         if let Some(i) = self.items.iter().position(|i| i.id == id) {
             let to = self.items.remove(i).to;
-            self.outbox.push(Record::Scratchpad);
+            self.queue(Record::Scratchpad);
             *self.changes.entry(to).or_default() += 1; // rules: allow(entry): BTreeMap API
         }
+    }
+
+    fn queue(&mut self, r: Record) {
+        self.outbox.push(r);
+        self.unsynced = true;
+    }
+
+    /// A sync point: queue a `Sync` if anything is queued since the last one.
+    pub fn sync(&mut self) {
+        if self.unsynced {
+            self.outbox.push(Record::Sync);
+            self.unsynced = false;
+        }
+    }
+
+    /// True when every queued record is covered by a `Sync`.
+    pub fn synced(&self) -> bool {
+        !self.unsynced
     }
 
     pub fn items(&self, cursor: CursorId) -> impl Iterator<Item = &Item> {

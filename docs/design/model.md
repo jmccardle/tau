@@ -1,7 +1,8 @@
 # Model
 
-Status: **for review (Phase 1).** On sign-off this file and `glossary.md`
-supersede the original plan's model section (git history). Terms are defined
+Status: **accepted (Phase 1 closed 2026-10-27).** This file and `glossary.md`
+supersede the original plan's model section (git history). Change it when
+code forces a change, not before. Terms are defined
 in `glossary.md`; D1–D12 are in `decisions/`; **Q*n*** are at the end.
 
 **The spike is the reference.** `crates/tau-core/src/tree.rs` (the tree) and
@@ -37,7 +38,9 @@ item, so a reload is a replay (I7).
   until the join. After a crash the cursor rests at the unanswered batch:
   input goes under it, a step re-runs it (D4).
 - **Persistence is not a job.** Writes happen inside the Rust call that makes
-  them and are durable when it returns (D11). JMFTS is a replica (D12).
+  them (D11). **Post hooks run on synced data:** a phase's writes, its pre
+  hooks' included, share one sync before its post hook; `post_step`'s writes
+  are synced before the step rests or restarts. JMFTS is a replica (D12).
 - **Hooks act only on their own cursor.** Cursors talk through the
   scratchpad.
 - **Abort cancels effects, never hooks** (§8).
@@ -51,7 +54,7 @@ Node   { id, parent?, time, by, body, delivers, copied_from*, derived_from* }
 body   = System(text)
        | User(text, images*)
        | Assistant { parts, stop, stop_raw* }
-       | Results(outcomes)                  [(call id, outcome)], in call order
+       | Results(outcomes)                  [(call id, outcome, by)], in call order
        | Config(snapshot)
        | Custom { kind, data }
 
@@ -185,7 +188,7 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
 |---|---|---|---|
 | input | input is pending | `Hooks(PreInput, draft)` per item, oldest first | one `User` per item, `delivers: [item]`, by `Frontend(client)` |
 | sample | `next == Sample` | `Hooks(PreSample)`, `Sample`, `Hooks(PreReply, draft)`, `Hooks(PostReply)` | one `Assistant` |
-| tools | `next == RunTools` | `RunCalls(calls)`, `Pending` until every `CallDone`, `Hooks(PostResult)` | one `Results` at the join, by `Core` |
+| tools | `next == RunTools` | `RunCalls(calls)`, `Pending` until every `CallDone`, `Hooks(PostResult)` | one `Results` at the join, by `Tools`; each outcome has its own `by` |
 
 - **A phase applies** only if the step was not aborted, auto-step is on or
   the step was `asked`, and its condition holds for `at` at the start of the
@@ -362,9 +365,13 @@ Each provider is a Python adapter for one API family. It owes the driver:
 ## 11. Persistence (not yet spiked beyond the outbox)
 
 Core queues what must be made durable in `Session::outbox` as `Record`s
-(`Write { node, mv }`, `Move`, `Scratchpad`). A Rust layer composing core with
-`tau-store` writes them before the call returns (D11), so `cursor.write` is
-durable on return. Layout (D12): one append-only record log per session
+(`Write { node, mv }`, `Move`, `Scratchpad`, `Sync`). A Rust layer composing
+core with `tau-store` hands them to the store inside the call (D11). The store
+may buffer up to a `Sync`; at a `Sync` it syncs the log, then rewrites the
+scratchpad file. The step queues a `Sync` before each post hook and when the
+step ends; calls outside a step (a frontend's input, go-to) sync on return.
+A crash loses at most the writes since the last sync, and never a post hook's
+view. Layout (D12): one append-only record log per session
 (length-prefixed, checksummed records) plus a scratchpad file rewritten
 atomically. A delivering record is durable before its items are removed;
 load drops delivered items. One `flock` lease per session: only the holder

@@ -16,6 +16,9 @@ its own time. How do calls and answers sit in the tree?
 - **One `Results` node per batch**, in call order, written at the join when
   every call has an outcome (`Ok`, `Err`, `Interrupted`). Until then the
   outcomes are in the step's memory (D4).
+- The node is `by: Tools`; each outcome carries its own `by` (`Tools`, or
+  the extension that answered or edited it), so blame survives one node per
+  batch.
 - I4 holds by construction. Core's only check is V2: distinct calls.
 - The provider expands `Results` into one tool message per call.
 - An `args_raw` that doesn't parse is `Err("invalid arguments")` without

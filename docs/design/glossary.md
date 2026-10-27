@@ -1,6 +1,6 @@
 # Glossary
 
-Status: **for review (Phase 1).** Rule 2: no type, field, or module-level
+Status: **accepted (Phase 1 closed 2026-10-27).** Rule 2: no type, field, or module-level
 concept exists without an entry here. One term, one meaning.
 
 Each entry gives the identifier (Rust in `tau_core`, Python in `tau_next`),
@@ -54,8 +54,11 @@ Answered by one `Results` node.
 ### Results
 *spike* `Body::Results` · retires toolResult, `Result` (per-call node)
 
-A node answering a batch: one `(call id, outcome)` per call, in call order,
-written at the join. Final; another answer is a sibling (Q10).
+A node answering a batch: one `(call id, outcome, by)` per call, in call
+order, written at the join, `by: Tools`. Each outcome's `by` is `Tools` if the
+tool ran unedited, else the extension whose `pre_tool` answered it or whose
+`pre_result` last edited it (fed in `CallDone`). Final; another answer is a
+sibling (Q10).
 
 ### outcome
 *spike* `Outcome` · retires `is_error`, `Skipped`
@@ -489,9 +492,17 @@ place that awaits.
 *spike* `tree::Record` · new
 
 What must be made durable, in order, queued in `Session::outbox`:
-`Write { node, mv }` (a node and its move, one record), `Move`, or
-`Scratchpad` (rewrite the scratchpad file).
+`Write { node, mv }` (a node and its move, one record), `Move`,
+`Scratchpad` (rewrite the scratchpad file), or `Sync` (a sync point).
 Queued in the **outbox** (`Session::outbox`) until the store writes them.
+
+### sync point
+*spike* `Session::sync`, `Session::synced`, `Record::Sync` · new
+
+Where queued records must reach disk: before each post hook and when a step
+ends (`post_reply`, `post_result`, `post_step`, then rest or restart). A
+phase's writes, its pre hooks' included, share one sync. `synced()` is true
+when nothing is queued since the last `Sync`.
 
 ### store
 `tau_store` · retires session store, `SessionCatalog`

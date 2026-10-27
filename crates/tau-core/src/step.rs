@@ -68,9 +68,12 @@ pub enum Fed {
         reply: Option<Draft>,
         error: Option<String>,
     },
+    /// `by`: `Tools`, or the extension whose `pre_tool` answered the call or
+    /// whose `pre_result` last edited the outcome.
     CallDone {
         call: String,
         outcome: Outcome,
+        by: Author,
     },
     Waited,
 }
@@ -104,7 +107,7 @@ pub struct Step {
     error: Option<String>,
     ending: Ending,
     /// The running batch's calls in call order, each with its outcome once fed.
-    batch: Vec<(String, Option<Outcome>)>,
+    batch: Vec<(String, Option<(Outcome, Author)>)>,
 }
 
 impl Step {
@@ -170,14 +173,18 @@ impl Step {
                 }
                 Pos::Sample => Job::Sample,
                 Pos::PreReply => hooks(Hook::PreReply, self.draft.clone()),
-                Pos::PostReply | Pos::PostResult => hooks(
-                    if self.pos == Pos::PostReply {
-                        Hook::PostReply
-                    } else {
-                        Hook::PostResult
-                    },
-                    None,
-                ),
+                // Post hooks run on data that is on disk.
+                Pos::PostReply | Pos::PostResult => {
+                    s.sync();
+                    hooks(
+                        if self.pos == Pos::PostReply {
+                            Hook::PostReply
+                        } else {
+                            Hook::PostResult
+                        },
+                        None,
+                    )
+                }
                 Pos::Tools if on && s.next(self.cursor) == Next::RunTools => {
                     let run = self.start_batch(s)?;
                     self.pos = Pos::Calls;
@@ -188,11 +195,14 @@ impl Step {
                     continue;
                 }
                 Pos::Calls => Job::Pending,
-                Pos::PostStep => Job::Hooks {
-                    point: Hook::PostStep,
-                    draft: None,
-                    ending: Some(self.ending.clone()),
-                },
+                Pos::PostStep => {
+                    s.sync();
+                    Job::Hooks {
+                        point: Hook::PostStep,
+                        draft: None,
+                        ending: Some(self.ending.clone()),
+                    }
+                }
                 Pos::Throttle => Job::Wait {
                     until: self.started + THROTTLE,
                 },
@@ -274,9 +284,9 @@ impl Step {
                 Some(e) => self.end(s, Ending::Failed(e)),
                 None => self.pos = Pos::Tools,
             },
-            (Pos::Calls, Fed::CallDone { call, outcome }) => {
+            (Pos::Calls, Fed::CallDone { call, outcome, by }) => {
                 if let Some(slot) = self.batch.iter_mut().find(|c| c.0 == call) {
-                    slot.1 = Some(outcome);
+                    slot.1 = Some((outcome, by));
                 }
                 if self.batch.iter().all(|c| c.1.is_some()) {
                     self.join(s, now)?;
@@ -312,7 +322,9 @@ impl Step {
         self.pos = Pos::PostStep;
     }
 
-    fn after(&mut self, s: &Session, now: u64) {
+    /// After `post_step`: sync what it wrote, then rest, throttle, or restart.
+    fn after(&mut self, s: &mut Session, now: u64) {
+        s.sync();
         let work = s.next(self.cursor) != Next::Wait
             || s.items(self.cursor)
                 .any(|i| matches!(i.data, ItemData::Input { .. }));
@@ -345,13 +357,16 @@ impl Step {
     fn join(&mut self, s: &mut Session, now: u64) -> Result<(), Error> {
         let outcomes = std::mem::take(&mut self.batch)
             .into_iter()
-            .map(|(c, o)| (c, o.expect("joined")))
+            .map(|(c, o)| {
+                let (o, by) = o.expect("joined");
+                (c, o, by)
+            })
             .collect();
         s.write(
             self.cursor,
             Body::Results(outcomes),
             vec![],
-            Author::Core,
+            Author::Tools,
             now,
         )?;
         self.committed = true;

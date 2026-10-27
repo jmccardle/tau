@@ -16,4 +16,4 @@ wins; where either differs from the step spike, the spike wins until review.
 | [D9](D09-session-compat.md) | 0.15 sessions | accepted | A one-way converter in Phase 7; details open. |
 | [D10](D10-package-name.md) | Package name | accepted | `tau_next` until absorption into τ 0.16.0. |
 | [D11](D11-core-decides.md) | Where rules live | proposed, spiked | A sans-IO step machine in `tau-core`; the driver performs jobs. |
-| [D12](D12-store-layout.md) | Store layout | proposed | One record log plus a scratchpad file; JMFTS a replica. |
+| [D12](D12-store-layout.md) | Store layout | accepted | One record log plus a scratchpad file; JMFTS a replica. |

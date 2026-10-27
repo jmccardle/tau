@@ -15,9 +15,9 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | phase | state |
 |---|---|
 | 0 scaffold | **done.** Workspace, maturin, `cp312-abi3` + `cp314t` wheels, CI on forge.goblincorps.com, rule lint. |
-| 1 design docs | **awaiting sign-off.** Revision 7 plus the rulings below; `docs/design/` re-aligned to the spike. |
-| 2 behavior spec | **not started.** No `Harness`, no fakes. 8 of the required scenarios exist as Rust tests (`crates/tau-core/tests/step.rs`). |
-| 3 Rust core | **spiked ahead of order.** See below. |
+| 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
+| 2 behavior spec | **folded into 3** (order below). No `Harness`, no fakes yet; 8 required scenarios exist as Rust tests (`crates/tau-core/tests/step.rs`). |
+| 3 Rust core | **in progress**, growing the spike. |
 | 4–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
@@ -25,7 +25,10 @@ Rulings since revision 7 (recorded in `model.md` and the ADRs):
 - JMFTS is a replica fed from the local log (D12);
 - the input phase applies whenever input is pending; queueing is an extension's;
 - no crash recovery for calls in core: rest at the unanswered batch, input
-  goes under it, a step re-runs it (D4).
+  goes under it, a step re-runs it (D4);
+- post hooks run on synced data: one sync before each post hook and when the
+  step ends, not one per write (D11);
+- `Results` is `by: Tools`, and each outcome carries its own `by` (D7).
 
 **The step spike** (`crates/tau-core/src/{tree,step}.rs`, ~700 lines, plus
 ~400 lines of tests) is the phase loop of D11 as a sans-IO machine:
@@ -34,16 +37,16 @@ throttle, abort, reload with auto-step off. A turn costs ~15–30 µs at any
 session depth. It covers part of 3a (`Node`, `Body`, `Move`, `Item`, `walk`,
 `next`, V1, V2) and the core of 3c. Missing: labels, `config_at`, LCA,
 questions, go-to on a busy cursor, `max_steps`, proptests, the store (3b),
-the bindings, and the clippy gate (20 pedantic lints).
+the bindings, and the clippy gate (pedantic lints; deferred to the Phase 3
+closeout).
 
-### Proposed reordering (needs John's call; bends rule 5)
+### Order from here (approved 2026-10-27; bends rule 5)
 
 Phase 2 as written specifies everything through the Python `Harness` before
 any implementation. The spike shows the machine is small and cheap to test
 directly, so:
 
-1. **Sign off Phase 1** on the re-aligned docs. Stop revising `model.md`;
-   change it only when code forces a change.
+1. Phase 1 is signed off. Change `model.md` only when code forces it.
 2. **Grow the spike into 3a + 3c** with a Rust scenario test per item in the
    Phase 2 coverage list, written before the code that passes it. These are
    the behavior spec at the core level.
@@ -65,7 +68,7 @@ runners we don't have — revisit before release), clippy, rustfmt, ruff,
 pyright strict, proptest. Exit met: the wheel imports next to `ffwf-tau` 0.15,
 including on free-threaded 3.14t without re-enabling the GIL.
 
-### Phase 1: design docs — awaiting sign-off
+### Phase 1: design docs — done
 `glossary.md`, `model.md` (numbered invariants, each with its enforcing
 test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
 
@@ -84,7 +87,7 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
 - `parity/`: a `Harness` adapter over τ 0.15 for the `keep` tests (plain
   turn, tool batch, tool error, unknown tool, bad args, HTTP error). An API
   diff, not the spec; run by `scripts/parity.sh`, never by `check.sh`.
-- Required coverage (✓ = spiked in `crates/tau-core/tests/step.rs`):
+- Required coverage (✓ = covered in `crates/tau-core/tests/step.rs`):
   - ✓ plain turn; ✓ tool batch (one `Results`, call order); tool error;
     unknown tool; bad args; HTTP error; mid-stream error;
   - ✓ abort during sample with parts; abort during sample without parts;
@@ -123,13 +126,12 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
 - **3b, store.** `tau-store` per D12: one record log (length-prefixed,
   checksummed), the scratchpad file rewritten atomically, the lease, load with
   the `delivers` reconciliation, a trait for the JMFTS replica. Proptest I7,
-  including torn tails. Decide the sync policy (per write or per phase): one
-  disk sync costs about ten turns of core work.
+  including torn tails. Sync at `Record::Sync` only (D11).
 - **3c, the step machine.** The phase loop as a sans-IO machine (D11).
   Proptests over scripted results and frontend calls. Transition tables
   emitted as DOT, checked in CI. `tau-py` bindings: `Session`, `Cursor`,
   `Node`, handles, plain functions.
-- **Exit:** property tests green; ratchet on (rule 7).
+- **Exit:** property tests green; clippy gate green; ratchet on (rule 7).
 
 ### Phase 4: Python driver, one provider, built-in tools
 - The driver performs jobs: hook calls, samples, calls (each call's

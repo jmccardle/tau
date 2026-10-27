@@ -1,6 +1,6 @@
 # D11: Core decides; the driver performs
 
-Status: proposed (Phase 1); spiked in `crates/tau-core/src/step.rs`
+Status: accepted (Phase 1); spiked in `crates/tau-core/src/step.rs`
 
 ## Context
 
@@ -22,8 +22,11 @@ question is where the decisions live.
 - **Writes are not jobs.** Every append, move, label change, and item change
   happens inside the Rust call that makes it. `tau-core` queues the
   `Record`s (`Session::outbox`); a Rust layer composing core with `tau-store`
-  writes them before returning. `tau-py` binds that layer. A hook's
-  `cursor.write` is durable when it returns.
+  hands them to the store inside the call. `tau-py` binds that layer.
+- **Post hooks run on synced data.** The store may buffer writes; the step
+  queues a `Sync` before each post hook (`post_reply`, `post_result`,
+  `post_step`) and when the step ends. A phase's writes, pre hooks'
+  included, share one sync. Calls outside a step sync on return.
 - A hook job's result is only the edited draft and the return value.
 - Frontend calls (input, go-to, step, abort, auto-step, answer) are inputs
   to the same machine.
@@ -42,8 +45,8 @@ question is where the decisions live.
 - Every rule is testable in Rust with no Python and no clock
   (`crates/tau-core/tests/step.rs`). A turn costs ~15–30 µs in the spike.
 - The driver is small: perform jobs, cancel what abort says.
-- Cost: a write blocks its thread for one fsync (~0.3 ms on the dev
-  container). Whether a sync per write or per phase is the durability unit is
-  open.
+- One fsync (~0.3 ms on the dev container) per phase, not per write: a
+  plain turn syncs twice. A crash loses at most the writes since the last
+  sync; a lost pre hook write is lost with the commit it came with.
 - Cost: `Session` is shared mutable state on free-threaded builds; its
   locking needs an ADR in Phase 3.

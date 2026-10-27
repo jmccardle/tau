@@ -1,7 +1,7 @@
 //! The step machine driven by a scripted driver: no Python, no clock.
 
 use tau_core::step::{Draft, Ending, Fed, Hook, Job, Step};
-use tau_core::tree::{Author, Body, ItemData, Outcome, Part, Session, Stop};
+use tau_core::tree::{Author, Body, ItemData, Outcome, Part, Record, Session, Stop};
 
 fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
     Draft {
@@ -117,6 +117,7 @@ fn batch_answers_in_call_order_then_samples_again() {
             .map(|id| Fed::CallDone {
                 call: id.into(),
                 outcome: Outcome::Ok(id.into()),
+                by: Author::Tools,
             })
             .to_vec(),
         _ => vec![ok()],
@@ -125,8 +126,8 @@ fn batch_answers_in_call_order_then_samples_again() {
     assert_eq!(
         b[4],
         Body::Results(vec![
-            ("a".into(), Outcome::Ok("a".into())),
-            ("b".into(), Outcome::Ok("b".into()))
+            ("a".into(), Outcome::Ok("a".into()), Author::Tools),
+            ("b".into(), Outcome::Ok("b".into()), Author::Tools)
         ])
     );
     assert_eq!(
@@ -136,10 +137,111 @@ fn batch_answers_in_call_order_then_samples_again() {
             stop: Stop::End
         }
     );
+    assert_eq!(s.items(c).count(), 0, "nothing left behind");
+    let results = s.walk(s.at(c).unwrap())[4];
+    assert_eq!(results.by, Author::Tools);
+}
+
+#[test]
+fn each_outcome_records_who_produced_it() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "look");
+    let mut samples = 0;
+    let mut step = Step::wake(&s, c, false, 0);
+    drive(&mut s, &mut step, |job, _| match job {
+        Job::Sample => {
+            samples += 1;
+            let r = if samples == 1 {
+                reply(vec![call("a"), call("b")], Stop::Tools)
+            } else {
+                reply(vec![text("done")], Stop::End)
+            };
+            vec![Fed::Sampled {
+                reply: Some(r),
+                error: None,
+            }]
+        }
+        // a ran; b was denied by a permissions extension's pre_tool
+        Job::RunCalls(_) => vec![
+            Fed::CallDone {
+                call: "a".into(),
+                outcome: Outcome::Ok("listing".into()),
+                by: Author::Tools,
+            },
+            Fed::CallDone {
+                call: "b".into(),
+                outcome: Outcome::Err("denied".into()),
+                by: Author::Extension("permissions".into()),
+            },
+        ],
+        _ => vec![ok()],
+    });
     assert_eq!(
-        s.items(c).count(),
-        0,
-        "the Results node delivered the journal"
+        bodies(&s, c)[4],
+        Body::Results(vec![
+            ("a".into(), Outcome::Ok("listing".into()), Author::Tools),
+            (
+                "b".into(),
+                Outcome::Err("denied".into()),
+                Author::Extension("permissions".into())
+            ),
+        ])
+    );
+}
+
+#[test]
+fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    s.outbox.clear();
+    send(&mut s, c, "look");
+    let mut samples = 0;
+    let mut step = Step::wake(&s, c, false, 0);
+    let jobs = drive(&mut s, &mut step, |job, s| {
+        if let Job::Hooks { point, .. } = job {
+            if matches!(point, Hook::PostReply | Hook::PostResult | Hook::PostStep) {
+                assert!(s.synced(), "{point:?} handed out before a sync");
+            }
+        }
+        match job {
+            Job::Sample => {
+                samples += 1;
+                let r = if samples == 1 {
+                    reply(vec![call("a")], Stop::Tools)
+                } else {
+                    reply(vec![text("done")], Stop::End)
+                };
+                vec![Fed::Sampled {
+                    reply: Some(r),
+                    error: None,
+                }]
+            }
+            Job::RunCalls(_) => vec![Fed::CallDone {
+                call: "a".into(),
+                outcome: Outcome::Ok("x".into()),
+                by: Author::Tools,
+            }],
+            _ => vec![ok()],
+        }
+    });
+    assert_eq!(jobs.last(), Some(&Job::Rest));
+    assert!(s.synced(), "at rest everything is synced");
+    let kinds: Vec<&str> = s
+        .outbox
+        .iter()
+        .map(|r| match r {
+            Record::Write { .. } => "write",
+            Record::Move(_) => "move",
+            Record::Scratchpad => "pad",
+            Record::Sync => "SYNC",
+        })
+        .collect();
+    // send's item; input + reply, synced before post_reply; Results, synced
+    // before post_result; the second reply, synced before post_step.
+    assert_eq!(
+        kinds,
+        [
+            "pad", "write", "pad", "write", "SYNC", "write", "SYNC", "write", "SYNC"
+        ]
     );
 }
 
@@ -167,6 +269,7 @@ fn crash_mid_batch() -> (Session, u64) {
                     Fed::CallDone {
                         call: "a".into(),
                         outcome: Outcome::Ok("done".into()),
+                        by: Author::Tools,
                     },
                     0,
                 )
@@ -219,6 +322,7 @@ fn after_a_crash_mid_batch_a_step_reruns_the_whole_batch() {
             .map(|r| Fed::CallDone {
                 call: r.id.clone(),
                 outcome: Outcome::Ok("again".into()),
+                by: Author::Tools,
             })
             .collect(),
         _ => vec![ok()],
@@ -238,8 +342,8 @@ fn after_a_crash_mid_batch_a_step_reruns_the_whole_batch() {
     assert_eq!(
         bodies(&s, c).last().unwrap(),
         &Body::Results(vec![
-            ("a".into(), Outcome::Ok("again".into())),
-            ("b".into(), Outcome::Ok("again".into()))
+            ("a".into(), Outcome::Ok("again".into()), Author::Tools),
+            ("b".into(), Outcome::Ok("again".into()), Author::Tools)
         ])
     );
 }
