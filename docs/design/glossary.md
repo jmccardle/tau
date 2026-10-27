@@ -71,7 +71,8 @@ kept it from starting; the tool may or may not have run).
 
 Who wrote a node, or who asked for a move: `Frontend(client)`, `Provider`,
 `Tools`, `Core`, `Extension(name)`. Filled in by the driver from the caller,
-recorded only, never used for control flow (Q7).
+recorded only, never used for control flow (Q7). A pre hook that edits a draft
+leaves its `by` as is; who edited a node is not recorded (accepted gap).
 
 ### time
 *spike* `Node::time`, `Move::time` · retires `timestamp`
