@@ -77,8 +77,10 @@ own string is kept as `stop_raw`.
 | `interrupted` | we cancelled it (abort) |
 | `error` | the stream failed after output had arrived |
 
-Only `tools` runs calls. On every other stop, core answers the reply's calls
-`Skipped(<stop>)` and `next` is `Wait` (Q29).
+Only `tools` runs calls. On every other stop, the reply's calls are not
+runnable and owe no result: core writes nothing for them, the cursor rests on
+the reply, and `next` is `Wait`. The provider renders them as text, per
+`partial_calls`.
 
 ### call
 **Rust** `Call`, `CallId` · **Python** `Call` · **retires** tool call,
@@ -98,23 +100,23 @@ reply's calls at once.
 ### batch
 **Python**: none (a view) · new
 
-The calls of one `Assistant` node. On a walk, a batch is in one of three
-states:
+The calls of one `Assistant` node with `stop == tools`. On a walk, a batch is
+in one of three states:
 - **unstarted**: no results yet;
 - **partial**: some calls answered;
 - **complete**: every call answered exactly once (I4).
 
-Only the cursor holding a batch's claim has its `at` partway through its run.
-Any other move onto the batch or into its run fast-forwards to the run's end
-(I3).
+Only the cursor holding a batch's claim has its `at` partway through a run.
+Any other move onto the batch or into a run fast-forwards to the run's end by
+default (I3).
 
 ### run
 **Python**: none (a view) · new
 
-A batch's result nodes: one per call, each under the previous, in the order
-the calls finished. A batch has at most one run (`model.md` §8). Nothing
-branches inside a run: each of its nodes has at most one child, except the
-result that completes it (I4b).
+A batch's result nodes on one line: one per call, each under the previous, in
+the order the calls finished. A batch may have several runs, and a run may
+branch partway; each line answers each call once (I4). A second run only ever
+comes from a deliberate **re-run**.
 
 ### result
 **Rust** `Body::Result` · **Python** `Result` (body class) · **retires** tool
@@ -122,8 +124,9 @@ result, toolResult message, `Results` (one node per batch, D7's old default)
 
 A node answering one call: `{call, outcome}`. Its parent is the batch's
 `Assistant` node (for the first result) or the previous result in the run.
-Every call gets exactly one result before anything else may follow its batch,
-even when the call is blocked or its output redacted.
+On every line, every call in a batch gets exactly one result before anything
+else may follow the batch, even when the call is blocked or its output
+redacted.
 
 ### outcome
 **Rust** `Outcome` · **Python** `Outcome` · **retires** `is_error`,
@@ -135,7 +138,7 @@ What a result says:
 |---|---|
 | `Ok(value)` | the tool ran and returned a value, or a `pre_tool` hook supplied one (cache, mock) |
 | `Err(error)` | the tool ran and failed, or could not run (unknown tool; `args_raw` doesn't parse: `Err("invalid arguments")`), or a hook raised: `Err("hook error")`, with any raw output withheld (`model.md` §7) |
-| `Skipped(reason)` | deliberately not run: a `pre_tool` hook declined it ("blocked by …"); input arrived at an unstarted batch and the call never started (`Skipped("superseded by input")`, Q17); or the reply stopped for a reason other than `tools` (Q29) |
+| `Skipped(reason)` | deliberately not run: a `pre_tool` hook declined it ("blocked by …"); or input arrived at an unstarted batch and the call never started (`Skipped("superseded by input")`, Q17) |
 | `Interrupted` | no result was written: the call was aborted, or a crash or abort came before its result was written. The tool may or may not have run (D4) |
 
 ### author
@@ -147,7 +150,7 @@ Who wrote a node:
 - `provider`: a sample.
 - `tools`: a result from running a call.
 - `core`: a root, I6's restated config, a `sample_error` record, and every
-  result core writes itself: `Skipped`, `Interrupted`,
+  result core writes itself: `Skipped("superseded by input")`, `Interrupted`,
   `Err("invalid arguments")`, `Err("hook error")`.
 - `extension(name)`: a hook.
 
@@ -248,8 +251,9 @@ Every write a step makes is followed by a move of its cursor onto it.
 `Session.open_cursor(at, opened_by=None)` · **retires** `spawn`, `newest`,
 cursor registration
 
-Creates a cursor and appends its opening move. The node must be committed, its
-walk must validate, and it must not be partway through a run (I3).
+Creates a cursor and appends its opening move. The node must be committed and
+its walk must validate. A node on a batch or inside one of its runs
+fast-forwards to the end of the run, as a move does (I3).
 
 ### at
 **Rust** `Cursor::at` · **Python** `Cursor.at` · **retires** leaf,
@@ -293,28 +297,28 @@ later reaches it. Nothing marks it; "side" describes where it sits.
 
 Writes one new node and emits `node_appended`. It checks the node first, so
 nothing invalid is written (I5):
-- I4a: under an unstarted or partial batch, only a result answering one of its
-  unanswered calls may be appended.
-- I4b: inside a run, a node may have only one child, except the result that
-  completes the batch.
+- I4: under an unstarted or partial batch, only a result answering one of its
+  calls still unanswered on that walk may be appended.
 - V2: a parentless node must be `Config`.
 
 Appending never moves a cursor. A step moves its cursor onto what it appended
 straight afterwards.
 
 ### move
-**Rust** `Session::move_cursor(cursor, to, by)` · **Python**
-`Session.move(cursor, to, by)` · new (0.15 had no single point where a write
-became final)
+**Rust** `Session::move_cursor(cursor, to, by, fast_forward)` · **Python**
+`Session.move(cursor, to, by, fast_forward=True)` · new (0.15 had no single
+point where a write became final)
 
 The only way `at` changes. It checks where the cursor lands (I3, and I6 for a
 go-to or a hook's move, which may restate config). A destination on a batch or
-inside its run fast-forwards to the end of the run, taking the batch's claim
-if the run is partial, and is refused if another cursor holds it. Then it
-appends one move record,
-sets `at := to`, and emits `cursor_moved` (`model.md` §5). A move comes from a
+inside one of its runs **fast-forwards** unless told not to, taking the
+batch's claim if the run is partial; with fast-forward off it is a
+**re-run**. Either way it is refused if another cursor holds the claim. Then
+it appends one move record, sets `at := to`, and emits `cursor_moved`
+(`model.md` §5). A move comes from a
 step (onto what it wrote), a frontend's go-to, or a post hook. A refused move
-changes nothing and raises to whoever asked. A step's own move is never
+changes nothing and raises to whoever asked. A hook that catches its own
+refused move has handled it, and auto-step is unchanged. A step's own move is never
 refused.
 
 ### move record
@@ -326,13 +330,35 @@ move. `by` says who asked: `frontend`, `core` (a step's own move), or
 `extension(name)` (a hook's move) (Q28). `opened_by` names the cursor that
 opened this one, such as a sub-agent's parent (Q6).
 
+### fast-forward
+**Python** `fast_forward=True`, an argument of `Session.move` and
+`Session.open_cursor` · new
+
+What a move or `open_cursor` does, by default, when its destination is a
+batch's `Assistant` node or a node inside one of its runs: it lands at the end
+of the existing run instead, following the most recently appended child where
+a run branches. If that run is partial, the cursor takes the batch's claim and
+resumes it. This is what keeps a cursor from landing mid-run by accident and
+running calls a second time (I3).
+
+### re-run
+**Python** `Session.move(cursor, to, by, fast_forward=False)` · new
+
+A deliberate second run of a batch: a go-to (or a hook's move) onto the
+batch's `Assistant` node, or a result inside a run, with fast-forward off. The
+cursor takes the claim, and its next step runs every call still unanswered on
+its new line, through `pre_tool` as usual. The result is a sibling run, or one
+that branches partway (keep `r5`, run `c3` again). Resume after a crash never
+re-runs on purpose (`model.md` §5, §8).
+
 ### go to
-**Python** `Session.move(cursor, to, by=frontend)` · **retires**
+**Python** `Session.move(cursor, to, by=frontend, fast_forward=True)` ·
+**retires**
 `navigate_tree`
 
 A move a frontend asks for, with no new input and no hooks (Q15). It is how a
-person branches, returns to an older line, or rejects a reply (go to its
-parent and step again).
+person branches, returns to an older line, rejects a reply (go to its parent
+and step again), or re-runs a batch (fast-forward off).
 
 ### branch
 **Rust/Python**: no type; a verb · **retires** fork (in-session),
@@ -340,7 +366,7 @@ parent and step again).
 
 To branch is to move to a node that is not a descendant of `at`. The cursor
 leaves its old line at the LCA, or entirely if there is none. The old line
-stays committed.
+stays committed. A re-run is a branch inside a batch's runs.
 
 ### fork
 **retires** `ctx.fork`, catalog fork, runtime fork, `multitask_strategy="fork"`,
@@ -365,9 +391,11 @@ node:
 
 | nearest message-bearing node | `Next` |
 |---|---|
-| `User`, or a result completing a batch whose reply had `stop == tools` | `Sample` |
+| `User`, or a result completing a batch | `Sample` |
 | `Assistant` with `stop == tools`, or a result in a partial batch | `RunTools(unanswered ids)` |
-| any other `Assistant` or completed batch, `System`, or none | `Wait` |
+| any other `Assistant`, `System`, or none | `Wait` |
+
+Once `max_steps` is reached, `next` is `Wait` wherever it would be `Sample`.
 
 ### step
 **retires** loop turn, agent run, user turn, submission, turn (all four
@@ -415,8 +443,9 @@ Step a paused cursor, or turn its auto-step back on. At an unstarted or
 partial batch, resume follows `model.md` §8:
 1. Take the batch's claim. If another cursor holds it, wait, then
    fast-forward to the end of the completed run; nothing is left to do.
-2. Re-read the run, and move onto its end if results lie below `at`.
-3. Re-run unanswered idempotent calls.
+2. Re-read the run, and fast-forward onto its end if results lie below `at`
+   (not for a re-run, which runs the calls unanswered where it is).
+3. Run unanswered idempotent calls again.
 4. Answer the rest `Interrupted` (D4).
 
 Each result is written and moved onto as usual.
@@ -425,7 +454,7 @@ Each result is written and moved onto as usual.
 **Python** `Tool.idempotent: bool` · new
 
 A tool flag meaning that running the tool twice has the same effect as running
-it once. Only idempotent calls are re-run on resume (D4).
+it once. Only idempotent calls run again on resume (D4).
 
 ### sample
 **Rust**: none (an effect) · **Python** `Provider.sample` · **retires**
@@ -472,14 +501,15 @@ Fields named so far:
   `next` is `Wait` where it would be `Sample`. The count is computed from the
   walk, not stored.
 - **`partial_calls`** (Q27): `text` (the default) or `omit`. It sets what a
-  call with no run (truncated or skipped) becomes when the walk is sent again:
+  call that was never run (its reply's `stop` was not `tools`, whether the
+  call is complete or truncated) becomes when the walk is sent again:
   `text` renders it after the reply in τ's `[τ: …]` markup, so the model sees
   what it was writing, and `omit` drops it.
 
 ### validate
 **Rust** `validate(walk)`
 
-The structural checks (I5). `append` checks each new node (V1: I4a and I4b;
+The structural checks (I5). `append` checks each new node (V1: I4;
 V2: a parentless node is `Config`), so every walk is valid by construction.
 A move checks where it lands (I3, I6). `validate(walk)` re-checks a whole walk,
 for tests. Provider legality is checked separately, by the provider's
@@ -505,7 +535,8 @@ receives what the previous one returned. There are three sorts:
   after it is written and the cursor has moved onto it, before `next` is
   evaluated. It may append side nodes, and it may move the cursor (checked
   like a go-to). A move ends that node's post hooks. `post_result` may move
-  only on the result that completes its batch (I4b). In a tools step, post
+  only on the result that completes its batch, because the cursor holds the
+  batch's claim until then. In a tools step, post
   hooks run one result at a time per cursor. Post hooks do not run after an
   abort, and an abort during one cancels it and skips the rest.
 
@@ -528,7 +559,7 @@ One of:
 | `post_input` | the written input node | nothing; it may append, or move the cursor (a synthetic sibling) |
 | `pre_sample` | the context tip | a context tip (the same, or a node it appended: a reminder, a `Config`, a compacted line), or a reply (answered) |
 | `pre_reply` | the reply | the reply, possibly rewritten, or nothing (refused, nothing written) |
-| `post_reply` | the written `Assistant` node | nothing; it may append, or move the cursor ("continue", Q20, Q29) |
+| `post_reply` | the written `Assistant` node | nothing; it may append, or move the cursor ("continue", Q20) |
 | `pre_tool` | one call | the call (possibly rewritten), or an outcome (answered) |
 | `pre_result` | the call as it ran, and its outcome | an outcome of the same kind, with its content possibly rewritten (Q18). It cannot drop one: every call is owed a result (I4) |
 | `post_result` | the written result node | nothing; it may append, or, on the completing result only, move the cursor |
@@ -570,8 +601,7 @@ Every wire format is a projection of this one type.
 
 Cancel a cursor's in-flight sample or tools, then turn its auto-step off. An
 aborted sample that had produced output is written with
-`stop: interrupted`, its calls are `Skipped` (Q29), and the cursor moves onto
-it; one that had produced nothing writes nothing. Aborted tools keep the
+`stop: interrupted`, its calls owe no result, and the cursor moves onto it; one that had produced nothing writes nothing. Aborted tools keep the
 results already written, and answer each unanswered call `Interrupted`,
 moving onto each, which I4 requires. No post hooks run after an abort, and an
 abort while a post hook is running cancels it and skips the remaining post

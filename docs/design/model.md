@@ -21,6 +21,15 @@ the documents assume the recommendation.
   - What a truncated call becomes on resubmission is a config option
     (`partial_calls`).
   - Replaying parts faithfully is a provider requirement (§11).
+- **Only a `stop == tools` reply is owed results**. Calls in a reply
+  that stopped for any other reason are not runnable; core writes nothing for
+  them, the cursor rests on the reply, and the provider renders them as text.
+- **Re-running a batch is a branch.** The tree may hold several runs under one
+  `Assistant` node, and a run may branch partway. The invariant is per line:
+  each walk answers each call once (I4). Avoiding an accidental second run is
+  the driver's job: landing on a batch fast-forwards to the end of the
+  existing run, and the claim stops concurrent runners. A deliberate re-run is
+  a go-to with fast-forward off (§5).
 - **Every write is followed by its move** (fourth revision). A cursor is
   `{id, at}`. The plan's `target`, draft, hold, and discard are gone, and D6
   becomes "a cursor is `{id, at}`; every write is followed by its move".
@@ -51,6 +60,15 @@ nodes, and everything else is either a pointer into that tree or a function of
 it.** τ 0.15 kept per-turn state in objects: cursor fields, queues, frames,
 suspension brokers. A reload had to guess that state back into existence.
 Here nothing is state unless it is a node or a move record.
+
+One way to picture it: **each cursor is a small Turing machine.** Its head
+reads `walk(at)`. `next` is the transition function. The extensions listed in
+`config_at(at)` are its state table. The session tree is the tape, except that
+the tape is append-only, so the only things a machine changes are where its
+own head is and what it appends. Hooks therefore belong to a cursor: two
+cursors whose lines carry different config run different extensions. This is
+why nodes and moves a hook writes trigger no hooks: they are the machine
+writing, not a new input to it.
 
 Notation: `x?` marks a field that may be absent. `A | B` means one of.
 
@@ -103,17 +121,18 @@ The core is pure. The driver passes `time` in, and core assigns ids at append
 
 ## 2. Batches
 
-An `Assistant` node's `Call` parts form a **batch**. The batch's results
-follow it in a **run**: one result per call, each under the previous, in the
-order the calls finished.
+The `Call` parts of an `Assistant` node with `stop == tools` form a
+**batch**. The batch's results follow it in a **run**: one result per call,
+each under the previous, in the order the calls finished.
 
-Every call gets a result. Only a reply that handed off runs anything:
+Only a reply that handed off runs anything, and only its calls are owed
+results:
 
 | reply's `stop` | call's `args_raw` | result |
 |---|---|---|
 | `tools` | parses | the tool runs, through `pre_tool` and `pre_result` |
 | `tools` | doesn't parse | `Err("invalid arguments")`, without running. The model sees its own malformed output. |
-| anything else | either | `Skipped(<stop>)`, written by core together with the reply (Q29). A truncated plan is not half-run. |
+| anything else | either | none. The calls are not runnable and owe nothing; the cursor rests on the reply, and the provider renders them as text (§11). A truncated plan is not half-run. |
 
 ```
 u1  User          "fix the bug"
@@ -126,6 +145,11 @@ On a given walk, a batch is in one of three states:
 - **unstarted**: no results yet;
 - **partial**: some calls answered, some not;
 - **complete**: every call answered exactly once.
+
+A batch may have more than one run. Running it again is a deliberate branch
+(a **re-run**, §5): a sibling run under the `Assistant` node, or one that
+branches partway, keeping `r5` and running `c3` again. Each run is its own
+line, and each line answers each call once (I4).
 
 Tree order is completion order. It is true, and it is what lets a finished call
 survive a crash. The provider's conversion restores call order for the next
@@ -220,58 +244,67 @@ A process exit between the two left an orphan that nothing could repair.
 
 ### I3 Valid `at`
 **Statement.** A cursor's `at` is always a committed node whose walk
-validates. Nothing *lands* partway through a run. A go-to, a hook's move, or
-`open_cursor` whose destination is an `Assistant` node with calls, or a node
-inside its run, **fast-forwards** to the end of the existing run:
-- if the run is complete (or there is none yet), the cursor lands there;
-- if the run is partial, the landing cursor takes the batch's claim and
-  resumes it (§8);
-- if another cursor holds that claim, the move is refused.
+validates. The session's first cursor opens at the root it creates (Q5).
 
-So only the cursor holding a batch's claim sits partway through its run, and
-it moves onto each result as it is written. The session's first cursor opens
-at the root it creates (Q5).
+Nothing lands partway through a run by accident. By default, a go-to, a
+hook's move, or `open_cursor` whose destination is a batch's `Assistant` node,
+or a node inside one of its runs, **fast-forwards** to the end of the existing
+run. Where a node in the run has more than one child (an earlier re-run), it
+follows the most recently appended one.
+- If the run is complete (or there is none yet), the cursor lands there.
+- If the run is partial, the landing cursor takes the batch's claim and
+  resumes it (§8).
+- If another cursor holds that claim, the move is refused.
+
+A move with fast-forward off lands exactly where it was sent. That is a
+deliberate **re-run** (§5): the cursor takes the claim, and its next step
+runs every call still unanswered on its new line.
 
 **Why.** "Where is this cursor?" must never need a guess (0.15's
-`default_leaf` was a heuristic). And a second cursor landing mid-run would see
-`next == RunTools` and run the remaining calls a second time.
+`default_leaf` was a heuristic). And a cursor that landed mid-run by accident
+would see `next == RunTools` and run the remaining calls a second time,
+which nobody chose.
 
 **Enforced by.**
 - Unit tests: `open_cursor` and go-to onto a batch or into its run
   fast-forward to the run's end, and are refused while another cursor holds
-  the batch's claim.
-- Proptest: after any operation sequence, every `cursor.at` is committed,
-  `validate(walk(at))` passes, and `at` is partway through a run only for the
+  the batch's claim. With fast-forward off, a go-to lands where it was sent.
+- Proptest: after any operation sequence, every `cursor.at` is committed and
+  `validate(walk(at))` passes. `at` is partway through a run only for the
   cursor holding that batch's claim, or for any cursor straight after a
   reload.
 
 ### I4 Every call gets exactly one result
-**Statement.** On any walk, a batch is followed only by its own results, one
-per call, until the batch is complete. Two checks enforce this at append, and
-both are local: they read only the batch and its run.
-- **I4a.** A result may be appended only at the end of its batch's run: under
-  the `Assistant` node if the batch is unstarted, otherwise under the latest
-  result, and only for a call that has no result yet on that walk. Under an
-  unstarted or partial batch, no other kind of node may be appended.
-- **I4b.** Nothing branches inside a run. A batch's `Assistant` node, and
-  every result except the one that completes the batch, has at most one
-  child. The completing result is an ordinary node, and any number of cursors
-  may continue from it.
+**Statement.** On every walk, a batch (an `Assistant` node with
+`stop == tools`) is followed only by its own results, one per call, until the
+batch is complete. Replies with any other `stop` owe no results (§2).
+
+The check is local, at append: a result may be appended under the batch's
+`Assistant` node, or under a result of the same batch, and only for a call
+that has no result yet on that walk. Under an unstarted or partial batch, no
+other kind of node may be appended.
+
+The tree may hold several runs under one `Assistant` node, and a run may
+branch partway. Each is its own line, and each line answers each call once.
+Preventing an *accidental* second run is the driver's job, not the tree's:
+landing fast-forwards (I3), and the claim stops concurrent runners (§10).
 
 **Why.** Every provider rejects a conversation with an unanswered call, so a
-blocked call still owes the model a result that says so. And running one
-batch twice on one line of the conversation is never what anyone meant.
+blocked call still owes the model a result that says so. And two answers to
+one call on one line could each be "the" answer.
 
-**Consequence (Q10).** A written result is final. To change history above
-it, branch from higher up, using copies or derived nodes, as prune does.
+**Consequence (Q10).** A result is final on its line. Another answer is
+another line: a re-run (§5), or a branch from higher up, using copies or
+derived nodes, as prune does.
 
 **Enforced by.**
 - Unit tests for each rejection.
-- Proptest: no node in a run, other than the completing result, has two
-  children.
+- Proptest: no walk holds two results for one call, or a non-result node
+  after a batch that is not complete.
 - Behavior scenarios: tool batch; unknown tool; bad arguments; `pre_tool`
   blocks one call of two; `pre_result` redacts an output; two cursors at one
-  batch (Q13); two cursors continuing from one completed batch.
+  batch (Q13); two cursors continuing from one completed batch; a deliberate
+  re-run from `a1`; a re-run that keeps `r5` and runs `c3` again.
 
 ### I5 Validation at append and at move
 **Statement.** `append` checks a node against its walk before writing it, and
@@ -284,7 +317,7 @@ provider request, possibly days later.
 
 **Rules.** Core's checks are structural.
 - At append:
-  - **V1**: I4a and I4b.
+  - **V1**: I4, on the new node's walk.
   - **V2**: a node without a parent must be `Config`, so every walk starts
     with one.
 - At a move (§5): I3, and I6 for a go-to or a hook's move.
@@ -315,7 +348,7 @@ There are two places a cursor's line can change:
 - **At a go-to or a hook's move** (§5): if `config_at(to) != config_at(at)`
   and none of the nodes the move commits is a `Config` node, the move appends
   the restating `Config` under `to` and lands on that node instead. `next`
-  looks past it (§6). If `to` is an unstarted batch, I4a forbids appending
+  looks past it (§6). If `to` is an unstarted batch, I4 forbids appending
   under it, so the move is refused (Q16).
 
 A config change that a hook or a frontend appends on purpose is explicit, and
@@ -370,19 +403,36 @@ places, and its `by` records which (Q28):
 In order:
 
 1. If `to == at`, stop: there is nothing to do, and nothing is written.
-2. I3: if `to` is an `Assistant` node with calls, or a node inside its run,
-   and this cursor does not hold that batch's claim, fast-forward `to` to the
-   end of the existing run. If the run is partial, take the batch's claim, so
-   that the cursor resumes it after landing (§8). If another cursor holds the
-   claim, refuse.
+2. I3: if `to` is a batch's `Assistant` node, or a node inside one of its
+   runs, and this cursor does not hold that batch's claim:
+   - with **fast-forward** on (the default), move `to` to the end of the
+     existing run. If that run is partial, take the batch's claim, so that the
+     cursor resumes it after landing (§8);
+   - with fast-forward off, keep `to` as given. This is a **re-run**: take the
+     batch's claim, and the cursor's next step runs every call still
+     unanswered on its new line, as a sibling run or a run that branches
+     partway;
+   - either way, if another cursor holds the claim, refuse.
 3. For a go-to or a hook's move, apply I6 (§4). Refuse if `to` is an unstarted
    batch and I6 would restate.
 4. Append the move `{cursor, from: at, to, by, time}`, set `at := to`, and
    emit `cursor_moved`.
 
 A **refused** move changes nothing and raises to whoever asked for it: the
-frontend, or the hook. A hook that does not catch it fails like any hook
-error (§7).
+frontend, or the hook. A hook that catches it has handled it, and auto-step
+stays as it was. A hook that does not catch it fails like any hook error
+(§7).
+
+A re-run is always explicit: a go-to (or a hook's move) with fast-forward
+off. Every call it runs passes through `pre_tool` as usual, so a hook may
+still block one, or ask a person first (Q22). Resume after a crash never
+re-runs on purpose (§8).
+
+```
+u1 ─ a1 ─ r5 ─ r3        the first run
+      │    └ r3'         go to r5, fast-forward off: keep c5's result, run c3 again
+      └ r3'' ─ r5''      go to a1, fast-forward off: run both calls again
+```
 
 **A step's own move is never refused.** Its node passed append's checks, the
 cursor is the one writing the run, and I6 does not apply. A tools step in
@@ -410,12 +460,11 @@ then looks at the nearest message-bearing node:
 | `User` | `Sample` |
 | `Assistant` with `stop == tools` (unstarted batch) | `RunTools` (all its calls) |
 | a result, batch partial | `RunTools` (the calls not yet answered on the walk) |
-| a result, batch complete, and the batch's reply had `stop == tools` | `Sample` |
-| a result, batch complete, any other `stop` (the calls were `Skipped`, Q29) | `Wait` |
-| any other `Assistant`, `System`, or none | `Wait` |
+| a result, batch complete | `Sample` |
+| any other `Assistant` (its calls, if any, are not runnable, §2), `System`, or none | `Wait` |
 
 Two cursors at the same node always agree on `next`. The "partial" row arises
-only at the `at` of the cursor running or resuming that batch (I3), including
+only at the `at` of the cursor holding that batch's claim (I3), including
 after a reload.
 
 ## 7. Steps and hook points
@@ -428,7 +477,7 @@ hook point, hooks run in the order their extensions are listed in
 | step | starts when | pre hook (effect) | effect | pre hook (node) | writes, then moves onto | post hook |
 |---|---|---|---|---|---|---|
 | input | a frontend gives input | none | none | `pre_input(user)` → a body to write, or nothing | that body | `post_input(node)` |
-| sample | `next == Sample` | `pre_sample(tip)` → a context tip, or a reply | provider request | `pre_reply(reply)` → a reply, or nothing | one `Assistant` node, plus `Skipped` results for its calls if `stop != tools`; the move lands on the last (Q29) | `post_reply(node)` |
+| sample | `next == Sample` | `pre_sample(tip)` → a context tip, or a reply | provider request | `pre_reply(reply)` → a reply, or nothing | one `Assistant` node | `post_reply(node)` |
 | tools | `next == RunTools` | per call: `pre_tool(call)` → a call, or an outcome | run the tool | per call: `pre_result(call, outcome)` → an outcome | one result per call, each moved onto as it is written | per result: `post_result(node)` |
 
 **Phases of a step**, in order:
@@ -456,7 +505,7 @@ What each pre hook may do:
   the tip (a reminder), a `Config` node (a model choice, which persists, Q26),
   or the end of a new line it built (compaction, Q25). The driver applies I6
   and samples `walk(tip)` with `config_at(tip)`. Before calling the provider,
-  the driver checks that a reply could be appended under the tip (I4a); if
+  the driver checks that a reply could be appended under the tip (I4); if
   not, it refuses the step. The step's move onto the reply commits those
   nodes too. The hook may instead **answer** with a reply
   (a cache hit), and then the provider is not called.
@@ -486,10 +535,11 @@ moved onto it, before `next` is evaluated.
     original stays in the tree, committed. Use `pre_input` to change what is
     written; use `post_input` to keep what was typed and continue from
     something else.
-  - `post_reply` appends `User "continue"` under the reply and moves onto it,
-    so `next` becomes `Sample` (Q20, Q29).
-- `post_result` may move only on the result that completes the batch, because
-  nothing branches inside a run (I4b).
+  - `post_reply` appends `User "continue"` directly under the reply and moves
+    onto it, so `next` becomes `Sample` (Q20). That works whatever the
+    reply's `stop`, because only a `stop == tools` reply is owed results.
+- `post_result` may move only on the result that completes the batch: the
+  cursor holds the batch's claim, and leaving partway would abandon the run.
 - A move by a post hook ends that node's post hooks: the later ones do not
   run.
 
@@ -509,7 +559,8 @@ is shown the error.
   (`by: core`), and the raw output is withheld, because the hooks that would
   have redacted it did not finish.
 - In a post hook, the node is already written and moved onto. A refused move
-  raises into the hook; uncaught, it is a hook error like any other.
+  raises into the hook. Caught, it is handled, and auto-step is unchanged;
+  uncaught, it is a hook error like any other.
 
 A step that ends without moving its cursor (a refusal, or a sample that failed
 before any output) **turns auto-step off**. Without that rule, a refused or
@@ -537,9 +588,9 @@ parent and step again).
     turn auto-step off. `next` is still `Sample`. Nodes `pre_sample` built for
     this sample are scratch.
   - **Otherwise:** write the reply with the parts so far and
-    `stop: interrupted`, after `pre_reply` (redaction still applies). Core
-    answers any calls `Skipped(interrupted)`, including a call cut off
-    mid-arguments (Q29). Move onto it, run no post hooks, and turn auto-step off.
+    `stop: interrupted`, after `pre_reply` (redaction still applies). Its
+    calls, including one cut off mid-arguments, are not runnable and owe no
+    result (§2). Move onto it, run no post hooks, and turn auto-step off.
     `next` is `Wait`.
 
   The user saw those tokens, so they are stored and the model sees them next
@@ -562,7 +613,7 @@ parent and step again).
     visible, but it is scratch, not part of the conversation, and the cursor
     does not move.
 - **Length, refusal.** These are ordinary replies with `stop: length` or
-  `stop: refused`. Their calls are `Skipped` and `next` is `Wait` (Q29). Continuing
+  `stop: refused`. Their calls owe no result, and `next` is `Wait`. Continuing
   automatically after `length` is an extension's choice, for example a
   `post_reply` hook that appends "continue" and moves onto it (Q20).
 - **Resume at a batch.** This happens after a reload, before taking input at
@@ -572,10 +623,13 @@ parent and step again).
      batch to complete, then fast-forward to the end of its run (I3); there
      is nothing left to resume.
   1. With the claim held, re-read the run: if the tree holds results of this
-     batch below `at`, move onto the end of that run. A batch has at most one
-     run: I4b allows each node in it one child, and the claim stops a second
-     runner. The driver does this step before running any tool, whether or
-     not it is resuming.
+     batch below `at`, fast-forward onto the end of that run (I3). The driver
+     does this step before running any tool, whether or not it is resuming,
+     except for a re-run: a cursor that landed with fast-forward off runs the
+     calls unanswered where it is. The claim stops a second runner. After a
+     crash the re-run's intent is gone (it was in memory), so a re-run that
+     had not written its first result fast-forwards onto the existing run:
+     nobody re-chose it.
   2. For each call still unanswered on that walk:
      - if its tool is idempotent, run it, with its pre hooks, the tool, and
        `pre_result`;
@@ -619,14 +673,15 @@ fourth kind (Q22).
   holder writes; every other process gets the session read-only. If the
   holder's process is dead, the lease is reclaimed. 0.15 left a stale holder
   record that nothing checked.
-- **Claim.** While a cursor runs or resumes a batch, the driver holds an
-  in-memory claim on the batch's `Assistant` node. A cursor takes the claim
-  before it runs any call, and re-reads the run once it has it (§8 resume).
-  Any other cursor that reaches the batch at rest, or resumes it, waits for
-  the batch to complete, then fast-forwards to the end of the run instead of
-  running the calls again (Q13). A go-to, hook move, or `open_cursor` that
-  would land partway through a run while another cursor holds the claim is
-  refused (I3). The lease keeps every claim inside one process.
+- **Claim.** While a cursor runs, resumes, or re-runs a batch, the driver
+  holds an in-memory claim on the batch's `Assistant` node. A cursor takes
+  the claim before it runs any call, and re-reads the run once it has it (§8
+  resume). Any other cursor that reaches the batch at rest, or resumes it,
+  waits for the batch to complete, then fast-forwards to the end of the run
+  instead of running the calls again (Q13). A go-to, hook move, or
+  `open_cursor` onto the batch or into one of its runs while another cursor
+  holds the claim is refused (I3), so a deliberate re-run never runs
+  alongside another runner. The lease keeps every claim inside one process.
 
 ## 11. Provider requirements
 
@@ -655,8 +710,10 @@ to these through `FakeProvider` and a recorded-wire test per provider.
    never sent back.
 5. **Render what isn't a call as text.** Two things are rendered after the
    reply's text, using τ's markup (Q27):
-   - a `Call` part that is not answered by a run (a truncated or skipped call),
-     rendered according to `config.partial_calls`;
+   - a `Call` part of a reply whose `stop` is not `tools`, complete or
+     truncated, which was never run and has no result (§2), rendered
+     according to `config.partial_calls`, for example
+     `[τ: call not run: interrupted]`;
    - a stop note for `length`, `interrupted`, and `error`.
 6. **Legality is the conversion's.** A walk the API would reject is a
    conversion error, and the sample fails before any request is sent (Q11).
@@ -671,7 +728,8 @@ to these through `FakeProvider` and a recorded-wire test per provider.
 
 Each one has a recommendation, which is what the documents assume. A "no"
 means a document changes before sign-off. Q14 and Q19 were folded into the
-review decisions and Q20.
+review decisions and Q20, and Q29 into the decision that only a
+`stop == tools` reply is owed results.
 
 | # | question | recommendation |
 |---|---|---|
@@ -684,21 +742,20 @@ review decisions and Q20.
 | Q7 | What is the set of authors? | **`frontend`, `provider`, `tools`, `core`, `extension(name)`.** A node's author is whoever produced its content as written. A hook's answer or rewrite makes its extension the author, and so does a copy. Authors are recorded only, never used for control flow. |
 | Q8 | Node id format? | **A session-local integer assigned at append.** It is deterministic, which suits I7 and tests. JMFTS (Phase 7) maps its own ids. ADR in Phase 3. |
 | Q9 | 0.15 had handler policies (timeouts on hooks). Keep any? | **Not in core.** A hook that needs a deadline uses `asyncio.timeout`. |
-| Q10 | A written result is final (I4b). | **Yes.** Otherwise two answers to one call could each be "the" answer. Change history by branching from higher up. |
+| Q10 | Is a written result final? | **Final on its line; another answer is another line.** Two answers to one call on one line could each be "the" answer, so I4 forbids it. A deliberate re-run (§5) or a branch from higher up gives the call another answer on another line. |
 | Q11 | Where does provider-specific legality live? | **In the provider's conversion**, which the driver runs before every sample. A rejection is a failed sample. Core stays provider-agnostic. |
 | Q12 | Do cursors close? | **Not in core for now.** Cursors are cheap, and frontends hide finished ones. Closing would need a new record and an ADR. |
 | Q13 | Two cursors at one batch both have `next == RunTools`. | **Run once**: an in-memory claim per batch (§10), and the second cursor moves onto the completed run. This becomes a Phase 2 scenario. |
 | Q15 | How does a person branch or go back? | **Two frontend operations.** Input under a named parent runs an input step there. "Go to" is a move, with no hooks. `Harness` exposes both. |
-| Q16 | A go-to across a config change restates the `Config` *under* the node it goes to. A go-to to an unstarted batch is then refused, because I4a forbids appending there. | **As written.** No other placement keeps both I4 and I6, and going to an unanswered batch on another line is rare. |
-| Q17 | Input arrives while `at` is an unstarted or partial batch: a paused cursor, or after a reload. | **Answer the batch first, then take the input.** Calls the driver knows never started are answered `Skipped("superseded by input")`. Calls that might have started (after a reload) follow resume: idempotent calls re-run, the rest are `Interrupted`. Refusing the input would raise an error the user didn't need. |
+| Q16 | A go-to across a config change restates the `Config` *under* the node it goes to. A go-to to an unstarted batch is then refused, because I4 forbids appending there. | **As written.** No other placement keeps both I4 and I6, and going to an unanswered batch on another line is rare. |
+| Q17 | Input arrives while `at` is an unstarted or partial batch: a paused cursor, or after a reload. | **Answer the batch first, then take the input.** Calls the driver knows never started are answered `Skipped("superseded by input")`. Calls that might have started (after a reload) follow resume: idempotent calls run again, the rest are `Interrupted`. Refusing the input would raise an error the user didn't need. |
 | Q18 | Which hooks run after a pre hook answers, and what may `pre_result` change? | **The node's pre hooks run** (`pre_reply`, `pre_result`), so a cache hit still gets redacted. `pre_result` may change an outcome's content but not its kind: it cannot turn `Skipped` into `Ok`. The driver enforces that. |
 | Q20 | Where does "keep going" live (a hook that sends more input after the model stops), and what stops a runaway loop? | **In post hooks.** A `post_reply` hook may append a `User` node (`by: extension(name)`) under the reply and move onto it, and `next` becomes `Sample`. As a hook's write, it runs no input hooks. A `max_steps` field in `Config` limits the number of `Assistant` nodes on the walk since the last node an input step wrote (whoever its author); once reached, `next` is `Wait` where it would be `Sample` (§6). The count is computed from the walk, so it survives a reload (I7). |
 | Q21 | Do a batch's calls run in parallel? | **Yes, by default.** A tool can be `exclusive` and run alone, for example two edits to one file. |
 | Q22 | How does a person approve one call and deny another? | **A `pre_tool` hook awaits an answer from the frontend.** Nothing is written while it waits. Abort or a crash leaves the call unanswered, and resume answers it `Interrupted`. This needs a fourth event kind (a question to the frontend) and an `api` call to answer it. The same mechanism lets a `pre_reply` hook show a reply to a person before it is written. 0.15's suspensions tried to do this, so it gets its own ADR. |
 | Q23 | 0.15 had lifecycle hooks (`session_start`, `session_shutdown`, `session_before_switch`). | **None until a Phase 5 extension needs one.** None of the three does. |
-| Q24 | When `pre_tool` rewrites a call (a sandbox, say), is the executed call recorded? | **Not by core.** The `Assistant` node keeps the call as the model made it, and the result answers it. A hook that wants an audit trail writes a `Custom` node on a detached root, because nothing but results may hang off a batch (I4a). |
+| Q24 | When `pre_tool` rewrites a call (a sandbox, say), is the executed call recorded? | **Not by core.** The `Assistant` node keeps the call as the model made it, and the result answers it. A hook that wants an audit trail writes a `Custom` node on a detached root, because nothing but results may hang off a batch that is not complete (I4). |
 | Q25 | May `pre_sample` change the request only by returning a context tip, never by editing the request invisibly? | **Yes.** That is I1's guarantee. Reminders, model choices, and compaction are all visible in the tree. |
 | Q26 | A `pre_sample` hook that picks a cheaper model appends a `Config` node, and that choice persists on the line. Should one-off choices revert on their own? | **No automatic revert.** A routing hook that wants a one-off appends the restoring `Config` at its next `pre_sample`. The tree then shows exactly which model produced each reply, and nothing reverts behind anyone's back. |
-| Q27 | What does a truncated or skipped call become when the walk is sent again, and what does τ's markup look like? | **`partial_calls: text` by default**, rendered as `[τ: interrupted while calling write_file; arguments so far: …]` after the reply's text. `partial_calls: omit` drops it. Stop notes use the same `[τ: …]` form. The exact markup is pinned in the Phase 4 provider ADR and tested byte for byte, because changing it later invalidates every cached prefix that contains it. |
+| Q27 | What does a call that was never run (its reply's `stop` was not `tools`) become when the walk is sent again, and what does τ's markup look like? | **`partial_calls: text` by default**, rendered as `[τ: interrupted while calling write_file; arguments so far: …]` after the reply's text. `partial_calls: omit` drops it. Stop notes use the same `[τ: …]` form. The exact markup is pinned in the Phase 4 provider ADR and tested byte for byte, because changing it later invalidates every cached prefix that contains it. |
 | Q28 | Hooks can now move a cursor. Should a move record say who asked for it? | **Yes: `{cursor, from?, to, by, time, opened_by?}`**, with `by` one of `frontend` (a go-to, an opening), `core` (a step's own move), or `extension(name)` (a hook's move). Like a node's author, it is recorded only, never used for control flow. |
-| Q29 | A reply with `stop != tools` gets `Skipped` results written under it, and the step moves onto the last. Then `post_reply`'s "the cursor has moved onto it" is false; a `User "continue"` appended under the reply is refused by I4b when the reply had a call; and whether `post_result` runs for core-written `Skipped` results is unspecified. | **Calls in a reply with `stop != tools` are not runnable and owe no result.** Core writes no `Skipped` nodes for them, the step moves onto the reply, and `next` is `Wait`. The provider renders them per `partial_calls` (§11). I4 applies only to replies with `stop == tools`. Passages marked (Q29) still describe the `Skipped` results and change if this is accepted. |
