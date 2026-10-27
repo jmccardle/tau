@@ -35,8 +35,8 @@ lines, plus ~1,400 lines of tests): the tree with labels, `config_at`, and
 LCA (3a, minus proptests); one cursor's step as a sans-IO machine (D11); and
 the session machine over every cursor, taking frontend calls (go-to on a busy
 cursor, `Session.step`, the question lock, wakes, `max_steps`). A turn costs
-~15–30 µs at any session depth. Missing: replay (`load(records)`), the
-proptests, the store (3b), the bindings, and the clippy gate (pedantic
+~15–30 µs at any session depth. Replay (`Session::load`) and the I7
+proptests are in. Missing: the I1–I5 proptests, the store (3b), the bindings, and the clippy gate (pedantic
 lints; deferred to the Phase 3 closeout).
 
 ### Order from here (approved 2026-10-27; bends rule 5)
@@ -91,8 +91,8 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
     unknown tool; bad args; ✓ HTTP error; ✓ mid-stream error;
   - ✓ abort during sample with parts; ✓ abort during sample without parts;
     ✓ abort during tools (running calls `Interrupted`, `post_result` once);
-  - crash during sample (the next step samples again); ✓ crash mid-batch:
-    rests at the batch, input goes under it, a step re-runs it; crash between
+  - ✓ crash during sample (the input is redelivered once); ✓ crash mid-batch:
+    rests at the batch, input goes under it, a step re-runs it; ✓ crash between
     a delivering record and the items' removal (delivered once);
   - ✓ input while busy is delivered by the next step, after the batch; input at
     rest; ✓ refused input (notice, item removed); abort leaves pending input
@@ -113,8 +113,8 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
     cursor to rest;
   - ✓ two cursors at one batch both run it; ✓ re-run from the `Assistant` node
     writes a sibling `Results`;
-  - branch across a config node; detached-root one-off call; labels across a
-    reload (records ✓, reload needs replay); ✓ `max_steps` stops a "continue" loop; reload equals pre-save state
+  - branch across a config node; detached-root one-off call; ✓ labels across a
+    reload; ✓ `max_steps` stops a "continue" loop; ✓ reload equals pre-save state
     (I7); a provider-illegal walk fails at the next sample (I5).
 - **Exit:** `keep` green through `parity/`; everything else collected and
   failing for the right reason. Sign-off.

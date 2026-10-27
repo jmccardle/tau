@@ -139,15 +139,15 @@ whole walk, for tests. `append` checks each node (`Session::check`).
 *spike* `tree::Error`
 
 Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
-`RootNotConfig` (V1), `DuplicateCall` (V2); and a frontend call's: `Busy`
+`RootNotConfig` (V1), `DuplicateCall` (V2), `BadRecord` (load); and a frontend call's: `Busy`
 (step on a busy cursor), `Locked` (input, go-to, or step with a question
 open), `HookRunning` (go-to while a cursor hook runs). Each becomes a typed Python exception in `tau-py`.
 
 ## The scratchpad
 
 ### scratchpad
-*spike* `Session::items` (field and method) · retires submission queue,
-steering queue, follow-up queue
+*spike* `tree::Scratchpad { items, next_item }`, `Session::scratchpad`,
+`Session::items` · retires submission queue, steering queue, follow-up queue
 
 A session's persistent, modifiable list of items, off the tree. A
 **cursor's scratchpad** is the items addressed to it, oldest first. Anyone
@@ -419,6 +419,14 @@ every outcome lost (D4). Input goes under it; a step re-runs it.
 What load does after replay: every cursor's auto-step off, and every
 delivered item dropped (I7).
 
+### load
+*spike* `Session::load(records, scratchpad)` · new
+
+Reload (I7): replay the log's records in order, take the scratchpad file,
+`reconcile`. Pure; the store reads the files. A record that cannot apply (a
+node id or cursor out of sequence, a move from a node its cursor is not at)
+is `Error::BadRecord(position)`.
+
 ### sample, context, message
 retires completion, model call, `ExtensionContext`/`ctx`, the `context`
 hook, message entry, `AgentMessage`
@@ -518,8 +526,10 @@ place that awaits.
 *spike* `tree::Record` · new
 
 What must be made durable, in order, queued in `Session::outbox`:
-`Write { node, mv }` (a node and its move, one record), `Move`,
-`Scratchpad` (rewrite the scratchpad file), or `Sync` (a sync point).
+`Write { node, mv }` (a node and its move, one record), `Move`, `Label`,
+or `Sync { pad }` (a sync point; `pad` is the scratchpad as it stands there,
+if it changed since the last sync, for the store's scratchpad file — never
+written to the log).
 Queued in the **outbox** (`Session::outbox`) until the store writes them.
 
 ### sync point
@@ -528,7 +538,7 @@ Queued in the **outbox** (`Session::outbox`) until the store writes them.
 Where queued records must reach disk: before each post hook and when a step
 ends (`post_reply`, `post_result`, `post_step`, then rest or restart). A
 phase's writes, its pre hooks' included, share one sync. `synced()` is true
-when nothing is queued since the last `Sync`.
+when nothing changed since the last `Sync`.
 
 ### store
 `tau_store` · retires session store, `SessionCatalog`

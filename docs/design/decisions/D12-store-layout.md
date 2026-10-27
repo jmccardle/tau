@@ -18,13 +18,15 @@ input's text twice.
 - **One scratchpad file per session** holding the current items and the next
   item id, rewritten atomically (write, sync, rename, sync the directory).
 - **Sync points** (D11): records are buffered up to a `Sync`; at a `Sync`
-  the log is synced first, then the scratchpad rewritten.
+  the log is synced first, then the scratchpad file rewritten from the
+  `Sync`'s own copy (`Record::Sync { pad }`), so the file is never newer
+  than the synced log. The log never holds items.
 - **Order:** an added item is durable before its cursor wakes; a delivering
   record is durable before its items are removed (the log sync precedes the
   scratchpad rewrite); nothing about a running
   batch is written (D4).
 - **Load** replays the log, reads the scratchpad, and drops delivered items
-  (`Session::reconcile`).
+  (`Session::load`, pure; the store only reads the files).
 - Writes happen inside the Rust call (D11). The lease (`flock`) is on the log.
 - **JMFTS (Phase 7) is a replica** fed from the local log outside any step;
   replay into it is idempotent by record position.
@@ -44,5 +46,6 @@ input's text twice.
 
 - A write and its move can never be split by a crash.
 - Cost: each item change rewrites the scratchpad file.
-- Enforced by the I7 proptests (Phase 3), including a torn tail and a crash
-  between a delivering record and the removal.
+- Enforced by the I7 proptests in `crates/tau-core/tests/replay.rs`
+  (including a crash between the log sync and the scratchpad rewrite);
+  torn tails are 3b's.

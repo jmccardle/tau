@@ -111,9 +111,17 @@ pub struct Item {
     pub data: ItemData,
 }
 
+/// A cursor's items live here, for every cursor, with the next item id. The
+/// store keeps it as the scratchpad file, never in the log (D12).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Scratchpad {
+    pub items: Vec<Item>,
+    pub next_item: ItemId,
+}
+
 /// What the store must make durable, in order. Core never writes; it queues.
 /// The store may buffer everything up to a `Sync`; at a `Sync` it syncs the
-/// log, then rewrites the scratchpad file.
+/// log, then, if `pad` is set, rewrites the scratchpad file with it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Record {
     Write {
@@ -126,8 +134,11 @@ pub enum Record {
         label: String,
         cursor: Option<CursorId>,
     },
-    Scratchpad,
-    Sync,
+    /// A sync point. `pad`: the scratchpad as it stands here, if it changed
+    /// since the last sync.
+    Sync {
+        pad: Option<Scratchpad>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -143,6 +154,9 @@ pub enum Error {
     HookRunning(CursorId),
     RootNotConfig,
     DuplicateCall,
+    /// A record replay cannot apply: a node id or a cursor out of sequence, a
+    /// move from a node the cursor is not at. Its position in the log.
+    BadRecord(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,22 +166,23 @@ pub enum Next {
     RunTools,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Session {
     nodes: Vec<Node>,
     at: BTreeMap<CursorId, NodeId>,
     labels: BTreeMap<String, CursorId>,
     pub auto: BTreeMap<CursorId, bool>,
-    items: Vec<Item>,
-    next_item: ItemId,
+    pad: Scratchpad,
     /// Per cursor: bumped by every scratchpad change core did not make itself.
     pub changes: BTreeMap<CursorId, u64>,
     pub moves: Vec<Move>,
     pub outbox: Vec<Record>,
     /// Per cursor: committing steps since a frontend last acted (`max_steps`).
     pub taken: BTreeMap<CursorId, u32>,
-    /// Records queued since the last `Sync`.
+    /// Records queued, or the scratchpad changed, since the last `Sync`.
     unsynced: bool,
+    /// The scratchpad changed since the last `Sync`.
+    pad_changed: bool,
     pub notices: Vec<(String, String)>,
 }
 
@@ -242,8 +257,8 @@ impl Session {
         self.moves.push(mv.clone());
         self.queue(Record::Write { node, mv: Some(mv) });
         if !delivers.is_empty() {
-            self.items.retain(|i| !delivers.contains(&i.id));
-            self.queue(Record::Scratchpad);
+            self.pad.items.retain(|i| !delivers.contains(&i.id));
+            self.touch_pad();
         }
         Ok(*self.at.get(&cursor).unwrap())
     }
@@ -326,8 +341,6 @@ impl Session {
         out
     }
 
-    /// `next` from the end of the walk, without building it: only the last
-    /// node that is not Config or Custom decides.
     /// The nearest `Config` on `walk(n)`; always defined, since every root is one (V1).
     pub fn config_at(&self, n: NodeId) -> Result<&Config, Error> {
         let mut x = self.node(n)?;
@@ -398,6 +411,8 @@ impl Session {
             .filter(move |m| m.cursor == cursor)
     }
 
+    /// `next` from the end of the walk, without building it: only the last
+    /// node that is not Config or Custom decides.
     pub fn next(&self, cursor: CursorId) -> Next {
         let last = self.at(cursor).ok().and_then(|a| {
             std::iter::successors(self.node(a).ok(), |x| {
@@ -409,18 +424,18 @@ impl Session {
     }
 
     pub fn add_item(&mut self, to: CursorId, data: ItemData) -> ItemId {
-        let id = self.next_item;
-        self.next_item += 1;
-        self.items.push(Item { id, to, data });
-        self.queue(Record::Scratchpad);
+        let id = self.pad.next_item;
+        self.pad.next_item += 1;
+        self.pad.items.push(Item { id, to, data });
+        self.touch_pad();
         *self.changes.entry(to).or_default() += 1; // rules: allow(entry): BTreeMap API
         id
     }
 
     pub fn remove_item(&mut self, id: ItemId) {
-        if let Some(i) = self.items.iter().position(|i| i.id == id) {
-            let to = self.items.remove(i).to;
-            self.queue(Record::Scratchpad);
+        if let Some(i) = self.pad.items.iter().position(|i| i.id == id) {
+            let to = self.pad.items.remove(i).to;
+            self.touch_pad();
             *self.changes.entry(to).or_default() += 1; // rules: allow(entry): BTreeMap API
         }
     }
@@ -430,12 +445,82 @@ impl Session {
         self.unsynced = true;
     }
 
-    /// A sync point: queue a `Sync` if anything is queued since the last one.
+    fn touch_pad(&mut self) {
+        self.pad_changed = true;
+        self.unsynced = true;
+    }
+
+    /// A sync point: queue a `Sync` if anything changed since the last one,
+    /// carrying the scratchpad if it changed.
     pub fn sync(&mut self) {
         if self.unsynced {
-            self.outbox.push(Record::Sync);
+            let pad = self.pad_changed.then(|| self.pad.clone());
+            self.outbox.push(Record::Sync { pad });
             self.unsynced = false;
+            self.pad_changed = false;
         }
+    }
+
+    /// The scratchpad as it stands.
+    pub fn scratchpad(&self) -> &Scratchpad {
+        &self.pad
+    }
+
+    /// Load (I7): replay the log's records, take the scratchpad file, then
+    /// `reconcile`. Pure; the store reads the files. Nothing is queued.
+    pub fn load(records: impl IntoIterator<Item = Record>, pad: Scratchpad) -> Result<Self, Error> {
+        let mut s = Self::default();
+        for (i, r) in records.into_iter().enumerate() {
+            s.replay(r).map_err(|_| Error::BadRecord(i))?;
+        }
+        s.pad = pad;
+        s.reconcile();
+        s.outbox.clear();
+        s.unsynced = false;
+        Ok(s)
+    }
+
+    fn replay(&mut self, r: Record) -> Result<(), Error> {
+        match r {
+            Record::Write { node, mv } => {
+                let checked = self.check(
+                    node.parent,
+                    node.by.clone(),
+                    node.body.clone(),
+                    node.delivers.clone(),
+                    node.time,
+                )?;
+                if checked != node {
+                    return Err(Error::BadRecord(0));
+                }
+                self.nodes.push(node);
+                mv.map_or(Ok(()), |m| self.replay_move(m))
+            }
+            Record::Move(m) => self.replay_move(m),
+            Record::Label { label, cursor } => {
+                match cursor {
+                    Some(c) => drop(self.labels.insert(label, self.at(c).map(|_| c)?)),
+                    None => drop(self.labels.remove(&label)),
+                }
+                Ok(())
+            }
+            Record::Sync { .. } => Ok(()),
+        }
+    }
+
+    fn replay_move(&mut self, m: Move) -> Result<(), Error> {
+        self.node(m.to)?;
+        let ok = match m.from {
+            None => m.cursor == self.at.len() as CursorId,
+            Some(f) => self.at(m.cursor) == Ok(f),
+        };
+        if !ok {
+            return Err(Error::BadRecord(0));
+        }
+        self.auto.entry(m.cursor).or_insert(false); // rules: allow(entry): BTreeMap API
+        self.at.insert(m.cursor, m.to);
+        self.moves.push(m);
+        Ok(())
     }
 
     /// True when every queued record is covered by a `Sync`.
@@ -444,7 +529,7 @@ impl Session {
     }
 
     pub fn items(&self, cursor: CursorId) -> impl Iterator<Item = &Item> {
-        self.items.iter().filter(move |i| i.to == cursor)
+        self.pad.items.iter().filter(move |i| i.to == cursor)
     }
 
     /// What load does after replay (I7): every cursor at rest with auto-step
@@ -456,7 +541,7 @@ impl Session {
             .iter()
             .flat_map(|n| n.delivers.iter().copied())
             .collect();
-        self.items.retain(|i| !delivered.contains(&i.id));
+        self.pad.items.retain(|i| !delivered.contains(&i.id));
     }
 }
 

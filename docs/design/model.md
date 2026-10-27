@@ -124,7 +124,7 @@ back from. Any node may be gone to.
 | I4 | The tools phase writes one `Results` per batch it runs, one outcome per call, in call order. Holds by construction. | `batch_answers_in_call_order_then_samples_again`; proptest |
 | I5 | Append checks only types: **V1** a root is `Config`; **V2** a `Results` node's outcomes name distinct calls. Wire legality is the provider's conversion (Q11). | `Error::RootNotConfig`, `Error::DuplicateCall`; unit tests |
 | I6 | Retired (D5). | — |
-| I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptest `state == load(save(state))` (Phase 3); `Session::reconcile` |
+| I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`; `Session::load` |
 
 **Not persisted (I7):** auto-step (every cursor loads with it off), busy (every
 cursor loads at rest), the `max_steps` count, open questions, shown state, a
@@ -323,7 +323,9 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
   `post_step` gets `Failed`. A conversion error is a failed sample (Q11).
 - **A tool fails**: an `Err` outcome.
 - **`Length`, `Refused`**: ordinary replies; `next` is `Wait`.
-- **Crash during a sample**: on reload `next` is `Sample`.
+- **Crash during a sample**: the input's commit was not synced yet, so its
+  item is pending again; the next step delivers it once and samples
+  (`crash_during_a_sample_*`).
 - **Crash during tools**: the cursor loads at the batch, at rest; every
   outcome is lost (D4). Input goes under the unanswered batch and the
   provider renders its calls as text; a step re-runs the whole batch
@@ -365,13 +367,14 @@ Each provider is a Python adapter for one API family. It owes the driver:
    before any request (Q11).
 8. Cache use reported per sample (llama.cpp `cache_n`, hosted usage fields).
 
-## 11. Persistence (not yet spiked beyond the outbox)
+## 11. Persistence (core side spiked; the store is 3b)
 
 Core queues what must be made durable in `Session::outbox` as `Record`s
-(`Write { node, mv }`, `Move`, `Scratchpad`, `Sync`). A Rust layer composing
-core with `tau-store` hands them to the store inside the call (D11). The store
-may buffer up to a `Sync`; at a `Sync` it syncs the log, then rewrites the
-scratchpad file. The step queues a `Sync` before each post hook and when the
+(`Write { node, mv }`, `Move`, `Label`, `Sync { pad }`). A Rust layer
+composing core with `tau-store` hands them to the store inside the call
+(D11). The store may buffer up to a `Sync`; at a `Sync` it syncs the log,
+then, if `pad` is set, rewrites the scratchpad file with it. The log never
+holds items. Load is `Session::load(records, scratchpad)`. The step queues a `Sync` before each post hook and when the
 step ends; calls outside a step (a frontend's input, go-to) sync on return.
 A crash loses at most the writes since the last sync, and never a post hook's
 view. Layout (D12): one append-only record log per session

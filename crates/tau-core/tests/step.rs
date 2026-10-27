@@ -231,17 +231,17 @@ fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
         .map(|r| match r {
             Record::Write { .. } => "write",
             Record::Move(_) => "move",
-            Record::Scratchpad => "pad",
             Record::Label { .. } => "label",
-            Record::Sync => "SYNC",
+            Record::Sync { pad: Some(_) } => "SYNC+pad",
+            Record::Sync { pad: None } => "SYNC",
         })
         .collect();
-    // send's item; input + reply, synced before post_reply; Results, synced
-    // before post_result; the second reply, synced before post_step.
+    // input + reply (and the delivered item gone), synced before post_reply;
+    // Results, before post_result; the second reply, before post_step.
     assert_eq!(
         kinds,
         [
-            "pad", "write", "pad", "write", "SYNC", "write", "SYNC", "write", "SYNC"
+            "write", "write", "SYNC+pad", "write", "SYNC", "write", "SYNC"
         ]
     );
 }
