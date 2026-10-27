@@ -5,3 +5,5 @@
 //! glossary and model docs are signed off.
 
 pub mod scaffold;
+pub mod step;
+pub mod tree;
