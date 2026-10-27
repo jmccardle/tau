@@ -1,6 +1,6 @@
-# D2: Input is hook-driven; input waits in the scratchpad
+# D2: Input is an item; the input phase delivers it
 
-Status: accepted, revised in review three times (Phase 1, 2026-10-27)
+Status: accepted, revised in review four times (Phase 1, 2026-10-27)
 
 ## Context
 
@@ -23,71 +23,73 @@ Cursors also need to send each other work: a sub-agent's task, or its answer.
 
 ## Decision
 
-- **Input is entirely hook-driven** (model.md §7). `Session.input(cursor,
-  input)` runs that cursor's `pre_input` hooks, busy or at rest, outside its
-  cycle. Each returns **handled**, **pass** (possibly rewritten), or
-  **refuse**. If none handles it, the input is refused, and the frontend
-  keeps the text. **Core has no default input behavior.**
-- `pre_input` is not a boundary: it writes nothing under `at` and moves
-  nothing. What input causes on the line happens in `pre_step`, between
-  steps.
 - **The scratchpad** is a persistent, modifiable list of items, off the
-  tree: `{id, from: {frontend?, extension, cursor}, to: cursor, data}`.
+  tree: `{id, from: {frontend?, extension?, cursor}, to: cursor, data}`.
   - Anyone may add, update, or remove any item.
   - Adding an item wakes the cursor it is addressed to.
-  - An extension reads its own cursor's scratchpad only in `pre_step` and
+  - An extension reads its own cursor's scratchpad in `pre_step` and
     `post_step`; frontends read any of it at any time.
   - `to` names a cursor, not an extension, so extensions cooperate without
     permissions.
-- **The base extension** ships in the default config and can be replaced:
-  - `pre_input` adds the input as an item, busy or at rest;
-  - `pre_step` delivers pending inputs as `User` nodes when `at` can take
-    one (`deliver: after_batch` by default; `combine` joins consecutive
-    inputs from one client);
-  - `post_step`, after an abort, returns pending inputs to the clients that
-    typed them (`cursor.tell`), or marks them returned for every frontend to
-    show with send and edit buttons.
-- **Delivery is recorded once.** `cursor.deliver` writes the `User` node with
-  `delivers: [item ids]` and moves onto it as one durable write, then removes
-  the items. Load drops any item a node delivers. So an input is delivered at
-  most once, and its content is stored once, in its node.
+- **Input is the one kind of item core knows** (model.md §1, §7): an item
+  whose `from` names a frontend client. `Session.input(cursor, input)` adds
+  one, `{from: {frontend: client, cursor}, to: cursor, data: {text,
+  images}}`. It is refused at once only while a question is open on the
+  cursor.
+- **The input phase delivers it.** The first phase of every step takes the
+  cursor's pending input, oldest first. For each item, `pre_input` runs on
+  its draft, then core commits a `User` node under `at` with
+  `delivers: [item]`, authored `frontend(client)`, and moves onto it, as
+  one record. The item is removed after. Two inputs from two clients are two
+  `User` nodes in a row.
+- **The input phase waits while `next == RunTools`** (Q40). Input given to a
+  cursor running a batch is delivered by the next step, after the batch's
+  `Results` node, never under the batch.
+- **`pre_input` may refuse.** A string return refuses the input: its item is
+  removed, its client gets a `notice` with the reason (Q43), and the step
+  halts. A hook error leaves the input pending.
+- **An abort leaves pending input pending** (Q42). The cursor rests; every
+  frontend shows the items and may edit or remove them. An extension may
+  offer them back to its client in `post_step(aborted)`.
+- **Delivery is recorded once.** Load drops any item a node delivers. So an
+  input is delivered at most once, and its content is stored once, in its
+  node.
 - **Interrupt and send is not a mechanism.** It is abort, then send (input
   plus auto-step on). The input lands under what the abort left.
 - **Between cursors**, the same: an extension adds an item to the other
-  cursor's scratchpad, and that cursor's own `pre_step` acts on it.
+  cursor's scratchpad, and that cursor's own `pre_step` acts on it, writing
+  a node with `cursor.write(…, delivers=[item])`.
 
 ## Alternatives
 
 | option | why not |
 |---|---|
-| Core `append` that injects at commit (plan default) | There is no commit. `append` writes a node and never moves a cursor (glossary), and a node under an unstarted or partial batch is refused by I4 anyway. |
+| Core `append` that injects at commit (plan default) | There is no commit pointer. `append` writes a node and never moves a cursor (glossary). |
 | A frontend buffer (plan default for queueing) | A client may switch away or detach under `tau serve`; the cursor it left must keep receiving input. A buffer dies with its client. |
 | One kept input in the driver, a second refused (fourth revision) | Driver memory, so lost on a crash. A refused second input is an error the person did not need. |
-| Pending inputs as uncommitted `Custom` nodes, delivered by a `User` node with `copied_from` (fifth revision) | Every message stored twice, once pending and once delivered. And a node "for" another cursor is only a side node: nothing ties it to that cursor or guarantees anyone reads it. |
-| A core-side queue per cursor | The fifth revision rejected it because a reload could not restore it. A persisted scratchpad can be restored, and it is not a queue: it has no order core enforces and no consumer core picks. |
-| A "delivered" marker beside the delivered node | Two writes; a crash between them delivers twice. `delivers` is part of the delivering write itself. |
+| Pending inputs as `Custom` nodes, delivered by a `User` node with `copied_from` (fifth revision) | Every message stored twice, once pending and once delivered. And a node "for" another cursor is only a side node: nothing ties it to that cursor or guarantees anyone reads it. |
+| A base extension that turns input into items in `pre_input` and delivers them in `pre_step`, with `deliver` and `combine` settings (sixth revision) | `pre_input` could not move the cursor, because it ran on a busy cursor outside the step, so it could not prepend anything. A config without the base extension refused all input. And `deliver`, `combine`, and returning items were policy in an extension every config needed. |
+| A core-side queue per cursor | A reload could not restore it. A persisted scratchpad can be restored, and it is not a queue: nothing but input has an order core enforces. |
+| A "delivered" marker beside the delivered node | Two writes; a crash between them delivers twice. `delivers` is part of the delivering record itself. |
 
 ## Consequences
 
-- Core's input rule is one sentence: run the input hooks. Everything else is
-  an extension, and the base extension is replaceable.
-- Every input takes one path, busy or at rest: an item, then `pre_step`.
+- Every input takes one path, busy or at rest: an item, then the next step's
+  input phase, through `pre_input`, which holds the cursor and may move it.
 - Input to a busy cursor survives a crash, and is delivered at most once.
-- Every frontend sees every cursor, every scratchpad, and every pending or
-  returned input, since all are in the session.
-- Cost: the default config must list the base extension. A config without an
-  input hook refuses all input.
-- Cost: an item consumed without a node (a discarded returned input, a
-  message an extension acted on without writing) may be seen twice after a
-  crash. Consumers that cannot write a node must tolerate it.
-- Cost: input at rest at an unstarted batch runs the batch first (Q17).
+- Every frontend sees every cursor, every scratchpad, and every pending
+  input, since all are in the session.
+- Cost: input at a batch with no `Results` runs the batch first (Q17, Q40).
+  To skip it, go to the reply's parent first.
+- Cost: an item consumed without a node (a message an extension acted on
+  without writing) may be seen twice after a crash. Consumers that cannot
+  write a node must tolerate it.
 - Enforced by: the I7 proptests (the scratchpad is part of the state a reload
-  rebuilds; a crash between delivery and removal leaves the item gone) and
-  the behavior scenario "crash before delivery, `pre_step` delivers once"
-  (model.md §4, I7). Scenarios still to name in Phase 2: input at rest, input
-  busy (pending, then delivered per `deliver` and `combine`), refused input,
-  abort returns pending input to its client, a returned input when its
-  client has gone, abort then send, a cursor-to-cursor item.
+  rebuilds; a crash between a delivering record and the removal leaves the
+  item gone) and the Phase 2 scenarios: input at rest, input while busy
+  (delivered by the next step, after the batch), refused input (notice,
+  item removed), abort leaves input pending, abort then send, a crash before
+  delivery, a cursor-to-cursor item that wakes an idle cursor.
 
 ## History
 
@@ -95,6 +97,7 @@ Plan default: core offers `append` (inject at commit) and `open_cursor`;
 queueing is a frontend buffer. The fourth revision removed commit (D6) and
 had the driver keep one input until `next != RunTools`, refusing a second.
 The fifth revision made input hook-driven and held busy input as pending
-`Custom` nodes under the first root. The sixth revision replaced those with
-the scratchpad, because a node is not addressed to anyone and storing every
-input twice was waste, and made delivery a `pre_step` job for every input.
+`Custom` nodes. The sixth revision replaced those with the scratchpad and a
+base extension that delivered in `pre_step`. The seventh revision made input
+the one item kind core knows, delivered by the step's input phase, and
+removed the base extension, `deliver`, and `combine`.

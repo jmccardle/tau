@@ -1,22 +1,23 @@
 # 01 Nodes and bodies
 
-Three things are stored: the **node** and the **move record**, which are
-written once, and the **scratchpad item**, which is not part of the tree. A node
-is written once and never changed (I2). Its `body` is exactly one of six
+Four things are stored. The **node**, the **move record** and the **label
+record** are written once and never changed. The **scratchpad item** sits off
+the tree and may be updated and removed. A node's `body` is exactly one of six
 kinds. Four kinds are **message-bearing** and reach the model; `Config` and
 `Custom` are bookkeeping and never do (Q3). An `Assistant` body is an ordered
 list of **parts**, stored as they streamed; a `Call` is a part, never a node of
-its own.
+its own. A batch is answered by one `Results` node with one outcome per call.
 
-Labels in these diagrams (`u1`, `a1`, `r5`, `c3`) stand for session-local
-integer ids (Q8). `c3` is a call id, `r5` is the result that answers `c5`.
+Labels in these diagrams (`u1`, `a1`, `r1`, `c3`) stand for session-local
+integer ids (Q8). `c3` is a call id, `r1` is the `Results` node that answers a
+batch.
 
 ## The node
 
 ```
 ┌─ Node ─ immutable, written once (I2) ───────────────────────────────────
 │ id            session-local integer, assigned at append (Q8)
-│ parent?       absent only on a root; every root is a Config (V2, Q5)
+│ parent?       absent only on a root; every root is a Config (V1, Q5)
 │ time          supplied by the driver; core reads no clock
 │ by            frontend(client) | provider | tools | core | extension(name)  (Q7)
 │ body          exactly one of the six kinds below
@@ -24,8 +25,8 @@ integer ids (Q8). `c3` is a call id, `r5` is the result that answers `c5`.
 │               (new parent; empty for most nodes)
 │ derived_from  a list of nodes whose walks this content was computed from
 │               (empty for most nodes)
-│ delivers      a list of scratchpad item ids this node consumed
-│               (empty for most nodes; ids, never content)
+│ delivers      a list of scratchpad item ids this node consumed: inputs on a User,
+│               journal items on a Results (empty for most nodes; ids, never content)
 └─────────────────────────────────────────────────────────────────────────
 ```
 
@@ -41,11 +42,11 @@ body
 │     ├─ Thinking(text, signature?)
 │     └─ Call { id, tool, args_raw }       a part, not a node; args_raw is
 │                                          the model's text, never re-serialised
-├─ Result      { call, outcome }                          message-bearing
+├─ Results     { outcomes }                               message-bearing
+│     outcomes: [ { call, outcome } ], one per call, in call order (V2: distinct calls)
 │     outcome
 │     ├─ Ok(value)
-│     ├─ Err(error)
-│     ├─ Skipped(reason)
+│     ├─ Err(error)                        a tool's error, or a hook's string (its reason)
 │     └─ Interrupted
 ├─ Config      { snapshot }                               bookkeeping
 └─ Custom      { kind, data }                             bookkeeping
@@ -55,21 +56,21 @@ body
 | kind | reaches the model | typical `by` |
 |---|---|---|
 | `System` | yes | core (`Session.create`) |
-| `User` | yes | frontend(client) (a delivered input), or extension(name) (a rewritten input, a summary or reminder, Q30) |
+| `User` | yes | frontend(client) (a delivered input), or extension(name) (a summary, a reminder, a task, Q30) |
 | `Assistant` | yes | provider (extension(name) if a hook answered or rewrote it) |
-| `Result` | yes | tools (core for `Interrupted`, `Err("invalid arguments")`, `Err("hook error")`) |
-| `Config` | no | core (the session's first root, I6 restatement); frontend or extension(name) when explicit; extension(name) for a root a hook creates |
+| `Results` | yes, expanded into one tool message per call (§10) | tools (extension(name) if a hook answered or rewrote an outcome; core if every outcome is core-written) |
+| `Config` | no | core (the session's first root); frontend or extension(name) when appended on purpose |
 | `Custom` | no | core (`sample_error`), extension(name) |
 
 `stop` and `stop_raw`:
 
 ```
-stop     end        the model chose to stop
-         tools      handed off to tool execution      the only stop that owes results
-         length     output limit reached
-         refused    provider filter or refusal
+stop     end          the model chose to stop
+         tools        handed off to tool execution      the only stop that runs calls
+         length       output limit reached
+         refused      provider filter or refusal
          interrupted  we cancelled it (abort)
-         error      stream failed after output had arrived
+         error        stream failed after output had arrived
 stop_raw the provider's own string (end_turn, tool_use, ...), for debugging
 ```
 
@@ -78,46 +79,58 @@ stop_raw the provider's own string (end_turn, tool_use, ...), for debugging
 ```
 k0  Config     by core        { snapshot: model big, tools, hooks, max_steps ... }     root
 └ s   System     by core      { "You are ..." }        Session.create writes k0 and s
-  └ u1  User       by frontend  { "fix the bug", images: [] }
+  └ u1  User       by frontend(laptop)  { "fix the bug", images: [] }   delivers: [4]
     └ a1  Assistant  by provider
         parts : [ Text "I'll look", Thinking "...", Call{c3, read, '{"p":"a.rs"}'},
                   Call{c5, grep, '{"q":"fn m'} ]            <- args_raw may be malformed
         stop  : tools          stop_raw: tool_use
         (a batch: c3 and c5)
-      └ r5  Result     by tools     { call: c5, outcome: Ok(...) }
-        └ r3  Result     by tools     { call: c3, outcome: Ok(...) }
+      └ r1  Results    by tools     { outcomes: [ {c3, Ok(...)},
+                                                  {c5, Err("invalid arguments")} ] }
+                                    delivers: [7]   (c3's journal item)
 
-e1  Custom     by core        { kind: sample_error, data: ... }   a node like any other,
-                              parented under a context tip; never reaches the model
+e1  Custom     by core        { kind: sample_error, data: ... }   a side node under the
+                              cursor's at; on no cursor's walk; never reaches the model
 ```
 
-A `Result` names its call by id; the `Call` part is on `walk(r5.parent)` (I1).
-`copied_from` and `derived_from` appear only on nodes a hook wrote (see
-`05-compaction.md`); `delivers` appears on a delivered input
-(`04-uncommitted-and-detached-roots.md`). They record a relation, and are never
-a parent.
+`c5`'s outcome is core-written (its `args_raw` did not parse), so it never had
+a journal item. `copied_from` and `derived_from` appear only on nodes a hook
+wrote (see `05-compaction.md`). They record a relation, and are never a
+parent.
 
 ## The other stored objects
 
 ```
-Move { cursor, from?, to, by, time, opened_by?, label? }
-        │      │      │   │              │           └ opening moves only: a unique, fixed name (Q33)
-        │      │      │   │              └ names a cursor, not a node (Q6)
+Move { cursor, from?, to, by, time, opened_by? }
+        │      │      │   │         └ names a cursor, not a node (Q6)
         │      │      │   └ frontend(client) | core | extension(name) | tools  (Q28)
         │      │      └ the node the cursor lands on; this becomes `at`
         │      └ absent on an opening move (Q5)
-        └ cursor id: a session-local integer, assigned by the opening move
+        └ cursor id: a session-local integer, assigned by the opening move (Q33)
 Cursor = { id, at }      at = the `to` of the cursor's latest move
 
-Item { id, from: { frontend?, extension, cursor }, to, data }      in the scratchpad, off the tree
-        │         │                                 │   └ any JSON; its meaning is the extensions'
-        │         │                                 └ the cursor it is addressed to; adding wakes it
-        │         └ who added it, and the client whose input started it
+Label { label, cursor? }           a unique string; cursor absent = the label is removed
+   "research-agent-3ca7"               ──▶ 4
+   "Web Search Agent (Rust Patterns)"  ──▶ 4      a cursor may have many labels;
+   "reviewer"                          ──▶ 7      a label names one cursor at a time
+   setting a label another cursor has moves it; load replays the records
+
+Item { id, from: { frontend?, extension?, cursor }, to, data }      in the scratchpad, off the tree
+        │         │                                  │   └ shape set by the kind below
+        │         │                                  └ the cursor it is addressed to; adding wakes it
+        │         └ the cursor that added it, and who
         └ a session-local integer, never reused
+
+  from has         kind         data                         consumed by
+  ─────────────────────────────────────────────────────────────────────────────────────
+  frontend client  input        { text, images }             the input phase: a User node delivers it
+  extension        extension's  any JSON                     whoever reads it; a node may deliver it
+  neither          journal      { batch, call, outcome }     the join: the Results node delivers it
+
 anyone may add, update, or remove an item; load drops an item some node delivers
 ```
 
-Reads with: `model.md` §1 (stored objects), §3 (committed and uncommitted are
-derived, not stored), §4 I2 (immutability), I4 (a `stop == tools` reply owes
-results), Q3, Q7, Q8, Q27; `glossary.md` terms node, body, part, stop, call,
-result, outcome, author, copied_from, delivers, scratchpad, item.
+Reads with: `model.md` §1 (stored objects, labels, items), §2 (batches and
+results, the journal), §3 (derived views), §4 I2, I4, I5 (V1, V2), Q3, Q7,
+Q8, Q27, Q33; `glossary.md` terms node, body, part, stop, call, results,
+outcome, author, copied_from, delivers, label, scratchpad, item, journal.

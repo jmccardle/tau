@@ -1,6 +1,6 @@
 # D8: No compatibility with 0.15 extensions
 
-Status: accepted (Phase 1, 2026-10-26)
+Status: accepted (Phase 1, 2026-10-26; mapping updated in the seventh revision)
 
 ## Context
 
@@ -10,9 +10,12 @@ runner with its own state, and relied on hooks such as `input`,
 waited for a person, which left state that a reload could not rebuild
 (glossary, "Retired 0.15 terms").
 
-The hook set here differs in meaning, not only in name. A hook now sits around
-a write (model.md §7), steers by returning a value, and receives a cursor
-handle and its subject: `hook(cursor, subject)`.
+The hook set here differs in meaning, not only in name. A hook now sits at a
+fixed point of the step's phase loop (model.md §6, §7). It changes the
+machine's state through its handle (moving the cursor, editing a draft) and
+returns `None` to carry on or a string to stop. Cursor hooks are
+`hook(cursor, subject)`; tool hooks (`pre_tool`, `pre_result`) are
+`hook(node, call)` and cannot move the cursor.
 
 ## Decision
 
@@ -24,10 +27,10 @@ handle and its subject: `hook(cursor, subject)`.
 
   | 0.15 hook | here |
   |---|---|
-  | `input` | `pre_input`, which handles, passes, or refuses (the base extension handles by default), and `pre_step`, where what the input causes is written |
-  | `before_agent_start` | `pre_sample`, which appends what it adds (I1) |
-  | `tool_call` | `pre_tool` |
-  | `tool_result` | `pre_result` |
+  | `input` | `pre_input`, a cursor hook run on each pending input's draft in the step's input phase: it edits the draft, moves the cursor to prepend, or returns a string to refuse |
+  | `before_agent_start` | `pre_sample`, which appends what it adds and moves the cursor onto it (I1) |
+  | `tool_call` | `pre_tool`, a tool hook: edits the call draft, sets its outcome to skip the tool, or returns a string that becomes the call's `Err` |
+  | `tool_result` | `pre_result`, a tool hook, per call; `post_result` runs once, on the batch's `Results` node |
   | `turn_end`, `user_turn_end` | `post_reply` (Q20), or `post_step` |
   | the node-written and annotate hooks | event observers (`node_appended`) |
 

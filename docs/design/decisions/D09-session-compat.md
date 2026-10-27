@@ -25,8 +25,8 @@ a move.
   leave these undecided:
   - which cursor `at` a converted session opens at, since 0.15 guessed it
     and I7 forbids guessing;
-  - how a 0.15 batch of tool results becomes one result per call and in what
-    order;
+  - how a 0.15 batch of tool results becomes one `Results` node, with its
+    outcomes in call order (D7);
   - what happens to 0.15 content with no counterpart (side nodes, paused
     hook waits, hook state), and what `copied_from` or `derived_from`
     records;

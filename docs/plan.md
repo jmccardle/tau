@@ -82,6 +82,8 @@ tau-next/
 
 ## 1. Model
 
+> Superseded by `docs/design/model.md` and `glossary.md` on Phase 1 sign-off. Kept as written for history.
+
 ### Objects
 
 | object | definition |
@@ -174,38 +176,52 @@ One `flock` lease per session file. Second process is read-only. Keep 0.15's lea
 - **Exit:** sign-off.
 
 ### Phase 2: behavior spec (no implementation)
-- `tests/behavior/harness.py`: the `Harness` protocol. Session create/load, input, step, auto-step on/off, abort, open_cursor, tree snapshot, cursor snapshot, events.
-- `FakeProvider` (scripted assistant nodes, including calls, errors, and stream deltas), `FakeTool`, a fake clock for cache-TTL tests.
-- Scenarios mined from the as-built review §8/§9 and the 0.15 test suite (read for scenarios only). Each test is tagged `keep` (0.15 behavior to preserve), `change` (0.15 does X, new does Y; cite the review row), `drop`, or `new`.
-- `tests/oracle/`: adapter over τ 0.15. `keep` tests must pass on it.
-- Required scenario coverage: plain turn; tool batch; tool error; unknown tool; bad args; HTTP error; mid-stream error; abort during sample; abort during tool; crash during sample (resume samples again); crash after calls committed (resume writes `Interrupted`); hook edits a tool result; hook refuses input; hook drafts on scratch and retargets; two cursors at one node; branch across a config node (I6); detached-root one-off call; reload equals pre-save state (I7); provider-illegal draft rejected at commit (I4/I5).
+- `tests/behavior/harness.py`: the `Harness` protocol, shaped as an in-process `tau serve` (model.md §9): a local frontend is serve with one client. Session create/load and `crash()` (drop memory, keep disk); `attach(client)` returns a client handle with input, go-to, step, abort, auto-step on/off, answer, decline, and that client's events; tree, cursor, label, and scratchpad snapshots; `open_cursor`.
+- **`settle()`**: run until every cursor rests or holds only jobs a fake has not released. D11 makes this well defined, so no test sleeps.
+- `FakeProvider` (scripted replies, including calls, errors, and stream deltas) and `FakeTool`, both with **gates**: a test holds a sample or a tool open, acts (esc, go-to, input), then releases it. A fake clock for cache TTLs and the 250 ms throttle.
+- Scenarios mined from the as-built review §8/§9 and the 0.15 test suite (read for scenarios only; 0.15's design is not a template). Each test is tagged `keep`, `change` (cite the review row), `drop`, or `new`.
+- `tests/oracle/`: adapter over τ 0.15, limited to `keep` tests: plain turn, tool batch, tool error, unknown tool, bad args, HTTP error. τ 0.15 is read from a read-only clone of `jmccardle/tau` at `v0.15.0`.
+- Required scenario coverage:
+  - plain turn; tool batch (one `Results` node, outcomes in call order); tool error; unknown tool; bad args; HTTP error; mid-stream error;
+  - abort during sample (with and without parts); abort during tools (running calls `Interrupted`, `post_result` once);
+  - crash during sample (the next step samples again); crash mid-batch (journal outcomes kept, finished calls not run again; idempotent unfinished calls run, others `Interrupted`); crash between a delivering record and the items' removal (delivered once);
+  - input while busy waits as an item and is delivered by the next step, after the batch; input at rest; refused input (notice, item removed); abort leaves pending input pending; abort then send;
+  - a frontend's go-to refused while a hook runs or a question is open; go-to on a busy cursor aborts, runs post hooks and `post_step`, then moves; a go-to wakes with no phase (auto-step off);
+  - a question locks the cursor (input, go-to, step refused); esc does not close it; a single-client question is declined when that client detaches; abort during a `pre_tool` waiting for approval, then approval, gives `Interrupted`;
+  - hook string returns: `pre_tool` → `Err(reason)`; a cursor hook halts the step; `pre_input` refuses;
+  - a `pre_sample` hook moves the cursor (reminder, model choice); a `pre_reply` hook moves the cursor and the reply lands there; a `post_reply` hook moves the cursor and the tools phase looks there;
+  - `cursor.moves(since_step=True)` shows other hooks' moves;
+  - the throttle; an extension leaving its item in place does not spin;
+  - agent-to-agent items wake an idle cursor; a sub-agent tool waits for its cursor to rest;
+  - two cursors at one batch both run it; re-run by going to the `Assistant` node and stepping writes a sibling `Results`;
+  - branch across a config node (the destination line's config applies); detached-root one-off call; labels set, moved, and removed across a reload; `max_steps` stops a "continue" loop; reload equals pre-save state (I7); a provider-illegal walk fails at the next sample (I5).
 - **Exit:** `keep` green on oracle; everything else collected and failing for the right reason. Sign-off.
 
 ### Phase 3: Rust core
-- `tau-core`: types, `walk`, `next`, `validate`, `config_at` (nearest `Config` ancestor; snapshots), `commit` with I6, LCA.
-- `tau-store`: JSONL node log + cursor-move log, versioned header, trait for JMFTS later.
-- Proptest: I1–I7 over random op sequences.
-- Transition table emitted as DOT; CI fails if the committed diagram differs.
-- `tau-py`: bindings for the above. Python sees `Session`, `Cursor`, `Node`, plain functions.
+Three parts, each ending with a review stop.
+- **3a, types and views.** `tau-core` types (`Node`, `Body`, `Results`, `Move`, `Label`, `Item`), `walk`, `next`, `config_at`, LCA, the append checks (V1, V2). Proptest I1–I5 over random op sequences.
+- **3b, store.** `tau-store` per D12: one record log (length-prefixed, checksummed records), the scratchpad file rewritten atomically, the lease, load with the `delivers` reconciliation, a trait for JMFTS later. Proptest I7, including torn tails and crashes between a delivering record and removal.
+- **3c, the step machine.** The phase loop as a sans-IO state machine (D11): jobs out, results in, frontend calls as inputs. Proptests over scripted results and frontend calls. Transition tables emitted as DOT; CI fails if the committed diagram differs. `tau-py` bindings: Python sees `Session`, `Cursor`, `Node`, handles, plain functions.
 - **Exit:** property tests green; ratchet on.
 
 ### Phase 4: Python driver, one provider, built-in tools
-- `driver.py` step loop; `hooks.py` chain; events.
-- OpenAI-compatible provider first (covers local llama.cpp). Typed request settings from `Config`; no pass-through dicts.
+- The driver performs the machine's jobs: hook calls, samples, tool runs, store writes, waits; it cancels what the machine says to cancel. `hooks.py` registers hooks; events.
+- OpenAI-compatible provider first (covers local llama.cpp), including `Results` expansion and `partial_calls` rendering. Typed request settings from `Config`; no pass-through dicts.
 - Typed config file schema (pydantic). Unknown keys are errors.
 - Built-in tools as one `Tool` type.
 - **Exit:** behavior suite green on the new implementation except tests that need later phases. Sign-off.
 
 ### Phase 5: extensions that prove the model
-- **Compaction:** warm-cache in-context summary on scratch under `at`; cold summary on a detached root with a cheap model; branch from the deepest verbatim prefix with copied tail; speculative candidate built on idle, committed at next input only if the cache has expired.
+- **Compaction:** warm-cache in-context summary; cold summary on a detached root with a cheap model; branch from the deepest verbatim prefix with copied tail, `pre_sample` moving the cursor onto it; speculative candidate built on idle, used at the next input only if the cache has expired.
 - **Prune:** post-expiry deterministic rewrite (old tool outputs, old thinking), branch from LCA.
-- **Sub-agent:** cursor opened by a tool at a committed node; result returned as the tool result with `derived_from`.
-- **Debug:** frontend with auto-step off. Shows walk, draft, scratch, and `next`.
+- **Sub-agent:** a tool opens a cursor, adds the task as an item, waits for it to rest; the outcome carries `derived_from`.
+- **Permissions:** `pre_tool` asks through `cursor.ask`; declined returns its own reason.
+- **Debug:** frontend with auto-step off, stepping with `Session.step`. Shows walk, drafts, the scratchpad, and `next`.
 - Provider gains `cache_state(walk) -> (warm_prefix_tokens, expires_at)`.
 - **Exit:** each extension has behavior tests and no core change was needed. If one was, stop and write an ADR.
 
 ### Phase 6: frontends
-Order: print/json, REPL, RPC, TUI, serve. One event projector per wire; all cursors visible on every wire.
+`tau serve` first: many clients over the network, sessions and cursors multiplexed, status, questions, and scratchpads replayed on connect. Then print/json, REPL, RPC, TUI, each a client of the same model (a local frontend serves one client). One event projector per wire; all cursors visible on every wire.
 
 ### Phase 7: release
 Anthropic and Google providers with `cache_state`; JMFTS store; one-way converter from 0.15 session files; docs site; `ffwf-tau` 1.0.
@@ -213,6 +229,8 @@ Anthropic and Google providers with `cache_state`; JMFTS store; one-way converte
 ---
 
 ## 4. Decisions (recommended default in bold)
+
+> Superseded by `docs/design/decisions/` (D1–D12) on Phase 1 sign-off. Kept as written for history.
 
 | # | decision | options |
 |---|---|---|

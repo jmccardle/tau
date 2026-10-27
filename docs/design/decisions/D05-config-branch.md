@@ -1,6 +1,7 @@
-# D5: Config follows the cursor, as full snapshots
+# D5: Config is the nearest `Config` on the walk, as full snapshots
 
-Status: accepted, revised in review (Phase 1, 2026-10-27)
+Status: accepted, revised in review twice (Phase 1, 2026-10-27). The seventh
+revision retired "config follows the cursor" (I6).
 
 ## Context
 
@@ -17,60 +18,40 @@ depended on which object a reader asked (glossary, `config`).
   body of the nearest `Config` node on `walk(n)`. Partial updates are never
   folded together. Every root is a `Config` node, so it is always defined
   (Q5).
-- **Config follows the cursor** (I6): moving never changes a cursor's
-  effective config implicitly.
-  - Both places use one reading: restate only when no node in the range
-    **(LCA, to]** (below the LCA, excluding it, including the destination;
-    all of `walk(to)` with no LCA) is an **explicit** `Config`, meaning any
-    `Config` except a restatement core wrote. A copied `Config` is explicit.
-  - A restatement is reused when the node already has a core-written
-    restating child with the same body, so going back and forth adds at most
-    one per place.
-  - At a sample, if a `pre_sample` tip is on another line with different
-    config and no explicit `Config` in (LCA, tip], the driver restates
-    `Config(config_at(at))` under the tip (`by: core`), and the reply is
-    appended under that `Config`.
-  - At a go-to, a hook's move, or a re-run, if `config_at(to) !=
-    config_at(at)` and no explicit `Config` lies in (LCA(at, to), to], the
-    move restates the cursor's config under `to` and lands on it.
-    `next` looks past it (model.md §6).
-  - If `to` is an unstarted or partial batch, I4 forbids appending under it.
-    The restatement is **deferred**: the move lands on the batch, the run
-    uses `config_at` of its own walk, and when a step's own move lands the
-    cursor on the result that completes the batch, the restating `Config` is
-    written under it and moved onto, in the same durable write (Q16). What
-    is owed is read off the move log, so it survives a reload.
-- A `Config` a hook or frontend appends on purpose is explicit and persists
-  until replaced. There is no automatic revert (Q26).
+- **A cursor's config is `config_at(at)`.** The last `Config` node on the
+  walk sets the cursor's model settings, extensions, and tools. Going to an
+  old line uses that line's config. Core restates nothing.
+- Frontends and extensions deal with the implications: a frontend may show
+  the model a go-to switches to, and an extension that wants a line to keep
+  the cursor's previous config appends a `Config` and moves onto it.
+- A `Config` a hook or frontend appends on purpose persists until replaced.
+  There is no automatic revert (Q26).
 
 ## Alternatives
 
 | option | why not |
 |---|---|
-| Config follows the branch (plan option 2) | Branching to an old line silently switches model, provider, or tools to what was in force back then. |
+| Config follows the cursor (I6, revisions one to six) | Needed a restatement rule with an LCA range, "explicit" versus core-written `Config` nodes, reuse of restatements, and a deferred restatement at a batch read off the move log. All of it was core logic about expectations, for a choice a frontend can show and an extension can make. |
+| Config follows the branch, with restatement (plan option 2, as the plan worded it) | The same restatement machinery, at a commit that no longer exists. |
 | Partial config deltas | Reading config means folding nodes; `config_at` would no longer be one lookup. |
 | Revert one-off choices automatically (Q26) | Behind-the-back state. The tree should show which model produced each reply. |
 
 ## Consequences
 
-- Every reply's config is readable: `config_at(parent)` (I1 test).
-- A go-to across a config change may write one restating `Config` node
-  (or reuse one already there). A go-to starts no step on its own: it turns
-  auto-step off and wakes the cursor, and a step follows only if an
-  extension's `pre_step` starts one.
-- Cost: a batch reached on another line runs with that line's config (its
-  tools and hooks), and the cursor's own config returns only after the
-  batch completes (Q16). The fourth revision refused such moves instead; a
-  refusal for a choice that had an obvious answer was worse.
-- Enforced by: I6 proptest (`config_at(at)` changes only across a move whose
-  (LCA, to] contains an explicit `Config`, which appends or reuses a
-  restatement, or which lands in an unstarted or partial batch whose
-  completing result then carries the restatement), the reuse unit test,
-  the scenario "go-to an unstarted batch on a line with another config", and scenarios "branch across a config
-  node" and "compaction across a model change".
+- One lookup, no rule: the walk says which config is in force.
+- Cost: going to an old line silently runs with that line's model and tools
+  unless a frontend or extension says otherwise. That is the trade the
+  review chose.
+- Enforced by: unit test (`config_at` is the nearest `Config`); behavior
+  scenarios "branch across a config node" (the step uses the destination
+  line's config) and "compaction across a model change".
 
-## Note on the plan
+## History
 
-The plan's wording said "commit appends the restating `Config`". There is no
-commit now, so I6 applies at a move and at a sample (model.md §4). The default
-(follows the cursor, full snapshots) is unchanged.
+The plan's default was "config follows the cursor": moving never changes a
+cursor's effective config implicitly, with a restating `Config` appended at
+commit. Revisions one to six kept it as I6, applied at a move and at a
+sample, with a deferred restatement for batches (Q16). The seventh revision
+retired it. In review: "the last `Config` node in the walk would set the
+cursor's model settings, and the frontend / extensions should come up with
+ways to deal with the implications."

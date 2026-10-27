@@ -45,7 +45,7 @@ hold:
 - **A step is one pass of a fixed loop**, from `pre_step` to `post_step`: an
   input phase, a sample phase, and a tools phase. Each phase has the same
   shape: pre hook on the effect, effect, pre hook on the draft, commit under
-  `at`, post hook. Hooks change the machine's state; then the machine acts
+  `at`, post hook (input has no effect and no post hook). Hooks change the machine's state; then the machine acts
   (§6). "Cycle" is retired: a step is the cycle.
 - **Two hook shapes.** Cursor hooks get the cursor and may move it. Tool hooks
   (`pre_tool`, `pre_result`) get the batch's node and may not. **A hook
@@ -203,7 +203,9 @@ u1  User          "fix the bug"
 Running a batch again is going back to its `Assistant` node and stepping: the
 cursor does not look at children, so the tools phase runs and writes a
 sibling `Results` (§5). Each `Results` node is final; another answer is
-another node (Q10).
+another node (Q10). The same holds for a copied batch: an extension that
+copies a batch (compaction) copies its `Results` too, or a cursor stepped
+there runs the copied calls.
 
 Until the join, each finished call's outcome waits as a **journal item** in
 the cursor's scratchpad. The `Results` node delivers them. A crash before the
@@ -320,7 +322,7 @@ construction: the join writes the node from one outcome per call, and
 nothing writes half of it.
 
 A hook may write a `Results` node of its own anywhere (a cache, a test). Core
-checks only that its outcomes name distinct calls. Whether a walk is legal on
+checks only that its outcomes name distinct calls (V2). Whether a walk is legal on
 the wire is the provider's (I5, Q11).
 
 **Why.** Every provider rejects a conversation with an unanswered call, so a
@@ -602,10 +604,12 @@ async def hook(node: NodeHandle, call: CallDraft) -> str | None
 
 **The return value.** `None` carries on. **A string stops**, and says why:
 - from a cursor hook, the step **halts**: later hooks at that point do not
-  run, the draft of the current phase is discarded, auto-step turns off, and
-  `post_step` runs with `halted(reason)`. In `pre_input`, the input is
-  refused: its item is removed, and its client is sent a `notice` with the
-  reason. Returning a string from `post_step` only turns auto-step off;
+  run, the draft of the current phase is discarded (from a pre hook; a post
+  hook's draft is already committed), auto-step turns off, and `post_step`
+  runs with `halted(reason)`. In `pre_input`, the input is not written: its
+  item is removed, and its client is sent a `notice` with the string, which
+  is a refusal's reason or a command's reply. Inputs already committed in that phase stay; later ones stay
+  pending. Returning a string from `post_step` only turns auto-step off;
 - from a tool hook, **that call's outcome is `Err(reason)`**: in `pre_tool`
   the tool does not run, and in `pre_result` the outcome is replaced. Later
   hooks of that call's chain do not run. The other calls carry on.
@@ -694,8 +698,8 @@ extension may offer it back to its client in `post_step` when the ending is
 
 Other input behaviors are extensions:
 - **A command**: a `pre_input` hook that handles `/model fast` writes the
-  `Config` node with `cursor.write` and returns `"handled: model fast"`, so
-  the input is not written and the step halts.
+  `Config` node with `cursor.write` and returns `"model: fast"`, so the input
+  is not written, the step halts, and the client is told.
 - **A gate**: a `pre_input` hook that returns a reason until something is
   satisfied.
 
@@ -746,7 +750,7 @@ drives nothing: it only waits.
   through its pre hooks and is committed as usual, its post hook runs, and
   `post_step` runs with `aborted`. Then the cursor rests.
   - **During a sample**, with no parts yet: there is no draft; nothing is
-    committed.
+    committed. Moves `pre_sample` hooks made stand, like every move.
   - **During a sample**, with parts: the reply draft has the parts so far and
     `stop: interrupted`. `pre_reply` runs, the reply is committed and moved
     onto, and `post_reply` runs. Its calls are not runnable (§2). The user
@@ -986,6 +990,6 @@ Q34 and Q37, and adds Q39–Q45.
 | Q40 | Pending input at a batch with no `Results`: which goes first? | **The batch.** The input phase applies only when `next != RunTools`. Otherwise the input would go under the batch and leave the journal of a running or crashed batch with nothing to deliver it. |
 | Q41 | A crash leaves journal items for a batch; the cursor then goes elsewhere, and later back. | **The journal is used** when a tools phase next runs that batch on that cursor: those calls ran, and their outcomes are true. A frontend that wants a clean re-run removes the items first; they are visible like any item. |
 | Q42 | What happens to pending input on an abort? | **It stays pending, and the cursor rests.** Every frontend shows it and may edit or remove it. An extension may offer it back to its client in `post_step(aborted)`; none ships in the default config until a frontend needs it. |
-| Q43 | How does a frontend learn that `pre_input` refused its input? | **A `notice` to that client with the reason**, and the item is removed. The step halts. A hook error leaves the input pending instead, because nothing decided against it. |
+| Q43 | How does a frontend learn that `pre_input` stopped its input (a refusal, or a command it handled)? | **A `notice` to that client with the hook's string**, and the item is removed. The step halts. A hook error leaves the input pending instead, because nothing decided against it. |
 | Q44 | How does a hook see where other hooks moved the cursor? | **`cursor.moves(since_step=True)`**: the cursor's move records since this step's `pre_step` began. The first record's `from` is where the step started. No `prev` field. |
 | Q45 | Should an `Assistant` node record which node it was sampled from (`sampled_from`), now that a reply may be committed elsewhere? | **No.** The move records already show every move between the sample and the commit. Add it if a debug frontend finds the records too indirect. |
