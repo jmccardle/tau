@@ -130,7 +130,21 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
   Proptests over scripted results and frontend calls. Transition tables
   emitted as DOT, checked in CI. `tau-py` bindings: `Session`, `Cursor`,
   `Node`, handles, plain functions.
-- **Exit:** property tests green; clippy gate green; ratchet on (rule 7).
+- **3d, as-built review of the core.** The same review, tools, and plots
+  as the τ 0.15 as-built review, on `crates/`, so the numbers compare:
+  - metrics: `rust-code-analysis-cli` (CC, cognitive, LOC; for radon),
+    `cargo llvm-cov` (for coverage.py), dead code denied plus `cargo machete`
+    (for vulture), `cargo-modules` and `cargo depgraph` (for grimp/`deps.py`),
+    `guppy` for "tau-core depends on no IO" as a check;
+  - generated diagrams, diffed in CI (rule 6): the step's position graph
+    and the frontend-call refusals, recorded by driving the scenario tests
+    (not `next`, which is a three-row table); `Body`/`Node`/`Session`/`Machine`
+    from a small `syn` script (for `uml.py`);
+  - traces: `tracing` spans around `write`, `append`, and `feed`, exported
+    with `tracing-chrome`.
+  The rule 7 thresholds are set from this review.
+- **Exit:** property tests green; clippy gate green; ratchet on (rule 7); the
+  3d review signed off.
 
 ### Phase 4: Python driver, one provider, built-in tools
 - The driver performs jobs: hook calls, samples, calls (each call's
@@ -141,7 +155,10 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
 - Typed config file schema (pydantic); unknown keys are errors.
 - Built-in tools as one `Tool` type. Rust tools ship as their own PyO3
   wheels, called by the driver with the GIL released; core has no plugin ABI.
-- **Exit:** behavior suite green except tests that need later phases.
+- **Exit:** behavior suite green except tests that need later phases. The
+  as-built review again, on `python/` with the 0.15 tools as they are (radon,
+  coverage.py, grimp, `trace_turn.py`), plus a traced turn across both
+  languages.
 
 ### Phase 5: extensions that prove the model
 Compaction (warm in-context summary; cold summary on a detached root; branch
