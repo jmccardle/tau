@@ -57,8 +57,13 @@ hold:
 - **One `Results` node per batch**, written when every call has finished,
   with one outcome per call. The provider expands it into one tool message
   per call. I4 holds by construction (D7, reversed back to the plan).
-- **The journal.** Each finished call's outcome is a scratchpad item until the
-  `Results` node delivers it, so a crash loses no finished call (§8).
+- **No crash recovery for calls in core** (after the step spike). A batch's
+  outcomes are held in the step until the join. After a crash the cursor
+  rests at the unanswered batch: input goes under it, and a step re-runs it
+  (§8, D4). The seventh revision's journal and `idempotent` flag are gone.
+- **Persistence is not a job.** Writes happen inside the call that makes
+  them, in Rust, so a hook's `cursor.write` is durable when it returns (§12).
+  JMFTS is a replica fed from the local log (D12).
 - **The cursor never looks at children.** `next` reads only `walk(at)`.
   Fast-forward, `Session.rerun`, runs, batch states, and the claim are gone.
   Going to an `Assistant` node with calls and stepping runs them again (§5).
@@ -126,9 +131,8 @@ Item   { id, from: { frontend?, extension?, cursor }, to, data }
   index of it, built at load.
 - `derived_from` lists the nodes whose walks this node's content was computed
   from, such as a summary.
-- `delivers` lists the scratchpad items this node consumed: the inputs a
-  `User` node holds, or the journal items a `Results` node holds. It holds
-  ids, never content.
+- `delivers` lists the scratchpad items this node consumed, such as the
+  input a `User` node holds. It holds ids, never content.
 
 Parts are kept in the order they streamed. `args_raw` is the argument text
 exactly as the model produced it, which may be truncated or malformed. It is
@@ -164,10 +168,8 @@ cursor that added it, and the extension or the frontend client:
 - **with a `frontend` client, it is input** (§7), whatever else `from`
   names. Its `data` is `{text, images}`. A frontend adds items only as
   input, through `Session.input`;
-- **with an `extension`, it belongs to the extensions.** `data` is any JSON
-  value;
-- **with neither, it is a journal item**, which core writes (§6). Its `data`
-  is `{batch, call, outcome}`.
+- **otherwise, it belongs to the extensions** (`from.extension` names
+  which). `data` is any JSON value.
 
 Items have session-local integer ids that are never reused. No walk contains
 an item, and no item reaches the model (I1).
@@ -207,9 +209,8 @@ another node (Q10). The same holds for a copied batch: an extension that
 copies a batch (compaction) copies its `Results` too, or a cursor stepped
 there runs the copied calls.
 
-Until the join, each finished call's outcome waits as a **journal item** in
-the cursor's scratchpad. The `Results` node delivers them. A crash before the
-join loses no finished call (§8).
+Until the join, each finished call's outcome is held in the step, in memory.
+A crash before the join loses the batch's outcomes (§8, D4).
 
 ## 3. Derived views
 
@@ -244,15 +245,13 @@ d    Config  (model: cheap)          (detached root: an earlier step's hook made
 
 scratchpad:  item 4 { from: {frontend: laptop, cursor: A}, to: A,
                       data: {text: "also check b.rs"} }               input
-             item 5 { from: {cursor: A}, to: A,
-                      data: {batch: a1, call: c5, outcome: Ok(…)} }   journal
 ```
 
-When `c3` finishes, the join writes `r1 Results` under `a1`, delivering item
-5, and A moves onto it. The step ends with `post_step`. The next step's input
-phase takes item 4: `u2 User` under `r1`, delivering it, then a sample. If
-the process dies before the join, A loads at `a1` with item 5 still there,
-and the next tools phase reuses `c5`'s outcome and answers `c3` (§8).
+When `c3` finishes, the join writes `r1 Results` under `a1` with both
+outcomes, and A moves onto it. The step ends with `post_step`. The next
+step's input phase takes item 4: `u2 User` under `r1`, delivering it, then a
+sample. If the process dies before the join, A loads at `a1`, at rest, with
+item 4 still pending; `c5`'s outcome is lost (§8).
 
 ## 4. Invariants
 
@@ -382,8 +381,8 @@ would have produced.
 - The reverse index of `copied_from`, which load rebuilds from the nodes.
 - Events and stream deltas.
 
-A cursor that was running a batch loads at its `Assistant` node, with the
-journal items of the calls that finished. Input given to a busy cursor
+A cursor that was running a batch loads at its `Assistant` node, and the
+batch's outcomes are lost (D4). Input given to a busy cursor
 survives a crash as an item. Whether an item was consumed is read off the
 nodes' `delivers`, so a reload neither loses nor repeats it.
 
@@ -497,7 +496,7 @@ for phase in [input, sample, tools]:                      if the phase applies (
     pre_<effect>     pre_sample | pre_tool                hooks may answer, so the effect is skipped
     effect           sample walk(at) | run the calls      input has no effect
     pre_<draft>      pre_input | pre_reply | pre_result   hooks edit the draft; in tools, per call as
-                                                          each finishes, then its journal item
+                                                          each finishes
     commit           the draft under at, and the move onto it, as one record
                                                           (in tools, once, at the join)
     post_<draft>     post_reply | post_result             input has no post hook
@@ -506,15 +505,16 @@ post_step(ending)
 
 | phase | applies when | pre hook on the effect | effect | pre hook on the draft | commits | post hook |
 |---|---|---|---|---|---|---|
-| input | there is pending input, and `next != RunTools` | — | — | `pre_input`, per item | one `User` node per item, each delivering it | — |
+| input | there is pending input | — | — | `pre_input`, per item | one `User` node per item, each delivering it | — |
 | sample | `next == Sample` | `pre_sample` | the provider request | `pre_reply` | one `Assistant` node | `post_reply` |
-| tools | `next == RunTools` | `pre_tool`, per call | the calls, in parallel (Q21) | `pre_result`, per call, as each finishes; then a journal item | one `Results` node at the join, delivering the journal items | `post_result` |
+| tools | `next == RunTools` | `pre_tool`, per call | the calls, in parallel (Q21) | `pre_result`, per call, as each finishes | one `Results` node at the join | `post_result` |
 
 A phase applies only if **auto-step is on, or a frontend asked for this step**
 (`Session.step`), and its condition holds for `at` *at the start of the
 phase*. A hook that moves the cursor in `post_reply` therefore decides where
-the tools phase looks. The input phase waits while `next == RunTools`, so a
-batch is answered before input goes under it (Q40).
+the tools phase looks. Input at an unanswered batch goes under it, and the
+tools phase then does not apply; an extension that wants input to wait
+behind a batch holds it in `pre_input`.
 
 **Ending.** `post_step` gets how the step ended:
 
@@ -531,8 +531,8 @@ What the step did is in the move records: `cursor.moves(since_step=True)`.
 `next(walk(at)) != Wait` or input is pending; or, throttled, if the cursor's
 scratchpad changed since this step's `pre_step` started. Otherwise the cursor
 **rests**. After an abort, a halt, or a failure, auto-step is off and the
-cursor rests whatever the scratchpad holds. Journal items the step itself
-wrote and delivered do not count as a change.
+cursor rests whatever the scratchpad holds. Items the step itself delivered
+do not count as a change.
 
 **Waking.** A cursor at rest starts a step when:
 - an item is added to its scratchpad;
@@ -781,16 +781,12 @@ drives nothing: it only waits.
   with `cursor.write` (Q20).
 - **Crash during a sample.** On reload `next` is `Sample`, so the next step
   samples again.
-- **Crash during tools.** The cursor loads at the batch's `Assistant` node.
-  Each call that finished before the crash has a journal item. The next
-  tools phase, for each call:
-  - with a journal item for this batch: uses its outcome; the call does not
-    run again, and its `pre_result` already ran;
-  - otherwise, if its tool is idempotent: runs it like any call;
-  - otherwise: `Interrupted` (D4).
-
-  The join delivers the journal items. A ten-minute `bash` that finished
-  before the crash keeps its outcome.
+- **Crash during tools.** The cursor loads at the batch's `Assistant` node,
+  at rest, and the batch's outcomes are lost (D4). Input goes under the
+  unanswered batch, and the provider renders its calls as text, so a person
+  can say "the power went out, check the files". A step without input
+  re-runs the whole batch. An extension may keep outcomes across a crash
+  with `pre_result`, `pre_tool`, and scratchpad items.
 - **Crash during a commit.** A commit and its move are one record (§11), so a
   crash leaves both or neither. A torn final record is ignored on load. A
   crash after a delivering record but before the items' removal leaves the
@@ -897,8 +893,7 @@ to these through `FakeProvider` and a recorded-wire test per provider.
 - **The scratchpad file** holds the current items and the next item id. It is
   rewritten whole for each change, atomically (write a new file, sync it,
   rename it over the old one). A removed item is gone from disk. Adding an
-  item is durable before the cursor it wakes is woken, and a journal item is
-  durable before its call counts as finished.
+  item is durable before the cursor it wakes is woken.
 - **Delivery order.** A delivering record is made durable first, and the
   items are removed after. Load drops any item a node delivers. An item
   consumed without a node is only removed; a crash before the removal leaves
@@ -908,7 +903,7 @@ to these through `FakeProvider` and a recorded-wire test per provider.
   holder runs steps and hooks, the wakes on load included. If the holder's
   process is dead, the lease is reclaimed.
 - **Two cursors at one batch** each run it, and each writes its own
-  `Results` node: the journal is per cursor (Q13). An extension that wants
+  `Results` node (Q13). An extension that wants
   "run once" coordinates through the scratchpad.
 
 ## 12. Core and driver
@@ -922,16 +917,19 @@ back the results:
 step = session.wake(cursor, reason)           Rust
 loop:
     job = step.next_job()                     Rust: run a hook point | sample | run calls
-                                              | persist a record | update the scratchpad
                                               | wait (the throttle) | rest
     result = await driver.perform(job)        Python: hooks, providers, tools, the store
     step.feed(result)                         Rust: applies hook changes, advances
 frontend calls (abort, move, input, step, answer, decline) are fed to the same machine
 ```
 
-A hook job's result is what the hook changed: moves, draft edits, the
-auto-step flag, and its return value. A run-calls job holds several calls;
-the driver feeds their completions back one at a time, in any order. Where a
+Writes are not jobs. A commit, and every handle call a hook makes while it
+runs (`cursor.move`, `cursor.write`, adding an item), goes into Rust, which
+applies it and writes the record before returning; that is how a write is
+durable before anything names it. A hook job's result is therefore only the
+edited draft and the return value. A run-calls job holds several calls, and
+for each the driver runs `pre_tool`, the tool, and `pre_result`, which need
+no cursor; it feeds the outcomes back one at a time, in any order. Where a
 job may wait (a question, a stream, a tool), an abort arrives as one more
 input, and the machine says which jobs to cancel. Time comes in with each
 result.
@@ -947,7 +945,7 @@ Each one has a recommendation, which is what the documents assume. A "no"
 means a document changes before sign-off. Q14 and Q19 were folded into
 earlier decisions, and Q29 into "only a `stop == tools` reply runs calls".
 The seventh revision retires Q2, Q16, Q35, Q36 and Q38, settles Q13, Q33,
-Q34 and Q37, and adds Q39–Q45.
+Q34 and Q37, and adds Q39–Q45. The step spike retires Q40 and Q41.
 
 | # | question | recommendation |
 |---|---|---|
@@ -963,10 +961,10 @@ Q34 and Q37, and adds Q39–Q45.
 | Q10 | Is a written `Results` node final? | **Yes; another answer is another node.** Going back to the batch and stepping writes a sibling `Results`. |
 | Q11 | Where does provider-specific legality live? | **In the provider's conversion**, which the driver runs before every sample. A rejection is a failed sample. |
 | Q12 | Do cursors close? | **Not in core for now.** Cursors are cheap, and frontends hide finished ones. |
-| Q13 | Two cursors at one batch both have `next == RunTools`. | **Settled (seventh revision): each runs it.** The claim is gone. The journal is per cursor, and each writes its own `Results`. "Run once" is an extension's, through the scratchpad. |
+| Q13 | Two cursors at one batch both have `next == RunTools`. | **Settled (seventh revision): each runs it.** The claim is gone. Each writes its own `Results`. "Run once" is an extension's, through the scratchpad. |
 | Q15 | How does a person branch or go back? | **Go-to, step, and input.** A go-to (`Session.move`) turns auto-step off and wakes the cursor; no phase runs unless an extension turns auto-step on. On a busy cursor it aborts first, and it is refused while a hook runs or a question is open. `Session.step` runs one step's phases whatever auto-step is, so going to a batch and stepping re-runs it. `Harness` exposes all three. |
 | Q16 | *Retired with I6.* | — |
-| Q17 | Input arrives while `at` is a batch with no `Results`: a paused cursor, or after a reload. | **The batch runs first** (Q40). The input waits; a send turns auto-step on, the tools phase answers the batch (with the journal and D4 after a crash), and the next step delivers the input. To skip the batch, go to the reply's parent first. |
+| Q17 | Input arrives while `at` is a batch with no `Results`: a paused cursor, or after a reload. | **The input goes under the batch** (after the step spike). The provider renders the unanswered calls as text, so the model sees them as interrupted. To answer the batch first, step before sending; an extension that wants input to wait holds it in `pre_input`. |
 | Q18 | Which hooks run after a pre hook answers, and what may `pre_result` change? | **The draft's pre hooks run** (`pre_reply`, `pre_result`), so a cache hit still gets redacted. `pre_result` may change an outcome's content, not its kind, except to `Err` by returning a string. |
 | Q20 | Where does "keep going" live, and what stops a runaway loop? | **In post hooks.** A `post_reply` hook writes a `User` node with `cursor.write`, and `next` becomes `Sample`. A runaway loop is stopped by `max_steps` in `Config`: the most committing steps a cursor takes without a frontend acting on it. Nothing is persisted, so a runaway loop cannot survive a reload. |
 | Q21 | Do a batch's calls run in parallel? | **Yes, by default.** A tool can be `exclusive` and run alone. |
@@ -987,8 +985,8 @@ Q34 and Q37, and adds Q39–Q45.
 | Q37 | A question asked of one client: what if that client detaches? | **Settled (seventh revision): it is declined**, and `cursor.ask` returns `None`. A question for any client holds the cursor until some client answers. |
 | Q38 | *Retired with "boundary".* A cursor hook may move its cursor; tool hooks cannot. | — |
 | Q39 | Does a wake with auto-step off run any phase? | **No: only `pre_step` and `post_step`.** A go-to or a load browses; an extension that wants work done turns auto-step on in `pre_step`. `Session.step` is the frontend's way to run phases with auto-step off. |
-| Q40 | Pending input at a batch with no `Results`: which goes first? | **The batch.** The input phase applies only when `next != RunTools`. Otherwise the input would go under the batch and leave the journal of a running or crashed batch with nothing to deliver it. |
-| Q41 | A crash leaves journal items for a batch; the cursor then goes elsewhere, and later back. | **The journal is used** when a tools phase next runs that batch on that cursor: those calls ran, and their outcomes are true. A frontend that wants a clean re-run removes the items first; they are visible like any item. |
+| Q40 | *Retired (John, after the spike).* The input phase applies whenever input is pending; queueing behind a batch is an extension's. | — |
+| Q41 | *Retired with the journal* (D4). | — |
 | Q42 | What happens to pending input on an abort? | **It stays pending, and the cursor rests.** Every frontend shows it and may edit or remove it. An extension may offer it back to its client in `post_step(aborted)`; none ships in the default config until a frontend needs it. |
 | Q43 | How does a frontend learn that `pre_input` stopped its input (a refusal, or a command it handled)? | **A `notice` to that client with the hook's string**, and the item is removed. The step halts. A hook error leaves the input pending instead, because nothing decided against it. |
 | Q44 | How does a hook see where other hooks moved the cursor? | **`cursor.moves(since_step=True)`**: the cursor's move records since this step's `pre_step` began. The first record's `from` is where the step started. No `prev` field. |
