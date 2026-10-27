@@ -541,16 +541,34 @@ phase's writes, its pre hooks' included, share one sync. `synced()` is true
 when nothing changed since the last `Sync`.
 
 ### store
-`tau_store` · retires session store, `SessionCatalog`
+`tau_store::Store` · retires session store, `SessionCatalog`
 
-The only Rust code that touches the filesystem: one record log and one
-scratchpad file per session (D12). **JMFTS** (Phase 7) is a replica of the
-log, never the store of record.
+The only Rust code that touches the filesystem: one session per directory,
+holding the **log** (`log`, append-only records) and the **scratchpad file**
+(`scratchpad`, rewritten by rename) (D12). Each file starts with a magic and
+a version (`VERSION`); a record on disk is its length, a CRC-32, and the
+record as JSON. `Store::create(dir, session)` writes a new session whole and
+links it into place; `Store::open(dir)` takes the lease and loads;
+`Store::save(session)` takes the outbox, writing and syncing the log at each
+`Sync`, then the scratchpad file. Its errors (`tau_store::Error`): `Io`,
+`Leased`, `Exists`, `NotASession`, `Version`, `Corrupt` (a damaged
+scratchpad file), `Failed` (an earlier write failed; open again), `Core`
+(the log does not replay). **JMFTS** (Phase 7) is a replica of the log,
+never the store of record.
+
+### torn tail, dropped
+*spike* `Store::dropped`
+
+Whatever follows the log's last good `Sync` on open: a record cut short,
+one failing its checksum, records never synced, damage. Open cuts it (so a
+session goes on from its last sync) and keeps the bytes as
+`dropped-<offset>` in the session directory; `dropped` is how many.
 
 ### lease
-retires `SessionWriteLock`
+*spike* in `Store` · retires `SessionWriteLock`
 
-One `flock` per session. Only the holder writes and runs steps.
+An exclusive `flock` on the log, held while a `Store` lives. Only the holder
+writes and runs steps; a second open is `Error::Leased`.
 
 ## Testing and scaffold
 

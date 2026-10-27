@@ -1,6 +1,6 @@
 [package]
 name = "tau-store"
-description = "Append-only persistence for τ sessions, behind a trait. The only crate that does IO."
+description = "One record log and one scratchpad file per session (D12). The only crate that does IO."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,13 @@ repository.workspace = true
 
 [dependencies]
 tau-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+crc32fast.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

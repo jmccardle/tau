@@ -1,6 +1,6 @@
 # D12: One record log, plus a scratchpad file
 
-Status: accepted (Phase 1); not yet spiked beyond `Session::outbox`
+Status: accepted (Phase 1); built in `crates/tau-store` (3b)
 
 ## Context
 
@@ -30,7 +30,16 @@ input's text twice.
 - Writes happen inside the Rust call (D11). The lease (`flock`) is on the log.
 - **JMFTS (Phase 7) is a replica** fed from the local log outside any step;
   replay into it is idempotent by record position.
-- The record encoding is Phase 3's.
+- **Encoding:** each file starts with an 8-byte magic and a `u32` version. A
+  record is its length, a CRC-32 of length and payload, and the payload as
+  JSON. A new session is written under a private name and hard-linked into
+  place, so a log always holds its first `Sync` and `create` never replaces
+  one.
+- **Load cuts back to the last good `Sync`.** A record cut short or failing
+  its checksum ends the scan; whatever follows the last `Sync` before it is
+  cut (made durable, so a session goes on from there) and kept aside as
+  `dropped-<offset>`. Damage mid-log is indistinguishable from a torn tail by
+  checksum alone, so it is cut too, never believed, and the bytes are kept.
 
 ## Alternatives
 
@@ -46,6 +55,10 @@ input's text twice.
 
 - A write and its move can never be split by a crash.
 - Cost: each item change rewrites the scratchpad file.
+- Cost: a stored plain turn is ~3 ms here, about ten fsyncs (log, scratchpad
+  file, directory); opening 300 turns takes ~3 ms.
 - Enforced by the I7 proptests in `crates/tau-core/tests/replay.rs`
-  (including a crash between the log sync and the scratchpad rewrite);
-  torn tails are 3b's.
+  (including a crash between the log sync and the scratchpad rewrite) and
+  `a_torn_tail_opens_as_the_last_sync_before_it` in
+  `crates/tau-store/tests/store.rs` (a log cut anywhere, plus garbage, opens
+  as the last sync before the cut, and the session goes on from there).

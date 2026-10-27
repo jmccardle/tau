@@ -36,8 +36,11 @@ LCA (3a, minus proptests); one cursor's step as a sans-IO machine (D11); and
 the session machine over every cursor, taking frontend calls (go-to on a busy
 cursor, `Session.step`, the question lock, wakes, `max_steps`). A turn costs
 ~15–30 µs at any session depth. Replay (`Session::load`) and the I7
-proptests are in. Missing: the I1–I5 proptests, the store (3b), the bindings, and the clippy gate (pedantic
-lints; deferred to the Phase 3 closeout).
+proptests are in. The store (3b, `crates/tau-store`, ~270 lines) writes the
+log and the scratchpad file, holds the lease, and cuts torn tails; a stored
+turn costs ~3 ms (fsyncs). Missing: the I1–I5 proptests, the JMFTS replica
+trait (nothing feeds it before Phase 7), the bindings, and the clippy gate
+(pedantic lints; deferred to the Phase 3 closeout).
 
 ### Order from here (approved 2026-10-27; bends rule 5)
 

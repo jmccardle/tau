@@ -190,10 +190,10 @@ proptest! {
         let mut pads = vec![Scratchpad::default()];
         for op in &ops {
             apply(&mut s, op);
-            if let Some(Record::Sync { pad: Some(p) }) = s.outbox.last() {
-                if matches!(op, Op::Sync) {
-                    pads.push(p.clone());
-                }
+            if let Some(Record::Sync { pad: Some(p) }) = s.outbox.last()
+                && matches!(op, Op::Sync)
+            {
+                pads.push(p.clone());
             }
         }
         s.sync();

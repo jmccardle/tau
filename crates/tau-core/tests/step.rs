@@ -197,10 +197,10 @@ fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
     let mut samples = 0;
     let mut step = Step::wake(&s, c, false, 0);
     let jobs = drive(&mut s, &mut step, |job, s| {
-        if let Job::Hooks { point, .. } = job {
-            if matches!(point, Hook::PostReply | Hook::PostResult | Hook::PostStep) {
-                assert!(s.synced(), "{point:?} handed out before a sync");
-            }
+        if let Job::Hooks { point, .. } = job
+            && matches!(point, Hook::PostReply | Hook::PostResult | Hook::PostStep)
+        {
+            assert!(s.synced(), "{point:?} handed out before a sync");
         }
         match job {
             Job::Sample => {
@@ -876,12 +876,11 @@ fn a_post_reply_move_changes_where_the_tools_phase_looks() {
             point: Hook::PostReply,
             ..
         } = job
+            && !moved
         {
-            if !moved {
-                moved = true;
-                s.move_to(c, old, Author::Extension("nav".into()), 0)
-                    .unwrap();
-            }
+            moved = true;
+            s.move_to(c, old, Author::Extension("nav".into()), 0)
+                .unwrap();
         }
         script(job, s)
     });

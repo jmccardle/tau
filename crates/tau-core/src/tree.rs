@@ -3,11 +3,13 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
 pub type NodeId = u64;
 pub type CursorId = u64;
 pub type ItemId = u64;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Part {
     Text(String),
     Thinking(String),
@@ -18,7 +20,7 @@ pub enum Part {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Stop {
     End,
     Tools,
@@ -28,14 +30,14 @@ pub enum Stop {
     Error,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Outcome {
     Ok(String),
     Err(String),
     Interrupted,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Body {
     System(String),
     User(String),
@@ -55,7 +57,7 @@ pub enum Body {
 
 /// A config snapshot. Core reads only its typed fields; `data` is the rest,
 /// opaque to core and typed by the driver.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub max_steps: Option<u32>,
     pub data: String,
@@ -70,7 +72,7 @@ impl From<&str> for Config {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Author {
     Frontend(String),
     Provider,
@@ -79,7 +81,7 @@ pub enum Author {
     Extension(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
     pub id: NodeId,
     pub parent: Option<NodeId>,
@@ -89,7 +91,7 @@ pub struct Node {
     pub delivers: Vec<ItemId>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Move {
     pub cursor: CursorId,
     pub from: Option<NodeId>,
@@ -98,13 +100,13 @@ pub struct Move {
     pub time: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ItemData {
     Input { client: String, text: String },
     Extension { name: String, data: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
     pub id: ItemId,
     pub to: CursorId,
@@ -113,7 +115,7 @@ pub struct Item {
 
 /// A cursor's items live here, for every cursor, with the next item id. The
 /// store keeps it as the scratchpad file, never in the log (D12).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scratchpad {
     pub items: Vec<Item>,
     pub next_item: ItemId,
@@ -122,7 +124,7 @@ pub struct Scratchpad {
 /// What the store must make durable, in order. Core never writes; it queues.
 /// The store may buffer everything up to a `Sync`; at a `Sync` it syncs the
 /// log, then, if `pad` is set, rewrites the scratchpad file with it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Record {
     Write {
         node: Node,
@@ -304,10 +306,10 @@ impl Session {
             (None, _) => return Err(Error::RootNotConfig),
             (Some(p), _) => drop(self.node(p)?),
         }
-        if let Body::Results(out) = &body {
-            if (1..out.len()).any(|i| out[..i].iter().any(|(c, ..)| *c == out[i].0)) {
-                return Err(Error::DuplicateCall); // V2
-            }
+        if let Body::Results(out) = &body
+            && (1..out.len()).any(|i| out[..i].iter().any(|(c, ..)| *c == out[i].0))
+        {
+            return Err(Error::DuplicateCall); // V2
         }
         Ok(Node {
             id: self.nodes.len() as NodeId,

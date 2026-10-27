@@ -124,12 +124,13 @@ back from. Any node may be gone to.
 | I4 | The tools phase writes one `Results` per batch it runs, one outcome per call, in call order. Holds by construction. | `batch_answers_in_call_order_then_samples_again`; proptest |
 | I5 | Append checks only types: **V1** a root is `Config`; **V2** a `Results` node's outcomes name distinct calls. Wire legality is the provider's conversion (Q11). | `Error::RootNotConfig`, `Error::DuplicateCall`; unit tests |
 | I6 | Retired (D5). | — |
-| I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`; `Session::load` |
+| I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`, `a_torn_tail_opens_as_the_last_sync_before_it`; `Session::load` |
 
 **Not persisted (I7):** auto-step (every cursor loads with it off), busy (every
 cursor loads at rest), the `max_steps` count, open questions, shown state, a
 step's in-memory batch outcomes, events. Load drops every item some node
-`delivers`; a torn final record is a write that never happened. That is the
+`delivers`; anything after the log's last good `Sync` (a torn tail) never
+happened. That is the
 whole of `reconcile`.
 
 ## 5. Move
@@ -331,8 +332,8 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
   provider renders its calls as text; a step re-runs the whole batch
   (`after_a_crash_mid_batch_*`). Keeping outcomes across a crash is an
   extension built from `pre_result`, `pre_tool`, and items.
-- **Crash during a commit**: node and move are one record; a torn final
-  record is ignored on load.
+- **Crash during a commit**: node and move are one record; a torn tail is cut
+  back to the last `Sync` on open.
 
 ## 9. Events and frontends (not yet spiked)
 
@@ -367,7 +368,7 @@ Each provider is a Python adapter for one API family. It owes the driver:
    before any request (Q11).
 8. Cache use reported per sample (llama.cpp `cache_n`, hosted usage fields).
 
-## 11. Persistence (core side spiked; the store is 3b)
+## 11. Persistence
 
 Core queues what must be made durable in `Session::outbox` as `Record`s
 (`Write { node, mv }`, `Move`, `Label`, `Sync { pad }`). A Rust layer
@@ -380,8 +381,10 @@ A crash loses at most the writes since the last sync, and never a post hook's
 view. Layout (D12): one append-only record log per session
 (length-prefixed, checksummed records) plus a scratchpad file rewritten
 atomically. A delivering record is durable before its items are removed;
-load drops delivered items. One `flock` lease per session: only the holder
-writes, runs steps, and runs hooks. JMFTS is a replica fed from the log.
+load drops delivered items. Open cuts the log back to its last good `Sync`
+(a torn tail) and keeps the cut bytes aside. One `flock` lease per session:
+only the holder writes, runs steps, and runs hooks. JMFTS is a replica fed
+from the log. Built in `crates/tau-store` (`Store::create`, `open`, `save`).
 
 ## Open questions
 
