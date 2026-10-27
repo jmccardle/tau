@@ -111,9 +111,8 @@ A node no cursor's walk passes through. Nothing marks it.
 *spike* `Session::walk` · retires fold, path, splice
 
 `walk(n)`: the nodes root → … → `n`, inclusive. Nothing spliced or filtered.
-
-### tip, line
-The last node of a walk; a walk seen as one path through the tree.
+Its last node is its **tip**; seen as a path through the tree, it is a
+**line**.
 
 ### LCA
 not yet spiked · new
@@ -394,20 +393,12 @@ every outcome lost (D4). Input goes under it; a step re-runs it.
 What load does after replay: every cursor's auto-step off, and every
 delivered item dropped (I7).
 
-### sample
-retires completion, model call
+### sample, context, message
+retires completion, model call, `ExtensionContext`/`ctx`, the `context`
+hook, message entry, `AgentMessage`
 
-One provider request over `walk(at)` with `config_at(at)` (I1).
-
-### context
-retires `ExtensionContext`/`ctx`, the `context` hook
-
-The walk a sample is drawn from.
-
-### message
-retires message entry, `AgentMessage`
-
-The provider's wire unit. Never stored.
+A **sample** is one provider request over the **context**, `walk(at)`, with
+`config_at(at)` (I1). A **message** is the provider's wire unit, never stored.
 
 ### config
 `Body::Config`, `config_at` · retires config entry, `CONFIG_KEYS`,
@@ -454,23 +445,15 @@ not yet spiked · retires `request_user_action`
 `await cursor.ask(target, question)`; the cursor is locked until it is
 answered or declined.
 
-### status
-not yet spiked
-
-State an extension shows every frontend (`cursor.show`). Driver memory.
 
 ## Effects and edges
 
-### provider
-retires backend (config key), `ProviderSpec`
+### provider, model
+retires backend (config key), `ProviderSpec`, `Model` descriptor,
+`model_spec`
 
-The Python adapter for one API family; converts walks to messages (`model.md`
-§10).
-
-### model
-retires `Model` descriptor, `model_spec`
-
-The model name, as the provider's API spells it.
+The **provider** is the Python adapter for one API family; it converts walks
+to messages (`model.md` §10). The **model** is a name, as its API spells it.
 
 ### tool
 retires `AgentTool`, `ToolDefinition`, `ToolInfo`
@@ -489,10 +472,12 @@ retires head, `Backend`, `RemoteBackend`
 A program that drives sessions and shows events (`tau serve` first). A
 **client** is one connection to it, with an id.
 
-### event
+### event, status
 not yet spiked · retires `AgentEvent`, `WireEvent`
 
-One type in eight kinds (`model.md` §9). Observers cannot change anything.
+One type in eight kinds (`model.md` §9); observers cannot change anything.
+**Status** is the state an extension shows every frontend (`cursor.show`),
+driver memory.
 
 ### driver
 Python `tau_next.driver` · new
@@ -506,25 +491,19 @@ place that awaits.
 What must be made durable, in order, queued in `Session::outbox`:
 `Write { node, mv }` (a node and its move, one record), `Move`, or
 `Scratchpad` (rewrite the scratchpad file).
-
-### outbox
-*spike* `Session::outbox` · new
-
-The records core has queued and the store has not yet written.
+Queued in the **outbox** (`Session::outbox`) until the store writes them.
 
 ### store
 `tau_store` · retires session store, `SessionCatalog`
 
 The only Rust code that touches the filesystem: one record log and one
-scratchpad file per session (D12).
+scratchpad file per session (D12). **JMFTS** (Phase 7) is a replica of the
+log, never the store of record.
 
 ### lease
 retires `SessionWriteLock`
 
 One `flock` per session. Only the holder writes and runs steps.
-
-### JMFTS
-A replica of the record log (Phase 7). Never the store of record.
 
 ## Testing and scaffold
 
