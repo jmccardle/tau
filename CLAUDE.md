@@ -5,9 +5,9 @@
 (`python/tau_next/`). The τ repository absorbs this one as τ 0.16.0: `tests/`
 replaces the 0.15 suite, `parity/` is deleted.
 
-`docs/plan.md` is the source of truth for design decisions until
-`docs/design/` exists; after Phase 1 those files supersede it. Read its §1
-(model) and §3 (phases) before changing anything structural.
+The design is `docs/design/` (`model.md`, `glossary.md`, `decisions/`).
+`docs/plan.md` holds the phases and current status. Read both before changing
+anything structural.
 
 τ 0.15 lives at `~/Development/tau` (tag `v0.15.0`). Read it to learn
 behavior. Never copy from it.
