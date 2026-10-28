@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/tau-core", "crates/tau-store", "crates/tau-py"]
+# Its own workspace and lockfile: encoders τ does not depend on.
+exclude = ["crates/bench-formats"]
 
 [workspace.package]
 version = "0.16.0-dev.0"

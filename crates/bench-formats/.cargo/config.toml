@@ -1,0 +1,3 @@
+# Build under the repository's ignored target/, not inside the source tree.
+[build]
+target-dir = "../../target/bench-formats"

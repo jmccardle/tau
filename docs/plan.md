@@ -41,7 +41,8 @@ random answers to every job, hooks that move the cursor included. A turn costs
 proptests are in. The store (3b, `crates/tau-store`, ~270 lines) writes the
 log and the scratchpad file, holds the lease, and cuts torn tails; a stored
 turn costs ~3 ms (fsyncs). The clippy gate (pedantic, `-D warnings`) is
-green. Missing: the JMFTS replica trait (nothing feeds it before Phase 7) and
+green. `docs/benchmarks.md` records the access-pattern benchmarks and how
+to rerun them. Missing: the JMFTS replica trait (nothing feeds it before Phase 7) and
 the bindings.
 
 ### Order from here (approved 2026-10-27; bends rule 5)
@@ -54,7 +55,9 @@ directly, so:
 2. **Grow the spike into 3a + 3c** with a Rust scenario test per item in the
    Phase 2 coverage list, written before the code that passes it. These are
    the behavior spec at the core level.
-3. **3b store** (done), then **`tau-py` + a minimal driver**.
+3. **3b store** (done), then **`tau-py` + a minimal driver**. D14 (proposed:
+   cold bodies leave memory, text by content, a segmented log) is decided
+   first, since it changes how the driver reads the tree; its build can follow.
 4. **Config overhaul** (approved 2026-10-27), in Python: the config file
    parser and `tau config check`. Written up as D13 when it starts. Agreed so far:
    - the flat `{"model": {...}}` file stays valid; an object with `models` is
