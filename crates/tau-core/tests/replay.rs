@@ -5,7 +5,8 @@ use proptest::prelude::*;
 use tau_core::machine::Machine;
 use tau_core::step::{Draft, Fed, Job};
 use tau_core::tree::{
-    Author, Body, Error, ItemData, Outcome, Part, Record, Scratchpad, Session, Stop,
+    Author, Body, CursorId, Error, ItemData, NodeId, Outcome, Part, Record, Scratchpad, Session,
+    Stop,
 };
 
 /// What the store holds after a crash: the records up to the last `Sync` and
@@ -80,24 +81,24 @@ fn op() -> impl Strategy<Value = Op> {
 }
 
 fn cursors(s: &Session) -> u64 {
-    (0..).take_while(|c| s.at(*c).is_ok()).count() as u64
+    (0..CursorId::MAX).take_while(|c| s.at(*c).is_ok()).count() as u64
 }
 
 fn nodes(s: &Session) -> u64 {
-    (0..).take_while(|n| s.node(*n).is_ok()).count() as u64
+    (0..NodeId::MAX).take_while(|n| s.node(*n).is_ok()).count() as u64
 }
 
 /// Applies `op` with every index taken modulo what exists; ops that do not
 /// apply (an answer with no batch, a delivery with no item) do nothing.
 fn apply(s: &mut Session, op: &Op) {
     let (nc, nn) = (cursors(s), nodes(s));
-    let c = move |i: usize| i as u64 % nc;
-    let n = move |i: usize| i as u64 % nn;
+    let cursor = move |i: usize| i as u64 % nc;
+    let node = move |i: usize| i as u64 % nn;
     let by = Author::Core;
     match *op {
-        Op::Open(t) => drop(s.open(n(t), by, 0).unwrap()),
+        Op::Open(t) => drop(s.open(node(t), by, 0).unwrap()),
         Op::User(i) => drop(
-            s.write(c(i), Body::User("u".into()), vec![], by, 0)
+            s.write(cursor(i), Body::User("u".into()), vec![], by, 0)
                 .unwrap(),
         ),
         Op::Batch(i, k) => {
@@ -112,10 +113,11 @@ fn apply(s: &mut Session, op: &Op) {
                 parts,
                 stop: Stop::Tools,
             };
-            s.write(c(i), body, vec![], Author::Provider, 0).unwrap();
+            s.write(cursor(i), body, vec![], Author::Provider, 0)
+                .unwrap();
         }
         Op::Answer(i) => {
-            let cur = c(i);
+            let cur = cursor(i);
             let at = s.at(cur).unwrap();
             let out: Vec<_> = tau_core::tree::calls(&s.node(at).unwrap().body)
                 .into_iter()
@@ -131,20 +133,20 @@ fn apply(s: &mut Session, op: &Op) {
                 kind: "note".into(),
                 data: "n".into(),
             };
-            s.append(Some(n(t)), by, body, vec![], 0).unwrap();
+            s.append(Some(node(t)), by, body, vec![], 0).unwrap();
         }
-        Op::Go(i, t) => s.move_to(c(i), n(t), by, 0).unwrap(),
-        Op::Label(l, i) => s.set_label(&format!("l{l}"), c(i)).unwrap(),
+        Op::Go(i, t) => s.move_to(cursor(i), node(t), by, 0).unwrap(),
+        Op::Label(l, i) => s.set_label(&format!("l{l}"), cursor(i)).unwrap(),
         Op::Unlabel(l) => drop(s.remove_label(&format!("l{l}"))),
         Op::Input(i) => {
             let data = ItemData::Input {
                 client: "t".into(),
                 text: "in".into(),
             };
-            s.add_item(c(i), data);
+            s.add_item(cursor(i), data);
         }
         Op::Deliver(i) => {
-            let cur = c(i);
+            let cur = cursor(i);
             let first = s.items(cur).next().map(|it| it.id);
             if let Some(item) = first {
                 s.write(cur, Body::User("in".into()), vec![item], by, 0)

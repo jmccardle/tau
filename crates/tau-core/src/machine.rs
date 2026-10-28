@@ -18,6 +18,7 @@ pub struct Machine {
 }
 
 impl Machine {
+    #[must_use]
     pub fn new(session: Session) -> Self {
         Self {
             session,
@@ -27,10 +28,12 @@ impl Machine {
         }
     }
 
+    #[must_use]
     pub fn busy(&self, cursor: CursorId) -> bool {
         self.steps.get(&cursor).is_some_and(|s| !s.resting())
     }
 
+    #[must_use]
     pub fn locked(&self, cursor: CursorId) -> bool {
         self.asking.get(&cursor).is_some_and(|n| *n > 0)
     }
@@ -38,6 +41,10 @@ impl Machine {
     // Frontend calls. Each resets the cursor's `max_steps` count and syncs on return.
 
     /// Add an input item; wakes the cursor. Waits for the next input phase if busy.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open; `Locked` if `cursor` has an open question.
     pub fn input(
         &mut self,
         cursor: CursorId,
@@ -56,6 +63,10 @@ impl Machine {
     }
 
     /// Input plus auto-step on.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open; `Locked` if `cursor` has an open question.
     pub fn send(
         &mut self,
         cursor: CursorId,
@@ -69,6 +80,10 @@ impl Machine {
     }
 
     /// `Session.step`: run the phases once with auto-step off.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open; `Locked` if `cursor` has an open question; `Busy` if a step is running.
     pub fn step(&mut self, cursor: CursorId, _client: String, now: u64) -> Result<(), Error> {
         self.frontend(cursor)?;
         if self.busy(cursor) {
@@ -82,6 +97,11 @@ impl Machine {
     /// Go to `to`: auto-step off, then a wake. On a busy cursor the step is
     /// aborted and the move applies after its `post_step`; returns whether the
     /// driver must cancel the effect in flight.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open; `Locked` if `cursor` has an open question; `NoSuchNode` if `to` is not a node;
+    /// `HookRunning` if a cursor hook job is out.
     pub fn go_to(
         &mut self,
         cursor: CursorId,
@@ -109,6 +129,10 @@ impl Machine {
     }
 
     /// Turn auto-step on or off; on wakes the cursor.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open.
     pub fn set_auto(
         &mut self,
         cursor: CursorId,
@@ -129,18 +153,21 @@ impl Machine {
     /// Esc. Allowed while locked; the question stays open. Returns whether the
     /// driver must cancel the effect in flight.
     pub fn abort(&mut self, cursor: CursorId) -> bool {
-        match self.steps.get_mut(&cursor).filter(|s| !s.resting()) {
-            Some(step) => step.abort(&mut self.session),
-            None => {
-                self.session.auto.insert(cursor, false);
-                false
-            }
+        if let Some(step) = self.steps.get_mut(&cursor).filter(|s| !s.resting()) {
+            step.abort(&mut self.session)
+        } else {
+            self.session.auto.insert(cursor, false);
+            false
         }
     }
 
     // Extension and driver calls.
 
     /// Open a cursor at `at`; opening wakes it (Q32).
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `at` is not a node.
     pub fn open(&mut self, at: NodeId, by: Author, now: u64) -> Result<CursorId, Error> {
         let cursor = self.session.open(at, by, now)?;
         self.wake(cursor, false, now);
@@ -148,6 +175,10 @@ impl Machine {
     }
 
     /// Add an item to `to`'s scratchpad; wakes `to`.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `to` is not open.
     pub fn add_item(&mut self, to: CursorId, data: ItemData, now: u64) -> Result<ItemId, Error> {
         self.session.at(to)?;
         let id = self.session.add_item(to, data);
@@ -179,6 +210,10 @@ impl Machine {
 
     /// The cursor's next job; `Rest` when it has no step. A go-to waiting on an
     /// aborted step applies here, once that step rests, and wakes the cursor.
+    ///
+    /// # Errors
+    ///
+    /// What the step's `next_job` returns, or a waiting go-to's `move_to`.
     pub fn next_job(&mut self, cursor: CursorId) -> Result<Job, Error> {
         let Some(step) = self.steps.get_mut(&cursor) else {
             return Ok(Job::Rest);
@@ -201,6 +236,15 @@ impl Machine {
         }
     }
 
+    /// Feed the result of the job last handed out for `cursor`.
+    ///
+    /// # Errors
+    ///
+    /// What the step's `feed` returns.
+    ///
+    /// # Panics
+    ///
+    /// If no job was handed out for `cursor`, or `fed` does not answer it.
     pub fn feed(&mut self, cursor: CursorId, fed: Fed, now: u64) -> Result<(), Error> {
         let step = self.steps.get_mut(&cursor).expect("a job was handed out");
         step.feed(&mut self.session, fed, now)

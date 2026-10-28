@@ -40,9 +40,9 @@ random answers to every job, hooks that move the cursor included. A turn costs
 ~15–30 µs at any session depth. Replay (`Session::load`) and the I7
 proptests are in. The store (3b, `crates/tau-store`, ~270 lines) writes the
 log and the scratchpad file, holds the lease, and cuts torn tails; a stored
-turn costs ~3 ms (fsyncs). Missing: the JMFTS replica
-trait (nothing feeds it before Phase 7), the bindings, and the clippy gate
-(pedantic lints; deferred to the Phase 3 closeout).
+turn costs ~3 ms (fsyncs). The clippy gate (pedantic, `-D warnings`) is
+green. Missing: the JMFTS replica trait (nothing feeds it before Phase 7) and
+the bindings.
 
 ### Order from here (approved 2026-10-27; bends rule 5)
 

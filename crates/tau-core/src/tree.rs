@@ -189,6 +189,11 @@ pub struct Session {
 }
 
 impl Session {
+    /// A session with a `Config` root, a `System` under it, and one cursor there.
+    ///
+    /// # Panics
+    ///
+    /// Never: that root and child pass V1 and V2.
     pub fn create(config: impl Into<Config>, system: &str, time: u64) -> (Self, CursorId) {
         let mut s = Self::default();
         let root = s
@@ -213,6 +218,11 @@ impl Session {
         (s, cursor)
     }
 
+    /// Open a cursor at `at`.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `at` is not a node.
     pub fn open(&mut self, at: NodeId, by: Author, time: u64) -> Result<CursorId, Error> {
         self.node(at)?;
         let id = self.at.len() as CursorId;
@@ -221,6 +231,13 @@ impl Session {
         Ok(id)
     }
 
+    /// Append a node; the only checks are V1 and V2 (I5).
+    ///
+    /// # Errors
+    ///
+    /// `RootNotConfig` for a root that is not `Config` (V1); `NoSuchNode`
+    /// if `parent` is not a node; `DuplicateCall` for `Results` that name a
+    /// call twice (V2).
     pub fn append(
         &mut self,
         parent: Option<NodeId>,
@@ -237,6 +254,10 @@ impl Session {
     }
 
     /// Append under `at` and move onto it, as one record; then drop delivered items.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open; else as `append`.
     pub fn write(
         &mut self,
         cursor: CursorId,
@@ -246,7 +267,12 @@ impl Session {
         time: u64,
     ) -> Result<NodeId, Error> {
         let from = self.at(cursor)?;
-        let node = self.check(Some(from), by.clone(), body, delivers.clone(), time)?;
+        let node = self.check(Some(from), by.clone(), body, delivers, time)?;
+        let id = node.id;
+        if !node.delivers.is_empty() {
+            self.pad.items.retain(|i| !node.delivers.contains(&i.id));
+            self.touch_pad();
+        }
         let mv = Move {
             cursor,
             from: Some(from),
@@ -258,13 +284,14 @@ impl Session {
         self.at.insert(cursor, node.id);
         self.moves.push(mv.clone());
         self.queue(Record::Write { node, mv: Some(mv) });
-        if !delivers.is_empty() {
-            self.pad.items.retain(|i| !delivers.contains(&i.id));
-            self.touch_pad();
-        }
-        Ok(*self.at.get(&cursor).unwrap())
+        Ok(id)
     }
 
+    /// Move `cursor` to `to`; no record when it is already there.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `to` is not a node; `NoSuchCursor` if `cursor` is not open.
     pub fn move_to(
         &mut self,
         cursor: CursorId,
@@ -321,12 +348,20 @@ impl Session {
         })
     }
 
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `id` is not a node.
     pub fn node(&self, id: NodeId) -> Result<&Node, Error> {
         self.nodes
             .get(usize::try_from(id).unwrap_or(usize::MAX))
             .ok_or(Error::NoSuchNode(id))
     }
 
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open.
     pub fn at(&self, cursor: CursorId) -> Result<NodeId, Error> {
         self.at
             .get(&cursor)
@@ -334,6 +369,7 @@ impl Session {
             .ok_or(Error::NoSuchCursor(cursor))
     }
 
+    #[must_use]
     pub fn walk(&self, n: NodeId) -> Vec<&Node> {
         let mut out: Vec<&Node> = std::iter::successors(self.node(n).ok(), |x| {
             x.parent.and_then(|p| self.node(p).ok())
@@ -344,6 +380,14 @@ impl Session {
     }
 
     /// The nearest `Config` on `walk(n)`; always defined, since every root is one (V1).
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `n` is not a node.
+    ///
+    /// # Panics
+    ///
+    /// If a root is not `Config`, which V1 rules out.
     pub fn config_at(&self, n: NodeId) -> Result<&Config, Error> {
         let mut x = self.node(n)?;
         loop {
@@ -355,6 +399,10 @@ impl Session {
     }
 
     /// The deepest node on both walks; `None` across trees.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `a` or `b` is not a node.
     pub fn lca(&self, a: NodeId, b: NodeId) -> Result<Option<NodeId>, Error> {
         self.node(b)?;
         let on_a: std::collections::BTreeSet<NodeId> =
@@ -368,6 +416,10 @@ impl Session {
     }
 
     /// Set a label on a cursor; a label already set elsewhere moves.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open.
     pub fn set_label(&mut self, label: &str, cursor: CursorId) -> Result<(), Error> {
         self.at(cursor)?;
         if self.labels.get(label) != Some(&cursor) {
@@ -380,6 +432,11 @@ impl Session {
         Ok(())
     }
 
+    /// Remove a label.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchLabel` if `label` is not set.
     pub fn remove_label(&mut self, label: &str) -> Result<(), Error> {
         self.labels
             .remove(label)
@@ -391,6 +448,11 @@ impl Session {
         Ok(())
     }
 
+    /// The cursor `label` is on.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchLabel` if `label` is not set.
     pub fn label(&self, label: &str) -> Result<CursorId, Error> {
         self.labels
             .get(label)
@@ -415,6 +477,7 @@ impl Session {
 
     /// `next` from the end of the walk, without building it: only the last
     /// node that is not Config or Custom decides.
+    #[must_use]
     pub fn next(&self, cursor: CursorId) -> Next {
         let last = self.at(cursor).ok().and_then(|a| {
             std::iter::successors(self.node(a).ok(), |x| {
@@ -464,12 +527,17 @@ impl Session {
     }
 
     /// The scratchpad as it stands.
+    #[must_use]
     pub fn scratchpad(&self) -> &Scratchpad {
         &self.pad
     }
 
     /// Load (I7): replay the log's records, take the scratchpad file, then
     /// `reconcile`. Pure; the store reads the files. Nothing is queued.
+    ///
+    /// # Errors
+    ///
+    /// `BadRecord` with its position for the first record replay cannot apply.
     pub fn load(records: impl IntoIterator<Item = Record>, pad: Scratchpad) -> Result<Self, Error> {
         let mut s = Self::default();
         for (i, r) in records.into_iter().enumerate() {
@@ -526,6 +594,7 @@ impl Session {
     }
 
     /// True when every queued record is covered by a `Sync`.
+    #[must_use]
     pub fn synced(&self) -> bool {
         !self.unsynced
     }
@@ -547,6 +616,7 @@ impl Session {
     }
 }
 
+#[must_use]
 pub fn calls(body: &Body) -> Vec<(&str, &str, &str)> {
     match body {
         Body::Assistant {
@@ -565,6 +635,7 @@ pub fn calls(body: &Body) -> Vec<(&str, &str, &str)> {
     }
 }
 
+#[must_use]
 pub fn next(walk: &[&Node]) -> Next {
     decide(
         walk.iter()

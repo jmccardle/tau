@@ -18,8 +18,8 @@ use tau_core::tree::{Record, Scratchpad, Session};
 
 const LOG: &str = "log";
 const PAD: &str = "scratchpad";
-const LOG_MAGIC: &[u8; 8] = b"tau-log\0";
-const PAD_MAGIC: &[u8; 8] = b"tau-pad\0";
+const LOG_MAGIC: [u8; 8] = *b"tau-log\0";
+const PAD_MAGIC: [u8; 8] = *b"tau-pad\0";
 /// The file version this build writes and reads.
 pub const VERSION: u32 = 1;
 /// Magic plus version.
@@ -85,7 +85,12 @@ pub struct Store {
 
 impl Store {
     /// A new session in `dir` (created if missing), holding `session`'s
-    /// records so far, synced. `Exists` if `dir` already holds a log.
+    /// records so far, synced.
+    ///
+    /// # Errors
+    ///
+    /// `Exists` if `dir` already holds a log; `Leased` if another store holds
+    /// the new log's lease; `Io`; whatever `save` returns.
     pub fn create(dir: &Path, session: &mut Session) -> Result<Self, Error> {
         fs::create_dir_all(dir)?;
         // Written whole under a private name, then linked into place: a crash
@@ -120,6 +125,12 @@ impl Store {
     /// Takes the lease and loads the session (I7): the log's records up to
     /// its last `Sync`, and the scratchpad file. Anything after that `Sync`
     /// (a torn tail, records never synced, damage) is cut and kept aside.
+    ///
+    /// # Errors
+    ///
+    /// `Leased` if another store holds the lease; `NotASession` for bad magic
+    /// or a log with no `Sync`; `Version`; `Corrupt` for a damaged scratchpad
+    /// file; `Core` for records that do not replay; `Io`.
     pub fn open(dir: &Path) -> Result<(Self, Session), Error> {
         let path = dir.join(LOG);
         let mut log = OpenOptions::new().read(true).append(true).open(&path)?;
@@ -155,6 +166,11 @@ impl Store {
     /// `Sync`; at a `Sync` the log is written and synced, then the scratchpad
     /// file rewritten if the `Sync` carries it (D12). Records after the last
     /// `Sync` stay buffered.
+    ///
+    /// # Errors
+    ///
+    /// `Failed` if an earlier write failed; `Io`, after which every later
+    /// call is `Failed`.
     pub fn save(&mut self, session: &mut Session) -> Result<(), Error> {
         if self.failed {
             return Err(Error::Failed);
@@ -201,14 +217,14 @@ fn sync_dir(dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn header(magic: &[u8; 8]) -> Vec<u8> {
+fn header(magic: [u8; 8]) -> Vec<u8> {
     let mut h = magic.to_vec();
     h.extend_from_slice(&VERSION.to_le_bytes());
     h
 }
 
-fn check_header(bytes: &[u8], magic: &[u8; 8], path: &Path) -> Result<(), Error> {
-    if bytes.len() < HEADER || &bytes[..8] != magic {
+fn check_header(bytes: &[u8], magic: [u8; 8], path: &Path) -> Result<(), Error> {
+    if bytes.len() < HEADER || bytes[..8] != magic {
         return Err(Error::NotASession(path.into()));
     }
     let version = u32::from_le_bytes(bytes[8..HEADER].try_into().unwrap());

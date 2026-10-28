@@ -95,6 +95,10 @@ enum Pos {
 }
 
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent flags: asked, aborted, committed, in_hook; no two encode one state"
+)]
 pub struct Step {
     pub cursor: CursorId,
     pos: Pos,
@@ -116,6 +120,7 @@ pub struct Step {
 
 impl Step {
     /// A wake. `asked`: a frontend's `Session.step`, which runs phases with auto-step off.
+    #[must_use]
     pub fn wake(s: &Session, cursor: CursorId, asked: bool, now: u64) -> Self {
         let seen = s.changes.get(&cursor).copied().unwrap_or(0);
         Self {
@@ -135,6 +140,11 @@ impl Step {
         }
     }
 
+    /// The step's next job; `Rest` once it ends.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open.
     pub fn next_job(&mut self, s: &mut Session) -> Result<Job, Error> {
         let job = self.job(s)?;
         self.in_hook = matches!(job, Job::Hooks { .. });
@@ -151,27 +161,25 @@ impl Step {
             };
             return Ok(match self.pos {
                 Pos::PreStep => hooks(Hook::PreStep, None),
-                Pos::Input => match s
-                    .items(self.cursor)
-                    .find(|i| matches!(i.data, ItemData::Input { .. }))
-                    .filter(|_| on)
-                {
-                    Some(item) => {
-                        let ItemData::Input { client, text } = &item.data else {
-                            unreachable!()
-                        };
-                        self.draft = Some(Draft {
-                            body: Body::User(text.clone()),
-                            delivers: vec![item.id],
-                            by: Author::Frontend(client.clone()),
+                Pos::Input => {
+                    let input = s
+                        .items(self.cursor)
+                        .filter(|_| on)
+                        .find_map(|i| match &i.data {
+                            ItemData::Input { client, text } => Some((i.id, client, text)),
+                            ItemData::Extension { .. } => None,
                         });
-                        hooks(Hook::PreInput, self.draft.clone())
-                    }
-                    None => {
+                    let Some((id, client, text)) = input else {
                         self.pos = Pos::PreSample;
                         continue;
-                    }
-                },
+                    };
+                    self.draft = Some(Draft {
+                        body: Body::User(text.clone()),
+                        delivers: vec![id],
+                        by: Author::Frontend(client.clone()),
+                    });
+                    hooks(Hook::PreInput, self.draft.clone())
+                }
                 Pos::PreSample if on && s.next(self.cursor) == Next::Sample => {
                     hooks(Hook::PreSample, None)
                 }
@@ -223,6 +231,15 @@ impl Step {
         }
     }
 
+    /// Feed the result of the job last handed out.
+    ///
+    /// # Errors
+    ///
+    /// What a commit's `write` or `append` returns (`NoSuchCursor`).
+    ///
+    /// # Panics
+    ///
+    /// If `fed` does not answer the job last handed out.
     pub fn feed(&mut self, s: &mut Session, fed: Fed, now: u64) -> Result<(), Error> {
         self.in_hook = false;
         match (self.pos, fed) {
@@ -327,10 +344,12 @@ impl Step {
     }
 
     /// True while a cursor hook job is out: a frontend's go-to is refused.
+    #[must_use]
     pub fn in_hook(&self) -> bool {
         self.in_hook
     }
 
+    #[must_use]
     pub fn resting(&self) -> bool {
         self.pos == Pos::Rest
     }

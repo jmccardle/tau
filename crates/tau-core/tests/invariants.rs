@@ -44,7 +44,7 @@ fn nodes(s: &Session) -> Vec<Node> {
 }
 
 fn cursors(s: &Session) -> u64 {
-    (0..).take_while(|c| s.at(*c).is_ok()).count() as u64
+    (0..CursorId::MAX).take_while(|c| s.at(*c).is_ok()).count() as u64
 }
 
 fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
@@ -81,172 +81,225 @@ impl Driver {
     fn drive(&mut self, m: &mut Machine, c: CursorId, k: usize) -> Result<(), TestCaseError> {
         let job = m.next_job(c).unwrap();
         let before = nodes(&m.session).len();
-        let fed = match job {
+        let fed = match &job {
             Job::Rest => return Ok(()),
-            Job::Hooks { point, .. } => {
-                if point == Hook::PreSample {
-                    // I1: the sample phase applies only where `next` says so.
-                    prop_assert_eq!(m.session.next(c), Next::Sample);
-                }
-                match k % 16 {
-                    0 => Fed::Hooks {
-                        stop: Some("halt".into()),
-                        draft: None,
-                    },
-                    1 => Fed::HookFailed("boom".into()),
-                    2 => {
-                        // A hook's `cursor.move`, to a node that may not exist.
-                        let to = (k / 16) as NodeId % (before as NodeId + 2);
-                        let at = m.session.at(c).unwrap();
-                        let moved = m.session.move_to(c, to, Author::Extension("x".into()), 0);
-                        if to >= before as NodeId {
-                            prop_assert_eq!(moved, Err(Error::NoSuchNode(to))); // I3
-                            prop_assert_eq!(m.session.at(c), Ok(at));
-                        }
-                        ok()
-                    }
-                    3 if point == Hook::PreSample => Fed::Hooks {
-                        stop: None,
-                        draft: Some(reply(vec![Part::Text("answered".into())], Stop::End)),
-                    },
-                    _ => ok(),
-                }
-            }
-            Job::Sample => match k % 4 {
-                0 => Fed::Sampled {
-                    reply: Some(reply(vec![Part::Text("hi".into())], Stop::End)),
-                    error: None,
-                },
-                1 => {
-                    let parts = (0..1 + k / 4 % 3)
-                        .map(|j| Part::Call {
-                            id: format!("c{j}"),
-                            tool: "t".into(),
-                            args_raw: "{}".into(),
-                        })
-                        .collect();
-                    Fed::Sampled {
-                        reply: Some(reply(parts, Stop::Tools)),
-                        error: None,
-                    }
-                }
-                2 => Fed::Sampled {
-                    reply: None,
-                    error: Some("overloaded".into()),
-                },
-                _ => Fed::Sampled {
-                    reply: None,
-                    error: None,
-                },
-            },
+            Job::Hooks { point, .. } => hook(m, c, *point, k, before)?,
+            Job::Sample => sample(k),
             Job::RunCalls(run) => {
-                let node = m.session.at(c).unwrap();
-                let ids: Vec<String> = run.iter().map(|r| r.id.clone()).collect();
-                let batch: Vec<String> = calls(&m.session.node(node).unwrap().body)
-                    .into_iter()
-                    .map(|(id, ..)| id.to_string())
-                    .collect();
-                prop_assert_eq!(&ids, &batch, "RunCalls hands out the batch at `at`");
-                self.batches.insert(
-                    c,
-                    Batch {
-                        node,
-                        calls: ids,
-                        fed: BTreeMap::new(),
-                    },
-                );
-                self.run += 1;
-                return Ok(());
+                let ids = run.iter().map(|r| r.id.clone()).collect();
+                return self.run_calls(m, c, ids);
             }
-            Job::Pending => {
-                let b = self.batches.get_mut(&c).expect("a batch is running");
-                let open: Vec<&String> = b
-                    .calls
-                    .iter()
-                    .filter(|id| !b.fed.contains_key(*id))
-                    .collect();
-                let call = open[k % open.len()].clone();
-                let outcome = match k / 8 % 3 {
-                    0 => Outcome::Ok(format!("{call} ok")),
-                    1 => Outcome::Err(format!("{call} failed")),
-                    _ => Outcome::Interrupted,
-                };
-                b.fed.insert(call.clone(), outcome.clone());
-                Fed::CallDone {
-                    call,
-                    outcome,
-                    by: Author::Tools,
-                }
-            }
+            Job::Pending => self.call_done(c, k),
             Job::Wait { .. } => Fed::Waited,
         };
         let at = m.session.at(c).unwrap();
-        let point = match &job {
-            Job::Hooks { point, .. } => Some(*point),
-            _ => None,
-        };
         m.feed(c, fed, 0).unwrap();
         let after = nodes(&m.session);
-        if point == Some(Hook::PreReply) && after.len() > before {
+        if matches!(
+            job,
+            Job::Hooks {
+                point: Hook::PreReply,
+                ..
+            }
+        ) && after.len() > before
+        {
             // I1: the reply lands under `at` as it stands at the commit.
             let n = &after[before];
             prop_assert_eq!(n.parent, Some(at));
             prop_assert!(matches!(n.body, Body::Assistant { .. }), "a reply");
         }
-        if job == Job::Pending
-            && let Some(b) = self.batches.get(&c)
-            && b.fed.len() == b.calls.len()
-        {
-            // I4: one `Results` under the batch, one outcome per call, in call order.
-            prop_assert_eq!(after.len(), before + 1);
-            let n = &after[before];
-            let want: Vec<_> = b
-                .calls
-                .iter()
-                .map(|id| (id.clone(), b.fed[id].clone(), Author::Tools))
-                .collect();
-            prop_assert_eq!(n.parent, Some(b.node));
-            prop_assert_eq!(&n.body, &Body::Results(want));
-            prop_assert_eq!(m.session.at(c), Ok(n.id));
-            self.batches.remove(&c);
-            self.joined += 1;
+        if job == Job::Pending {
+            self.check_join(m, c, &after[before..])?;
         }
+        Ok(())
+    }
+
+    fn run_calls(
+        &mut self,
+        m: &Machine,
+        c: CursorId,
+        ids: Vec<String>,
+    ) -> Result<(), TestCaseError> {
+        let node = m.session.at(c).unwrap();
+        let batch: Vec<String> = calls(&m.session.node(node).unwrap().body)
+            .into_iter()
+            .map(|(id, ..)| id.to_string())
+            .collect();
+        prop_assert_eq!(&ids, &batch, "RunCalls hands out the batch at `at`");
+        self.batches.insert(
+            c,
+            Batch {
+                node,
+                calls: ids,
+                fed: BTreeMap::new(),
+            },
+        );
+        self.run += 1;
+        Ok(())
+    }
+
+    /// One open call of `c`'s batch done, its outcome picked by `k`.
+    fn call_done(&mut self, c: CursorId, k: usize) -> Fed {
+        let b = self.batches.get_mut(&c).expect("a batch is running");
+        let open: Vec<&String> = b
+            .calls
+            .iter()
+            .filter(|id| !b.fed.contains_key(*id))
+            .collect();
+        let call = open[k % open.len()].clone();
+        let outcome = match k / 8 % 3 {
+            0 => Outcome::Ok(format!("{call} ok")),
+            1 => Outcome::Err(format!("{call} failed")),
+            _ => Outcome::Interrupted,
+        };
+        b.fed.insert(call.clone(), outcome.clone());
+        Fed::CallDone {
+            call,
+            outcome,
+            by: Author::Tools,
+        }
+    }
+
+    /// After a `CallDone`: once every call of the batch is fed, `added` is
+    /// exactly its `Results` (I4).
+    fn check_join(
+        &mut self,
+        m: &Machine,
+        c: CursorId,
+        added: &[Node],
+    ) -> Result<(), TestCaseError> {
+        let Some(b) = self
+            .batches
+            .get(&c)
+            .filter(|b| b.fed.len() == b.calls.len())
+        else {
+            return Ok(());
+        };
+        // I4: one `Results` under the batch, one outcome per call, in call order.
+        prop_assert_eq!(added.len(), 1);
+        let want: Vec<_> = b
+            .calls
+            .iter()
+            .map(|id| (id.clone(), b.fed[id].clone(), Author::Tools))
+            .collect();
+        prop_assert_eq!(added[0].parent, Some(b.node));
+        prop_assert_eq!(&added[0].body, &Body::Results(want));
+        prop_assert_eq!(m.session.at(c), Ok(added[0].id));
+        self.batches.remove(&c);
+        self.joined += 1;
         Ok(())
     }
 }
 
-fn apply(m: &mut Machine, d: &mut Driver, op: &Op) -> Result<(), TestCaseError> {
-    let (nc, nn) = (cursors(&m.session), nodes(&m.session).len() as NodeId);
-    let c = |i: usize| i as CursorId % nc;
-    // Up to two ids past the last node: those must be refused (I3).
-    let n = |i: usize| i as NodeId % (nn + 2);
-    let term = || "term".to_string();
-    match *op {
-        Op::Send(i) => drop(m.send(c(i), term(), "hello", 0).unwrap()),
-        Op::Input(i) => drop(m.input(c(i), term(), "more", 0).unwrap()),
-        Op::Step(i) => {
-            let busy = m.busy(c(i));
-            let r = m.step(c(i), term(), 0);
-            prop_assert_eq!(r, if busy { Err(Error::Busy(c(i))) } else { Ok(()) });
+/// A hook point's answer, picked by `k`: halt, fail, a hook's move, a
+/// `pre_sample` hook answering the sample itself, or nothing.
+fn hook(
+    m: &mut Machine,
+    c: CursorId,
+    point: Hook,
+    k: usize,
+    nn: usize,
+) -> Result<Fed, TestCaseError> {
+    if point == Hook::PreSample {
+        // I1: the sample phase applies only where `next` says so.
+        prop_assert_eq!(m.session.next(c), Next::Sample);
+    }
+    Ok(match k % 16 {
+        0 => Fed::Hooks {
+            stop: Some("halt".into()),
+            draft: None,
+        },
+        1 => Fed::HookFailed("boom".into()),
+        2 => {
+            // A hook's `cursor.move`, to a node that may not exist.
+            let to = (k / 16) as NodeId % (nn as NodeId + 2);
+            let at = m.session.at(c).unwrap();
+            let moved = m.session.move_to(c, to, Author::Extension("x".into()), 0);
+            if to >= nn as NodeId {
+                prop_assert_eq!(moved, Err(Error::NoSuchNode(to))); // I3
+                prop_assert_eq!(m.session.at(c), Ok(at));
+            }
+            ok()
         }
-        Op::Go(i, t) => {
-            let at = m.session.at(c(i)).unwrap();
-            match m.go_to(c(i), n(t), term(), 0) {
-                Err(e) => {
-                    prop_assert_eq!(e, Error::NoSuchNode(n(t)));
-                    prop_assert!(n(t) >= nn);
-                    prop_assert_eq!(m.session.at(c(i)), Ok(at));
-                }
-                Ok(_) => prop_assert!(n(t) < nn),
+        3 if point == Hook::PreSample => Fed::Hooks {
+            stop: None,
+            draft: Some(reply(vec![Part::Text("answered".into())], Stop::End)),
+        },
+        _ => ok(),
+    })
+}
+
+/// A provider's answer, picked by `k`: text, a batch of one to three calls,
+/// an error, or a cancel.
+fn sample(k: usize) -> Fed {
+    match k % 4 {
+        0 => Fed::Sampled {
+            reply: Some(reply(vec![Part::Text("hi".into())], Stop::End)),
+            error: None,
+        },
+        1 => {
+            let parts = (0..=k / 4 % 3)
+                .map(|j| Part::Call {
+                    id: format!("c{j}"),
+                    tool: "t".into(),
+                    args_raw: "{}".into(),
+                })
+                .collect();
+            Fed::Sampled {
+                reply: Some(reply(parts, Stop::Tools)),
+                error: None,
             }
         }
-        Op::Auto(i, on) => m.set_auto(c(i), on, term(), 0).unwrap(),
-        Op::Abort(i) => drop(m.abort(c(i))),
-        Op::Open(t) => match m.open(n(t), Author::Core, 0) {
-            Err(e) => prop_assert_eq!(e, Error::NoSuchNode(n(t))),
+        2 => Fed::Sampled {
+            reply: None,
+            error: Some("overloaded".into()),
+        },
+        _ => Fed::Sampled {
+            reply: None,
+            error: None,
+        },
+    }
+}
+
+fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseError> {
+    let (nc, nn) = (cursors(&m.session), nodes(&m.session).len() as NodeId);
+    let cursor = |i: usize| i as CursorId % nc;
+    // Up to two ids past the last node: those must be refused (I3).
+    let node = |i: usize| i as NodeId % (nn + 2);
+    let term = || "term".to_string();
+    match *op {
+        Op::Send(i) => drop(m.send(cursor(i), term(), "hello", 0).unwrap()),
+        Op::Input(i) => drop(m.input(cursor(i), term(), "more", 0).unwrap()),
+        Op::Step(i) => {
+            let busy = m.busy(cursor(i));
+            let stepped = m.step(cursor(i), term(), 0);
+            prop_assert_eq!(
+                stepped,
+                if busy {
+                    Err(Error::Busy(cursor(i)))
+                } else {
+                    Ok(())
+                }
+            );
+        }
+        Op::Go(i, t) => {
+            let at = m.session.at(cursor(i)).unwrap();
+            match m.go_to(cursor(i), node(t), term(), 0) {
+                Err(e) => {
+                    prop_assert_eq!(e, Error::NoSuchNode(node(t)));
+                    prop_assert!(node(t) >= nn);
+                    prop_assert_eq!(m.session.at(cursor(i)), Ok(at));
+                }
+                Ok(_) => prop_assert!(node(t) < nn),
+            }
+        }
+        Op::Auto(i, on) => m.set_auto(cursor(i), on, term(), 0).unwrap(),
+        Op::Abort(i) => drop(m.abort(cursor(i))),
+        Op::Open(t) => match m.open(node(t), Author::Core, 0) {
+            Err(e) => prop_assert_eq!(e, Error::NoSuchNode(node(t))),
             Ok(id) => prop_assert_eq!(id, nc),
         },
-        Op::Drive(i, k) => d.drive(m, c(i), k)?,
+        Op::Drive(i, k) => driver.drive(m, cursor(i), k)?,
     }
     Ok(())
 }

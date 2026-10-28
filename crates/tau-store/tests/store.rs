@@ -51,34 +51,34 @@ fn op() -> impl Strategy<Value = Op> {
 }
 
 fn count(f: impl Fn(u64) -> bool) -> u64 {
-    (0..).take_while(|i| f(*i)).count() as u64
+    (0..u64::MAX).take_while(|i| f(*i)).count() as u64
 }
 
 fn apply(s: &mut Session, op: &Op) {
     let nc = count(|c| s.at(c).is_ok());
     let nn = count(|n| s.node(n).is_ok());
-    let c = move |i: usize| i as u64 % nc;
-    let n = move |i: usize| i as u64 % nn;
+    let cursor = move |i: usize| i as u64 % nc;
+    let node = move |i: usize| i as u64 % nn;
     let by = Author::Core;
     match *op {
-        Op::Open(t) => drop(s.open(n(t), by, 0).unwrap()),
+        Op::Open(t) => drop(s.open(node(t), by, 0).unwrap()),
         Op::User(i) => drop(
-            s.write(c(i), Body::User("u".into()), vec![], by, 0)
+            s.write(cursor(i), Body::User("u".into()), vec![], by, 0)
                 .unwrap(),
         ),
-        Op::Go(i, t) => s.move_to(c(i), n(t), by, 0).unwrap(),
-        Op::Label(l, i) => s.set_label(&format!("l{l}"), c(i)).unwrap(),
+        Op::Go(i, t) => s.move_to(cursor(i), node(t), by, 0).unwrap(),
+        Op::Label(l, i) => s.set_label(&format!("l{l}"), cursor(i)).unwrap(),
         Op::Input(i) => {
             let data = ItemData::Input {
                 client: "t".into(),
                 text: "in".into(),
             };
-            s.add_item(c(i), data);
+            s.add_item(cursor(i), data);
         }
         Op::Deliver(i) => {
-            let first = s.items(c(i)).next().map(|it| it.id);
+            let first = s.items(cursor(i)).next().map(|it| it.id);
             if let Some(item) = first {
-                s.write(c(i), Body::User("in".into()), vec![item], by, 0)
+                s.write(cursor(i), Body::User("in".into()), vec![item], by, 0)
                     .unwrap();
             }
         }
@@ -116,7 +116,7 @@ proptest! {
     #[test]
     fn a_torn_tail_opens_as_the_last_sync_before_it(
         ops in prop::collection::vec(op(), 0..60),
-        cut in 0.0..1.0f64,
+        cut in any::<prop::sample::Index>(),
         garbage in prop::collection::vec(any::<u8>(), 0..40),
     ) {
         let d = dir();
@@ -133,9 +133,9 @@ proptest! {
         }
         drop(store);
         let log = fs::read(d.path().join("log")).unwrap();
-        let first = synced[0].0 as usize;
-        let len = first + ((log.len() - first) as f64 * cut) as usize;
-        let k = synced.iter().rposition(|(l, ..)| *l as usize <= len).unwrap();
+        let first = usize::try_from(synced[0].0).unwrap();
+        let len = first + cut.index(log.len() - first + 1);
+        let k = synced.iter().rposition(|(l, ..)| *l <= len as u64).unwrap();
         let (_, pad, want) = &synced[k];
         let crashed = crash_at(&log, len, &garbage, pad.as_ref());
         let (store, loaded) = Store::open(crashed.path()).unwrap();
