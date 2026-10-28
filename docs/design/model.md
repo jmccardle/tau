@@ -118,11 +118,11 @@ back from. Any node may be gone to.
 
 | # | statement | enforced by |
 |---|---|---|
-| I1 | A sample sends exactly `walk(at)` with `config_at(at)`, as `at` stands when the sample starts. Items and `Custom` nodes never reach the model. A reply is committed under `at` as it stands at the commit. | `FakeProvider` records each request (Phase 2); `pre_reply_move_chooses_where_the_reply_lands` |
-| I2 | No node changes after it is appended. Pre hooks shape a draft before its commit. | no setters; frozen pyclass; proptest |
-| I3 | `at` is always a node of its session. | unit test: a move to an unknown id is refused (`Error::NoSuchNode`); proptest |
-| I4 | The tools phase writes one `Results` per batch it runs, one outcome per call, in call order. Holds by construction. | `batch_answers_in_call_order_then_samples_again`; proptest |
-| I5 | Append checks only types: **V1** a root is `Config`; **V2** a `Results` node's outcomes name distinct calls. Wire legality is the provider's conversion (Q11). | `Error::RootNotConfig`, `Error::DuplicateCall`; unit tests |
+| I1 | A sample sends exactly `walk(at)` with `config_at(at)`, as `at` stands when the sample starts. Items and `Custom` nodes never reach the model. A reply is committed under `at` as it stands at the commit. | `FakeProvider` records each request (Phase 2); `pre_reply_move_chooses_where_the_reply_lands`; proptest `invariants_hold_under_any_driver` (the sample phase starts only where `next` is `Sample`; a reply lands under `at` at its commit) |
+| I2 | No node changes after it is appended. Pre hooks shape a draft before its commit. | no setters; frozen pyclass; proptest `invariants_hold_under_any_driver` (no node changes; the queued `Write`s equal the nodes) |
+| I3 | `at` is always a node of its session. | unit test: a move to an unknown id is refused (`Error::NoSuchNode`); proptest `invariants_hold_under_any_driver` (go-to, hook moves, and opens to unknown ids are refused and change nothing) |
+| I4 | The tools phase writes one `Results` per batch it runs, one outcome per call, in call order. Holds by construction. | `batch_answers_in_call_order_then_samples_again`; proptest `invariants_hold_under_any_driver` (outcomes fed in any order, aborts mid-batch; every batch run is answered once) |
+| I5 | Append checks only types: **V1** a root is `Config`; **V2** a `Results` node's outcomes name distinct calls. Wire legality is the provider's conversion (Q11). | `Error::RootNotConfig`, `Error::DuplicateCall`; unit tests; proptest `appends_check_only_types` (refused only for V1 or V2, any other shape under any node taken; a refusal changes nothing) |
 | I6 | Retired (D5). | — |
 | I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`, `a_torn_tail_opens_as_the_last_sync_before_it`; `Session::load` |
 
