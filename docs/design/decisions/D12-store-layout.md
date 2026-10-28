@@ -20,7 +20,9 @@ input's text twice.
 - **Sync points** (D11): records are buffered up to a `Sync`; at a `Sync`
   the log is synced first, then the scratchpad file rewritten from the
   `Sync`'s own copy (`Record::Sync { pad }`), so the file is never newer
-  than the synced log. The log never holds items.
+  than the synced log. The log never holds items. A save that finds several
+  `Sync`s queued writes through the last with one log sync, then the newest
+  pad among them: one sync per save, not per `Sync`.
 - **Order:** an added item is durable before its cursor wakes; a delivering
   record is durable before its items are removed (the log sync precedes the
   scratchpad rewrite); nothing about a running
@@ -56,7 +58,9 @@ input's text twice.
 - A write and its move can never be split by a crash.
 - Cost: each item change rewrites the scratchpad file.
 - Cost: a stored plain turn is ~3 ms here, about ten fsyncs (log, scratchpad
-  file, directory); opening 300 turns takes ~3 ms.
+  file, directory); opening 300 turns takes ~3 ms. `benches/tree.rs` in
+  `crates/tau-store` measures the rest (a 1M-token session opens in
+  ~7–27 ms; creating one from memory is one sync).
 - Enforced by the I7 proptests in `crates/tau-core/tests/replay.rs`
   (including a crash between the log sync and the scratchpad rewrite) and
   `a_torn_tail_opens_as_the_last_sync_before_it` in

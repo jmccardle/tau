@@ -162,9 +162,10 @@ impl Store {
         Ok((store, session))
     }
 
-    /// Takes `session`'s queued records. They are buffered up to each
-    /// `Sync`; at a `Sync` the log is written and synced, then the scratchpad
-    /// file rewritten if the `Sync` carries it (D12). Records after the last
+    /// Takes `session`'s queued records. Everything up to the last queued
+    /// `Sync` is written with one log sync, then the scratchpad file is
+    /// rewritten from the newest pad those `Sync`s carry, if any (D12): one
+    /// sync per call, however many `Sync`s it covers. Records after the last
     /// `Sync` stay buffered.
     ///
     /// # Errors
@@ -175,21 +176,28 @@ impl Store {
         if self.failed {
             return Err(Error::Failed);
         }
+        // Through the last `Sync`: its end in `pending`, and the newest pad.
+        let mut through = None;
         for r in session.outbox.drain(..) {
             let Record::Sync { pad } = r else {
                 encode(&r, &mut self.pending);
                 continue;
             };
             encode(&Record::Sync { pad: None }, &mut self.pending);
-            self.failed = true;
-            self.log.write_all(&self.pending)?;
-            self.log.sync_data()?;
-            self.pending.clear();
-            if let Some(pad) = pad {
-                self.write_pad(&pad)?;
-            }
-            self.failed = false;
+            let newest = pad.or(through.and_then(|(_, p)| p));
+            through = Some((self.pending.len(), newest));
         }
+        let Some((end, pad)) = through else {
+            return Ok(());
+        };
+        self.failed = true;
+        self.log.write_all(&self.pending[..end])?;
+        self.log.sync_data()?;
+        self.pending.drain(..end);
+        if let Some(pad) = pad {
+            self.write_pad(&pad)?;
+        }
+        self.failed = false;
         Ok(())
     }
 

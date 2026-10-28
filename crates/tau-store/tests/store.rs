@@ -189,6 +189,35 @@ fn a_session_reopens_as_it_was_synced() {
 }
 
 #[test]
+fn one_save_over_many_syncs_reopens_as_the_last() {
+    let d = dir();
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let mut store = Store::create(d.path(), &mut s).unwrap();
+    let input = |text: &str| ItemData::Input {
+        client: "term".into(),
+        text: text.into(),
+    };
+    let first = s.add_item(c, input("first"));
+    s.sync();
+    s.write(c, Body::User("first".into()), vec![first], Author::Core, 0)
+        .unwrap();
+    s.sync();
+    s.add_item(c, input("second"));
+    s.sync();
+    // The last `Sync` carries no pad: the newest is the one before it.
+    s.write(c, Body::User("plain".into()), vec![], Author::Core, 0)
+        .unwrap();
+    s.sync();
+    store.save(&mut s).unwrap();
+    drop(store);
+    let (store, loaded) = Store::open(d.path()).unwrap();
+    assert_eq!(store.dropped, 0);
+    assert_eq!(loaded, as_loaded(&s));
+    let texts: Vec<_> = loaded.items(c).map(|i| i.data.clone()).collect();
+    assert_eq!(texts, vec![input("second")]);
+}
+
+#[test]
 fn the_log_never_holds_items() {
     let d = dir();
     let (mut s, c) = Session::create("{}", "sys", 0);

@@ -171,6 +171,8 @@ pub enum Next {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Session {
     nodes: Vec<Node>,
+    /// Per node, by id: the nearest `Config` on its walk (`config_at`).
+    configs: Vec<NodeId>,
     at: BTreeMap<CursorId, NodeId>,
     labels: BTreeMap<String, CursorId>,
     pub auto: BTreeMap<CursorId, bool>,
@@ -248,7 +250,7 @@ impl Session {
     ) -> Result<NodeId, Error> {
         let node = self.check(parent, by, body, delivers, time)?;
         let id = node.id;
-        self.nodes.push(node.clone());
+        self.push(node.clone());
         self.queue(Record::Write { node, mv: None });
         Ok(id)
     }
@@ -280,7 +282,7 @@ impl Session {
             by,
             time,
         };
-        self.nodes.push(node.clone());
+        self.push(node.clone());
         self.at.insert(cursor, node.id);
         self.moves.push(mv.clone());
         self.queue(Record::Write { node, mv: Some(mv) });
@@ -318,6 +320,16 @@ impl Session {
         self.at.insert(cursor, to);
         self.moves.push(mv.clone());
         self.queue(Record::Move(mv));
+    }
+
+    /// Add a checked node, with its nearest `Config`.
+    fn push(&mut self, node: Node) {
+        let config = match (&node.body, node.parent) {
+            (Body::Config(_), _) | (_, None) => node.id,
+            (_, Some(p)) => self.configs[usize::try_from(p).expect("a checked parent")],
+        };
+        self.configs.push(config);
+        self.nodes.push(node);
     }
 
     fn check(
@@ -379,7 +391,8 @@ impl Session {
         out
     }
 
-    /// The nearest `Config` on `walk(n)`; always defined, since every root is one (V1).
+    /// The nearest `Config` on `walk(n)`; always defined, since every root is
+    /// one (V1). Constant time: each node records its own when added.
     ///
     /// # Errors
     ///
@@ -389,12 +402,11 @@ impl Session {
     ///
     /// If a root is not `Config`, which V1 rules out.
     pub fn config_at(&self, n: NodeId) -> Result<&Config, Error> {
-        let mut x = self.node(n)?;
-        loop {
-            if let Body::Config(c) = &x.body {
-                return Ok(c);
-            }
-            x = self.node(x.parent.expect("a root is Config (V1)"))?;
+        self.node(n)?;
+        let config = self.configs[usize::try_from(n).expect("a node id")];
+        match &self.node(config)?.body {
+            Body::Config(c) => Ok(c),
+            _ => panic!("a root is Config (V1)"),
         }
     }
 
@@ -563,7 +575,7 @@ impl Session {
                 if checked != node {
                     return Err(Error::BadRecord(0));
                 }
-                self.nodes.push(node);
+                self.push(node);
                 mv.map_or(Ok(()), |m| self.replay_move(m))
             }
             Record::Move(m) => self.replay_move(m),

@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 
 use tau_core::machine::Machine;
 use tau_core::step::{Draft, Fed, Job};
-use tau_core::tree::{Author, Body, CursorId, Node, NodeId, Outcome, Part, Session, Stop};
+use tau_core::tree::{
+    Author, Body, CursorId, Node, NodeId, Outcome, Part, Record, Scratchpad, Session, Stop,
+};
 use tau_store::Store;
 
 const TOKEN: usize = 4;
@@ -279,7 +281,7 @@ impl Rig {
             .session
             .outbox
             .iter()
-            .filter(|r| matches!(r, tau_core::tree::Record::Sync { .. }))
+            .filter(|r| matches!(r, Record::Sync { .. }))
             .count();
         let t = Instant::now();
         store.save(&mut self.m.session).unwrap();
@@ -814,12 +816,85 @@ fn lookup() {
     print!("{out}");
 }
 
+/// Where a reopen goes, for a 1M-token session after 5 compactions: the log's
+/// bytes by record kind, then decode against replay.
+fn load() {
+    heading("load: a 1M-token session after 5 compactions (chatty), reopen split");
+    let (mut rig, c) = Rig::new(CHATTY, Read::Walk);
+    for _ in 0..5 {
+        rig.grow(c, 1_000_000);
+        let (kept, _) = classify(&rig.m.session, c);
+        let tip = copy(&mut rig.m.session, &kept, rig.now);
+        rig.m
+            .session
+            .move_to(c, tip, Author::Core, rig.now)
+            .unwrap();
+    }
+    rig.m.session.sync();
+    let records = std::mem::take(&mut rig.m.session.outbox);
+    let encoded: Vec<Vec<u8>> = records
+        .iter()
+        .map(|r| serde_json::to_vec(r).unwrap())
+        .collect();
+    let mut kinds = [
+        ("Write", 0usize, 0usize),
+        ("Move", 0, 0),
+        ("Label", 0, 0),
+        ("Sync", 0, 0),
+    ];
+    let mut bodies = 0;
+    for (r, e) in records.iter().zip(&encoded) {
+        let k = match r {
+            Record::Write { node, .. } => {
+                bodies += body_bytes(&node.body);
+                0
+            }
+            Record::Move(_) => 1,
+            Record::Label { .. } => 2,
+            Record::Sync { .. } => 3,
+        };
+        kinds[k].1 += 1;
+        kinds[k].2 += e.len();
+    }
+    let total: usize = encoded.iter().map(Vec::len).sum();
+    println!("| record | count | bytes | share |");
+    println!("|---|---|---|---|");
+    for (name, n, b) in kinds {
+        println!(
+            "| {name} | {n} | {:.1} MB | {:.0}% |",
+            b as f64 / 1e6,
+            100.0 * b as f64 / total as f64
+        );
+    }
+    println!(
+        "\nBody text is {:.1} MB of the {:.1} MB; the context at the tip is {}k tokens.",
+        bodies as f64 / 1e6,
+        total as f64 / 1e6,
+        rig.tokens_at(c) / 1000
+    );
+    let t = Instant::now();
+    let decoded: Vec<Record> = encoded
+        .iter()
+        .map(|e| serde_json::from_slice(e).unwrap())
+        .collect();
+    let decode = t.elapsed();
+    let t = Instant::now();
+    let session = Session::load(decoded, Scratchpad::default()).unwrap();
+    let replay = t.elapsed();
+    let t = Instant::now();
+    drop(session);
+    let free = t.elapsed();
+    println!("\n| decode JSON | replay (`Session::load`) | drop |");
+    println!("|---|---|---|");
+    println!("| {} | {} | {} |", us(decode), us(replay), us(free));
+}
+
 fn main() {
     let args: Vec<String> = std::env::args()
         .skip(1)
         .filter(|a| !a.starts_with('-'))
         .collect();
-    let all: [(&str, fn()); 7] = [
+    let all: [(&str, fn()); 8] = [
         ("depth", depth),
         ("lookup", lookup),
         ("jump", jump),
@@ -827,6 +902,7 @@ fn main() {
         ("compact", compact),
         ("cursors", cursors),
         ("parallel", parallel),
+        ("load", load),
     ];
     println!(
         "# tau tree bench ({} cpus)",

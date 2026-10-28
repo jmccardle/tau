@@ -95,8 +95,9 @@ its content was computed from (a summary, a sub-agent's answer).
 *spike* `Session` · retires `AgentSession`, `SessionManager`, catalog
 
 One conversation: a forest of nodes, its cursors, labels, and scratchpad.
-Spike fields: `nodes`, `at` (cursor → node), `auto`, `items`, `next_item`,
-`changes`, `moves`, `outbox`, `notices`. `Session::create(config, system,
+Spike fields: `nodes`, `configs` (per node, its nearest `Config`), `at`
+(cursor → node), `auto`, `items`, `next_item`, `changes`, `moves`, `outbox`,
+`notices`. `Session::create(config, system,
 time)` writes the root `Config` and a `System` node and opens the first
 cursor (Q5).
 
@@ -439,7 +440,8 @@ A **sample** is one provider request over the **context**, `walk(at)`, with
 entry, `CONFIG_KEYS`, `Settings`, model entry
 
 A full snapshot of how a step runs. `config_at(n)` is the nearest `Config`
-on `walk(n)` (D5). Core reads only the typed fields it needs
+on `walk(n)` (D5), recorded per node when it is added (`Session::configs`),
+so it costs the same at any depth. Core reads only the typed fields it needs
 (`max_steps`); `data` holds the rest, opaque to core and typed by the
 driver.
 
