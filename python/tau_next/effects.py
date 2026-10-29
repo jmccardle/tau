@@ -119,7 +119,7 @@ class SampleRun:
         return stop
 
     def _reply(self, stop: Stop) -> Draft:
-        return Draft(Body.Assistant(self._parts, stop), Author.Provider())
+        return Draft(Body.Assistant(self._parts, stop), Author.Provider(), [])
 
     async def run(self) -> Fed:
         self._task = asyncio.ensure_future(self._stream())

@@ -366,7 +366,7 @@ What the step asks the driver to do: `Hooks { point, draft, ending }`,
 *spike* `Fed` · new
 
 What the driver feeds back: `Hooks { stop, draft }`, `HookFailed(error)`,
-`Sampled { reply, error }`, `CallDone { call, outcome }`, `Waited`.
+`Sampled { reply, error }`, `CallDone { call, outcome }`, `Waited`. Each is accepted only while the job it answers is out; any other feed is `WrongFeed`.
 
 ### RunCall
 *spike* `RunCall` · new

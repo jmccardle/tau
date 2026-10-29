@@ -109,10 +109,6 @@ enum Out {
 }
 
 #[derive(Debug)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent flags: asked, aborted, committed; no two encode one state"
-)]
 pub struct Step {
     pub cursor: CursorId,
     pos: Pos,

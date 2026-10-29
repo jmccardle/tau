@@ -449,7 +449,7 @@ fn notices_are_drained_once() {
     assert_eq!(s.take_notices().len(), 0);
 }
 
-/// A pre_input hook that rewrites the input and delivers nothing.
+/// A `pre_input` hook that rewrites the input and delivers nothing.
 fn undelivering(job: &Job, m: &mut Machine) -> Vec<Fed> {
     match job {
         Job::Hooks {

@@ -546,7 +546,9 @@ def test_open_and_add_item_outside_a_step_are_durable_on_return(tmp_path: Path) 
     session.close()
     loaded = Session.load(tmp_path / "s", 3)
     assert loaded.cursors() == [cursor, other]
-    assert [(i.id, i.data) for i in loaded.items(cursor)] == [(item, ItemData.Extension("timer", "tick"))]
+    assert [(i.id, i.data) for i in loaded.items(cursor)] == [
+        (item, ItemData.Extension("timer", "tick"))
+    ]
 
 
 def test_after_a_failed_save_every_changing_call_is_refused_before_it_changes_anything(
@@ -584,7 +586,9 @@ def test_a_pre_input_draft_that_delivers_nothing_leaves_the_input_pending() -> N
     session = Session.create(Config("{}", 3), "sys", 0)
     cursor = session.cursors()[0]
     session.send(cursor, "term", "hi", 0)
-    jobs = run(session, cursor, iter(say("ok") for _ in range(10)), on_job=edit_input_without_delivering)
+    jobs = run(
+        session, cursor, iter(say("ok") for _ in range(10)), on_job=edit_input_without_delivering
+    )
     assert sum(isinstance(j, Job.Sample) for j in jobs) == 3  # one per step until max_steps
     users = [b for b in bodies(session, cursor) if isinstance(b, Body.User)]
     assert users == [Body.User("edited")] * 3
@@ -595,9 +599,9 @@ def test_a_pre_input_draft_that_delivers_nothing_leaves_the_input_pending() -> N
 def test_a_cursor_that_is_not_open_is_refused_and_leaves_no_record() -> None:
     session, cursor = new()
     before = state(session)
-    for call in (session.abort, session.ask, session.answered, session.next_job):
+    for method in (session.abort, session.ask, session.answered, session.next_job):
         with pytest.raises(tau_next.NoSuchCursor):
-            call(999)
+            method(999)
     with pytest.raises(tau_next.NoSuchCursor):
         session.feed(999, Fed.Hooks(), 0)
     assert session.cursors() == [cursor]
