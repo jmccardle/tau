@@ -1,0 +1,309 @@
+"""Which calls a cursor accepts or refuses in each state, found by making them.
+
+For every (call, state) pair this builds a fresh session through the public
+Python API (`tau_next`), brings one cursor to the state, makes the call once,
+and writes down what came back: `ok`, or the typed exception it raised. Nothing
+here is a hand-written expectation. Prints the result as JSON on stdout; the
+Markdown and the SVG are made from that JSON by `render.py`.
+"""
+
+import json
+import sys
+import tempfile
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from tau_next import (
+    Author,
+    Body,
+    Config,
+    Draft,
+    Fed,
+    Hook,
+    ItemData,
+    Job,
+    Outcome,
+    Part,
+    Session,
+    Stop,
+)
+
+NOW = 10
+
+
+@dataclass
+class Ctx:
+    """What a call needs to know about the state it is made in."""
+
+    session: Session
+    cursor: int
+    serial: int = 1
+    node: int = 1
+    item: int = 0
+    held: list[Session] = field(default_factory=list)
+
+
+def reply(*calls: tuple[str, str]) -> Fed:
+    if calls:
+        parts = [Part.Call(i, t, "{}") for i, t in calls]
+        body = Body.Assistant(parts, Stop.Tools)
+    else:
+        body = Body.Assistant([Part.Text("ok")], Stop.End)
+    return Fed.Sampled(Draft(body, Author.Provider(), []), None)
+
+
+def answer(job: Job, calls: tuple[tuple[str, str], ...]) -> list[Fed]:
+    match job:
+        case Job.Hooks():
+            return [Fed.Hooks()]
+        case Job.Sample():
+            return [reply(*calls)]
+        case Job.RunCalls(calls=run):
+            return [Fed.CallDone(c.id, Outcome.Ok("done"), Author.Tools()) for c in run]
+        case Job.Wait():
+            return [Fed.Waited()]
+    raise AssertionError(f"no answer for {job}")
+
+
+def drive_to(ctx: Ctx, stop: Callable[[Job], bool], calls: tuple[tuple[str, str], ...] = ()) -> Job:
+    """Perform jobs until `stop(job)`; that job stays out, not fed."""
+    for _ in range(100):
+        job = ctx.session.next_job(ctx.cursor)
+        if stop(job):
+            if isinstance(job, Job.Hooks):
+                ctx.serial = job.serial
+            return job
+        if isinstance(job, Job.Rest):
+            raise AssertionError("the step ended before the state was reached")
+        for fed in answer(job, calls):
+            ctx.session.feed(ctx.cursor, fed, NOW)
+    raise AssertionError("state not reached")
+
+
+def at_hook(point: Hook) -> Callable[[Job], bool]:
+    return lambda job: isinstance(job, Job.Hooks) and job.point == point
+
+
+def rest(ctx: Ctx) -> None:
+    drive_to(ctx, lambda job: isinstance(job, Job.Rest))
+
+
+def fresh(directory: Path | None = None) -> Ctx:
+    """A session whose one cursor has an item and a label, at rest."""
+    session = Session.create(Config("{}"), "sys", 0, directory)
+    cursor = session.cursors()[0]
+    ctx = Ctx(session, cursor)
+    ctx.item = session.add_item(cursor, ItemData.Extension("ext", "note"), 1)
+    session.set_label("main", cursor)
+    rest(ctx)
+    return ctx
+
+
+def started(ctx: Ctx) -> None:
+    ctx.session.send(ctx.cursor, "term", "hi", NOW)
+
+
+# Each state brings `fresh()`'s cursor to one place and returns the context.
+# Order is the order of the table's columns.
+
+
+def s_rest(ctx: Ctx) -> None:
+    pass
+
+
+def s_rest_auto(ctx: Ctx) -> None:
+    ctx.session.set_auto(ctx.cursor, True, "term", NOW)
+    rest(ctx)
+
+
+def hook_state(point: Hook) -> Callable[[Ctx], None]:
+    def build(ctx: Ctx) -> None:
+        started(ctx)
+        drive_to(ctx, at_hook(point))
+
+    return build
+
+
+def s_sample(ctx: Ctx) -> None:
+    started(ctx)
+    drive_to(ctx, lambda job: isinstance(job, Job.Sample))
+
+
+def s_calls(ctx: Ctx) -> None:
+    started(ctx)
+    drive_to(ctx, lambda job: isinstance(job, Job.RunCalls), (("a", "t"), ("b", "t")))
+
+
+def s_pending(ctx: Ctx) -> None:
+    s_calls(ctx)
+    ctx.session.feed(ctx.cursor, Fed.CallDone("a", Outcome.Ok("x"), Author.Tools()), NOW)
+    job = ctx.session.next_job(ctx.cursor)
+    assert isinstance(job, Job.Pending), job
+
+
+def s_post_result(ctx: Ctx) -> None:
+    started(ctx)
+    drive_to(ctx, at_hook(Hook.PostResult), (("a", "t"),))
+
+
+def s_throttle(ctx: Ctx) -> None:
+    """A step that commits nothing but saw an item added: it waits out the throttle."""
+    ctx.session.set_auto(ctx.cursor, True, "term", NOW)
+    drive_to(ctx, at_hook(Hook.PreStep))
+    ctx.session.add_item(ctx.cursor, ItemData.Extension("ext", "tick"), NOW)
+    ctx.session.feed(ctx.cursor, Fed.Hooks(), NOW)
+    drive_to(ctx, lambda job: isinstance(job, Job.Wait))
+
+
+def s_locked_rest(ctx: Ctx) -> None:
+    ctx.session.ask(ctx.cursor)
+
+
+def s_locked_sample(ctx: Ctx) -> None:
+    s_sample(ctx)
+    ctx.session.ask(ctx.cursor)
+
+
+def s_unknown_cursor(ctx: Ctx) -> None:
+    ctx.cursor = 999
+
+
+def s_closed(ctx: Ctx) -> None:
+    ctx.session.close()
+
+
+STATES: list[tuple[str, str, Callable[[Ctx], None]]] = [
+    ("rest", "at rest", s_rest),
+    ("rest_auto", "at rest, auto-step on", s_rest_auto),
+    ("pre_step", "busy: pre_step hook out", hook_state(Hook.PreStep)),
+    ("pre_input", "busy: pre_input hook out", hook_state(Hook.PreInput)),
+    ("pre_sample", "busy: pre_sample hook out", hook_state(Hook.PreSample)),
+    ("sample", "busy: sample out", s_sample),
+    ("pre_reply", "busy: pre_reply hook out", hook_state(Hook.PreReply)),
+    ("post_reply", "busy: post_reply hook out", hook_state(Hook.PostReply)),
+    ("calls", "busy: calls out", s_calls),
+    ("pending", "busy: calls out, one answered", s_pending),
+    ("post_result", "busy: post_result hook out", s_post_result),
+    ("post_step", "busy: post_step hook out", hook_state(Hook.PostStep)),
+    ("throttle", "busy: throttle wait out", s_throttle),
+    ("locked_rest", "locked by a question, at rest", s_locked_rest),
+    ("locked_sample", "locked by a question, sample out", s_locked_sample),
+    ("unknown_cursor", "a cursor that is not open", s_unknown_cursor),
+    ("closed", "session closed", s_closed),
+]
+
+# The store-failed state needs a directory, so it is built apart.
+
+
+def s_store_failed(ctx: Ctx, directory: Path) -> None:
+    block = directory / "scratchpad.new"
+    block.mkdir()  # the store cannot create its temporary scratchpad file here
+    try:
+        ctx.session.input(ctx.cursor, "term", "x", NOW)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("the save was meant to fail")
+    block.rmdir()
+
+
+STORE_FAILED = ("store_failed", "store failed (an earlier save raised)")
+
+Call = Callable[[Ctx], object]
+
+
+def hook_serial(ctx: Ctx) -> int:
+    return ctx.serial
+
+
+# (group, name, call). A call returns what the API returned.
+CALLS: list[tuple[str, str, Call]] = [
+    ("frontend", "input", lambda c: c.session.input(c.cursor, "term", "hi", NOW)),
+    ("frontend", "send", lambda c: c.session.send(c.cursor, "term", "hi", NOW)),
+    ("frontend", "step", lambda c: c.session.step(c.cursor, "term", NOW)),
+    ("frontend", "go_to (an ancestor)", lambda c: c.session.go_to(c.cursor, 0, "term", NOW)),
+    ("frontend", "go_to (not a node)", lambda c: c.session.go_to(c.cursor, 999, "term", NOW)),
+    ("frontend", "set_auto(on)", lambda c: c.session.set_auto(c.cursor, True, "term", NOW)),
+    ("frontend", "set_auto(off)", lambda c: c.session.set_auto(c.cursor, False, "term", NOW)),
+    ("frontend", "abort", lambda c: c.session.abort(c.cursor)),
+    ("frontend", "set_label", lambda c: c.session.set_label("other", c.cursor)),
+    ("frontend", "remove_label", lambda c: c.session.remove_label("main")),
+    ("question", "ask", lambda c: c.session.ask(c.cursor)),
+    ("question", "answered", lambda c: c.session.answered(c.cursor)),
+    ("extension", "open", lambda c: c.session.open(1, Author.Extension("ext"), NOW)),
+    (
+        "extension",
+        "add_item",
+        lambda c: c.session.add_item(c.cursor, ItemData.Extension("ext", "n"), NOW),
+    ),
+    ("extension", "remove_item", lambda c: c.session.remove_item(c.item)),
+    (
+        "extension",
+        "append (under at)",
+        lambda c: c.session.append(
+            c.session.at(c.cursor), Body.Custom("note", ""), Author.Core(), NOW
+        ),
+    ),
+    (
+        "hook",
+        "hook_move",
+        lambda c: c.session.hook_move(c.cursor, hook_serial(c), 0, Author.Extension("ext"), NOW),
+    ),
+    (
+        "hook",
+        "hook_write",
+        lambda c: c.session.hook_write(
+            c.cursor, hook_serial(c), Body.Custom("note", ""), [], Author.Extension("ext"), NOW
+        ),
+    ),
+    (
+        "hook",
+        "hook_set_auto",
+        lambda c: c.session.hook_set_auto(c.cursor, hook_serial(c), True),
+    ),
+    ("driver", "feed Hooks", lambda c: c.session.feed(c.cursor, Fed.Hooks(), NOW)),
+    ("driver", "feed Waited", lambda c: c.session.feed(c.cursor, Fed.Waited(), NOW)),
+    ("driver", "next_job", lambda c: c.session.next_job(c.cursor)),
+    ("read", "at", lambda c: c.session.at(c.cursor)),
+]
+
+
+def outcome(call: Call, ctx: Ctx) -> str:
+    try:
+        value = call(ctx)
+    except Exception as error:  # recording every refusal is the point
+        return type(error).__name__
+    if value is True:
+        return "ok (true)"
+    return "ok"
+
+
+def cells() -> Iterator[tuple[str, str, str]]:
+    for state_id, _, build in STATES:
+        for _, name, call in CALLS:
+            ctx = fresh()
+            build(ctx)
+            yield state_id, name, outcome(call, ctx)
+    for _, name, call in CALLS:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "s"
+            ctx = fresh(directory)
+            s_store_failed(ctx, directory)
+            yield STORE_FAILED[0], name, outcome(call, ctx)
+            ctx.session.close()
+
+
+def main() -> None:
+    states = [(i, label) for i, label, _ in STATES] + [STORE_FAILED]
+    result = {
+        "states": [{"id": i, "label": label} for i, label in states],
+        "calls": [{"group": g, "name": n} for g, n, _ in CALLS],
+        "cells": {f"{s}|{c}": v for s, c, v in cells()},
+    }
+    json.dump(result, sys.stdout, indent=1, sort_keys=True)
+    print()
+
+
+if __name__ == "__main__":
+    main()

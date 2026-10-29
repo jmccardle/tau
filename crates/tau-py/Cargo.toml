@@ -18,6 +18,9 @@ crate-type = ["cdylib"]
 # (abi3t), so for 3.14t maturin ignores this and builds cp314t. Verified with
 # maturin 1.15 / PyO3 0.30.1.
 abi3 = ["pyo3/abi3-py312"]
+# Diagram builds only (scripts/diagrams.sh): logs step transitions, and adds
+# `_core.transitions_scenario(name)`. Never in a wheel.
+transitions = ["tau-core/transitions"]
 
 [dependencies]
 tau-core.workspace = true

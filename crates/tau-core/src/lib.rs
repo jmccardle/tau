@@ -3,4 +3,5 @@
 
 pub mod machine;
 pub mod step;
+pub mod transitions;
 pub mod tree;

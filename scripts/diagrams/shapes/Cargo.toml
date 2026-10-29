@@ -1,0 +1,14 @@
+# Reads Rust source with `syn` and prints the shape of named types as JSON
+# (scripts/diagrams.sh). Its own workspace and lockfile: never in a wheel.
+[workspace]
+
+[package]
+name = "diagram-types"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+serde_json = "1"

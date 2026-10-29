@@ -1,6 +1,7 @@
 //! One cursor's step: the phase loop of model.md §6 as a sans-IO machine.
 //! `next_job` says what to do; the driver does it and `feed`s the result.
 
+use crate::transitions;
 use crate::tree::{
     Author, Body, CursorId, Error, Item, ItemData, ItemId, Next, NodeId, Outcome, Session, calls,
 };
@@ -174,6 +175,7 @@ impl Step {
     /// `NoSuchCursor` if `cursor` is not open.
     pub fn next_job(&mut self, s: &mut Session) -> Result<Job, Error> {
         let job = self.job(s)?;
+        transitions::emit(self.pos, &job);
         match job {
             Job::Hooks { .. } => self.out = Out::Hook,
             Job::Sample => self.out = Out::Sample,
@@ -223,7 +225,7 @@ impl Step {
                         }
                     };
                     let Some((id, client, text)) = next else {
-                        self.pos = Pos::PreSample;
+                        self.hop("no input to offer", Pos::PreSample);
                         continue;
                     };
                     self.offered = Some(id);
@@ -238,11 +240,11 @@ impl Step {
                     hooks(Hook::PreSample, None)
                 }
                 Pos::PreSample => {
-                    self.pos = Pos::Tools;
+                    self.hop("sample does not apply", Pos::Tools);
                     continue;
                 }
                 Pos::Sample if self.draft.is_some() => {
-                    self.pos = Pos::PreReply;
+                    self.hop("pre_sample draft answers the sample", Pos::PreReply);
                     continue;
                 }
                 Pos::Sample => Job::Sample,
@@ -262,11 +264,11 @@ impl Step {
                 Pos::Tools => match s.deciding(self.cursor) {
                     Some((Next::RunTools, node)) if on => {
                         let calls = self.start_batch(s, node)?;
-                        self.pos = Pos::Calls;
+                        self.hop("tools apply", Pos::Calls);
                         Job::RunCalls { node, calls }
                     }
                     _ => {
-                        self.pos = Pos::PostStep;
+                        self.hop("tools do not apply", Pos::PostStep);
                         continue;
                     }
                 },
@@ -300,6 +302,7 @@ impl Step {
         if !self.answers(&fed) {
             return Err(Error::WrongFeed(self.cursor));
         }
+        transitions::fed(&fed);
         self.out = if self.out == Out::Calls && matches!(fed, Fed::CallDone { .. }) {
             Out::Calls
         } else {
@@ -332,7 +335,7 @@ impl Step {
                 self.draft = None;
                 self.end(s, Ending::Halted(reason));
             }
-            (Pos::PreStep, Fed::Hooks { .. }) => self.pos = Pos::Input,
+            (Pos::PreStep, Fed::Hooks { .. }) => self.go(Pos::Input),
             (Pos::Input | Pos::PreReply, Fed::Hooks { draft, .. }) => {
                 let d = draft
                     .or(self.draft.take())
@@ -341,7 +344,7 @@ impl Step {
             }
             (Pos::PreSample, Fed::Hooks { draft, .. }) => {
                 self.draft = draft;
-                self.pos = Pos::Sample;
+                self.go(Pos::Sample);
             }
             (
                 Pos::Sample,
@@ -352,7 +355,7 @@ impl Step {
             ) => {
                 self.draft = Some(reply);
                 self.error = error;
-                self.pos = Pos::PreReply;
+                self.go(Pos::PreReply);
             }
             (Pos::Sample, Fed::Sampled { reply: None, error }) => match error {
                 Some(e) => {
@@ -373,16 +376,22 @@ impl Step {
             },
             (Pos::PostReply, Fed::Hooks { .. }) => match self.error.take() {
                 Some(e) => self.end(s, Ending::Failed(e)),
-                None => self.pos = Pos::Tools,
+                None => self.go(Pos::Tools),
             },
             (Pos::Calls, Fed::CallDone { call, outcome, by }) => {
                 if let Some(slot) = self.batch.iter_mut().find(|c| c.0 == call) {
                     slot.1 = Some((outcome, by));
                 }
                 self.join(s, now)?;
+                if self.pos == Pos::Calls {
+                    self.go(Pos::Calls); // calls still out
+                }
             }
-            (Pos::PostResult, Fed::Hooks { .. }) => self.pos = Pos::PostStep,
-            (Pos::Throttle, Fed::Waited) => *self = Self::wake(s, self.cursor, false, now),
+            (Pos::PostResult, Fed::Hooks { .. }) => self.go(Pos::PostStep),
+            (Pos::Throttle, Fed::Waited) => {
+                transitions::go(Pos::Throttle, Pos::PreStep);
+                *self = Self::wake(s, self.cursor, false, now);
+            }
             _ => return Err(Error::WrongFeed(self.cursor)),
         }
         Ok(())
@@ -411,7 +420,8 @@ impl Step {
         }
         let cancel = matches!(self.pos, Pos::Sample | Pos::Calls | Pos::Throttle);
         if self.pos == Pos::Throttle {
-            self.pos = Pos::Rest; // the scheduled restart is cancelled
+            transitions::event("abort");
+            self.go(Pos::Rest); // the scheduled restart is cancelled
         }
         cancel
     }
@@ -430,16 +440,21 @@ impl Step {
         if self.pos == Pos::Input && self.delivered_by_a_hook(s, &mut delivers) {
             // The hook's own write stood in for this commit: it counts as one.
             self.committed = true;
+            transitions::event("input delivered by a hook");
+            self.go(Pos::Input);
             return;
         }
         match s.write(self.cursor, d.body, delivers, d.by, now) {
             Ok(_) => {
                 self.committed = true;
                 if self.pos == Pos::PreReply {
-                    self.pos = Pos::PostReply;
+                    self.go(Pos::PostReply);
+                } else {
+                    self.go(self.pos);
                 }
             }
             Err(e) => {
+                transitions::event("commit refused");
                 self.draft = None;
                 self.end(s, Ending::Failed(e.to_string()));
             }
@@ -459,6 +474,18 @@ impl Step {
         let was = delivers.len();
         delivers.retain(|d| *d != id);
         was != delivers.len() && delivers.is_empty()
+    }
+
+    /// A move inside `job` that no job or feed causes: logged under `why`.
+    fn hop(&mut self, why: &str, to: Pos) {
+        transitions::event(why);
+        self.go(to);
+    }
+
+    /// Move to `to`, logging the change under the current event.
+    fn go(&mut self, to: Pos) {
+        transitions::go(self.pos, to);
+        self.pos = to;
     }
 
     /// The machine numbers the hook job it just took from `next_job`.
@@ -487,7 +514,7 @@ impl Step {
         if self.ending == Ending::Done {
             self.ending = ending;
         }
-        self.pos = Pos::PostStep;
+        self.go(Pos::PostStep);
     }
 
     /// After `post_step`: sync what it wrote, then rest, throttle, or restart.
@@ -510,14 +537,16 @@ impl Step {
                 .any(|i| matches!(i.data, ItemData::Input { .. }));
         let changed = s.changes.get(&self.cursor).copied().unwrap_or(0) != self.seen;
         let again = self.ending == Ending::Done && ((s.auto[&self.cursor] && work) || changed);
-        self.pos = match (again, self.committed) {
+        let to = match (again, self.committed) {
             (false, _) => Pos::Rest,
             (true, false) => Pos::Throttle,
-            (true, true) => {
-                *self = Self::wake(s, self.cursor, false, now);
-                Pos::PreStep
-            }
+            (true, true) => Pos::PreStep,
         };
+        transitions::ending(&self.ending);
+        self.go(to);
+        if to == Pos::PreStep {
+            *self = Self::wake(s, self.cursor, false, now);
+        }
     }
 
     fn start_batch(&mut self, s: &Session, node: NodeId) -> Result<Vec<RunCall>, Error> {
@@ -552,7 +581,7 @@ impl Step {
             now,
         )?;
         self.committed = true;
-        self.pos = Pos::PostResult;
+        self.go(Pos::PostResult);
         Ok(())
     }
 }

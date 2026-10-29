@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 
 use crate::step::{Fed, Job, Step};
+use crate::transitions;
 use crate::tree::{Author, Body, CursorId, Error, ItemData, ItemId, Move, NodeId, Session};
 
 #[derive(Debug)]
@@ -589,6 +590,7 @@ impl Machine {
     /// Start a step unless one is running; a wake while busy joins it.
     fn wake(&mut self, cursor: CursorId, asked: bool, now: u64) {
         if !self.busy(cursor) {
+            transitions::wake(asked);
             self.steps
                 .insert(cursor, Step::wake(&self.session, cursor, asked, now));
         }
