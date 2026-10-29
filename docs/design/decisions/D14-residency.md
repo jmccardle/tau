@@ -66,13 +66,22 @@ measurement asks for it.
 ## Consequences
 
 - Memory is node ids and parents (~32 bytes a node) plus the cursors'
-  walks, whatever the session's history. Measured in `benches/tree.rs`
-  (`cycles`); see `docs/benchmarks.md`.
-- Open is unchanged: the log is scanned and replayed whole, then evicted,
-  so its peak memory is still the whole log. If that matters, a **header
-  cache** (node ids, parents, and offsets up to a log position, checksummed,
-  rebuilt by a full scan when missing or bad) fixes it without new crash
-  cases.
+  walks, whatever the session's history. Measured (`cycles` in
+  `benches/tree.rs`, `docs/benchmarks.md`): after 20 compactions of a
+  1M-token session, 3.3 MB of bodies in memory instead of 83 MB, and the
+  process at 47 MB RSS instead of 150 MB. `walk` got faster; a go-to now
+  checks its target's walk (~20 µs instead of ~1 µs).
+- Open is unchanged: the log is decoded and replayed whole, then evicted,
+  so its peak is ~2.5× the log, and the allocator keeps the freed bodies'
+  memory, so a session that is opened rather than built keeps its open-time
+  RSS. Replaying in batches and evicting as it goes would bound both; a
+  **header cache** (node ids, parents, and offsets up to a log position,
+  checksummed, rebuilt by a full scan when missing or bad) would also cut
+  open time, without new crash cases.
+- A line appended with no cursor on it (a compaction's copy, before its
+  move) is evicted by the next save and read back if the extension reads
+  it (~8–11 ms for a 1M-token compaction). An extension that builds a line
+  under a cursor of its own keeps it in memory.
 - Disk is unchanged.
 - A go-to into an evicted line reads its bodies back (one read each).
 - `tau-py`: a node's body may not be in memory; `Stored` becomes a typed
