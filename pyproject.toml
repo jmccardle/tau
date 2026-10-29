@@ -8,6 +8,7 @@ description = "τ next (\"Trusty\"): Rust core, Python extensions."
 requires-python = ">=3.12"
 license = "MIT"
 dynamic = ["version"]
+dependencies = ["httpx>=0.28"]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
@@ -33,6 +34,7 @@ features = ["abi3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests/behavior", "tests/providers"]
 addopts = ["--strict-markers"]
 
 [tool.ruff]
@@ -56,8 +58,9 @@ max-complexity = 15
 "tests/**" = ["PLR2004"]
 
 [tool.pyright]
-include = ["python", "tests", "parity"]
+include = ["python", "tests", "parity", "examples"]
 strict = ["python"]
 pythonVersion = "3.12"
 venvPath = "."
 venv = ".venv"
+extraPaths = ["tests/behavior", "tests/providers"]

@@ -65,6 +65,7 @@ class Driver:
         self._tasks: set[asyncio.Task[None]] = set()
         self._units = 0
         self._failure: Exception | None = None
+        self._watchers: list[asyncio.Future[None]] = []
 
     # Lifecycle
 
@@ -107,6 +108,26 @@ class Driver:
         """Raise the first exception an effect or the pump died of."""
         if self._failure is not None:
             raise self._failure
+
+    async def rest(self, cursor: int) -> None:
+        """Wait until the cursor is at rest with no effect out. Raises what an effect or the
+        pump died of. A cursor held by an open question or a gate does not rest."""
+        while True:
+            self.check()
+            if not self._active(cursor):
+                return
+            watcher = asyncio.get_running_loop().create_future()
+            self._watchers.append(watcher)
+            await watcher
+
+    def _active(self, cursor: int) -> bool:
+        return self.session.busy(cursor) or cursor in self._out or cursor in self._poll
+
+    def _notify(self) -> None:
+        watchers, self._watchers = self._watchers, []
+        for watcher in watchers:
+            if not watcher.done():
+                watcher.set_result(None)
 
     def questions(self, cursor: int) -> list[Question]:
         return list(self._questions.get(cursor, []))
@@ -189,11 +210,14 @@ class Driver:
         try:
             while self._failure is None:
                 self._dispatch_ready()
+                self._notify()
                 item = await self._queue.get()
                 if item is not None:
                     self._deliver(*item)
         except Exception as e:
             self._failure = e
+        finally:
+            self._notify()
 
     def _dispatch_ready(self) -> None:
         polls, self._poll = self._poll, set()

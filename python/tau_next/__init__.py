@@ -42,6 +42,7 @@ from tau_next._core import (
     WrongFeed,
 )
 from tau_next.clock import SystemClock
+from tau_next.config import ConfigError, ModelConfig
 from tau_next.driver import Driver, Outstanding, Question
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 from tau_next.protocols import (
@@ -65,6 +66,7 @@ __all__ = [
     "Clock",
     "Closed",
     "Config",
+    "ConfigError",
     "Corrupt",
     "Cursor",
     "CursorHook",
@@ -83,6 +85,7 @@ __all__ = [
     "Job",
     "Leased",
     "Locked",
+    "ModelConfig",
     "Move",
     "Next",
     "NoSuchCursor",

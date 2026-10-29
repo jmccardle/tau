@@ -438,6 +438,7 @@ it turns auto-step off (D1).
 not yet spiked · `Config` field
 
 `text` (default) or `omit`: how a never-run call is rendered on resend (Q27).
+The `text` markup is `[tool call <id>: <tool> <args_raw>]` (see `OpenAIProvider`).
 
 ### abort
 *spike* `Step::abort` · retires `AbortSignal`, abort-tree, `rollback`
@@ -487,6 +488,26 @@ so it costs the same at any depth. Core reads only the typed fields it needs
 (`max_steps`); `data` holds the rest, opaque to core and typed by the
 driver.
 
+### ModelConfig, ConfigError
+`tau_next.ModelConfig`, `tau_next.ConfigError` (`config.py`) · new
+
+The typed reading of a `Config` node's `data`, minimal subset of the planned
+config overhaul (plan.md, item 4): `model` (the name as its API spells it),
+`base_url` (an http or https URL), and optional `api_key_env`, the *name* of
+the environment variable holding the API key. `data` is a JSON object with
+exactly those keys. `ModelConfig.parse(config)` validates; unknown keys, wrong
+types, and missing keys raise `ConfigError` (a `ValueError`). `to_config()`
+builds the `Config`. `api_key(environ)` reads the key at sample time; it is
+never a field, so it reaches no node and no log (tested). No groups, merging,
+or file loading.
+
+### api_key_env
+`ModelConfig.api_key_env` · `Config` data key
+
+The name of the environment variable that holds the API key. Unset or empty
+when named is a `ConfigError`, which the provider reports as a failed sample.
+No variable named: no `Authorization` header.
+
 ## Hooks
 
 ### hook
@@ -535,6 +556,34 @@ retires backend (config key), `ProviderSpec`, `Model` descriptor,
 
 The **provider** is the Python adapter for one API family; it converts walks
 to messages (`model.md` §10). The **model** is a name, as its API spells it.
+
+### OpenAIProvider
+`tau_next.providers.openai.OpenAIProvider` · new
+
+The provider for OpenAI-compatible `/chat/completions` (llama.cpp, vLLM, OpenAI).
+Reads `ModelConfig` from the sample's `config`. The request carries `model`,
+`messages`, and `stream: true` and nothing else; the config has no sampling
+settings and a provider is not handed tool definitions. Conversion: `System`
+and `User` map to their roles; an `Assistant` to `assistant` with its text and
+`tool_calls` (`args_raw` sent as the `arguments` string); a `Results` that
+follows its batch to one `tool` message per outcome (`Err(e)` is `Error: e`,
+`Interrupted` is `Interrupted`); a `Results` that answers no batch to one
+`user` message of `[tool result <id>: <outcome>]` lines. `Thinking` parts are
+not sent back (this API takes none). Calls that are not runnable, or a batch
+with no `Results` after it, are `[tool call <id>: <tool> <args_raw>]` lines of
+text (the `partial_calls: text` markup), followed by `[reply stopped: <why>]`
+for `Length`, `Interrupted`, and `Error`. A `Results` whose ids differ from
+its batch's is a conversion error (Q11). The response is read as SSE;
+`reasoning_content` deltas become `Thinking`, `content` `Text`, `tool_calls`
+`Call`s; each part is yielded once the next kind of part begins or the stream
+finishes. `finish_reason` maps `stop` to `End`, `tool_calls` to `Tools`,
+`length` to `Length`, `content_filter` to `Refused`; any other is an error. The
+raw string is dropped until `stop_raw` exists. Fails with `SampleError`: a
+non-200 status (the server's `error.message`), a transport error, malformed
+SSE, an error object in the stream, a stream ending without `finish_reason`.
+Parts begun before a failure are yielded first. Constructor: `transport`
+(a test's `httpx.MockTransport`), `environ` (where keys are looked up),
+`timeout`. `request(walk, config)` returns the URL, headers, and body.
 
 ### tool
 retires `AgentTool`, `ToolDefinition`, `ToolInfo`
@@ -621,6 +670,13 @@ What a provider raises to fail a sample. Parts it yielded first are kept: the
 reply is committed with `stop: Error` and `Sampled.error` set. With none,
 `Sampled { reply: None, error }`. Any other exception from a provider or the
 driver is a bug and surfaces through `Driver.check`.
+
+### rest
+`Driver.rest(cursor)` · new
+
+Await until the cursor is at rest: not busy, no effect out, no poll due.
+Re-raises what an effect or the pump died of. A cursor held by an open
+question or a gate does not rest. The pump wakes its waiters after each pass.
 
 ### Clock, SystemClock
 `tau_next.Clock`, `tau_next.SystemClock` · new
@@ -722,6 +778,14 @@ later arrivals through.
 The only fakes allowed (rule 4): scripted samples (`Reply`, `Fail`; a `Gate` after
 `gate_after` parts; each request's walk ids and config recorded), scripted
 outcomes (calls recorded), and time that moves only on `advance`.
+
+### Transcript
+`tests/providers/fixtures/`, `tests/providers/transcripts.py` · new
+
+A real server's response recorded as raw bytes (`*.sse`, or `http_error.http`
+with its status line and headers) and replayed through `httpx.MockTransport`
+(`Server`, with `GatedStream` and `CutStream` for streams a test holds or
+breaks). Recorded from llama.cpp serving Qwen3; never edited.
 
 ### Recorder
 `tests/behavior/fakes.py` · new

@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-SCANNED = ["crates", "python", "tests", "parity", "scripts"]
+SCANNED = ["crates", "python", "tests", "parity", "scripts", "examples"]
 SUFFIXES = {".rs", ".py", ".pyi", ".toml"}
 SELF = Path(__file__).resolve()
 BUILD_DIR = ROOT / "target"
