@@ -13,6 +13,7 @@ pub mod bash;
 pub mod grep;
 pub mod limit;
 pub mod read;
+pub(crate) mod session;
 pub mod write;
 
 use std::fmt;
@@ -123,11 +124,13 @@ impl Limits {
     /// As [`Limits::new`], with the overflow directory chosen.
     ///
     /// # Errors
-    /// A limit of zero keeps nothing and is refused.
+    /// A limit of zero keeps nothing and is refused; so is an existing directory that
+    /// is a symlink, not ours, or open to others.
     pub fn in_dir(max_bytes: usize, dir: PathBuf) -> Result<Self> {
         if max_bytes == 0 {
             return Err("the output limit must be at least 1 byte".into());
         }
+        limit::check_existing_dir(&dir)?;
         Ok(Self {
             max_bytes,
             dir,

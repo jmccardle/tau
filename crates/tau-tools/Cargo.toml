@@ -15,7 +15,7 @@ grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
 fastrand = "2"
-nix = { version = "0.30", default-features = false, features = ["signal", "process", "poll", "user"] }
+nix = { version = "0.30", default-features = false, features = ["signal", "process", "poll", "user", "fs"] }
 globset = "0.4"
 
 [dev-dependencies]

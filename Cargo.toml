@@ -23,7 +23,7 @@ crc32fast = "1.5.3"
 tempfile = "3.27.0"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]

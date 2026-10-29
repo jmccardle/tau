@@ -1,26 +1,27 @@
 //! `bash`: a shell command, with a timeout and a real kill.
 //!
-//! [`Bash::start`] spawns `bash -c` as a session leader (through `setsid(1)`,
-//! which `exec`s without forking here): no controlling terminal, and its
-//! process group id is its pid. Stdin is closed; stdout and stderr share one
-//! pipe, so their order is the order the command wrote them.
-//! [`BashRun::wait`] reads the output and returns the call's answer.
+//! [`Bash::start`] spawns `bash -c` as a session leader (`setsid` in the child
+//! before `exec`, so the session exists when `start` returns): no controlling
+//! terminal, and its process group id and session id are its pid. Stdin is
+//! closed; stdout and stderr share one pipe, so their order is the order the
+//! command wrote them. [`BashRun::wait`] reads the output and returns the
+//! call's answer.
 //!
 //! Ending a command. [`BashRun::kill`] (any thread, any time) and the timeout
-//! both send SIGTERM to the whole process group, then SIGKILL after a grace
-//! period, so the shell, its pipeline and anything it backgrounded die
-//! together. Whenever the shell has exited (it is waited for without being
-//! reaped, so its pid cannot be reused), the rest of the group is killed, and
-//! only then is it reaped. A process that left the group (`setsid`) and keeps
-//! the output pipe open is not killed; the pipe is drained for a short grace
-//! period after the shell exits and then closed, and the answer says so.
+//! both send SIGTERM to the process group and to every other process of the
+//! session (see [`crate::session`]), then SIGKILL after a grace period.
+//! Whenever the shell has exited (it is waited for without being reaped, so its
+//! pid cannot be reused), the rest of its session is killed, and only then is
+//! it reaped. A process that started a session of its own (`setsid`) is out of
+//! reach; if it keeps the output pipe open, the pipe is drained for a short
+//! grace period after the shell exits and then closed, and the answer says so.
 //!
 //! The kept end of the output is the tail. A nonzero exit is an `Err` whose
 //! text is the output followed by the exit code.
 
 use std::io::{PipeReader, Read as _};
 use std::os::fd::AsFd;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Condvar, Mutex, PoisonError};
@@ -28,13 +29,14 @@ use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
-use nix::sys::signal::{Signal, killpg};
+use nix::sys::signal::Signal;
 use nix::sys::wait::{Id, WaitPidFlag, waitid};
 use nix::unistd::Pid;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::limit::{Keep, Sink};
+use crate::session;
 use crate::{Limits, Result, ToolError, lock, parse_args};
 
 /// The timeout when the call gives none, in milliseconds.
@@ -172,19 +174,30 @@ impl Bash {
         let child = {
             // The command holds the writer ends; they must be gone from here
             // before we read, or the pipe never ends.
-            let mut command = Command::new("setsid");
+            let mut command = Command::new("bash");
             command
-                .arg("bash")
                 .arg("-c")
                 .arg(&args.command)
                 .current_dir(&self.cwd)
                 .stdin(Stdio::null())
                 .stdout(writer.try_clone().map_err(spawn_failed)?)
                 .stderr(writer);
+            // SAFETY: the closure runs in the forked child before `exec`, where
+            // only async-signal-safe calls are allowed. `setsid(2)` is one, and
+            // it touches no memory of ours: no allocation, no lock. The error
+            // path builds an `io::Error` from the errno, which does not allocate.
+            #[allow(unsafe_code)]
+            unsafe {
+                command.pre_exec(|| {
+                    nix::unistd::setsid()
+                        .map(drop)
+                        .map_err(std::io::Error::from)
+                });
+            }
             command.spawn().map_err(|e| {
                 ToolError(format!(
-                    "could not start the command (does the working directory {} exist, and are \
-                     `setsid` and `bash` installed?): {e}",
+                    "could not start the command (does the working directory {} exist, and is \
+                     `bash` installed?): {e}",
                     self.cwd.display()
                 ))
             })?
@@ -271,32 +284,50 @@ impl BashRun {
     }
 }
 
+/// Makes the thread that reaps the shell always end the wait, even by a panic:
+/// without it `supervise` would wait for a reap that never comes.
+struct ReapGuard<'a>(&'a Running);
+
+impl Drop for ReapGuard<'_> {
+    fn drop(&mut self) {
+        let mut ctl = lock(&self.0.ctl);
+        if !ctl.reaped {
+            // Cleanup after a panic; the panic itself is reported by the join.
+            let _ = session::kill_all(self.0.pgid);
+            ctl.reaped = true;
+            ctl.exited_at.get_or_insert_with(Instant::now);
+            ctl.status = Some(Err("the thread that waits for the command panicked".into()));
+        }
+        drop(ctl);
+        self.0.wake.notify_all();
+    }
+}
+
 impl Drop for Running {
     fn drop(&mut self) {
         // A run that was never waited on must not leave its command running.
         // Cleanup: there is no caller left to tell about a failure.
         let child = self.child.get_mut().unwrap_or_else(PoisonError::into_inner);
         if let Some(mut child) = child.take() {
-            let _ = killpg(self.pgid, Signal::SIGKILL);
+            let _ = session::kill_all(self.pgid);
             let _ = child.wait();
         }
     }
 }
 
 impl Running {
-    /// Signal the group, unless the shell is gone (its pid may be someone else's).
+    /// Signal the session, unless the shell is gone (its pid may be someone else's).
     fn signal(&self, ctl: &mut Ctl, signal: Signal) {
         if ctl.reaped {
             return;
         }
-        match killpg(self.pgid, signal) {
-            // ESRCH: the group is already gone, which is what we wanted.
-            Ok(()) | Err(Errno::ESRCH) => {}
-            Err(e) => {
-                ctl.signal_error.get_or_insert(ToolError(format!(
-                    "could not kill the command's processes: {e}"
-                )));
-            }
+        let sent = if signal == Signal::SIGKILL {
+            session::kill_all(self.pgid)
+        } else {
+            session::signal_all(self.pgid, signal)
+        };
+        if let Err(e) = sent {
+            ctl.signal_error.get_or_insert(e);
         }
     }
 
@@ -367,6 +398,7 @@ impl Running {
     /// Wait for the shell to exit without reaping it, kill what it left in the
     /// group, then reap it.
     fn reap(&self, mut child: Child) {
+        let _guard = ReapGuard(self);
         let waited = loop {
             match waitid(
                 Id::Pid(self.pgid),
@@ -459,6 +491,9 @@ impl Running {
             match status.code() {
                 Some(0) => {
                     return Ok(match escaped {
+                        Some(cause) if text.is_empty() => {
+                            format!("[output may be cut off: {cause}]")
+                        }
                         Some(cause) => format!("{text}\n[output may be cut off: {cause}]"),
                         None => text.to_owned(),
                     });
@@ -483,6 +518,25 @@ impl Running {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Starts `sleep 13` in a session of its own and returns once it is there (a
+    /// bare `setsid ... &` races with the command's own end), saving its pid.
+    const LEAVE: &str = "setsid sleep 13 & p=$!; until [ \"$(cut -d' ' -f6 /proc/$p/stat)\" = \"$p\" ]; \
+                         do sleep 0.02; done; echo $p > pid;";
+
+    /// Whether a live process has `marker` in its command line.
+    fn running(marker: &str) -> bool {
+        let want = marker.as_bytes();
+        std::fs::read_dir("/proc").unwrap().any(|item| {
+            let path = item.unwrap().path();
+            let Ok(cmdline) = std::fs::read(path.join("cmdline")) else {
+                return false;
+            };
+            let alive =
+                std::fs::read_to_string(path.join("stat")).is_ok_and(|stat| !stat.contains(") Z "));
+            alive && cmdline.windows(want.len()).any(|w| w == want)
+        })
+    }
 
     fn config(grace: u64) -> BashConfig {
         BashConfig {
@@ -635,7 +689,7 @@ mod tests {
         let started = Instant::now();
         let err = run(
             &tool,
-            &json!({"command": "echo hi; setsid sleep 13 & echo $! > pid; sleep 30", "timeout": 500}),
+            &json!({"command": format!("echo hi; {LEAVE} sleep 30"), "timeout": 500}),
         )
         .unwrap_err();
         let elapsed = started.elapsed();
@@ -652,11 +706,7 @@ mod tests {
     fn an_escaped_process_after_a_normal_exit_is_an_ok_with_a_note() {
         let (tool, dir) = tool(10_000);
         let started = Instant::now();
-        let out = run(
-            &tool,
-            &json!({"command": "setsid sleep 13 & echo $! > pid; sleep 0.3; echo done"}),
-        )
-        .unwrap();
+        let out = run(&tool, &json!({"command": format!("{LEAVE} echo done")})).unwrap();
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(out, format!("done\n\n[output may be cut off: {ESCAPED}]"));
         end_process(read_pid(&dir));
@@ -665,8 +715,7 @@ mod tests {
     #[test]
     fn cancelling_while_an_escaped_process_holds_the_pipe_returns() {
         let (tool, dir) = tool(10_000);
-        let handle = tool
-            .start(&json!({"command": "setsid sleep 13 & echo $! > pid; sleep 30"}).to_string());
+        let handle = tool.start(&json!({"command": format!("{LEAVE} sleep 30")}).to_string());
         let started = Instant::now();
         std::thread::scope(|scope| {
             let waiting = scope.spawn(|| handle.wait());
@@ -746,5 +795,73 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn processes_that_moved_to_their_own_group_are_killed_with_the_session() {
+        // timeout(1) puts itself and its child in a group of their own.
+        let (tool, _dir) = tool(10_000);
+        let out = run(
+            &tool,
+            &json!({"command": "timeout 30 sleep 31.25 & echo ok"}),
+        )
+        .unwrap();
+        assert_eq!(out, "ok\n");
+        assert!(
+            !running("sleep\x0031.25"),
+            "a process of the session survived"
+        );
+        let err = run(
+            &tool,
+            &json!({"command": "timeout 30 sleep 31.5; echo after", "timeout": 300}),
+        )
+        .unwrap_err();
+        assert!(err.0.contains("timed out after 300 ms"), "{err}");
+        assert!(
+            !running("sleep\x0031.5"),
+            "a process of the session survived"
+        );
+    }
+
+    #[test]
+    fn killing_right_after_start_works_every_time() {
+        let (tool, _dir) = tool(10_000);
+        let started = Instant::now();
+        for _ in 0..20 {
+            let handle = tool.start(&json!({"command": "sleep 30.75"}).to_string());
+            handle.kill();
+            let err = handle.wait().unwrap_err();
+            assert_eq!(err.0, "command was aborted");
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(!running("30.75"), "a command survived its kill");
+    }
+
+    #[test]
+    fn dropping_right_after_start_is_prompt_and_kills() {
+        let (tool, _dir) = tool(10_000);
+        for _ in 0..20 {
+            let handle = tool.start(&json!({"command": "sleep 30.5"}).to_string());
+            let dropped = Instant::now();
+            drop(handle);
+            assert!(
+                dropped.elapsed() < Duration::from_secs(1),
+                "{:?}",
+                dropped.elapsed()
+            );
+        }
+        assert!(!running("30.5"), "a command survived its drop");
+    }
+
+    #[test]
+    fn an_escaped_process_with_no_output_leaves_a_clean_note() {
+        let (tool, dir) = tool(10_000);
+        let out = run(&tool, &json!({"command": format!("{LEAVE} true")})).unwrap();
+        assert_eq!(out, format!("[output may be cut off: {ESCAPED}]"));
+        end_process(read_pid(&dir));
     }
 }

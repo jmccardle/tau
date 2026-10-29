@@ -4,10 +4,12 @@
 //! file of one enormous line costs the output window, not the file.
 
 use std::fmt::Write as _;
-use std::fs::{self, File};
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
+use nix::fcntl::OFlag;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -81,10 +83,17 @@ impl Read {
         let limit = positive("limit", args.limit)?.unwrap_or(DEFAULT_LINES);
         let path = resolve(&self.cwd, &args.path);
         let io = |e: std::io::Error| ToolError(format!("cannot read {}: {e}", args.path));
-        let meta = fs::metadata(&path).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => ToolError(format!("file not found: {}", args.path)),
-            _ => io(e),
-        })?;
+        // Opened without blocking (a pipe with no writer would hang an open) and
+        // judged by `fstat` of the open file, not by its path, which may change.
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags((OFlag::O_NONBLOCK | OFlag::O_NOCTTY).bits())
+            .open(&path)
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => ToolError(format!("file not found: {}", args.path)),
+                _ => io(e),
+            })?;
+        let meta = file.metadata().map_err(io)?;
         if meta.is_dir() {
             return Err(format!("{} is a directory, not a file", args.path).into());
         }
@@ -95,7 +104,7 @@ impl Read {
             )
             .into());
         }
-        let mut reader = BufReader::with_capacity(64 * 1024, File::open(&path).map_err(io)?);
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
         if reader.fill_buf().map_err(io)?.contains(&0) {
             return Err(binary(&args.path));
         }
@@ -123,12 +132,22 @@ impl Read {
                 read
             }
             .max(1);
-            let _ = write!(
-                text,
-                "\n[showing lines {offset}-{}; offset={} continues]",
-                offset + shown - 1,
-                offset + shown
-            );
+            if finished.cut_line {
+                // No whole line fit: line `offset` is shown only in part.
+                let _ = write!(
+                    text,
+                    "\n[line {offset} is shown only in part; the rest of it is only in the \
+                     overflow file; offset={} continues after it]",
+                    offset + 1
+                );
+            } else {
+                let _ = write!(
+                    text,
+                    "\n[showing lines {offset}-{}; offset={} continues]",
+                    offset + shown - 1,
+                    offset + shown
+                );
+            }
         }
         Ok(text)
     }
@@ -211,6 +230,7 @@ fn binary(path: &str) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn tool(max: usize) -> (Read, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -343,5 +363,25 @@ mod tests {
         fs::write(dir.path().join("l.txt"), b"caf\xe9\n").unwrap();
         let out = call(&tool, &json!({"path": "l.txt"})).unwrap();
         assert_eq!(out, format!("caf\u{FFFD}\n\n{}", crate::limit::LOSSY_NOTE));
+    }
+
+    #[test]
+    fn a_cut_first_line_says_the_rest_of_it_is_only_in_the_file() {
+        let (tool, dir) = tool(20);
+        fs::write(
+            dir.path().join("a.txt"),
+            format!("{}\nsecond\n", "x".repeat(50)),
+        )
+        .unwrap();
+        let out = call(&tool, &json!({"path": "a.txt"})).unwrap();
+        assert!(out.contains("one long line cut short"), "{out}");
+        assert!(
+            out.ends_with(
+                "\n[line 1 is shown only in part; the rest of it is only in the overflow file; \
+                 offset=2 continues after it]"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("showing lines"), "{out}");
     }
 }

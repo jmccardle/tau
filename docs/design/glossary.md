@@ -673,10 +673,10 @@ are strict: an unknown or missing field is an `Err`.
 
 | tool | parameters | does |
 |---|---|---|
-| `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default 4096) | A text file, verbatim, scanned in buffer-sized pieces (a file of one huge line costs the output window, not the file). `Err` for a missing file, a directory, a pipe, device or socket, an offset past the end, a binary file (NUL bytes; images are not supported). When `limit` or the byte limit stops it short of the end, a last line `[showing lines A-B; offset=N continues]` is appended; after a byte cut, `B` is the last kept line. Bytes that are not UTF-8 become U+FFFD and a line says so. |
+| `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default 4096) | A text file, verbatim, scanned in buffer-sized pieces (a file of one huge line costs the output window, not the file). `Err` for a missing file, a directory, a pipe, device or socket, an offset past the end, a binary file (NUL bytes; images are not supported). When `limit` or the byte limit stops it short of the end, a last line `[showing lines A-B; offset=N continues]` is appended; after a byte cut, `B` is the last kept line. If not even the first line fits, it is shown in part and the last line says the rest of it is only in the overflow file and `offset=N+1` continues after it. Opened with `O_NONBLOCK` and judged by `fstat` of the open file. Bytes that are not UTF-8 become U+FFFD and a line says so. |
 | `write` | `path`, `content` | The whole file, UTF-8, atomically (a temp file beside it, then a rename), creating parent directories, following a symlink (dangling or not). Answers `Wrote N lines (B bytes) to <path>` (`1 line` in the singular). The new file gets the mode of the one it replaces before any content is written; the file and then the directory are synced. Hard links to the old file, its owner, group and ACLs are not kept. |
-| `grep` | `pattern`, `path` (file or directory, default `cwd`), `files` (list; overrides `path`; searched as named), `ignore_case`, `glob` (a filter of a directory walk: the file name, or the path below the searched directory if it has a `/`; ignore rules still apply; not with `files` or a file `path`) | The Rust regex engine of ripgrep over a parallel, ignore-aware walk: `.gitignore` (in any tree, git repository or not), `.ignore`, hidden files and binary files are skipped. One `path:line:text` per match, path relative to the tool's working directory (not the searched path), sorted by path then line; a line is cut at 500 bytes with ` [+N bytes]`. The search stops once the matches held reach the overflow cap (a note says so). No match: `No matches found in N file(s)`. Notes add last lines: `[skipped N binary file(s)]` (the names, for files named explicitly), `[matching in F stopped at a NUL byte at offset N; ...]` (binary detection works a buffer at a time), an invalid-UTF-8 note, `[N paths could not be searched; first: ...]`. |
-| `bash` | `command`, `timeout` (ms) | `bash -c command` in `cwd` as a session leader (no controlling terminal; run through `setsid(1)`, because `pre_exec` needs `unsafe`, which the workspace forbids), stdin closed, stdout and stderr on one pipe so they arrive in the order written. Exit 0: `Ok(output)`. Otherwise `Err(output + "\n\n" + "command exited with code N")` (or `killed by signal N`, `timed out after N ms and was terminated`). A `timeout` over the tool's maximum is an `Err` stating the maximum. |
+| `grep` | `pattern`, `path` (file or directory, default `cwd`), `files` (list; overrides `path`; searched as named), `ignore_case`, `glob` (a filter of a directory walk: the file name, or the path below the searched directory if it has a `/`; ignore rules still apply; not with `files` or a file `path`) | The Rust regex engine of ripgrep over a parallel, ignore-aware walk: `.gitignore` (in any tree, git repository or not), `.ignore`, hidden files and binary files are skipped. One `path:line:text` per match, path relative to the tool's working directory (not the searched path), sorted by path then line; a line is cut at 500 bytes (before decoding) with ` [+N bytes]`; a file with a line over 16 MiB (the searcher's heap limit) is not searched and is named in the could-not-search note. The search stops once the matches held reach the overflow cap, and a note says that some files were not searched. No match: `No matches found in N file(s)`. Notes add last lines: `[skipped N binary file(s)]` (the names, for files named explicitly), `[matching in F stopped at a NUL byte at offset N; ...]` (binary detection works a buffer at a time), an invalid-UTF-8 note, `[N paths could not be searched; first: ...]`. |
+| `bash` | `command`, `timeout` (ms) | `bash -c command` in `cwd` as a session leader (no controlling terminal; `setsid` runs in the child before `exec`, so the session exists when the call starts), stdin closed, stdout and stderr on one pipe so they arrive in the order written. Exit 0: `Ok(output)`. Otherwise `Err(output + "\n\n" + "command exited with code N")` (or `killed by signal N`, `timed out after N ms and was terminated`). A `timeout` over the tool's maximum is an `Err` stating the maximum. The one `unsafe` block of the workspace is here (`pre_exec`); the workspace lint is `deny`, not `forbid`, for that. |
 
 `write` has no output limit: its answer is one short line. The other three
 share the *output limit*.
@@ -705,9 +705,13 @@ character boundary instead and the note says so.
 When output passes the limit, the output (everything the tool would have
 answered, not just what it kept) is written to `<overflow_dir>/<id>.out`, `id`
 being 8 random characters from `a-z0-9`. The directory is created `0700` if
-missing, and then checked with `lstat`: it must be a directory (not a symlink),
-owned by the effective uid, with `mode & 0o077 == 0`; otherwise the call is an
-`Err` naming the problem. There is no fallback directory. Files are created
+missing. It must be a directory (not a symlink), owned by the effective uid,
+with `mode & 0o077 == 0`; otherwise the call is an `Err` naming the problem.
+This is checked at construction (`lstat`; a directory that does not exist yet
+is fine, `ValueError` otherwise) and again at use: the directory is opened
+with `O_DIRECTORY|O_NOFOLLOW`, checked with `fstat` on that fd, and the file
+is created relative to the fd with `openat`, so a path swapped in between
+cannot redirect it. There is no fallback directory. Files are created
 `0600` with `create_new`, so an existing file is never touched. For `read` the
 output is the lines selected by `offset` and `limit`; for `grep`, all matches
 (without a trailing newline); for `bash`, stdout and stderr interleaved,
@@ -743,20 +747,46 @@ A started `bash` command. `Bash.start(args_raw)` spawns it as a session leader
 `BashRun` whose `wait` answers `Err`); `wait()` blocks, GIL released, and answers
 the `Outcome`; `kill()` does not block and may be called from any thread, any
 number of times. Ending a command, by `kill()` or by the timeout, is: SIGTERM to
-the whole group, then SIGKILL after the grace period (`kill_grace_ms=`, default
+the process group and every other process of the session, then SIGKILL after the grace period (`kill_grace_ms=`, default
 2000), so the shell, its pipeline and anything it backgrounded die together.
 The shell is waited for without being reaped (`waitid` with `WNOWAIT`, so its
 pid cannot be reused), the rest of its group is killed, and only then is it
-reaped; so a command cannot leave a process running behind it. A `killpg`
+reaped; the SIGKILL is repeated, scanning `/proc/*/stat` for the session id (Linux only), until no live process of the session is left. A process that has called `setsid` itself leaves the session and is out of reach. A `killpg`
 failure other than "no such process" is an `Err`, never a panic. `timeout_ms=`
 is the timeout of a call that gives none (30_000); `max_timeout_ms=` (600_000)
 the most a call may ask for. `BashTool.call` kills when it is cancelled and waits
 for the command to be gone before the `CancelledError` goes on, and gives each
-call a thread of its own. A process that escaped the group (`setsid`) and holds
+call a thread of its own. A process of a session of its own that holds
 the output pipe open is not killed: the pipe is read for 250 ms after the shell
 exits and then closed, and the answer says "a process outside the command's
 group still holds the output open" (an `Ok` with a note after a normal exit).
-A `BashRun` dropped without `wait` kills its group.
+A `BashRun` dropped without `wait` kills its session.
+
+### BashConfig
+`tau_tools::bash::BashConfig` · new
+
+The three times of the `bash` tool, in milliseconds: `default_timeout_ms` (a
+call that gives no `timeout`; 30_000), `max_timeout_ms` (the most a call may
+ask for; 600_000) and `kill_grace_ms` (SIGTERM to SIGKILL; 2_000). All at least
+1, the default not over the maximum. Python: `timeout_ms=`, `max_timeout_ms=`,
+`kill_grace_ms=`.
+
+### Limits
+`tau_tools::Limits` · new
+
+What `read`, `grep` and `bash` share: `max_bytes` (the output limit),
+`dir` (the overflow directory) and `max_overflow` (the cap of the overflow
+file). Built by `Limits::new` (default directory) or `Limits::in_dir`; refuses
+a zero limit, a cap below the limit, and an existing directory that is a
+symlink, not ours, or open to others.
+
+### Finished
+`tau_tools::limit::Finished` · new
+
+What a `Sink` answers: `text` (the kept text with its notes), `kept_lines`
+(lines shown; a cut-short line counts as one), `truncated` (the output passed
+the limit) and `cut_line` (the one line shown is only the start of a line). Used
+by `read` to word its continuation hint.
 
 ### Cancel
 `tau_next._core.Cancel` · new
