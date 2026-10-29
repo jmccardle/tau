@@ -17,7 +17,6 @@ fn as_loaded(s: &Session) -> Session {
     s.reconcile();
     s.outbox.clear();
     s.changes.clear();
-    s.taken.clear();
     s.notices.clear();
     s
 }
@@ -337,10 +336,8 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
                 }),
                 error: None,
             },
-            _ => Fed::Hooks {
-                stop: None,
-                draft: None,
-            },
+            Job::Hooks { draft, .. } => Fed::Hooks { stop: None, draft },
+            other => panic!("a plain turn has no {other:?}"),
         };
         m.feed(c, fed, 0).unwrap();
         store = store.save(&mut m.session).unwrap();

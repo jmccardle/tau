@@ -281,15 +281,16 @@ async def test_a_handle_used_after_its_hook_returned_is_refused(tmp_path: Path) 
 
 @scenario
 async def test_core_refusals_surface_as_typed_exceptions_in_the_hook(tmp_path: Path) -> None:
-    """V1, V2, I3: `RootNotConfig`, `DuplicateCall`, `NoSuchNode`, `NoSuchCursor`."""
+    """V2, I3: `DuplicateCall` (a `Results` and an `Assistant`), `NoSuchNode`, `NoSuchCursor`."""
     errors: list[type[Exception]] = []
 
     async def probe(cursor: Cursor, subject: Subject) -> str | None:
         dup = Body.Results(
             [("c", Outcome.Ok("a"), Author.Tools()), ("c", Outcome.Ok("b"), Author.Tools())]
         )
+        twice = Body.Assistant([Part.Call("c", "t", "{}"), Part.Call("c", "t", "{}")], Stop.Tools)
         for attempt in (
-            lambda: cursor.append(None, Body.System("root")),
+            lambda: cursor.write(twice),
             lambda: cursor.write(dup),
             lambda: cursor.append(999, Body.Custom("k", "")),
             lambda: cursor.open(999),
@@ -306,7 +307,7 @@ async def test_core_refusals_surface_as_typed_exceptions_in_the_hook(tmp_path: P
     await h.step()
     await h.settle()
     assert errors == [
-        tau_next.RootNotConfig,
+        tau_next.DuplicateCall,
         tau_next.DuplicateCall,
         tau_next.NoSuchNode,
         tau_next.NoSuchNode,
@@ -554,12 +555,14 @@ async def test_a_write_cannot_deliver_another_cursors_item(tmp_path: Path) -> No
 
 @scenario
 async def test_an_input_a_hook_delivered_itself_is_not_delivered_twice(tmp_path: Path) -> None:
-    """The input commit delivers what is still pending after the hooks; a hook that
-    already delivered the item leaves nothing to commit (and so nothing to sample)."""
+    """The hook's own write is the delivery, and it clears the draft too: a draft of `None`
+    commits nothing, so the input is delivered once and there is nothing to sample. The
+    step made no commit of its own, so it does not throttle."""
 
     async def deliver(cursor: Cursor, subject: Subject) -> str | None:
         for item in cursor.items():
             cursor.write(Body.Custom("seen", ""), delivers=[item.id])
+        subject.draft = None
         return None
 
     provider = FakeProvider([])
@@ -572,6 +575,7 @@ async def test_an_input_a_hook_delivered_itself_is_not_delivered_twice(tmp_path:
     assert h.session.items(h.cursor) == []
     assert provider.requests == []
     assert [n.delivers for n in h.nodes()[2:]] == [[0]]
+    assert h.clock.sleepers == 0
 
 
 @scenario
@@ -771,24 +775,64 @@ async def test_a_retired_handle_refuses_every_write_and_ask_but_still_reads(
 
 
 @scenario
-async def test_a_hook_that_delivers_the_offered_input_counts_as_the_steps_commit(
+async def test_a_hook_that_delivers_the_offered_input_but_keeps_the_draft_fails_the_step(
     tmp_path: Path,
 ) -> None:
-    """The hook's own write stands in for the input commit: the step committed, so it
-    counts toward `max_steps` (here 1, which turns auto-step off), and does not throttle."""
+    """The draft still delivers an item the hook's write removed: the commit is refused
+    (`NotPending`), through the same path as any bad draft."""
 
     async def deliver(cursor: Cursor, subject: Subject) -> str | None:
         for item in cursor.items():
             cursor.write(Body.Custom("seen", ""), delivers=[item.id])
         return None
 
-    h = await Harness.create(
-        tmp_path,
-        config=Config("{}", max_steps=1),
-        extensions=[Scripted("d", pre_input=deliver)],
-    )
+    recorder = Recorder()
+    h = await Harness.create(tmp_path, extensions=[Scripted("d", pre_input=deliver), recorder])
     await h.send("hi")
     await h.settle()
-    assert h.bodies()[-1] == Body.Custom("seen", "")
-    assert not h.session.auto(h.cursor), "one committing step reached max_steps"
-    assert h.clock.sleepers == 0
+    (ending,) = recorder.endings
+    assert isinstance(ending, Ending.Failed)
+    assert "not pending" in ending.error
+    assert Body.User("hi") not in h.bodies()
+    assert not h.session.auto(h.cursor)
+
+
+@scenario
+async def test_a_pre_reply_hook_that_clears_the_draft_drops_the_reply(tmp_path: Path) -> None:
+    """`None` commits nothing for the reply too: no `Assistant` node, and the step is not failed."""
+
+    def drop(subject: Subject | CallDraft) -> None:
+        assert isinstance(subject, Subject)
+        subject.draft = None
+
+    recorder = Recorder(on={"pre_reply": drop})
+    h = await Harness.create(tmp_path, provider=FakeProvider([text("lost")]), extensions=[recorder])
+    await h.input("hi")
+    await h.settle()
+    await h.step()
+    await h.settle()
+    assert h.bodies()[-1] == Body.User("hi")
+    assert recorder.endings[-1] == Ending.Done()
+
+
+@scenario
+async def test_a_hook_appends_a_detached_root_without_moving_any_cursor(tmp_path: Path) -> None:
+    """A root is made only by `append_root`, which takes a `Config`: it has no parent and
+    leaves the cursor where it was. There is no way to ask for a root of another kind."""
+    made: list[int] = []
+
+    async def detach(cursor: Cursor, subject: Subject) -> str | None:
+        made.append(cursor.append_root(Config("detached")))
+        return None
+
+    h = await Harness.create(tmp_path, extensions=[Scripted("d", pre_step=detach)])
+    at = h.session.at(h.cursor)
+    await h.step()
+    await h.settle()
+    (root,) = made
+    node = h.session.node(root)
+    assert node.parent is None
+    assert node.body == Body.Config(Config("detached"))
+    assert node.by == Author.Extension("d")
+    assert h.session.at(h.cursor) == at
+    assert h.session.lca(root, at) is None

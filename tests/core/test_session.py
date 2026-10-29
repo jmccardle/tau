@@ -341,7 +341,7 @@ def test_a_results_draft_naming_a_call_twice_fails_the_step_and_changes_nothing(
 
     jobs = run(session, cursor, on_job=corrupt)
     endings = [j.ending for j in jobs if isinstance(j, Job.Hooks) and j.ending is not None]
-    assert endings == [Ending.Failed("Results name a call twice")]
+    assert endings == [Ending.Failed("a node names a call id twice")]
     assert bodies(session, cursor) == before, "the refused commit wrote nothing"
     assert [i.data for i in session.items(cursor)] == [ItemData.Input("term", "hi")]
     assert not session.auto(cursor)
@@ -578,17 +578,35 @@ def test_a_draft_must_state_what_it_delivers() -> None:
 
 
 def test_a_pre_input_draft_that_delivers_nothing_leaves_the_input_pending() -> None:
-    session = Session.create(Config("{}", 3), "sys", 0)
-    cursor = session.cursors()[0]
-    session.send(cursor, "term", "hi", 0)
+    session, cursor = new()
+    session.input(cursor, "term", "hi", 0)
+    run(session, cursor)  # auto-step is off: the woken step offers no input
+    session.step(cursor, "term", 0)
     jobs = run(
         session, cursor, iter(say("ok") for _ in range(10)), on_job=edit_input_without_delivering
     )
-    assert sum(isinstance(j, Job.Sample) for j in jobs) == 3  # one per step until max_steps
+    assert sum(isinstance(j, Job.Sample) for j in jobs) == 1
     users = [b for b in bodies(session, cursor) if isinstance(b, Body.User)]
-    assert users == [Body.User("edited")] * 3
-    assert not session.auto(cursor)
+    assert users == [Body.User("edited")]
     assert [i.data for i in session.items(cursor)] == [ItemData.Input("term", "hi")]
+
+
+def test_a_pre_input_hook_that_leaves_no_draft_commits_nothing() -> None:
+    session, cursor = new()
+    session.input(cursor, "term", "hi", 0)
+    run(session, cursor)  # auto-step is off: the woken step offers no input
+    session.step(cursor, "term", 0)
+
+    def take_the_draft(job: Job) -> list[Fed] | None:
+        if isinstance(job, Job.Hooks) and job.point == Hook.PreInput:
+            return [Fed.Hooks(None, None)]
+        return None
+
+    jobs = run(session, cursor, iter(say("ok") for _ in range(10)), on_job=take_the_draft)
+    assert not any(isinstance(b, Body.User) for b in bodies(session, cursor))
+    assert [i.data for i in session.items(cursor)] == [ItemData.Input("term", "hi")]
+    endings = [j.ending for j in jobs if isinstance(j, Job.Hooks) and j.ending is not None]
+    assert endings == [Ending.Done()], "leaving no draft is not a failure"
 
 
 def test_a_cursor_that_is_not_open_is_refused_and_leaves_no_record() -> None:

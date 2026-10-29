@@ -54,15 +54,9 @@ create_exception!(
 );
 create_exception!(
     tau_next._core,
-    RootNotConfig,
-    PyValueError,
-    "A root node that is not a Config (V1)."
-);
-create_exception!(
-    tau_next._core,
     DuplicateCall,
     PyValueError,
-    "A Results body naming a call twice (V2)."
+    "A Results or Assistant body naming a call id twice (V2)."
 );
 create_exception!(
     tau_next._core,
@@ -165,7 +159,6 @@ fn tree_err(e: &tree::Error) -> PyErr {
         tree::Error::NotInHook(_) => NotInHook::new_err(m),
         tree::Error::NoSuchItem(_) => NoSuchItem::new_err(m),
         tree::Error::NotPending(_) => NotPending::new_err(m),
-        tree::Error::RootNotConfig => RootNotConfig::new_err(m),
         tree::Error::DuplicateCall => DuplicateCall::new_err(m),
         tree::Error::WrongFeed(_) => WrongFeed::new_err(m),
         tree::Error::BadRecord(_) => BadRecord::new_err(m),
@@ -194,7 +187,6 @@ pub fn add_all(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("NotInHook", py.get_type::<NotInHook>())?;
     m.add("NoSuchItem", py.get_type::<NoSuchItem>())?;
     m.add("NotPending", py.get_type::<NotPending>())?;
-    m.add("RootNotConfig", py.get_type::<RootNotConfig>())?;
     m.add("DuplicateCall", py.get_type::<DuplicateCall>())?;
     m.add("BadRecord", py.get_type::<BadRecord>())?;
     m.add("WrongFeed", py.get_type::<WrongFeed>())?;

@@ -27,6 +27,17 @@ fn call(id: &str) -> Part {
     }
 }
 
+/// The hooks' answer that changes nothing: a job's draft comes back as it was.
+fn echo(job: &Job) -> Fed {
+    match job {
+        Job::Hooks { draft, .. } => Fed::Hooks {
+            stop: None,
+            draft: draft.clone(),
+        },
+        _ => ok(),
+    }
+}
+
 fn ok() -> Fed {
     Fed::Hooks {
         stop: None,
@@ -82,7 +93,7 @@ fn plain_turn() {
             reply: Some(reply(vec![text("hello")], Stop::End)),
             error: None,
         }],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     assert_eq!(
         bodies(&s, c)[2..],
@@ -125,7 +136,7 @@ fn batch_answers_in_call_order_then_samples_again() {
                 by: Author::Tools,
             })
             .to_vec(),
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     let b = bodies(&s, c);
     assert_eq!(
@@ -180,7 +191,7 @@ fn each_outcome_records_who_produced_it() {
                 by: Author::Extension("permissions".into()),
             },
         ],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     assert_eq!(
         bodies(&s, c)[4],
@@ -226,7 +237,7 @@ fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
                 outcome: Outcome::Ok("x".into()),
                 by: Author::Tools,
             }],
-            _ => vec![ok()],
+            _ => vec![echo(job)],
         }
     });
     assert_eq!(jobs.last(), Some(&Job::Rest));
@@ -283,7 +294,7 @@ fn crash_mid_batch() -> (Session, u64) {
                 .unwrap();
                 break; // the power goes out: b never finishes
             }
-            _ => step.feed(&mut s, ok(), 0).unwrap(),
+            job => step.feed(&mut s, echo(&job), 0).unwrap(),
         }
     }
     drop(step);
@@ -305,7 +316,7 @@ fn after_a_crash_mid_batch_input_goes_under_the_unanswered_batch() {
             reply: Some(reply(vec![text("checking")], Stop::End)),
             error: None,
         }],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     assert!(
         !jobs.iter().any(|j| matches!(j, Job::RunCalls { .. })),
@@ -332,7 +343,7 @@ fn after_a_crash_mid_batch_a_step_reruns_the_whole_batch() {
                 by: Author::Tools,
             })
             .collect(),
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     let ran: Vec<String> = jobs
         .iter()
@@ -368,7 +379,7 @@ fn pre_input_string_refuses_with_a_notice() {
             stop: Some("model: fast".into()),
             draft: None,
         }],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     assert!(has_hook(
         &jobs,
@@ -407,9 +418,9 @@ fn pre_reply_move_chooses_where_the_reply_lands() {
                 .unwrap();
             s.move_to(c, note, Author::Extension("ctx".into()), 0)
                 .unwrap();
-            vec![ok()]
+            vec![echo(job)]
         }
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     assert_eq!(
         bodies(&s, c)[3..],
@@ -449,7 +460,7 @@ fn abort_during_sample_commits_the_partial_reply() {
                     )
                     .unwrap();
                 }
-                _ => step.feed(&mut s, ok(), 0).unwrap(),
+                job => step.feed(&mut s, echo(&job), 0).unwrap(),
             }
         }
     };
@@ -488,7 +499,7 @@ fn a_step_that_committed_nothing_is_throttled() {
             vec![ok()]
         }
         Job::Wait { .. } => vec![Fed::Waited],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     assert!(jobs.contains(&Job::Wait { until: 250 }));
     assert_eq!(
@@ -524,7 +535,7 @@ fn scripted(mut replies: Vec<Draft>) -> impl FnMut(&Job, &mut Session) -> Vec<Fe
             })
             .collect(),
         Job::Wait { .. } => vec![Fed::Waited],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     }
 }
 
@@ -565,7 +576,7 @@ fn a_tool_error_is_an_outcome_and_the_model_sees_it() {
             outcome: Outcome::Err("no such file".into()),
             by: Author::Tools,
         }],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     let b = bodies(&s, c);
     assert_eq!(
@@ -589,7 +600,7 @@ fn an_http_error_leaves_a_side_node_and_the_cursor_where_it_was() {
             reply: None,
             error: Some("HTTP 500".into()),
         }],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     assert_eq!(ending(&jobs), Ending::Failed("HTTP 500".into()));
     assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
@@ -609,7 +620,7 @@ fn a_mid_stream_error_commits_the_partial_reply_and_fails() {
             reply: Some(reply(vec![text("hel")], Stop::Error)),
             error: Some("connection reset".into()),
         }],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     assert!(has_hook(&jobs, Hook::PostReply, None));
     assert_eq!(ending(&jobs), Ending::Failed("connection reset".into()));
@@ -646,7 +657,7 @@ fn abort_during_sample_with_no_parts_commits_nothing() {
                 )
                 .unwrap();
             }
-            _ => step.feed(&mut s, ok(), 0).unwrap(),
+            job => step.feed(&mut s, echo(&job), 0).unwrap(),
         }
     }
     assert_eq!(ending(&jobs), Ending::Aborted);
@@ -693,7 +704,7 @@ fn abort_during_tools_interrupts_unfinished_calls_and_runs_post_result_once() {
                 step.feed(&mut s, done("b", Outcome::Interrupted), 0)
                     .unwrap();
             }
-            _ => step.feed(&mut s, ok(), 0).unwrap(),
+            job => step.feed(&mut s, echo(&job), 0).unwrap(),
         }
     }
     let post_results = jobs
@@ -763,7 +774,7 @@ fn abort_leaves_pending_input_pending_and_a_send_then_delivers_it() {
                 )
                 .unwrap();
             }
-            _ => step.feed(&mut s, ok(), 0).unwrap(),
+            job => step.feed(&mut s, echo(&job), 0).unwrap(),
         }
     }
     assert_eq!(s.items(c).count(), 1, "still pending");
@@ -806,7 +817,7 @@ fn a_cursor_hook_string_halts_the_step() {
             stop: Some("over budget".into()),
             draft: None,
         }],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     });
     assert!(!jobs.contains(&Job::Sample));
     assert_eq!(ending(&jobs), Ending::Halted("over budget".into()));
@@ -852,7 +863,7 @@ fn a_post_reply_move_changes_where_the_tools_phase_looks() {
     let sys = s.at(c).unwrap();
     let old = s
         .append(
-            Some(sys),
+            sys,
             Author::Provider,
             Body::Assistant {
                 parts: vec![call("old")],
@@ -924,7 +935,7 @@ fn answered_batch() -> (Session, u64, u64) {
                 outcome: Outcome::Ok("first".into()),
                 by: Author::Tools,
             }],
-            _ => vec![ok()],
+            _ => vec![echo(job)],
         }
     });
     let batch = s.node(s.at(c).unwrap()).unwrap().parent.unwrap();
@@ -1003,8 +1014,8 @@ fn a_second_hooks_feed_before_the_next_job_is_refused() {
     let mut step = Step::wake(&s, c, false, 0);
     // To the pre_sample hook, answer it, then feed again with no job out.
     for _ in 0..2 {
-        step.next_job(&mut s).unwrap();
-        step.feed(&mut s, ok(), 0).unwrap();
+        let job = step.next_job(&mut s).unwrap();
+        step.feed(&mut s, echo(&job), 0).unwrap();
     }
     assert!(matches!(
         step.next_job(&mut s).unwrap(),
@@ -1024,16 +1035,17 @@ fn a_second_feed_at_a_pre_input_hook_is_refused_not_a_panic() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
     let mut step = Step::wake(&s, c, false, 0);
-    step.next_job(&mut s).unwrap();
-    step.feed(&mut s, ok(), 0).unwrap();
+    let job = step.next_job(&mut s).unwrap();
+    step.feed(&mut s, echo(&job), 0).unwrap();
+    let job = step.next_job(&mut s).unwrap();
     assert!(matches!(
-        step.next_job(&mut s).unwrap(),
+        job,
         Job::Hooks {
             point: Hook::PreInput,
             ..
         }
     ));
-    step.feed(&mut s, ok(), 0).unwrap();
+    step.feed(&mut s, echo(&job), 0).unwrap();
     refused(&mut s, &mut step, c, ok());
 }
 
@@ -1057,7 +1069,7 @@ fn a_hook_feed_while_a_sample_is_out_is_refused() {
     loop {
         match step.next_job(&mut s).unwrap() {
             Job::Sample => break,
-            _ => step.feed(&mut s, ok(), 0).unwrap(),
+            job => step.feed(&mut s, echo(&job), 0).unwrap(),
         }
     }
     refused(&mut s, &mut step, c, Fed::HookFailed("x".into()));
@@ -1086,7 +1098,7 @@ fn a_stop_while_calls_are_out_does_not_discard_the_batch() {
                 )
                 .unwrap(),
             Job::RunCalls { .. } => break,
-            _ => step.feed(&mut s, ok(), 0).unwrap(),
+            job => step.feed(&mut s, echo(&job), 0).unwrap(),
         }
     }
     refused(&mut s, &mut step, c, stop());
@@ -1160,6 +1172,80 @@ fn a_pre_input_draft_that_delivers_nothing_is_written_and_the_item_stays_pending
         1,
         "what the draft did not deliver stays"
     );
+}
+
+#[test]
+fn a_pre_input_hook_that_leaves_no_draft_commits_nothing_and_the_input_stays_pending() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    s.auto.insert(c, false);
+    let mut step = Step::wake(&s, c, true, 0);
+    let jobs = drive(&mut s, &mut step, |job, _| match job {
+        Job::Hooks {
+            point: Hook::PreInput,
+            ..
+        } => vec![ok()],
+        Job::Sample => vec![Fed::Sampled {
+            reply: Some(reply(vec![text("hello")], Stop::End)),
+            error: None,
+        }],
+        _ => vec![echo(job)],
+    });
+    assert!(
+        !bodies(&s, c).iter().any(|b| matches!(b, Body::User(_))),
+        "no User node: the hook took the draft away"
+    );
+    assert_eq!(s.items(c).count(), 1, "the input is still pending");
+    assert_eq!(
+        jobs.iter()
+            .filter(|j| matches!(
+                j,
+                Job::Hooks {
+                    point: Hook::PreInput,
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "offered once"
+    );
+}
+
+/// How many node and move records are queued: a refused write queues none.
+fn writes(s: &Session) -> usize {
+    s.outbox
+        .iter()
+        .filter(|r| !matches!(r, tau_core::tree::Record::Sync { .. }))
+        .count()
+}
+
+#[test]
+fn a_reply_naming_a_call_id_twice_fails_the_step_and_changes_nothing() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "go");
+    let mut step = Step::wake(&s, c, false, 0);
+    let mut before = None;
+    let jobs = drive(&mut s, &mut step, |job, s| match job {
+        Job::Sample => {
+            before = Some((bodies(s, c), writes(s)));
+            vec![Fed::Sampled {
+                reply: Some(reply(vec![call("a"), call("a")], Stop::Tools)),
+                error: None,
+            }]
+        }
+        _ => vec![echo(job)],
+    });
+    assert!(
+        !jobs.iter().any(|j| matches!(j, Job::RunCalls { .. })),
+        "no batch is handed out"
+    );
+    let failed = Error::DuplicateCall.to_string();
+    assert!(jobs.iter().any(|j| matches!(
+        j,
+        Job::Hooks { point: Hook::PostStep, ending: Some(Ending::Failed(e)), .. } if *e == failed
+    )));
+    assert_eq!(Some((bodies(&s, c), writes(&s))), before);
+    assert!(!s.auto[&c]);
 }
 
 /// Whether `jobs` hold a hook job at `point` with this `ending`, whatever its serial.

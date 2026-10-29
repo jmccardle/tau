@@ -30,6 +30,7 @@ from tau_next import (
     Node,
     Part,
     Session,
+    StepLimit,
     Stop,
     SystemClock,
     tool,
@@ -298,9 +299,10 @@ async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
         """Read a text file and return its contents."""
         return Path(path).read_text()
 
-    config = ModelConfig(model, os.environ["TAU_LIVE_BASE_URL"]).to_config(max_steps=6)
+    config = ModelConfig(model, os.environ["TAU_LIVE_BASE_URL"]).to_config()
     session = Session.create(config, "Use tools when needed.", SystemClock().now(), tmp_path / "s")
-    driver = Driver(session, OpenAIProvider(), tools=[read_file])
+    # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
+    driver = Driver(session, OpenAIProvider(), tools=[read_file], extensions=[StepLimit(6)])
     driver.start()
     c = session.cursors()[0]
     try:

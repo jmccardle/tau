@@ -11,8 +11,7 @@ URL = "http://localhost:8100/v1"
 
 def test_a_config_round_trips_through_its_node() -> None:
     model = ModelConfig("qwen", URL, "MY_KEY")
-    config = model.to_config(max_steps=5)
-    assert config.max_steps == 5
+    config = model.to_config()
     assert json.loads(config.data) == {"model": "qwen", "base_url": URL, "api_key_env": "MY_KEY"}
     assert ModelConfig.parse(config) == model
 

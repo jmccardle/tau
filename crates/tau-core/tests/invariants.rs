@@ -59,13 +59,6 @@ fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
     }
 }
 
-fn ok() -> Fed {
-    Fed::Hooks {
-        stop: None,
-        draft: None,
-    }
-}
-
 /// A batch handed out by `RunCalls` and not yet joined.
 struct Batch {
     node: NodeId,
@@ -87,7 +80,7 @@ impl Driver {
         let before = nodes(&m.session).len();
         let fed = match &job {
             Job::Rest => return Ok(()),
-            Job::Hooks { point, .. } => hook(m, c, *point, k, before)?,
+            Job::Hooks { point, draft, .. } => hook(m, c, (*point, draft), k, before)?,
             Job::Sample => sample(k),
             Job::RunCalls { calls: run, .. } => {
                 let ids = run.iter().map(|r| r.id.clone()).collect();
@@ -200,10 +193,14 @@ impl Driver {
 fn hook(
     m: &mut Machine,
     c: CursorId,
-    point: Hook,
+    (point, draft): (Hook, &Option<Draft>),
     k: usize,
     nn: usize,
 ) -> Result<Fed, TestCaseError> {
+    let echo = || Fed::Hooks {
+        stop: None,
+        draft: draft.clone(),
+    };
     if point == Hook::PreSample {
         // I1: the sample phase applies only where `next` says so.
         prop_assert_eq!(m.session.next(c), Next::Sample);
@@ -223,13 +220,13 @@ fn hook(
                 prop_assert_eq!(moved, Err(Error::NoSuchNode(to))); // I3
                 prop_assert_eq!(m.session.at(c), Ok(at));
             }
-            ok()
+            echo()
         }
         3 if point == Hook::PreSample => Fed::Hooks {
             stop: None,
             draft: Some(reply(vec![Part::Text("answered".into())], Stop::End)),
         },
-        _ => ok(),
+        _ => echo(),
     })
 }
 
@@ -309,10 +306,7 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
 }
 
 fn config() -> impl Strategy<Value = Config> {
-    prop::option::of(1..4u32).prop_map(|max_steps| Config {
-        max_steps,
-        data: "{}".into(),
-    })
+    Just(Config::from("{}"))
 }
 
 proptest! {
@@ -371,6 +365,18 @@ fn body() -> impl Strategy<Value = Body> {
                 .collect(),
         )
     });
+    let calls = prop::collection::vec(0..3u8, 0..4).prop_map(|ids| Body::Assistant {
+        parts: ids
+            .into_iter()
+            .map(|i| Part::Call {
+                id: format!("c{i}"),
+                tool: "t".into(),
+                args_raw: "{}".into(),
+            })
+            .collect(),
+        stop: Stop::Tools,
+        finish_reason: None,
+    });
     prop_oneof![
         Just(Body::Config(Config::from("{}"))),
         Just(Body::System("s".into())),
@@ -380,6 +386,7 @@ fn body() -> impl Strategy<Value = Body> {
             stop: Stop::End,
             finish_reason: None
         }),
+        calls,
         Just(Body::Custom {
             kind: "note".into(),
             data: "n".into(),
@@ -388,37 +395,42 @@ fn body() -> impl Strategy<Value = Body> {
     ]
 }
 
-/// What I5 says an append under `parent` gives: V1, V2, and nothing else.
-fn expected(s: &Session, parent: Option<NodeId>, body: &Body) -> Result<NodeId, Error> {
-    match (parent, body) {
-        (None, Body::Config(_)) => {}
-        (None, _) => return Err(Error::RootNotConfig),
-        (Some(p), _) => drop(s.node(p)?),
-    }
-    if let Body::Results(out) = body {
-        let mut ids: Vec<&String> = out.iter().map(|(c, ..)| c).collect();
-        ids.sort();
-        ids.dedup();
-        if ids.len() < out.len() {
-            return Err(Error::DuplicateCall);
-        }
+/// What I5 says an append under `parent` gives: V2, and nothing else.
+fn expected(s: &Session, parent: NodeId, body: &Body) -> Result<NodeId, Error> {
+    s.node(parent)?;
+    let mut ids: Vec<&String> = match body {
+        Body::Results(out) => out.iter().map(|(c, ..)| c).collect(),
+        Body::Assistant { parts, .. } => parts
+            .iter()
+            .filter_map(|p| match p {
+                Part::Call { id, .. } => Some(id),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    };
+    let named = ids.len();
+    ids.sort();
+    ids.dedup();
+    if ids.len() < named {
+        return Err(Error::DuplicateCall);
     }
     Ok(nodes(s).len() as NodeId)
 }
 
 proptest! {
-    /// I5: an append is refused only for a root that is not `Config` (V1) or
-    /// a `Results` naming a call twice (V2); any other shape, under any node,
-    /// is taken. A refused append changes nothing.
+    /// I5: an append is refused only for a `Results` or `Assistant` naming a
+    /// call id twice (V2); any other shape, under any node, is taken. A refused
+    /// append changes nothing.
     #[test]
     fn appends_check_only_types(
-        steps in prop::collection::vec((prop::option::weighted(0.9, 0..12u64), body(), any::<bool>()), 0..60),
+        steps in prop::collection::vec((0..12u64, body(), any::<bool>()), 0..60),
     ) {
         let (mut s, c) = Session::create("{}", "sys", 0);
         for (parent, body, write) in steps {
             let (old, queued, at) = (nodes(&s), s.outbox.len(), s.at(c).unwrap());
             let (want, got) = if write {
-                let want = expected(&s, Some(at), &body);
+                let want = expected(&s, at, &body);
                 (want, s.write(c, body, vec![], Author::Core, 0))
             } else {
                 let want = expected(&s, parent, &body);

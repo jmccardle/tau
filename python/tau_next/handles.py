@@ -133,11 +133,16 @@ class TreeHandle:
 
     # Writes
 
-    def append(self, parent: int | None, body: Body) -> int:
-        """Append a node under `parent` (none: a root, which must be a `Config`)
-        without moving any cursor. Returns its id."""
+    def append(self, parent: int, body: Body) -> int:
+        """Append a node under `parent` without moving any cursor. Returns its id."""
         self._check()
         return self._session.append(parent, body, self.by, self._now(), self._hook)
+
+    def append_root(self, config: Config) -> int:
+        """Append a root (a detached tree) holding `config`, without moving any
+        cursor. Returns its id."""
+        self._check()
+        return self._session.append_root(config, self.by, self._now(), self._hook)
 
     def open(self, at: int) -> int:
         """Open a cursor at `at`; it wakes. Returns its id."""

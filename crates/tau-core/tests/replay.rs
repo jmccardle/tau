@@ -41,7 +41,6 @@ fn as_loaded(s: &Session) -> Session {
     s.reconcile();
     s.outbox.clear();
     s.changes.clear();
-    s.taken.clear();
     s.notices.clear();
     s
 }
@@ -134,7 +133,7 @@ fn apply(s: &mut Session, op: &Op) {
                 kind: "note".into(),
                 data: "n".into(),
             };
-            s.append(Some(node(t)), by, body, vec![], 0).unwrap();
+            s.append(node(t), by, body, vec![], 0).unwrap();
         }
         Op::Go(i, t) => s.move_to(cursor(i), node(t), by, 0).unwrap(),
         Op::Label(l, i) => s.set_label(&format!("l{l}"), cursor(i)).unwrap(),
@@ -263,6 +262,17 @@ fn reply(parts: Vec<Part>, stop: Stop) -> Fed {
     }
 }
 
+/// The hooks' answer that changes nothing: a job's draft comes back as it was.
+fn echo(job: &Job) -> Fed {
+    match job {
+        Job::Hooks { draft, .. } => Fed::Hooks {
+            stop: None,
+            draft: draft.clone(),
+        },
+        _ => ok(),
+    }
+}
+
 fn ok() -> Fed {
     Fed::Hooks {
         stop: None,
@@ -295,7 +305,7 @@ fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item()
     let (s, c) = Session::create("{}", "sys", 0);
     let mut m = Machine::new(s);
     m.send(c, "term".into(), "hi", 0).unwrap();
-    until(&mut m, c, |j| *j == Job::Sample, |_| vec![ok()]);
+    until(&mut m, c, |j| *j == Job::Sample, |j| vec![echo(j)]);
     // The input was committed but not yet synced; its item was.
     let mut m = Machine::new(crash(&m.session));
     assert_eq!(m.session.next(c), tau_core::tree::Next::Wait);
@@ -311,7 +321,7 @@ fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item()
                 sampled += 1;
                 vec![reply(vec![Part::Text("hello".into())], Stop::End)]
             }
-            _ => vec![ok()],
+            _ => vec![echo(j)],
         },
     );
     assert_eq!(sampled, 1);
@@ -349,7 +359,7 @@ fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
                     by: Author::Tools,
                 }]
             }
-            _ => vec![ok()],
+            _ => vec![echo(j)],
         },
     );
     let loaded = crash(&m.session);

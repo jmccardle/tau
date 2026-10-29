@@ -33,7 +33,6 @@ from tau_next._core import (
     Outcome,
     Part,
     Poisoned,
-    RootNotConfig,
     RunCall,
     Scratchpad,
     Session,
@@ -58,6 +57,7 @@ from tau_next.protocols import (
     ToolContractError,
     ToolHook,
 )
+from tau_next.step_limit import StepLimit
 from tau_next.tools import FunctionTool, ToolDefinitionError, ToolError, tool
 
 __version__ = version("ffwf-tau-next")
@@ -110,11 +110,11 @@ __all__ = [
     "Provider",
     "Question",
     "ReadTool",
-    "RootNotConfig",
     "RunCall",
     "SampleError",
     "Scratchpad",
     "Session",
+    "StepLimit",
     "Stop",
     "Subject",
     "SystemClock",

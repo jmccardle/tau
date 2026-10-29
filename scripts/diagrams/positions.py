@@ -53,7 +53,6 @@ def _allowed() -> set[tuple[str, str, str]]:
     a.add(("PreStep", "feed Hooks", "Input"))
     a.add(("Input", "no input to offer", "PreSample"))
     a.add(("Input", "feed Hooks", "Input"))  # one input committed; the next is offered
-    a.add(("Input", "input delivered by a hook", "Input"))
     a.add(("Input", "commit refused", "PostStep"))
     a.add(("PreSample", "feed Hooks", "Sample"))
     a.add(("PreSample", "sample does not apply", "Tools"))

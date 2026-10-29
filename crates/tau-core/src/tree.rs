@@ -58,20 +58,15 @@ pub enum Body {
     },
 }
 
-/// A config snapshot. Core reads only its typed fields; `data` is the rest,
-/// opaque to core and typed by the driver.
+/// A config snapshot. `data` is opaque to core and typed by the driver.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
-    pub max_steps: Option<u32>,
     pub data: String,
 }
 
 impl From<&str> for Config {
     fn from(data: &str) -> Self {
-        Self {
-            max_steps: None,
-            data: data.into(),
-        }
+        Self { data: data.into() }
     }
 }
 
@@ -161,7 +156,8 @@ pub enum Error {
     /// A write that delivers an item not pending for that cursor (not in the
     /// scratchpad, or addressed to another cursor).
     NotPending(ItemId),
-    RootNotConfig,
+    /// A node naming a call id twice: a `Results` node's outcomes, or an
+    /// `Assistant` node's calls.
     DuplicateCall,
     /// A record replay cannot apply: a node id or a cursor out of sequence, a
     /// move from a node the cursor is not at. Its position in the log.
@@ -183,8 +179,7 @@ impl std::fmt::Display for Error {
             Self::NotInHook(c) => write!(f, "no cursor hook is running on cursor {c}"),
             Self::NoSuchItem(i) => write!(f, "no item {i}"),
             Self::NotPending(i) => write!(f, "item {i} is not pending for that cursor"),
-            Self::RootNotConfig => write!(f, "a root must be a Config"),
-            Self::DuplicateCall => write!(f, "Results name a call twice"),
+            Self::DuplicateCall => write!(f, "a node names a call id twice"),
             Self::WrongFeed(c) => write!(f, "that feed answers no job on cursor {c}"),
             Self::BadRecord(at) => write!(f, "record {at} does not replay"),
         }
@@ -213,8 +208,6 @@ pub struct Session {
     pub changes: BTreeMap<CursorId, u64>,
     pub moves: Vec<Move>,
     pub outbox: Vec<Record>,
-    /// Per cursor: committing steps since a frontend last acted (`max_steps`).
-    pub taken: BTreeMap<CursorId, u32>,
     /// Records queued, or the scratchpad changed, since the last `Sync`.
     unsynced: bool,
     /// The scratchpad changed since the last `Sync`.
@@ -227,21 +220,13 @@ impl Session {
     ///
     /// # Panics
     ///
-    /// Never: that root and child pass V1 and V2.
+    /// Never: a root has nothing to refuse, and that child passes V2.
     pub fn create(config: impl Into<Config>, system: &str, time: u64) -> (Self, CursorId) {
         let mut s = Self::default();
-        let root = s
-            .append(
-                None,
-                Author::Core,
-                Body::Config(config.into()),
-                vec![],
-                time,
-            )
-            .unwrap();
+        let root = s.append_root(Author::Core, config.into(), time);
         let sys = s
             .append(
-                Some(root),
+                root,
                 Author::Core,
                 Body::System(system.into()),
                 vec![],
@@ -265,27 +250,44 @@ impl Session {
         Ok(id)
     }
 
-    /// Append a node; the only checks are V1 and V2 (I5).
+    /// Append a node under `parent`; the only check is V2 (I5).
     ///
     /// # Errors
     ///
-    /// `RootNotConfig` for a root that is not `Config` (V1); `NoSuchNode`
-    /// if `parent` is not a node; `DuplicateCall` for `Results` that name a
-    /// call twice (V2).
+    /// `NoSuchNode` if `parent` is not a node; `DuplicateCall` for a `Results`
+    /// or `Assistant` node that names a call id twice (V2).
     pub fn append(
         &mut self,
-        parent: Option<NodeId>,
+        parent: NodeId,
         by: Author,
         body: Body,
         delivers: Vec<ItemId>,
         time: u64,
     ) -> Result<NodeId, Error> {
         let _span = tracing::info_span!("core.append").entered();
-        let node = self.check(parent, by, body, delivers, time)?;
+        let node = self.check(Some(parent), by, body, delivers, time)?;
         let id = node.id;
         self.push(node.clone());
         self.queue(Record::Write { node, mv: None });
         Ok(id)
+    }
+
+    /// Append a root: a node with no parent, which is always a `Config`. Cannot
+    /// be refused.
+    pub fn append_root(&mut self, by: Author, config: Config, time: u64) -> NodeId {
+        let _span = tracing::info_span!("core.append_root").entered();
+        let node = Node {
+            id: self.nodes.len() as NodeId,
+            parent: None,
+            time,
+            by,
+            body: Body::Config(config),
+            delivers: vec![],
+        };
+        let id = node.id;
+        self.push(node.clone());
+        self.queue(Record::Write { node, mv: None });
+        id
     }
 
     /// Append under `at` and move onto it, as one record; then drop delivered items.
@@ -384,14 +386,21 @@ impl Session {
         delivers: Vec<ItemId>,
         time: u64,
     ) -> Result<Node, Error> {
-        match (parent, &body) {
-            (None, Body::Config(_)) => {}
-            (None, _) => return Err(Error::RootNotConfig),
-            (Some(p), _) => drop(self.node(p)?),
+        if let Some(p) = parent {
+            self.node(p)?;
         }
-        if let Body::Results(out) = &body
-            && (1..out.len()).any(|i| out[..i].iter().any(|(c, ..)| *c == out[i].0))
-        {
+        let ids: Vec<&str> = match &body {
+            Body::Results(out) => out.iter().map(|(c, ..)| c.as_str()).collect(),
+            Body::Assistant { parts, .. } => parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Call { id, .. } => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect(),
+            _ => vec![],
+        };
+        if (1..ids.len()).any(|i| ids[..i].contains(&ids[i])) {
             return Err(Error::DuplicateCall); // V2
         }
         Ok(Node {
@@ -436,7 +445,7 @@ impl Session {
     }
 
     /// The nearest `Config` on `walk(n)`; always defined, since every root is
-    /// one (V1). Constant time: each node records its own when added.
+    /// one. Constant time: each node records its own when added.
     ///
     /// # Errors
     ///
@@ -444,13 +453,13 @@ impl Session {
     ///
     /// # Panics
     ///
-    /// If a root is not `Config`, which V1 rules out.
+    /// If a root is not `Config`, which `append_root` and replay rule out.
     pub fn config_at(&self, n: NodeId) -> Result<&Config, Error> {
         self.node(n)?;
         let config = self.configs[usize::try_from(n).expect("a node id")];
         match &self.node(config)?.body {
             Body::Config(c) => Ok(c),
-            _ => panic!("a root is Config (V1)"),
+            _ => panic!("a root is a Config"),
         }
     }
 
@@ -575,11 +584,6 @@ impl Session {
         self.labels.iter().map(|(l, c)| (l.as_str(), *c))
     }
 
-    /// Drain the notices queued for clients, oldest first.
-    pub fn take_notices(&mut self) -> Vec<(String, String)> {
-        std::mem::take(&mut self.notices)
-    }
-
     pub fn add_item(&mut self, to: CursorId, data: ItemData) -> ItemId {
         let id = self.pad.next_item;
         self.pad.next_item += 1;
@@ -644,6 +648,9 @@ impl Session {
     fn replay(&mut self, r: Record) -> Result<(), Error> {
         match r {
             Record::Write { node, mv } => {
+                if node.parent.is_none() && !matches!(node.body, Body::Config(_)) {
+                    return Err(Error::BadRecord(0)); // a root is a Config
+                }
                 let checked = self.check(
                     node.parent,
                     node.by.clone(),

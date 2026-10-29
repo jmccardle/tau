@@ -8,7 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from tau_next import Body, Driver, ModelConfig, Session, SystemClock, tool
+from tau_next import Body, Driver, ModelConfig, Session, StepLimit, SystemClock, tool
 from tau_next.providers.openai import OpenAIProvider
 
 PHRASE = "violet anchor 42"
@@ -38,10 +38,12 @@ async def main(base_url: str, model: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         secret = Path(tmp) / "secret.txt"
         secret.write_text(f"The secret phrase is: {PHRASE}\n")
-        # max_steps bounds the loop of sample, tools, sample: a model that keeps asking stops.
-        config = ModelConfig(model, base_url).to_config(max_steps=6)
+        config = ModelConfig(model, base_url).to_config()
         session = Session.create(config, "Use your tools when asked.", clock.now(), Path(tmp) / "s")
-        driver = Driver(session, OpenAIProvider(), tools=[read_file], clock=clock)
+        # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
+        driver = Driver(
+            session, OpenAIProvider(), tools=[read_file], extensions=[StepLimit(6)], clock=clock
+        )
         driver.start()
         cursor = session.cursors()[0]
         driver.send(cursor, "example", f"Read the file {secret} and tell me the secret phrase.")

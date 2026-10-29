@@ -5,7 +5,7 @@ wins; where either differs from the step spike, the spike wins until review.
 
 | id | title | status | decision |
 |---|---|---|---|
-| [D1](D01-turn.md) | No "turn" | accepted | The unit is the step; `max_steps` bounds unattended steps. |
+| [D1](D01-turn.md) | No "turn" | accepted | The unit is the step; `StepLimit` (an extension) bounds unattended steps. |
 | [D2](D02-busy-input.md) | Input | accepted | Input is a scratchpad item; the input phase delivers it whenever pending. |
 | [D3](D03-compaction.md) | Compaction | accepted | An extension: a new line plus a `pre_sample` move. |
 | [D4](D04-resume.md) | Crash mid-batch | accepted | No recovery in core: rest at the batch; input goes under it; a step re-runs it. |

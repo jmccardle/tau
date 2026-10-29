@@ -1,9 +1,20 @@
-//! The session machine: frontend calls, wakes, and `max_steps` across
+//! The session machine: frontend calls and wakes across
 //! cursors. Driven by a scripted driver, as in `step.rs`.
 
 use tau_core::machine::Machine;
 use tau_core::step::{Draft, Ending, Fed, Hook, Job};
 use tau_core::tree::{Author, Body, Config, Error, ItemData, Part, Session, Stop};
+
+/// The hooks' answer that changes nothing: a job's draft comes back as it was.
+fn echo(job: &Job) -> Fed {
+    match job {
+        Job::Hooks { draft, .. } => Fed::Hooks {
+            stop: None,
+            draft: draft.clone(),
+        },
+        _ => ok(),
+    }
+}
 
 fn ok() -> Fed {
     Fed::Hooks {
@@ -55,7 +66,7 @@ fn plain(job: &Job, _: &mut Machine) -> Vec<Fed> {
     match job {
         Job::Sample => vec![said("ok")],
         Job::Wait { .. } => vec![Fed::Waited],
-        _ => vec![ok()],
+        _ => vec![echo(job)],
     }
 }
 
@@ -269,43 +280,6 @@ fn abort_during_the_throttle_cancels_the_restart() {
 }
 
 #[test]
-fn max_steps_stops_a_continue_loop_and_a_frontend_action_resets_it() {
-    let config = Config {
-        max_steps: Some(2),
-        data: "{}".into(),
-    };
-    let (s, c) = Session::create(config, "sys", 0);
-    let mut m = Machine::new(s);
-    // A "keep going" extension: post_reply writes a User node.
-    let keep_going = |job: &Job, m: &mut Machine| {
-        if matches!(
-            job,
-            Job::Hooks {
-                point: Hook::PostReply,
-                ..
-            }
-        ) {
-            let by = Author::Extension("continue".into());
-            m.session
-                .write(c, Body::User("continue".into()), vec![], by, 0)
-                .unwrap();
-        }
-        plain(job, m)
-    };
-    m.send(c, term(), "go", 0).unwrap();
-    let jobs = run(&mut m, c, keep_going);
-    assert_eq!(jobs.iter().filter(|j| **j == Job::Sample).count(), 2);
-    assert!(!m.session.auto[&c]);
-    m.send(c, term(), "again", 0).unwrap();
-    let jobs = run(&mut m, c, keep_going);
-    assert_eq!(
-        jobs.iter().filter(|j| **j == Job::Sample).count(),
-        2,
-        "the send reset the count"
-    );
-}
-
-#[test]
 fn opening_a_cursor_wakes_it_and_an_item_for_it_wakes_it_again() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
@@ -351,7 +325,7 @@ fn moves_since_step_are_the_running_steps() {
     let by = Author::Extension("nav".into());
     let note = m
         .session
-        .append(Some(sys), by.clone(), Body::User("n".into()), vec![], 0)
+        .append(sys, by.clone(), Body::User("n".into()), vec![], 0)
         .unwrap();
     m.session.move_to(c, note, by, 0).unwrap();
     assert_eq!(m.moves_since_step(c).count(), 1);
@@ -433,14 +407,6 @@ fn loading_wakes_every_cursor_for_pre_step_and_post_step_only() {
     }
 }
 
-#[test]
-fn notices_are_drained_once() {
-    let (mut s, _) = Session::create("{}", "sys", 0);
-    s.notices.push(("term".into(), "no".into()));
-    assert_eq!(s.take_notices(), [("term".to_string(), "no".to_string())]);
-    assert_eq!(s.take_notices().len(), 0);
-}
-
 /// A `pre_input` hook that rewrites the input and delivers nothing.
 fn undelivering(job: &Job, m: &mut Machine) -> Vec<Fed> {
     match job {
@@ -505,23 +471,7 @@ fn a_hook_that_delivers_nothing_gets_each_pending_input_once_per_step() {
 }
 
 #[test]
-fn an_input_a_hook_leaves_pending_keeps_stepping_until_max_steps() {
-    let config = Config {
-        max_steps: Some(3),
-        data: "{}".into(),
-    };
-    let (s, c) = Session::create(config, "sys", 0);
-    let mut m = Machine::new(s);
-    m.send(c, term(), "hi", 0).unwrap();
-    let jobs = run(&mut m, c, undelivering);
-    assert_eq!(jobs.iter().filter(|j| **j == Job::Sample).count(), 3);
-    assert_eq!(users(&m, c), 3, "one User per committing step");
-    assert!(!m.session.auto[&c]);
-    assert_eq!(m.session.items(c).count(), 1, "the input is still pending");
-}
-
-#[test]
-fn without_max_steps_a_left_input_steps_and_samples_each_time_without_spinning() {
+fn a_left_input_steps_and_samples_each_time_without_spinning() {
     // The hook's choice, predictable: every step makes progress (one User,
     // one sample); nothing but the hook ends it.
     let (mut m, c) = machine();
@@ -690,7 +640,7 @@ fn a_write_delivers_only_what_is_pending_for_its_own_cursor() {
 }
 
 #[test]
-fn a_hook_that_delivered_the_input_itself_leaves_nothing_to_commit() {
+fn a_hook_that_delivered_the_input_itself_leaves_no_draft_to_commit() {
     let (mut m, c) = machine();
     let item = m.send(c, term(), "hi", 0).unwrap();
     let by = Author::Extension("x".into());
@@ -698,11 +648,31 @@ fn a_hook_that_delivered_the_input_itself_leaves_nothing_to_commit() {
     run(&mut m, c, |job, m| match job {
         Job::Hooks {
             point: Hook::PreInput,
-            draft,
             ..
         } => {
             m.hook_write(c, note(), vec![item], by.clone(), 0).unwrap();
             writes += 1;
+            vec![ok()] // the draft is cleared too: nothing to commit
+        }
+        _ => plain(job, m),
+    });
+    assert_eq!(writes, 1);
+    assert_eq!(users(&m, c), 0, "the input was delivered once, by the hook");
+    assert_eq!(m.session.items(c).count(), 0);
+}
+
+#[test]
+fn a_hook_that_delivered_the_input_but_kept_the_draft_fails_the_step() {
+    let (mut m, c) = machine();
+    let item = m.send(c, term(), "hi", 0).unwrap();
+    let by = Author::Extension("x".into());
+    let jobs = run(&mut m, c, |job, m| match job {
+        Job::Hooks {
+            point: Hook::PreInput,
+            draft,
+            ..
+        } => {
+            m.hook_write(c, note(), vec![item], by.clone(), 0).unwrap();
             vec![Fed::Hooks {
                 stop: None,
                 draft: draft.clone(),
@@ -710,12 +680,13 @@ fn a_hook_that_delivered_the_input_itself_leaves_nothing_to_commit() {
         }
         _ => plain(job, m),
     });
-    assert_eq!(writes, 1);
-    let users = (0..m.session.node_count() as u64)
-        .filter(|n| matches!(m.session.node(*n).unwrap().body, Body::User(_)))
-        .count();
-    assert_eq!(users, 0, "the input was delivered once, by the hook");
-    assert_eq!(m.session.items(c).count(), 0);
+    assert_eq!(
+        ending(&jobs),
+        Ending::Failed(Error::NotPending(item).to_string()),
+        "the commit delivers an item that is gone"
+    );
+    assert_eq!(users(&m, c), 0);
+    assert!(!m.session.auto[&c]);
 }
 
 #[test]
@@ -749,8 +720,8 @@ fn removing_an_item_is_no_change_and_adding_one_is() {
 fn a_hook_reads_children_labels_and_the_node_count() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    let a = m.append(Some(sys), note(), Author::Core, 0, None).unwrap();
-    let b = m.append(Some(sys), note(), Author::Core, 0, None).unwrap();
+    let a = m.append(sys, note(), Author::Core, 0, None).unwrap();
+    let b = m.append(sys, note(), Author::Core, 0, None).unwrap();
     assert_eq!(m.session.children(sys).unwrap(), &[a, b]);
     assert_eq!(m.session.children(0).unwrap(), &[sys]);
     assert_eq!(m.session.children(99), Err(Error::NoSuchNode(99)));
@@ -768,12 +739,12 @@ fn an_extension_appends_a_note_and_removes_items() {
         kind: "note".into(),
         data: "n".into(),
     };
-    let note = m
-        .append(Some(sys), body.clone(), by.clone(), 0, None)
-        .unwrap();
+    let note = m.append(sys, body.clone(), by.clone(), 0, None).unwrap();
     assert_eq!(m.session.at(c), Ok(sys), "no cursor moved");
     assert_eq!(m.session.node(note).unwrap().parent, Some(sys));
-    assert_eq!(m.append(None, body, by, 0, None), Err(Error::RootNotConfig));
+    let root = m.append_root(Config::from("{}"), by, 0, None);
+    assert_eq!(m.session.node(root).unwrap().parent, None);
+    assert_eq!(m.session.at(c), Ok(sys), "no cursor moved");
     let item = m
         .add_item(
             c,

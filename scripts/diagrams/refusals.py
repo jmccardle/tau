@@ -54,8 +54,8 @@ def reply(*calls: tuple[str, str]) -> Fed:
 
 def answer(job: Job, calls: tuple[tuple[str, str], ...]) -> list[Fed]:
     match job:
-        case Job.Hooks():
-            return [Fed.Hooks()]
+        case Job.Hooks(draft=draft):
+            return [Fed.Hooks(None, draft)]
         case Job.Sample():
             return [reply(*calls)]
         case Job.RunCalls(calls=run):

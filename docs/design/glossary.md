@@ -111,8 +111,10 @@ cursor (Q5).
 ### root, detached root
 a view · retires session header, side-completion sessions
 
-A node with no parent; always `Config` (V1). Any root after the first is
-**detached**: one-off work outside the conversation.
+A node with no parent; always a `Config`, because it is made only by
+`append_root`. Any root after the first is **detached**: one-off work outside
+the conversation. Replay refuses a logged root that is not a `Config`
+(`BadRecord`).
 
 ### side node
 a view · new
@@ -134,20 +136,27 @@ Lowest common ancestor of two nodes; none across trees.
 ### append
 *spike* `Session::append` · retires `append_at`, write group
 
-Writes a node under any parent (or none) without moving any cursor. Checks
-V1 and V2 only (I5).
+Writes a node under any parent without moving any cursor. Checks V2 only (I5).
+
+### append_root
+*spike* `Session::append_root`, `Machine::append_root`, `Session.append_root`,
+`TreeHandle.append_root` · new
+
+Writes a root `Config` (no parent) without moving any cursor. Takes a `Config`,
+not a `Body`, so it has nothing to refuse.
 
 ### validate
 not yet spiked
 
-V1 (a root is `Config`) and V2 (a `Results` node names distinct calls) over a
-whole walk, for tests. `append` checks each node (`Session::check`).
+V2 (a `Results` node's outcomes, and an `Assistant` node's calls, name distinct
+call ids) over a whole walk, for tests. `append` checks each node (`Session::check`).
 
 ### Error
 *spike* `tree::Error`
 
 Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
-`RootNotConfig` (V1), `DuplicateCall` (V2), `BadRecord` (load); a driver's: `WrongFeed`
+`DuplicateCall` (V2: a `Results` or `Assistant` node naming a call id twice; checked
+on every append and write), `BadRecord` (load); a driver's: `WrongFeed`
 (a feed that answers no job: none is out, it is of another kind, or it
 names a call that is not in the batch or already answered; nothing changes); and a frontend call's: `Busy`
 (step on a busy cursor); a hook's: `NotInHook` (a hook's
@@ -232,14 +241,16 @@ Append under `at` and move onto it, as one record; then drop the delivered
 items. Every commit, and a hook's `cursor.write`. Core checks the resulting
 state: every `delivers` id must be pending for that cursor (else `NotPending`,
 nothing written), so a write cannot take another cursor's item. The input
-phase's commit delivers only the input items still pending after the
-`pre_input` hooks; if a hook delivered the item itself, nothing is committed
-for it.
+phase's commit delivers what the draft names: a hook that delivers the
+offered item itself must also leave the draft `None`, else the commit names a
+gone item and `write` refuses it (`NotPending`), failing the step.
 
 ### commit
 *spike* (in `Step::feed`) · retires the plan's commit
 
-A phase writing its draft with `Session::write`.
+A phase writing its draft with `Session::write`; a draft of `None` (cleared by a
+hook) writes nothing. Only a commit and the join make a step *committed* (the
+throttle's test): a hook's own `cursor.write` does not.
 
 ### cursor.moves
 *spike* `Session::moves_of`, `Step::moves` · new
@@ -289,11 +300,11 @@ the cursor whose hook makes it: it syncs on return unless a cursor hook job
 is out for that cursor (then the phase's sync covers it); a frontend or the
 driver passes `None`. `abort`, `next_job`, `feed` check the cursor:
 `NoSuchCursor`. Holds a busy go-to until its aborted step
-rests (`going`). Each frontend call resets `max_steps` and syncs on return.
+rests (`going`). Each frontend call syncs on return.
 What `tau-py` exposes; `Session`'s own mutators are for core and tests.
 Also `set_label` and `remove_label` (which sync on return), `Machine::loaded(session,
 now)` (a machine for a session just opened from a store: load is a wake, so
-every cursor starts a step), and `Session::take_notices` (drain `notices`).
+every cursor starts a step), and the `Session::notices` the Python `take_notices` drains.
 
 ### Python session
 `tau_next.Session` (`tau-py`) · new
@@ -414,8 +425,8 @@ One call handed out in `Job::RunCalls`: `{id, tool, args_raw}`.
 *spike* `Draft` · retires the plan's draft under `target`
 
 What the current phase will commit: `{body, delivers, by}`. Carried in a
-`Hooks` job; the edited one comes back in `Fed::Hooks`. A halt discards it;
-an abort commits it. Python subjects: input draft, sample draft, reply
+`Hooks` job; the edited one comes back in `Fed::Hooks`, and a hook that leaves
+none (`None`) means commit nothing. A halt discards it; an abort commits it. Python subjects: input draft, sample draft, reply
 draft, call draft (Phase 4).
 
 ### answer
@@ -446,8 +457,8 @@ the item is removed and its client gets a notice.
 ### throttle
 *spike* `THROTTLE` (250 ms), `Job::Wait` · new
 
-A step that committed nothing starts the next no sooner than 250 ms after it
-started.
+A step that committed nothing (a hook's own writes do not count) starts the next
+no sooner than 250 ms after it started.
 
 ### wake
 *spike* `Step::wake` · new
@@ -463,13 +474,18 @@ responder
 
 A cursor's only flag. On: phases run and steps follow one another while
 there is work. Off: a woken cursor runs only `pre_step` and `post_step`. Goes
-off on abort, halt, failure, go-to, `max_steps`, and load.
+off on abort, halt, failure, go-to, `StepLimit`, and load.
 
-### max_steps
-*spike* `Config::max_steps`; the count is `Session::taken` · `Config` field
+### StepLimit
+`tau_next.StepLimit` (`step_limit.py`) · extension, retires `Config::max_steps`
+and `Session::taken`
 
-The most committing steps a cursor takes without a frontend acting. Reaching
-it turns auto-step off (D1).
+`StepLimit(limit)`: an extension whose `post_step` hook turns a cursor's
+auto-step off after `limit` steps that moved it, counted since a new input item
+reached the cursor (D1). It restarts its count when it stops the cursor, so
+whoever resumes it gets another `limit`. Core keeps no count: the counts are
+the object's memory, per cursor. It cannot see a frontend's `set_auto`, `step`,
+or go-to, so those do not restart the count by themselves.
 
 ### partial_calls
 not yet spiked · `Config` field
@@ -509,7 +525,7 @@ delivered item dropped (I7).
 Reload (I7): replay the log's records in order, take the scratchpad file,
 `reconcile`. Pure; the store reads the files. A record that cannot apply (a
 node id or cursor out of sequence, a move from a node its cursor is not at)
-is `Error::BadRecord(position)`.
+is `Error::BadRecord(position)`; so is a logged root that is not a `Config`.
 
 ### sample, context, message
 retires completion, model call, `ExtensionContext`/`ctx`, the `context`
@@ -524,9 +540,8 @@ entry, `CONFIG_KEYS`, `Settings`, model entry
 
 A full snapshot of how a step runs. `config_at(n)` is the nearest `Config`
 on `walk(n)` (D5), recorded per node when it is added (`Session::configs`),
-so it costs the same at any depth. Core reads only the typed fields it needs
-(`max_steps`); `data` holds the rest, opaque to core and typed by the
-driver.
+so it costs the same at any depth. Core reads nothing in it: `data` is opaque
+to core and typed by the driver.
 
 ### ModelConfig, ConfigError
 `tau_next.ModelConfig`, `tau_next.ConfigError` (`config.py`) · new
@@ -572,8 +587,7 @@ while a cursor hook job is out for that cursor (`in_hook`):
 A handle kept from an earlier job is retired (see **retired handle**). They apply at once and sync
 nothing; the phase's sync covers them. `set_auto(True)` in a step that is then
 aborted leaves the cursor at rest: it wakes nothing.
-Core checks no more than the tree's own rules (no hook edit limits), and a hook
-that sets auto-step does not reset the `max_steps` count (only a frontend does).
+Core checks no more than the tree's own rules (no hook edit limits).
 
 ### tool hook
 `async def hook(node, call) -> str | None` · new

@@ -11,9 +11,9 @@
 
 # Function cyclomatic complexity (crate-relative file::Type::fn); limit 15
 [function_cc]
-"crates/tau-core/src/step.rs::Step::feed" = 29
+"crates/tau-core/src/step.rs::Step::feed" = 28
 "crates/tau-core/src/step.rs::Step::job" = 29
-"crates/tau-py/src/error.rs::add_all" = 19
+"crates/tau-py/src/error.rs::add_all" = 18
 "crates/tau-tools/src/bash.rs::Running::read_output" = 16
 "crates/tau-tools/src/read.rs::Read::run" = 24
 

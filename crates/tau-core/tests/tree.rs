@@ -1,7 +1,7 @@
 //! The tree's views and label records, without the step machine.
 
 use tau_core::step::{Fed, Job, Step};
-use tau_core::tree::{Author, Body, Config, Error, Record, Session};
+use tau_core::tree::{Author, Body, Config, Error, Node, Record, Scratchpad, Session};
 
 fn user(s: &mut Session, c: u64, t: &str) -> u64 {
     s.write(c, Body::User(t.into()), vec![], Author::Core, 0)
@@ -45,7 +45,6 @@ fn config_at_is_the_nearest_config_on_the_walk() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let a = user(&mut s, c, "a");
     let fast = Config {
-        max_steps: Some(3),
         data: "fast".into(),
     };
     s.write(c, Body::Config(fast.clone()), vec![], Author::Core, 0)
@@ -66,9 +65,7 @@ fn lca_is_the_deepest_shared_node_and_none_across_trees() {
     let b2x = user(&mut s, c, "b2x");
     assert_eq!(s.lca(b1, b2x), Ok(Some(a)));
     assert_eq!(s.lca(b2, b2x), Ok(Some(b2)));
-    let other = s
-        .append(None, Author::Core, Body::Config("{}".into()), vec![], 0)
-        .unwrap();
+    let other = s.append_root(Author::Core, "{}".into(), 0);
     assert_eq!(s.lca(b1, other), Ok(None));
 }
 
@@ -88,7 +85,7 @@ fn a_step_sees_its_cursor_moves_since_it_woke() {
     );
     let by = Author::Extension("nav".into());
     let note = s
-        .append(Some(before), by.clone(), Body::User("n".into()), vec![], 0)
+        .append(before, by.clone(), Body::User("n".into()), vec![], 0)
         .unwrap();
     s.move_to(c, note, by.clone(), 0).unwrap();
     s.move_to(d, note, by, 0).unwrap(); // another cursor's move: not shown
@@ -103,4 +100,24 @@ fn a_step_sees_its_cursor_moves_since_it_woke() {
     .unwrap();
     let seen: Vec<(Option<u64>, u64)> = step.moves(&s).map(|m| (m.from, m.to)).collect();
     assert_eq!(seen, [(Some(before), note)]);
+}
+
+#[test]
+fn a_logged_root_that_is_not_a_config_does_not_replay() {
+    let root = Node {
+        id: 0,
+        parent: None,
+        time: 0,
+        by: Author::Core,
+        body: Body::System("s".into()),
+        delivers: vec![],
+    };
+    let log = [Record::Write {
+        node: root,
+        mv: None,
+    }];
+    assert_eq!(
+        Session::load(log, Scratchpad::default()).map(|_| ()),
+        Err(Error::BadRecord(0))
+    );
 }

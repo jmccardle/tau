@@ -254,6 +254,27 @@ async def test_a_go_to_on_a_busy_cursor_aborts_then_moves(tmp_path: Path) -> Non
 
 
 @scenario
+async def test_a_reply_naming_a_call_id_twice_fails_the_step_and_changes_nothing(
+    tmp_path: Path,
+) -> None:
+    """V2 for an `Assistant` node: the write is refused, nothing hangs waiting for a
+    batch that was never handed out, and the tree is as it was before the reply."""
+    recorder = Recorder()
+    tool = FakeTool("t", "ran")
+    twice = Reply([Part.Call("a", "t", "{}"), Part.Call("a", "t", "{}")], Stop.Tools)
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([twice]), tools=[tool], extensions=[recorder]
+    )
+    await h.send("go")
+    await h.settle()
+    assert not h.session.busy(h.cursor), "the step ended"
+    assert recorder.endings == [Ending.Failed("a node names a call id twice")]
+    assert h.bodies() == [*SYSTEM, Body.User("go")], "the reply was not written"
+    assert tool.calls == []
+    assert not h.session.auto(h.cursor)
+
+
+@scenario
 async def test_a_pre_input_string_refuses_with_a_notice(tmp_path: Path) -> None:
     """step.rs `pre_input_string_refuses_with_a_notice`."""
     recorder = Recorder(says={"pre_input": "model: fast"})

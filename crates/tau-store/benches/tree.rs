@@ -185,10 +185,7 @@ impl Agent {
                 rig.stats.core += start.elapsed();
                 vec![]
             }
-            Job::Hooks { .. } => vec![Fed::Hooks {
-                stop: None,
-                draft: None,
-            }],
+            Job::Hooks { draft, .. } => vec![Fed::Hooks { stop: None, draft }],
             Job::Sample => {
                 rig.sample(c);
                 vec![self.reply(&rig.payloads)]
@@ -681,7 +678,7 @@ fn compact() {
         let s = &mut rig.m.session;
         let top = s
             .append(
-                Some(tip),
+                tip,
                 Author::Extension("compact".into()),
                 Body::User(summary),
                 vec![],
@@ -764,7 +761,7 @@ fn byte_score(b: &Body) -> u64 {
 fn copy(s: &mut Session, kept: &[Body], now: u64) -> NodeId {
     let by = Author::Extension("compact".into());
     kept.iter().fold(1, |parent, body| {
-        s.append(Some(parent), by.clone(), body.clone(), vec![], now)
+        s.append(parent, by.clone(), body.clone(), vec![], now)
             .unwrap()
     })
 }

@@ -164,16 +164,15 @@ impl From<Author> for tree::Author {
 #[pyclass(frozen, eq, hash, get_all, from_py_object, module = "tau_next._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Config {
-    max_steps: Option<u32>,
     data: String,
 }
 
 #[pymethods]
 impl Config {
     #[new]
-    #[pyo3(signature = (data = String::new(), max_steps = None))]
-    fn new(data: String, max_steps: Option<u32>) -> Self {
-        Self { max_steps, data }
+    #[pyo3(signature = (data = String::new()))]
+    fn new(data: String) -> Self {
+        Self { data }
     }
 
     fn __repr__(&self) -> String {
@@ -183,19 +182,13 @@ impl Config {
 
 impl From<tree::Config> for Config {
     fn from(c: tree::Config) -> Self {
-        Self {
-            max_steps: c.max_steps,
-            data: c.data,
-        }
+        Self { data: c.data }
     }
 }
 
 impl From<Config> for tree::Config {
     fn from(c: Config) -> Self {
-        Self {
-            max_steps: c.max_steps,
-            data: c.data,
-        }
+        Self { data: c.data }
     }
 }
 

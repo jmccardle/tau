@@ -32,8 +32,8 @@ def run(
     now: int = 0,
     on_job: Callable[[Job], list[Fed] | None] | None = None,
 ) -> list[Job]:
-    """Drive `cursor` to rest. Hooks carry on, samples come from `samples`,
-    calls succeed with their id, the throttle passes. `on_job` may answer a job itself."""
+    """Drive `cursor` to rest. Hooks leave the draft as it came, samples come from
+    `samples`, calls succeed with their id, the throttle passes. `on_job` may answer a job."""
     seen: list[Job] = []
     for _ in range(200):
         job = session.next_job(cursor)
@@ -50,8 +50,8 @@ def run(
 
 def default_answers(job: Job, samples: Iterator[Fed] | None) -> list[Fed]:
     match job:
-        case Job.Hooks():
-            return [Fed.Hooks()]
+        case Job.Hooks(draft=draft):
+            return [Fed.Hooks(None, draft)]
         case Job.Sample():
             assert samples is not None, "a sample with no script"
             return [next(samples)]

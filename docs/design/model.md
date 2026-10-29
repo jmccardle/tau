@@ -26,10 +26,11 @@ item, so a reload is a replay (I7).
   crash-resume extension turns its own cursor's auto-step back on.
 - **No hook edit limits.** Core checks the state hooks leave, not what they
   changed: after a point's hooks run, it acts on the draft and cursor as they
-  are, refusing only what would make the tree invalid (V1, V2). A `pre_input`
+  are, refusing only what would make the tree invalid (V2). A `pre_input`
   draft that delivers nothing writes its `User` node and leaves the input
   pending; the input phase offers each input once, so it cannot spin, and
-  `after`'s rules (throttle, `max_steps`) decide whether another step runs.
+  `after`'s rules (throttle, an extension such as `StepLimit`) decide whether
+  another step runs. A draft a hook leaves as `None` commits nothing.
 - **A step is one pass of a fixed loop**: `pre_step`, then the input, sample,
   and tools phases (each if it applies), then `post_step` (§6).
 - **Every phase has one shape**: pre hook on the effect, the effect, pre hook
@@ -67,7 +68,7 @@ body   = System(text)
        | User(text, images*)
        | Assistant { parts, stop, finish_reason? }
        | Results(outcomes)                  [(call id, outcome, by)], in call order
-       | Config { max_steps?, data }      data: opaque to core
+       | Config { data }                  data: opaque to core
        | Custom { kind, data }
 
 part    = Text(text) | Thinking(text, signature*) | Call { id, tool, args_raw }
@@ -96,7 +97,8 @@ Item   { id, to, data }   data = Input { client, text } | Extension { name, data
 - An **item** is addressed to one cursor (`to`). Input items come from a
   frontend client; every other item belongs to the extensions. No item
   reaches the model (I1).
-- Every root is a `Config` node (V1), so `config_at` is always defined.
+- Every root is a `Config` node, so `config_at` is always defined: a root is
+  made only by `append_root`, which takes a `Config` (no refusal to have).
 - Core is pure: the driver passes `time` in; core assigns ids.
 
 ## 2. Batches
@@ -135,12 +137,12 @@ back from. Any node may be gone to.
 | I2 | No node changes after it is appended. Pre hooks shape a draft before its commit. | no setters; frozen pyclass; proptest `invariants_hold_under_any_driver` (no node changes; the queued `Write`s equal the nodes) |
 | I3 | `at` is always a node of its session. | unit test: a move to an unknown id is refused (`Error::NoSuchNode`); proptest `invariants_hold_under_any_driver` (go-to, hook moves, and opens to unknown ids are refused and change nothing) |
 | I4 | The tools phase writes one `Results` per batch it runs, one outcome per call, in call order. Holds by construction. | `batch_answers_in_call_order_then_samples_again`; proptest `invariants_hold_under_any_driver` (outcomes fed in any order, aborts mid-batch; every batch run is answered once) |
-| I5 | Append checks only types: **V1** a root is `Config`; **V2** a `Results` node's outcomes name distinct calls. Wire legality is the provider's conversion (Q11). | `Error::RootNotConfig`, `Error::DuplicateCall`; unit tests; proptest `appends_check_only_types` (refused only for V1 or V2, any other shape under any node taken; a refusal changes nothing) |
+| I5 | Append checks only types: **V2** a `Results` node's outcomes, and an `Assistant` node's calls, name distinct call ids. A root is made by `append_root` (a `Config` by construction), so there is no V1; replay refuses a logged root that is not a `Config` as `BadRecord`. Wire legality is the provider's conversion (Q11). | `Error::DuplicateCall`; unit tests; proptest `appends_check_only_types` (refused only for V2, any other shape under any node taken; a refusal changes nothing) |
 | I6 | Retired (D5). | — |
 | I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`, `a_torn_tail_opens_as_the_last_sync_before_it`; `Session::load` |
 
 **Not persisted (I7):** auto-step (every cursor loads with it off), busy (every
-cursor loads at rest), the `max_steps` count, open questions (driver memory), shown state, a
+cursor loads at rest), open questions (driver memory), shown state, a
 step's in-memory batch outcomes, events. Load drops every item some node
 `delivers`; anything after the log's last good `Sync` (a torn tail) never
 happened. That is the
@@ -201,7 +203,7 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
 
 | phase | applies when | jobs, in order | commits |
 |---|---|---|---|
-| input | input is pending | `Hooks(PreInput, draft)` per item, oldest first; the items pending when the phase begins, each offered once | one `User` per item, `delivers: [item]`, by `Frontend(client)`; an item a hook already delivered is skipped: the hook's write stands in for the commit and counts as it (the step committed, so it counts toward `max_steps`); any other `delivers` id goes to `write`, which refuses a non-pending one and fails the step |
+| input | input is pending | `Hooks(PreInput, draft)` per item, oldest first; the items pending when the phase begins, each offered once | one `User` per item, `delivers: [item]`, by `Frontend(client)`; an item a hook already delivered is skipped, and a hook that delivers the offered one itself must also leave the draft `None` (below): otherwise the commit's `delivers` names an item that is gone, `write` refuses it (`NotPending`), and the step fails |
 | sample | `next == Sample` | `Hooks(PreSample)`, `Sample`, `Hooks(PreReply, draft)`, `Hooks(PostReply)` | one `Assistant` |
 | tools | `next == RunTools` | `RunCalls(calls)`, `Pending` until every `CallDone`, `Hooks(PostResult)` | one `Results` at the join, by `Tools`; each outcome has its own `by` |
 
@@ -211,8 +213,12 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
   phase looks.
 - **Drafts.** A `Hooks` job carries the phase's `Draft {body, delivers, by}`;
   `Fed::Hooks { draft }` returns the edited one, and core writes it under
-  `at` with `Session::write`. From `pre_sample`, a draft is a reply that
-  **answers** the sample: no `Sample` job, straight to `pre_reply`.
+  `at` with `Session::write`. A draft of `None` (a hook cleared it) commits
+  nothing and the step carries on; it is not a failure. From `pre_sample`, a
+  draft is a reply that **answers** the sample: no `Sample` job, straight to
+  `pre_reply`. A step *committed* only through core's own writes (a phase's
+  draft, the join); a hook's `cursor.write` is not a commit, so a step whose
+  only writes are a hook's still throttles if it restarts.
 - **`RunCalls`** hands the driver the batch. For each call the driver runs
   `pre_tool`, the tool, and `pre_result`, and feeds `CallDone` in any order.
   The step holds each outcome in its slot; when every slot is filled, the
@@ -237,10 +243,10 @@ Another step starts if the ending is `Done` and either auto-step is on with
 work to do (`next != Wait`, or input pending) or an item was added to the
 cursor's scratchpad since this step woke (`Session::changes`; removing or
 delivering an item is not a change). A step that committed
-nothing waits first: `Job::Wait { until: started + THROTTLE }` (250 ms). An
+nothing (a hook's own writes do not count) waits first: `Job::Wait { until: started + THROTTLE }` (250 ms). An
 extension item left in place does not cause another step (an input left
 pending does: it is work, so with auto-step on the next step offers it again,
-until `max_steps`). Otherwise `Job::Rest`.
+until an extension such as `StepLimit` turns auto-step off). Otherwise `Job::Rest`.
 
 **Wakes:** an item added to its scratchpad, opening, load (lease holder
 only), a go-to, `Session.step`, auto-step turned on. Busy means a step exists
@@ -249,9 +255,8 @@ one on a wake; a wake while busy, the throttle included, joins the step
 already there. `Session.step` on a busy cursor is refused (`Error::Busy`).
 Abort during the throttle cancels the restart.
 
-**`max_steps`.** Each committing step counts (`Session::taken`); only
-frontend calls reset the count. At `config_at(at).max_steps`, auto-step turns
-off (D1).
+**Runaway loops** are an extension's (D1): `StepLimit`, a `post_step` hook, turns
+auto-step off after N steps. Core keeps no count.
 
 ## 7. Hooks
 
@@ -440,7 +445,7 @@ Q19, Q29, Q35, Q36, Q38, Q40, Q41.
 | Q15 | How a person branches | go-to, step, input |
 | Q17 | Input at an unanswered batch | goes under it (D4) |
 | Q18 | After a pre hook answers | the draft's pre hooks still run |
-| Q20 | "Keep going", runaway loops | a `post_reply` hook writes a `User` node; `max_steps` |
+| Q20 | "Keep going", runaway loops | a `post_reply` hook writes a `User` node; `StepLimit` |
 | Q21 | Parallel calls | yes; an `exclusive` tool runs alone (not built yet: `Tool` has no `exclusive`) |
 | Q22 | Approve one call, deny another | `cursor.ask` from `pre_tool`; declined returns a reason |
 | Q23 | Lifecycle hooks | none until Phase 5 needs one |

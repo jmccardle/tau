@@ -71,12 +71,12 @@ class ModelConfig:
             None if "api_key_env" not in fields else _text(env, "api_key_env"),
         )
 
-    def to_config(self, max_steps: int | None = None) -> Config:
+    def to_config(self) -> Config:
         """The `Config` node body holding this, ready for `Session.create`."""
         data: dict[str, str] = {"model": self.model, "base_url": self.base_url}
         if self.api_key_env is not None:
             data["api_key_env"] = self.api_key_env
-        return Config(json.dumps(data), max_steps)
+        return Config(json.dumps(data))
 
     def api_key(self, environ: Mapping[str, str]) -> str | None:
         """The key in `environ` named by `api_key_env`; `None` if no variable is named.

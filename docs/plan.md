@@ -35,7 +35,7 @@ Rulings since revision 7 (recorded in `model.md` and the ADRs):
 lines, plus ~1,400 lines of tests): the tree with labels, `config_at`, and
 LCA (3a); one cursor's step as a sans-IO machine (D11); and
 the session machine over every cursor, taking frontend calls (go-to on a busy
-cursor, `Session.step`, wakes, `max_steps`). The I1–I5
+cursor, `Session.step`, wakes). The I1–I5
 proptests (`tests/invariants.rs`) drive it with random frontend calls and
 random answers to every job, hooks that move the cursor included. A turn costs
 ~15–30 µs at any session depth. Replay (`Session::load`) and the I7
@@ -160,14 +160,14 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
   - ✓ two cursors at one batch both run it; ✓ re-run from the `Assistant` node
     writes a sibling `Results`;
   - branch across a config node; detached-root one-off call; ✓ labels across a
-    reload; ✓ `max_steps` stops a "continue" loop; ✓ reload equals pre-save state
+    reload; ✓ `StepLimit` stops a "continue" loop; ✓ reload equals pre-save state
     (I7); a provider-illegal walk fails at the next sample (I5).
 - **Exit:** `keep` green through `parity/`; everything else collected and
   failing for the right reason. Sign-off.
 
 ### Phase 3: Rust core
 - **3a, types and views.** `Node`, `Body`, `Results`, `Move`, `Label`, `Item`,
-  `walk`, `next`, `config_at`, LCA, the append checks (V1, V2). Proptest I1–I5.
+  `walk`, `next`, `config_at`, LCA, the append check (V2). Proptest I1–I5.
 - **3b, store.** `tau-store` per D12: one record log (length-prefixed,
   checksummed), the scratchpad file rewritten atomically, the lease, load with
   the `delivers` reconciliation, a trait for the JMFTS replica. Proptest I7,

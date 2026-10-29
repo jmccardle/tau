@@ -116,12 +116,12 @@ fn compact(s: &mut Session, c: CursorId, text: &mut Text) {
     let mut parent = 1;
     for (i, body) in walk.into_iter().enumerate() {
         if i >= recent || matches!(body, Body::User(_)) {
-            parent = s.append(Some(parent), by.clone(), body, vec![], 0).unwrap();
+            parent = s.append(parent, by.clone(), body, vec![], 0).unwrap();
         }
     }
     let summary = Body::User(text.take(SUMMARY));
     let top = s
-        .append(Some(parent), by.clone(), summary, vec![], 0)
+        .append(parent, by.clone(), summary, vec![], 0)
         .unwrap();
     s.move_to(c, top, by, 0).unwrap();
     s.sync();

@@ -115,8 +115,6 @@ pub struct Step {
     /// A job is out: handed out by `next_job` and not yet answered. Which kind
     /// is `pos`'s; the batch stays out through `Pending` until its last call is fed.
     out: bool,
-    /// The input item the draft in `Pos::Input` offers.
-    offered: Option<ItemId>,
     draft: Option<Draft>,
     /// The input phase's work: the inputs pending when it began, oldest
     /// first, each offered once. `None` until the phase begins.
@@ -141,7 +139,6 @@ impl Step {
             seen,
             first_move: s.moves.len(),
             out: false,
-            offered: None,
             draft: None,
             inputs: None,
             error: None,
@@ -203,7 +200,6 @@ impl Step {
                         self.hop("no input to offer", Pos::PreSample);
                         continue;
                     };
-                    self.offered = Some(id);
                     self.draft = Some(Draft {
                         body: Body::User(text),
                         delivers: vec![id],
@@ -307,10 +303,8 @@ impl Step {
             }
             (Pos::PreStep, Fed::Hooks { .. }) => self.go(Pos::Input),
             (Pos::Input | Pos::PreReply, Fed::Hooks { draft, .. }) => {
-                let d = draft
-                    .or(self.draft.take())
-                    .ok_or(Error::WrongFeed(self.cursor))?;
-                self.commit(s, d, now);
+                self.draft = None;
+                self.commit(s, draft, now);
             }
             (Pos::PreSample, Fed::Hooks { draft, .. }) => {
                 self.draft = draft;
@@ -331,7 +325,7 @@ impl Step {
                 Some(e) => {
                     let at = s.at(self.cursor)?;
                     s.append(
-                        Some(at),
+                        at,
                         Author::Core,
                         Body::Custom {
                             kind: "sample_error".into(),
@@ -412,48 +406,24 @@ impl Step {
             )
     }
 
-    /// Write a phase's draft under `at`. Core validates the draft the hooks left: any
-    /// refusal from `write` (it changes nothing when it refuses) fails the step, its
-    /// reason the error's text.
-    fn commit(&mut self, s: &mut Session, d: Draft, now: u64) {
-        let mut delivers = d.delivers;
-        if self.pos == Pos::Input && self.delivered_by_a_hook(s, &mut delivers) {
-            // The hook's own write stood in for this commit: it counts as one.
-            self.committed = true;
-            transitions::event("input delivered by a hook");
-            self.go(Pos::Input);
-            return;
-        }
-        match s.write(self.cursor, d.body, delivers, d.by, now) {
-            Ok(_) => {
-                self.committed = true;
-                if self.pos == Pos::PreReply {
-                    self.go(Pos::PostReply);
-                } else {
-                    self.go(self.pos);
-                }
-            }
-            Err(e) => {
+    /// Write a phase's draft under `at`; `None`, the draft the hooks left, commits
+    /// nothing. Core validates the draft the hooks left: any refusal from
+    /// `write` (it changes nothing when it refuses) fails the step, its reason
+    /// the error's text. Only a write here counts as the step's commit.
+    fn commit(&mut self, s: &mut Session, draft: Option<Draft>, now: u64) {
+        if let Some(d) = draft {
+            if let Err(e) = s.write(self.cursor, d.body, d.delivers, d.by, now) {
                 transitions::event("commit refused");
-                self.draft = None;
                 self.end(s, Ending::Failed(e.to_string()));
+                return;
             }
+            self.committed = true;
         }
-    }
-
-    /// A hook may have delivered the offered input itself. Then that one id is
-    /// taken out of `delivers` (every other id goes to `write`, which refuses one
-    /// that is not pending); true when that leaves nothing to commit.
-    fn delivered_by_a_hook(&mut self, s: &Session, delivers: &mut Vec<ItemId>) -> bool {
-        let Some(id) = self.offered.take() else {
-            return false;
-        };
-        if s.items(self.cursor).any(|i| i.id == id) {
-            return false;
-        }
-        let was = delivers.len();
-        delivers.retain(|d| *d != id);
-        was != delivers.len() && delivers.is_empty()
+        self.go(if self.pos == Pos::PreReply {
+            Pos::PostReply
+        } else {
+            self.pos
+        });
     }
 
     /// A move inside `job` that no job or feed causes: logged under `why`.
@@ -489,18 +459,6 @@ impl Step {
     /// After `post_step`: sync what it wrote, then rest, throttle, or restart.
     fn after(&mut self, s: &mut Session, now: u64) {
         s.sync();
-        if self.committed {
-            let max = s
-                .at(self.cursor)
-                .and_then(|a| s.config_at(a))
-                .ok()
-                .and_then(|c| c.max_steps);
-            let taken = s.taken.entry(self.cursor).or_default(); // rules: allow(entry): BTreeMap API
-            *taken += 1;
-            if max.is_some_and(|m| *taken >= m) {
-                s.auto.insert(self.cursor, false);
-            }
-        }
         let work = s.next(self.cursor) != Next::Wait
             || s.items(self.cursor)
                 .any(|i| matches!(i.data, ItemData::Input { .. }));

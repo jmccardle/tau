@@ -91,12 +91,6 @@ impl Session {
             result
         })?)
     }
-
-    fn new(inner: Inner) -> Self {
-        Self {
-            inner: Mutex::new(Some(inner)),
-        }
-    }
 }
 
 #[pymethods]
@@ -123,7 +117,9 @@ impl Session {
             }
             .save()
         })?;
-        Ok(Self::new(inner))
+        Ok(Self {
+            inner: Mutex::new(Some(inner)),
+        })
     }
 
     /// Open the session in `directory`, taking its lease. Every cursor loads
@@ -133,10 +129,12 @@ impl Session {
         let (store, session) = py
             .detach(move || Store::open(&directory))
             .map_err(Failure::from)?;
-        Ok(Self::new(Inner {
-            machine: Machine::loaded(session, now),
-            store: Some(store),
-        }))
+        Ok(Self {
+            inner: Mutex::new(Some(Inner {
+                machine: Machine::loaded(session, now),
+                store: Some(store),
+            })),
+        })
     }
 
     /// Drop the store and release the lease without writing what is not yet
@@ -268,13 +266,13 @@ impl Session {
         })
     }
 
-    /// Append a node under `parent` (none: a root) without moving any cursor.
-    /// `hook` as for `open`.
+    /// Append a node under `parent` without moving any cursor. `hook` as for
+    /// `open`.
     #[pyo3(signature = (parent, body, by, now, hook = None))]
     fn append(
         &self,
         py: Python<'_>,
-        parent: Option<u64>,
+        parent: u64,
         body: Body,
         by: Author,
         now: u64,
@@ -282,6 +280,22 @@ impl Session {
     ) -> PyResult<u64> {
         self.write(py, tracing::info_span!("py.append"), |m| {
             Ok(m.append(parent, body.into(), by.into(), now, hook)?)
+        })
+    }
+
+    /// Append a root `Config` (a detached tree) without moving any cursor.
+    /// `hook` as for `open`.
+    #[pyo3(signature = (config, by, now, hook = None))]
+    fn append_root(
+        &self,
+        py: Python<'_>,
+        config: Config,
+        by: Author,
+        now: u64,
+        hook: Option<u64>,
+    ) -> PyResult<u64> {
+        self.write(py, tracing::info_span!("py.append_root"), |m| {
+            Ok(m.append_root(config.into(), by.into(), now, hook))
         })
     }
 
@@ -517,7 +531,7 @@ impl Session {
     /// Drain the `(client, text)` messages to clients, oldest first.
     fn take_notices(&self, py: Python<'_>) -> PyResult<Vec<(String, String)>> {
         self.write(py, tracing::info_span!("py.take_notices"), |m| {
-            Ok(m.session.take_notices())
+            Ok(std::mem::take(&mut m.session.notices))
         })
     }
 }

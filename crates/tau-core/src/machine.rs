@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::step::{Fed, Job, Step};
 use crate::transitions;
-use crate::tree::{Author, Body, CursorId, Error, ItemData, ItemId, Move, NodeId, Session};
+use crate::tree::{Author, Body, Config, CursorId, Error, ItemData, ItemId, Move, NodeId, Session};
 
 #[derive(Debug)]
 pub struct Machine {
@@ -44,7 +44,7 @@ impl Machine {
         self.steps.get(&cursor).is_some_and(|s| !s.resting())
     }
 
-    // Frontend calls. Each resets the cursor's `max_steps` count and syncs on return.
+    // Frontend calls. Each syncs on return.
 
     /// Add an input item; wakes the cursor. Waits for the next input phase if busy.
     ///
@@ -58,7 +58,7 @@ impl Machine {
         text: &str,
         now: u64,
     ) -> Result<ItemId, Error> {
-        self.frontend(cursor)?;
+        self.session.at(cursor)?;
         let data = ItemData::Input {
             client,
             text: text.into(),
@@ -80,7 +80,7 @@ impl Machine {
         text: &str,
         now: u64,
     ) -> Result<ItemId, Error> {
-        self.frontend(cursor)?;
+        self.session.at(cursor)?;
         self.session.auto.insert(cursor, true);
         self.input(cursor, client, text, now)
     }
@@ -91,7 +91,7 @@ impl Machine {
     ///
     /// `NoSuchCursor` if `cursor` is not open; `Busy` if a step is running.
     pub fn step(&mut self, cursor: CursorId, _client: String, now: u64) -> Result<(), Error> {
-        self.frontend(cursor)?;
+        self.session.at(cursor)?;
         if self.busy(cursor) {
             return Err(Error::Busy(cursor));
         }
@@ -115,7 +115,7 @@ impl Machine {
         client: String,
         now: u64,
     ) -> Result<bool, Error> {
-        self.frontend(cursor)?;
+        self.session.at(cursor)?;
         self.session.node(to)?;
         let by = Author::Frontend(client);
         let cancel = if let Some(step) = self.steps.get_mut(&cursor).filter(|s| !s.resting()) {
@@ -144,7 +144,6 @@ impl Machine {
         now: u64,
     ) -> Result<(), Error> {
         self.session.at(cursor)?;
-        self.session.taken.remove(&cursor);
         self.session.auto.insert(cursor, on);
         if on {
             self.wake(cursor, false, now);
@@ -254,15 +253,15 @@ impl Machine {
         Ok(())
     }
 
-    /// Append a node under `parent` (none: a root) without moving any cursor
-    /// (an extension's note). `hook` as for `open`.
+    /// Append a node under `parent` without moving any cursor (an extension's
+    /// note). `hook` as for `open`.
     ///
     /// # Errors
     ///
     /// As `Session::append`.
     pub fn append(
         &mut self,
-        parent: Option<NodeId>,
+        parent: NodeId,
         body: Body,
         by: Author,
         now: u64,
@@ -271,6 +270,20 @@ impl Machine {
         let id = self.session.append(parent, by, body, vec![], now)?;
         self.sync_unless_hook(hook);
         Ok(id)
+    }
+
+    /// Append a root `Config` (a detached tree) without moving any cursor.
+    /// `hook` as for `open`.
+    pub fn append_root(
+        &mut self,
+        config: Config,
+        by: Author,
+        now: u64,
+        hook: Option<CursorId>,
+    ) -> NodeId {
+        let id = self.session.append_root(by, config, now);
+        self.sync_unless_hook(hook);
+        id
     }
 
     // A cursor hook's own-cursor calls (model.md section 7, Handles). Each is
@@ -312,8 +325,7 @@ impl Machine {
         self.session.write(cursor, body, delivers, by, now)
     }
 
-    /// A hook sets its own cursor's auto-step. Unlike a frontend's, it does not
-    /// reset the `max_steps` count and needs no wake: the step is running.
+    /// A hook sets its own cursor's auto-step. It needs no wake: the step is running.
     ///
     /// # Errors
     ///
@@ -389,13 +401,6 @@ impl Machine {
             .get_mut(&cursor)
             .ok_or(Error::WrongFeed(cursor))?;
         step.feed(&mut self.session, fed, now)
-    }
-
-    /// A frontend call's check: the cursor exists; then its `max_steps` count resets.
-    fn frontend(&mut self, cursor: CursorId) -> Result<(), Error> {
-        self.session.at(cursor)?;
-        self.session.taken.remove(&cursor);
-        Ok(())
     }
 
     /// The sync a call owes on return. Only a call made from the cursor hook
