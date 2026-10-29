@@ -365,6 +365,15 @@ or the step was asked, and its condition holds at its start.
 Where a step is: `PreStep`, `Input`, `PreSample`, `Sample`, `PreReply`,
 `PostReply`, `Tools`, `Calls`, `PostResult`, `PostStep`, `Throttle`, `Rest`.
 
+### transition log
+*spike* `tau_core::transitions`, cargo feature `transitions` · new
+
+Off by default and absent from every wheel. With it on, each position change
+of a step (`Pos` to `Pos`, the job handed out or the feed that caused it) is
+written once per scenario to stderr as a `TAU-TRANSITION` line. It exists so
+`scripts/diagrams.sh` can draw the step's position graph from what the tests
+actually did (`docs/as-built/diagrams/`). It changes no behavior.
+
 ### next
 *spike* `tree::next`, `Session::next`, `Next` · retires `LoopPosition`
 

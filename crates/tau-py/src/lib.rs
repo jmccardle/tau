@@ -24,6 +24,18 @@ mod _core {
 
     #[pymodule_init]
     fn init(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+        #[cfg(feature = "transitions")]
+        {
+            use pyo3::types::PyModuleMethods;
+            m.add_function(pyo3::wrap_pyfunction!(super::transitions_scenario, m)?)?;
+        }
         super::error::add_all(m)
     }
+}
+
+/// Name the scenario the logged transitions belong to (diagram builds only).
+#[cfg(feature = "transitions")]
+#[pyfunction]
+fn transitions_scenario(name: &str) {
+    tau_core::transitions::scenario(name);
 }

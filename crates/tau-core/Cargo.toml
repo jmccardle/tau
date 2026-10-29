@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Logs every step position change to stderr (src/transitions.rs). Off by default.
+transitions = []
+
 [dependencies]
 serde.workspace = true
 
