@@ -150,14 +150,14 @@ def test_the_default_limit_is_10_kb_and_the_default_directory_is_the_temp_dir() 
 def test_the_overflow_file_cannot_be_written_is_an_error_not_a_silent_cut(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "blocker").write_text("a file where the directory should be")
     (tmp_path / "f.txt").write_text("x" * 100)
     unwritable = tmp_path / "blocker" / "tau"
     read = ReadTool(tmp_path, max_output=10, overflow_dir=unwritable)
-    assert "could not be created" in err(call(read, path="f.txt"))
     grep = GrepTool(tmp_path, max_output=10, overflow_dir=unwritable)
-    assert "could not be created" in err(call(grep, pattern="x"))
     bash = BashTool(tmp_path, max_output=10, overflow_dir=unwritable)
+    (tmp_path / "blocker").write_text("a file where the directory should be")
+    assert "could not be created" in err(call(read, path="f.txt"))
+    assert "could not be created" in err(call(grep, pattern="x"))
     assert "could not be created" in err(call(bash, command="seq 1 100"))
 
 

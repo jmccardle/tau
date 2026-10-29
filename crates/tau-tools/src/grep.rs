@@ -9,11 +9,12 @@
 //! Memory is bounded: a matching line is cut at [`MAX_LINE`] bytes, and the
 //! search stops once the matches it holds reach the overflow cap.
 
-use std::borrow::Cow;
 use std::fmt::Write as _;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use globset::{GlobBuilder, GlobMatcher};
 use grep_regex::RegexMatcherBuilder;
@@ -29,6 +30,9 @@ use crate::{Cancel, Limits, Result, ToolError, lock, parse_args, resolve};
 
 /// The most bytes of one matching line that are shown.
 pub const MAX_LINE: usize = 500;
+/// The most memory the searcher may use for one line; a file with a longer
+/// line is not searched (it lands in the could-not-search note).
+const HEAP_LIMIT: usize = 16 * 1024 * 1024;
 /// Names listed in a note before it says "and N more".
 const NAMES_SHOWN: usize = 5;
 
@@ -194,7 +198,7 @@ impl Grep {
     }
 
     fn render(&self, search: Search, named: bool) -> Result<String> {
-        let mut all = search.found.into_inner().unwrap_or_default();
+        let mut all = into_data(search.found);
         let searched = search.searched.into_inner();
         all.sort_by(|a, b| a.path.cmp(&b.path));
         let mut sink = Sink::new(&self.limits, Keep::Head);
@@ -216,7 +220,7 @@ impl Grep {
             sink.finish()?.text
         };
         let mut notes = Vec::new();
-        let mut binary = search.binary.into_inner().unwrap_or_default();
+        let mut binary = into_data(search.binary);
         binary.sort_by(|a, b| a.path.cmp(&b.path));
         let skipped: Vec<&str> = binary
             .iter()
@@ -241,11 +245,11 @@ impl Grep {
         }
         if search.stopped.into_inner() {
             notes.push(format!(
-                "[search stopped: the matches reached {} bytes; there are more, and later files were not searched]",
+                "[search stopped: the matches reached {} bytes; there are more, and some files were not searched]",
                 self.limits.max_overflow
             ));
         }
-        let mut unreadable = search.unreadable.into_inner().unwrap_or_default();
+        let mut unreadable = into_data(search.unreadable);
         unreadable.sort();
         if let Some(example) = unreadable.first() {
             notes.push(format!(
@@ -327,7 +331,13 @@ impl<'a> Search<'a> {
             lines: Vec::new(),
             binary_at: None,
         };
-        match searcher.search_path(&self.matcher, path, &mut collect) {
+        let opened = File::open(path).map(|inner| CancelReader {
+            inner,
+            cancel: self.cancel,
+        });
+        let result =
+            opened.and_then(|reader| searcher.search_reader(&self.matcher, reader, &mut collect));
+        match result {
             Ok(()) => {
                 self.searched.fetch_add(1, Ordering::Relaxed);
                 let Collect {
@@ -372,11 +382,10 @@ impl SearchSink for Collect<'_, '_> {
         let bytes = found.bytes();
         let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
         let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
-        let text = String::from_utf8_lossy(bytes);
-        if matches!(text, Cow::Owned(_)) {
+        let (text, lossy) = cut_line(bytes);
+        if lossy {
             self.search.lossy.store(true, Ordering::Relaxed);
         }
-        let text = cut_line(&text);
         let cost = text.len() + self.shown.len() + 12;
         self.lines.push((found.line_number().unwrap_or(0), text));
         if self.search.held.fetch_add(cost, Ordering::Relaxed) + cost >= self.search.cap {
@@ -397,19 +406,46 @@ impl SearchSink for Collect<'_, '_> {
 }
 
 /// `text` cut to [`MAX_LINE`] bytes on a character, with a marker if it was cut.
-fn cut_line(text: &str) -> String {
-    if text.len() <= MAX_LINE {
-        return text.to_owned();
-    }
-    let mut end = MAX_LINE;
-    while !text.is_char_boundary(end) {
+/// The line as text, cut to [`MAX_LINE`] bytes (on a character) with a marker if it
+/// was longer, and whether bytes that are not UTF-8 were replaced. The cut is made
+/// on the bytes, before decoding, so a huge line is never decoded whole.
+fn cut_line(bytes: &[u8]) -> (String, bool) {
+    let mut end = bytes.len().min(MAX_LINE);
+    while end < bytes.len() && end > 0 && bytes[end] & 0xC0 == 0x80 {
         end -= 1;
     }
-    format!("{} [+{} bytes]", &text[..end], text.len() - end)
+    let text = String::from_utf8_lossy(&bytes[..end]);
+    let lossy = std::str::from_utf8(&bytes[..end]).is_err();
+    if end == bytes.len() {
+        (text.into_owned(), lossy)
+    } else {
+        (format!("{text} [+{} bytes]", bytes.len() - end), lossy)
+    }
+}
+
+fn into_data<T>(mutex: Mutex<T>) -> T {
+    mutex.into_inner().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A file that fails its reads once the call is cancelled, so that a search of
+/// a big file with no matches stops, not only the walk between files.
+struct CancelReader<'a> {
+    inner: File,
+    cancel: &'a Cancel,
+}
+
+impl Read for CancelReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.is_cancelled() {
+            return Err(std::io::Error::other("the call was cancelled"));
+        }
+        self.inner.read(buf)
+    }
 }
 
 fn searcher() -> Searcher {
     SearcherBuilder::new()
+        .heap_limit(Some(HEAP_LIMIT))
         .line_number(true)
         .binary_detection(BinaryDetection::quit(0))
         .build()
@@ -665,5 +701,46 @@ mod tests {
             .run(&json!({"pattern": "needle"}).to_string(), &cancel)
             .unwrap_err();
         assert!(err.0.contains("cancelled"), "{err}");
+    }
+
+    #[test]
+    fn a_file_with_a_line_over_the_heap_limit_is_not_searched() {
+        let (tool, dir) = setup(10_000);
+        let mut huge = b"needle ".to_vec();
+        huge.resize(HEAP_LIMIT + 4096, b'x');
+        fs::write(dir.path().join("huge.txt"), huge).unwrap();
+        fs::write(dir.path().join("ok.txt"), "needle\n").unwrap();
+        let out = call(&tool, &json!({"pattern": "needle"})).unwrap();
+        assert!(
+            out.starts_with("ok.txt:1:needle\n[1 paths could not be searched; first: huge.txt:"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_read_after_the_cancel_fails_and_one_before_it_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("f"), "data").unwrap();
+        let cancel = Cancel::new();
+        let mut reader = CancelReader {
+            inner: File::open(dir.path().join("f")).unwrap(),
+            cancel: &cancel,
+        };
+        let mut buf = [0_u8; 2];
+        assert_eq!(reader.read(&mut buf).unwrap(), 2);
+        cancel.cancel();
+        let err = reader.read(&mut buf).unwrap_err();
+        assert!(err.to_string().contains("cancelled"), "{err}");
+    }
+
+    #[test]
+    fn cutting_happens_on_bytes_and_flags_only_real_invalid_utf8() {
+        let line = format!("a{}", "é".repeat(300)); // 601 bytes; byte 500 is inside a character
+        let (text, lossy) = cut_line(line.as_bytes());
+        assert!(!lossy, "a cut inside a character is not invalid input");
+        assert!(text.ends_with(" [+102 bytes]"), "{text}");
+        let (text, lossy) = cut_line(b"caf\xe9");
+        assert!(lossy);
+        assert_eq!(text, "caf\u{FFFD}");
     }
 }

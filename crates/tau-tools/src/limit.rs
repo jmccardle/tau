@@ -11,11 +11,15 @@
 //! closed to everyone else. Files are created `0600`, never overwritten.
 
 use std::fmt::Write as _;
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, DirBuilder, File};
 use std::io::{BufWriter, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
+use nix::errno::Errno;
+use nix::fcntl::{OFlag, open, openat};
+use nix::sys::stat::{Mode, fstat};
 use nix::unistd::Uid;
 
 use crate::{Limits, Result, ToolError};
@@ -54,6 +58,8 @@ pub struct Finished {
     pub kept_lines: usize,
     /// Whether the output passed the limit.
     pub truncated: bool,
+    /// Whether the one line shown is only the start of a line (none fit whole).
+    pub cut_line: bool,
 }
 
 /// Output being limited. See the module docs.
@@ -130,8 +136,10 @@ impl Sink {
         Ok(())
     }
 
-    /// Make sure `self.dir` is a private directory of ours; create it if absent.
-    fn private_dir(&self) -> Result<()> {
+    /// Open `self.dir` (created `0700` if absent) as a directory fd, refusing a
+    /// symlink, and check with `fstat` on that fd that it is ours and private.
+    fn open_private_dir(&self) -> Result<OwnedFd> {
+        let shown = self.dir.display();
         DirBuilder::new()
             .recursive(true)
             .mode(0o700)
@@ -139,53 +147,56 @@ impl Sink {
             .map_err(|e| {
                 ToolError(format!(
                     "output exceeds {} bytes and the directory for the full output could not be \
-                     created ({}): {e}",
-                    self.max,
-                    self.dir.display()
+                     created ({shown}): {e}",
+                    self.max
                 ))
             })?;
-        let shown = self.dir.display();
-        let meta = fs::symlink_metadata(&self.dir).map_err(|e| {
+        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        let fd = open(self.dir.as_path(), flags, Mode::empty()).map_err(|e| {
+            let problem = match fs::symlink_metadata(&self.dir) {
+                Ok(meta) if meta.file_type().is_symlink() => "is a symlink".to_owned(),
+                Ok(meta) if !meta.is_dir() => "is not a directory".to_owned(),
+                _ => format!("cannot be opened: {e}"),
+            };
+            self.dir_refused(&problem)
+        })?;
+        let stat = fstat(&fd).map_err(|e| {
             ToolError(format!(
                 "cannot inspect the overflow directory {shown}: {e}"
             ))
         })?;
-        let problem = if meta.file_type().is_symlink() {
-            "is a symlink".to_owned()
-        } else if !meta.is_dir() {
-            "is not a directory".to_owned()
-        } else if meta.uid() != Uid::effective().as_raw() {
-            format!("is owned by uid {}, not by this process", meta.uid())
-        } else if meta.mode() & 0o077 != 0 {
-            format!(
-                "has mode {:04o}; it must be accessible only by its owner (0700)",
-                meta.mode() & 0o7777
-            )
-        } else {
-            return Ok(());
-        };
-        Err(ToolError(format!(
-            "output exceeds {} bytes, but the overflow directory {shown} {problem}, so the full \
+        match dir_problem(stat.st_uid, stat.st_mode) {
+            Some(problem) => Err(self.dir_refused(&problem)),
+            None => Ok(fd),
+        }
+    }
+
+    fn dir_refused(&self, problem: &str) -> ToolError {
+        ToolError(format!(
+            "output exceeds {} bytes, but the overflow directory {} {problem}, so the full \
              output was not saved",
-            self.max
-        )))
+            self.max,
+            self.dir.display()
+        ))
     }
 
     fn create_overflow(&mut self) -> Result<Overflow> {
-        self.private_dir()?;
+        let dir = self.open_private_dir()?;
         for _ in 0..ID_TRIES {
             let id: String = (0..ID_LEN)
                 .map(|_| char::from(ID_CHARS[fastrand::usize(..ID_CHARS.len())]))
                 .collect();
-            let path = self.dir.join(format!("{id}.out"));
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path)
-            {
-                Ok(file) => {
-                    let mut out = BufWriter::new(file);
+            let name = format!("{id}.out");
+            let path = self.dir.join(&name);
+            // Relative to the fd we checked, so a swapped path cannot redirect us.
+            let flags = OFlag::O_WRONLY
+                | OFlag::O_CREAT
+                | OFlag::O_EXCL
+                | OFlag::O_NOFOLLOW
+                | OFlag::O_CLOEXEC;
+            match openat(&dir, name.as_str(), flags, Mode::from_bits_truncate(0o600)) {
+                Ok(fd) => {
+                    let mut out = BufWriter::new(File::from(fd));
                     out.write_all(&self.window)
                         .map_err(|e| write_failed(&path, &e))?;
                     let written = self.window.len();
@@ -196,7 +207,7 @@ impl Sink {
                         capped: false,
                     });
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(Errno::EEXIST) => {}
                 Err(e) => {
                     return Err(ToolError(format!(
                         "output exceeds {} bytes and the file for the full output could not be \
@@ -227,6 +238,7 @@ impl Sink {
                 text,
                 kept_lines: count_lines(kept),
                 truncated: false,
+                cut_line: false,
             });
         };
         let Overflow {
@@ -273,6 +285,7 @@ impl Sink {
             text,
             kept_lines,
             truncated: true,
+            cut_line,
         })
     }
 
@@ -336,6 +349,52 @@ impl Sink {
         }
         let skip = fits.iter().take_while(|&&b| is_continuation(b)).count();
         (&fits[skip..], true)
+    }
+}
+
+/// What is wrong with a directory of this owner and mode, if anything.
+fn dir_problem(uid: u32, mode: u32) -> Option<String> {
+    if uid != Uid::effective().as_raw() {
+        Some(format!("is owned by uid {uid}, not by this process"))
+    } else if mode & 0o077 != 0 {
+        Some(format!(
+            "has mode {:04o}; it must be accessible only by its owner (0700)",
+            mode & 0o7777
+        ))
+    } else {
+        None
+    }
+}
+
+/// Check an overflow directory that exists already, by `lstat`: it must be a
+/// directory (not a symlink), ours, and closed to others. One that does not
+/// exist is fine; it is created `0700` when first needed.
+///
+/// # Errors
+/// The directory is there and unfit, or cannot be inspected.
+pub fn check_existing_dir(dir: &Path) -> Result<()> {
+    let shown = dir.display();
+    let meta = match fs::symlink_metadata(dir) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => {
+            return Err(ToolError(format!(
+                "cannot inspect the overflow directory {shown}: {e}"
+            )));
+        }
+    };
+    let problem = if meta.file_type().is_symlink() {
+        Some("is a symlink".to_owned())
+    } else if !meta.is_dir() {
+        Some("is not a directory".to_owned())
+    } else {
+        dir_problem(meta.uid(), meta.mode())
+    };
+    match problem {
+        Some(problem) => Err(ToolError(format!(
+            "the overflow directory {shown} {problem}"
+        ))),
+        None => Ok(()),
     }
 }
 
@@ -519,8 +578,9 @@ mod tests {
     fn an_unwritable_overflow_directory_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let blocker = dir.path().join("blocker");
-        fs::write(&blocker, "x").unwrap();
+        // Fine when the tool is built; a file takes the directory's place after.
         let limits = Limits::in_dir(4, blocker.join("tau")).unwrap();
+        fs::write(&blocker, "x").unwrap();
         let mut sink = Sink::new(&limits, Keep::Head);
         let err = sink.push(b"too long for four").unwrap_err();
         assert!(err.0.contains("could not be created"), "{err}");
@@ -548,26 +608,40 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_open_to_others_is_refused() {
+    fn a_directory_open_to_others_is_refused_at_construction_and_at_use() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let open = dir.path().join("open");
         fs::create_dir(&open).unwrap();
         fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
-        let mut sink = Sink::new(&Limits::in_dir(4, open.clone()).unwrap(), Keep::Head);
+        let err = Limits::in_dir(4, open.clone()).unwrap_err();
+        assert!(err.0.contains("has mode 0755"), "{err}");
+        // Opened up after the tool was built:
+        let later = dir.path().join("later");
+        fs::create_dir(&later).unwrap();
+        fs::set_permissions(&later, fs::Permissions::from_mode(0o700)).unwrap();
+        let limits = Limits::in_dir(4, later.clone()).unwrap();
+        fs::set_permissions(&later, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut sink = Sink::new(&limits, Keep::Head);
         let err = sink.push(b"too long for four").unwrap_err();
         assert!(err.0.contains("has mode 0755"), "{err}");
-        assert_eq!(fs::read_dir(&open).unwrap().count(), 0, "no fallback file");
+        assert_eq!(fs::read_dir(&later).unwrap().count(), 0, "no fallback file");
     }
 
     #[test]
-    fn a_symlink_as_the_directory_is_refused() {
+    fn a_symlink_as_the_directory_is_refused_at_construction_and_at_use() {
         let dir = tempfile::tempdir().unwrap();
         let real = dir.path().join("real");
         fs::create_dir(&real).unwrap();
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
-        let mut sink = Sink::new(&Limits::in_dir(4, link).unwrap(), Keep::Head);
+        let err = Limits::in_dir(4, link.clone()).unwrap_err();
+        assert!(err.0.contains("is a symlink"), "{err}");
+        // Swapped for a symlink after the tool was built:
+        let swapped = dir.path().join("swapped");
+        let limits = Limits::in_dir(4, swapped.clone()).unwrap();
+        std::os::unix::fs::symlink(&real, &swapped).unwrap();
+        let mut sink = Sink::new(&limits, Keep::Head);
         let err = sink.push(b"too long for four").unwrap_err();
         assert!(err.0.contains("is a symlink"), "{err}");
         assert_eq!(fs::read_dir(&real).unwrap().count(), 0);

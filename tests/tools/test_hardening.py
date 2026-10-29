@@ -4,9 +4,9 @@ memory, special files, cancellation."""
 import asyncio
 import json
 import os
-import resource
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -14,6 +14,14 @@ import pytest
 from calls import call, err, ok, parse_truncated
 
 from tau_next import BashTool, GrepTool, Outcome, ReadTool, WriteTool
+
+# Starts `sleep 13` in a session of its own, and goes on once it is there (a bare
+# `setsid ... &` races with the end of the command), saving its pid.
+LEAVE = (
+    "setsid sleep 13 & p=$!; "
+    'until [ "$(cut -d\' \' -f6 /proc/$p/stat)" = "$p" ]; do sleep 0.02; done; '
+    "echo $p > pid;"
+)
 
 ESCAPED = "a process outside the command's group still holds the output open"
 
@@ -46,7 +54,7 @@ def test_a_process_outside_the_group_does_not_hold_the_timeout_hostage(tmp_path:
     started = time.monotonic()
     out = call(
         BashTool(tmp_path),
-        command="setsid sleep 13 & echo $! > pid; sleep 30",
+        command=f"{LEAVE} sleep 30",
         timeout=500,
     )
     assert time.monotonic() - started < 5
@@ -58,7 +66,7 @@ def test_a_process_outside_the_group_does_not_hold_the_timeout_hostage(tmp_path:
 def test_cancelling_while_a_process_outside_the_group_holds_the_pipe(tmp_path: Path) -> None:
     async def scenario() -> float:
         tool = BashTool(tmp_path)
-        command = "setsid sleep 13 & echo $! > pid; sleep 30"
+        command = f"{LEAVE} sleep 30"
         running = asyncio.create_task(tool.call(json.dumps({"command": command})))
         while not (tmp_path / "pid").exists():
             await asyncio.sleep(0.01)
@@ -74,9 +82,7 @@ def test_cancelling_while_a_process_outside_the_group_holds_the_pipe(tmp_path: P
 
 
 def test_a_normal_exit_with_an_escaped_process_is_an_ok_with_a_note(tmp_path: Path) -> None:
-    out = ok(
-        call(BashTool(tmp_path), command="setsid sleep 13 & echo $! > pid; sleep 0.3; echo done")
-    )
+    out = ok(call(BashTool(tmp_path), command=f"{LEAVE} echo done"))
     assert out == f"done\n\n[output may be cut off: {ESCAPED}]"
     end(int((tmp_path / "pid").read_text()))
 
@@ -118,15 +124,19 @@ def test_a_timeout_over_the_maximum_is_an_error_naming_it(tmp_path: Path) -> Non
 
 
 def test_each_call_has_its_own_thread(tmp_path: Path) -> None:
-    async def scenario() -> float:
-        tool = BashTool(tmp_path)
-        started = time.monotonic()
-        calls = [tool.call(json.dumps({"command": "sleep 0.4"})) for _ in range(100)]
-        outcomes = await asyncio.gather(*calls)
-        assert outcomes == [Outcome.Ok("")] * 100
-        return time.monotonic() - started
+    """Each command waits until 100 are running at once: with fewer threads than that, none
+    could finish (the pool of asyncio's default executor is far smaller)."""
+    barrier = (
+        "mkdir -p here; touch here/$$; "
+        "until f=(here/*); [ ${#f[@]} -ge 100 ]; do sleep 0.05; done; echo together"
+    )
 
-    assert asyncio.run(scenario()) < 1.5
+    async def scenario() -> list[Outcome]:
+        tool = BashTool(tmp_path)
+        calls = [tool.call(json.dumps({"command": barrier, "timeout": 60_000})) for _ in range(100)]
+        return list(await asyncio.gather(*calls))
+
+    assert asyncio.run(scenario()) == [Outcome.Ok("together\n")] * 100
 
 
 # overflow file: private, capped
@@ -147,9 +157,15 @@ def test_a_directory_open_to_others_is_an_error_with_no_fallback(tmp_path: Path)
     open_dir.mkdir()
     open_dir.chmod(0o755)
     (tmp_path / "f.txt").write_text("x\n" * 100)
-    tool = ReadTool(tmp_path, max_output=10, overflow_dir=open_dir)
+    with pytest.raises(ValueError, match="has mode 0755"):
+        ReadTool(tmp_path, max_output=10, overflow_dir=open_dir)
+    # Opened up after the tool was built:
+    later = tmp_path / "later"
+    later.mkdir(mode=0o700)
+    tool = ReadTool(tmp_path, max_output=10, overflow_dir=later)
+    later.chmod(0o755)
     assert "has mode 0755" in err(call(tool, path="f.txt"))
-    assert list(open_dir.iterdir()) == []
+    assert list(later.iterdir()) == []
 
 
 def test_a_symlink_as_the_overflow_directory_is_an_error(tmp_path: Path) -> None:
@@ -158,7 +174,11 @@ def test_a_symlink_as_the_overflow_directory_is_an_error(tmp_path: Path) -> None
     link = tmp_path / "link"
     link.symlink_to(real)
     (tmp_path / "f.txt").write_text("x\n" * 100)
-    tool = BashTool(tmp_path, max_output=10, overflow_dir=link)
+    with pytest.raises(ValueError, match="is a symlink"):
+        BashTool(tmp_path, max_output=10, overflow_dir=link)
+    swapped = tmp_path / "swapped"
+    tool = BashTool(tmp_path, max_output=10, overflow_dir=swapped)
+    swapped.symlink_to(real)
     assert "is a symlink" in err(call(tool, command="seq 1 100"))
     assert list(real.iterdir()) == []
 
@@ -200,17 +220,42 @@ def test_the_hint_continues_after_the_kept_lines_when_the_byte_limit_cut(tmp_pat
     assert "were read" not in out
 
 
+MEASURE = """
+import asyncio, json, resource, sys
+from tau_next import ReadTool
+tool = ReadTool(sys.argv[1], overflow_dir=sys.argv[2], max_overflow=1_000_000)
+before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+out = asyncio.run(tool.call(json.dumps({"path": "one.txt"})))
+after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+print((after - before) // 1024, "holds only the first 1000000 bytes" in out.value)
+"""
+
+
 def test_a_file_of_one_enormous_line_is_not_held_in_memory(tmp_path: Path) -> None:
-    (tmp_path / "one.txt").write_bytes(b"x" * 200_000_000)
-    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    out = ok(
-        call(
-            ReadTool(tmp_path, overflow_dir=tmp_path / "ov", max_overflow=1_000_000), path="one.txt"
-        )
+    """Measured in a fresh process, so the baseline is not the test run's own peak."""
+    with (tmp_path / "one.txt").open("wb") as f:
+        for _ in range(200):
+            f.write(b"x" * 1_000_000)
+    done = subprocess.run(
+        [sys.executable, "-c", MEASURE, str(tmp_path), str(tmp_path / "ov")],
+        capture_output=True,
+        text=True,
+        check=True,
     )
-    grown_mb = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before) / 1024
-    assert grown_mb < 50, grown_mb
-    assert "holds only the first 1000000 bytes" in out
+    grown_mb, capped = done.stdout.split()
+    assert int(grown_mb) < 50, done.stdout
+    assert capped == "True"
+
+
+def test_a_cut_first_line_says_the_rest_of_it_is_only_in_the_file(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("x" * 50 + "\nsecond\n")
+    tool = ReadTool(tmp_path, max_output=20, overflow_dir=tmp_path / "ov")
+    out = ok(call(tool, path="a.txt"))
+    assert out.endswith(
+        "\n[line 1 is shown only in part; the rest of it is only in the overflow file; "
+        "offset=2 continues after it]"
+    )
+    assert "showing lines" not in out
 
 
 def test_a_pipe_is_refused_not_opened(tmp_path: Path) -> None:
@@ -300,6 +345,7 @@ def test_the_search_stops_at_the_overflow_cap(tmp_path: Path) -> None:
     tool = GrepTool(tmp_path, max_output=100, overflow_dir=tmp_path / "ov", max_overflow=5000)
     out = ok(call(tool, pattern="hit"))
     assert "[search stopped: the matches reached 5000 bytes" in out
+    assert "some files were not searched" in out
 
 
 # write
@@ -320,3 +366,55 @@ def test_write_keeps_a_read_only_mode(tmp_path: Path) -> None:
     ok(call(WriteTool(tmp_path), path="ro.txt", content="new"))
     assert path.read_text() == "new"
     assert stat.S_IMODE(path.stat().st_mode) == 0o444
+
+
+def running(marker: str) -> bool:
+    """Whether a live process has `marker` in its command line."""
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            cmdline = (proc / "cmdline").read_bytes()
+            state = (proc / "stat").read_text().rsplit(")", 1)[1].split()[0]
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if state != "Z" and marker.encode() in cmdline:
+            return True
+    return False
+
+
+def test_processes_that_moved_to_their_own_group_do_not_survive(tmp_path: Path) -> None:
+    """`timeout(1)` makes a process group of its own; the session still finds it."""
+    assert ok(call(BashTool(tmp_path), command="timeout 30 sleep 31.7 & echo ok")) == "ok\n"
+    assert not running("sleep\x0031.7")
+    out = err(call(BashTool(tmp_path), command="timeout 30 sleep 31.8; echo no", timeout=300))
+    assert "timed out after 300 ms" in out
+    assert not running("sleep\x0031.8")
+
+
+def test_cancelling_right_after_the_call_starts_always_ends_the_command(tmp_path: Path) -> None:
+    async def scenario() -> float:
+        tool = BashTool(tmp_path)
+        started = time.monotonic()
+        for _ in range(20):
+            task = asyncio.create_task(tool.call(json.dumps({"command": "sleep 31.9"})))
+            await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        return time.monotonic() - started
+
+    assert asyncio.run(scenario()) < 30
+    assert not running("sleep\x0031.9")
+
+
+def test_a_file_with_a_line_over_the_search_memory_limit_is_named_not_searched(
+    tmp_path: Path,
+) -> None:
+    with (tmp_path / "huge.txt").open("wb") as f:
+        f.write(b"needle ")
+        for _ in range(17):
+            f.write(b"x" * 1_000_000)
+    (tmp_path / "ok.txt").write_text("needle\n")
+    out = ok(call(GrepTool(tmp_path), pattern="needle"))
+    assert out.startswith("ok.txt:1:needle\n[1 paths could not be searched; first: huge.txt:")
