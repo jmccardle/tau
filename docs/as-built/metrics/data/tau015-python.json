@@ -1,0 +1,546 @@
+{
+ "src": {
+  "files": 176,
+  "total_lines": 99233,
+  "cc": {
+   "count": 3301,
+   "max": 73,
+   "p50": 2,
+   "p90": 8,
+   "p99": 21,
+   "mean": 3.87,
+   "over_10": 222,
+   "over_15": 85,
+   "over_20": 35,
+   "over_40": 5
+  },
+  "function_loc": {
+   "count": 3301,
+   "max": 336,
+   "p50": 13,
+   "p90": 44,
+   "p99": 113,
+   "mean": 20.09,
+   "over_50": 258,
+   "over_100": 45
+  },
+  "file_lines": {
+   "count": 176,
+   "max": 6510,
+   "p50": 282,
+   "p90": 1256,
+   "p99": 4280,
+   "mean": 563.82,
+   "over_500": 54,
+   "over_800": 32,
+   "over_1500": 12
+  },
+  "methods_per_class": {
+   "count": 557,
+   "max": 216,
+   "p50": 0,
+   "p90": 10,
+   "p99": 47,
+   "mean": 4.0,
+   "over_25": 22
+  },
+  "top_cc": [
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/cli.py",
+    "name": "main",
+    "line": 776,
+    "cc": 73,
+    "loc": 229,
+    "class": null
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/testing/schema_check.py",
+    "name": "_errors",
+    "line": 47,
+    "cc": 49,
+    "loc": 77,
+    "class": null
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/headless.py",
+    "name": "run_print",
+    "line": 1031,
+    "cc": 49,
+    "loc": 226,
+    "class": null
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/backends.py",
+    "name": "build_model_from_config",
+    "line": 1050,
+    "cc": 45,
+    "loc": 183,
+    "class": null
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/repl.py",
+    "name": "run_repl",
+    "line": 1451,
+    "cc": 43,
+    "loc": 191,
+    "class": null
+   },
+   {
+    "file": "tau-llm/src/tau_llm/providers/openai.py",
+    "name": "_stream_transport",
+    "line": 1811,
+    "cc": 39,
+    "loc": 150,
+    "class": "OpenAICompletionsProvider"
+   },
+   {
+    "file": "tau-llm/src/tau_llm/providers/openai.py",
+    "name": "_complete_transport",
+    "line": 1962,
+    "cc": 33,
+    "loc": 150,
+    "class": "OpenAICompletionsProvider"
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/agent_loop.py",
+    "name": "_stream_response",
+    "line": 1083,
+    "cc": 33,
+    "loc": 212,
+    "class": "AgentLoop"
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/export.py",
+    "name": "_message_html",
+    "line": 407,
+    "cc": 30,
+    "loc": 67,
+    "class": null
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/agent_session.py",
+    "name": "__init__",
+    "line": 722,
+    "cc": 28,
+    "loc": 144,
+    "class": "AgentSession"
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/suspensions.py",
+    "name": "validate_suspension_spec",
+    "line": 107,
+    "cc": 28,
+    "loc": 78,
+    "class": null
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/agent_loop.py",
+    "name": "_run",
+    "line": 337,
+    "cc": 27,
+    "loc": 193,
+    "class": "AgentLoop"
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/agent_loop.py",
+    "name": "_run_continue",
+    "line": 566,
+    "cc": 27,
+    "loc": 184,
+    "class": "AgentLoop"
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/agent_session.py",
+    "name": "_run_one_turn",
+    "line": 4647,
+    "cc": 26,
+    "loc": 158,
+    "class": "AgentSession"
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/rpc/commands.py",
+    "name": "_assert_supported_schema",
+    "line": 484,
+    "cc": 26,
+    "loc": 65,
+    "class": null
+   }
+  ],
+  "top_files": [
+   {
+    "file": "tau-agent-core/src/tau_agent_core/agent_session.py",
+    "lines": 6510
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/rpc/commands.py",
+    "lines": 4280
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/app.py",
+    "lines": 4239
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/extension_types.py",
+    "lines": 3201
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/repl.py",
+    "lines": 2682
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/backends.py",
+    "lines": 2598
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/capabilities.py",
+    "lines": 2515
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/sdk.py",
+    "lines": 2351
+   },
+   {
+    "file": "tau-llm/src/tau_llm/providers/openai.py",
+    "lines": 2111
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/transcript.py",
+    "lines": 1942
+   }
+  ],
+  "top_classes": [
+   {
+    "file": "tau-agent-core/src/tau_agent_core/agent_session.py",
+    "name": "AgentSession",
+    "line": 652,
+    "methods": 216
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/app.py",
+    "name": "TauApp",
+    "line": 194,
+    "methods": 143
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/transcript.py",
+    "name": "ChatDisplay",
+    "line": 570,
+    "methods": 60
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/testing/session_log_contract.py",
+    "name": "SessionLogContractTests",
+    "line": 65,
+    "methods": 51
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/serve/remote.py",
+    "name": "RemoteBackend",
+    "line": 669,
+    "methods": 49
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/backends.py",
+    "name": "TauBackend",
+    "line": 1605,
+    "methods": 47
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/tree_browser.py",
+    "name": "SessionTreeModal",
+    "line": 628,
+    "methods": 47
+   },
+   {
+    "file": "tau-coding-agent/src/tau_coding_agent/repl.py",
+    "name": "ReplLoop",
+    "line": 1644,
+    "methods": 43
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/extension_types.py",
+    "name": "ExtensionAPI",
+    "line": 1906,
+    "methods": 42
+   },
+   {
+    "file": "tau-agent-core/src/tau_agent_core/agent_loop.py",
+    "name": "AgentLoop",
+    "line": 213,
+    "methods": 42
+   }
+  ]
+ },
+ "tests": {
+  "files": 415,
+  "total_lines": 142491,
+  "cc": {
+   "count": 9324,
+   "max": 32,
+   "p50": 2,
+   "p90": 6,
+   "p99": 11,
+   "mean": 2.95,
+   "over_10": 123,
+   "over_15": 29,
+   "over_20": 7,
+   "over_40": 0
+  },
+  "function_loc": {
+   "count": 9324,
+   "max": 146,
+   "p50": 1,
+   "p90": 13,
+   "p99": 37,
+   "mean": 5.02,
+   "over_50": 36,
+   "over_100": 4
+  },
+  "file_lines": {
+   "count": 415,
+   "max": 2316,
+   "p50": 256,
+   "p90": 643,
+   "p99": 1940,
+   "mean": 343.35,
+   "over_500": 68,
+   "over_800": 28,
+   "over_1500": 8
+  },
+  "methods_per_class": {
+   "count": 889,
+   "max": 24,
+   "p50": 3,
+   "p90": 7,
+   "p99": 14,
+   "mean": 4.06,
+   "over_25": 0
+  },
+  "top_cc": [
+   {
+    "file": "tau-coding-agent/tests/test_before_agent_start_durable.py",
+    "name": "test_before_agent_start_message_is_a_durable_node",
+    "line": 150,
+    "cc": 32,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tau-jmfts/tests/test_client_live.py",
+    "name": "test_create_read_topology_and_delete_cascade",
+    "line": 47,
+    "cc": 29,
+    "loc": 141,
+    "class": null
+   },
+   {
+    "file": "tau-coding-agent/tests/test_serve_schema.py",
+    "name": "test_every_frame_a_session_produces_validates_against_the_schema",
+    "line": 214,
+    "cc": 27,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tau-coding-agent/tests/test_rpc_conformance.py",
+    "name": "test_a_compaction_finishing_during_shutdown_is_never_silent",
+    "line": 1996,
+    "cc": 26,
+    "loc": 133,
+    "class": null
+   },
+   {
+    "file": "tau-coding-agent/tests/test_rpc_conformance.py",
+    "name": "test_tier_b_results_match_their_published_schemas_and_set_model_persists_across_reload",
+    "line": 1233,
+    "cc": 24,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tau-coding-agent/tests/test_serve_compare.py",
+    "name": "test_compare_runs_each_model_from_one_leaf_and_keeping_one_moves_the_head",
+    "line": 132,
+    "cc": 23,
+    "loc": 55,
+    "class": null
+   },
+   {
+    "file": "tau-coding-agent/tests/test_rpc_conformance.py",
+    "name": "test_protocol_conformance_capabilities_framing_errors_and_ordering",
+    "line": 430,
+    "cc": 23,
+    "loc": 65,
+    "class": null
+   },
+   {
+    "file": "tau-agent-core/tests/test_rpc_tier_b_set_auto_compaction.py",
+    "name": "test_enabling_over_the_wire_makes_a_real_turn_actually_compact",
+    "line": 363,
+    "cc": 20,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tau-agent-core/tests/test_submit_fork_rollback.py",
+    "name": "test_rollback_aborts_the_in_flight_turn_and_resumes_from_pre_turn_leaf",
+    "line": 301,
+    "cc": 19,
+    "loc": 1,
+    "class": "TestRollback"
+   },
+   {
+    "file": "tau-coding-agent/tests/test_live_procedures_doc.py",
+    "name": "test_gatekeeper_blocked_node_is_durable_in_transcript_and_tree",
+    "line": 274,
+    "cc": 19,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tau-llm/tests/test_provider_dispatch.py",
+    "name": "test_tau_ships_three_apis_and_their_three_vendors",
+    "line": 435,
+    "cc": 18,
+    "loc": 43,
+    "class": null
+   },
+   {
+    "file": "tau-agent-core/tests/test_reminders.py",
+    "name": "test_both_reminder_channels_are_durable_in_tree_transcript_and_reload",
+    "line": 238,
+    "cc": 18,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tau-agent-core/tests/test_suspend.py",
+    "name": "test_an_answered_suspension_returns_its_resolution_and_finalizes_its_side_entry",
+    "line": 196,
+    "cc": 18,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tau-coding-agent/tests/test_serve_schema.py",
+    "name": "test_a_long_reply_streams_bounded_deltas_that_rebuild_the_answer",
+    "line": 775,
+    "cc": 18,
+    "loc": 1,
+    "class": null
+   },
+   {
+    "file": "tau-coding-agent/tests/test_rpc_conformance.py",
+    "name": "test_prompt_dual_completion_concurrency_and_cursor",
+    "line": 500,
+    "cc": 18,
+    "loc": 72,
+    "class": null
+   }
+  ],
+  "top_files": [
+   {
+    "file": "tau-agent-core/tests/test_agent_loop.py",
+    "lines": 2316
+   },
+   {
+    "file": "tau-coding-agent/tests/test_rpc_conformance.py",
+    "lines": 2130
+   },
+   {
+    "file": "tau-agent-core/tests/test_rpc.py",
+    "lines": 2122
+   },
+   {
+    "file": "tau-llm/tests/test_openai_provider.py",
+    "lines": 2018
+   },
+   {
+    "file": "tau-agent-core/tests/test_agent_session.py",
+    "lines": 1940
+   },
+   {
+    "file": "tau-coding-agent/tests/test_chat_rendering.py",
+    "lines": 1771
+   },
+   {
+    "file": "tau-coding-agent/tests/test_tui_appearance.py",
+    "lines": 1739
+   },
+   {
+    "file": "tau-llm/tests/test_anthropic_provider.py",
+    "lines": 1510
+   },
+   {
+    "file": "tau-agent-core/tests/test_rpc_tier_b_compact.py",
+    "lines": 1446
+   },
+   {
+    "file": "tau-agent-core/tests/test_tools_built_in.py",
+    "lines": 1337
+   }
+  ],
+  "top_classes": [
+   {
+    "file": "tau-agent-core/tests/test_agent_session.py",
+    "name": "TestExtensions",
+    "line": 964,
+    "methods": 24
+   },
+   {
+    "file": "tau-agent-core/tests/test_extension_packages.py",
+    "name": "TestExplicitModuleNames",
+    "line": 384,
+    "methods": 20
+   },
+   {
+    "file": "tau-llm/tests/test_anthropic_provider.py",
+    "name": "TestRequest",
+    "line": 1121,
+    "methods": 19
+   },
+   {
+    "file": "tau-agent-core/tests/test_session_catalog.py",
+    "name": "_InMemoryConversationSession",
+    "line": 61,
+    "methods": 18
+   },
+   {
+    "file": "tau-coding-agent/tests/repl_fakes.py",
+    "name": "FakeBackend",
+    "line": 123,
+    "methods": 17
+   },
+   {
+    "file": "tau-agent-core/tests/test_extension_types.py",
+    "name": "TestValidatePanelSpec",
+    "line": 830,
+    "methods": 16
+   },
+   {
+    "file": "tau-agent-core/tests/test_agent_session.py",
+    "name": "TestSDKHelpers",
+    "line": 1668,
+    "methods": 15
+   },
+   {
+    "file": "tau-agent-core/tests/test_flows.py",
+    "name": "TestEnumerateDomain",
+    "line": 145,
+    "methods": 15
+   },
+   {
+    "file": "tau-agent-core/tests/test_agent_loop_types.py",
+    "name": "TestAgentLoopConfig",
+    "line": 174,
+    "methods": 14
+   },
+   {
+    "file": "tau-agent-core/tests/test_agent_session.py",
+    "name": "TestCreateAgentSession",
+    "line": 810,
+    "methods": 14
+   }
+  ]
+ }
+}

@@ -1,0 +1,670 @@
+{
+ "src": {
+  "files": 18,
+  "total_lines": 7119,
+  "cc": {
+   "count": 315,
+   "max": 30,
+   "p50": 2,
+   "p90": 8,
+   "p99": 21,
+   "mean": 3.32,
+   "over_10": 17,
+   "over_15": 5,
+   "over_20": 4,
+   "over_40": 0
+  },
+  "cognitive": {
+   "count": 315,
+   "max": 18,
+   "p50": 0,
+   "p90": 3,
+   "p99": 14,
+   "mean": 1.15,
+   "over_10": 6,
+   "over_15": 3,
+   "over_25": 0
+  },
+  "function_loc": {
+   "count": 315,
+   "max": 102,
+   "p50": 8,
+   "p90": 24,
+   "p99": 65,
+   "mean": 11.3,
+   "over_50": 6,
+   "over_100": 1
+  },
+  "file_lines": {
+   "count": 18,
+   "max": 867,
+   "p50": 311,
+   "p90": 750,
+   "p99": 867,
+   "mean": 395.5,
+   "over_500": 7,
+   "over_800": 1,
+   "over_1500": 0
+  },
+  "top_cc": [
+   {
+    "file": "crates/tau-core/src/step.rs",
+    "name": "feed",
+    "owner": "Step",
+    "line": 299,
+    "end": 389,
+    "cc": 30,
+    "cognitive": 18,
+    "loc": 91,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-core/src/step.rs",
+    "name": "job",
+    "owner": "Step",
+    "line": 188,
+    "end": 289,
+    "cc": 29,
+    "cognitive": 18,
+    "loc": 102,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-tools/src/read.rs",
+    "name": "run",
+    "owner": "Read",
+    "line": 80,
+    "end": 153,
+    "cc": 24,
+    "cognitive": 16,
+    "loc": 74,
+    "crate": "tau-tools"
+   },
+   {
+    "file": "crates/tau-py/src/error.rs",
+    "name": "add_all",
+    "owner": null,
+    "line": 209,
+    "end": 232,
+    "cc": 21,
+    "cognitive": 0,
+    "loc": 24,
+    "crate": "tau-py"
+   },
+   {
+    "file": "crates/tau-tools/src/bash.rs",
+    "name": "read_output",
+    "owner": "Running",
+    "line": 428,
+    "end": 472,
+    "cc": 16,
+    "cognitive": 6,
+    "loc": 45,
+    "crate": "tau-tools"
+   },
+   {
+    "file": "crates/tau-store/src/lib.rs",
+    "name": "open",
+    "owner": "Store",
+    "line": 134,
+    "end": 163,
+    "cc": 15,
+    "cognitive": 2,
+    "loc": 30,
+    "crate": "tau-store"
+   },
+   {
+    "file": "crates/tau-core/src/tree.rs",
+    "name": "fmt",
+    "owner": "Error",
+    "line": 181,
+    "end": 197,
+    "cc": 14,
+    "cognitive": 1,
+    "loc": 17,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-py/src/error.rs",
+    "name": "tree_err",
+    "owner": null,
+    "line": 175,
+    "end": 193,
+    "cc": 14,
+    "cognitive": 1,
+    "loc": 19,
+    "crate": "tau-py"
+   },
+   {
+    "file": "crates/tau-tools/src/bash.rs",
+    "name": "supervise",
+    "owner": "Running",
+    "line": 365,
+    "end": 396,
+    "cc": 14,
+    "cognitive": 7,
+    "loc": 32,
+    "crate": "tau-tools"
+   },
+   {
+    "file": "crates/tau-tools/src/bash.rs",
+    "name": "answer",
+    "owner": "Running",
+    "line": 479,
+    "end": 515,
+    "cc": 14,
+    "cognitive": 12,
+    "loc": 37,
+    "crate": "tau-tools"
+   },
+   {
+    "file": "crates/tau-tools/src/grep.rs",
+    "name": "render",
+    "owner": "Grep",
+    "line": 200,
+    "end": 264,
+    "cc": 14,
+    "cognitive": 14,
+    "loc": 65,
+    "crate": "tau-tools"
+   },
+   {
+    "file": "crates/tau-tools/src/write.rs",
+    "name": "replace",
+    "owner": null,
+    "line": 115,
+    "end": 147,
+    "cc": 14,
+    "cognitive": 5,
+    "loc": 33,
+    "crate": "tau-tools"
+   },
+   {
+    "file": "crates/tau-tools/src/bash.rs",
+    "name": "spawn",
+    "owner": "Bash",
+    "line": 154,
+    "end": 216,
+    "cc": 13,
+    "cognitive": 2,
+    "loc": 63,
+    "crate": "tau-tools"
+   },
+   {
+    "file": "crates/tau-tools/src/grep.rs",
+    "name": "run",
+    "owner": "Grep",
+    "line": 121,
+    "end": 146,
+    "cc": 12,
+    "cognitive": 4,
+    "loc": 26,
+    "crate": "tau-tools"
+   },
+   {
+    "file": "crates/tau-store/src/lib.rs",
+    "name": "create",
+    "owner": "Store",
+    "line": 94,
+    "end": 123,
+    "cc": 11,
+    "cognitive": 1,
+    "loc": 30,
+    "crate": "tau-store"
+   }
+  ],
+  "top_files": [
+   {
+    "crate": "tau-tools",
+    "file": "crates/tau-tools/src/bash.rs",
+    "kind": "src",
+    "lines": 867,
+    "test_module_from": 518
+   },
+   {
+    "crate": "tau-core",
+    "file": "crates/tau-core/src/tree.rs",
+    "kind": "src",
+    "lines": 750,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-tools",
+    "file": "crates/tau-tools/src/grep.rs",
+    "kind": "src",
+    "lines": 746,
+    "test_module_from": 486
+   },
+   {
+    "crate": "tau-tools",
+    "file": "crates/tau-tools/src/limit.rs",
+    "kind": "src",
+    "lines": 713,
+    "test_module_from": 440
+   },
+   {
+    "crate": "tau-core",
+    "file": "crates/tau-core/src/machine.rs",
+    "kind": "src",
+    "lines": 596,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-core",
+    "file": "crates/tau-core/src/step.rs",
+    "kind": "src",
+    "lines": 558,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-py",
+    "file": "crates/tau-py/src/session.rs",
+    "kind": "src",
+    "lines": 519,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-py",
+    "file": "crates/tau-py/src/values.rs",
+    "kind": "src",
+    "lines": 420,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-tools",
+    "file": "crates/tau-tools/src/read.rs",
+    "kind": "src",
+    "lines": 387,
+    "test_module_from": 230
+   },
+   {
+    "crate": "tau-store",
+    "file": "crates/tau-store/src/lib.rs",
+    "kind": "src",
+    "lines": 311,
+    "test_module_from": null
+   }
+  ],
+  "methods_per_type_inherent": {
+   "count": 24,
+   "max": 47,
+   "p50": 5,
+   "p90": 36,
+   "p99": 47,
+   "mean": 9.33,
+   "over_25": 3
+  },
+  "methods_per_type_trait": {
+   "count": 29,
+   "max": 3,
+   "p50": 1,
+   "p90": 2,
+   "p99": 3,
+   "mean": 1.45,
+   "over_25": 0
+  },
+  "top_types": [
+   {
+    "crate": "tau-py",
+    "type": "Session",
+    "impl": "inherent",
+    "methods": 47
+   },
+   {
+    "crate": "tau-core",
+    "type": "Machine",
+    "impl": "inherent",
+    "methods": 40
+   },
+   {
+    "crate": "tau-core",
+    "type": "Session",
+    "impl": "inherent",
+    "methods": 36
+   },
+   {
+    "crate": "tau-core",
+    "type": "Step",
+    "impl": "inherent",
+    "methods": 17
+   },
+   {
+    "crate": "tau-tools",
+    "type": "Sink",
+    "impl": "inherent",
+    "methods": 9
+   },
+   {
+    "crate": "tau-tools",
+    "type": "Grep",
+    "impl": "inherent",
+    "methods": 7
+   },
+   {
+    "crate": "tau-tools",
+    "type": "Running",
+    "impl": "inherent",
+    "methods": 7
+   },
+   {
+    "crate": "tau-py",
+    "type": "Bash",
+    "impl": "inherent",
+    "methods": 5
+   },
+   {
+    "crate": "tau-py",
+    "type": "Grep",
+    "impl": "inherent",
+    "methods": 5
+   },
+   {
+    "crate": "tau-py",
+    "type": "Read",
+    "impl": "inherent",
+    "methods": 5
+   }
+  ],
+  "per_crate": {
+   "tau-core": {
+    "files": 4,
+    "lines": 1910,
+    "functions": 98,
+    "max_cc": 30,
+    "over_10": 3,
+    "over_15": 2
+   },
+   "tau-py": {
+    "files": 6,
+    "lines": 1692,
+    "functions": 115,
+    "max_cc": 21,
+    "over_10": 2,
+    "over_15": 1
+   },
+   "tau-store": {
+    "files": 1,
+    "lines": 311,
+    "functions": 16,
+    "max_cc": 15,
+    "over_10": 2,
+    "over_15": 0
+   },
+   "tau-tools": {
+    "files": 7,
+    "lines": 3206,
+    "functions": 86,
+    "max_cc": 24,
+    "over_10": 10,
+    "over_15": 2
+   }
+  }
+ },
+ "tests": {
+  "files": 7,
+  "total_lines": 4277,
+  "cc": {
+   "count": 264,
+   "max": 16,
+   "p50": 1,
+   "p90": 5,
+   "p99": 12,
+   "mean": 2.14,
+   "over_10": 4,
+   "over_15": 1,
+   "over_20": 0,
+   "over_40": 0
+  },
+  "cognitive": {
+   "count": 264,
+   "max": 10,
+   "p50": 0,
+   "p90": 3,
+   "p99": 7,
+   "mean": 0.97,
+   "over_10": 0,
+   "over_15": 0,
+   "over_25": 0
+  },
+  "function_loc": {
+   "count": 264,
+   "max": 73,
+   "p50": 14,
+   "p90": 36,
+   "p99": 67,
+   "mean": 17.07,
+   "over_50": 8,
+   "over_100": 0
+  },
+  "file_lines": {
+   "count": 7,
+   "max": 1170,
+   "p50": 452,
+   "p90": 1170,
+   "p99": 1170,
+   "mean": 611.0,
+   "over_500": 3,
+   "over_800": 3,
+   "over_1500": 0
+  },
+  "top_cc": [
+   {
+    "file": "crates/tau-core/tests/replay.rs",
+    "name": "apply",
+    "owner": null,
+    "line": 93,
+    "end": 165,
+    "cc": 16,
+    "cognitive": 7,
+    "loc": 73,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-core/tests/invariants.rs",
+    "name": "apply",
+    "owner": null,
+    "line": 268,
+    "end": 309,
+    "cc": 15,
+    "cognitive": 5,
+    "loc": 42,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-core/tests/invariants.rs",
+    "name": "drive",
+    "owner": "Driver",
+    "line": 85,
+    "end": 119,
+    "cc": 12,
+    "cognitive": 4,
+    "loc": 35,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-core/tests/step.rs",
+    "name": "post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync",
+    "owner": null,
+    "line": 199,
+    "end": 253,
+    "cc": 12,
+    "cognitive": 10,
+    "loc": 55,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-store/benches/tree.rs",
+    "name": "body_bytes",
+    "owner": null,
+    "line": 75,
+    "end": 95,
+    "cc": 10,
+    "cognitive": 7,
+    "loc": 21,
+    "crate": "tau-store"
+   },
+   {
+    "file": "crates/tau-store/benches/tree.rs",
+    "name": "tick",
+    "owner": "Agent",
+    "line": 170,
+    "end": 214,
+    "cc": 10,
+    "cognitive": 2,
+    "loc": 45,
+    "crate": "tau-store"
+   },
+   {
+    "file": "crates/tau-core/tests/invariants.rs",
+    "name": "hook",
+    "owner": null,
+    "line": 200,
+    "end": 234,
+    "cc": 9,
+    "cognitive": 4,
+    "loc": 35,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-store/tests/store.rs",
+    "name": "apply",
+    "owner": null,
+    "line": 57,
+    "end": 87,
+    "cc": 9,
+    "cognitive": 3,
+    "loc": 31,
+    "crate": "tau-store"
+   },
+   {
+    "file": "crates/tau-store/benches/tree.rs",
+    "name": "load",
+    "owner": null,
+    "line": 825,
+    "end": 894,
+    "cc": 8,
+    "cognitive": 5,
+    "loc": 70,
+    "crate": "tau-store"
+   },
+   {
+    "file": "crates/tau-core/tests/invariants.rs",
+    "name": "expected",
+    "owner": null,
+    "line": 392,
+    "end": 407,
+    "cc": 7,
+    "cognitive": 4,
+    "loc": 16,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-store/benches/tree.rs",
+    "name": "classify",
+    "owner": null,
+    "line": 727,
+    "end": 755,
+    "cc": 7,
+    "cognitive": 8,
+    "loc": 29,
+    "crate": "tau-store"
+   },
+   {
+    "file": "crates/tau-core/tests/step.rs",
+    "name": "abort_during_tools_interrupts_unfinished_calls_and_runs_post_result_once",
+    "owner": null,
+    "line": 664,
+    "end": 721,
+    "cc": 6,
+    "cognitive": 1,
+    "loc": 58,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-core/tests/step.rs",
+    "name": "answered_batch",
+    "owner": null,
+    "line": 901,
+    "end": 932,
+    "cc": 6,
+    "cognitive": 4,
+    "loc": 32,
+    "crate": "tau-core"
+   },
+   {
+    "file": "crates/tau-tools/src/bash.rs",
+    "name": "gone",
+    "owner": null,
+    "line": 783,
+    "end": 798,
+    "cc": 6,
+    "cognitive": 3,
+    "loc": 16,
+    "crate": "tau-tools"
+   },
+   {
+    "file": "crates/tau-core/tests/invariants.rs",
+    "name": "sample",
+    "owner": null,
+    "line": 238,
+    "end": 266,
+    "cc": 5,
+    "cognitive": 1,
+    "loc": 29,
+    "crate": "tau-core"
+   }
+  ],
+  "top_files": [
+   {
+    "crate": "tau-core",
+    "file": "crates/tau-core/tests/step.rs",
+    "kind": "tests",
+    "lines": 1170,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-store",
+    "file": "crates/tau-store/benches/tree.rs",
+    "kind": "tests",
+    "lines": 920,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-core",
+    "file": "crates/tau-core/tests/machine.rs",
+    "kind": "tests",
+    "lines": 823,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-store",
+    "file": "crates/tau-store/tests/store.rs",
+    "kind": "tests",
+    "lines": 452,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-core",
+    "file": "crates/tau-core/tests/invariants.rs",
+    "kind": "tests",
+    "lines": 437,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-core",
+    "file": "crates/tau-core/tests/replay.rs",
+    "kind": "tests",
+    "lines": 368,
+    "test_module_from": null
+   },
+   {
+    "crate": "tau-core",
+    "file": "crates/tau-core/tests/tree.rs",
+    "kind": "tests",
+    "lines": 107,
+    "test_module_from": null
+   }
+  ]
+ },
+ "tool": "rust-code-analysis-cli 0.0.25"
+}

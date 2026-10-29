@@ -1,0 +1,31 @@
+# Rule 7 allowlist: every crates/*/src violation that exists today, with its
+# current value. scripts/ratchet.py fails if a line gets worse, if a new
+# violation appears, or if a line is fixed (or improved) and still listed.
+# The list only shrinks. Never raise a number or add a line here to get
+# green: fix the code. Lower or delete lines with `scripts/ratchet.py
+# --tighten`. Python is not in the ratchet until Phase 4.
+#
+# Keys: function_cc is file::Type::fn (or file::fn); type_methods is
+# crate::Type, inherent impl blocks only, summed across blocks.
+
+
+# Function cyclomatic complexity (crate-relative file::Type::fn); limit 15
+
+
+# Function cyclomatic complexity (crate-relative file::Type::fn); limit 15
+[function_cc]
+"crates/tau-core/src/step.rs::Step::feed" = 30
+"crates/tau-core/src/step.rs::Step::job" = 29
+"crates/tau-py/src/error.rs::add_all" = 21
+"crates/tau-tools/src/bash.rs::Running::read_output" = 16
+"crates/tau-tools/src/read.rs::Read::run" = 24
+
+# Inherent methods per type (crate::Type); limit 25
+[type_methods]
+"tau-core::Machine" = 40
+"tau-core::Session" = 36
+"tau-py::Session" = 47
+
+# Lines per file; limit 800
+[file_lines]
+"crates/tau-tools/src/bash.rs" = 867
