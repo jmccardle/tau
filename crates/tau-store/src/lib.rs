@@ -249,24 +249,35 @@ impl Store {
     ///
     /// `Core(NoSuchNode)` for an id this store never synced; `Corrupt` for a
     /// record that does not read back as that node; `Io`.
+    ///
+    /// # Panics
+    ///
+    /// Never: offsets and lengths are far below `i64::MAX`.
     pub fn load(&mut self, session: &mut Session, ids: &[NodeId]) -> Result<(), Error> {
-        for &id in ids {
-            if session.node(id).is_ok() {
-                continue;
-            }
+        let mut wanted = vec![];
+        for &id in ids.iter().filter(|&&id| session.node(id).is_err()) {
             let at = usize::try_from(id)
                 .ok()
                 .and_then(|i| self.offsets.get(i))
                 .copied()
                 .filter(|&o| o < self.len)
                 .ok_or(Error::Core(tau_core::tree::Error::NoSuchNode(id)))?;
-            let mut head = [0; 8];
-            (&self.log).seek(SeekFrom::Start(at))?;
-            (&self.log).read_exact(&mut head)?;
-            let [a, b, c, d, ..] = head;
-            let mut buf = head.to_vec();
-            buf.resize(8 + u32::from_le_bytes([a, b, c, d]) as usize, 0);
-            (&self.log).read_exact(&mut buf[8..])?;
+            wanted.push((at, id));
+        }
+        // In log order through one buffer: a line's bodies are mostly
+        // written in order, so most reads skip forward within it.
+        wanted.sort_unstable();
+        let mut log = BufReader::with_capacity(1 << 16, &self.log);
+        let mut pos = log.seek(SeekFrom::Start(wanted.first().map_or(0, |w| w.0)))?;
+        let mut buf = vec![];
+        for (at, id) in wanted {
+            log.seek_relative(i64::try_from(at).unwrap() - i64::try_from(pos).unwrap())?;
+            buf.resize(8, 0);
+            log.read_exact(&mut buf)?;
+            let len = u32::from_le_bytes(buf[..4].try_into().unwrap()) as usize;
+            buf.resize(8 + len, 0);
+            log.read_exact(&mut buf[8..])?;
+            pos = at + buf.len() as u64;
             let restored = match decode::<Record>(&buf, 0) {
                 Some((Record::Write { node, .. }, _)) if node.id == id => session.restore(node),
                 _ => Err(tau_core::tree::Error::BadRecord(0)),
