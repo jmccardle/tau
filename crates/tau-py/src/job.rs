@@ -4,7 +4,7 @@
 use pyo3::prelude::*;
 use tau_core::step;
 
-use crate::values::{Author, Body, Outcome};
+use crate::values::{Author, Body, Outcome, debug_repr};
 
 /// Python view of [`step::Hook`]: the seven cursor hook points.
 #[pyclass(frozen, eq, eq_int, hash, from_py_object, module = "tau_next._core")]
@@ -66,11 +66,16 @@ pub struct Draft {
 #[pymethods]
 impl Draft {
     #[new]
-    #[pyo3(signature = (body, by, delivers = Vec::new()))]
     fn new(body: Body, by: Author, delivers: Vec<u64>) -> Self {
         Self { body, delivers, by }
     }
+
+    fn __repr__(&self) -> String {
+        format!("{self:?}")
+    }
 }
+
+debug_repr!(RunCall, Ending, Job, Fed);
 
 impl From<step::Draft> for Draft {
     fn from(d: step::Draft) -> Self {

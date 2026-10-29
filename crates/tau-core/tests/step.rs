@@ -1,7 +1,7 @@
 //! The step machine driven by a scripted driver: no Python, no clock.
 
 use tau_core::step::{Draft, Ending, Fed, Hook, Job, Step};
-use tau_core::tree::{Author, Body, ItemData, Outcome, Part, Record, Session, Stop};
+use tau_core::tree::{Author, Body, Error, ItemData, Outcome, Part, Record, Session, Stop};
 
 fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
     Draft {
@@ -979,4 +979,186 @@ fn two_cursors_at_one_batch_both_run_it() {
     }
     assert_ne!(s.at(c).unwrap(), s.at(d).unwrap());
     assert_eq!(results_under(&s, batch, &[c, d]).len(), 2);
+}
+
+// A feed is accepted only while the job it answers is out; anything else is
+// `WrongFeed` and changes nothing.
+
+fn refused(s: &mut Session, step: &mut Step, c: u64, fed: Fed) {
+    let before = s.clone();
+    assert_eq!(step.feed(s, fed, 0), Err(Error::WrongFeed(c)));
+    assert_eq!(*s, before, "a refused feed changes nothing");
+}
+
+fn stop() -> Fed {
+    Fed::Hooks {
+        stop: Some("no".into()),
+        draft: None,
+    }
+}
+
+#[test]
+fn a_second_hooks_feed_before_the_next_job_is_refused() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    // To the pre_sample hook, answer it, then feed again with no job out.
+    for _ in 0..2 {
+        step.next_job(&mut s).unwrap();
+        step.feed(&mut s, ok(), 0).unwrap();
+    }
+    assert!(matches!(
+        step.next_job(&mut s).unwrap(),
+        Job::Hooks {
+            point: Hook::PreSample,
+            ..
+        }
+    ));
+    step.feed(&mut s, ok(), 0).unwrap();
+    refused(&mut s, &mut step, c, ok());
+    refused(&mut s, &mut step, c, stop());
+    refused(&mut s, &mut step, c, Fed::HookFailed("x".into()));
+}
+
+#[test]
+fn a_second_feed_at_a_pre_input_hook_is_refused_not_a_panic() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    step.next_job(&mut s).unwrap();
+    step.feed(&mut s, ok(), 0).unwrap();
+    assert!(matches!(
+        step.next_job(&mut s).unwrap(),
+        Job::Hooks {
+            point: Hook::PreInput,
+            ..
+        }
+    ));
+    step.feed(&mut s, ok(), 0).unwrap();
+    refused(&mut s, &mut step, c, ok());
+}
+
+#[test]
+fn a_stop_at_rest_does_not_restart_the_step() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let mut step = Step::wake(&s, c, false, 0);
+    drive(&mut s, &mut step, |_, _| vec![ok()]);
+    assert!(step.resting());
+    refused(&mut s, &mut step, c, stop());
+    refused(&mut s, &mut step, c, Fed::HookFailed("x".into()));
+    assert!(step.resting());
+    assert_eq!(step.next_job(&mut s), Ok(Job::Rest));
+}
+
+#[test]
+fn a_hook_feed_while_a_sample_is_out_is_refused() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    loop {
+        match step.next_job(&mut s).unwrap() {
+            Job::Sample => break,
+            _ => step.feed(&mut s, ok(), 0).unwrap(),
+        }
+    }
+    refused(&mut s, &mut step, c, Fed::HookFailed("x".into()));
+    refused(&mut s, &mut step, c, stop());
+    refused(&mut s, &mut step, c, ok());
+    refused(&mut s, &mut step, c, Fed::Waited);
+    // The sample is still the job.
+    assert_eq!(step.next_job(&mut s), Ok(Job::Sample));
+}
+
+#[test]
+fn a_stop_while_calls_are_out_does_not_discard_the_batch() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    loop {
+        match step.next_job(&mut s).unwrap() {
+            Job::Sample => step
+                .feed(
+                    &mut s,
+                    Fed::Sampled {
+                        reply: Some(reply(vec![call("a")], Stop::Tools)),
+                        error: None,
+                    },
+                    0,
+                )
+                .unwrap(),
+            Job::RunCalls(_) => break,
+            _ => step.feed(&mut s, ok(), 0).unwrap(),
+        }
+    }
+    refused(&mut s, &mut step, c, stop());
+    refused(&mut s, &mut step, c, Fed::HookFailed("x".into()));
+    let unknown = Fed::CallDone {
+        call: "zzz".into(),
+        outcome: Outcome::Ok("x".into()),
+        by: Author::Tools,
+    };
+    refused(&mut s, &mut step, c, unknown);
+    let done = Fed::CallDone {
+        call: "a".into(),
+        outcome: Outcome::Ok("x".into()),
+        by: Author::Tools,
+    };
+    step.feed(&mut s, done.clone(), 0).unwrap();
+    refused(&mut s, &mut step, c, done);
+}
+
+#[test]
+fn a_call_done_with_no_batch_out_is_refused() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let mut step = Step::wake(&s, c, false, 0);
+    let done = Fed::CallDone {
+        call: "a".into(),
+        outcome: Outcome::Ok("x".into()),
+        by: Author::Tools,
+    };
+    refused(&mut s, &mut step, c, done.clone());
+    drive(&mut s, &mut step, |_, _| vec![ok()]);
+    refused(&mut s, &mut step, c, done);
+    refused(&mut s, &mut step, c, Fed::Waited);
+    refused(
+        &mut s,
+        &mut step,
+        c,
+        Fed::Sampled {
+            reply: None,
+            error: None,
+        },
+    );
+}
+
+#[test]
+fn a_pre_input_draft_that_delivers_nothing_is_written_and_the_item_stays_pending() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false, 0);
+    step.next_job(&mut s).unwrap();
+    step.feed(&mut s, ok(), 0).unwrap();
+    let Job::Hooks {
+        point: Hook::PreInput,
+        draft: Some(handed),
+        ..
+    } = step.next_job(&mut s).unwrap()
+    else {
+        panic!("pre_input with a draft");
+    };
+    let edited = Fed::Hooks {
+        stop: None,
+        draft: Some(Draft {
+            body: Body::User("edited".into()),
+            delivers: vec![],
+            by: handed.by.clone(),
+        }),
+    };
+    step.feed(&mut s, edited, 0).unwrap();
+    assert_eq!(bodies(&s, c).last(), Some(&Body::User("edited".into())));
+    assert_eq!(
+        s.items(c).count(),
+        1,
+        "what the draft did not deliver stays"
+    );
 }

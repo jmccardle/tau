@@ -190,14 +190,14 @@ fn a_frontend_step_is_refused_on_a_busy_cursor_and_runs_once_at_rest() {
 fn a_question_locks_the_cursor_and_abort_leaves_it_open() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    m.ask(c);
+    m.ask(c).unwrap();
     assert_eq!(m.input(c, term(), "hi", 0), Err(Error::Locked(c)));
     assert_eq!(m.send(c, term(), "hi", 0), Err(Error::Locked(c)));
     assert_eq!(m.go_to(c, sys, term(), 0), Err(Error::Locked(c)));
     assert_eq!(m.step(c, term(), 0), Err(Error::Locked(c)));
-    assert!(!m.abort(c));
+    assert!(!m.abort(c).unwrap());
     assert!(m.locked(c), "abort does not close it");
-    m.answered(c);
+    m.answered(c).unwrap();
     assert!(!m.locked(c));
     m.send(c, term(), "hi", 0).unwrap();
     run(&mut m, c, plain);
@@ -264,7 +264,7 @@ fn abort_during_the_throttle_cancels_the_restart() {
             m.add_item(c, data, 0).unwrap();
         }
         if let Job::Wait { .. } = job {
-            assert!(m.abort(c), "the driver cancels its sleeper");
+            assert!(m.abort(c).unwrap(), "the driver cancels its sleeper");
             return vec![];
         }
         plain(job, m)
@@ -417,7 +417,7 @@ fn a_stray_waited_after_an_abort_in_the_throttle_is_refused() {
             m.add_item(c, data, 0).unwrap();
         }
         if let Job::Wait { .. } = job {
-            assert!(m.abort(c));
+            assert!(m.abort(c).unwrap());
             refused = m.feed(c, Fed::Waited, 0) == Err(Error::WrongFeed(c));
             return vec![];
         }
@@ -447,4 +447,157 @@ fn notices_are_drained_once() {
     s.notices.push(("term".into(), "no".into()));
     assert_eq!(s.take_notices(), [("term".to_string(), "no".to_string())]);
     assert_eq!(s.take_notices().len(), 0);
+}
+
+/// A pre_input hook that rewrites the input and delivers nothing.
+fn undelivering(job: &Job, m: &mut Machine) -> Vec<Fed> {
+    match job {
+        Job::Hooks {
+            point: Hook::PreInput,
+            draft: Some(d),
+            ..
+        } => vec![Fed::Hooks {
+            stop: None,
+            draft: Some(Draft {
+                body: Body::User("edited".into()),
+                delivers: vec![],
+                by: d.by.clone(),
+            }),
+        }],
+        _ => plain(job, m),
+    }
+}
+
+fn users(m: &Machine, c: u64) -> usize {
+    let s = &m.session;
+    s.walk(s.at(c).unwrap())
+        .iter()
+        .filter(|n| matches!(n.body, Body::User(_)))
+        .count()
+}
+
+/// Jobs from now through the end of the current step's `post_step`.
+fn one_step(m: &mut Machine, c: u64) -> Vec<Job> {
+    let mut seen = vec![];
+    for _ in 0..50 {
+        let job = m.next_job(c).unwrap();
+        seen.push(job.clone());
+        let last = matches!(
+            job,
+            Job::Hooks {
+                point: Hook::PostStep,
+                ..
+            } | Job::Rest
+        );
+        for fed in undelivering(&job, m) {
+            m.feed(c, fed, 0).unwrap();
+        }
+        if last {
+            return seen;
+        }
+    }
+    panic!("a step that never ends: {seen:?}");
+}
+
+#[test]
+fn a_hook_that_delivers_nothing_gets_each_pending_input_once_per_step() {
+    let (mut m, c) = machine();
+    m.send(c, term(), "one", 0).unwrap();
+    m.send(c, term(), "two", 0).unwrap();
+    let jobs = one_step(&mut m, c);
+    let p = points(&jobs);
+    assert_eq!(p.iter().filter(|h| **h == Hook::PreInput).count(), 2);
+    assert!(jobs.contains(&Job::Sample), "the step went on to sample");
+    assert_eq!(users(&m, c), 2);
+    assert_eq!(m.session.items(c).count(), 2, "both are still pending");
+}
+
+#[test]
+fn an_input_a_hook_leaves_pending_keeps_stepping_until_max_steps() {
+    let config = Config {
+        max_steps: Some(3),
+        data: "{}".into(),
+    };
+    let (s, c) = Session::create(config, "sys", 0);
+    let mut m = Machine::new(s);
+    m.send(c, term(), "hi", 0).unwrap();
+    let jobs = run(&mut m, c, undelivering);
+    assert_eq!(jobs.iter().filter(|j| **j == Job::Sample).count(), 3);
+    assert_eq!(users(&m, c), 3, "one User per committing step");
+    assert!(!m.session.auto[&c]);
+    assert_eq!(m.session.items(c).count(), 1, "the input is still pending");
+}
+
+#[test]
+fn without_max_steps_a_left_input_steps_and_samples_each_time_without_spinning() {
+    // The hook's choice, predictable: every step makes progress (one User,
+    // one sample); nothing but the hook ends it.
+    let (mut m, c) = machine();
+    m.send(c, term(), "hi", 0).unwrap();
+    for n in 1..=5 {
+        let jobs = one_step(&mut m, c);
+        let p = points(&jobs);
+        assert_eq!(p.iter().filter(|h| **h == Hook::PreInput).count(), 1);
+        assert_eq!(jobs.iter().filter(|j| **j == Job::Sample).count(), 1);
+        assert_eq!(users(&m, c), n);
+        assert!(m.busy(c), "the pending input wakes another step");
+    }
+}
+
+#[test]
+fn a_cursor_that_is_not_open_is_refused_by_every_call_and_nothing_is_recorded() {
+    let (mut m, c) = machine();
+    let before = m.session.clone();
+    assert_eq!(m.abort(999), Err(Error::NoSuchCursor(999)));
+    assert_eq!(m.ask(999), Err(Error::NoSuchCursor(999)));
+    assert_eq!(m.answered(999), Err(Error::NoSuchCursor(999)));
+    assert_eq!(m.next_job(999), Err(Error::NoSuchCursor(999)));
+    assert_eq!(m.feed(999, ok(), 0), Err(Error::NoSuchCursor(999)));
+    assert_eq!(
+        m.session, before,
+        "no record for a cursor that is not there"
+    );
+    assert!(!m.locked(999));
+    assert_eq!(m.session.auto.keys().copied().collect::<Vec<_>>(), [c]);
+}
+
+#[test]
+fn add_item_and_open_inside_a_pre_hook_ride_the_phases_sync() {
+    let (mut m, c) = machine();
+    let sys = m.session.at(c).unwrap();
+    m.input(c, term(), "hi", 0).unwrap();
+    assert!(m.session.synced());
+    let job = m.next_job(c).unwrap();
+    assert!(matches!(
+        job,
+        Job::Hooks {
+            point: Hook::PreStep,
+            ..
+        }
+    ));
+    let tick = ItemData::Extension {
+        name: "timer".into(),
+        data: "tick".into(),
+    };
+    m.add_item(c, tick.clone(), 0).unwrap();
+    assert!(!m.session.synced(), "no early sync inside a hook");
+    m.open(sys, Author::Extension("ext".into()), 0).unwrap();
+    assert!(!m.session.synced());
+    m.feed(c, ok(), 0).unwrap();
+    run(&mut m, c, plain);
+    assert!(m.session.synced(), "the phase's sync covered them");
+}
+
+#[test]
+fn add_item_and_open_outside_a_step_sync_on_return() {
+    let (mut m, c) = machine();
+    let sys = m.session.at(c).unwrap();
+    let tick = ItemData::Extension {
+        name: "timer".into(),
+        data: "tick".into(),
+    };
+    m.add_item(c, tick, 0).unwrap();
+    assert!(m.session.synced());
+    m.open(sys, Author::Extension("ext".into()), 0).unwrap();
+    assert!(m.session.synced());
 }

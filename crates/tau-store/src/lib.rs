@@ -201,6 +201,13 @@ impl Store {
         Ok(())
     }
 
+    /// True after a write failed: every `save` is `Failed` until the session
+    /// is opened again.
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
+
     fn write_pad(&self, pad: &Scratchpad) -> Result<(), Error> {
         let tmp = self.dir.join(format!("{PAD}.new"));
         let mut bytes = header(PAD_MAGIC);

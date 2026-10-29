@@ -7,6 +7,20 @@
 use pyo3::prelude::*;
 use tau_core::tree;
 
+/// `__repr__` is the Rust `Debug` text: mechanical, and readable in a failing
+/// assert. (A class that already has a `#[pymethods]` block writes its own.)
+macro_rules! debug_repr {
+    ($($t:ty),+) => {$(
+        #[pymethods]
+        impl $t {
+            fn __repr__(&self) -> String {
+                format!("{self:?}")
+            }
+        }
+    )+};
+}
+pub(crate) use debug_repr;
+
 /// Python view of [`tree::Part`].
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -160,6 +174,10 @@ impl Config {
     #[pyo3(signature = (data = String::new(), max_steps = None))]
     fn new(data: String, max_steps: Option<u32>) -> Self {
         Self { max_steps, data }
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{self:?}")
     }
 }
 
@@ -384,3 +402,7 @@ impl From<tree::Next> for Next {
         }
     }
 }
+
+debug_repr!(
+    Part, Outcome, Author, Body, Node, Move, ItemData, Item, Scratchpad
+);

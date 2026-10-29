@@ -334,7 +334,7 @@ proptest! {
         }
         // Rest every cursor: abort, then answer whatever the step still asks.
         for c in 0..cursors(&m.session) {
-            m.abort(c);
+            m.abort(c).unwrap();
             for _ in 0..64 {
                 if !m.busy(c) {
                     break;

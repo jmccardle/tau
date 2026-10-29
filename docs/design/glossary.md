@@ -141,8 +141,8 @@ whole walk, for tests. `append` checks each node (`Session::check`).
 
 Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
 `RootNotConfig` (V1), `DuplicateCall` (V2), `BadRecord` (load); a driver's: `WrongFeed`
-(a feed that answers no job: none is out, or it is of another kind; nothing
-changes); and a frontend call's: `Busy`
+(a feed that answers no job: none is out, it is of another kind, or it
+names a call that is not in the batch or already answered; nothing changes); and a frontend call's: `Busy`
 (step on a busy cursor), `Locked` (input, go-to, or step with a question
 open), `HookRunning` (go-to while a cursor hook runs). Each becomes a typed Python exception of the same name in `tau-py`, and so does
 each `tau_store::Error` variant except `Io` (the builtin `OSError`) and `Core` (the
@@ -268,7 +268,9 @@ on that cursor writes nothing.
 The session plus every cursor's step: the frontend calls (`input`, `send`,
 `step`, `go_to`, `set_auto`, `abort`), the extension calls that wake a
 cursor (`open`, `add_item`), the question lock (`ask`, `answered`), and
-`next_job`/`feed` per cursor. Holds a busy go-to until its aborted step
+`next_job`/`feed` per cursor. `open` and `add_item` sync on return unless a
+cursor hook is running (then the phase's sync covers them). `abort`, `ask`,
+`answered`, `next_job`, `feed` check the cursor: `NoSuchCursor`. Holds a busy go-to until its aborted step
 rests (`going`). Each frontend call resets `max_steps` and syncs on return.
 What `tau-py` exposes; `Session`'s own mutators are for core and tests.
 Also `set_label` and `remove_label` (which sync on return), `Machine::loaded(session,
@@ -284,7 +286,10 @@ directory=None)` makes one (in memory, or in a directory with a store);
 `Session.load(directory, now)` opens one. Every call takes the lock with the
 GIL released; every call that changes the session then gives the store its
 queued records before it returns, so Python never saves. An in-memory
-session drops them. Cursor ids are checked: an unknown one is `NoSuchCursor`.
+session drops them. After a failed save (`Store::failed`) every call that
+changes the session is refused up front with `Failed`. Cursor ids are checked
+by core: an unknown one is `NoSuchCursor`. The value classes have a `__repr__`
+(the Rust `Debug` text).
 `cursors()` lists the open cursors; `take_notices()` drains the notices.
 
 ### close, Closed

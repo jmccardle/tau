@@ -6,7 +6,7 @@ use std::path::Path;
 
 use proptest::prelude::*;
 use tau_core::machine::Machine;
-use tau_core::step::{Draft, Fed, Job};
+use tau_core::step::{Draft, Fed, Hook, Job};
 use tau_core::tree::{Author, Body, ItemData, Part, Session, Stop};
 use tau_store::{Error, HEADER, Store, VERSION};
 
@@ -369,4 +369,83 @@ fn a_damaged_record_is_cut_not_believed() {
     fs::write(&log, bytes).unwrap();
     let (_, loaded) = Store::open(d.path()).unwrap();
     assert_eq!(loaded, before);
+}
+
+#[test]
+fn open_and_add_item_outside_a_step_are_durable_on_return() {
+    let d = dir();
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let mut store = Store::create(d.path(), &mut s).unwrap();
+    let mut m = Machine::new(s);
+    let sys = m.session.at(c).unwrap();
+    let tick = ItemData::Extension {
+        name: "timer".into(),
+        data: "tick".into(),
+    };
+    m.add_item(c, tick, 0).unwrap();
+    let other = m.open(sys, Author::Extension("ext".into()), 0).unwrap();
+    store.save(&mut m.session).unwrap();
+    drop(store); // as a crash: nothing is saved after the calls returned
+    let (_, loaded) = Store::open(d.path()).unwrap();
+    assert!(loaded.at(other).is_ok(), "the opened cursor is there");
+    assert_eq!(loaded.items(c).count(), 1, "the item is there");
+}
+
+#[test]
+fn load_wakes_a_cursor_with_input_pending_for_its_hooks_only() {
+    let d = dir();
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let mut store = Store::create(d.path(), &mut s).unwrap();
+    let mut m = Machine::new(s);
+    m.send(c, "term".into(), "hi", 0).unwrap();
+    store.save(&mut m.session).unwrap();
+    drop(m);
+    drop(store); // closed before the step ran
+    let (_store, loaded) = Store::open(d.path()).unwrap();
+    let mut m = Machine::loaded(loaded, 1);
+    assert!(m.busy(c));
+    let mut jobs = vec![];
+    loop {
+        let job = m.next_job(c).unwrap();
+        if job == Job::Rest {
+            break;
+        }
+        jobs.push(job);
+        m.feed(
+            c,
+            Fed::Hooks {
+                stop: None,
+                draft: None,
+            },
+            1,
+        )
+        .unwrap();
+    }
+    let points: Vec<_> = jobs
+        .iter()
+        .map(|j| match j {
+            Job::Hooks { point, .. } => *point,
+            other => panic!("only hooks run after a load, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(points, [Hook::PreStep, Hook::PostStep]);
+    assert_eq!(m.session.items(c).count(), 1, "the input is still pending");
+    assert_eq!(m.session.walk(m.session.at(c).unwrap()).len(), 2);
+}
+
+#[test]
+fn after_a_failed_save_the_store_says_so_and_refuses() {
+    let d = dir();
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let mut store = Store::create(d.path(), &mut s).unwrap();
+    assert!(!store.failed());
+    // The store cannot create its temporary scratchpad file here.
+    fs::create_dir(d.path().join("scratchpad.new")).unwrap();
+    let mut m = Machine::new(s);
+    m.input(c, "term".into(), "hi", 0).unwrap();
+    assert!(matches!(store.save(&mut m.session), Err(Error::Io(_))));
+    assert!(store.failed());
+    m.session.set_label("x", c).unwrap();
+    m.session.sync();
+    assert!(matches!(store.save(&mut m.session), Err(Error::Failed)));
 }

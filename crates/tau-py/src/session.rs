@@ -66,8 +66,8 @@ impl Session {
     }
 
     /// A call that changes the session: then the store gets what it queued.
-    /// A failure of the call itself is reported before a failure to save; the
-    /// store refuses every call after its own failure.
+    /// A failure of the call itself is reported before a failure to save. After
+    /// a failed save every such call is refused up front with `Failed`.
     fn write<R: Send>(
         &self,
         py: Python<'_>,
@@ -76,6 +76,11 @@ impl Session {
         Ok(py.detach(|| {
             let mut guard = self.lock()?;
             let inner = guard.as_mut().ok_or(Failure::Closed)?;
+            // After a failed save the store refuses everything; so do we,
+            // before the call changes what the log no longer matches.
+            if inner.store.as_ref().is_some_and(Store::failed) {
+                return Err(tau_store::Error::Failed.into());
+            }
             let result = f(&mut inner.machine);
             let saved = inner.save();
             let result = result?;
@@ -200,10 +205,7 @@ impl Session {
 
     /// Returns whether the driver must cancel the effect in flight.
     fn abort(&self, py: Python<'_>, cursor: u64) -> PyResult<bool> {
-        self.write(py, |m| {
-            m.session.at(cursor)?;
-            Ok(m.abort(cursor))
-        })
+        self.write(py, |m| Ok(m.abort(cursor)?))
     }
 
     // Extension and driver calls.
@@ -217,19 +219,11 @@ impl Session {
     }
 
     fn ask(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
-        self.write(py, |m| {
-            m.session.at(cursor)?;
-            m.ask(cursor);
-            Ok(())
-        })
+        self.write(py, |m| Ok(m.ask(cursor)?))
     }
 
     fn answered(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
-        self.write(py, |m| {
-            m.session.at(cursor)?;
-            m.answered(cursor);
-            Ok(())
-        })
+        self.write(py, |m| Ok(m.answered(cursor)?))
     }
 
     fn set_label(&self, py: Python<'_>, label: &str, cursor: u64) -> PyResult<()> {
@@ -244,18 +238,12 @@ impl Session {
 
     /// The cursor's next job; `Job.Rest` when it has no step.
     fn next_job(&self, py: Python<'_>, cursor: u64) -> PyResult<Job> {
-        self.write(py, |m| {
-            m.session.at(cursor)?;
-            Ok(m.next_job(cursor)?.into())
-        })
+        self.write(py, |m| Ok(m.next_job(cursor)?.into()))
     }
 
     /// Feed the result of the job last handed out for `cursor`.
     fn feed(&self, py: Python<'_>, cursor: u64, fed: Fed, now: u64) -> PyResult<()> {
-        self.write(py, |m| {
-            m.session.at(cursor)?;
-            Ok(m.feed(cursor, fed.into(), now)?)
-        })
+        self.write(py, |m| Ok(m.feed(cursor, fed.into(), now)?))
     }
 
     fn busy(&self, py: Python<'_>, cursor: u64) -> PyResult<bool> {

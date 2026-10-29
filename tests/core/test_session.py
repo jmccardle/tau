@@ -347,7 +347,7 @@ def test_a_results_draft_naming_a_call_twice_is_a_duplicate_call() -> None:
     session, cursor = new()
     session.send(cursor, "term", "hi", 0)
     twice = [("a", Outcome.Ok("1"), Author.Tools()), ("a", Outcome.Ok("2"), Author.Tools())]
-    bad = Draft(Body.Results(twice), Author.Core())
+    bad = Draft(Body.Results(twice), Author.Core(), [])
 
     def corrupt(job: Job) -> list[Fed] | None:
         if isinstance(job, Job.Hooks) and job.point == Hook.PreInput:
@@ -482,13 +482,20 @@ def test_a_send_is_durable_on_return_and_a_loaded_cursor_has_auto_off(tmp_path: 
     assert not loaded.auto(cursor)
 
 
-def test_load_wakes_every_cursor_for_pre_step_and_post_step_only(tmp_path: Path) -> None:
+def test_load_wakes_a_cursor_with_input_pending_for_pre_step_and_post_step_only(
+    tmp_path: Path,
+) -> None:
     session, cursor = new(tmp_path / "s")
-    session.close()
-    loaded = Session.load(tmp_path / "s", 0)
+    session.send(cursor, "term", "hi", 0)  # auto-step on, durable on return
+    session.close()  # before the step ran
+    loaded = Session.load(tmp_path / "s", 1)
     assert loaded.busy(cursor)
+    assert not loaded.auto(cursor)
     jobs = run(loaded, cursor)
     assert [j.point for j in jobs if isinstance(j, Job.Hooks)] == [Hook.PreStep, Hook.PostStep]
+    assert not any(isinstance(j, Job.Sample) for j in jobs)
+    assert [i.data for i in loaded.items(cursor)] == [ItemData.Input("term", "hi")]
+    assert len(loaded.walk(loaded.at(cursor))) == 2  # no User node, no reply
 
 
 def test_close_drops_what_was_not_synced_as_a_crash_would(tmp_path: Path) -> None:
@@ -527,3 +534,85 @@ def test_post_hooks_see_synced_data(tmp_path: Path) -> None:
 
     run(session, cursor, iter([say("x")]), on_job=peek)
     assert on_disk == [4]
+
+
+# Syncs, store failure, hook edits, cursor checks, repr
+
+
+def test_open_and_add_item_outside_a_step_are_durable_on_return(tmp_path: Path) -> None:
+    session, cursor = new(tmp_path / "s")
+    other = session.open(session.at(cursor), Author.Extension("ext"), 1)
+    item = session.add_item(cursor, ItemData.Extension("timer", "tick"), 2)
+    session.close()
+    loaded = Session.load(tmp_path / "s", 3)
+    assert loaded.cursors() == [cursor, other]
+    assert [(i.id, i.data) for i in loaded.items(cursor)] == [(item, ItemData.Extension("timer", "tick"))]
+
+
+def test_after_a_failed_save_every_changing_call_is_refused_before_it_changes_anything(
+    tmp_path: Path,
+) -> None:
+    session, cursor = new(tmp_path / "s")
+    block = tmp_path / "s" / "scratchpad.new"
+    block.mkdir()  # the store cannot create its temporary scratchpad file here
+    with pytest.raises(OSError):  # noqa: PT011
+        session.send(cursor, "term", "hi", 0)
+    block.rmdir()
+    before = state(session)
+    with pytest.raises(tau_next.Failed):
+        session.set_label("main", cursor)
+    with pytest.raises(tau_next.Failed):
+        session.input(cursor, "term", "again", 1)
+    with pytest.raises(tau_next.Failed):
+        session.open(session.at(cursor), Author.Core(), 1)
+    assert state(session) == before
+
+
+def edit_input_without_delivering(job: Job) -> list[Fed] | None:
+    if isinstance(job, Job.Hooks) and job.point == Hook.PreInput and job.draft:
+        edited = Draft(Body.User("edited"), job.draft.by, [])
+        return [Fed.Hooks(None, edited)]
+    return None
+
+
+def test_a_draft_must_state_what_it_delivers() -> None:
+    with pytest.raises(TypeError):
+        Draft(Body.User("x"), Author.Core())  # pyright: ignore[reportCallIssue]
+
+
+def test_a_pre_input_draft_that_delivers_nothing_leaves_the_input_pending() -> None:
+    session = Session.create(Config("{}", 3), "sys", 0)
+    cursor = session.cursors()[0]
+    session.send(cursor, "term", "hi", 0)
+    jobs = run(session, cursor, iter(say("ok") for _ in range(10)), on_job=edit_input_without_delivering)
+    assert sum(isinstance(j, Job.Sample) for j in jobs) == 3  # one per step until max_steps
+    users = [b for b in bodies(session, cursor) if isinstance(b, Body.User)]
+    assert users == [Body.User("edited")] * 3
+    assert not session.auto(cursor)
+    assert [i.data for i in session.items(cursor)] == [ItemData.Input("term", "hi")]
+
+
+def test_a_cursor_that_is_not_open_is_refused_and_leaves_no_record() -> None:
+    session, cursor = new()
+    before = state(session)
+    for call in (session.abort, session.ask, session.answered, session.next_job):
+        with pytest.raises(tau_next.NoSuchCursor):
+            call(999)
+    with pytest.raises(tau_next.NoSuchCursor):
+        session.feed(999, Fed.Hooks(), 0)
+    assert session.cursors() == [cursor]
+    assert state(session) == before
+
+
+def test_values_have_a_readable_repr() -> None:
+    session, cursor = new()
+    session.send(cursor, "term", "hi", 0)
+    job = session.next_job(cursor)
+    assert repr(Body.User("hello")) == 'User { text: "hello" }'
+    assert "PreStep" in repr(job)
+    assert "hi" in repr(session.items(cursor)[0])
+    assert "System" in repr(session.walk(session.at(cursor))[-1])
+    assert "Ok" in repr(Outcome.Ok("fine"))
+    assert "Frontend" in repr(Draft(Body.User("x"), Author.Frontend("term"), [1]))
+    assert "Halted" in repr(Ending.Halted("why"))
+    assert "HookFailed" in repr(Fed.HookFailed("oops"))

@@ -1,7 +1,9 @@
 //! One cursor's step: the phase loop of model.md §6 as a sans-IO machine.
 //! `next_job` says what to do; the driver does it and `feed`s the result.
 
-use crate::tree::{Author, Body, CursorId, Error, ItemData, ItemId, Next, Outcome, Session, calls};
+use crate::tree::{
+    Author, Body, CursorId, Error, Item, ItemData, ItemId, Next, Outcome, Session, calls,
+};
 
 pub const THROTTLE: u64 = 250;
 
@@ -94,10 +96,22 @@ enum Pos {
     Rest,
 }
 
+/// The job last handed out and not yet answered: the only kind of feed the
+/// step accepts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Out {
+    Nothing,
+    Hook,
+    Sample,
+    /// The batch: stays out through `Pending` until its last call is fed.
+    Calls,
+    Wait,
+}
+
 #[derive(Debug)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "independent flags: asked, aborted, committed, in_hook; no two encode one state"
+    reason = "independent flags: asked, aborted, committed; no two encode one state"
 )]
 pub struct Step {
     pub cursor: CursorId,
@@ -109,9 +123,11 @@ pub struct Step {
     seen: u64,
     /// `Session::moves.len()` when this step woke.
     first_move: usize,
-    /// A `Hooks` job is out and not yet fed.
-    in_hook: bool,
+    out: Out,
     draft: Option<Draft>,
+    /// The input phase's work: the inputs pending when it began, oldest
+    /// first, each offered once. `None` until the phase begins.
+    inputs: Option<Vec<ItemId>>,
     error: Option<String>,
     ending: Ending,
     /// The running batch's calls in call order, each with its outcome once fed.
@@ -132,8 +148,9 @@ impl Step {
             started: now,
             seen,
             first_move: s.moves.len(),
-            in_hook: false,
+            out: Out::Nothing,
             draft: None,
+            inputs: None,
             error: None,
             ending: Ending::Done,
             batch: vec![],
@@ -147,7 +164,14 @@ impl Step {
     /// `NoSuchCursor` if `cursor` is not open.
     pub fn next_job(&mut self, s: &mut Session) -> Result<Job, Error> {
         let job = self.job(s)?;
-        self.in_hook = matches!(job, Job::Hooks { .. });
+        match job {
+            Job::Hooks { .. } => self.out = Out::Hook,
+            Job::Sample => self.out = Out::Sample,
+            Job::RunCalls(_) => self.out = Out::Calls,
+            Job::Wait { .. } => self.out = Out::Wait,
+            Job::Pending => {}
+            Job::Rest => self.out = Out::Nothing,
+        }
         Ok(job)
     }
 
@@ -162,21 +186,39 @@ impl Step {
             return Ok(match self.pos {
                 Pos::PreStep => hooks(Hook::PreStep, None),
                 Pos::Input => {
-                    let input = s
-                        .items(self.cursor)
-                        .filter(|_| on)
-                        .find_map(|i| match &i.data {
-                            ItemData::Input { client, text } => Some((i.id, client, text)),
-                            ItemData::Extension { .. } => None,
-                        });
-                    let Some((id, client, text)) = input else {
+                    let cursor = self.cursor;
+                    let queue = self.inputs.get_or_insert_with(|| {
+                        let inputs = s
+                            .items(cursor)
+                            .filter(|i| matches!(i.data, ItemData::Input { .. }));
+                        if on {
+                            inputs.map(|i| i.id).collect()
+                        } else {
+                            vec![]
+                        }
+                    });
+                    // An input a hook already delivered is gone from the pad.
+                    let next = loop {
+                        if queue.is_empty() {
+                            break None;
+                        }
+                        let id = queue.remove(0);
+                        if let Some(Item {
+                            data: ItemData::Input { client, text },
+                            ..
+                        }) = s.items(cursor).find(|i| i.id == id)
+                        {
+                            break Some((id, client.clone(), text.clone()));
+                        }
+                    };
+                    let Some((id, client, text)) = next else {
                         self.pos = Pos::PreSample;
                         continue;
                     };
                     self.draft = Some(Draft {
-                        body: Body::User(text.clone()),
+                        body: Body::User(text),
                         delivers: vec![id],
-                        by: Author::Frontend(client.clone()),
+                        by: Author::Frontend(client),
                     });
                     hooks(Hook::PreInput, self.draft.clone())
                 }
@@ -236,15 +278,18 @@ impl Step {
     /// # Errors
     ///
     /// What a commit's `write` or `append` returns (`NoSuchCursor`);
-    /// `WrongFeed` if `fed` does not answer the job last handed out, with
-    /// nothing changed.
-    ///
-    /// # Panics
-    ///
-    /// Never on a driver's input: a pre hook's position always holds a draft.
+    /// `WrongFeed` if `fed` does not answer the job that is out (none, or one
+    /// of another kind, a call not in the batch, or a call already answered), with
+    /// nothing changed. Core checks no edit a hook made, only the tree's rules.
     pub fn feed(&mut self, s: &mut Session, fed: Fed, now: u64) -> Result<(), Error> {
-        let was_in_hook = self.in_hook;
-        self.in_hook = false;
+        if !self.answers(&fed) {
+            return Err(Error::WrongFeed(self.cursor));
+        }
+        self.out = if self.out == Out::Calls && matches!(fed, Fed::CallDone { .. }) {
+            Out::Calls
+        } else {
+            Out::Nothing
+        };
         match (self.pos, fed) {
             (Pos::PostStep, Fed::Hooks { stop, .. }) => {
                 if stop.is_some() {
@@ -274,7 +319,9 @@ impl Step {
             }
             (Pos::PreStep, Fed::Hooks { .. }) => self.pos = Pos::Input,
             (Pos::Input | Pos::PreReply, Fed::Hooks { draft, .. }) => {
-                let d = draft.or(self.draft.take()).expect("a draft at a pre hook");
+                let d = draft
+                    .or(self.draft.take())
+                    .ok_or(Error::WrongFeed(self.cursor))?;
                 s.write(self.cursor, d.body, d.delivers, d.by, now)?;
                 self.committed = true;
                 if self.pos == Pos::PreReply {
@@ -321,18 +368,26 @@ impl Step {
                 if let Some(slot) = self.batch.iter_mut().find(|c| c.0 == call) {
                     slot.1 = Some((outcome, by));
                 }
-                if self.batch.iter().all(|c| c.1.is_some()) {
-                    self.join(s, now)?;
-                }
+                self.join(s, now)?;
             }
             (Pos::PostResult, Fed::Hooks { .. }) => self.pos = Pos::PostStep,
             (Pos::Throttle, Fed::Waited) => *self = Self::wake(s, self.cursor, false, now),
-            _ => {
-                self.in_hook = was_in_hook;
-                return Err(Error::WrongFeed(self.cursor));
-            }
+            _ => return Err(Error::WrongFeed(self.cursor)),
         }
         Ok(())
+    }
+
+    /// Whether `fed` answers the job that is out. Decided before anything changes.
+    fn answers(&self, fed: &Fed) -> bool {
+        match (self.out, self.pos, fed) {
+            (Out::Hook, _, Fed::Hooks { .. } | Fed::HookFailed(_))
+            | (Out::Sample, Pos::Sample, Fed::Sampled { .. })
+            | (Out::Wait, Pos::Throttle, Fed::Waited) => true,
+            (Out::Calls, Pos::Calls, Fed::CallDone { call, .. }) => {
+                self.batch.iter().any(|c| c.0 == *call && c.1.is_none())
+            }
+            _ => false,
+        }
     }
 
     /// Abort: auto-step off, no later effect. Returns true if the driver must
@@ -353,7 +408,7 @@ impl Step {
     /// True while a cursor hook job is out: a frontend's go-to is refused.
     #[must_use]
     pub fn in_hook(&self) -> bool {
-        self.in_hook
+        self.out == Out::Hook
     }
 
     #[must_use]
@@ -417,15 +472,17 @@ impl Step {
         Ok(run)
     }
 
-    /// The join: one `Results` node, in call order.
+    /// The join, once every call has its outcome: one `Results` node, in call order.
     fn join(&mut self, s: &mut Session, now: u64) -> Result<(), Error> {
-        let outcomes = std::mem::take(&mut self.batch)
-            .into_iter()
-            .map(|(c, o)| {
-                let (o, by) = o.expect("joined");
-                (c, o, by)
-            })
-            .collect();
+        let Some(outcomes) = self
+            .batch
+            .iter()
+            .map(|(c, o)| o.clone().map(|(o, by)| (c.clone(), o, by)))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(());
+        };
+        self.batch.clear();
         s.write(
             self.cursor,
             Body::Results(outcomes),

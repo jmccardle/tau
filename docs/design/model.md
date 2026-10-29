@@ -24,6 +24,12 @@ item, so a reload is a replay (I7).
   exposes the state an extension needs to decide. Loading wakes every cursor
   with auto-step off, so only `pre_step` and `post_step` run (Q39); a
   crash-resume extension turns its own cursor's auto-step back on.
+- **No hook edit limits.** Core checks the state hooks leave, not what they
+  changed: after a point's hooks run, it acts on the draft and cursor as they
+  are, refusing only what would make the tree invalid (V1, V2). A `pre_input`
+  draft that delivers nothing writes its `User` node and leaves the input
+  pending; the input phase offers each input once, so it cannot spin, and
+  `after`'s rules (throttle, `max_steps`) decide whether another step runs.
 - **A step is one pass of a fixed loop**: `pre_step`, then the input, sample,
   and tools phases (each if it applies), then `post_step` (§6).
 - **Every phase has one shape**: pre hook on the effect, the effect, pre hook
@@ -194,7 +200,7 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
 
 | phase | applies when | jobs, in order | commits |
 |---|---|---|---|
-| input | input is pending | `Hooks(PreInput, draft)` per item, oldest first | one `User` per item, `delivers: [item]`, by `Frontend(client)` |
+| input | input is pending | `Hooks(PreInput, draft)` per item, oldest first; the items pending when the phase begins, each offered once | one `User` per item, `delivers: [item]`, by `Frontend(client)` |
 | sample | `next == Sample` | `Hooks(PreSample)`, `Sample`, `Hooks(PreReply, draft)`, `Hooks(PostReply)` | one `Assistant` |
 | tools | `next == RunTools` | `RunCalls(calls)`, `Pending` until every `CallDone`, `Hooks(PostResult)` | one `Results` at the join, by `Tools`; each outcome has its own `by` |
 
@@ -230,7 +236,9 @@ Another step starts if the ending is `Done` and either auto-step is on with
 work to do (`next != Wait`, or input pending) or the cursor's scratchpad
 changed since this step woke (`Session::changes`). A step that committed
 nothing waits first: `Job::Wait { until: started + THROTTLE }` (250 ms). An
-item left in place does not cause another step. Otherwise `Job::Rest`.
+extension item left in place does not cause another step (an input left
+pending does: it is work, so with auto-step on the next step offers it again,
+until `max_steps`). Otherwise `Job::Rest`.
 
 **Wakes:** an item added to its scratchpad, opening, load (lease holder
 only), a go-to, `Session.step`, auto-step turned on. Busy means a step exists
@@ -250,10 +258,10 @@ off (D1).
 | `pre_step` | cursor | `Hooks(PreStep)` | none |
 | `pre_input` | cursor | `Hooks(PreInput, draft)`, per item | the input draft |
 | `pre_sample` | cursor | `Hooks(PreSample)` | the sample draft; a reply answers it |
-| `pre_reply` | cursor | `Hooks(PreReply, draft)` | the reply draft; `stop` is not editable |
+| `pre_reply` | cursor | `Hooks(PreReply, draft)` | the reply draft |
 | `post_reply` | cursor | `Hooks(PostReply)` | the `Assistant` node |
 | `pre_tool` | tool | inside `RunCalls` | the call draft; setting an outcome answers it |
-| `pre_result` | tool | inside `RunCalls` | the call draft with its outcome; content editable, kind not |
+| `pre_result` | tool | inside `RunCalls` | the call draft with its outcome |
 | `post_result` | cursor | `Hooks(PostResult)` | the `Results` node |
 | `post_step` | cursor | `Hooks(PostStep, ending)` | the `Ending` |
 

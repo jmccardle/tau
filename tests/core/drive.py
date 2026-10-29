@@ -16,13 +16,13 @@ from tau_next import (
 
 
 def say(text: str) -> Fed:
-    reply = Draft(Body.Assistant([Part.Text(text)], Stop.End), Author.Provider())
+    reply = Draft(Body.Assistant([Part.Text(text)], Stop.End), Author.Provider(), [])
     return Fed.Sampled(reply, None)
 
 
 def call(*calls: tuple[str, str]) -> Fed:
     parts = [Part.Call(id, tool, "{}") for id, tool in calls]
-    return Fed.Sampled(Draft(Body.Assistant(parts, Stop.Tools), Author.Provider()), None)
+    return Fed.Sampled(Draft(Body.Assistant(parts, Stop.Tools), Author.Provider(), []), None)
 
 
 def run(

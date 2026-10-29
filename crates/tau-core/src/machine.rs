@@ -187,18 +187,26 @@ impl Machine {
 
     /// Esc. Allowed while locked; the question stays open. Returns whether the
     /// driver must cancel the effect in flight.
-    pub fn abort(&mut self, cursor: CursorId) -> bool {
-        if let Some(step) = self.steps.get_mut(&cursor).filter(|s| !s.resting()) {
-            step.abort(&mut self.session)
-        } else {
-            self.session.auto.insert(cursor, false);
-            false
-        }
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open.
+    pub fn abort(&mut self, cursor: CursorId) -> Result<bool, Error> {
+        self.session.at(cursor)?;
+        Ok(
+            if let Some(step) = self.steps.get_mut(&cursor).filter(|s| !s.resting()) {
+                step.abort(&mut self.session)
+            } else {
+                self.session.auto.insert(cursor, false);
+                false
+            },
+        )
     }
 
     // Extension and driver calls.
 
-    /// Open a cursor at `at`; opening wakes it (Q32).
+    /// Open a cursor at `at`; opening wakes it (Q32). Syncs on return, unless
+    /// a cursor hook is running: then the write rides that phase's sync (D11).
     ///
     /// # Errors
     ///
@@ -206,10 +214,12 @@ impl Machine {
     pub fn open(&mut self, at: NodeId, by: Author, now: u64) -> Result<CursorId, Error> {
         let cursor = self.session.open(at, by, now)?;
         self.wake(cursor, false, now);
+        self.sync_outside_hooks();
         Ok(cursor)
     }
 
-    /// Add an item to `to`'s scratchpad; wakes `to`.
+    /// Add an item to `to`'s scratchpad; wakes `to`. Syncs on return, unless
+    /// a cursor hook is running: then the write rides that phase's sync (D11).
     ///
     /// # Errors
     ///
@@ -218,19 +228,32 @@ impl Machine {
         self.session.at(to)?;
         let id = self.session.add_item(to, data);
         self.wake(to, false, now);
+        self.sync_outside_hooks();
         Ok(id)
     }
 
     /// A hook asked a question on `cursor`: it is locked until answered.
-    pub fn ask(&mut self, cursor: CursorId) {
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open.
+    pub fn ask(&mut self, cursor: CursorId) -> Result<(), Error> {
+        self.session.at(cursor)?;
         *self.asking.entry(cursor).or_default() += 1; // rules: allow(entry): BTreeMap API
+        Ok(())
     }
 
     /// A question on `cursor` was answered or declined.
-    pub fn answered(&mut self, cursor: CursorId) {
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open.
+    pub fn answered(&mut self, cursor: CursorId) -> Result<(), Error> {
+        self.session.at(cursor)?;
         if let Some(n) = self.asking.get_mut(&cursor) {
             *n = n.saturating_sub(1);
         }
+        Ok(())
     }
 
     /// `cursor.moves(since_step=True)` for the cursor's current step.
@@ -248,8 +271,10 @@ impl Machine {
     ///
     /// # Errors
     ///
-    /// What the step's `next_job` returns, or a waiting go-to's `move_to`.
+    /// `NoSuchCursor` if `cursor` is not open; what the step's `next_job`
+    /// returns, or a waiting go-to's `move_to`.
     pub fn next_job(&mut self, cursor: CursorId) -> Result<Job, Error> {
+        self.session.at(cursor)?;
         let Some(step) = self.steps.get_mut(&cursor) else {
             return Ok(Job::Rest);
         };
@@ -275,8 +300,10 @@ impl Machine {
     ///
     /// # Errors
     ///
-    /// What the step's `feed` returns; `WrongFeed` if no step exists for `cursor`.
+    /// `NoSuchCursor` if `cursor` is not open; what the step's `feed` returns;
+    /// `WrongFeed` if no step exists for `cursor`.
     pub fn feed(&mut self, cursor: CursorId, fed: Fed, now: u64) -> Result<(), Error> {
+        self.session.at(cursor)?;
         let step = self
             .steps
             .get_mut(&cursor)
@@ -293,6 +320,14 @@ impl Machine {
         }
         self.session.taken.remove(&cursor);
         Ok(())
+    }
+
+    /// The sync a call outside a step owes on return; inside a cursor hook
+    /// the phase's own sync covers the write.
+    fn sync_outside_hooks(&mut self) {
+        if !self.steps.values().any(Step::in_hook) {
+            self.session.sync();
+        }
     }
 
     /// Start a step unless one is running; a wake while busy joins it.
