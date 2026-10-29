@@ -17,8 +17,8 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 0 scaffold | **done.** Workspace, maturin, `cp312-abi3` + `cp314t` wheels, CI on forge.goblincorps.com, rule lint. |
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
-| 3 Rust core | **in progress**: core, store, and bindings work; 3d (as-built review, ratchet) not done. |
-| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. Missing: D13 config, the 4 exit review. |
+| 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
+| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. Missing: D13 config (proposed, `decisions/D13-config.md`), the 4 exit review. |
 | 5–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
@@ -80,22 +80,11 @@ directly, so:
   through `/proc`, so it is Linux-only), and a `powershell` tool for Windows.
 
 4. **Config overhaul** (approved 2026-10-27), in Python: the config file
-   parser and `tau config check`. Written up as D13 when it starts. Agreed so far:
-   - the flat `{"model": {...}}` file stays valid; an object with `models` is
-     a group whose keys apply to every model inside; groups may nest;
-   - nearer wins; nested objects merge by key; lists and scalars replace;
-     `null` drops an inherited key; model names are unique file-wide;
-   - `api_key_env` names the variable, read at sample time; a literal
-     `api_key` still works but the checker warns; no key reaches a `Config`
-     node or the log (tested);
-   - a `Config` node stores the resolved snapshot, so editing the file never
-     changes a session; an explicit reload appends a `Config`;
-   - the checker: JSON errors with line and column, unknown keys with their
-     path and a suggestion, duplicates, unset variables, wrong types;
-     `--show <model>` prints each resolved value and where it came from.
-   Open for D13: layering (user, project, CLI), a schema version for stored
-   `Config` nodes, and `Job::Sample` naming the `Config` it resolved (I1).
-   The model schema grows with the Phase 4 provider.
+   parser, project trust, and `tau config check`. Written up as
+   `decisions/D13-config.md` (proposed 2026-10-29), which supersedes the
+   points agreed here earlier: model names are qualified by group
+   (`group:name`), not unique file-wide; a `Config` node names its model
+   instead of storing a snapshot; no schema version before 1.0.
 5. The `Harness`, `FakeProvider`, `FakeTool` (Phase 2's Python half), and the
    scenarios ported to `tests/behavior/`, which is what carries into τ 0.16.
 6. `parity/` keep-tests over τ 0.15 can be written any time; they block

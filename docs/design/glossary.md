@@ -577,7 +577,8 @@ A **sample** is one provider request over the **context**, `walk(at)`, with
 *spike* `tree::Config`, `Body::Config`, `Tree::config_at` · retires config
 entry, `CONFIG_KEYS`, `Settings`, model entry
 
-A full snapshot of how a step runs. `config_at(n)` is the nearest `Config`
+How a step runs; under D13 (proposed) its data names a model by qualified
+name instead of holding a full snapshot. `config_at(n)` is the nearest `Config`
 on `walk(n)` (D5), recorded per node when it is added (`Session::configs`),
 so it costs the same at any depth. Core reads nothing in it: `data` is opaque
 to core and typed by the driver.
@@ -601,6 +602,38 @@ or file loading.
 The name of the environment variable that holds the API key. Unset or empty
 when named is a `ConfigError`, which the provider reports as a failed sample.
 No variable named: no `Authorization` header.
+
+### user config, project config, TAU_HOME
+D13 (proposed) · retires 0.15's `~/.tau/config.json` reader
+
+The **user config** is `$TAU_HOME/config.json` (`TAU_HOME` defaults to
+`~/.tau`); tau owns it and may rewrite it. A **project config** is
+`.tau/config.json` in a trusted directory. Layers, nearest wins: user,
+project, CLI flags.
+
+### group, qualified name
+D13 (proposed) · new
+
+A **group** is a config object with a `models` object; its other keys apply to
+every model inside, and groups nest. A model's **qualified name** is the path
+of group names and its own name joined by `:` (`free_tokens:gpt-6-sol`).
+Names may not contain `:`. A `Config` node stores a qualified name; a bare
+name is only a search term.
+
+### trusted directory, trusted.json
+D13 (proposed) · new
+
+A project directory whose `.tau/` the user approved, listed in
+`$TAU_HOME/trusted.json`. Only a trusted directory's project config and `.env`
+are read. Approval also makes `.tau/` the user's, mode `700`, with a
+`.gitignore` of `*`.
+
+### tau config check, tau trust
+D13 (proposed) · new
+
+The first `tau` commands. `tau config check` validates the layers and reports
+where each problem is; `--show <model>` prints each resolved value and its
+source. `tau trust <dir>` approves a project directory, as the prompt does.
 
 ## Hooks
 
