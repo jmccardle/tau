@@ -30,7 +30,7 @@ question is where the decisions live.
 - A hook job's result is only the edited draft and the return value.
 - Frontend calls (input, go-to, step, abort, auto-step) are inputs to the
   session machine (`machine::Machine`), which holds every cursor's step and
-  refuses a call with a typed error (`Busy`, `Locked`, `HookRunning`).
+  refuses a call only where it has no edge, with a typed error (`Busy`).
 - No async runtime in Rust.
 
 ## Alternatives

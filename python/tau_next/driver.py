@@ -152,12 +152,14 @@ class Driver:
         self._poke()
 
     def go_to(self, cursor: int, to: int, client: str) -> bool:
-        """Move, aborting a busy step first. True if it aborted one."""
-        aborted = self.session.go_to(cursor, to, client, self.clock.now())
-        if aborted:
+        """Move, aborting a busy step first (which declines its open questions). True if
+        core had an effect in flight to cancel."""
+        cancel = self.session.go_to(cursor, to, client, self.clock.now())
+        if cancel:
             self._cancel(cursor)
+        self._decline(cursor)
         self._poke()
-        return aborted
+        return cancel
 
     def set_auto(self, cursor: int, on: bool, client: str) -> None:
         self.session.set_auto(cursor, on, client, self.clock.now())
@@ -193,10 +195,12 @@ class Driver:
         return dict(self.session.labels())
 
     def abort(self, cursor: int) -> bool:
-        """Abort the cursor's step. True if core had effects in flight to cancel."""
+        """Abort the cursor's step and decline its open questions. True if core had
+        effects in flight to cancel."""
         cancel = self.session.abort(cursor)
         if cancel:
             self._cancel(cursor)
+        self._decline(cursor)
         self._poke()
         return cancel
 
@@ -206,15 +210,17 @@ class Driver:
         if not open_:
             raise LookupError(f"cursor {cursor} has no open question")
         open_.pop(0).future.set_result(answer)
-        self.session.answered(cursor)
-        self._poke()
 
     async def ask(self, cursor: int, target: str, text: str) -> str | None:
-        """`cursor.ask`: lock the cursor, hold the question, return its answer."""
-        self.session.ask(cursor)
+        """`cursor.ask`: hold the question until it is answered or declined. Core
+        knows nothing of it: the hook awaiting it keeps its job out, so the cursor is busy."""
         question = Question(target, text, asyncio.get_running_loop().create_future())
         self._questions.setdefault(cursor, []).append(question)
         return await question.future
+
+    def _decline(self, cursor: int) -> None:
+        for question in self._questions.pop(cursor, []):
+            question.future.set_result(None)
 
     # The pump
 
@@ -327,9 +333,9 @@ class Driver:
             case _:
                 raise RuntimeError(f"cursor {cursor}: a job this driver does not know: {job}")
 
-    def _cursor_for(self, cursor: int) -> Callable[[Extension, int], Cursor]:
-        return lambda ext, serial: Cursor(
-            self.session, cursor, ext.name, serial, self.ask, self.clock.now, self._poke
+    def _cursor_for(self, cursor: int) -> Callable[[Extension], Cursor]:
+        return lambda ext: Cursor(
+            self.session, cursor, ext.name, self.ask, self.clock.now, self._poke
         )
 
     def _cancel(self, cursor: int) -> None:

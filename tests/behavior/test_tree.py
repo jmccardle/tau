@@ -363,42 +363,73 @@ async def test_a_tool_hook_writes_through_its_node_handle(tmp_path: Path) -> Non
 
 
 @scenario
-async def test_a_frontend_go_to_is_refused_while_a_cursor_hook_runs(tmp_path: Path) -> None:
-    """Section 5: refused with `HookRunning`; the hook finishes, then go-to works."""
+async def test_a_frontend_go_to_while_a_cursor_hook_runs_aborts_and_moves_after_it(
+    tmp_path: Path,
+) -> None:
+    """Section 5: a go-to on a busy cursor aborts the step, a hook job out included. The
+    hook is never cancelled: it finishes, `post_step` gets `Aborted`, then the move applies."""
     gate = Gate()
-    h = await Harness.create(
-        tmp_path, extensions=[Recorder(gates={"pre_step": gate})], gates=[gate]
-    )
-    await h.step()
+    recorder = Recorder(gates={"pre_step": gate})
+    h = await Harness.create(tmp_path, extensions=[recorder], gates=[gate])
+    await h.send("hi")
     await h.settle()
     assert gate.held == 1
-    with pytest.raises(tau_next.HookRunning):
-        await h.go_to(0)
-    assert h.session.at(h.cursor) == SYS
+    assert not await h.go_to(0), "nothing to cancel: a hook is never cancelled"
+    assert h.session.at(h.cursor) == SYS, "the move waits for the step to end"
     gate.release()
     await h.settle()
-    assert not await h.go_to(0), "at rest, nothing to abort"
+    assert recorder.endings[0] == Ending.Aborted()
     assert h.session.at(h.cursor) == 0
     assert h.session.moves_of(h.cursor)[-1].by == Author.Frontend("term")
+    assert not h.session.auto(h.cursor)
+    assert [i.data for i in h.session.items(h.cursor)] == [ItemData.Input("term", "hi")], (
+        "the input stays pending"
+    )
 
 
 @scenario
-async def test_a_frontend_go_to_is_refused_while_a_question_is_open(tmp_path: Path) -> None:
-    """Section 5: refused with `Locked`; abort stays allowed."""
+async def test_a_frontend_go_to_during_a_question_declines_it_then_moves(tmp_path: Path) -> None:
+    """Section 7: a question is a hook awaiting; a go-to aborts that step through the
+    abort path and declines the question, so the hook finishes with `None`."""
+    answers: list[str | None] = []
 
     async def ask(cursor: Cursor, subject: Subject) -> str | None:
-        await cursor.ask("term", "ok?")
+        if not answers:
+            answers.append(await cursor.ask("term", "ok?"))
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("asker", pre_step=ask)])
     await h.step()
     await h.settle()
-    with pytest.raises(tau_next.Locked):
-        await h.go_to(0)
-    await h.answer(None)
+    assert h.driver.open_questions == 1
+    assert not await h.go_to(0), "nothing to cancel: the hook finishes"
     await h.settle()
-    await h.go_to(0)
+    assert answers == [None], "declined"
+    assert h.driver.open_questions == 0
     assert h.session.at(h.cursor) == 0
+
+
+@scenario
+async def test_an_abort_during_a_question_declines_it(tmp_path: Path) -> None:
+    """Section 8: abort never cancels a hook; it declines the hook's open question, so the
+    hook finishes and `post_step` gets `Aborted`."""
+    answers: list[str | None] = []
+
+    async def ask(cursor: Cursor, subject: Subject) -> str | None:
+        answers.append(await cursor.ask("term", "send it?"))
+        return None
+
+    recorder = Recorder()
+    h = await Harness.create(tmp_path, extensions=[Scripted("asker", pre_input=ask), recorder])
+    await h.send("hi")
+    await h.settle()
+    assert [q.text for q in h.driver.questions(h.cursor)] == ["send it?"]
+    assert not await h.abort(), "nothing to cancel: the hook finishes"
+    await h.settle()
+    assert answers == [None]
+    assert h.driver.questions(h.cursor) == []
+    assert recorder.endings == [Ending.Aborted()]
+    assert not h.session.busy(h.cursor)
 
 
 @scenario
@@ -454,7 +485,8 @@ async def test_a_post_reply_note_does_not_strand_the_tool_batch(tmp_path: Path) 
 
 @scenario
 async def test_a_handle_from_an_earlier_hook_is_refused_in_a_later_one(tmp_path: Path) -> None:
-    """Each hook job has its own serial: step 1's handle cannot act during step 2's hook."""
+    """A handle is retired when its hook returns: step 1's handle cannot act during step 2's
+    hook, though core sees a hook job out on that cursor."""
     kept: list[Cursor] = []
     gate = Gate()
 

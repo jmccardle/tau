@@ -55,7 +55,7 @@ async def run_hooks(
     job: Job.Hooks,
     subject: Subject,
     extensions: Sequence[Extension],
-    cursor_for: Callable[[Extension, int], Cursor],
+    cursor_for: Callable[[Extension], Cursor],
 ) -> Fed:
     """Every extension's hook for the point, in order. The first string halts;
     an exception fails; otherwise the subject's draft comes back."""
@@ -64,7 +64,7 @@ async def run_hooks(
         hook = cast("CursorHook | None", getattr(ext, name, None))
         if hook is None:
             continue
-        cursor = cursor_for(ext, job.serial)
+        cursor = cursor_for(ext)
         try:
             with trace.span("hook", f"{name} {ext.name}"):
                 stop = await hook(cursor, subject)

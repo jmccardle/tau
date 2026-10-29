@@ -18,40 +18,35 @@ Each cell is what the call returned in a fresh session whose cursor was brought 
 | S11 | busy: post_result hook out |
 | S12 | busy: post_step hook out |
 | S13 | busy: throttle wait out |
-| S14 | locked by a question, at rest |
-| S15 | locked by a question, sample out |
-| S16 | a cursor that is not open |
-| S17 | session closed |
-| S18 | store failed (an earlier save raised) |
+| S14 | a cursor that is not open |
+| S15 | session closed |
+| S16 | closed by a failed save |
 
-| call | S1 | S2 | S3 | S4 | S5 | S6 | S7 | S8 | S9 | S10 | S11 | S12 | S13 | S14 | S15 | S16 | S17 | S18 |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **frontend** | | | | | | | | | | | | | | | | | | |
-| input | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | Locked | Locked | NoSuchCursor | Closed | Failed |
-| send | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | Locked | Locked | NoSuchCursor | Closed | Failed |
-| step | ok | ok | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Locked | Locked | NoSuchCursor | Closed | Failed |
-| go_to (an ancestor) | ok | ok | HookRunning | HookRunning | HookRunning | ok, cancel | HookRunning | HookRunning | ok, cancel | ok, cancel | HookRunning | HookRunning | ok, cancel | Locked | Locked | NoSuchCursor | Closed | Failed |
-| go_to (not a node) | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | Locked | Locked | NoSuchCursor | Closed | Failed |
-| set_auto(on) | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Failed |
-| set_auto(off) | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Failed |
-| abort | ok | ok | ok | ok | ok | ok, cancel | ok | ok | ok, cancel | ok, cancel | ok | ok | ok, cancel | ok | ok, cancel | NoSuchCursor | Closed | Failed |
-| set_label | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Failed |
-| remove_label | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | Closed | Failed |
-| **question** | | | | | | | | | | | | | | | | | | |
-| ask | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Failed |
-| answered | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Failed |
-| **extension** | | | | | | | | | | | | | | | | | | |
-| open | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | Closed | Failed |
-| add_item | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Failed |
-| remove_item | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | Closed | Failed |
-| append (under at) | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Failed |
-| **hook** | | | | | | | | | | | | | | | | | | |
-| hook_move | NotInHook | NotInHook | ok | ok | ok | NotInHook | ok | ok | NotInHook | NotInHook | ok | ok | NotInHook | NotInHook | NotInHook | NoSuchCursor | Closed | Failed |
-| hook_write | NotInHook | NotInHook | ok | ok | ok | NotInHook | ok | ok | NotInHook | NotInHook | ok | ok | NotInHook | NotInHook | NotInHook | NoSuchCursor | Closed | Failed |
-| hook_set_auto | NotInHook | NotInHook | ok | ok | ok | NotInHook | ok | ok | NotInHook | NotInHook | ok | ok | NotInHook | NotInHook | NotInHook | NoSuchCursor | Closed | Failed |
-| **driver** | | | | | | | | | | | | | | | | | | |
-| feed Hooks | WrongFeed | WrongFeed | ok | ok | ok | WrongFeed | ok | ok | WrongFeed | WrongFeed | ok | ok | WrongFeed | WrongFeed | WrongFeed | NoSuchCursor | Closed | Failed |
-| feed Waited | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | ok | WrongFeed | WrongFeed | NoSuchCursor | Closed | Failed |
-| next_job | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Failed |
-| **read** | | | | | | | | | | | | | | | | | | |
-| at | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | ok |
+| call | S1 | S2 | S3 | S4 | S5 | S6 | S7 | S8 | S9 | S10 | S11 | S12 | S13 | S14 | S15 | S16 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **frontend** | | | | | | | | | | | | | | | | |
+| input | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
+| send | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
+| step | ok | ok | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | NoSuchCursor | Closed | Closed |
+| go_to (an ancestor) | ok | ok | ok | ok | ok | ok, cancel | ok | ok | ok, cancel | ok, cancel | ok | ok | ok, cancel | NoSuchCursor | Closed | Closed |
+| go_to (not a node) | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchCursor | Closed | Closed |
+| set_auto(on) | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
+| set_auto(off) | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
+| abort | ok | ok | ok | ok | ok | ok, cancel | ok | ok | ok, cancel | ok, cancel | ok | ok | ok, cancel | NoSuchCursor | Closed | Closed |
+| set_label | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
+| remove_label | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | Closed | Closed |
+| **extension** | | | | | | | | | | | | | | | | |
+| open | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | Closed | Closed |
+| add_item | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
+| remove_item | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | Closed | Closed |
+| append (under at) | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
+| **hook** | | | | | | | | | | | | | | | | |
+| hook_move | NotInHook | NotInHook | ok | ok | ok | NotInHook | ok | ok | NotInHook | NotInHook | ok | ok | NotInHook | NoSuchCursor | Closed | Closed |
+| hook_write | NotInHook | NotInHook | ok | ok | ok | NotInHook | ok | ok | NotInHook | NotInHook | ok | ok | NotInHook | NoSuchCursor | Closed | Closed |
+| hook_set_auto | NotInHook | NotInHook | ok | ok | ok | NotInHook | ok | ok | NotInHook | NotInHook | ok | ok | NotInHook | NoSuchCursor | Closed | Closed |
+| **driver** | | | | | | | | | | | | | | | | |
+| feed Hooks | WrongFeed | WrongFeed | ok | ok | ok | WrongFeed | ok | ok | WrongFeed | WrongFeed | ok | ok | WrongFeed | NoSuchCursor | Closed | Closed |
+| feed Waited | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | WrongFeed | ok | NoSuchCursor | Closed | Closed |
+| next_job | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
+| **read** | | | | | | | | | | | | | | | | |
+| at | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |

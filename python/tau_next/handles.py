@@ -70,7 +70,7 @@ class TreeHandle:
         extension: str,
         now: Now,
         poke: Poke,
-        hook: tuple[int, int] | None = None,
+        hook: int | None = None,
     ) -> None:
         self._session = session
         self._now = now
@@ -195,10 +195,10 @@ class Cursor(TreeHandle):
     """What a cursor hook acts through: one cursor, bound to its extension.
 
     The tree handle, plus the cursor's own `move`, `write`, and `set_auto`,
-    which core allows only while the hook job the handle was made for is out:
-    after it is fed, or once the hook coroutine returns (`retire`), they raise
-    `NotInHook`; so does every other write and `ask`. Reads still work. Core
-    checks no more than that the tree stays valid (no hook edit limits).
+    which core allows only while a cursor hook job is out for the cursor. Once
+    the hook coroutine returns (`retire`), they raise `NotInHook`; so does every
+    other write and `ask`. Reads still work. Core checks no more than that the
+    tree stays valid (no hook edit limits).
     """
 
     def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
@@ -206,14 +206,12 @@ class Cursor(TreeHandle):
         session: Session,
         id: int,
         extension: str,
-        serial: int,
         asker: Asker,
         now: Now,
         poke: Poke,
     ) -> None:
-        super().__init__(session, extension, now, poke, hook=(id, serial))
+        super().__init__(session, extension, now, poke, hook=id)
         self._asker = asker
-        self._serial = serial
         self.id = id
 
     @property
@@ -249,23 +247,22 @@ class Cursor(TreeHandle):
     def move(self, to: int) -> None:
         """Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`."""
         self._check()
-        self._session.hook_move(self.id, self._serial, to, self.by, self._now())
+        self._session.hook_move(self.id, to, self.by, self._now())
 
     def write(self, body: Body, delivers: Sequence[int] = ()) -> int:
         """Append `body` under `at` and move onto it, as one record; the
         `delivers` items are removed. Returns the new node's id."""
         self._check()
-        return self._session.hook_write(
-            self.id, self._serial, body, list(delivers), self.by, self._now()
-        )
+        return self._session.hook_write(self.id, body, list(delivers), self.by, self._now())
 
     def set_auto(self, on: bool) -> None:
         """Turn this cursor's auto-step on or off. Wakes nothing: the step is running.
         Turning it on inside a step that is aborted leaves the cursor at rest."""
         self._check()
-        self._session.hook_set_auto(self.id, self._serial, on)
+        self._session.hook_set_auto(self.id, on)
 
     async def ask(self, target: str, question: str) -> str | None:
-        """Lock the cursor and wait for the answer, or `None` if declined."""
+        """Wait for the answer, or `None` if declined. The hook's job stays out
+        meanwhile, so the cursor is busy; an abort or go-to declines it."""
         self._check()
         return await self._asker(self.id, target, question)

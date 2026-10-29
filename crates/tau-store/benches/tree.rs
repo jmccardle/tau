@@ -277,7 +277,7 @@ impl Rig {
     }
 
     fn save(&mut self) {
-        let Some(store) = &mut self.store else {
+        let Some(store) = self.store.take() else {
             return;
         };
         let syncs = self
@@ -288,7 +288,7 @@ impl Rig {
             .filter(|r| matches!(r, Record::Sync { .. }))
             .count();
         let t = Instant::now();
-        store.save(&mut self.m.session).unwrap();
+        self.store = Some(store.save(&mut self.m.session).unwrap());
         if syncs > 0 {
             self.stats.syncs.push(t.elapsed());
         }
@@ -612,7 +612,7 @@ fn cursors() {
         let mut agents: Vec<Agent> = (0..k)
             .map(|_| {
                 let at = rig.recent(0, 400, &mut seed);
-                let c = rig.m.open(at, Author::Core, rig.now).unwrap();
+                let c = rig.m.open(at, Author::Core, rig.now, None).unwrap();
                 Agent::new(c, 8)
             })
             .collect();
@@ -785,7 +785,7 @@ fn lookup() {
     let mut tips = vec![];
     for _ in 0..64 {
         let at = rig.recent(0, 2_000, &mut seed);
-        let c = rig.m.open(at, Author::Core, rig.now).unwrap();
+        let c = rig.m.open(at, Author::Core, rig.now, None).unwrap();
         Agent::new(c, 2).run(&mut rig);
         tips.push(rig.m.session.at(c).unwrap());
     }

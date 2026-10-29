@@ -125,7 +125,7 @@ proptest! {
         let mut synced = vec![disk(d.path(), &s)];
         for op in &ops {
             apply(&mut s, op);
-            store.save(&mut s).unwrap();
+            store = store.save(&mut s).unwrap();
             let now = disk(d.path(), &s);
             if now.0 != synced.last().unwrap().0 {
                 synced.push(now);
@@ -148,7 +148,7 @@ proptest! {
         // The session goes on from the cut, and that reloads too.
         again.write(0, Body::User("after".into()), vec![], Author::Core, 0).unwrap();
         again.sync();
-        store.save(&mut again).unwrap();
+        store = store.save(&mut again).unwrap();
         drop(store);
         let (_, after) = Store::open(crashed.path()).unwrap();
         prop_assert_eq!(after, as_loaded(&again));
@@ -167,7 +167,7 @@ fn a_session_reopens_as_it_was_synced() {
     };
     s.add_item(c, data);
     s.sync();
-    store.save(&mut s).unwrap();
+    store = store.save(&mut s).unwrap();
     s.write(
         c,
         Body::User("never synced".into()),
@@ -176,7 +176,7 @@ fn a_session_reopens_as_it_was_synced() {
         0,
     )
     .unwrap();
-    store.save(&mut s).unwrap();
+    store = store.save(&mut s).unwrap();
     drop(store);
     let (store, loaded) = Store::open(d.path()).unwrap();
     assert_eq!(store.dropped, 0, "unsynced records were never written");
@@ -208,7 +208,7 @@ fn one_save_over_many_syncs_reopens_as_the_last() {
     s.write(c, Body::User("plain".into()), vec![], Author::Core, 0)
         .unwrap();
     s.sync();
-    store.save(&mut s).unwrap();
+    store = store.save(&mut s).unwrap();
     drop(store);
     let (store, loaded) = Store::open(d.path()).unwrap();
     assert_eq!(store.dropped, 0);
@@ -221,14 +221,14 @@ fn one_save_over_many_syncs_reopens_as_the_last() {
 fn the_log_never_holds_items() {
     let d = dir();
     let (mut s, c) = Session::create("{}", "sys", 0);
-    let mut store = Store::create(d.path(), &mut s).unwrap();
+    let store = Store::create(d.path(), &mut s).unwrap();
     let data = ItemData::Input {
         client: "term".into(),
         text: "in the scratchpad only".into(),
     };
     s.add_item(c, data);
     s.sync();
-    store.save(&mut s).unwrap();
+    let _store = store.save(&mut s).unwrap();
     let log = fs::read(d.path().join("log")).unwrap();
     let pad = fs::read(d.path().join("scratchpad")).unwrap();
     let has = |b: &[u8]| b.windows(6).any(|w| w == b"scratc");
@@ -319,10 +319,10 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let mut m = Machine::new(s);
     m.send(c, "term".into(), "hi", 0).unwrap();
-    store.save(&mut m.session).unwrap();
+    store = store.save(&mut m.session).unwrap();
     loop {
         let job = m.next_job(c).unwrap();
-        store.save(&mut m.session).unwrap();
+        store = store.save(&mut m.session).unwrap();
         let fed = match job {
             Job::Rest => break,
             Job::Sample => Fed::Sampled {
@@ -343,7 +343,7 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
             },
         };
         m.feed(c, fed, 0).unwrap();
-        store.save(&mut m.session).unwrap();
+        store = store.save(&mut m.session).unwrap();
     }
     assert!(m.session.synced());
     drop(store);
@@ -361,7 +361,7 @@ fn a_damaged_record_is_cut_not_believed() {
     s.write(c, Body::User("hello".into()), vec![], Author::Core, 0)
         .unwrap();
     s.sync();
-    store.save(&mut s).unwrap();
+    store = store.save(&mut s).unwrap();
     drop(store);
     let log = d.path().join("log");
     let mut bytes = fs::read(&log).unwrap();
@@ -383,9 +383,11 @@ fn open_and_add_item_outside_a_step_are_durable_on_return() {
         name: "timer".into(),
         data: "tick".into(),
     };
-    m.add_item(c, tick, 0).unwrap();
-    let other = m.open(sys, Author::Extension("ext".into()), 0).unwrap();
-    store.save(&mut m.session).unwrap();
+    m.add_item(c, tick, 0, None).unwrap();
+    let other = m
+        .open(sys, Author::Extension("ext".into()), 0, None)
+        .unwrap();
+    store = store.save(&mut m.session).unwrap();
     drop(store); // as a crash: nothing is saved after the calls returned
     let (_, loaded) = Store::open(d.path()).unwrap();
     assert!(loaded.at(other).is_ok(), "the opened cursor is there");
@@ -399,7 +401,7 @@ fn load_wakes_a_cursor_with_input_pending_for_its_hooks_only() {
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let mut m = Machine::new(s);
     m.send(c, "term".into(), "hi", 0).unwrap();
-    store.save(&mut m.session).unwrap();
+    store = store.save(&mut m.session).unwrap();
     drop(m);
     drop(store); // closed before the step ran
     let (_store, loaded) = Store::open(d.path()).unwrap();
@@ -435,18 +437,19 @@ fn load_wakes_a_cursor_with_input_pending_for_its_hooks_only() {
 }
 
 #[test]
-fn after_a_failed_save_the_store_says_so_and_refuses() {
+fn a_failed_save_consumes_the_store_and_the_session_reopens_as_last_synced() {
     let d = dir();
     let (mut s, c) = Session::create("{}", "sys", 0);
-    let mut store = Store::create(d.path(), &mut s).unwrap();
-    assert!(!store.failed());
+    let store = Store::create(d.path(), &mut s).unwrap();
+    let synced = as_loaded(&s);
     // The store cannot create its temporary scratchpad file here.
-    fs::create_dir(d.path().join("scratchpad.new")).unwrap();
+    let block = d.path().join("scratchpad.new");
+    fs::create_dir(&block).unwrap();
     let mut m = Machine::new(s);
     m.input(c, "term".into(), "hi", 0).unwrap();
     assert!(matches!(store.save(&mut m.session), Err(Error::Io(_))));
-    assert!(store.failed());
-    m.session.set_label("x", c).unwrap();
-    m.session.sync();
-    assert!(matches!(store.save(&mut m.session), Err(Error::Failed)));
+    // The store is gone with its lease, as after a crash: the session opens again.
+    fs::remove_dir(&block).unwrap();
+    let (_, loaded) = Store::open(d.path()).unwrap();
+    assert_eq!(loaded, synced);
 }

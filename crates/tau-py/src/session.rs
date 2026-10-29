@@ -20,13 +20,15 @@ struct Inner {
 
 impl Inner {
     /// Hand the queued records to the store, or drop them when there is none:
-    /// an in-memory session has nowhere to make them durable.
-    fn save(&mut self) -> Result<(), Failure> {
-        match &mut self.store {
-            Some(store) => store.save(&mut self.machine.session)?,
-            None => self.machine.session.outbox.clear(),
+    /// an in-memory session has nowhere to make them durable. A failed save
+    /// consumes the session (`Store::save`): the caller is left with none.
+    fn save(mut self) -> Result<Self, Failure> {
+        if let Some(store) = self.store.take() {
+            self.store = Some(store.save(&mut self.machine.session)?);
+        } else {
+            self.machine.session.outbox.clear();
         }
-        Ok(())
+        Ok(self)
     }
 
     /// Cursor arguments are checked, so an unknown id is `NoSuchCursor` rather
@@ -71,8 +73,9 @@ impl Session {
     }
 
     /// A call that changes the session: then the store gets what it queued.
-    /// A failure of the call itself is reported before a failure to save. After
-    /// a failed save every such call is refused up front with `Failed`.
+    /// A failed save is a crash: the OS error is raised and the session is
+    /// closed, as `close` leaves it; reopen it from disk. Otherwise a failure
+    /// of the call itself is raised.
     fn write<R: Send>(
         &self,
         py: Python<'_>,
@@ -82,17 +85,10 @@ impl Session {
         let _span = span.entered();
         Ok(py.detach(|| {
             let mut guard = tracing::info_span!("py.lock").in_scope(|| self.lock())?;
-            let inner = guard.as_mut().ok_or(Failure::Closed)?;
-            // After a failed save the store refuses everything; so do we,
-            // before the call changes what the log no longer matches.
-            if inner.store.as_ref().is_some_and(Store::failed) {
-                return Err(tau_store::Error::Failed.into());
-            }
+            let mut inner = guard.take().ok_or(Failure::Closed)?;
             let result = tracing::info_span!("py.machine").in_scope(|| f(&mut inner.machine));
-            let saved = tracing::info_span!("py.save").in_scope(|| inner.save());
-            let result = result?;
-            saved?;
-            Ok::<R, Failure>(result)
+            *guard = Some(tracing::info_span!("py.save").in_scope(|| inner.save())?);
+            result
         })?)
     }
 
@@ -121,12 +117,11 @@ impl Session {
             let store = directory
                 .map(|dir| Store::create(&dir, &mut session))
                 .transpose()?;
-            let mut inner = Inner {
+            Inner {
                 machine: Machine::new(session),
                 store,
-            };
-            inner.save()?;
-            Ok::<Inner, Failure>(inner)
+            }
+            .save()
         })?;
         Ok(Self::new(inner))
     }
@@ -233,8 +228,9 @@ impl Session {
 
     // Extension and driver calls.
 
-    /// `hook`: `(cursor, serial)` of the hook job that makes this call, which then rides that
-    /// phase's sync; none for a frontend's or the driver's call, which syncs.
+    /// `hook`: the cursor whose hook makes this call, which then rides that
+    /// phase's sync while its hook job is out; none for a frontend's or the
+    /// driver's call, which syncs.
     #[pyo3(signature = (at, by, now, hook = None))]
     fn open(
         &self,
@@ -242,13 +238,10 @@ impl Session {
         at: u64,
         by: Author,
         now: u64,
-        hook: Option<(u64, u64)>,
+        hook: Option<u64>,
     ) -> PyResult<u64> {
         self.write(py, tracing::info_span!("py.open"), |m| {
-            Ok(match hook {
-                Some((h, k)) => m.hook_open(h, k, at, by.into(), now)?,
-                None => m.open(at, by.into(), now)?,
-            })
+            Ok(m.open(at, by.into(), now, hook)?)
         })
     }
 
@@ -260,25 +253,18 @@ impl Session {
         to: u64,
         data: ItemData,
         now: u64,
-        hook: Option<(u64, u64)>,
+        hook: Option<u64>,
     ) -> PyResult<u64> {
         self.write(py, tracing::info_span!("py.add_item"), |m| {
-            Ok(match hook {
-                Some((h, k)) => m.hook_add_item(h, k, to, data.into(), now)?,
-                None => m.add_item(to, data.into(), now)?,
-            })
+            Ok(m.add_item(to, data.into(), now, hook)?)
         })
     }
 
     /// `hook` as for `open`.
     #[pyo3(signature = (id, hook = None))]
-    fn remove_item(&self, py: Python<'_>, id: u64, hook: Option<(u64, u64)>) -> PyResult<()> {
+    fn remove_item(&self, py: Python<'_>, id: u64, hook: Option<u64>) -> PyResult<()> {
         self.write(py, tracing::info_span!("py.remove_item"), |m| {
-            match hook {
-                Some((h, k)) => m.hook_remove_item(h, k, id),
-                None => m.remove_item(id),
-            }
-            .map_err(Failure::from)
+            Ok(m.remove_item(id, hook)?)
         })
     }
 
@@ -292,62 +278,46 @@ impl Session {
         body: Body,
         by: Author,
         now: u64,
-        hook: Option<(u64, u64)>,
+        hook: Option<u64>,
     ) -> PyResult<u64> {
         self.write(py, tracing::info_span!("py.append"), |m| {
-            Ok(match hook {
-                Some((h, k)) => m.hook_append(h, k, parent, body.into(), by.into(), now)?,
-                None => m.append(parent, body.into(), by.into(), now)?,
-            })
+            Ok(m.append(parent, body.into(), by.into(), now, hook)?)
         })
     }
 
-    // A cursor hook's calls on its own cursor: refused (`NotInHook`) unless the
-    // hook job with this `serial` (`Job.Hooks.serial`) is still out for it.
+    // A cursor hook's calls on its own cursor: refused (`NotInHook`) unless a
+    // cursor hook job is out for it.
 
     fn hook_move(
         &self,
         py: Python<'_>,
         cursor: u64,
-        serial: u64,
         to: u64,
         by: Author,
         now: u64,
     ) -> PyResult<()> {
         self.write(py, tracing::info_span!("py.hook_move"), |m| {
-            Ok(m.hook_move(cursor, serial, to, by.into(), now)?)
+            Ok(m.hook_move(cursor, to, by.into(), now)?)
         })
     }
 
-    #[allow(clippy::too_many_arguments)] // rules: allow: the binding mirrors the call's whole signature
     fn hook_write(
         &self,
         py: Python<'_>,
         cursor: u64,
-        serial: u64,
         body: Body,
         delivers: Vec<u64>,
         by: Author,
         now: u64,
     ) -> PyResult<u64> {
         self.write(py, tracing::info_span!("py.hook_write"), |m| {
-            Ok(m.hook_write(cursor, serial, body.into(), delivers, by.into(), now)?)
+            Ok(m.hook_write(cursor, body.into(), delivers, by.into(), now)?)
         })
     }
 
-    fn hook_set_auto(&self, py: Python<'_>, cursor: u64, serial: u64, on: bool) -> PyResult<()> {
+    fn hook_set_auto(&self, py: Python<'_>, cursor: u64, on: bool) -> PyResult<()> {
         self.write(py, tracing::info_span!("py.hook_set_auto"), |m| {
-            Ok(m.hook_set_auto(cursor, serial, on)?)
-        })
-    }
-
-    fn ask(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
-        self.write(py, tracing::info_span!("py.ask"), |m| Ok(m.ask(cursor)?))
-    }
-
-    fn answered(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
-        self.write(py, tracing::info_span!("py.answered"), |m| {
-            Ok(m.answered(cursor)?)
+            Ok(m.hook_set_auto(cursor, on)?)
         })
     }
 
@@ -358,26 +328,18 @@ impl Session {
         py: Python<'_>,
         label: &str,
         cursor: u64,
-        hook: Option<(u64, u64)>,
+        hook: Option<u64>,
     ) -> PyResult<()> {
         self.write(py, tracing::info_span!("py.set_label"), |m| {
-            match hook {
-                Some((h, k)) => m.hook_set_label(h, k, label, cursor),
-                None => m.set_label(label, cursor),
-            }
-            .map_err(Failure::from)
+            Ok(m.set_label(label, cursor, hook)?)
         })
     }
 
     /// `hook` as for `open`.
     #[pyo3(signature = (label, hook = None))]
-    fn remove_label(&self, py: Python<'_>, label: &str, hook: Option<(u64, u64)>) -> PyResult<()> {
+    fn remove_label(&self, py: Python<'_>, label: &str, hook: Option<u64>) -> PyResult<()> {
         self.write(py, tracing::info_span!("py.remove_label"), |m| {
-            match hook {
-                Some((h, k)) => m.hook_remove_label(h, k, label),
-                None => m.remove_label(label),
-            }
-            .map_err(Failure::from)
+            Ok(m.remove_label(label, hook)?)
         })
     }
 
@@ -401,13 +363,6 @@ impl Session {
         self.read(py, tracing::info_span!("py.busy"), |i| {
             i.cursor(cursor)?;
             Ok(i.machine.busy(cursor))
-        })
-    }
-
-    fn locked(&self, py: Python<'_>, cursor: u64) -> PyResult<bool> {
-        self.read(py, tracing::info_span!("py.locked"), |i| {
-            i.cursor(cursor)?;
-            Ok(i.machine.locked(cursor))
         })
     }
 

@@ -150,8 +150,7 @@ Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
 `RootNotConfig` (V1), `DuplicateCall` (V2), `BadRecord` (load); a driver's: `WrongFeed`
 (a feed that answers no job: none is out, it is of another kind, or it
 names a call that is not in the batch or already answered; nothing changes); and a frontend call's: `Busy`
-(step on a busy cursor), `Locked` (input, go-to, or step with a question
-open), `HookRunning` (go-to while a cursor hook runs); a hook's: `NotInHook` (a hook's
+(step on a busy cursor); a hook's: `NotInHook` (a hook's
 move, write, or auto-step change on a cursor with no cursor hook job out), and
 `NoSuchItem` (removing an item not in the scratchpad), and `NotPending` (a
 write that delivers an item not pending for that cursor). Each becomes a typed Python exception of the same name in `tau-py`, and so does
@@ -252,8 +251,8 @@ since the step woke (Q44).
 not yet spiked · retires `navigate_tree`, `Session.rerun`
 
 A frontend's move. Turns auto-step off and wakes the cursor (Q39). On a busy
-cursor: refused while a hook runs or a question is open, else abort then
-move.
+cursor: abort, then move once the step rests; a hook that is running
+finishes, and an open question is declined.
 
 ### re-run
 Go to a batch's `Assistant` node and step: the tools phase runs it again and
@@ -282,11 +281,14 @@ on that cursor writes nothing.
 *spike* `machine::Machine` · new
 
 The session plus every cursor's step: the frontend calls (`input`, `send`,
-`step`, `go_to`, `set_auto`, `abort`), the extension calls that wake a
-cursor (`open`, `add_item`), the question lock (`ask`, `answered`), and
-`next_job`/`feed` per cursor. `open` and `add_item` sync on return unless a
-cursor hook is running (then the phase's sync covers them). `abort`, `ask`,
-`answered`, `next_job`, `feed` check the cursor: `NoSuchCursor`. Holds a busy go-to until its aborted step
+`step`, `go_to`, `set_auto`, `abort`), the extension calls (`open`,
+`add_item`, `remove_item`, `append`, `set_label`, `remove_label`), a hook's
+own-cursor calls (`hook_move`, `hook_write`, `hook_set_auto`), and
+`next_job`/`feed` per cursor. Each extension call takes `hook: Option<CursorId>`,
+the cursor whose hook makes it: it syncs on return unless a cursor hook job
+is out for that cursor (then the phase's sync covers it); a frontend or the
+driver passes `None`. `abort`, `next_job`, `feed` check the cursor:
+`NoSuchCursor`. Holds a busy go-to until its aborted step
 rests (`going`). Each frontend call resets `max_steps` and syncs on return.
 What `tau-py` exposes; `Session`'s own mutators are for core and tests.
 Also `set_label` and `remove_label` (which sync on return), `Machine::loaded(session,
@@ -302,8 +304,8 @@ directory=None)` makes one (in memory, or in a directory with a store);
 `Session.load(directory, now)` opens one. Every call takes the lock with the
 GIL released; every call that changes the session then gives the store its
 queued records before it returns, so Python never saves. An in-memory
-session drops them. After a failed save (`Store::failed`) every call that
-changes the session is refused up front with `Failed`. Cursor ids are checked
+session drops them. A failed save is a crash: the call raises the OS error
+and the session closes itself (see **close**). Cursor ids are checked
 by core: an unknown one is `NoSuchCursor`. The value classes have a `__repr__`
 (the Rust `Debug` text).
 `cursors()` lists the open cursors; `take_notices()` drains the notices.
@@ -313,7 +315,8 @@ by core: an unknown one is `NoSuchCursor`. The value classes have a `__repr__`
 
 Drops the store and releases the lease without writing what is not yet
 synced, as a crash would. Every later call, a second `close` included,
-raises `Closed`.
+raises `Closed`. A failed save leaves the session in the same state: the
+store is gone with its lease, and reopening from disk is the recovery.
 
 ### Poisoned
 `tau_next.Poisoned` · new
@@ -328,13 +331,6 @@ more calls on possibly torn state.
 A cursor is busy while a `Step` exists for it that is not `resting()`.
 Never stored; every cursor loads at rest.
 
-### locked
-*spike* `Machine::locked`, `ask`, `answered` · new
-
-A cursor with an open question. Input, go-to, and step on it are refused
-(`Error::Locked`); abort is allowed and leaves the question open. Core
-counts open questions per cursor; the driver holds their content.
-
 ## The step
 
 ### step
@@ -344,8 +340,9 @@ submission, cycle
 One pass of the phase loop for one cursor, `pre_step` to `post_step`.
 `Step::wake(session, cursor, asked, now)` starts one; `next_job` and `feed`
 drive it; `abort` and `resting` are its other calls. Private state:
-`cursor`, `pos`, `asked`, `aborted`, `committed`, `started`, `seen`,
-`draft`, `error`, `ending`, `batch`.
+`cursor`, `pos`, `asked`, `committed`, `started`, `seen`, `out` (a job is
+handed out and not yet answered; which kind is `pos`'s), `draft`, `error`,
+`ending` (no longer `Done` once aborted, so no later phase applies), `batch`.
 
 ### asked
 *spike* `Step::asked` · new
@@ -386,27 +383,21 @@ that is not `Config` or `Custom`); a batch is read from that node, not from
 ### job
 *spike* `Job` · new
 
-What the step asks the driver to do: `Hooks { point, draft, ending, serial }`,
+What the step asks the driver to do: `Hooks { point, draft, ending }`,
 `Sample`, `RunCalls { node, calls }` (`node`: the `Assistant` node holding the
 batch; the driver refuses an empty one), `Pending` (calls outstanding),
 `Wait { until }` (the throttle), `Rest`. Only waits are jobs; writes never are.
 
-### serial
-*spike* `Job::Hooks.serial`, `Machine::serial` · new
+### retired handle
+Python `TreeHandle.retire` · new
 
-A number core gives each cursor hook job, never reused. A cursor handle carries
-the serial of the job it was made for. A hook's own-cursor calls (`hook_move`,
-`hook_write`, `hook_set_auto`) are refused with `NotInHook` unless that job is
-still the one out; its other writes (`hook_open`, `hook_add_item`, `hook_append`,
-`hook_remove_item`, `hook_set_label`, `hook_remove_label`) skip their sync only
-while that job is out, and sync otherwise.
-
-**Retired handle.** Python retires a handle (`TreeHandle.retire`) when its hook
-coroutine returns, before the job is fed. A retired handle can still read (`walk`,
-`items`, `children`, ...); it cannot write at all: every write, `ask`, and own-cursor
-call raises `NotInHook`. A node handle is retired when its tool hook returns. A
-handle from an earlier job, step, or cursor is retired by then, and core also refuses
-its serial.
+Python retires a handle when its hook coroutine returns, before the job is
+fed. A retired handle can still read (`walk`, `items`, `children`, ...); it
+cannot write at all: every write, `ask`, and own-cursor call raises
+`NotInHook`. A node handle is retired when its tool hook returns. A handle
+from an earlier job, step, or cursor is retired by then. This is the only
+check of handle identity: core knows only whether a cursor hook job is out
+for a cursor (`in_hook`).
 
 ### Fed
 *spike* `Fed` · new
@@ -497,11 +488,11 @@ so a later `Waited` is a `WrongFeed`). Never cancels a hook.
 ### in_hook
 *spike* `Step::in_hook` · new
 
-True while a cursor hook job is out and not yet fed (`serial` says which). Core
-cannot see tool hooks inside `RunCalls`; a go-to then aborts and the hook
-finishes (Q34). A call made from a hook skips its sync only while its own
-cursor's job is out (`Machine::hook_*`); a frontend's or the driver's call
-always syncs.
+True while a cursor hook job is out and not yet fed. A hook's own-cursor
+calls (`Machine::hook_*`) are allowed only then, and a call made with
+`hook: Some(cursor)` skips its sync only then; a frontend's or the driver's
+call always syncs. A go-to or abort during a hook, cursor or tool, aborts
+the step and the hook finishes (Q34).
 ### resume
 What a crash mid-batch leaves: the cursor at rest at the unanswered batch,
 every outcome lost (D4). Input goes under it; a step re-runs it.
@@ -576,9 +567,9 @@ on; a string stops. Hooks at a point run in `config_at(at)` order.
 `async def hook(cursor, subject) -> str | None` · new
 
 May move its cursor, write under `at`, set auto-step. Core allows these only
-while the hook's own job is out (`in_hook`, matched by its `serial`):
-`Machine::hook_move`, `hook_write`, `hook_set_auto` raise `NotInHook` otherwise,
-including for a handle kept from an earlier job. They apply at once and sync
+while a cursor hook job is out for that cursor (`in_hook`):
+`Machine::hook_move`, `hook_write`, `hook_set_auto` raise `NotInHook` otherwise.
+A handle kept from an earlier job is retired (see **retired handle**). They apply at once and sync
 nothing; the phase's sync covers them. `set_auto(True)` in a step that is then
 aborted leaves the cursor at rest: it wakes nothing.
 Core checks no more than the tree's own rules (no hook edit limits), and a hook
@@ -606,7 +597,7 @@ share. Reads: `get_node`, `lca`, `cursors`, `cursor_at`, `items_of`,
 `config`, `items`, `labels`, `moves(since_step=)`, `move(to)`,
 `write(body, delivers)`, `set_auto(on)`, and `ask`. A handle's writes that
 belong to no cursor pass the hook's cursor to core (`hook`), so they skip their
-sync only while that cursor's own hook job is out. Not built: updating an item
+sync only while a cursor hook job is out for it. Not built: updating an item
 in place, `show`, `tell` (`docs/plan.md`, roadmap row 8).
 
 ### Poke, Now
@@ -618,11 +609,13 @@ the driver's clock in milliseconds, so a handle fills in `time`. `Asker` is the
 driver's question call (see **question**).
 
 ### question
-the lock is *spike* (`Machine::ask`); the rest is the driver's · retires
-`request_user_action`
+`Driver.ask`, `answer`, `questions`, `Question` (driver memory; not core) ·
+retires `request_user_action`
 
-`await cursor.ask(target, question)`; the cursor is locked until it is
-answered or declined.
+`await cursor.ask(target, question)` returns the answer, or `None` if
+declined. The hook awaiting it keeps its job out, so the cursor is busy and
+core's busy rules apply (model.md §7). `Driver.abort` and `Driver.go_to`
+decline the cursor's open questions.
 
 
 ## Effects and edges
@@ -1010,8 +1003,9 @@ links it into place; `Store::open(dir)` takes the lease and loads;
 `Store::save(session)` takes the outbox, writing and syncing the log at each
 `Sync`, then the scratchpad file. Its errors (`tau_store::Error`): `Io`,
 `Leased`, `Exists`, `NotASession`, `Version`, `Corrupt` (a damaged
-scratchpad file), `Failed` (an earlier write failed; open again), `Core`
-(the log does not replay). **JMFTS** (Phase 7) is a replica of the log,
+scratchpad file), `Core` (the log does not replay). `save` consumes the
+store and returns it on success: after an `Io` error it is gone with its
+lease, as after a crash, and the session is opened again. **JMFTS** (Phase 7) is a replica of the log,
 never the store of record.
 
 ### torn tail, dropped

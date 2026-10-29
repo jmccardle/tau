@@ -374,8 +374,10 @@ async def test_a_step_that_committed_nothing_is_throttled(tmp_path: Path) -> Non
 
 
 @scenario
-async def test_a_question_locks_the_cursor_until_it_is_answered(tmp_path: Path) -> None:
-    """machine.rs `a_question_locks_the_cursor_and_abort_leaves_it_open`."""
+async def test_a_question_holds_its_step_until_it_is_answered(tmp_path: Path) -> None:
+    """A question is a hook awaiting its answer: the hook's job stays out, so the cursor
+    is busy. Core's rules for a busy cursor apply: step is refused, input waits for the
+    next step's input phase."""
 
     class Asker:
         name = "asker"
@@ -389,13 +391,26 @@ async def test_a_question_locks_the_cursor_until_it_is_answered(tmp_path: Path) 
             return None
 
     asker = Asker()
-    h = await Harness.create(tmp_path, provider=FakeProvider([text("ok")]), extensions=[asker])
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([text("ok"), text("ok 2")]), extensions=[asker]
+    )
     await h.send("hi")
     await h.settle()
     assert [q.text for q in h.driver.questions(h.cursor)] == ["send it?"]
-    with pytest.raises(tau_next.Locked):
-        await h.input("more")
+    assert h.session.busy(h.cursor)
+    with pytest.raises(tau_next.Busy):
+        await h.step()
+    await h.input("more")
     await h.answer("yes")
     await h.settle()
     assert asker.answers == ["yes"]
-    assert h.bodies()[-2:] == [Body.User("hi"), Body.Assistant([Part.Text("ok")], Stop.End)]
+    assert [q.text for q in h.driver.questions(h.cursor)] == ["send it?"], "the next step's"
+    await h.answer(None)
+    await h.settle()
+    assert asker.answers == ["yes", None]
+    assert h.bodies()[2:] == [
+        Body.User("hi"),
+        Body.Assistant([Part.Text("ok")], Stop.End),
+        Body.User("more"),
+        Body.Assistant([Part.Text("ok 2")], Stop.End),
+    ]

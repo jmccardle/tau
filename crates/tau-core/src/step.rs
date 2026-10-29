@@ -48,9 +48,6 @@ pub enum Job {
         point: Hook,
         draft: Option<Draft>,
         ending: Option<Ending>,
-        /// Unique to this job, given by the `Machine` (0 from a bare `Step`): a
-        /// hook's own-cursor calls carry it, and are refused once the job is fed.
-        serial: u64,
     },
     Sample,
     /// Each call: `pre_tool`, the tool, `pre_result`, in the driver. `node` is
@@ -105,34 +102,21 @@ enum Pos {
     Rest,
 }
 
-/// The job last handed out and not yet answered: the only kind of feed the
-/// step accepts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Out {
-    Nothing,
-    Hook,
-    Sample,
-    /// The batch: stays out through `Pending` until its last call is fed.
-    Calls,
-    Wait,
-}
-
 #[derive(Debug)]
 pub struct Step {
     pub cursor: CursorId,
     pos: Pos,
     asked: bool,
-    aborted: bool,
     committed: bool,
     started: u64,
     seen: u64,
     /// `Session::moves.len()` when this step woke.
     first_move: usize,
-    out: Out,
+    /// A job is out: handed out by `next_job` and not yet answered. Which kind
+    /// is `pos`'s; the batch stays out through `Pending` until its last call is fed.
+    out: bool,
     /// The input item the draft in `Pos::Input` offers.
     offered: Option<ItemId>,
-    /// The serial of the cursor hook job last handed out.
-    serial: u64,
     draft: Option<Draft>,
     /// The input phase's work: the inputs pending when it began, oldest
     /// first, each offered once. `None` until the phase begins.
@@ -152,14 +136,12 @@ impl Step {
             cursor,
             pos: Pos::PreStep,
             asked,
-            aborted: false,
             committed: false,
             started: now,
             seen,
             first_move: s.moves.len(),
-            out: Out::Nothing,
+            out: false,
             offered: None,
-            serial: 0,
             draft: None,
             inputs: None,
             error: None,
@@ -176,25 +158,18 @@ impl Step {
     pub fn next_job(&mut self, s: &mut Session) -> Result<Job, Error> {
         let job = self.job(s)?;
         transitions::emit(self.pos, &job);
-        match job {
-            Job::Hooks { .. } => self.out = Out::Hook,
-            Job::Sample => self.out = Out::Sample,
-            Job::RunCalls { .. } => self.out = Out::Calls,
-            Job::Wait { .. } => self.out = Out::Wait,
-            Job::Pending => {}
-            Job::Rest => self.out = Out::Nothing,
-        }
+        self.out = job != Job::Rest;
         Ok(job)
     }
 
     fn job(&mut self, s: &mut Session) -> Result<Job, Error> {
         loop {
-            let on = !self.aborted && (self.asked || s.auto[&self.cursor]);
+            // An aborted step's ending is no longer `Done`: no later phase applies.
+            let on = self.ending == Ending::Done && (self.asked || s.auto[&self.cursor]);
             let hooks = |point, draft| Job::Hooks {
                 point,
                 draft,
                 ending: None,
-                serial: 0,
             };
             return Ok(match self.pos {
                 Pos::PreStep => hooks(Hook::PreStep, None),
@@ -279,7 +254,6 @@ impl Step {
                         point: Hook::PostStep,
                         draft: None,
                         ending: Some(self.ending.clone()),
-                        serial: 0,
                     }
                 }
                 Pos::Throttle => Job::Wait {
@@ -303,11 +277,7 @@ impl Step {
             return Err(Error::WrongFeed(self.cursor));
         }
         transitions::fed(&fed);
-        self.out = if self.out == Out::Calls && matches!(fed, Fed::CallDone { .. }) {
-            Out::Calls
-        } else {
-            Out::Nothing
-        };
+        self.out = false;
         match (self.pos, fed) {
             (Pos::PostStep, Fed::Hooks { stop, .. }) => {
                 if stop.is_some() {
@@ -384,6 +354,7 @@ impl Step {
                 }
                 self.join(s, now)?;
                 if self.pos == Pos::Calls {
+                    self.out = true;
                     self.go(Pos::Calls); // calls still out
                 }
             }
@@ -399,12 +370,11 @@ impl Step {
 
     /// Whether `fed` answers the job that is out. Decided before anything changes.
     fn answers(&self, fed: &Fed) -> bool {
-        match (self.out, self.pos, fed) {
-            (Out::Hook, _, Fed::Hooks { .. } | Fed::HookFailed(_))
-            | (Out::Sample, Pos::Sample, Fed::Sampled { .. })
-            | (Out::Wait, Pos::Throttle, Fed::Waited) => true,
-            (Out::Calls, Pos::Calls, Fed::CallDone { call, .. }) => {
-                self.batch.iter().any(|c| c.0 == *call && c.1.is_none())
+        match (self.pos, fed) {
+            (_, Fed::Hooks { .. } | Fed::HookFailed(_)) => self.in_hook(),
+            (Pos::Sample, Fed::Sampled { .. }) | (Pos::Throttle, Fed::Waited) => self.out,
+            (Pos::Calls, Fed::CallDone { call, .. }) => {
+                self.out && self.batch.iter().any(|c| c.0 == *call && c.1.is_none())
             }
             _ => false,
         }
@@ -414,22 +384,32 @@ impl Step {
     /// cancel the effect in flight (or, in the throttle, its sleeper) and feed what it got (partial reply, `Interrupted`s).
     pub fn abort(&mut self, s: &mut Session) -> bool {
         s.auto.insert(self.cursor, false);
-        self.aborted = true;
         if self.ending == Ending::Done {
             self.ending = Ending::Aborted;
         }
         let cancel = matches!(self.pos, Pos::Sample | Pos::Calls | Pos::Throttle);
         if self.pos == Pos::Throttle {
             transitions::event("abort");
+            self.out = false;
             self.go(Pos::Rest); // the scheduled restart is cancelled
         }
         cancel
     }
 
-    /// True while a cursor hook job is out: a frontend's go-to is refused.
+    /// True while a cursor hook job is out: the hook may act on its own cursor.
     #[must_use]
     pub fn in_hook(&self) -> bool {
-        self.out == Out::Hook
+        self.out
+            && matches!(
+                self.pos,
+                Pos::PreStep
+                    | Pos::Input
+                    | Pos::PreSample
+                    | Pos::PreReply
+                    | Pos::PostReply
+                    | Pos::PostResult
+                    | Pos::PostStep
+            )
     }
 
     /// Write a phase's draft under `at`. Core validates the draft the hooks left: any
@@ -486,17 +466,6 @@ impl Step {
     fn go(&mut self, to: Pos) {
         transitions::go(self.pos, to);
         self.pos = to;
-    }
-
-    /// The machine numbers the hook job it just took from `next_job`.
-    pub fn set_serial(&mut self, serial: u64) {
-        self.serial = serial;
-    }
-
-    /// The serial of the cursor hook job last handed out (valid while `in_hook`).
-    #[must_use]
-    pub fn serial(&self) -> u64 {
-        self.serial
     }
 
     #[must_use]

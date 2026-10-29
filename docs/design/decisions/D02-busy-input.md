@@ -17,7 +17,7 @@ need to send each other work.
   adding one wakes its cursor. An extension reads its own cursor's items in
   `pre_step` and `post_step`.
 - **Input is the one item kind core knows** (`ItemData::Input`).
-  `Session.input` adds one; it is refused only while a question is open.
+  `Session.input` adds one; it is refused only for an unknown cursor.
 - **The input phase delivers it**, whenever input is pending, even at an
   unanswered batch. Per item, oldest first: `pre_input`, then a `User` node
   under `at` with `delivers: [item]`, by `Frontend(client)`, and the move,

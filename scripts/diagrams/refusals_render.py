@@ -12,9 +12,9 @@ COLOURS = {
     "ok": "honeydew",
     "state": "khaki1",  # refused because of what the cursor is doing
     "argument": "gray88",  # refused because the cursor or node is not there
-    "dead": "mistyrose",  # refused because the session is closed or its store failed
+    "dead": "mistyrose",  # refused because the session is closed
 }
-STATE_REFUSALS = {"Busy", "Locked", "HookRunning", "NotInHook", "WrongFeed"}
+STATE_REFUSALS = {"Busy", "NotInHook", "WrongFeed"}
 ARGUMENT_REFUSALS = {"NoSuchCursor", "NoSuchNode", "NoSuchItem", "NoSuchLabel", "NotPending"}
 SHOWN = {"ok (true)": "ok, cancel"}
 
@@ -78,7 +78,7 @@ def main(data_path: Path, out: Path) -> None:
         '  graph [fontname="Helvetica", labelloc=t, label=<<b>Frontend calls against cursor states'
         "</b><br/>green: accepted. yellow: refused because of what the cursor is doing. "
         "grey: refused because the cursor or node does not exist. "
-        "pink: the session is closed or its store failed>];",
+        "pink: the session is closed>];",
         '  node [shape=plain, fontname="Helvetica", fontsize=9];',
         '  t [label=<<table border="0" cellborder="1" cellspacing="0" cellpadding="3">',
         '<tr><td border="0"></td>'

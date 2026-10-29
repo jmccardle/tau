@@ -89,7 +89,9 @@ def compare(
 
 
 def write_allow(tight: dict[str, dict[str, int]]) -> None:
-    head = ALLOW.read_text().split("\n[", 1)[0].rstrip() + "\n"
+    titles = {f"# {title}; limit {LIMITS[sec]}" for sec, title in SECTIONS.items()}
+    lines = ALLOW.read_text().split("\n[", 1)[0].splitlines()
+    head = "\n".join(line for line in lines if line not in titles).rstrip() + "\n"
     out = [head]
     for sec, title in SECTIONS.items():
         out.append(f"\n# {title}; limit {LIMITS[sec]}\n[{sec}]")

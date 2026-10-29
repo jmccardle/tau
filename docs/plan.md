@@ -35,7 +35,7 @@ Rulings since revision 7 (recorded in `model.md` and the ADRs):
 lines, plus ~1,400 lines of tests): the tree with labels, `config_at`, and
 LCA (3a); one cursor's step as a sans-IO machine (D11); and
 the session machine over every cursor, taking frontend calls (go-to on a busy
-cursor, `Session.step`, the question lock, wakes, `max_steps`). The I1–I5
+cursor, `Session.step`, wakes, `max_steps`). The I1–I5
 proptests (`tests/invariants.rs`) drive it with random frontend calls and
 random answers to every job, hooks that move the cursor included. A turn costs
 ~15–30 µs at any session depth. Replay (`Session::load`) and the I7
@@ -143,10 +143,10 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
   - ✓ input while busy is delivered by the next step, after the batch; input at
     rest; ✓ refused input (notice, item removed); abort leaves pending input
     pending (✓); abort then send (✓);
-  - ✓ a frontend's go-to refused while a hook runs or a question is open; ✓ go-to
-    on a busy cursor aborts, runs post hooks and `post_step`, then moves; ✓ a
-    go-to wakes with no phase;
-  - ✓ a question locks the cursor; ✓ esc does not close it; a single-client
+  - ✓ a frontend's go-to on a busy cursor, a hook running included, aborts,
+    runs post hooks and `post_step`, then moves; ✓ a go-to wakes with no phase;
+  - ✓ a question holds its hook's step (the cursor is busy); ✓ esc and go-to
+    decline it; a single-client
     question is declined when that client detaches; abort during a `pre_tool`
     awaiting approval, then approval, gives `Interrupted`;
   - hook strings: `pre_tool` → `Err(reason)`; ✓ a cursor hook halts the step;

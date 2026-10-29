@@ -10,21 +10,17 @@
 
 
 # Function cyclomatic complexity (crate-relative file::Type::fn); limit 15
-
-
-# Function cyclomatic complexity (crate-relative file::Type::fn); limit 15
 [function_cc]
-"crates/tau-core/src/step.rs::Step::feed" = 31  # +1 from the diagrams merge (built before the ratchet); wave 3 splits it
+"crates/tau-core/src/step.rs::Step::feed" = 29
 "crates/tau-core/src/step.rs::Step::job" = 29
-"crates/tau-py/src/error.rs::add_all" = 22  # +1 TraceError from the traces merge (built before the ratchet)
+"crates/tau-py/src/error.rs::add_all" = 19
 "crates/tau-tools/src/bash.rs::Running::read_output" = 16
 "crates/tau-tools/src/read.rs::Read::run" = 24
 
 # Inherent methods per type (crate::Type); limit 25
 [type_methods]
-"tau-core::Machine" = 40
 "tau-core::Session" = 36
-"tau-py::Session" = 47
+"tau-py::Session" = 44
 
 # Lines per file; limit 800
 [file_lines]

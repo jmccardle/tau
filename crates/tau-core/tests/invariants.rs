@@ -299,7 +299,7 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
         }
         Op::Auto(i, on) => m.set_auto(cursor(i), on, term(), 0).unwrap(),
         Op::Abort(i) => drop(m.abort(cursor(i))),
-        Op::Open(t) => match m.open(node(t), Author::Core, 0) {
+        Op::Open(t) => match m.open(node(t), Author::Core, 0, None) {
             Err(e) => prop_assert_eq!(e, Error::NoSuchNode(node(t))),
             Ok(id) => prop_assert_eq!(id, nc),
         },

@@ -38,7 +38,6 @@ class Ctx:
 
     session: Session
     cursor: int
-    serial: int = 1
     node: int = 1
     item: int = 0
     held: list[Session] = field(default_factory=list)
@@ -71,8 +70,6 @@ def drive_to(ctx: Ctx, stop: Callable[[Job], bool], calls: tuple[tuple[str, str]
     for _ in range(100):
         job = ctx.session.next_job(ctx.cursor)
         if stop(job):
-            if isinstance(job, Job.Hooks):
-                ctx.serial = job.serial
             return job
         if isinstance(job, Job.Rest):
             raise AssertionError("the step ended before the state was reached")
@@ -156,15 +153,6 @@ def s_throttle(ctx: Ctx) -> None:
     drive_to(ctx, lambda job: isinstance(job, Job.Wait))
 
 
-def s_locked_rest(ctx: Ctx) -> None:
-    ctx.session.ask(ctx.cursor)
-
-
-def s_locked_sample(ctx: Ctx) -> None:
-    s_sample(ctx)
-    ctx.session.ask(ctx.cursor)
-
-
 def s_unknown_cursor(ctx: Ctx) -> None:
     ctx.cursor = 999
 
@@ -187,13 +175,11 @@ STATES: list[tuple[str, str, Callable[[Ctx], None]]] = [
     ("post_result", "busy: post_result hook out", s_post_result),
     ("post_step", "busy: post_step hook out", hook_state(Hook.PostStep)),
     ("throttle", "busy: throttle wait out", s_throttle),
-    ("locked_rest", "locked by a question, at rest", s_locked_rest),
-    ("locked_sample", "locked by a question, sample out", s_locked_sample),
     ("unknown_cursor", "a cursor that is not open", s_unknown_cursor),
     ("closed", "session closed", s_closed),
 ]
 
-# The store-failed state needs a directory, so it is built apart.
+# The failed-save state needs a directory, so it is built apart.
 
 
 def s_store_failed(ctx: Ctx, directory: Path) -> None:
@@ -208,14 +194,9 @@ def s_store_failed(ctx: Ctx, directory: Path) -> None:
     block.rmdir()
 
 
-STORE_FAILED = ("store_failed", "store failed (an earlier save raised)")
+STORE_FAILED = ("store_failed", "closed by a failed save")
 
 Call = Callable[[Ctx], object]
-
-
-def hook_serial(ctx: Ctx) -> int:
-    return ctx.serial
-
 
 # (group, name, call). A call returns what the API returned.
 CALLS: list[tuple[str, str, Call]] = [
@@ -229,8 +210,6 @@ CALLS: list[tuple[str, str, Call]] = [
     ("frontend", "abort", lambda c: c.session.abort(c.cursor)),
     ("frontend", "set_label", lambda c: c.session.set_label("other", c.cursor)),
     ("frontend", "remove_label", lambda c: c.session.remove_label("main")),
-    ("question", "ask", lambda c: c.session.ask(c.cursor)),
-    ("question", "answered", lambda c: c.session.answered(c.cursor)),
     ("extension", "open", lambda c: c.session.open(1, Author.Extension("ext"), NOW)),
     (
         "extension",
@@ -248,19 +227,19 @@ CALLS: list[tuple[str, str, Call]] = [
     (
         "hook",
         "hook_move",
-        lambda c: c.session.hook_move(c.cursor, hook_serial(c), 0, Author.Extension("ext"), NOW),
+        lambda c: c.session.hook_move(c.cursor, 0, Author.Extension("ext"), NOW),
     ),
     (
         "hook",
         "hook_write",
         lambda c: c.session.hook_write(
-            c.cursor, hook_serial(c), Body.Custom("note", ""), [], Author.Extension("ext"), NOW
+            c.cursor, Body.Custom("note", ""), [], Author.Extension("ext"), NOW
         ),
     ),
     (
         "hook",
         "hook_set_auto",
-        lambda c: c.session.hook_set_auto(c.cursor, hook_serial(c), True),
+        lambda c: c.session.hook_set_auto(c.cursor, True),
     ),
     ("driver", "feed Hooks", lambda c: c.session.feed(c.cursor, Fed.Hooks(), NOW)),
     ("driver", "feed Waited", lambda c: c.session.feed(c.cursor, Fed.Waited(), NOW)),
@@ -291,7 +270,6 @@ def cells() -> Iterator[tuple[str, str, str]]:
             ctx = fresh(directory)
             s_store_failed(ctx, directory)
             yield STORE_FAILED[0], name, outcome(call, ctx)
-            ctx.session.close()
 
 
 def main() -> None:

@@ -84,7 +84,6 @@ fn a_step_sees_its_cursor_moves_since_it_woke() {
             point: tau_core::step::Hook::PreStep,
             draft: None,
             ending: None,
-            serial: 0
         }
     );
     let by = Author::Extension("nav".into());

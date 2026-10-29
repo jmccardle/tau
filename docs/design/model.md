@@ -140,7 +140,7 @@ back from. Any node may be gone to.
 | I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`, `a_torn_tail_opens_as_the_last_sync_before_it`; `Session::load` |
 
 **Not persisted (I7):** auto-step (every cursor loads with it off), busy (every
-cursor loads at rest), the `max_steps` count, open questions, shown state, a
+cursor loads at rest), the `max_steps` count, open questions (driver memory), shown state, a
 step's in-memory batch outcomes, events. Load drops every item some node
 `delivers`; anything after the log's last good `Sync` (a torn tail) never
 happened. That is the
@@ -160,11 +160,11 @@ A move is the only way `at` changes, and it checks only that `to` is a node
 - **A hook's move applies at once**; later hooks see the new `at`. Each hook
   sees the step's moves with `cursor.moves(since_step=True)` (`Step::moves`).
 - **A go-to** turns auto-step off and wakes the cursor, whose step then runs
-  only `pre_step` and `post_step` (Q39). On a busy cursor it is refused while
-  a cursor hook runs (`Error::HookRunning`) or a question is open
-  (`Error::Locked`); otherwise it aborts the step and applies after
-  `post_step` (`Machine::go_to`). A tool hook inside `RunCalls` is not
-  visible to core, so a go-to then aborts and the hook finishes (Q34).
+  only `pre_step` and `post_step` (Q39). On a busy cursor it aborts the step
+  and applies after `post_step` (`Machine::go_to`), whatever is out: an
+  effect is cancelled, a hook (cursor or tool) finishes (Q34), and an open
+  question is declined (§7). It is refused only for an unknown cursor or
+  node.
 - **Re-run** is go-to the batch's `Assistant` node, then step. **Branching**
   is moving off `walk(at)` and not below it; the branch forms at the next
   commit. Going to an ancestor is going back.
@@ -297,7 +297,9 @@ its own cursor's scratchpad in `pre_step` and `post_step`. Writes a hook
 makes trigger no hooks on its own step. A handle lives exactly as long as its
 hook coroutine: once the hook returns (or its job is fed), the handle is
 **retired**. A retired handle still reads the tree; every write, `ask`, and
-own-cursor call raises `NotInHook`. The exact surface is Phase 4's.
+own-cursor call raises `NotInHook`. Core has no handle identity: it allows
+own-cursor calls while a cursor hook job is out for that cursor, and the
+retired handle is the driver's. The exact surface is Phase 4's.
 
 ### Input
 
@@ -306,14 +308,18 @@ spike's `Session::add_item`). A **send** is input plus auto-step on. On a
 busy cursor the item waits for the next step's input phase. After an abort it
 stays pending (Q42). Commands and gates are `pre_input` hooks.
 
-### Questions (the lock is spiked)
+### Questions (the driver's; core has none)
 
 `await cursor.ask(target, question)` returns the answer, or `None` if
-declined. While a question is open the cursor is **locked**: a frontend's
-input, go-to, and step are refused; abort is allowed and leaves the question
-open. A question for one client is declined if it detaches. Core counts
-open questions per cursor (`Machine::ask`, `answered`) to enforce the lock;
-the questions themselves are driver memory.
+declined. A question is a hook awaiting a future the driver holds
+(`Driver.ask`, `answer`, `questions`); core knows nothing of it. The hook's
+job stays out while it waits, so the cursor is **busy**, and core's rules
+for a busy cursor apply unchanged: input is accepted and waits for the next
+step's input phase, `Session.step` is `Busy`, auto-step on or off only sets
+the flag (no second step starts under the question). Abort and go-to take
+the abort path: the step is aborted, the driver declines the cursor's open
+questions, and the hook finishes with `None`. A question for one client is
+declined if it detaches (not built).
 
 ### Between cursors
 
@@ -324,10 +330,12 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
 
 ## 8. Abort, failure, crash
 
-- **Abort** (`Step::abort`) turns auto-step off and marks the step aborted, so
+- **Abort** (`Step::abort`) turns auto-step off and ends the step `Aborted`, so
   no later phase applies. It returns true when the driver must cancel the
-  effect in flight (`Sample` or `Calls`) and feed what it got. Hooks are
-  never cancelled; post hooks and `post_step` run as usual.
+  effect in flight (`Sample` or `Calls`) and feed what it got, or the
+  throttle's sleeper. Hooks are never cancelled; post hooks and `post_step`
+  run as usual. The driver declines the cursor's open questions (§7), so a
+  hook awaiting one finishes.
   - During a sample with parts: the driver feeds the partial reply with
     `stop: Interrupted`; it goes through `pre_reply`, is committed, and
     `post_reply` runs (`abort_during_sample_commits_the_partial_reply`).
@@ -352,6 +360,10 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
   extension built from `pre_result`, `pre_tool`, and items.
 - **Crash during a commit**: node and move are one record; a torn tail is cut
   back to the last `Sync` on open.
+- **A save fails** (disk full, permissions changed): it is a crash. The call
+  raises the OS error and the session closes itself, as `Session.close`
+  leaves it: every later call raises `Closed`. Continuing is reopening from
+  disk, which is the crash recovery above; nothing in memory is trusted.
 
 ## 9. Events and frontends (not yet spiked)
 
@@ -397,7 +409,8 @@ then, if `pad` is set, rewrites the scratchpad file with it. The log never
 holds items. Load is `Session::load(records, scratchpad)`. The step queues a `Sync` before each post hook and when the
 step ends; calls outside a step (a frontend's input, go-to) sync on return.
 A crash loses at most the writes since the last sync, and never a post hook's
-view. Layout (D12): one append-only record log per session
+view. A failed save is a crash (§8): `Store::save` consumes the store, and
+the Python session closes. Layout (D12): one append-only record log per session
 (length-prefixed, checksummed records) plus a scratchpad file rewritten
 atomically. A delivering record is durable before its items are removed;
 load drops delivered items. Open cuts the log back to its last good `Sync`

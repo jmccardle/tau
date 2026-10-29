@@ -282,17 +282,6 @@ def test_moves_since_step_lists_the_moves_the_step_made() -> None:
     assert seen == [user, reply]
 
 
-def test_a_question_locks_the_cursor_until_answered() -> None:
-    session, cursor = new()
-    session.ask(cursor)
-    assert session.locked(cursor)
-    session.abort(cursor)
-    assert session.locked(cursor)
-    session.answered(cursor)
-    assert not session.locked(cursor)
-    session.send(cursor, "term", "hi", 0)
-
-
 # Exceptions
 
 
@@ -324,23 +313,18 @@ def test_a_step_on_a_busy_cursor_is_busy() -> None:
         session.step(cursor, "term", 0)
 
 
-def test_a_cursor_with_a_question_is_locked() -> None:
+def test_a_go_to_while_a_cursor_hook_runs_aborts_and_moves_once_the_step_rests() -> None:
     session, cursor = new()
-    session.ask(cursor)
-    with pytest.raises(tau_next.Locked):
-        session.input(cursor, "term", "hi", 0)
-    with pytest.raises(tau_next.Locked):
-        session.step(cursor, "term", 0)
-    with pytest.raises(tau_next.Locked):
-        session.go_to(cursor, 0, "term", 0)
-
-
-def test_a_go_to_while_a_cursor_hook_runs_is_refused() -> None:
-    session, cursor = new()
+    system = session.at(cursor)
     session.send(cursor, "term", "hi", 0)
     assert isinstance(session.next_job(cursor), Job.Hooks)
-    with pytest.raises(tau_next.HookRunning):
-        session.go_to(cursor, 0, "term", 0)
+    assert not session.go_to(cursor, 0, "term", 0), "nothing to cancel: the hook finishes"
+    assert session.at(cursor) == system
+    jobs = run(session, cursor)
+    endings = [j.ending for j in jobs if isinstance(j, Job.Hooks) and j.ending is not None]
+    assert endings[0] == Ending.Aborted()
+    assert not any(isinstance(j, Job.Sample) for j in jobs)
+    assert session.at(cursor) == 0
 
 
 def test_a_results_draft_naming_a_call_twice_fails_the_step_and_changes_nothing() -> None:
@@ -371,9 +355,8 @@ def test_a_feed_that_answers_no_job_is_refused_and_the_job_stays_out() -> None:
     assert isinstance(session.next_job(cursor), Job.Hooks)
     with pytest.raises(tau_next.WrongFeed):
         session.feed(cursor, say("x"), 0)
-    with pytest.raises(tau_next.HookRunning):
-        session.go_to(cursor, 0, "term", 0)
-    run(session, cursor, iter([say("x")]), on_job=lambda _: None)
+    session.feed(cursor, Fed.Hooks(), 0)  # the hook job was still out
+    run(session, cursor, iter([say("x")]))
 
 
 def test_abort_in_the_throttle_tells_the_driver_to_cancel_its_sleep() -> None:
@@ -556,23 +539,30 @@ def test_open_and_add_item_outside_a_step_are_durable_on_return(tmp_path: Path) 
     ]
 
 
-def test_after_a_failed_save_every_changing_call_is_refused_before_it_changes_anything(
+def test_a_failed_save_is_a_crash_the_session_closes_and_reloads_as_last_synced(
     tmp_path: Path,
 ) -> None:
     session, cursor = new(tmp_path / "s")
+    session.set_label("main", cursor)
+    synced = state(session)
     block = tmp_path / "s" / "scratchpad.new"
     block.mkdir()  # the store cannot create its temporary scratchpad file here
-    with pytest.raises(OSError):  # noqa: PT011
-        session.send(cursor, "term", "hi", 0)
+    with pytest.raises(IsADirectoryError):
+        session.send(cursor, "term", "hi", 1)
+    # Closed, as `close` leaves it: every call raises `Closed`, reads included.
+    for call_ in (
+        lambda: session.at(cursor),
+        lambda: session.items(cursor),
+        lambda: session.abort(cursor),
+        lambda: session.next_job(cursor),
+        session.close,
+    ):
+        with pytest.raises(tau_next.Closed):
+            call_()
     block.rmdir()
-    before = state(session)
-    with pytest.raises(tau_next.Failed):
-        session.set_label("main", cursor)
-    with pytest.raises(tau_next.Failed):
-        session.input(cursor, "term", "again", 1)
-    with pytest.raises(tau_next.Failed):
-        session.open(session.at(cursor), Author.Core(), 1)
-    assert state(session) == before
+    loaded = Session.load(tmp_path / "s", 2)  # the lease was released
+    assert state(loaded) == synced
+    assert not loaded.auto(cursor)
 
 
 def edit_input_without_delivering(job: Job) -> list[Fed] | None:
@@ -604,7 +594,7 @@ def test_a_pre_input_draft_that_delivers_nothing_leaves_the_input_pending() -> N
 def test_a_cursor_that_is_not_open_is_refused_and_leaves_no_record() -> None:
     session, cursor = new()
     before = state(session)
-    for method in (session.abort, session.ask, session.answered, session.next_job):
+    for method in (session.abort, session.next_job):
         with pytest.raises(tau_next.NoSuchCursor):
             method(999)
     with pytest.raises(tau_next.NoSuchCursor):

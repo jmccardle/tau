@@ -153,10 +153,6 @@ pub enum Error {
     NoSuchLabel(String),
     /// A frontend's `Session.step` on a busy cursor.
     Busy(CursorId),
-    /// A frontend's input, go-to, or step on a cursor with an open question.
-    Locked(CursorId),
-    /// A frontend's go-to while a cursor hook runs.
-    HookRunning(CursorId),
     /// A hook's move, write, or auto-step change on a cursor with no cursor
     /// hook job out (a handle used after its hook returned).
     NotInHook(CursorId),
@@ -184,8 +180,6 @@ impl std::fmt::Display for Error {
             Self::NoSuchCursor(c) => write!(f, "no cursor {c}"),
             Self::NoSuchLabel(l) => write!(f, "no label {l:?}"),
             Self::Busy(c) => write!(f, "cursor {c} has a step running"),
-            Self::Locked(c) => write!(f, "cursor {c} has an open question"),
-            Self::HookRunning(c) => write!(f, "a cursor hook is running on cursor {c}"),
             Self::NotInHook(c) => write!(f, "no cursor hook is running on cursor {c}"),
             Self::NoSuchItem(i) => write!(f, "no item {i}"),
             Self::NotPending(i) => write!(f, "item {i} is not pending for that cursor"),

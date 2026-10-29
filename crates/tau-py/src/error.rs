@@ -36,18 +36,6 @@ create_exception!(
 );
 create_exception!(
     tau_next._core,
-    Locked,
-    PyRuntimeError,
-    "A frontend call on a cursor with an open question."
-);
-create_exception!(
-    tau_next._core,
-    HookRunning,
-    PyRuntimeError,
-    "A go-to while a cursor hook runs."
-);
-create_exception!(
-    tau_next._core,
     NotInHook,
     PyRuntimeError,
     "A hook's move, write, or auto-step change when no cursor hook is running on that cursor."
@@ -114,12 +102,6 @@ create_exception!(
 );
 create_exception!(
     tau_next._core,
-    Failed,
-    PyRuntimeError,
-    "An earlier store write failed; load the session again."
-);
-create_exception!(
-    tau_next._core,
     Poisoned,
     PyRuntimeError,
     "A call panicked while it held the session; load the session again."
@@ -180,8 +162,6 @@ fn tree_err(e: &tree::Error) -> PyErr {
         tree::Error::NoSuchCursor(_) => NoSuchCursor::new_err(m),
         tree::Error::NoSuchLabel(_) => NoSuchLabel::new_err(m),
         tree::Error::Busy(_) => Busy::new_err(m),
-        tree::Error::Locked(_) => Locked::new_err(m),
-        tree::Error::HookRunning(_) => HookRunning::new_err(m),
         tree::Error::NotInHook(_) => NotInHook::new_err(m),
         tree::Error::NoSuchItem(_) => NoSuchItem::new_err(m),
         tree::Error::NotPending(_) => NotPending::new_err(m),
@@ -200,7 +180,6 @@ fn store_err(e: store::Error) -> PyErr {
         store::Error::NotASession(_) => NotASession::new_err(e.to_string()),
         store::Error::Version(_) => Version::new_err(e.to_string()),
         store::Error::Corrupt(_) => Corrupt::new_err(e.to_string()),
-        store::Error::Failed => Failed::new_err(e.to_string()),
         store::Error::Core(e) => tree_err(&e),
     }
 }
@@ -212,8 +191,6 @@ pub fn add_all(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("NoSuchCursor", py.get_type::<NoSuchCursor>())?;
     m.add("NoSuchLabel", py.get_type::<NoSuchLabel>())?;
     m.add("Busy", py.get_type::<Busy>())?;
-    m.add("Locked", py.get_type::<Locked>())?;
-    m.add("HookRunning", py.get_type::<HookRunning>())?;
     m.add("NotInHook", py.get_type::<NotInHook>())?;
     m.add("NoSuchItem", py.get_type::<NoSuchItem>())?;
     m.add("NotPending", py.get_type::<NotPending>())?;
@@ -227,7 +204,6 @@ pub fn add_all(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("NotASession", py.get_type::<NotASession>())?;
     m.add("Version", py.get_type::<Version>())?;
     m.add("Corrupt", py.get_type::<Corrupt>())?;
-    m.add("Failed", py.get_type::<Failed>())?;
     m.add("Poisoned", py.get_type::<Poisoned>())?;
     m.add("TraceError", py.get_type::<crate::trace::TraceError>())
 }

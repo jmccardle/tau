@@ -39,9 +39,6 @@ pub enum Error {
     /// A scratchpad file that fails its checksum or decode. The file is
     /// replaced by rename, so this is damage, never a crash.
     Corrupt(PathBuf),
-    /// An earlier write failed; what reached the log is unknown. Open the
-    /// session again.
-    Failed,
     /// The log's records do not replay (`tree::Error::BadRecord`).
     Core(tau_core::tree::Error),
 }
@@ -61,7 +58,6 @@ impl fmt::Display for Error {
             Self::NotASession(p) => write!(f, "not a τ session file: {}", p.display()),
             Self::Version(v) => write!(f, "session file version {v}; this build reads {VERSION}"),
             Self::Corrupt(p) => write!(f, "damaged scratchpad file: {}", p.display()),
-            Self::Failed => f.write_str("an earlier write failed; open the session again"),
             Self::Core(e) => write!(f, "the log does not replay: {e:?}"),
         }
     }
@@ -70,14 +66,15 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// One open session on disk. Holds the lease (an exclusive `flock` on the
-/// log) while it lives; only the holder writes.
+/// log) while it lives; only the holder writes. A failed `save` consumes it:
+/// what reached the log is unknown, so the session is reopened from disk, as
+/// after a crash.
 #[derive(Debug)]
 pub struct Store {
     dir: PathBuf,
     log: File,
     /// Encoded records since the last `Sync`, not yet written.
     pending: Vec<u8>,
-    failed: bool,
     /// Bytes cut from the log's tail by `open`: a torn or unsynced tail. Kept
     /// in the session directory as `dropped-<offset>`.
     pub dropped: u64,
@@ -103,15 +100,14 @@ impl Store {
             .truncate(true)
             .open(&tmp)?;
         lease(&log)?;
-        let mut store = Self {
+        let store = Self {
             dir: dir.into(),
             log,
             pending: header(LOG_MAGIC),
-            failed: false,
             dropped: 0,
         };
         session.sync();
-        store.save(session)?;
+        let store = store.save(session)?;
         let linked = fs::hard_link(&tmp, dir.join(LOG));
         fs::remove_file(&tmp)?;
         match linked {
@@ -156,7 +152,6 @@ impl Store {
             dir: dir.into(),
             log,
             pending: vec![],
-            failed: false,
             dropped: (bytes.len() - end) as u64,
         };
         Ok((store, session))
@@ -166,16 +161,13 @@ impl Store {
     /// `Sync` is written with one log sync, then the scratchpad file is
     /// rewritten from the newest pad those `Sync`s carry, if any (D12): one
     /// sync per call, however many `Sync`s it covers. Records after the last
-    /// `Sync` stay buffered.
+    /// `Sync` stay buffered. Returns the store to save with next.
     ///
     /// # Errors
     ///
-    /// `Failed` if an earlier write failed; `Io`, after which every later
-    /// call is `Failed`.
-    pub fn save(&mut self, session: &mut Session) -> Result<(), Error> {
-        if self.failed {
-            return Err(Error::Failed);
-        }
+    /// `Io`. The store is gone (its lease released): open the session again,
+    /// which cuts anything after the log's last good `Sync`.
+    pub fn save(mut self, session: &mut Session) -> Result<Self, Error> {
         let _span = tracing::info_span!("store.save").entered();
         // Through the last `Sync`: its end in `pending`, and the newest pad.
         let mut through = None;
@@ -189,9 +181,8 @@ impl Store {
             through = Some((self.pending.len(), newest));
         }
         let Some((end, pad)) = through else {
-            return Ok(());
+            return Ok(self);
         };
-        self.failed = true;
         {
             let _span = tracing::info_span!("store.append", bytes = end).entered();
             self.log.write_all(&self.pending[..end])?;
@@ -204,15 +195,7 @@ impl Store {
         if let Some(pad) = pad {
             self.write_pad(&pad)?;
         }
-        self.failed = false;
-        Ok(())
-    }
-
-    /// True after a write failed: every `save` is `Failed` until the session
-    /// is opened again.
-    #[must_use]
-    pub fn failed(&self) -> bool {
-        self.failed
+        Ok(self)
     }
 
     fn write_pad(&self, pad: &Scratchpad) -> Result<(), Error> {
