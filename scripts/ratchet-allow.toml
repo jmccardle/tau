@@ -11,7 +11,6 @@
 
 # Function cyclomatic complexity (crate-relative file::Type::fn); limit 15
 [function_cc]
-"crates/tau-py/src/error.rs::add_all" = 18
 
 # Inherent methods per type (crate::Type); limit 25
 [type_methods]

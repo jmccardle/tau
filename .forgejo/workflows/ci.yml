@@ -27,11 +27,19 @@ jobs:
         python: ["3.12", "3.14t"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # scripts/ratchet.py compares ratchet-allow.toml with its version at
+          # the merge-base (or HEAD~1 on master): it needs history.
+          fetch-depth: 0
       - name: toolchain
         run: scripts/ci-toolchain.sh ${{ matrix.python }}
       - name: dev group
         run: .venv/bin/pip install --group dev
       - name: scripts/check.sh
+        # The ratchet's allowlist guard checks the whole push, not only its
+        # last commit (all zeros on a new branch: ratchet.py falls back).
+        env:
+          TAU_RATCHET_BASE: ${{ github.event.before }}
         run: scripts/check.sh
 
   # Rule 6: the committed diagram sources must match what the code generates.

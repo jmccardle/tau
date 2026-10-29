@@ -6,113 +6,41 @@
 use pyo3::create_exception;
 use pyo3::exceptions::{PyFileExistsError, PyLookupError, PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::PyModuleMethods;
+use pyo3::types::{PyModuleMethods, PyType};
 use tau_core::tree;
 use tau_store as store;
 
-create_exception!(
-    tau_next._core,
-    NoSuchNode,
-    PyLookupError,
-    "A node id that is not in the session."
-);
-create_exception!(
-    tau_next._core,
-    NoSuchCursor,
-    PyLookupError,
-    "A cursor id that is not open."
-);
-create_exception!(
-    tau_next._core,
-    NoSuchLabel,
-    PyLookupError,
-    "A label that is not set."
-);
-create_exception!(
-    tau_next._core,
-    Busy,
-    PyRuntimeError,
-    "A step on a cursor whose step is running."
-);
-create_exception!(
-    tau_next._core,
-    NotInHook,
-    PyRuntimeError,
-    "A hook's move, write, or auto-step change when no cursor hook is running on that cursor."
-);
-create_exception!(
-    tau_next._core,
-    NoSuchItem,
-    PyLookupError,
-    "An item id that is not in the scratchpad."
-);
-create_exception!(
-    tau_next._core,
-    NotPending,
-    PyLookupError,
-    "A write that delivers an item not pending for that cursor."
-);
-create_exception!(
-    tau_next._core,
-    DuplicateCall,
-    PyValueError,
-    "A Results or Assistant body naming a call id twice (V2)."
-);
-create_exception!(
-    tau_next._core,
-    BadRecord,
-    PyValueError,
-    "A logged record that replay cannot apply."
-);
-create_exception!(
-    tau_next._core,
-    Leased,
-    PyOSError,
-    "Another store holds the session's lease."
-);
-create_exception!(
-    tau_next._core,
-    Exists,
-    PyFileExistsError,
-    "A session already exists in that directory."
-);
-create_exception!(
-    tau_next._core,
-    NotASession,
-    PyValueError,
-    "Not a τ log or scratchpad file."
-);
-create_exception!(
-    tau_next._core,
-    Version,
-    PyValueError,
-    "A session file of a version this build does not read."
-);
-create_exception!(
-    tau_next._core,
-    Corrupt,
-    PyValueError,
-    "A damaged scratchpad file."
-);
-create_exception!(
-    tau_next._core,
-    Poisoned,
-    PyRuntimeError,
-    "A call panicked while it held the session; load the session again."
-);
+/// The one table of exception classes: each is created here and listed in
+/// `CLASSES` under its own name, which [`add_all`] registers.
+macro_rules! exceptions {
+    ($($name:ident: $base:ty = $doc:literal;)*) => {
+        $(create_exception!(tau_next._core, $name, $base, $doc);)*
 
-create_exception!(
-    tau_next._core,
-    WrongFeed,
-    PyValueError,
-    "A feed that answers no job; nothing changed."
-);
-create_exception!(
-    tau_next._core,
-    Closed,
-    PyRuntimeError,
-    "The session was closed."
-);
+        /// Python name and class of every exception created above.
+        const CLASSES: &[(&str, fn(Python<'_>) -> Bound<'_, PyType>)] =
+            &[$((stringify!($name), |py| py.get_type::<$name>())),*];
+    };
+}
+
+exceptions! {
+    NoSuchNode: PyLookupError = "A node id that is not in the session.";
+    NoSuchCursor: PyLookupError = "A cursor id that is not open.";
+    NoSuchLabel: PyLookupError = "A label that is not set.";
+    Busy: PyRuntimeError = "A step on a cursor whose step is running.";
+    NotInHook: PyRuntimeError = "A hook's move, write, or auto-step change when no cursor hook is running on that cursor.";
+    NoSuchItem: PyLookupError = "An item id that is not in the scratchpad.";
+    NotPending: PyLookupError = "A write that delivers an item not pending for that cursor.";
+    DuplicateCall: PyValueError = "A Results or Assistant body naming a call id twice (V2).";
+    BadRecord: PyValueError = "A logged record that replay cannot apply.";
+    Leased: PyOSError = "Another store holds the session's lease.";
+    Exists: PyFileExistsError = "A session already exists in that directory.";
+    NotASession: PyValueError = "Not a τ log or scratchpad file.";
+    Version: PyValueError = "A session file of a version this build does not read.";
+    Corrupt: PyValueError = "A damaged scratchpad file.";
+    Poisoned: PyRuntimeError = "A call panicked while it held the session; load the session again.";
+    WrongFeed: PyValueError = "A feed that answers no job; nothing changed.";
+    Closed: PyRuntimeError = "The session was closed.";
+}
 
 /// Everything a session call can fail with.
 #[derive(Debug)]
@@ -180,22 +108,8 @@ fn store_err(e: store::Error) -> PyErr {
 /// Add every exception class to the module.
 pub fn add_all(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
-    m.add("NoSuchNode", py.get_type::<NoSuchNode>())?;
-    m.add("NoSuchCursor", py.get_type::<NoSuchCursor>())?;
-    m.add("NoSuchLabel", py.get_type::<NoSuchLabel>())?;
-    m.add("Busy", py.get_type::<Busy>())?;
-    m.add("NotInHook", py.get_type::<NotInHook>())?;
-    m.add("NoSuchItem", py.get_type::<NoSuchItem>())?;
-    m.add("NotPending", py.get_type::<NotPending>())?;
-    m.add("DuplicateCall", py.get_type::<DuplicateCall>())?;
-    m.add("BadRecord", py.get_type::<BadRecord>())?;
-    m.add("WrongFeed", py.get_type::<WrongFeed>())?;
-    m.add("Closed", py.get_type::<Closed>())?;
-    m.add("Leased", py.get_type::<Leased>())?;
-    m.add("Exists", py.get_type::<Exists>())?;
-    m.add("NotASession", py.get_type::<NotASession>())?;
-    m.add("Version", py.get_type::<Version>())?;
-    m.add("Corrupt", py.get_type::<Corrupt>())?;
-    m.add("Poisoned", py.get_type::<Poisoned>())?;
+    for (name, class) in CLASSES {
+        m.add(*name, class(py))?;
+    }
     m.add("TraceError", py.get_type::<crate::trace::TraceError>())
 }
