@@ -38,6 +38,8 @@ fi
 cargo install --locked rust-code-analysis-cli --version "$RCA_VERSION"
 if [ -n "${TAU_CI_METRICS:-}" ]; then
     if ! command -v dot >/dev/null; then
+        # The image has curl, so the update above may not have run: its lists are empty.
+        apt-get update -qq
         apt-get install -y --no-install-recommends graphviz
     fi
     cargo install --locked cargo-llvm-cov --version "$LLVM_COV_VERSION"
