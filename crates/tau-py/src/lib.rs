@@ -5,6 +5,7 @@ mod error;
 mod job;
 mod session;
 mod tools;
+mod trace;
 mod values;
 
 use pyo3::prelude::*;
@@ -17,6 +18,8 @@ mod _core {
     use super::session::Session;
     #[pymodule_export]
     use super::tools::{Bash, BashRun, Cancel, Grep, Read, Write};
+    #[pymodule_export]
+    use super::trace::{stop_trace, trace_clock, trace_to};
     #[pymodule_export]
     use super::values::{
         Author, Body, Config, Item, ItemData, Move, Next, Node, Outcome, Part, Scratchpad, Stop,

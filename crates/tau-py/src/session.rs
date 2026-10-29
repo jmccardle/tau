@@ -60,9 +60,14 @@ impl Session {
     fn read<R: Send>(
         &self,
         py: Python<'_>,
+        span: tracing::Span,
         f: impl FnOnce(&Inner) -> Result<R, Failure> + Send,
     ) -> PyResult<R> {
-        Ok(py.detach(|| f(self.lock()?.as_ref().ok_or(Failure::Closed)?))?)
+        let _span = span.entered();
+        Ok(py.detach(|| {
+            let guard = tracing::info_span!("py.lock").in_scope(|| self.lock())?;
+            f(guard.as_ref().ok_or(Failure::Closed)?)
+        })?)
     }
 
     /// A call that changes the session: then the store gets what it queued.
@@ -71,18 +76,20 @@ impl Session {
     fn write<R: Send>(
         &self,
         py: Python<'_>,
+        span: tracing::Span,
         f: impl FnOnce(&mut Machine) -> Result<R, Failure> + Send,
     ) -> PyResult<R> {
+        let _span = span.entered();
         Ok(py.detach(|| {
-            let mut guard = self.lock()?;
+            let mut guard = tracing::info_span!("py.lock").in_scope(|| self.lock())?;
             let inner = guard.as_mut().ok_or(Failure::Closed)?;
             // After a failed save the store refuses everything; so do we,
             // before the call changes what the log no longer matches.
             if inner.store.as_ref().is_some_and(Store::failed) {
                 return Err(tau_store::Error::Failed.into());
             }
-            let result = f(&mut inner.machine);
-            let saved = inner.save();
+            let result = tracing::info_span!("py.machine").in_scope(|| f(&mut inner.machine));
+            let saved = tracing::info_span!("py.save").in_scope(|| inner.save());
             let result = result?;
             saved?;
             Ok::<R, Failure>(result)
@@ -149,7 +156,9 @@ impl Session {
 
     /// Bytes cut from the log's tail when this session was loaded; 0 in memory.
     fn dropped(&self, py: Python<'_>) -> PyResult<u64> {
-        self.read(py, |i| Ok(i.store.as_ref().map_or(0, |s| s.dropped)))
+        self.read(py, tracing::info_span!("py.dropped"), |i| {
+            Ok(i.store.as_ref().map_or(0, |s| s.dropped))
+        })
     }
 
     // Frontend calls.
@@ -162,7 +171,9 @@ impl Session {
         text: &str,
         now: u64,
     ) -> PyResult<u64> {
-        self.write(py, |m| Ok(m.input(cursor, client, text, now)?))
+        self.write(py, tracing::info_span!("py.input"), |m| {
+            Ok(m.input(cursor, client, text, now)?)
+        })
     }
 
     fn send(
@@ -173,11 +184,15 @@ impl Session {
         text: &str,
         now: u64,
     ) -> PyResult<u64> {
-        self.write(py, |m| Ok(m.send(cursor, client, text, now)?))
+        self.write(py, tracing::info_span!("py.send"), |m| {
+            Ok(m.send(cursor, client, text, now)?)
+        })
     }
 
     fn step(&self, py: Python<'_>, cursor: u64, client: String, now: u64) -> PyResult<()> {
-        self.write(py, |m| Ok(m.step(cursor, client, now)?))
+        self.write(py, tracing::info_span!("py.step"), |m| {
+            Ok(m.step(cursor, client, now)?)
+        })
     }
 
     /// Returns whether the driver must cancel the effect in flight.
@@ -189,7 +204,9 @@ impl Session {
         client: String,
         now: u64,
     ) -> PyResult<bool> {
-        self.write(py, |m| Ok(m.go_to(cursor, to, client, now)?))
+        self.write(py, tracing::info_span!("py.go_to"), |m| {
+            Ok(m.go_to(cursor, to, client, now)?)
+        })
     }
 
     fn set_auto(
@@ -200,12 +217,18 @@ impl Session {
         client: String,
         now: u64,
     ) -> PyResult<()> {
-        self.write(py, |m| Ok(m.set_auto(cursor, on, client, now)?))
+        self.write(py, tracing::info_span!("py.set_auto"), |m| {
+            Ok(m.set_auto(cursor, on, client, now)?)
+        })
     }
 
     /// Returns whether the driver must cancel the effect in flight.
     fn abort(&self, py: Python<'_>, cursor: u64) -> PyResult<bool> {
-        self.write(py, |m| Ok(m.abort(cursor)?))
+        self.write(
+            py,
+            tracing::info_span!("py.abort"),
+            |m| Ok(m.abort(cursor)?),
+        )
     }
 
     // Extension and driver calls.
@@ -221,7 +244,7 @@ impl Session {
         now: u64,
         hook: Option<(u64, u64)>,
     ) -> PyResult<u64> {
-        self.write(py, |m| {
+        self.write(py, tracing::info_span!("py.open"), |m| {
             Ok(match hook {
                 Some((h, k)) => m.hook_open(h, k, at, by.into(), now)?,
                 None => m.open(at, by.into(), now)?,
@@ -239,7 +262,7 @@ impl Session {
         now: u64,
         hook: Option<(u64, u64)>,
     ) -> PyResult<u64> {
-        self.write(py, |m| {
+        self.write(py, tracing::info_span!("py.add_item"), |m| {
             Ok(match hook {
                 Some((h, k)) => m.hook_add_item(h, k, to, data.into(), now)?,
                 None => m.add_item(to, data.into(), now)?,
@@ -250,7 +273,7 @@ impl Session {
     /// `hook` as for `open`.
     #[pyo3(signature = (id, hook = None))]
     fn remove_item(&self, py: Python<'_>, id: u64, hook: Option<(u64, u64)>) -> PyResult<()> {
-        self.write(py, |m| {
+        self.write(py, tracing::info_span!("py.remove_item"), |m| {
             match hook {
                 Some((h, k)) => m.hook_remove_item(h, k, id),
                 None => m.remove_item(id),
@@ -271,7 +294,7 @@ impl Session {
         now: u64,
         hook: Option<(u64, u64)>,
     ) -> PyResult<u64> {
-        self.write(py, |m| {
+        self.write(py, tracing::info_span!("py.append"), |m| {
             Ok(match hook {
                 Some((h, k)) => m.hook_append(h, k, parent, body.into(), by.into(), now)?,
                 None => m.append(parent, body.into(), by.into(), now)?,
@@ -291,7 +314,7 @@ impl Session {
         by: Author,
         now: u64,
     ) -> PyResult<()> {
-        self.write(py, |m| {
+        self.write(py, tracing::info_span!("py.hook_move"), |m| {
             Ok(m.hook_move(cursor, serial, to, by.into(), now)?)
         })
     }
@@ -307,21 +330,25 @@ impl Session {
         by: Author,
         now: u64,
     ) -> PyResult<u64> {
-        self.write(py, |m| {
+        self.write(py, tracing::info_span!("py.hook_write"), |m| {
             Ok(m.hook_write(cursor, serial, body.into(), delivers, by.into(), now)?)
         })
     }
 
     fn hook_set_auto(&self, py: Python<'_>, cursor: u64, serial: u64, on: bool) -> PyResult<()> {
-        self.write(py, |m| Ok(m.hook_set_auto(cursor, serial, on)?))
+        self.write(py, tracing::info_span!("py.hook_set_auto"), |m| {
+            Ok(m.hook_set_auto(cursor, serial, on)?)
+        })
     }
 
     fn ask(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
-        self.write(py, |m| Ok(m.ask(cursor)?))
+        self.write(py, tracing::info_span!("py.ask"), |m| Ok(m.ask(cursor)?))
     }
 
     fn answered(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
-        self.write(py, |m| Ok(m.answered(cursor)?))
+        self.write(py, tracing::info_span!("py.answered"), |m| {
+            Ok(m.answered(cursor)?)
+        })
     }
 
     /// `hook` as for `open`.
@@ -333,7 +360,7 @@ impl Session {
         cursor: u64,
         hook: Option<(u64, u64)>,
     ) -> PyResult<()> {
-        self.write(py, |m| {
+        self.write(py, tracing::info_span!("py.set_label"), |m| {
             match hook {
                 Some((h, k)) => m.hook_set_label(h, k, label, cursor),
                 None => m.set_label(label, cursor),
@@ -345,7 +372,7 @@ impl Session {
     /// `hook` as for `open`.
     #[pyo3(signature = (label, hook = None))]
     fn remove_label(&self, py: Python<'_>, label: &str, hook: Option<(u64, u64)>) -> PyResult<()> {
-        self.write(py, |m| {
+        self.write(py, tracing::info_span!("py.remove_label"), |m| {
             match hook {
                 Some((h, k)) => m.hook_remove_label(h, k, label),
                 None => m.remove_label(label),
@@ -358,30 +385,34 @@ impl Session {
 
     /// The cursor's next job; `Job.Rest` when it has no step.
     fn next_job(&self, py: Python<'_>, cursor: u64) -> PyResult<Job> {
-        self.write(py, |m| Ok(m.next_job(cursor)?.into()))
+        self.write(py, tracing::info_span!("py.next_job"), |m| {
+            Ok(m.next_job(cursor)?.into())
+        })
     }
 
     /// Feed the result of the job last handed out for `cursor`.
     fn feed(&self, py: Python<'_>, cursor: u64, fed: Fed, now: u64) -> PyResult<()> {
-        self.write(py, |m| Ok(m.feed(cursor, fed.into(), now)?))
+        self.write(py, tracing::info_span!("py.feed"), |m| {
+            Ok(m.feed(cursor, fed.into(), now)?)
+        })
     }
 
     fn busy(&self, py: Python<'_>, cursor: u64) -> PyResult<bool> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.busy"), |i| {
             i.cursor(cursor)?;
             Ok(i.machine.busy(cursor))
         })
     }
 
     fn locked(&self, py: Python<'_>, cursor: u64) -> PyResult<bool> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.locked"), |i| {
             i.cursor(cursor)?;
             Ok(i.machine.locked(cursor))
         })
     }
 
     fn moves_since_step(&self, py: Python<'_>, cursor: u64) -> PyResult<Vec<Move>> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.moves_since_step"), |i| {
             i.cursor(cursor)?;
             Ok(i.machine
                 .moves_since_step(cursor)
@@ -395,21 +426,27 @@ impl Session {
 
     /// Every open cursor, by id.
     fn cursors(&self, py: Python<'_>) -> PyResult<Vec<u64>> {
-        self.read(py, |i| Ok(i.machine.session.auto.keys().copied().collect()))
+        self.read(py, tracing::info_span!("py.cursors"), |i| {
+            Ok(i.machine.session.auto.keys().copied().collect())
+        })
     }
 
     /// The node `cursor` is on.
     fn at(&self, py: Python<'_>, cursor: u64) -> PyResult<u64> {
-        self.read(py, |i| Ok(i.machine.session.at(cursor)?))
+        self.read(py, tracing::info_span!("py.at"), |i| {
+            Ok(i.machine.session.at(cursor)?)
+        })
     }
 
     fn node(&self, py: Python<'_>, id: u64) -> PyResult<Node> {
-        self.read(py, |i| Ok(i.machine.session.node(id)?.clone().into()))
+        self.read(py, tracing::info_span!("py.node"), |i| {
+            Ok(i.machine.session.node(id)?.clone().into())
+        })
     }
 
     /// The nodes root to `node`, inclusive.
     fn walk(&self, py: Python<'_>, node: u64) -> PyResult<Vec<Node>> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.walk"), |i| {
             let s = &i.machine.session;
             s.node(node)?;
             Ok(s.walk(node).into_iter().cloned().map(Into::into).collect())
@@ -418,17 +455,21 @@ impl Session {
 
     /// The children of `node`, in append order.
     fn children(&self, py: Python<'_>, node: u64) -> PyResult<Vec<u64>> {
-        self.read(py, |i| Ok(i.machine.session.children(node)?.to_vec()))
+        self.read(py, tracing::info_span!("py.children"), |i| {
+            Ok(i.machine.session.children(node)?.to_vec())
+        })
     }
 
     /// How many nodes there are; ids are `0..node_count()`.
     fn node_count(&self, py: Python<'_>) -> PyResult<usize> {
-        self.read(py, |i| Ok(i.machine.session.node_count()))
+        self.read(py, tracing::info_span!("py.node_count"), |i| {
+            Ok(i.machine.session.node_count())
+        })
     }
 
     /// Every label with its cursor, in string order.
     fn labels(&self, py: Python<'_>) -> PyResult<Vec<(String, u64)>> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.labels"), |i| {
             Ok(i.machine
                 .session
                 .labels()
@@ -438,26 +479,28 @@ impl Session {
     }
 
     fn config_at(&self, py: Python<'_>, node: u64) -> PyResult<Config> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.config_at"), |i| {
             Ok(i.machine.session.config_at(node)?.clone().into())
         })
     }
 
     /// The deepest node on both walks; `None` across trees.
     fn lca(&self, py: Python<'_>, a: u64, b: u64) -> PyResult<Option<u64>> {
-        self.read(py, |i| Ok(i.machine.session.lca(a, b)?))
+        self.read(py, tracing::info_span!("py.lca"), |i| {
+            Ok(i.machine.session.lca(a, b)?)
+        })
     }
 
     /// What the cursor needs next, read from its walk alone.
     fn next(&self, py: Python<'_>, cursor: u64) -> PyResult<Next> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.next"), |i| {
             i.cursor(cursor)?;
             Ok(i.machine.session.next(cursor).into())
         })
     }
 
     fn auto(&self, py: Python<'_>, cursor: u64) -> PyResult<bool> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.auto"), |i| {
             i.cursor(cursor)?;
             Ok(i.machine.session.auto[&cursor])
         })
@@ -465,7 +508,7 @@ impl Session {
 
     /// The cursor's scratchpad, oldest first.
     fn items(&self, py: Python<'_>, cursor: u64) -> PyResult<Vec<Item>> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.items"), |i| {
             i.cursor(cursor)?;
             Ok(i.machine
                 .session
@@ -478,17 +521,21 @@ impl Session {
 
     /// The whole scratchpad, every cursor's items.
     fn scratchpad(&self, py: Python<'_>) -> PyResult<Scratchpad> {
-        self.read(py, |i| Ok(i.machine.session.scratchpad().clone().into()))
+        self.read(py, tracing::info_span!("py.scratchpad"), |i| {
+            Ok(i.machine.session.scratchpad().clone().into())
+        })
     }
 
     /// The cursor `label` is on.
     fn label(&self, py: Python<'_>, label: &str) -> PyResult<u64> {
-        self.read(py, |i| Ok(i.machine.session.label(label)?))
+        self.read(py, tracing::info_span!("py.label"), |i| {
+            Ok(i.machine.session.label(label)?)
+        })
     }
 
     /// The cursor's labels, in string order.
     fn labels_of(&self, py: Python<'_>, cursor: u64) -> PyResult<Vec<String>> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.labels_of"), |i| {
             i.cursor(cursor)?;
             Ok(i.machine
                 .session
@@ -501,7 +548,7 @@ impl Session {
     /// Every move of `cursor` from index `since` of the session's moves on.
     #[pyo3(signature = (cursor, since = 0))]
     fn moves_of(&self, py: Python<'_>, cursor: u64, since: usize) -> PyResult<Vec<Move>> {
-        self.read(py, |i| {
+        self.read(py, tracing::info_span!("py.moves_of"), |i| {
             i.cursor(cursor)?;
             Ok(i.machine
                 .session
@@ -514,6 +561,8 @@ impl Session {
 
     /// Drain the `(client, text)` messages to clients, oldest first.
     fn take_notices(&self, py: Python<'_>) -> PyResult<Vec<(String, String)>> {
-        self.write(py, |m| Ok(m.session.take_notices()))
+        self.write(py, tracing::info_span!("py.take_notices"), |m| {
+            Ok(m.session.take_notices())
+        })
     }
 }

@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
+tracing = { version = "0.1.44", default-features = false }
 
 [dev-dependencies]
 proptest.workspace = true

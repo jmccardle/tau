@@ -228,5 +228,6 @@ pub fn add_all(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("Version", py.get_type::<Version>())?;
     m.add("Corrupt", py.get_type::<Corrupt>())?;
     m.add("Failed", py.get_type::<Failed>())?;
-    m.add("Poisoned", py.get_type::<Poisoned>())
+    m.add("Poisoned", py.get_type::<Poisoned>())?;
+    m.add("TraceError", py.get_type::<crate::trace::TraceError>())
 }

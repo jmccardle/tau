@@ -522,6 +522,7 @@ impl Machine {
     /// `NoSuchCursor` if `cursor` is not open; what the step's `next_job`
     /// returns, or a waiting go-to's `move_to`.
     pub fn next_job(&mut self, cursor: CursorId) -> Result<Job, Error> {
+        let _span = tracing::info_span!("core.next_job", cursor).entered();
         self.session.at(cursor)?;
         let Some(step) = self.steps.get_mut(&cursor) else {
             return Ok(Job::Rest);
@@ -556,6 +557,7 @@ impl Machine {
     /// `NoSuchCursor` if `cursor` is not open; what the step's `feed` returns;
     /// `WrongFeed` if no step exists for `cursor`.
     pub fn feed(&mut self, cursor: CursorId, fed: Fed, now: u64) -> Result<(), Error> {
+        let _span = tracing::info_span!("core.feed", cursor).entered();
         self.session.at(cursor)?;
         let step = self
             .steps

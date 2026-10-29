@@ -41,6 +41,7 @@ from tau_next._core import (
     Scratchpad,
     Session,
     Stop,
+    TraceError,
     Version,
     WrongFeed,
 )
@@ -128,6 +129,7 @@ __all__ = [
     "ToolDefinitionError",
     "ToolError",
     "ToolHook",
+    "TraceError",
     "TreeHandle",
     "Version",
     "WriteTool",

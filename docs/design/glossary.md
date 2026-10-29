@@ -1074,6 +1074,46 @@ breaks). Recorded from llama.cpp serving Qwen3; never edited.
 Not a fake: a real extension that records the hooks it is run at (`points`,
 `subjects`, `endings`) and returns the string a test gives it for a point.
 
+## Tracing
+
+Observability only: none of these changes what a session does, and none is
+in the model. Findings are in `docs/as-built/traces/`.
+
+### span
+`tracing` crate spans in `tau-core`, `tau-store`, and `tau-py` · new
+
+A named interval in the code, made with the `tracing` facade, which costs a
+static check and nothing else while no subscriber is installed. Names are
+`core.*` (the machine: `write`, `append`, `feed`, `next_job`), `store.*`
+(`save`, `append`, `fsync_log`, `write_pad`, `fsync_pad`, `fsync_dir`), and
+`py.*` (a `Session` method's whole body, with `py.lock`, `py.machine`, and
+`py.save` inside it). `tau-core` only makes spans: it installs no subscriber
+and does no IO.
+
+### trace
+`tau_next.trace` · new
+
+One recording of spans, written as a Chrome trace file (Perfetto,
+chrome://tracing) by `tracing-chrome`. `trace.start(path)`, `trace.stop()`,
+and `trace.capture(path)` (both as a context manager). At most one runs per
+process. The driver's own spans, `trace.span(kind, name)` (`hook`, `sample`,
+`tool`, `driver`), are timed on the native clock and merged in by `stop`, one
+track per asyncio task; they are no-ops when no trace runs.
+
+### trace_to, stop_trace, trace_clock
+`tau_next._core` · new
+
+The native half of a trace: `trace_to(path)` installs the global subscriber
+the first time and starts recording, `stop_trace()` returns when the file is
+complete, `trace_clock()` is microseconds on the spans' own clock. Not for
+callers other than `tau_next.trace`.
+
+### TraceError
+`tau_next.TraceError` (`tau_next._core.TraceError`, a `RuntimeError`) · new
+
+A trace started while one runs, stopped while none runs, or that cannot be
+installed because another global tracing subscriber is.
+
 ## Retired terms
 
 | 0.15 term | replaced by |
