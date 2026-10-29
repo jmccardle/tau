@@ -159,6 +159,9 @@ pub enum Error {
     /// A record replay cannot apply: a node id or a cursor out of sequence, a
     /// move from a node the cursor is not at. Its position in the log.
     BadRecord(usize),
+    /// A feed that answers no job: none is out for the cursor, or the result
+    /// is not of the kind the job asked for. Nothing changed.
+    WrongFeed(CursorId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -498,6 +501,11 @@ impl Session {
             .find(|n| !matches!(n.body, Body::Config(_) | Body::Custom { .. }))
         });
         decide(last)
+    }
+
+    /// Drain the notices queued for clients, oldest first.
+    pub fn take_notices(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.notices)
     }
 
     pub fn add_item(&mut self, to: CursorId, data: ItemData) -> ItemId {

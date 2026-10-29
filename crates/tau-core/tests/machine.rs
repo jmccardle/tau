@@ -264,7 +264,7 @@ fn abort_during_the_throttle_cancels_the_restart() {
             m.add_item(c, data, 0).unwrap();
         }
         if let Job::Wait { .. } = job {
-            assert!(!m.abort(c), "nothing in flight to cancel");
+            assert!(m.abort(c), "the driver cancels its sleeper");
             return vec![];
         }
         plain(job, m)
@@ -364,4 +364,87 @@ fn moves_since_step_are_the_running_steps() {
     assert_eq!(m.moves_since_step(c).count(), 1);
     m.feed(c, ok(), 0).unwrap();
     run(&mut m, c, plain);
+}
+
+#[test]
+fn a_feed_that_answers_nothing_is_refused_and_changes_nothing() {
+    let (mut m, c) = machine();
+    // No step yet.
+    assert_eq!(m.feed(c, ok(), 0), Err(Error::WrongFeed(c)));
+    m.send(c, term(), "hi", 0).unwrap();
+    let job = m.next_job(c).unwrap();
+    assert!(matches!(
+        job,
+        Job::Hooks {
+            point: Hook::PreStep,
+            ..
+        }
+    ));
+    // A pre_step hook job is out: a sample result does not answer it.
+    assert_eq!(m.feed(c, said("x"), 0), Err(Error::WrongFeed(c)));
+    assert_eq!(
+        m.session.walk(m.session.at(c).unwrap()).len(),
+        2,
+        "nothing committed"
+    );
+    // The hook job is still out, so a go-to is still refused.
+    assert_eq!(m.go_to(c, 0, term(), 0), Err(Error::HookRunning(c)));
+    m.feed(c, ok(), 0).unwrap();
+    run(&mut m, c, plain);
+}
+
+#[test]
+fn a_stray_waited_after_an_abort_in_the_throttle_is_refused() {
+    let (mut m, first_cursor) = machine();
+    let sys = m.session.at(first_cursor).unwrap();
+    let c = m.open(sys, Author::Core, 0).unwrap();
+    let mut first = true;
+    let mut refused = false;
+    run(&mut m, c, |job, m| {
+        if matches!(
+            job,
+            Job::Hooks {
+                point: Hook::PreStep,
+                ..
+            }
+        ) && first
+        {
+            first = false;
+            let data = ItemData::Extension {
+                name: "t".into(),
+                data: "tick".into(),
+            };
+            m.add_item(c, data, 0).unwrap();
+        }
+        if let Job::Wait { .. } = job {
+            assert!(m.abort(c));
+            refused = m.feed(c, Fed::Waited, 0) == Err(Error::WrongFeed(c));
+            return vec![];
+        }
+        plain(job, m)
+    });
+    assert!(refused);
+}
+
+#[test]
+fn loading_wakes_every_cursor_for_pre_step_and_post_step_only() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let sys = s.at(c).unwrap();
+    let d = s.open(sys, Author::Core, 0).unwrap();
+    s.auto.insert(c, false);
+    let mut m = Machine::loaded(s, 0);
+    for cursor in [c, d] {
+        assert!(m.busy(cursor));
+        let jobs = run(&mut m, cursor, plain);
+        assert_eq!(points(&jobs), [Hook::PreStep, Hook::PostStep]);
+        assert!(!m.busy(cursor));
+    }
+}
+
+#[test]
+fn notices_are_drained_once() {
+    let (mut s, _) = Session::create("{}", "sys", 0);
+    s.notices.push(("term".into(), "no".into()));
+    assert_eq!(s.take_notices(), [("term".to_string(), "no".to_string())]);
+    assert_eq!(s.take_notices().len(), 0);
 }

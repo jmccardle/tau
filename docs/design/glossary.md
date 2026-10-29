@@ -140,9 +140,14 @@ whole walk, for tests. `append` checks each node (`Session::check`).
 *spike* `tree::Error`
 
 Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
-`RootNotConfig` (V1), `DuplicateCall` (V2), `BadRecord` (load); and a frontend call's: `Busy`
+`RootNotConfig` (V1), `DuplicateCall` (V2), `BadRecord` (load); a driver's: `WrongFeed`
+(a feed that answers no job: none is out, or it is of another kind; nothing
+changes); and a frontend call's: `Busy`
 (step on a busy cursor), `Locked` (input, go-to, or step with a question
-open), `HookRunning` (go-to while a cursor hook runs). Each becomes a typed Python exception in `tau-py`.
+open), `HookRunning` (go-to while a cursor hook runs). Each becomes a typed Python exception of the same name in `tau-py`, and so does
+each `tau_store::Error` variant except `Io` (the builtin `OSError`) and `Core` (the
+inner error). Each subclasses the closest builtin (`_core.pyi` has them all);
+there is no common base class.
 
 ## The scratchpad
 
@@ -266,6 +271,35 @@ cursor (`open`, `add_item`), the question lock (`ask`, `answered`), and
 `next_job`/`feed` per cursor. Holds a busy go-to until its aborted step
 rests (`going`). Each frontend call resets `max_steps` and syncs on return.
 What `tau-py` exposes; `Session`'s own mutators are for core and tests.
+Also `set_label` and `remove_label` (which sync on return), `Machine::loaded(session,
+now)` (a machine for a session just opened from a store: load is a wake, so
+every cursor starts a step), and `Session::take_notices` (drain `notices`).
+
+### Python session
+`tau_next.Session` (`tau-py`) · new
+
+The machine plus its optional store behind one `Mutex`, so the class is
+`frozen` and free-threading safe. `Session.create(config, system, now,
+directory=None)` makes one (in memory, or in a directory with a store);
+`Session.load(directory, now)` opens one. Every call takes the lock with the
+GIL released; every call that changes the session then gives the store its
+queued records before it returns, so Python never saves. An in-memory
+session drops them. Cursor ids are checked: an unknown one is `NoSuchCursor`.
+`cursors()` lists the open cursors; `take_notices()` drains the notices.
+
+### close, Closed
+`Session.close`, `tau_next.Closed` · new
+
+Drops the store and releases the lease without writing what is not yet
+synced, as a crash would. Every later call, a second `close` included,
+raises `Closed`.
+
+### Poisoned
+`tau_next.Poisoned` · new
+
+A call panicked inside the session's lock; the session raises it from then on.
+Not core's: a binding-level guard so a core bug (a panic) is not followed by
+more calls on possibly torn state.
 
 ### busy, at rest
 *spike* `Machine::busy`, `Step::resting` · new
@@ -377,7 +411,9 @@ started.
 *spike* `Step::wake` · new
 
 Start a step on a cursor at rest: an item added, opening, load, a go-to,
-`Session.step`, auto-step turned on.
+`Session.step`, auto-step turned on. Load: `Machine::loaded` wakes every
+cursor of the loaded session (auto-step is off, so `pre_step` and `post_step`
+only); `Session.create` does not wake its first cursor.
 
 ### auto-step
 *spike* `Session::auto` · retires step mode, suspension, `api.suspend`,
@@ -402,7 +438,8 @@ not yet spiked · `Config` field
 *spike* `Step::abort` · retires `AbortSignal`, abort-tree, `rollback`
 
 Esc. Auto-step off, no later phase; returns whether the driver must cancel
-the effect in flight. Never cancels a hook.
+the effect in flight, or its sleeper in the throttle (the restart is cancelled,
+so a later `Waited` is a `WrongFeed`). Never cancels a hook.
 
 
 ### in_hook
@@ -454,7 +491,7 @@ A Python function an extension registers at one hook point. `None` carries
 on; a string stops. Hooks at a point run in `config_at(at)` order.
 
 ### hook point
-*spike* `Hook` (the seven cursor points) · new
+*spike* `Hook`, Python `tau_next.Hook` (the seven cursor points) · new
 
 `pre_step`, `pre_input`, `pre_sample`, `pre_reply`, `post_reply`,
 `post_result`, `post_step` (cursor hooks, each a `Job::Hooks`), and
@@ -572,7 +609,7 @@ session goes on from its last sync) and keeps the bytes as
 An exclusive `flock` on the log, held while a `Store` lives. Only the holder
 writes and runs steps; a second open is `Error::Leased`.
 
-## Testing and scaffold
+## Testing
 
 ### Harness
 `tests/behavior/harness.py`
@@ -581,11 +618,6 @@ The protocol every behavior test drives, shaped like `tau serve`.
 
 ### FakeProvider, FakeTool
 The only fakes allowed (rule 4): scripted samples, scripted outcomes.
-
-### probe
-`tau_core::scaffold::Probe`, `tau_next.Probe`, `ProbeError`, `echo`
-
-Phase 0's boundary probe. Deleted in Phase 3.
 
 ## Retired terms
 

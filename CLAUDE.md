@@ -41,7 +41,7 @@ holds it to the built module.
 | `crates/tau-py` | PyO3 bindings, built as `tau_next._core`. Conversion and error mapping only. |
 | `python/tau_next` | Python package. `_core.pyi` is the hand-written stub for the native module. |
 | `tests/behavior` | Phase 2: behavior suite through the `Harness` protocol. Carried into τ 0.16 as its test suite. |
-| `tests/scaffold` | Phase 0 boundary probes. Deleted with `tau_core::scaffold` in Phase 3. |
+| `tests/core` | The native module through the public Python API: a hand-run job loop, errors, persistence, threads. |
 | `parity/` | The API diff against τ 0.15 (the oracle). Migration tooling: deleted when τ absorbs this repo. See `parity/README.md`. |
 | `scripts/` | Gates: `check.sh` (everything except parity, in CI order), `parity.sh`. |
 
@@ -75,7 +75,7 @@ scripts/parity.sh                         # the API diff; needs --group parity
   version-specific `cp314t` wheel. maturin does this automatically from the
   same config.
 - `gil_used = false` is PyO3 0.30's default; the module states it anyway, as a
-  claim the tests hold it to. `tests/scaffold/test_threads.py` fails on a
+  claim the tests hold it to. `tests/core/test_threads.py` fails on a
   free-threaded build if importing us (alone or beside τ 0.15) turns the GIL
   back on. Every `#[pyclass]` is `frozen` unless a glossary entry and an ADR
   argue otherwise.

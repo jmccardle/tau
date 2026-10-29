@@ -235,12 +235,15 @@ impl Step {
     ///
     /// # Errors
     ///
-    /// What a commit's `write` or `append` returns (`NoSuchCursor`).
+    /// What a commit's `write` or `append` returns (`NoSuchCursor`);
+    /// `WrongFeed` if `fed` does not answer the job last handed out, with
+    /// nothing changed.
     ///
     /// # Panics
     ///
-    /// If `fed` does not answer the job last handed out.
+    /// Never on a driver's input: a pre hook's position always holds a draft.
     pub fn feed(&mut self, s: &mut Session, fed: Fed, now: u64) -> Result<(), Error> {
+        let was_in_hook = self.in_hook;
         self.in_hook = false;
         match (self.pos, fed) {
             (Pos::PostStep, Fed::Hooks { stop, .. }) => {
@@ -324,23 +327,27 @@ impl Step {
             }
             (Pos::PostResult, Fed::Hooks { .. }) => self.pos = Pos::PostStep,
             (Pos::Throttle, Fed::Waited) => *self = Self::wake(s, self.cursor, false, now),
-            (pos, fed) => panic!("{fed:?} fed at {pos:?}"),
+            _ => {
+                self.in_hook = was_in_hook;
+                return Err(Error::WrongFeed(self.cursor));
+            }
         }
         Ok(())
     }
 
     /// Abort: auto-step off, no later effect. Returns true if the driver must
-    /// cancel the effect in flight and feed what it got (partial reply, `Interrupted`s).
+    /// cancel the effect in flight (or, in the throttle, its sleeper) and feed what it got (partial reply, `Interrupted`s).
     pub fn abort(&mut self, s: &mut Session) -> bool {
         s.auto.insert(self.cursor, false);
         self.aborted = true;
         if self.ending == Ending::Done {
             self.ending = Ending::Aborted;
         }
+        let cancel = matches!(self.pos, Pos::Sample | Pos::Calls | Pos::Throttle);
         if self.pos == Pos::Throttle {
             self.pos = Pos::Rest; // the scheduled restart is cancelled
         }
-        matches!(self.pos, Pos::Sample | Pos::Calls)
+        cancel
     }
 
     /// True while a cursor hook job is out: a frontend's go-to is refused.

@@ -18,6 +18,12 @@ item, so a reload is a replay (I7).
 
 ## Rulings
 
+- **Leave it to an extension.** Core's defaults are simplicity and
+  predictability. Behavior that someone might want differently (resuming
+  after a crash, queueing input, retries) is an extension's, and core only
+  exposes the state an extension needs to decide. Loading wakes every cursor
+  with auto-step off, so only `pre_step` and `post_step` run (Q39); a
+  crash-resume extension turns its own cursor's auto-step back on.
 - **A step is one pass of a fixed loop**: `pre_step`, then the input, sample,
   and tools phases (each if it applies), then `post_step` (§6).
 - **Every phase has one shape**: pre hook on the effect, the effect, pre hook

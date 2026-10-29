@@ -55,8 +55,20 @@ directly, so:
 2. **Grow the spike into 3a + 3c** with a Rust scenario test per item in the
    Phase 2 coverage list, written before the code that passes it. These are
    the behavior spec at the core level.
-3. **3b store** (done), then **`tau-py` + a minimal driver**. D14 (loading a
-   subset of a long history) is deferred: every body stays in memory.
+3. **3b store** (done), **`tau-py`** (done), then **a minimal driver**. D14
+   (loading a subset of a long history) is deferred: every body stays in memory.
+
+### Roadmap to the first LLM call (2026-10-28)
+
+| # | step | done when |
+|---|---|---|
+| 1 | `tau-py` bindings | done: a turn driven by hand from Python (`tests/core/`) |
+| 2 | minimal driver | performs every job, cancels on abort; provider, tool, hook protocols |
+| 3 | `Harness`, `FakeProvider`, `FakeTool` | the first Rust scenarios pass as Python tests (`tests/behavior/`); review starts here |
+| 4 | minimal config | a `Config` holds model, base URL, and the *name* of the API-key variable; full D13 later |
+| 5 | OpenAI-compatible provider | walk to messages, streamed parts, stop normalized and kept raw, HTTP errors as failures |
+| 6 | first call | a Python import example against local llama.cpp (`192.168.1.100:8100`), not a CLI |
+| 7 | first tool round-trip | one built-in tool called and answered |
 4. **Config overhaul** (approved 2026-10-27), in Python: the config file
    parser and `tau config check`. Written up as D13 when it starts. Agreed so far:
    - the flat `{"model": {...}}` file stays valid; an object with `models` is

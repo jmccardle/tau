@@ -28,6 +28,19 @@ impl Machine {
         }
     }
 
+    /// A machine for a session just opened from a store. Load is a wake
+    /// (model.md §6): every cursor starts a step, which with auto-step off (the
+    /// load's `reconcile`) runs only `pre_step` and `post_step`.
+    #[must_use]
+    pub fn loaded(session: Session, now: u64) -> Self {
+        let mut m = Self::new(session);
+        let cursors: Vec<CursorId> = m.session.auto.keys().copied().collect();
+        for cursor in cursors {
+            m.wake(cursor, false, now);
+        }
+        m
+    }
+
     #[must_use]
     pub fn busy(&self, cursor: CursorId) -> bool {
         self.steps.get(&cursor).is_some_and(|s| !s.resting())
@@ -150,6 +163,28 @@ impl Machine {
         Ok(())
     }
 
+    /// Set a label on a cursor; a label already set elsewhere moves. Syncs on return.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open.
+    pub fn set_label(&mut self, label: &str, cursor: CursorId) -> Result<(), Error> {
+        self.session.set_label(label, cursor)?;
+        self.session.sync();
+        Ok(())
+    }
+
+    /// Remove a label. Syncs on return.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchLabel` if `label` is not set.
+    pub fn remove_label(&mut self, label: &str) -> Result<(), Error> {
+        self.session.remove_label(label)?;
+        self.session.sync();
+        Ok(())
+    }
+
     /// Esc. Allowed while locked; the question stays open. Returns whether the
     /// driver must cancel the effect in flight.
     pub fn abort(&mut self, cursor: CursorId) -> bool {
@@ -240,13 +275,12 @@ impl Machine {
     ///
     /// # Errors
     ///
-    /// What the step's `feed` returns.
-    ///
-    /// # Panics
-    ///
-    /// If no job was handed out for `cursor`, or `fed` does not answer it.
+    /// What the step's `feed` returns; `WrongFeed` if no step exists for `cursor`.
     pub fn feed(&mut self, cursor: CursorId, fed: Fed, now: u64) -> Result<(), Error> {
-        let step = self.steps.get_mut(&cursor).expect("a job was handed out");
+        let step = self
+            .steps
+            .get_mut(&cursor)
+            .ok_or(Error::WrongFeed(cursor))?;
         step.feed(&mut self.session, fed, now)
     }
 
