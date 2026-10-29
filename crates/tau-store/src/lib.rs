@@ -9,15 +9,17 @@
 //!
 //! The store also keeps each node's offset in the log, so a body evicted
 //! from memory (`Store::evict`) can be read back (`Store::load`) (D14).
+//! Open streams the log once, reading each node without its body unless
+//! it is a `Config`, then reads back only the bodies on the cursors' walks.
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use tau_core::tree::{NodeId, Record, Scratchpad, Session};
+use serde::de::{DeserializeOwned, IgnoredAny};
+use serde::{Deserialize, Serialize};
+use tau_core::tree::{CursorId, ItemId, Move, NodeId, Record, Replay, Scratchpad, Session};
 
 const LOG: &str = "log";
 const PAD: &str = "scratchpad";
@@ -137,42 +139,55 @@ impl Store {
     /// Takes the lease and loads the session (I7): the log's records up to
     /// its last `Sync`, and the scratchpad file. Anything after that `Sync`
     /// (a torn tail, records never synced, damage) is cut and kept aside.
+    /// Only the bodies on the cursors' walks and `Config`s are read into
+    /// memory; the rest are stored, as after `evict`.
     ///
     /// # Errors
     ///
     /// `Leased` if another store holds the lease; `NotASession` for bad magic
     /// or a log with no `Sync`; `Version`; `Corrupt` for a damaged scratchpad
-    /// file; `Core` for records that do not replay; `Io`.
+    /// file or a body on a cursor's walk that does not read back; `Core` for
+    /// records that do not replay; `Io`.
     pub fn open(dir: &Path) -> Result<(Self, Session), Error> {
         let path = dir.join(LOG);
         let mut log = OpenOptions::new().read(true).append(true).open(&path)?;
         lease(&log)?;
-        let mut bytes = vec![];
-        log.read_to_end(&mut bytes)?;
-        check_header(&bytes, LOG_MAGIC, &path)?;
-        let (records, offsets, kept) = scan(&bytes[HEADER..]);
-        if records.is_empty() {
+        let size = log.metadata()?.len();
+        let mut head = vec![];
+        (&log).take(HEADER as u64).read_to_end(&mut head)?;
+        check_header(&head, LOG_MAGIC, &path)?;
+        let scanned = scan(BufReader::new(&log), size)?;
+        if scanned.replays.is_empty() {
             return Err(Error::NotASession(path));
         }
-        let end = HEADER + kept;
-        if end < bytes.len() {
+        let end = scanned.kept;
+        if end < size {
+            let mut tail = vec![];
+            log.seek(SeekFrom::Start(end))?;
+            log.read_to_end(&mut tail)?;
             let aside = dir.join(format!("dropped-{end}"));
-            File::create(&aside)?.write_all(&bytes[end..])?;
+            File::create(&aside)?.write_all(&tail)?;
             File::open(&aside)?.sync_all()?;
-            log.set_len(end as u64)?;
+            log.set_len(end)?;
             log.sync_all()?;
         }
         let pad = read_pad(&dir.join(PAD))?;
-        let session = Session::load(records, pad).map_err(Error::Core)?;
-        let store = Self {
+        let mut session = Session::load(scanned.replays, pad).map_err(Error::Core)?;
+        let mut store = Self {
             dir: dir.into(),
             log,
             pending: vec![],
-            len: end as u64,
-            offsets: offsets.into_iter().map(|o| (HEADER + o) as u64).collect(),
+            len: end,
+            offsets: scanned.offsets,
             failed: false,
-            dropped: (bytes.len() - end) as u64,
+            dropped: size - end,
         };
+        let cursors = (0..).map_while(|c: CursorId| session.at(c).ok());
+        for tip in cursors.collect::<Vec<_>>() {
+            if let Err(tau_core::tree::Error::Stored(ids)) = session.resident(tip) {
+                store.load(&mut session, &ids)?;
+            }
+        }
         Ok((store, session))
     }
 
@@ -333,26 +348,104 @@ fn decode<T: DeserializeOwned>(bytes: &[u8], at: usize) -> Option<(T, usize)> {
     Some((serde_json::from_slice(payload).ok()?, end))
 }
 
-/// The records up to the last `Sync` before the first bad record, where
-/// each of their `Write`s starts, and the bytes they span.
-fn scan(bytes: &[u8]) -> (Vec<Record>, Vec<usize>, usize) {
-    let (mut records, mut batch) = (vec![], vec![]);
+/// What open reads from the log.
+struct Scanned {
+    /// The records up to the last `Sync` before the first bad record; each
+    /// `Write` but a `Config` without its body.
+    replays: Vec<Replay>,
+    /// Where each of their `Write`s starts.
+    offsets: Vec<u64>,
+    /// Where the last of them ends.
+    kept: u64,
+}
+
+/// The log after its header, one record at a time, to `size`. A record cut
+/// short, failing its checksum, or not decoding ends the scan.
+fn scan(mut log: impl Read, size: u64) -> io::Result<Scanned> {
+    let (mut replays, mut batch) = (vec![], vec![]);
     let (mut offsets, mut writes) = (vec![], vec![]);
-    let (mut at, mut kept) = (0, 0);
-    while let Some((r, next)) = decode::<Record>(bytes, at) {
-        let sync = matches!(r, Record::Sync { .. });
-        if matches!(r, Record::Write { .. }) {
+    let (mut at, mut kept) = (HEADER as u64, HEADER as u64);
+    let mut payload = vec![];
+    while at + 8 <= size {
+        let mut head = [0; 8];
+        log.read_exact(&mut head)?;
+        let [l0, l1, l2, l3, c0, c1, c2, c3] = head;
+        let len = u64::from(u32::from_le_bytes([l0, l1, l2, l3]));
+        if at + 8 + len > size {
+            break;
+        }
+        payload.resize(usize::try_from(len).expect("a record under 4 GiB"), 0);
+        log.read_exact(&mut payload)?;
+        if checksum(&head[..4], &payload) != u32::from_le_bytes([c0, c1, c2, c3]) {
+            break;
+        }
+        let Some(record) = light(&payload) else {
+            break;
+        };
+        let sync = matches!(record, Replay::Record(Record::Sync { .. }));
+        if matches!(
+            record,
+            Replay::Stored { .. } | Replay::Record(Record::Write { .. })
+        ) {
             writes.push(at);
         }
-        batch.push(r);
-        at = next;
+        batch.push(record);
+        at += 8 + len;
         if sync {
-            records.append(&mut batch);
+            replays.append(&mut batch);
             offsets.append(&mut writes);
             kept = at;
         }
     }
-    (records, offsets, kept)
+    Ok(Scanned {
+        replays,
+        offsets,
+        kept,
+    })
+}
+
+/// A `Record` as open reads it: a `Write` without its body.
+#[derive(Deserialize)]
+enum Light {
+    Write { node: LightNode, mv: Option<Move> },
+}
+
+/// A node's id, parent, and delivers, and which kind of body it has.
+#[derive(Deserialize)]
+struct LightNode {
+    id: NodeId,
+    parent: Option<NodeId>,
+    body: LightBody,
+    delivers: Vec<ItemId>,
+}
+
+/// A body's kind, its content skipped unbuilt. Mirrors `Body`; a body that
+/// does not match is read whole instead.
+#[derive(Deserialize)]
+enum LightBody {
+    System(IgnoredAny),
+    User(IgnoredAny),
+    Assistant(IgnoredAny),
+    Results(IgnoredAny),
+    Config(IgnoredAny),
+    Custom(IgnoredAny),
+}
+
+/// `payload` as open replays it: a `Write` of anything but a `Config`
+/// without its body; anything else, or anything `Light` does not match,
+/// whole. `None` if it does not decode.
+fn light(payload: &[u8]) -> Option<Replay> {
+    match serde_json::from_slice(payload) {
+        Ok(Light::Write { node, mv }) if !matches!(node.body, LightBody::Config(_)) => {
+            Some(Replay::Stored {
+                id: node.id,
+                parent: node.parent,
+                delivers: node.delivers,
+                mv,
+            })
+        }
+        _ => serde_json::from_slice(payload).ok().map(Replay::Record),
+    }
 }
 
 fn read_pad(path: &Path) -> Result<Scratchpad, Error> {

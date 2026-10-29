@@ -146,6 +146,25 @@ pub enum Record {
     },
 }
 
+/// What load replays: a record, or a `Write` whose body was left in the
+/// log (D14). The store reads that body back when it is needed (`restore`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Replay {
+    Record(Record),
+    Stored {
+        id: NodeId,
+        parent: Option<NodeId>,
+        delivers: Vec<ItemId>,
+        mv: Option<Move>,
+    },
+}
+
+impl From<Record> for Replay {
+    fn from(r: Record) -> Self {
+        Self::Record(r)
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     NoSuchNode(NodeId),
@@ -364,11 +383,7 @@ impl Session {
             (None, _) => return Err(Error::RootNotConfig),
             (Some(p), _) => drop(self.parent(p)?),
         }
-        if let Body::Results(out) = &body
-            && (1..out.len()).any(|i| out[..i].iter().any(|(c, ..)| *c == out[i].0))
-        {
-            return Err(Error::DuplicateCall); // V2
-        }
+        v2(&body)?;
         Ok(Node {
             id: self.nodes.len() as NodeId,
             parent,
@@ -573,25 +588,55 @@ impl Session {
     }
 
     /// Load (I7): replay the log's records, take the scratchpad file, then
-    /// `reconcile`. Pure; the store reads the files. Nothing is queued.
+    /// reconcile: every cursor at rest with auto-step off, and every item a
+    /// node delivers dropped. A `Replay::Stored` node is replayed with its
+    /// body stored. Pure; the store reads the files. Nothing is queued.
     ///
     /// # Errors
     ///
-    /// `BadRecord` with its position for the first record replay cannot apply.
-    pub fn load(records: impl IntoIterator<Item = Record>, pad: Scratchpad) -> Result<Self, Error> {
+    /// `BadRecord` with its position for the first record replay cannot
+    /// apply; a stored root among them (V1 needs its body).
+    pub fn load(
+        records: impl IntoIterator<Item = impl Into<Replay>>,
+        pad: Scratchpad,
+    ) -> Result<Self, Error> {
         let mut s = Self::default();
+        let mut delivered = std::collections::BTreeSet::new();
         for (i, r) in records.into_iter().enumerate() {
-            s.replay(r).map_err(|_| Error::BadRecord(i))?;
+            s.replay(r.into(), &mut delivered)
+                .map_err(|_| Error::BadRecord(i))?;
         }
         s.pad = pad;
-        s.reconcile();
+        s.auto.values_mut().for_each(|a| *a = false);
+        s.pad.items.retain(|i| !delivered.contains(&i.id));
         s.outbox.clear();
         s.unsynced = false;
         s.cooled = true;
         Ok(s)
     }
 
-    fn replay(&mut self, r: Record) -> Result<(), Error> {
+    fn replay(
+        &mut self,
+        r: Replay,
+        delivered: &mut std::collections::BTreeSet<ItemId>,
+    ) -> Result<(), Error> {
+        let r = match r {
+            Replay::Record(r) => r,
+            Replay::Stored {
+                id,
+                parent: Some(p),
+                delivers,
+                mv,
+            } if id == self.nodes.len() as NodeId => {
+                self.parent(p)?;
+                self.configs.push(self.configs[slot(p)]);
+                self.parents.push(Some(p));
+                self.nodes.push(None);
+                delivered.extend(delivers);
+                return mv.map_or(Ok(()), |m| self.replay_move(m));
+            }
+            Replay::Stored { .. } => return Err(Error::BadRecord(0)),
+        };
         match r {
             Record::Write { node, mv } => {
                 let checked = self.check(
@@ -604,6 +649,7 @@ impl Session {
                 if checked != node {
                     return Err(Error::BadRecord(0));
                 }
+                delivered.extend(node.delivers.iter().copied());
                 self.push(node);
                 mv.map_or(Ok(()), |m| self.replay_move(m))
             }
@@ -620,7 +666,7 @@ impl Session {
     }
 
     fn replay_move(&mut self, m: Move) -> Result<(), Error> {
-        self.node(m.to)?;
+        self.parent(m.to)?;
         let ok = match m.from {
             None => m.cursor == self.at.len() as CursorId,
             Some(f) => self.at(m.cursor) == Ok(f),
@@ -645,8 +691,7 @@ impl Session {
     }
 
     /// What load does after replay (I7): every cursor at rest with auto-step
-    /// off, and every item a node delivers dropped. Reads every body, so it
-    /// runs before any `evict`.
+    /// off, and every item a resident node delivers dropped.
     pub fn reconcile(&mut self) {
         self.auto.values_mut().for_each(|a| *a = false);
         let delivered: Vec<ItemId> = self
@@ -656,6 +701,18 @@ impl Session {
             .flat_map(|n| n.delivers.iter().copied())
             .collect();
         self.pad.items.retain(|i| !delivered.contains(&i.id));
+    }
+}
+
+/// V2: a `Results` node names each call once.
+fn v2(body: &Body) -> Result<(), Error> {
+    match body {
+        Body::Results(out)
+            if (1..out.len()).any(|i| out[..i].iter().any(|(c, ..)| *c == out[i].0)) =>
+        {
+            Err(Error::DuplicateCall)
+        }
+        _ => Ok(()),
     }
 }
 

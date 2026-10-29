@@ -127,11 +127,14 @@ impl Session {
     /// # Errors
     ///
     /// `NoSuchNode` if `node.id` is not a node; `BadRecord` if `node` does
-    /// not have the parent the session holds for it.
+    /// not have the parent the session holds for it, or is a `Config` (only
+    /// a non-`Config` body is ever stored); `DuplicateCall` (V2: a body left
+    /// in the log on open is checked here).
     pub fn restore(&mut self, node: Node) -> Result<(), Error> {
-        if self.parent(node.id)? != node.parent {
+        if self.parent(node.id)? != node.parent || matches!(node.body, Body::Config(_)) {
             return Err(Error::BadRecord(0));
         }
+        super::v2(&node.body)?;
         let held = &mut self.nodes[slot(node.id)];
         if held.is_none() {
             *held = Some(Box::new(node));

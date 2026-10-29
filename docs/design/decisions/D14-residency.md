@@ -34,6 +34,9 @@ One rule, no tuning:
 - **The store keeps each node's offset** in the log, filled as it writes and
   as it scans on open. Core holds no positions. A stored body is one read at
   a known offset, usually from the kernel's page cache: the OS is the cache.
+- **Open reads only what the rule keeps.** It reads every node's id,
+  parent, and delivers, and the bodies of `Config`s and of the cursors'
+  walks; every other body stays in the log, as if just evicted.
 - **A stored node keeps its id and parent** in memory, so `parent`, `lca`,
   `config_at`, and `append` under it work without its body.
 - **Core refuses, the driver loads.** A call that needs stored bodies
@@ -71,13 +74,14 @@ measurement asks for it.
   1M-token session, 3.3 MB of bodies in memory instead of 83 MB, and the
   process at 47 MB RSS instead of 150 MB. `walk` got faster; a go-to now
   checks its target's walk (~20 µs instead of ~1 µs).
-- Open is unchanged: the log is decoded and replayed whole, then evicted,
-  so its peak is ~2.5× the log, and the allocator keeps the freed bodies'
-  memory, so a session that is opened rather than built keeps its open-time
-  RSS. Replaying in batches and evicting as it goes would bound both; a
+- **Open leaves the past in the log.** It streams the log once (never the
+  whole file in memory), reading each `Write` without building its body
+  (`Replay::Stored`) unless it is a `Config`, replays, then reads back only
+  the bodies on the cursors' walks. V2 for a body left in the log is
+  checked when it is restored. Open still reads every byte (the CRC); a
   **header cache** (node ids, parents, and offsets up to a log position,
-  checksummed, rebuilt by a full scan when missing or bad) would also cut
-  open time, without new crash cases.
+  checksummed, rebuilt by a full scan when missing or bad) would cut that,
+  without new crash cases.
 - A line appended with no cursor on it (a compaction's copy, before its
   move) is evicted by the next save and read back if the extension reads
   it (~8–11 ms for a 1M-token compaction). An extension that builds a line

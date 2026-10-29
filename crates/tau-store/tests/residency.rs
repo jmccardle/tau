@@ -149,9 +149,10 @@ fn a_go_to_into_a_cold_line_loads_it_first() {
     store.load(&mut s, &[old]).unwrap();
     assert_eq!(s.node(old).unwrap().body, Body::User("old".into()));
     drop(store);
-    // Offsets come back from the log on open.
+    // Open leaves it in the log; offsets come back from the scan.
     let (mut store, mut s) = Store::open(d.path()).unwrap();
-    assert_eq!(store.evict(&mut s), 1, "a loaded session evicts at once");
+    assert_eq!(s.node(old), Err(Error::Stored(vec![old])));
+    assert_eq!(store.evict(&mut s), 0, "nothing else to drop");
     store.load(&mut s, &[old]).unwrap();
     s.move_to(c, old, Author::Core, 0).unwrap();
     assert_eq!(s.node(old).unwrap().body, Body::User("old".into()));
@@ -212,4 +213,55 @@ fn a_waiting_go_to_whose_line_was_evicted_waits_for_the_load() {
     }
     assert!(loaded);
     assert_eq!(m.session.at(c), Ok(old), "the go-to applied after the load");
+}
+
+#[test]
+fn open_leaves_every_kind_of_body_off_the_walks_in_the_log() {
+    use tau_core::tree::{Config, Outcome, Part, Stop};
+    let d = tempfile::tempdir().unwrap();
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let sys = s.at(c).unwrap();
+    let bodies = [
+        Body::System("s".into()),
+        Body::User("u".into()),
+        Body::Assistant {
+            parts: vec![
+                Part::Thinking("t".into()),
+                Part::Text("x".into()),
+                Part::Call {
+                    id: "c1".into(),
+                    tool: "read".into(),
+                    args_raw: "{\"p\":\"\\\"q\\\"\"}".into(),
+                },
+            ],
+            stop: Stop::Tools,
+        },
+        Body::Results(vec![("c1".into(), Outcome::Err("e".into()), Author::Tools)]),
+        Body::Custom {
+            kind: "k".into(),
+            data: "d".into(),
+        },
+        Body::Config(Config {
+            max_steps: Some(3),
+            data: "{}".into(),
+        }),
+    ];
+    let ids: Vec<NodeId> = bodies
+        .iter()
+        .map(|b| {
+            s.append(Some(sys), Author::Core, b.clone(), vec![], 0)
+                .unwrap()
+        })
+        .collect();
+    drop(Store::create(d.path(), &mut s).unwrap());
+    let (mut store, mut opened) = Store::open(d.path()).unwrap();
+    for (id, body) in ids.iter().zip(&bodies) {
+        let stored = matches!(opened.node(*id), Err(Error::Stored(_)));
+        assert_eq!(stored, !matches!(body, Body::Config(_)), "{body:?}");
+    }
+    store.load(&mut opened, &ids).unwrap();
+    for (id, body) in ids.iter().zip(&bodies) {
+        assert_eq!(&opened.node(*id).unwrap().body, body);
+    }
+    assert_eq!(state(&opened), state(&s));
 }

@@ -362,3 +362,61 @@ fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
     );
     assert!(!loaded.auto[&c]);
 }
+
+#[test]
+fn a_body_left_in_the_log_is_checked_when_restored() {
+    use tau_core::tree::{Node, Replay};
+    let (mut s, _) = Session::create("{}", "sys", 0);
+    s.sync();
+    let mut log: Vec<Replay> = s.outbox.drain(..).map(Replay::from).collect();
+    log.push(Replay::Stored {
+        id: 2,
+        parent: Some(1),
+        delivers: vec![],
+        mv: None,
+    });
+    let mut loaded = Session::load(log.clone(), Scratchpad::default()).unwrap();
+    assert_eq!(loaded.node(2), Err(Error::Stored(vec![2])));
+    let twice = Outcome::Ok("r".into());
+    let results = Body::Results(vec![
+        ("c".into(), twice.clone(), Author::Tools),
+        ("c".into(), twice, Author::Tools),
+    ]);
+    let node = |body| Node {
+        id: 2,
+        parent: Some(1),
+        time: 0,
+        by: Author::Tools,
+        body,
+        delivers: vec![],
+    };
+    assert_eq!(
+        loaded.restore(node(results)),
+        Err(Error::DuplicateCall),
+        "V2"
+    );
+    assert_eq!(
+        loaded.restore(Node {
+            parent: Some(0),
+            ..node(Body::User("u".into()))
+        }),
+        Err(Error::BadRecord(0)),
+        "not the parent replayed"
+    );
+    loaded.restore(node(Body::User("u".into()))).unwrap();
+    assert_eq!(loaded.node(2).unwrap().body, Body::User("u".into()));
+
+    let root = Replay::Stored {
+        id: 2,
+        parent: None,
+        delivers: vec![],
+        mv: None,
+    };
+    let at = log.len() - 1;
+    log[at] = root;
+    assert_eq!(
+        Session::load(log, Scratchpad::default()),
+        Err(Error::BadRecord(at)),
+        "a stored root: V1 needs its body"
+    );
+}

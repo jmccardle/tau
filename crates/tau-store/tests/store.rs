@@ -22,6 +22,15 @@ fn as_loaded(s: &Session) -> Session {
     s
 }
 
+/// `s` with every body open left in the log read back, to compare by state.
+fn whole(store: &mut Store, mut s: Session) -> Session {
+    let stored: Vec<u64> = (0..count(|n| s.parent(n).is_ok()))
+        .filter(|&n| matches!(s.node(n), Err(tau_core::tree::Error::Stored(_))))
+        .collect();
+    store.load(&mut s, &stored).unwrap();
+    s
+}
+
 fn dir() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
@@ -138,20 +147,21 @@ proptest! {
         let k = synced.iter().rposition(|(l, ..)| *l <= len as u64).unwrap();
         let (_, pad, want) = &synced[k];
         let crashed = crash_at(&log, len, &garbage, pad.as_ref());
-        let (store, loaded) = Store::open(crashed.path()).unwrap();
-        prop_assert_eq!(&loaded, want);
+        let (mut store, loaded) = Store::open(crashed.path()).unwrap();
+        prop_assert_eq!(&whole(&mut store, loaded), want);
         // Reopening cuts nothing more: the cut was made durable.
         drop(store);
-        let (mut store, mut again) = Store::open(crashed.path()).unwrap();
+        let (mut store, again) = Store::open(crashed.path()).unwrap();
         prop_assert_eq!(store.dropped, 0);
+        let mut again = whole(&mut store, again);
         prop_assert_eq!(&again, want);
         // The session goes on from the cut, and that reloads too.
         again.write(0, Body::User("after".into()), vec![], Author::Core, 0).unwrap();
         again.sync();
         store.save(&mut again).unwrap();
         drop(store);
-        let (_, after) = Store::open(crashed.path()).unwrap();
-        prop_assert_eq!(after, as_loaded(&again));
+        let (mut store, after) = Store::open(crashed.path()).unwrap();
+        prop_assert_eq!(whole(&mut store, after), as_loaded(&again));
     }
 }
 

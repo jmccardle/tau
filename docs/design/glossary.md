@@ -445,12 +445,15 @@ What load does after replay: every cursor's auto-step off, and every
 delivered item dropped (I7).
 
 ### load
-*spike* `Session::load(records, scratchpad)` · new
+*spike* `Session::load(records, scratchpad)`, `tree::Replay` · new
 
 Reload (I7): replay the log's records in order, take the scratchpad file,
-`reconcile`. Pure; the store reads the files. A record that cannot apply (a
-node id or cursor out of sequence, a move from a node its cursor is not at)
-is `Error::BadRecord(position)`.
+`reconcile`. Pure; the store reads the files. Each item is a **`Replay`**: a
+`Record`, or `Replay::Stored { id, parent, delivers, mv }`, a `Write` whose
+body was left in the log (D14), replayed as a stored node; its V2 check
+waits for `restore`. A record that cannot apply (a node id or cursor out of
+sequence, a move from a node its cursor is not at, a stored root) is
+`Error::BadRecord(position)`.
 
 ### sample, context, message
 retires completion, model call, `ExtensionContext`/`ctx`, the `context`
@@ -574,7 +577,10 @@ holding the **log** (`log`, append-only records) and the **scratchpad file**
 (`scratchpad`, rewritten by rename) (D12). Each file starts with a magic and
 a version (`VERSION`); a record on disk is its length, a CRC-32, and the
 record as JSON. `Store::create(dir, session)` writes a new session whole and
-links it into place; `Store::open(dir)` takes the lease and loads;
+links it into place; `Store::open(dir)` takes the lease and loads,
+streaming the log once and reading each `Write` without its body (`Light`,
+`LightNode`, `LightBody`: a node's id, parent, delivers, and body kind),
+except a `Config`; then it reads back only the bodies on the cursors' walks;
 `Store::save(session)` takes the outbox, writing and syncing the log at each
 `Sync`, then the scratchpad file. It keeps each node's offset in the log
 (`offsets`; `len` is how much of the log is synced), so `Store::evict(session)`
