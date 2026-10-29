@@ -34,6 +34,22 @@ jobs:
       - name: scripts/check.sh
         run: scripts/check.sh
 
+  # Rule 6: the committed diagram sources must match what the code generates.
+  # Gating, but kept out of check.sh: it builds a second, feature-enabled core.
+  diagrams:
+    runs-on: ubuntu
+    needs: gate
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: scripts/ci-toolchain.sh 3.12
+      - name: dev group
+        run: .venv/bin/pip install --group dev
+      - name: build
+        run: VIRTUAL_ENV="$PWD/.venv" .venv/bin/maturin develop --release --locked
+      - name: scripts/diagrams.sh --check
+        run: PATH="$HOME/.cargo/bin:$PATH" scripts/diagrams.sh --check
+
   # Reported, never gating: coverage (Rust tests, then Python tests through the
   # instrumented cdylib) and the metrics tables. The numbers land in the job
   # log; docs/as-built/metrics/README.md says how to commit a fresh run.
