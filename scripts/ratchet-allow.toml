@@ -12,8 +12,6 @@
 # Function cyclomatic complexity (crate-relative file::Type::fn); limit 15
 [function_cc]
 "crates/tau-py/src/error.rs::add_all" = 18
-"crates/tau-tools/src/bash.rs::Running::read_output" = 16
-"crates/tau-tools/src/read.rs::Read::run" = 24
 
 # Inherent methods per type (crate::Type); limit 25
 [type_methods]
@@ -21,4 +19,3 @@
 
 # Lines per file; limit 800
 [file_lines]
-"crates/tau-tools/src/bash.rs" = 867

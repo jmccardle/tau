@@ -13,7 +13,7 @@ use nix::fcntl::OFlag;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::limit::{Keep, Sink};
+use crate::limit::{Finished, Keep, Sink};
 use crate::{Cancel, Limits, Result, ToolError, parse_args, resolve};
 
 /// Lines read when the call gives no `limit`.
@@ -81,33 +81,8 @@ impl Read {
         let args: Args = parse_args(args_raw)?;
         let offset = positive("offset", args.offset)?.unwrap_or(1);
         let limit = positive("limit", args.limit)?.unwrap_or(DEFAULT_LINES);
-        let path = resolve(&self.cwd, &args.path);
+        let mut reader = self.open(&args.path)?;
         let io = |e: std::io::Error| ToolError(format!("cannot read {}: {e}", args.path));
-        // Opened without blocking (a pipe with no writer would hang an open) and
-        // judged by `fstat` of the open file, not by its path, which may change.
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags((OFlag::O_NONBLOCK | OFlag::O_NOCTTY).bits())
-            .open(&path)
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => ToolError(format!("file not found: {}", args.path)),
-                _ => io(e),
-            })?;
-        let meta = file.metadata().map_err(io)?;
-        if meta.is_dir() {
-            return Err(format!("{} is a directory, not a file", args.path).into());
-        }
-        if !meta.is_file() {
-            return Err(format!(
-                "{} is not a regular file (a pipe, device or socket); read cannot show it",
-                args.path
-            )
-            .into());
-        }
-        let mut reader = BufReader::with_capacity(64 * 1024, file);
-        if reader.fill_buf().map_err(io)?.contains(&0) {
-            return Err(binary(&args.path));
-        }
         let past_end = || {
             ToolError(format!(
                 "offset {offset} is past the end of {}, which has fewer lines",
@@ -123,34 +98,69 @@ impl Read {
             return Err(past_end());
         }
         let more = read == limit && !reader.fill_buf().map_err(io)?.is_empty();
-        let finished = sink.finish()?;
-        let mut text = finished.text;
-        if finished.truncated || more {
-            let shown = if finished.truncated {
-                u64::try_from(finished.kept_lines).unwrap_or(u64::MAX)
-            } else {
-                read
-            }
-            .max(1);
-            if finished.cut_line {
-                // No whole line fit: line `offset` is shown only in part.
-                let _ = write!(
-                    text,
-                    "\n[line {offset} is shown only in part; the rest of it is only in the \
-                     overflow file; offset={} continues after it]",
-                    offset + 1
-                );
-            } else {
-                let _ = write!(
-                    text,
-                    "\n[showing lines {offset}-{}; offset={} continues]",
-                    offset + shown - 1,
-                    offset + shown
-                );
-            }
-        }
-        Ok(text)
+        Ok(answer(sink.finish()?, offset, read, more))
     }
+
+    /// Open `shown` (relative to the working directory) as a regular text file.
+    fn open(&self, shown: &str) -> Result<BufReader<File>> {
+        let io = |e: std::io::Error| ToolError(format!("cannot read {shown}: {e}"));
+        // Opened without blocking (a pipe with no writer would hang an open) and
+        // judged by `fstat` of the open file, not by its path, which may change.
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags((OFlag::O_NONBLOCK | OFlag::O_NOCTTY).bits())
+            .open(resolve(&self.cwd, shown))
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => ToolError(format!("file not found: {shown}")),
+                _ => io(e),
+            })?;
+        let meta = file.metadata().map_err(io)?;
+        if meta.is_dir() {
+            return Err(format!("{shown} is a directory, not a file").into());
+        }
+        if !meta.is_file() {
+            return Err(format!(
+                "{shown} is not a regular file (a pipe, device or socket); read cannot show it"
+            )
+            .into());
+        }
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
+        if reader.fill_buf().map_err(io)?.contains(&0) {
+            return Err(binary(shown));
+        }
+        Ok(reader)
+    }
+}
+
+/// The text, with a note on where to continue when it is not the whole file.
+fn answer(finished: Finished, offset: u64, read: u64, more: bool) -> String {
+    let mut text = finished.text;
+    if !(finished.truncated || more) {
+        return text;
+    }
+    let shown = if finished.truncated {
+        u64::try_from(finished.kept_lines).unwrap_or(u64::MAX)
+    } else {
+        read
+    }
+    .max(1);
+    if finished.cut_line {
+        // No whole line fit: line `offset` is shown only in part.
+        let _ = write!(
+            text,
+            "\n[line {offset} is shown only in part; the rest of it is only in the \
+             overflow file; offset={} continues after it]",
+            offset + 1
+        );
+    } else {
+        let _ = write!(
+            text,
+            "\n[showing lines {offset}-{}; offset={} continues]",
+            offset + shown - 1,
+            offset + shown
+        );
+    }
+    text
 }
 
 /// Pass `n` lines; false if the file ended first.
