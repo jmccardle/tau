@@ -52,6 +52,7 @@ fn drive(
 
 fn bodies(s: &Session, cursor: u64) -> Vec<Body> {
     s.walk(s.at(cursor).unwrap())
+        .unwrap()
         .into_iter()
         .map(|n| n.body.clone())
         .collect()
@@ -138,7 +139,7 @@ fn batch_answers_in_call_order_then_samples_again() {
         }
     );
     assert_eq!(s.items(c).count(), 0, "nothing left behind");
-    let results = s.walk(s.at(c).unwrap())[4];
+    let results = s.walk(s.at(c).unwrap()).unwrap()[4];
     assert_eq!(results.by, Author::Tools);
 }
 

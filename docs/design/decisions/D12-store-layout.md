@@ -30,6 +30,8 @@ input's text twice.
 - **Load** replays the log, reads the scratchpad, and drops delivered items
   (`Session::load`, pure; the store only reads the files).
 - Writes happen inside the Rust call (D11). The lease (`flock`) is on the log.
+- **The store keeps each node's offset in the log** (D14), so a body
+  evicted from memory reads back from the log; the format is unchanged.
 - **JMFTS (Phase 7) is a replica** fed from the local log outside any step;
   replay into it is idempotent by record position.
 - **Encoding:** each file starts with an 8-byte magic and a `u32` version. A

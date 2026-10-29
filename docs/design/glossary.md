@@ -95,7 +95,9 @@ its content was computed from (a summary, a sub-agent's answer).
 *spike* `Session` · retires `AgentSession`, `SessionManager`, catalog
 
 One conversation: a forest of nodes, its cursors, labels, and scratchpad.
-Spike fields: `nodes`, `configs` (per node, its nearest `Config`), `at`
+Spike fields: `nodes` (each node, or nothing while its body is stored),
+`parents` (each node's parent, stored or not), `configs` (per node, its
+nearest `Config`), `cooled` (a move or append since the last `evict`), `at`
 (cursor → node), `auto`, `items`, `next_item`, `changes`, `moves`, `outbox`,
 `notices`. `Session::create(config, system,
 time)` writes the root `Config` and a `System` node and opens the first
@@ -111,6 +113,27 @@ A node with no parent; always `Config` (V1). Any root after the first is
 a view · new
 
 A node no cursor's walk passes through. Nothing marks it.
+
+### resident, stored
+*spike* `tree::resident`: `Session::resident`, `parent`, `restore`, `Error::Stored` · new
+
+A node's body is **resident** while it is in memory and **stored** while
+only the log holds it (D14). Which is which is not state: not persisted,
+not compared (I7). A stored node keeps its id and `parent` in memory
+(`Session::parent` answers for any node); `node`, `walk`, a move, or a go-to
+onto it is refused with `Stored(ids)`, the stored bodies the call needs,
+root first. The store loads them (`Store::load`, which calls `restore`)
+and the call is made again. `resident(n)` checks `walk(n)` without
+building it.
+
+### evict
+*spike* `Session::evict`, `Store::evict` · new
+
+Drops from memory every body that is on no cursor's walk (a side node), is
+not `Config`, and is synced. No budget and no order: one rule. Does work
+only after a move or an append (`cooled`). Every cursor's walk is
+resident, so a step never waits on disk; going back into an evicted line is
+the one read.
 
 ### walk
 *spike* `Session::walk` · retires fold, path, splice
@@ -140,7 +163,8 @@ whole walk, for tests. `append` checks each node (`Session::check`).
 *spike* `tree::Error`
 
 Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
-`RootNotConfig` (V1), `DuplicateCall` (V2), `BadRecord` (load); and a frontend call's: `Busy`
+`RootNotConfig` (V1), `DuplicateCall` (V2), `BadRecord` (load), `Stored`
+(bodies not in memory; see resident); and a frontend call's: `Busy`
 (step on a busy cursor), `Locked` (input, go-to, or step with a question
 open), `HookRunning` (go-to while a cursor hook runs). Each becomes a typed Python exception in `tau-py`.
 
@@ -552,9 +576,13 @@ a version (`VERSION`); a record on disk is its length, a CRC-32, and the
 record as JSON. `Store::create(dir, session)` writes a new session whole and
 links it into place; `Store::open(dir)` takes the lease and loads;
 `Store::save(session)` takes the outbox, writing and syncing the log at each
-`Sync`, then the scratchpad file. Its errors (`tau_store::Error`): `Io`,
-`Leased`, `Exists`, `NotASession`, `Version`, `Corrupt` (a damaged
-scratchpad file), `Failed` (an earlier write failed; open again), `Core`
+`Sync`, then the scratchpad file. It keeps each node's offset in the log
+(`offsets`; `len` is how much of the log is synced), so `Store::evict(session)`
+can drop synced side nodes' bodies
+and `Store::load(session, ids)` can read them back. Its errors
+(`tau_store::Error`): `Io`, `Leased`, `Exists`, `NotASession`, `Version`,
+`Corrupt` (a damaged scratchpad file, or a log record that does not read
+back as the node asked for), `Failed` (an earlier write failed; open again), `Core`
 (the log does not replay). **JMFTS** (Phase 7) is a replica of the log,
 never the store of record.
 

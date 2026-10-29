@@ -109,6 +109,7 @@ fn turn(s: &mut Session, c: CursorId, text: &mut Text, calls: &mut u64) {
 fn compact(s: &mut Session, c: CursorId, text: &mut Text) {
     let walk: Vec<Body> = s
         .walk(s.at(c).unwrap())
+        .unwrap()
         .iter()
         .skip(2)
         .map(|n| n.body.clone())

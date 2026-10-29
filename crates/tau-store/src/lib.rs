@@ -6,15 +6,18 @@
 //! A record on disk is its payload's length (`u32` LE), a CRC-32 of the
 //! length and the payload (`u32` LE), then the payload: the `Record` (or, in
 //! the scratchpad file, the `Scratchpad`) as JSON.
+//!
+//! The store also keeps each node's offset in the log, so a body evicted
+//! from memory (`Store::evict`) can be read back (`Store::load`) (D14).
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tau_core::tree::{Record, Scratchpad, Session};
+use tau_core::tree::{NodeId, Record, Scratchpad, Session};
 
 const LOG: &str = "log";
 const PAD: &str = "scratchpad";
@@ -36,8 +39,9 @@ pub enum Error {
     NotASession(PathBuf),
     /// A file of a version this build does not read.
     Version(u32),
-    /// A scratchpad file that fails its checksum or decode. The file is
-    /// replaced by rename, so this is damage, never a crash.
+    /// A scratchpad file that fails its checksum or decode (the file is
+    /// replaced by rename, so this is damage, never a crash), or a log
+    /// record that does not read back as the node `load` asked for.
     Corrupt(PathBuf),
     /// An earlier write failed; what reached the log is unknown. Open the
     /// session again.
@@ -60,7 +64,7 @@ impl fmt::Display for Error {
             Self::Exists => f.write_str("a session already exists here"),
             Self::NotASession(p) => write!(f, "not a τ session file: {}", p.display()),
             Self::Version(v) => write!(f, "session file version {v}; this build reads {VERSION}"),
-            Self::Corrupt(p) => write!(f, "damaged scratchpad file: {}", p.display()),
+            Self::Corrupt(p) => write!(f, "damaged session file: {}", p.display()),
             Self::Failed => f.write_str("an earlier write failed; open the session again"),
             Self::Core(e) => write!(f, "the log does not replay: {e:?}"),
         }
@@ -77,6 +81,11 @@ pub struct Store {
     log: File,
     /// Encoded records since the last `Sync`, not yet written.
     pending: Vec<u8>,
+    /// Bytes of the log on disk, all synced.
+    len: u64,
+    /// Per node, by id: where its `Write` record starts in the log, counting
+    /// records still in `pending`.
+    offsets: Vec<u64>,
     failed: bool,
     /// Bytes cut from the log's tail by `open`: a torn or unsynced tail. Kept
     /// in the session directory as `dropped-<offset>`.
@@ -98,15 +107,18 @@ impl Store {
         // to replace one. The lease is on the file, so it holds through the link.
         let tmp = dir.join(format!("{LOG}.new-{}", std::process::id()));
         let log = OpenOptions::new()
-            .write(true)
+            .read(true)
+            .append(true)
             .create(true)
-            .truncate(true)
             .open(&tmp)?;
         lease(&log)?;
+        log.set_len(0)?;
         let mut store = Self {
             dir: dir.into(),
             log,
             pending: header(LOG_MAGIC),
+            len: 0,
+            offsets: vec![],
             failed: false,
             dropped: 0,
         };
@@ -138,7 +150,7 @@ impl Store {
         let mut bytes = vec![];
         log.read_to_end(&mut bytes)?;
         check_header(&bytes, LOG_MAGIC, &path)?;
-        let (records, kept) = scan(&bytes[HEADER..]);
+        let (records, offsets, kept) = scan(&bytes[HEADER..]);
         if records.is_empty() {
             return Err(Error::NotASession(path));
         }
@@ -156,6 +168,8 @@ impl Store {
             dir: dir.into(),
             log,
             pending: vec![],
+            len: end as u64,
+            offsets: offsets.into_iter().map(|o| (HEADER + o) as u64).collect(),
             failed: false,
             dropped: (bytes.len() - end) as u64,
         };
@@ -180,6 +194,10 @@ impl Store {
         let mut through = None;
         for r in session.outbox.drain(..) {
             let Record::Sync { pad } = r else {
+                if let Record::Write { node, .. } = &r {
+                    debug_assert_eq!(node.id, self.offsets.len() as NodeId, "writes in id order");
+                    self.offsets.push(self.len + self.pending.len() as u64);
+                }
                 encode(&r, &mut self.pending);
                 continue;
             };
@@ -193,11 +211,53 @@ impl Store {
         self.failed = true;
         self.log.write_all(&self.pending[..end])?;
         self.log.sync_data()?;
+        self.len += end as u64;
         self.pending.drain(..end);
         if let Some(pad) = pad {
             self.write_pad(&pad)?;
         }
         self.failed = false;
+        Ok(())
+    }
+
+    /// Drop from memory every body the log holds synced that is on no
+    /// cursor's walk and is not `Config` (`Session::evict`). Returns how many.
+    pub fn evict(&self, session: &mut Session) -> usize {
+        let durable = self.offsets.partition_point(|&o| o < self.len);
+        session.evict(durable as NodeId)
+    }
+
+    /// Read the stored bodies of `ids` back from the log into `session`, as
+    /// asked by `tree::Error::Stored`. Bodies in memory are skipped.
+    ///
+    /// # Errors
+    ///
+    /// `Core(NoSuchNode)` for an id this store never synced; `Corrupt` for a
+    /// record that does not read back as that node; `Io`.
+    pub fn load(&mut self, session: &mut Session, ids: &[NodeId]) -> Result<(), Error> {
+        for &id in ids {
+            if session.node(id).is_ok() {
+                continue;
+            }
+            let at = usize::try_from(id)
+                .ok()
+                .and_then(|i| self.offsets.get(i))
+                .copied()
+                .filter(|&o| o < self.len)
+                .ok_or(Error::Core(tau_core::tree::Error::NoSuchNode(id)))?;
+            let mut head = [0; 8];
+            (&self.log).seek(SeekFrom::Start(at))?;
+            (&self.log).read_exact(&mut head)?;
+            let [a, b, c, d, ..] = head;
+            let mut buf = head.to_vec();
+            buf.resize(8 + u32::from_le_bytes([a, b, c, d]) as usize, 0);
+            (&self.log).read_exact(&mut buf[8..])?;
+            let restored = match decode::<Record>(&buf, 0) {
+                Some((Record::Write { node, .. }, _)) if node.id == id => session.restore(node),
+                _ => Err(tau_core::tree::Error::BadRecord(0)),
+            };
+            restored.map_err(|_| Error::Corrupt(self.dir.join(LOG)))?;
+        }
         Ok(())
     }
 
@@ -273,21 +333,26 @@ fn decode<T: DeserializeOwned>(bytes: &[u8], at: usize) -> Option<(T, usize)> {
     Some((serde_json::from_slice(payload).ok()?, end))
 }
 
-/// The records up to the last `Sync` before the first bad record, and the
-/// bytes they span.
-fn scan(bytes: &[u8]) -> (Vec<Record>, usize) {
+/// The records up to the last `Sync` before the first bad record, where
+/// each of their `Write`s starts, and the bytes they span.
+fn scan(bytes: &[u8]) -> (Vec<Record>, Vec<usize>, usize) {
     let (mut records, mut batch) = (vec![], vec![]);
+    let (mut offsets, mut writes) = (vec![], vec![]);
     let (mut at, mut kept) = (0, 0);
     while let Some((r, next)) = decode::<Record>(bytes, at) {
         let sync = matches!(r, Record::Sync { .. });
+        if matches!(r, Record::Write { .. }) {
+            writes.push(at);
+        }
         batch.push(r);
         at = next;
         if sync {
             records.append(&mut batch);
+            offsets.append(&mut writes);
             kept = at;
         }
     }
-    (records, kept)
+    (records, offsets, kept)
 }
 
 fn read_pad(path: &Path) -> Result<Scratchpad, Error> {

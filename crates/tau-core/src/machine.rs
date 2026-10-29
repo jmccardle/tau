@@ -101,7 +101,8 @@ impl Machine {
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open; `Locked` if `cursor` has an open question; `NoSuchNode` if `to` is not a node;
-    /// `HookRunning` if a cursor hook job is out.
+    /// `HookRunning` if a cursor hook job is out; `Stored` for bodies on
+    /// `walk(to)` not in memory.
     pub fn go_to(
         &mut self,
         cursor: CursorId,
@@ -110,7 +111,7 @@ impl Machine {
         now: u64,
     ) -> Result<bool, Error> {
         self.frontend(cursor)?;
-        self.session.node(to)?;
+        self.session.resident(to)?;
         let by = Author::Frontend(client);
         let cancel = if let Some(step) = self.steps.get_mut(&cursor).filter(|s| !s.resting()) {
             if step.in_hook() {
@@ -213,7 +214,8 @@ impl Machine {
     ///
     /// # Errors
     ///
-    /// What the step's `next_job` returns, or a waiting go-to's `move_to`.
+    /// What the step's `next_job` returns, or a waiting go-to's `move_to`:
+    /// on `Stored`, the go-to still waits, for the call after the load.
     pub fn next_job(&mut self, cursor: CursorId) -> Result<Job, Error> {
         let Some(step) = self.steps.get_mut(&cursor) else {
             return Ok(Job::Rest);
@@ -221,6 +223,11 @@ impl Machine {
         let job = step.next_job(&mut self.session)?;
         match (job, self.going.remove(&cursor)) {
             (Job::Rest, Some((to, by, time))) => {
+                // Bodies evicted since the go-to: kept for the call after the load.
+                if let Err(e) = self.session.resident(to) {
+                    self.going.insert(cursor, (to, by, time));
+                    return Err(e);
+                }
                 self.session.move_to(cursor, to, by, time)?;
                 self.session.auto.insert(cursor, false);
                 self.session.sync();

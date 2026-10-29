@@ -313,6 +313,7 @@ fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item()
     let users = m
         .session
         .walk(m.session.at(c).unwrap())
+        .unwrap()
         .iter()
         .filter(|n| matches!(&n.body, Body::User(t) if t == "hi"))
         .count();

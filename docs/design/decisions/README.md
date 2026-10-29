@@ -17,4 +17,4 @@ wins; where either differs from the step spike, the spike wins until review.
 | [D10](D10-package-name.md) | Package name | accepted | `tau_next` until absorption into τ 0.16.0. |
 | [D11](D11-core-decides.md) | Where rules live | accepted, spiked | A sans-IO step machine in `tau-core`; the driver performs jobs. |
 | [D12](D12-store-layout.md) | Store layout | accepted | One record log plus a scratchpad file; JMFTS a replica. |
-| [D14](D14-residency.md) | Residency, text by content, segments | proposed | Bodies off every cursor's walk leave memory; text stored once by hash; a segmented, indexed log. |
+| [D14](D14-residency.md) | Residency | accepted, built | Bodies on no cursor's walk leave memory once synced; core refuses with `Stored`, the store loads them back. |
