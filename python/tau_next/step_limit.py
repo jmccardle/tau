@@ -1,20 +1,33 @@
 """`StepLimit`: the extension that stops a cursor from stepping on forever."""
 
-from tau_next._core import ItemData
 from tau_next.handles import Cursor, Subject
 
 
 class StepLimit:
-    """Turns a cursor's auto-step off after `limit` steps that moved it, counted
-    since a frontend last sent it input (D1).
+    """Turns a cursor's auto-step off after `limit` unattended steps in a row (D1).
 
-    A step counts if its cursor moved, which every commit does. The count starts
-    over at a new input item (seen in `pre_step`, `pre_input`, or `post_step`) and
-    when this extension stops the cursor, so whoever resumes it with `set_auto`
-    or `step` gets another `limit`. It cannot see those two calls, nor
-    `go_to`; core keeps no count for it (the count is this object's memory).
-    Counts are per cursor. List it after any extension that turns auto-step back
-    on from `post_step`, or that hook's `set_auto(True)` wins.
+    It guards the loops where the cursor does move every step, such as a model
+    that calls tools forever or a hook that writes "continue" after every reply.
+    A cursor that does not move is stopped by core, not by this limit.
+
+    The count is this object's own memory, per cursor, kept at hook points:
+
+    - `pre_input` sets it to 1: the step that takes an input is the first. There
+      is no `post_input` hook; `pre_input` fires once per input item offered.
+    - `pre_step` adds one, when the cursor's auto-step is on. A step run with
+      auto-step off (a frontend's `step`, a load) is attended and is not counted.
+    - `post_step` turns auto-step off when the count has reached `limit`, and
+      starts the count over, so whoever resumes the cursor (`set_auto`) gets
+      another `limit` steps. It also starts over whenever it sees auto-step off:
+      a halt, an abort, or a go-to ended the run.
+
+    When core turns auto-step off because a step did not move the cursor, that
+    happens after `post_step`: the count stays as it was until the next input.
+
+    A hook that leaves an input pending offers it again every step, so
+    `pre_input` restarts the count every time: this limit does not bound that.
+    List it after any extension that turns auto-step back on from `post_step`,
+    or that hook's `set_auto(True)` wins.
     """
 
     name = "step_limit"
@@ -24,31 +37,19 @@ class StepLimit:
             raise ValueError(f"a step limit must be at least 1, not {limit}")
         self.limit = limit
         self._counts: dict[int, int] = {}
-        self._inputs: dict[int, int] = {}
-
-    def _count_new_input(self, cursor: Cursor) -> None:
-        """Start over if an input item arrived that no hook has seen."""
-        newest = self._inputs.get(cursor.id, -1)
-        for item in cursor.items():
-            if isinstance(item.data, ItemData.Input) and item.id > newest:
-                self._inputs[cursor.id] = newest = item.id
-                self._counts[cursor.id] = 0
-
-    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        self._count_new_input(cursor)
-        return None
 
     async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
-        self._count_new_input(cursor)
+        self._counts[cursor.id] = 1
+        return None
+
+    async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
+        if cursor.auto:
+            self._counts[cursor.id] = self._counts.get(cursor.id, 0) + 1
         return None
 
     async def post_step(self, cursor: Cursor, subject: Subject) -> str | None:
-        self._count_new_input(cursor)
-        if not cursor.moves(since_step=True):
-            return None
-        taken = self._counts.get(cursor.id, 0) + 1
-        if taken >= self.limit:
+        if cursor.auto and self._counts.get(cursor.id, 0) >= self.limit:
             cursor.set_auto(False)
-            taken = 0
-        self._counts[cursor.id] = taken
+        if not cursor.auto:
+            self._counts[cursor.id] = 0
         return None

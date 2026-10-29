@@ -222,7 +222,6 @@ async def test_a_hook_removes_an_item_without_waking_anything(tmp_path: Path) ->
     assert len(refused) == 1
     assert recorder.points.count("pre_step") == 1, "the removal woke nothing"
     assert not h.session.busy(h.cursor)
-    assert h.clock.sleepers == 0
 
 
 @scenario
@@ -556,8 +555,7 @@ async def test_a_write_cannot_deliver_another_cursors_item(tmp_path: Path) -> No
 @scenario
 async def test_an_input_a_hook_delivered_itself_is_not_delivered_twice(tmp_path: Path) -> None:
     """The hook's own write is the delivery, and it clears the draft too: a draft of `None`
-    commits nothing, so the input is delivered once and there is nothing to sample. The
-    step made no commit of its own, so it does not throttle."""
+    commits nothing, so the input is delivered once and there is nothing to sample."""
 
     async def deliver(cursor: Cursor, subject: Subject) -> str | None:
         for item in cursor.items():
@@ -575,7 +573,6 @@ async def test_an_input_a_hook_delivered_itself_is_not_delivered_twice(tmp_path:
     assert h.session.items(h.cursor) == []
     assert provider.requests == []
     assert [n.delivers for n in h.nodes()[2:]] == [[0]]
-    assert h.clock.sleepers == 0
 
 
 @scenario

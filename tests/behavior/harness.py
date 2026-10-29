@@ -112,7 +112,7 @@ class Harness:
         """Open the session `create` left in `tmp_path` (no one holds it)."""
         clock = clock or FakeClock()
         directory = tmp_path / "session"
-        session = Session.load(directory, clock.now())
+        session = Session.load(directory)
         return cls(
             directory, session, provider or FakeProvider([]), tools, extensions, clock, gates
         )
@@ -154,7 +154,7 @@ class Harness:
 
         Quiet means: the driver has no report or poke to take and no busy
         cursor without an effect out, and every effect in flight is parked at a
-        held gate, a fake-clock sleeper, or an open question. Never advances
+        held gate or an open question. Never advances
         the clock. Re-raises what an effect or the pump died of.
         """
         quiet = 0
@@ -172,14 +172,14 @@ class Harness:
     def parked(self) -> int:
         gates = {*self.provider.gates, *self.gates}
         gates.update(t.gate for t in self.tools if isinstance(t, FakeTool) and t.gate is not None)
-        return sum(g.held for g in gates) + self.clock.sleepers + self.driver.open_questions
+        return sum(g.held for g in gates) + self.driver.open_questions
 
     async def crash(self) -> None:
         """Drop memory, keep disk: cancel every task without feeding, close the
         session unsynced, reopen it, and start a new driver on the same fakes."""
         await self.driver.stop()
         self.session.close()
-        self.session = Session.load(self.directory, self.clock.now())
+        self.session = Session.load(self.directory)
         self.driver = self._driver()
 
     async def close(self) -> None:

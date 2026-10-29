@@ -362,8 +362,8 @@ async def test_a_pre_tool_string_is_that_calls_err_and_the_tool_does_not_run(
 
 
 @scenario
-async def test_a_step_that_committed_nothing_is_throttled(tmp_path: Path) -> None:
-    """step.rs `a_step_that_committed_nothing_is_throttled`, on the fake clock."""
+async def test_an_item_added_while_busy_causes_one_more_step(tmp_path: Path) -> None:
+    """step.rs `an_item_added_while_busy_causes_one_more_step`."""
 
     class Ticker:
         """Adds a second item during the step it was woken by."""
@@ -379,18 +379,76 @@ async def test_a_step_that_committed_nothing_is_throttled(tmp_path: Path) -> Non
 
     recorder = Recorder()
     h = await Harness.create(tmp_path, extensions=[Ticker(), recorder])
-    start = h.clock.now()
     await h.add_item("timer", "tick")
     await h.settle()
-    assert recorder.points.count("pre_step") == 1
-    assert h.clock.sleepers == 1, "the throttle's sleeper is parked"
-    h.clock.advance(249)
-    await h.settle()
-    assert recorder.points.count("pre_step") == 1
-    h.clock.advance(1)
-    await h.settle()
-    assert h.clock.now() == start + 250
     assert recorder.points.count("pre_step") == 2, "the item left in place does not spin"
+    assert not h.session.busy(h.cursor)
+
+
+@scenario
+async def test_a_hook_that_declines_every_input_runs_one_step_and_auto_step_goes_off(
+    tmp_path: Path,
+) -> None:
+    """step.rs `a_hook_that_declines_every_input_runs_one_step_then_auto_step_goes_off`:
+    the cursor did not move, so it will never move; it rests with the input pending."""
+
+    def decline(subject: Subject | CallDraft) -> None:
+        assert isinstance(subject, Subject)
+        subject.draft = None
+
+    recorder = Recorder(on={"pre_input": decline})
+    provider = FakeProvider([])
+    h = await Harness.create(tmp_path, provider=provider, extensions=[recorder])
+    await h.send("hi")
+    await h.settle()
+    assert recorder.points.count("pre_step") == 1
+    assert recorder.points.count("pre_input") == 1
+    assert not h.session.auto(h.cursor)
+    assert not h.session.busy(h.cursor)
+    assert h.bodies() == SYSTEM
+    assert [i.data for i in h.session.items(h.cursor)] == [ItemData.Input("term", "hi")]
+    assert provider.requests == []
+
+
+@scenario
+async def test_a_hook_that_discards_the_reply_runs_one_step_and_auto_step_goes_off(
+    tmp_path: Path,
+) -> None:
+    """step.rs `a_discarded_reply_runs_one_step_then_auto_step_goes_off`."""
+
+    def discard(subject: Subject | CallDraft) -> None:
+        assert isinstance(subject, Subject)
+        subject.draft = None
+
+    recorder = Recorder(on={"pre_reply": discard})
+    provider = FakeProvider([text("lost"), text("lost")])
+    h = await Harness.create(tmp_path, provider=provider, extensions=[recorder])
+    await h.input("hi")
+    await h.settle()  # the wake runs pre_step and post_step only
+    await h.step()  # asked: commits the input, samples, loses the reply
+    await h.settle()
+    steps, samples = recorder.points.count("pre_step"), len(provider.requests)
+    await h.set_auto(True)  # at the User node: the one step samples again
+    await h.settle()
+    assert recorder.points.count("pre_step") == steps + 1
+    assert len(provider.requests) == samples + 1
+    assert not h.session.auto(h.cursor)
+    assert h.bodies() == [*SYSTEM, Body.User("hi")], "no reply was ever written"
+
+
+@scenario
+async def test_a_tool_loop_runs_sample_tools_sample_without_delay(tmp_path: Path) -> None:
+    """The clock is never advanced: a step that moved starts the next at once."""
+    provider = FakeProvider([calls("a"), text("done")])
+    tool = FakeTool("ta", "A")
+    recorder = Recorder()
+    h = await Harness.create(tmp_path, provider=provider, tools=[tool], extensions=[recorder])
+    start = h.clock.now()
+    await h.send("go")
+    await h.settle()
+    assert len(provider.requests) == 2
+    assert recorder.points.count("pre_step") == 2
+    assert h.clock.now() == start
     assert not h.session.busy(h.cursor)
 
 

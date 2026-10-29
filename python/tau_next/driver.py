@@ -12,7 +12,7 @@ from functools import partial
 from tau_next import trace
 from tau_next._core import Author, Fed, ItemData, Job, Session
 from tau_next.clock import SystemClock
-from tau_next.effects import CallRun, SampleRun, run_hooks, subject_for, wait
+from tau_next.effects import CallRun, SampleRun, run_hooks, subject_for
 from tau_next.handles import Cursor, NodeHandle
 from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools
 
@@ -34,7 +34,6 @@ class Outstanding:
     sample: SampleRun | None = None
     calls: list[CallRun] = field(default_factory=lambda: [])
     remaining: int = 0
-    throttle: bool = False
 
 
 class Driver:
@@ -137,18 +136,18 @@ class Driver:
 
     def input(self, cursor: int, client: str, text: str) -> int:
         with trace.span("driver", "input"):
-            item = self.session.input(cursor, client, text, self.clock.now())
+            item = self.session.input(cursor, client, text)
         self._poke()
         return item
 
     def send(self, cursor: int, client: str, text: str) -> int:
         with trace.span("driver", "send"):
-            item = self.session.send(cursor, client, text, self.clock.now())
+            item = self.session.send(cursor, client, text)
         self._poke()
         return item
 
     def step(self, cursor: int, client: str) -> None:
-        self.session.step(cursor, client, self.clock.now())
+        self.session.step(cursor, client)
         self._poke()
 
     def go_to(self, cursor: int, to: int, client: str) -> bool:
@@ -162,7 +161,7 @@ class Driver:
         return cancel
 
     def set_auto(self, cursor: int, on: bool, client: str) -> None:
-        self.session.set_auto(cursor, on, client, self.clock.now())
+        self.session.set_auto(cursor, on, client)
         self._poke()
 
     def open(self, at: int, by: Author) -> int:
@@ -172,7 +171,7 @@ class Driver:
 
     def add_item(self, to: int, data: ItemData) -> int:
         """Add an item to a cursor's scratchpad (an extension's call): wakes it."""
-        item = self.session.add_item(to, data, self.clock.now())
+        item = self.session.add_item(to, data)
         self._poke()
         return item
 
@@ -326,10 +325,6 @@ class Driver:
                 ]
                 units = [self._unit(cursor, r.run) for r in runs]
                 self._out[cursor] = Outstanding(units, calls=runs, remaining=len(runs))
-            case Job.Wait(until=until):
-                self._out[cursor] = Outstanding(
-                    [self._unit(cursor, partial(wait, self.clock, until))], throttle=True
-                )
             case _:
                 raise RuntimeError(f"cursor {cursor}: a job this driver does not know: {job}")
 
@@ -340,7 +335,7 @@ class Driver:
 
     def _cancel(self, cursor: int) -> None:
         """Core said abort cancels the effect: stop its tasks. Each call unit and the
-        sample feed what they have; a throttle sleeper is cancelled and feeds nothing."""
+        sample feed what they have."""
         out = self._out.get(cursor)
         if out is None:
             raise RuntimeError(f"cursor {cursor}: abort cancels an effect, but none is out")
@@ -348,8 +343,3 @@ class Driver:
             out.sample.cancel()
         for call in out.calls:
             call.abort()
-        if out.throttle:
-            for unit in out.units:
-                unit.cancel()
-            del self._out[cursor]
-            self._poll.add(cursor)  # a go-to waiting on the aborted throttle applies

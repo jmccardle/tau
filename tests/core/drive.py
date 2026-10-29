@@ -33,7 +33,7 @@ def run(
     on_job: Callable[[Job], list[Fed] | None] | None = None,
 ) -> list[Job]:
     """Drive `cursor` to rest. Hooks leave the draft as it came, samples come from
-    `samples`, calls succeed with their id, the throttle passes. `on_job` may answer a job."""
+    `samples`, calls succeed with their id. `on_job` may answer a job."""
     seen: list[Job] = []
     for _ in range(200):
         job = session.next_job(cursor)
@@ -57,6 +57,4 @@ def default_answers(job: Job, samples: Iterator[Fed] | None) -> list[Fed]:
             return [next(samples)]
         case Job.RunCalls(calls=calls):
             return [Fed.CallDone(c.id, Outcome.Ok(f"ran {c.tool}"), Author.Tools()) for c in calls]
-        case Job.Wait():
-            return [Fed.Waited()]
     raise AssertionError(f"no default answer for {job}")

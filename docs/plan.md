@@ -126,7 +126,7 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
 - `settle()`: run until every cursor rests or holds only jobs a fake has not
   released. No test sleeps.
 - `FakeProvider` and `FakeTool` with **gates** (hold a sample or call open,
-  act, release), and a fake clock for cache TTLs and the throttle.
+  act, release), and a fake clock for cache TTLs.
 - Scenarios mined from the as-built review §8/§9 and the 0.15 suite (for
   scenarios only), each tagged `keep`, `change`, `drop`, or `new`.
 - `parity/`: a `Harness` adapter over τ 0.15 for the `keep` tests (plain
@@ -154,13 +154,15 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
   - ✓ a `pre_sample` hook moves the cursor; ✓ a `pre_reply` move chooses where
     the reply lands; ✓ a `post_reply` move changes where tools look;
   - ✓ `cursor.moves(since_step=True)` shows other hooks' moves;
-  - ✓ the throttle, and an item left in place does not spin;
+  - ✓ a cursor that does not move rests with auto-step off (a hook that
+    declines every input, a `pre_reply` that discards the reply); an item added
+    while busy causes one more step, and an item left in place does not spin;
   - ✓ agent-to-agent items wake an idle cursor; a sub-agent tool waits for its
     cursor to rest;
   - ✓ two cursors at one batch both run it; ✓ re-run from the `Assistant` node
     writes a sibling `Results`;
   - branch across a config node; detached-root one-off call; ✓ labels across a
-    reload; ✓ `StepLimit` stops a "continue" loop; ✓ reload equals pre-save state
+    reload; ✓ `StepLimit` stops a "continue" loop and a model that calls tools forever; ✓ reload equals pre-save state
     (I7); a provider-illegal walk fails at the next sample (I5).
 - **Exit:** `keep` green through `parity/`; everything else collected and
   failing for the right reason. Sign-off.

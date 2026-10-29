@@ -179,9 +179,7 @@ impl Agent {
                 self.turns -= 1;
                 self.rounds = rig.payloads.shape.rounds;
                 let start = Instant::now();
-                rig.m
-                    .send(c, "bench".into(), &rig.payloads.user, rig.now)
-                    .unwrap();
+                rig.m.send(c, "bench".into(), &rig.payloads.user).unwrap();
                 rig.stats.core += start.elapsed();
                 vec![]
             }
@@ -198,7 +196,6 @@ impl Agent {
                     by: Author::Tools,
                 })
                 .collect(),
-            Job::Wait { .. } => vec![Fed::Waited],
             Job::Pending => unreachable!("every call is fed with its batch"),
         };
         let start = Instant::now();

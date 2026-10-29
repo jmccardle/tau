@@ -25,8 +25,9 @@ page is the shape they share.
    ▼ PostStep     Job::Hooks(PostStep, ending)
    │
    ├─ Done, and (auto-step on with work) or the scratchpad changed
-   │     committed something ──▶ Step::wake again, from PreStep
-   │     committed nothing  ──▶ Throttle: Job::Wait{until: started + 250} ─ Fed::Waited
+   │     the cursor moved since the step woke ──▶ Step::wake again, from PreStep
+   │     the cursor did not move, auto-step on ──▶ auto-step off, Rest
+   │       (a scratchpad change alone still wakes one step)
    └─ otherwise ──▶ Rest: Job::Rest
 ```
 

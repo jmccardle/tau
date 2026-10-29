@@ -74,7 +74,7 @@ fn a_step_sees_its_cursor_moves_since_it_woke() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let d = s.open(s.at(c).unwrap(), Author::Core, 0).unwrap();
     let before = user(&mut s, c, "before");
-    let mut step = Step::wake(&s, c, true, 0);
+    let mut step = Step::wake(&s, c, true);
     assert_eq!(
         step.next_job(&mut s).unwrap(),
         Job::Hooks {

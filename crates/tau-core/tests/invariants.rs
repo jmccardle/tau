@@ -87,7 +87,6 @@ impl Driver {
                 return self.run_calls(m, c, ids);
             }
             Job::Pending => self.call_done(c, k),
-            Job::Wait { .. } => Fed::Waited,
         };
         let at = m.session.at(c).unwrap();
         m.feed(c, fed, 0).unwrap();
@@ -269,11 +268,11 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
     let node = |i: usize| i as NodeId % (nn + 2);
     let term = || "term".to_string();
     match *op {
-        Op::Send(i) => drop(m.send(cursor(i), term(), "hello", 0).unwrap()),
-        Op::Input(i) => drop(m.input(cursor(i), term(), "more", 0).unwrap()),
+        Op::Send(i) => drop(m.send(cursor(i), term(), "hello").unwrap()),
+        Op::Input(i) => drop(m.input(cursor(i), term(), "more").unwrap()),
         Op::Step(i) => {
             let busy = m.busy(cursor(i));
-            let stepped = m.step(cursor(i), term(), 0);
+            let stepped = m.step(cursor(i), term());
             prop_assert_eq!(
                 stepped,
                 if busy {
@@ -294,7 +293,7 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
                 Ok(_) => prop_assert!(node(t) < nn),
             }
         }
-        Op::Auto(i, on) => m.set_auto(cursor(i), on, term(), 0).unwrap(),
+        Op::Auto(i, on) => m.set_auto(cursor(i), on, term()).unwrap(),
         Op::Abort(i) => drop(m.abort(cursor(i))),
         Op::Open(t) => match m.open(node(t), Author::Core, 0, None) {
             Err(e) => prop_assert_eq!(e, Error::NoSuchNode(node(t))),

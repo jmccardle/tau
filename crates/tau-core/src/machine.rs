@@ -30,11 +30,11 @@ impl Machine {
     /// (model.md §6): every cursor starts a step, which with auto-step off (the
     /// load's `reconcile`) runs only `pre_step` and `post_step`.
     #[must_use]
-    pub fn loaded(session: Session, now: u64) -> Self {
+    pub fn loaded(session: Session) -> Self {
         let mut m = Self::new(session);
         let cursors: Vec<CursorId> = m.session.auto.keys().copied().collect();
         for cursor in cursors {
-            m.wake(cursor, false, now);
+            m.wake(cursor, false);
         }
         m
     }
@@ -51,19 +51,13 @@ impl Machine {
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open.
-    pub fn input(
-        &mut self,
-        cursor: CursorId,
-        client: String,
-        text: &str,
-        now: u64,
-    ) -> Result<ItemId, Error> {
+    pub fn input(&mut self, cursor: CursorId, client: String, text: &str) -> Result<ItemId, Error> {
         self.session.at(cursor)?;
         let data = ItemData::Input {
             client,
             text: text.into(),
         };
-        let id = self.add_item(cursor, data, now, None)?;
+        let id = self.add_item(cursor, data, None)?;
         self.session.sync();
         Ok(id)
     }
@@ -73,16 +67,10 @@ impl Machine {
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open.
-    pub fn send(
-        &mut self,
-        cursor: CursorId,
-        client: String,
-        text: &str,
-        now: u64,
-    ) -> Result<ItemId, Error> {
+    pub fn send(&mut self, cursor: CursorId, client: String, text: &str) -> Result<ItemId, Error> {
         self.session.at(cursor)?;
         self.session.auto.insert(cursor, true);
-        self.input(cursor, client, text, now)
+        self.input(cursor, client, text)
     }
 
     /// `Session.step`: run the phases once with auto-step off.
@@ -90,12 +78,12 @@ impl Machine {
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open; `Busy` if a step is running.
-    pub fn step(&mut self, cursor: CursorId, _client: String, now: u64) -> Result<(), Error> {
+    pub fn step(&mut self, cursor: CursorId, _client: String) -> Result<(), Error> {
         self.session.at(cursor)?;
         if self.busy(cursor) {
             return Err(Error::Busy(cursor));
         }
-        self.wake(cursor, true, now);
+        self.wake(cursor, true);
         self.session.sync();
         Ok(())
     }
@@ -124,7 +112,7 @@ impl Machine {
         } else {
             self.session.move_to(cursor, to, by, now)?;
             self.session.auto.insert(cursor, false);
-            self.wake(cursor, false, now);
+            self.wake(cursor, false);
             false
         };
         self.session.sync();
@@ -136,17 +124,11 @@ impl Machine {
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open.
-    pub fn set_auto(
-        &mut self,
-        cursor: CursorId,
-        on: bool,
-        _client: String,
-        now: u64,
-    ) -> Result<(), Error> {
+    pub fn set_auto(&mut self, cursor: CursorId, on: bool, _client: String) -> Result<(), Error> {
         self.session.at(cursor)?;
         self.session.auto.insert(cursor, on);
         if on {
-            self.wake(cursor, false, now);
+            self.wake(cursor, false);
         }
         self.session.sync();
         Ok(())
@@ -214,7 +196,7 @@ impl Machine {
         hook: Option<CursorId>,
     ) -> Result<CursorId, Error> {
         let cursor = self.session.open(at, by, now)?;
-        self.wake(cursor, false, now);
+        self.wake(cursor, false);
         self.sync_unless_hook(hook);
         Ok(cursor)
     }
@@ -228,12 +210,11 @@ impl Machine {
         &mut self,
         to: CursorId,
         data: ItemData,
-        now: u64,
         hook: Option<CursorId>,
     ) -> Result<ItemId, Error> {
         self.session.at(to)?;
         let id = self.session.add_item(to, data);
-        self.wake(to, false, now);
+        self.wake(to, false);
         self.sync_unless_hook(hook);
         Ok(id)
     }
@@ -375,7 +356,7 @@ impl Machine {
                 self.session.move_to(cursor, to, by, time)?;
                 self.session.auto.insert(cursor, false);
                 self.session.sync();
-                self.wake(cursor, false, time);
+                self.wake(cursor, false);
                 self.next_job(cursor)
             }
             (job, going) => {
@@ -415,11 +396,11 @@ impl Machine {
     }
 
     /// Start a step unless one is running; a wake while busy joins it.
-    fn wake(&mut self, cursor: CursorId, asked: bool, now: u64) {
+    fn wake(&mut self, cursor: CursorId, asked: bool) {
         if !self.busy(cursor) {
             transitions::wake(asked);
             self.steps
-                .insert(cursor, Step::wake(&self.session, cursor, asked, now));
+                .insert(cursor, Step::wake(&self.session, cursor, asked));
         }
     }
 }

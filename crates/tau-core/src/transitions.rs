@@ -92,7 +92,6 @@ pub(crate) fn fed(fed: &Fed) {
             }
         ),
         Fed::CallDone { .. } => "feed CallDone".into(),
-        Fed::Waited => "feed Waited".into(),
     });
     #[cfg(not(feature = "transitions"))]
     let _ = fed;
@@ -160,7 +159,6 @@ pub(crate) fn emit(pos: impl std::fmt::Debug, job: &Job) {
             ),
             Job::Hooks { point, .. } => format!("Hooks({point:?})"),
             Job::RunCalls { .. } => "RunCalls".into(),
-            Job::Wait { .. } => "Wait".into(),
             other => format!("{other:?}"),
         };
         let pos = format!("{pos:?}");

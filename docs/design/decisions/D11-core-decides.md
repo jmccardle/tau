@@ -15,8 +15,7 @@ question is where the decisions live.
 - **Each cursor's step is a sans-IO state machine in `tau-core`**
   (`step::Step`). It never waits. It hands out **jobs** (`Job`) and takes
   results (`Fed`); the Python driver performs one and feeds the other.
-- **Only waits are jobs**: run a hook point, sample, run calls, wait (the
-  throttle), rest. `pre_tool`, the tool, and `pre_result` run inside the
+- **Only waits are jobs**: run a hook point, sample, run calls, rest. `pre_tool`, the tool, and `pre_result` run inside the
   driver's per-call unit; core holds outcomes and writes `Results` at the
   join.
 - **Writes are not jobs.** Every append, move, label change, and item change

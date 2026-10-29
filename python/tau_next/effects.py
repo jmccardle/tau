@@ -23,7 +23,6 @@ from tau_next._core import (
 )
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 from tau_next.protocols import (
-    Clock,
     CursorHook,
     Extension,
     Finish,
@@ -75,11 +74,6 @@ async def run_hooks(
         if stop is not None:
             return Fed.Hooks(stop, None)
     return Fed.Hooks(None, subject.draft)
-
-
-async def wait(clock: Clock, until: int) -> Fed:
-    await clock.sleep_until(until)
-    return Fed.Waited()
 
 
 async def _finish[T](task: asyncio.Future[T]) -> None:

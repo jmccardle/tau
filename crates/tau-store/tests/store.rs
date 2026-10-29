@@ -317,7 +317,7 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let mut m = Machine::new(s);
-    m.send(c, "term".into(), "hi", 0).unwrap();
+    m.send(c, "term".into(), "hi").unwrap();
     store = store.save(&mut m.session).unwrap();
     loop {
         let job = m.next_job(c).unwrap();
@@ -380,7 +380,7 @@ fn open_and_add_item_outside_a_step_are_durable_on_return() {
         name: "timer".into(),
         data: "tick".into(),
     };
-    m.add_item(c, tick, 0, None).unwrap();
+    m.add_item(c, tick, None).unwrap();
     let other = m
         .open(sys, Author::Extension("ext".into()), 0, None)
         .unwrap();
@@ -397,12 +397,12 @@ fn load_wakes_a_cursor_with_input_pending_for_its_hooks_only() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let mut m = Machine::new(s);
-    m.send(c, "term".into(), "hi", 0).unwrap();
+    m.send(c, "term".into(), "hi").unwrap();
     store = store.save(&mut m.session).unwrap();
     drop(m);
     drop(store); // closed before the step ran
     let (_store, loaded) = Store::open(d.path()).unwrap();
-    let mut m = Machine::loaded(loaded, 1);
+    let mut m = Machine::loaded(loaded);
     assert!(m.busy(c));
     let mut jobs = vec![];
     loop {
@@ -443,7 +443,7 @@ fn a_failed_save_consumes_the_store_and_the_session_reopens_as_last_synced() {
     let block = d.path().join("scratchpad.new");
     fs::create_dir(&block).unwrap();
     let mut m = Machine::new(s);
-    m.input(c, "term".into(), "hi", 0).unwrap();
+    m.input(c, "term".into(), "hi").unwrap();
     assert!(matches!(store.save(&mut m.session), Err(Error::Io(_))));
     // The store is gone with its lease, as after a crash: the session opens again.
     fs::remove_dir(&block).unwrap();

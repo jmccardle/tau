@@ -154,9 +154,7 @@ class TreeHandle:
     def add_item(self, to: int, data: str) -> int:
         """Add this extension's item to a cursor's scratchpad; the cursor wakes."""
         self._check()
-        item = self._session.add_item(
-            to, ItemData.Extension(self.extension, data), self._now(), self._hook
-        )
+        item = self._session.add_item(to, ItemData.Extension(self.extension, data), self._hook)
         self._poke()
         return item
 

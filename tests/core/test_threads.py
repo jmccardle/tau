@@ -38,7 +38,7 @@ def test_threads_share_one_session(tmp_path: Path, on_disk: bool) -> None:
     def turns(cursor: int) -> int:
         run(session, cursor)  # the open's own wake
         for n in range(TURNS):
-            session.send(cursor, "term", f"hi {n}", n)
+            session.send(cursor, "term", f"hi {n}")
             run(session, cursor, iter([say(f"re {n}")]), n)
             session.cursors()
             session.walk(session.at(cursor))

@@ -87,7 +87,7 @@ fn send(s: &mut Session, cursor: u64, t: &str) {
 fn plain_turn() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     drive(&mut s, &mut step, |job, _| match job {
         Job::Sample => vec![Fed::Sampled {
             reply: Some(reply(vec![text("hello")], Stop::End)),
@@ -114,7 +114,7 @@ fn batch_answers_in_call_order_then_samples_again() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "look");
     let mut samples = 0;
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     drive(&mut s, &mut step, |job, _| match job {
         Job::Sample => {
             samples += 1;
@@ -164,7 +164,7 @@ fn each_outcome_records_who_produced_it() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "look");
     let mut samples = 0;
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     drive(&mut s, &mut step, |job, _| match job {
         Job::Sample => {
             samples += 1;
@@ -212,7 +212,7 @@ fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
     s.outbox.clear();
     send(&mut s, c, "look");
     let mut samples = 0;
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let jobs = drive(&mut s, &mut step, |job, s| {
         if let Job::Hooks { point, .. } = job
             && matches!(point, Hook::PostReply | Hook::PostResult | Hook::PostStep)
@@ -268,7 +268,7 @@ fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
 fn crash_mid_batch() -> (Session, u64) {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "look");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     loop {
         match step.next_job(&mut s).unwrap() {
             Job::Sample => step
@@ -310,7 +310,7 @@ fn after_a_crash_mid_batch_input_goes_under_the_unanswered_batch() {
         "rests at the batch"
     );
     send(&mut s, c, "the power went out, check the files");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
         Job::Sample => vec![Fed::Sampled {
             reply: Some(reply(vec![text("checking")], Stop::End)),
@@ -333,7 +333,7 @@ fn after_a_crash_mid_batch_input_goes_under_the_unanswered_batch() {
 #[test]
 fn after_a_crash_mid_batch_a_step_reruns_the_whole_batch() {
     let (mut s, c) = crash_mid_batch();
-    let mut step = Step::wake(&s, c, true, 0);
+    let mut step = Step::wake(&s, c, true);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
         Job::RunCalls { calls: run, .. } => run
             .iter()
@@ -370,7 +370,7 @@ fn after_a_crash_mid_batch_a_step_reruns_the_whole_batch() {
 fn pre_input_string_refuses_with_a_notice() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "/model fast");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
         Job::Hooks {
             point: Hook::PreInput,
@@ -397,7 +397,7 @@ fn pre_input_string_refuses_with_a_notice() {
 fn pre_reply_move_chooses_where_the_reply_lands() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     drive(&mut s, &mut step, |job, s| match job {
         Job::Sample => vec![Fed::Sampled {
             reply: Some(reply(vec![text("hello")], Stop::End)),
@@ -439,7 +439,7 @@ fn pre_reply_move_chooses_where_the_reply_lands() {
 fn abort_during_sample_commits_the_partial_reply() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let mut cancelled = false;
     let jobs = {
         let mut seen = vec![];
@@ -478,10 +478,24 @@ fn abort_during_sample_commits_the_partial_reply() {
     assert!(!s.auto[&c]);
 }
 
+fn pre_steps(jobs: &[Job]) -> usize {
+    jobs.iter()
+        .filter(|j| {
+            matches!(
+                j,
+                Job::Hooks {
+                    point: Hook::PreStep,
+                    ..
+                }
+            )
+        })
+        .count()
+}
+
 #[test]
-fn a_step_that_committed_nothing_is_throttled() {
+fn an_item_added_while_busy_causes_one_more_step() {
     let (mut s, c) = Session::create("{}", "sys", 0);
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let mut woke = false;
     let jobs = drive(&mut s, &mut step, |job, s| match job {
         Job::Hooks {
@@ -498,23 +512,50 @@ fn a_step_that_committed_nothing_is_throttled() {
             );
             vec![ok()]
         }
-        Job::Wait { .. } => vec![Fed::Waited],
         _ => vec![echo(job)],
     });
-    assert!(jobs.contains(&Job::Wait { until: 250 }));
-    assert_eq!(
-        jobs.iter()
-            .filter(|j| matches!(
-                j,
-                Job::Hooks {
-                    point: Hook::PreStep,
-                    ..
-                }
-            ))
-            .count(),
-        2,
-        "the item left in place does not spin"
+    assert_eq!(pre_steps(&jobs), 2, "one more step, none after it");
+}
+
+#[test]
+fn a_hook_that_declines_every_input_runs_one_step_then_auto_step_goes_off() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let before = bodies(&s, c).len();
+    let mut step = Step::wake(&s, c, false);
+    // `ok()` answers `pre_input` with no draft: the input is declined.
+    let jobs = drive(&mut s, &mut step, |_, _| vec![ok()]);
+    assert_eq!(pre_steps(&jobs), 1, "the cursor does not try again");
+    assert!(!jobs.contains(&Job::Sample));
+    assert!(!s.auto[&c], "a cursor that cannot move stops trying");
+    assert!(
+        s.items(c).any(|i| matches!(i.data, ItemData::Input { .. })),
+        "the input stays pending"
     );
+    assert_eq!(bodies(&s, c).len(), before, "nothing was written");
+}
+
+#[test]
+fn a_discarded_reply_runs_one_step_then_auto_step_goes_off() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    let root = s.at(c).unwrap();
+    s.write(c, Body::User("hi".into()), vec![], Author::Core, 0)
+        .unwrap();
+    s.auto.insert(c, true);
+    assert_ne!(s.at(c).unwrap(), root);
+    let before = bodies(&s, c).len();
+    let mut step = Step::wake(&s, c, false);
+    let jobs = drive(&mut s, &mut step, |job, _| match job {
+        Job::Sample => vec![Fed::Sampled {
+            reply: Some(reply(vec![text("lost")], Stop::End)),
+            error: None,
+        }],
+        _ => vec![ok()], // `pre_reply` leaves no draft
+    });
+    assert_eq!(pre_steps(&jobs), 1);
+    assert_eq!(jobs.iter().filter(|j| **j == Job::Sample).count(), 1);
+    assert!(!s.auto[&c]);
+    assert_eq!(bodies(&s, c).len(), before, "the reply was never written");
 }
 
 /// Samples `replies` in order; answers every call `Ok(call id)` by `Tools`;
@@ -534,7 +575,6 @@ fn scripted(mut replies: Vec<Draft>) -> impl FnMut(&Job, &mut Session) -> Vec<Fe
                 by: Author::Tools,
             })
             .collect(),
-        Job::Wait { .. } => vec![Fed::Waited],
         _ => vec![echo(job)],
     }
 }
@@ -557,7 +597,7 @@ fn a_tool_error_is_an_outcome_and_the_model_sees_it() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "look");
     let mut samples = 0;
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     drive(&mut s, &mut step, |job, _| match job {
         Job::Sample => {
             samples += 1;
@@ -594,7 +634,7 @@ fn a_tool_error_is_an_outcome_and_the_model_sees_it() {
 fn an_http_error_leaves_a_side_node_and_the_cursor_where_it_was() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
         Job::Sample => vec![Fed::Sampled {
             reply: None,
@@ -614,7 +654,7 @@ fn an_http_error_leaves_a_side_node_and_the_cursor_where_it_was() {
 fn a_mid_stream_error_commits_the_partial_reply_and_fails() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
         Job::Sample => vec![Fed::Sampled {
             reply: Some(reply(vec![text("hel")], Stop::Error)),
@@ -638,7 +678,7 @@ fn a_mid_stream_error_commits_the_partial_reply_and_fails() {
 fn abort_during_sample_with_no_parts_commits_nothing() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let mut jobs = vec![];
     loop {
         let job = step.next_job(&mut s).unwrap();
@@ -675,7 +715,7 @@ fn abort_during_sample_with_no_parts_commits_nothing() {
 fn abort_during_tools_interrupts_unfinished_calls_and_runs_post_result_once() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "look");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let mut jobs = vec![];
     loop {
         let job = step.next_job(&mut s).unwrap();
@@ -735,7 +775,7 @@ fn abort_during_tools_interrupts_unfinished_calls_and_runs_post_result_once() {
 fn input_while_busy_waits_and_the_next_step_delivers_it_after_the_batch() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "look");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let mut script = scripted(vec![
         reply(vec![call("a")], Stop::Tools),
         reply(vec![text("seen both")], Stop::End),
@@ -757,7 +797,7 @@ fn input_while_busy_waits_and_the_next_step_delivers_it_after_the_batch() {
 fn abort_leaves_pending_input_pending_and_a_send_then_delivers_it() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     loop {
         match step.next_job(&mut s).unwrap() {
             Job::Rest => break,
@@ -780,7 +820,7 @@ fn abort_leaves_pending_input_pending_and_a_send_then_delivers_it() {
     assert_eq!(s.items(c).count(), 1, "still pending");
     assert!(!s.auto[&c]);
     send(&mut s, c, "go on");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     drive(
         &mut s,
         &mut step,
@@ -808,7 +848,7 @@ fn abort_leaves_pending_input_pending_and_a_send_then_delivers_it() {
 fn a_cursor_hook_string_halts_the_step() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
         Job::Hooks {
             point: Hook::PreSample,
@@ -829,7 +869,7 @@ fn a_cursor_hook_string_halts_the_step() {
 fn a_pre_sample_move_chooses_what_is_sampled_and_where_the_reply_lands() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let mut script = scripted(vec![reply(vec![text("hello")], Stop::End)]);
     drive(&mut s, &mut step, |job, s| {
         if let Job::Hooks {
@@ -875,7 +915,7 @@ fn a_post_reply_move_changes_where_the_tools_phase_looks() {
         )
         .unwrap();
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let mut script = scripted(vec![
         reply(vec![text("hello")], Stop::End),
         reply(vec![text("after old")], Stop::End),
@@ -912,7 +952,7 @@ fn a_post_reply_move_changes_where_the_tools_phase_looks() {
 fn answered_batch() -> (Session, u64, u64) {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "look");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let mut first = true;
     drive(&mut s, &mut step, |job, s| {
         if let Job::Hooks {
@@ -961,7 +1001,7 @@ fn going_to_a_batch_and_stepping_writes_a_sibling_results() {
     let first = s.at(c).unwrap();
     s.move_to(c, batch, Author::Frontend("term".into()), 0)
         .unwrap();
-    let mut step = Step::wake(&s, c, true, 0);
+    let mut step = Step::wake(&s, c, true);
     drive(&mut s, &mut step, scripted(vec![]));
     let second = s.at(c).unwrap();
     assert_ne!(first, second);
@@ -984,7 +1024,7 @@ fn two_cursors_at_one_batch_both_run_it() {
         .unwrap();
     let d = s.open(batch, Author::Frontend("term".into()), 0).unwrap();
     for cur in [c, d] {
-        let mut step = Step::wake(&s, cur, true, 0);
+        let mut step = Step::wake(&s, cur, true);
         drive(&mut s, &mut step, scripted(vec![]));
     }
     assert_ne!(s.at(c).unwrap(), s.at(d).unwrap());
@@ -1011,7 +1051,7 @@ fn stop() -> Fed {
 fn a_second_hooks_feed_before_the_next_job_is_refused() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     // To the pre_sample hook, answer it, then feed again with no job out.
     for _ in 0..2 {
         let job = step.next_job(&mut s).unwrap();
@@ -1034,7 +1074,7 @@ fn a_second_hooks_feed_before_the_next_job_is_refused() {
 fn a_second_feed_at_a_pre_input_hook_is_refused_not_a_panic() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let job = step.next_job(&mut s).unwrap();
     step.feed(&mut s, echo(&job), 0).unwrap();
     let job = step.next_job(&mut s).unwrap();
@@ -1052,7 +1092,7 @@ fn a_second_feed_at_a_pre_input_hook_is_refused_not_a_panic() {
 #[test]
 fn a_stop_at_rest_does_not_restart_the_step() {
     let (mut s, c) = Session::create("{}", "sys", 0);
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     drive(&mut s, &mut step, |_, _| vec![ok()]);
     assert!(step.resting());
     refused(&mut s, &mut step, c, stop());
@@ -1065,7 +1105,7 @@ fn a_stop_at_rest_does_not_restart_the_step() {
 fn a_hook_feed_while_a_sample_is_out_is_refused() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     loop {
         match step.next_job(&mut s).unwrap() {
             Job::Sample => break,
@@ -1075,7 +1115,6 @@ fn a_hook_feed_while_a_sample_is_out_is_refused() {
     refused(&mut s, &mut step, c, Fed::HookFailed("x".into()));
     refused(&mut s, &mut step, c, stop());
     refused(&mut s, &mut step, c, ok());
-    refused(&mut s, &mut step, c, Fed::Waited);
     // The sample is still the job.
     assert_eq!(step.next_job(&mut s), Ok(Job::Sample));
 }
@@ -1084,7 +1123,7 @@ fn a_hook_feed_while_a_sample_is_out_is_refused() {
 fn a_stop_while_calls_are_out_does_not_discard_the_batch() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     loop {
         match step.next_job(&mut s).unwrap() {
             Job::Sample => step
@@ -1121,7 +1160,7 @@ fn a_stop_while_calls_are_out_does_not_discard_the_batch() {
 #[test]
 fn a_call_done_with_no_batch_out_is_refused() {
     let (mut s, c) = Session::create("{}", "sys", 0);
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let done = Fed::CallDone {
         call: "a".into(),
         outcome: Outcome::Ok("x".into()),
@@ -1130,7 +1169,6 @@ fn a_call_done_with_no_batch_out_is_refused() {
     refused(&mut s, &mut step, c, done.clone());
     drive(&mut s, &mut step, |_, _| vec![ok()]);
     refused(&mut s, &mut step, c, done);
-    refused(&mut s, &mut step, c, Fed::Waited);
     refused(
         &mut s,
         &mut step,
@@ -1146,7 +1184,7 @@ fn a_call_done_with_no_batch_out_is_refused() {
 fn a_pre_input_draft_that_delivers_nothing_is_written_and_the_item_stays_pending() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     step.next_job(&mut s).unwrap();
     step.feed(&mut s, ok(), 0).unwrap();
     let Job::Hooks {
@@ -1179,7 +1217,7 @@ fn a_pre_input_hook_that_leaves_no_draft_commits_nothing_and_the_input_stays_pen
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
     s.auto.insert(c, false);
-    let mut step = Step::wake(&s, c, true, 0);
+    let mut step = Step::wake(&s, c, true);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
         Job::Hooks {
             point: Hook::PreInput,
@@ -1223,7 +1261,7 @@ fn writes(s: &Session) -> usize {
 fn a_reply_naming_a_call_id_twice_fails_the_step_and_changes_nothing() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "go");
-    let mut step = Step::wake(&s, c, false, 0);
+    let mut step = Step::wake(&s, c, false);
     let mut before = None;
     let jobs = drive(&mut s, &mut step, |job, s| match job {
         Job::Sample => {

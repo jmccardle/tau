@@ -123,15 +123,15 @@ impl Session {
     }
 
     /// Open the session in `directory`, taking its lease. Every cursor loads
-    /// with auto-step off, woken at `now` (load is a wake).
+    /// with auto-step off, woken (load is a wake).
     #[staticmethod]
-    fn load(py: Python<'_>, directory: PathBuf, now: u64) -> PyResult<Self> {
+    fn load(py: Python<'_>, directory: PathBuf) -> PyResult<Self> {
         let (store, session) = py
             .detach(move || Store::open(&directory))
             .map_err(Failure::from)?;
         Ok(Self {
             inner: Mutex::new(Some(Inner {
-                machine: Machine::loaded(session, now),
+                machine: Machine::loaded(session),
                 store: Some(store),
             })),
         })
@@ -156,35 +156,21 @@ impl Session {
 
     // Frontend calls.
 
-    fn input(
-        &self,
-        py: Python<'_>,
-        cursor: u64,
-        client: String,
-        text: &str,
-        now: u64,
-    ) -> PyResult<u64> {
+    fn input(&self, py: Python<'_>, cursor: u64, client: String, text: &str) -> PyResult<u64> {
         self.write(py, tracing::info_span!("py.input"), |m| {
-            Ok(m.input(cursor, client, text, now)?)
+            Ok(m.input(cursor, client, text)?)
         })
     }
 
-    fn send(
-        &self,
-        py: Python<'_>,
-        cursor: u64,
-        client: String,
-        text: &str,
-        now: u64,
-    ) -> PyResult<u64> {
+    fn send(&self, py: Python<'_>, cursor: u64, client: String, text: &str) -> PyResult<u64> {
         self.write(py, tracing::info_span!("py.send"), |m| {
-            Ok(m.send(cursor, client, text, now)?)
+            Ok(m.send(cursor, client, text)?)
         })
     }
 
-    fn step(&self, py: Python<'_>, cursor: u64, client: String, now: u64) -> PyResult<()> {
+    fn step(&self, py: Python<'_>, cursor: u64, client: String) -> PyResult<()> {
         self.write(py, tracing::info_span!("py.step"), |m| {
-            Ok(m.step(cursor, client, now)?)
+            Ok(m.step(cursor, client)?)
         })
     }
 
@@ -202,16 +188,9 @@ impl Session {
         })
     }
 
-    fn set_auto(
-        &self,
-        py: Python<'_>,
-        cursor: u64,
-        on: bool,
-        client: String,
-        now: u64,
-    ) -> PyResult<()> {
+    fn set_auto(&self, py: Python<'_>, cursor: u64, on: bool, client: String) -> PyResult<()> {
         self.write(py, tracing::info_span!("py.set_auto"), |m| {
-            Ok(m.set_auto(cursor, on, client, now)?)
+            Ok(m.set_auto(cursor, on, client)?)
         })
     }
 
@@ -244,17 +223,16 @@ impl Session {
     }
 
     /// `hook` as for `open`.
-    #[pyo3(signature = (to, data, now, hook = None))]
+    #[pyo3(signature = (to, data, hook = None))]
     fn add_item(
         &self,
         py: Python<'_>,
         to: u64,
         data: ItemData,
-        now: u64,
         hook: Option<u64>,
     ) -> PyResult<u64> {
         self.write(py, tracing::info_span!("py.add_item"), |m| {
-            Ok(m.add_item(to, data.into(), now, hook)?)
+            Ok(m.add_item(to, data.into(), hook)?)
         })
     }
 

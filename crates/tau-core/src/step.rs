@@ -6,8 +6,6 @@ use crate::tree::{
     Author, Body, CursorId, Error, Item, ItemData, ItemId, Next, NodeId, Outcome, Session, calls,
 };
 
-pub const THROTTLE: u64 = 250;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hook {
     PreStep,
@@ -58,9 +56,6 @@ pub enum Job {
         calls: Vec<RunCall>,
     },
     Pending,
-    Wait {
-        until: u64,
-    },
     Rest,
 }
 
@@ -83,7 +78,6 @@ pub enum Fed {
         outcome: Outcome,
         by: Author,
     },
-    Waited,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,7 +92,6 @@ enum Pos {
     Calls,
     PostResult,
     PostStep,
-    Throttle,
     Rest,
 }
 
@@ -107,8 +100,6 @@ pub struct Step {
     pub cursor: CursorId,
     pos: Pos,
     asked: bool,
-    committed: bool,
-    started: u64,
     seen: u64,
     /// `Session::moves.len()` when this step woke.
     first_move: usize,
@@ -128,14 +119,12 @@ pub struct Step {
 impl Step {
     /// A wake. `asked`: a frontend's `Session.step`, which runs phases with auto-step off.
     #[must_use]
-    pub fn wake(s: &Session, cursor: CursorId, asked: bool, now: u64) -> Self {
+    pub fn wake(s: &Session, cursor: CursorId, asked: bool) -> Self {
         let seen = s.changes.get(&cursor).copied().unwrap_or(0);
         Self {
             cursor,
             pos: Pos::PreStep,
             asked,
-            committed: false,
-            started: now,
             seen,
             first_move: s.moves.len(),
             out: false,
@@ -252,9 +241,6 @@ impl Step {
                         ending: Some(self.ending.clone()),
                     }
                 }
-                Pos::Throttle => Job::Wait {
-                    until: self.started + THROTTLE,
-                },
                 Pos::Rest => Job::Rest,
             });
         }
@@ -279,9 +265,9 @@ impl Step {
                 if stop.is_some() {
                     s.auto.insert(self.cursor, false);
                 }
-                self.after(s, now);
+                self.after(s);
             }
-            (Pos::PostStep, Fed::HookFailed(_)) => self.after(s, now),
+            (Pos::PostStep, Fed::HookFailed(_)) => self.after(s),
             (_, Fed::HookFailed(e)) => {
                 self.draft = None;
                 self.end(s, Ending::Failed(e));
@@ -353,10 +339,6 @@ impl Step {
                 }
             }
             (Pos::PostResult, Fed::Hooks { .. }) => self.go(Pos::PostStep),
-            (Pos::Throttle, Fed::Waited) => {
-                transitions::go(Pos::Throttle, Pos::PreStep);
-                *self = Self::wake(s, self.cursor, false, now);
-            }
             _ => return Err(Error::WrongFeed(self.cursor)),
         }
         Ok(())
@@ -366,7 +348,7 @@ impl Step {
     fn answers(&self, fed: &Fed) -> bool {
         match (self.pos, fed) {
             (_, Fed::Hooks { .. } | Fed::HookFailed(_)) => self.in_hook(),
-            (Pos::Sample, Fed::Sampled { .. }) | (Pos::Throttle, Fed::Waited) => self.out,
+            (Pos::Sample, Fed::Sampled { .. }) => self.out,
             (Pos::Calls, Fed::CallDone { call, .. }) => {
                 self.out && self.batch.iter().any(|c| c.0 == *call && c.1.is_none())
             }
@@ -375,19 +357,13 @@ impl Step {
     }
 
     /// Abort: auto-step off, no later effect. Returns true if the driver must
-    /// cancel the effect in flight (or, in the throttle, its sleeper) and feed what it got (partial reply, `Interrupted`s).
+    /// cancel the effect in flight and feed what it got (partial reply, `Interrupted`s).
     pub fn abort(&mut self, s: &mut Session) -> bool {
         s.auto.insert(self.cursor, false);
         if self.ending == Ending::Done {
             self.ending = Ending::Aborted;
         }
-        let cancel = matches!(self.pos, Pos::Sample | Pos::Calls | Pos::Throttle);
-        if self.pos == Pos::Throttle {
-            transitions::event("abort");
-            self.out = false;
-            self.go(Pos::Rest); // the scheduled restart is cancelled
-        }
-        cancel
+        matches!(self.pos, Pos::Sample | Pos::Calls)
     }
 
     /// True while a cursor hook job is out: the hook may act on its own cursor.
@@ -409,15 +385,14 @@ impl Step {
     /// Write a phase's draft under `at`; `None`, the draft the hooks left, commits
     /// nothing. Core validates the draft the hooks left: any refusal from
     /// `write` (it changes nothing when it refuses) fails the step, its reason
-    /// the error's text. Only a write here counts as the step's commit.
+    /// the error's text.
     fn commit(&mut self, s: &mut Session, draft: Option<Draft>, now: u64) {
-        if let Some(d) = draft {
-            if let Err(e) = s.write(self.cursor, d.body, d.delivers, d.by, now) {
-                transitions::event("commit refused");
-                self.end(s, Ending::Failed(e.to_string()));
-                return;
-            }
-            self.committed = true;
+        if let Some(d) = draft
+            && let Err(e) = s.write(self.cursor, d.body, d.delivers, d.by, now)
+        {
+            transitions::event("commit refused");
+            self.end(s, Ending::Failed(e.to_string()));
+            return;
         }
         self.go(if self.pos == Pos::PreReply {
             Pos::PostReply
@@ -456,23 +431,31 @@ impl Step {
         self.go(Pos::PostStep);
     }
 
-    /// After `post_step`: sync what it wrote, then rest, throttle, or restart.
-    fn after(&mut self, s: &mut Session, now: u64) {
+    /// After `post_step`: sync what it wrote, then rest or restart. A step that
+    /// ended `Done` with work left (auto-step on and `next != Wait`, or input
+    /// pending) starts the next at once if its cursor moved. If it did not move,
+    /// it would only try the same thing again: auto-step goes off and it rests.
+    /// An item added since the step woke is news from outside and wakes a step
+    /// regardless; that step answers to the same rule.
+    fn after(&mut self, s: &mut Session) {
         s.sync();
         let work = s.next(self.cursor) != Next::Wait
             || s.items(self.cursor)
                 .any(|i| matches!(i.data, ItemData::Input { .. }));
         let changed = s.changes.get(&self.cursor).copied().unwrap_or(0) != self.seen;
-        let again = self.ending == Ending::Done && ((s.auto[&self.cursor] && work) || changed);
-        let to = match (again, self.committed) {
-            (false, _) => Pos::Rest,
-            (true, false) => Pos::Throttle,
-            (true, true) => Pos::PreStep,
-        };
+        let moved = self.moves(s).next().is_some();
+        let idle = self.ending == Ending::Done && s.auto[&self.cursor] && work && !moved;
+        if idle {
+            s.auto.insert(self.cursor, false);
+        }
+        let again =
+            self.ending == Ending::Done && (changed || (s.auto[&self.cursor] && work && moved));
         transitions::ending(&self.ending);
-        self.go(to);
-        if to == Pos::PreStep {
-            *self = Self::wake(s, self.cursor, false, now);
+        if again {
+            self.go(Pos::PreStep);
+            *self = Self::wake(s, self.cursor, false);
+        } else {
+            self.go(Pos::Rest);
         }
     }
 
@@ -507,7 +490,6 @@ impl Step {
             Author::Tools,
             now,
         )?;
-        self.committed = true;
         self.go(Pos::PostResult);
         Ok(())
     }

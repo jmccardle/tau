@@ -35,7 +35,6 @@ MEANING = {
     "Calls": "the tool calls run in the driver; outcomes arrive one by one",
     "PostResult": "post_result hooks, after the Results node is written",
     "PostStep": "post_step hooks, carrying the ending",
-    "Throttle": "wait 250 ms before the next step (nothing was committed)",
     "Rest": "the step has ended",
 }
 
@@ -72,10 +71,7 @@ def _allowed() -> set[tuple[str, str, str]]:
     a.add(("PostResult", "feed Hooks", "PostStep"))
     for ending in ENDINGS:
         a.add(("PostStep", f"ending {ending}", "Rest"))
-    a.add(("PostStep", "ending Done", "Throttle"))
     a.add(("PostStep", "ending Done", "PreStep"))
-    a.add(("Throttle", "feed Waited", "PreStep"))
-    a.add(("Throttle", "abort", "Rest"))
     return a
 
 
@@ -93,7 +89,6 @@ EMITS = {
     "Calls": ["RunCalls", "Pending"],
     "PostResult": ["Hooks(PostResult)"],
     "PostStep": [f"Hooks(PostStep, {e})" for e in ENDINGS],
-    "Throttle": ["Wait"],
     "Rest": ["Rest"],
 }
 

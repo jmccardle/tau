@@ -249,8 +249,7 @@ gone item and `write` refuses it (`NotPending`), failing the step.
 *spike* (in `Step::feed`) · retires the plan's commit
 
 A phase writing its draft with `Session::write`; a draft of `None` (cleared by a
-hook) writes nothing. Only a commit and the join make a step *committed* (the
-throttle's test): a hook's own `cursor.write` does not.
+hook) writes nothing, and the step moved no further than the hooks moved it.
 
 ### cursor.moves
 *spike* `Session::moves_of`, `Step::moves` · new
@@ -312,7 +311,7 @@ every cursor starts a step), and the `Session::notices` the Python `take_notices
 The machine plus its optional store behind one `Mutex`, so the class is
 `frozen` and free-threading safe. `Session.create(config, system, now,
 directory=None)` makes one (in memory, or in a directory with a store);
-`Session.load(directory, now)` opens one. Every call takes the lock with the
+`Session.load(directory)` opens one. Every call takes the lock with the
 GIL released; every call that changes the session then gives the store its
 queued records before it returns, so Python never saves. An in-memory
 session drops them. A failed save is a crash: the call raises the OS error
@@ -349,9 +348,9 @@ Never stored; every cursor loads at rest.
 submission, cycle
 
 One pass of the phase loop for one cursor, `pre_step` to `post_step`.
-`Step::wake(session, cursor, asked, now)` starts one; `next_job` and `feed`
+`Step::wake(session, cursor, asked)` starts one; `next_job` and `feed`
 drive it; `abort` and `resting` are its other calls. Private state:
-`cursor`, `pos`, `asked`, `committed`, `started`, `seen`, `out` (a job is
+`cursor`, `pos`, `asked`, `seen`, `first_move`, `out` (a job is
 handed out and not yet answered; which kind is `pos`'s), `draft`, `error`,
 `ending` (no longer `Done` once aborted, so no later phase applies), `batch`.
 
@@ -371,7 +370,7 @@ or the step was asked, and its condition holds at its start.
 *spike* `step::Pos` (private) · new
 
 Where a step is: `PreStep`, `Input`, `PreSample`, `Sample`, `PreReply`,
-`PostReply`, `Tools`, `Calls`, `PostResult`, `PostStep`, `Throttle`, `Rest`.
+`PostReply`, `Tools`, `Calls`, `PostResult`, `PostStep`, `Rest`.
 
 ### transition log
 *spike* `tau_core::transitions`, cargo feature `transitions` · new
@@ -397,7 +396,7 @@ that is not `Config` or `Custom`); a batch is read from that node, not from
 What the step asks the driver to do: `Hooks { point, draft, ending }`,
 `Sample`, `RunCalls { node, calls }` (`node`: the `Assistant` node holding the
 batch; the driver refuses an empty one), `Pending` (calls outstanding),
-`Wait { until }` (the throttle), `Rest`. Only waits are jobs; writes never are.
+`Rest`. Only waits are jobs; writes never are.
 
 ### retired handle
 Python `TreeHandle.retire` · new
@@ -414,7 +413,7 @@ for a cursor (`in_hook`).
 *spike* `Fed` · new
 
 What the driver feeds back: `Hooks { stop, draft }`, `HookFailed(error)`,
-`Sampled { reply, error }`, `CallDone { call, outcome }`, `Waited`. Each is accepted only while the job it answers is out; any other feed is `WrongFeed`.
+`Sampled { reply, error }`, `CallDone { call, outcome }`. Each is accepted only while the job it answers is out; any other feed is `WrongFeed`.
 
 ### RunCall
 *spike* `RunCall` · new
@@ -454,11 +453,15 @@ A cursor hook returning a string: later hooks at that point skip, the draft
 is discarded, auto-step goes off, `post_step` gets `Halted`. In `pre_input`
 the item is removed and its client gets a notice.
 
-### throttle
-*spike* `THROTTLE` (250 ms), `Job::Wait` · new
+### rest rule
+*spike* `Step::after` (private) · new
 
-A step that committed nothing (a hook's own writes do not count) starts the next
-no sooner than 250 ms after it started.
+After `post_step` with a `Done` ending and work left (auto-step on and
+`next != Wait`, or input pending): the next step starts at once if the cursor
+moved since the step woke (`cursor.moves(since_step=True)`), else auto-step
+goes off and the cursor rests. A cursor never tries the same thing twice
+(model.md §6, with John's ruling). An item added since the step woke starts a
+step regardless; that step answers to the same rule.
 
 ### wake
 *spike* `Step::wake` · new
@@ -474,18 +477,21 @@ responder
 
 A cursor's only flag. On: phases run and steps follow one another while
 there is work. Off: a woken cursor runs only `pre_step` and `post_step`. Goes
-off on abort, halt, failure, go-to, `StepLimit`, and load.
+off on abort, halt, failure, go-to, `StepLimit`, a step that did not move the
+cursor (the **rest rule**), and load. Any reader sees the change the same way:
+`Session.auto(cursor)`, `cursor.auto` in a hook.
 
 ### StepLimit
 `tau_next.StepLimit` (`step_limit.py`) · extension, retires `Config::max_steps`
 and `Session::taken`
 
-`StepLimit(limit)`: an extension whose `post_step` hook turns a cursor's
-auto-step off after `limit` steps that moved it, counted since a new input item
-reached the cursor (D1). It restarts its count when it stops the cursor, so
-whoever resumes it gets another `limit`. Core keeps no count: the counts are
-the object's memory, per cursor. It cannot see a frontend's `set_auto`, `step`,
-or go-to, so those do not restart the count by themselves.
+`StepLimit(limit)`: an extension that guards loops where the cursor does move
+each step (D1). It keeps its own count per cursor (core keeps none), read
+and changed at three hook points with `cursor.auto`: `pre_input` sets it to 1
+(the step that takes an input is the first; there is no `post_input`),
+`pre_step` adds one while auto-step is on, and `post_step` turns auto-step off
+once the count reaches `limit`, then starts the count over, as it also does on
+seeing auto-step off. Whoever resumes the cursor gets another `limit`.
 
 ### partial_calls
 not yet spiked · `Config` field
@@ -497,8 +503,7 @@ The `text` markup is `[tool call <id>: <tool> <args_raw>]` (see `OpenAIProvider`
 *spike* `Step::abort` · retires `AbortSignal`, abort-tree, `rollback`
 
 Esc. Auto-step off, no later phase; returns whether the driver must cancel
-the effect in flight, or its sleeper in the throttle (the restart is cancelled,
-so a later `Waited` is a `WrongFeed`). Never cancels a hook.
+the effect in flight. Never cancels a hook.
 
 
 ### in_hook
@@ -928,15 +933,15 @@ cursor has an effect out, except after a `CallDone` (expecting `Pending`).
 ### unit
 `Driver` (`units`) · new
 
-One task performing one effect: a hooks job, a sample, one call of a batch, or
-a throttle sleeper. It reports `(cursor, Fed)` to the pump's queue when done.
+One task performing one effect: a hooks job, a sample, or one call of a batch.
+It reports `(cursor, Fed)` to the pump's queue when done.
 A cancelled unit reports nothing.
 
 ### Outstanding
 `tau_next.Outstanding` · new
 
 A cursor's effect in flight: its units, and what abort needs to cancel them
-(the sample, the calls, whether it is the throttle). At most one per cursor.
+(the sample, the calls). At most one per cursor.
 
 ### poke, poll
 `Driver._poke`, `Driver._poll` · new
@@ -978,8 +983,8 @@ question or a gate does not rest. The pump wakes its waiters after each pass.
 ### Clock, SystemClock
 `tau_next.Clock`, `tau_next.SystemClock` · new
 
-`now() -> int` (milliseconds) and `async sleep_until(t)`. The driver reads time
-only through it, so tests move time themselves.
+`now() -> int` (milliseconds). The driver reads time only through it, so tests
+move time themselves.
 
 ### Question
 `tau_next.Question` · new
@@ -1056,8 +1061,8 @@ row. Never sleeps and never advances the clock; re-raises what a unit died of.
 Gives up with an error after 10,000 passes.
 
 ### parked
-A unit waiting on something only a test releases: a held `Gate`, a
-`FakeClock` sleeper, or an open question. `settle` compares the driver's unit
+A unit waiting on something only a test releases: a held `Gate` or an open
+question. `settle` compares the driver's unit
 count with the parked count.
 
 ### crash
@@ -1160,4 +1165,5 @@ Retired during design review: committed, uncommitted, boundary, cycle, base
 extension, `deliver`, `combine`, returned input, run, batch states,
 journal, journal item, `idempotent`, `Result`, fast-forward, claim,
 `Session.rerun`, `Skipped`, refuse/handled/pass, restating `Config`, label on
-the move record, `post_open`, `post_input`, interrupt, scratch.
+the move record, `post_open`, `post_input`, interrupt, scratch, the throttle
+(`THROTTLE`, `Pos::Throttle`, `Job::Wait`, `Fed::Waited`, `Clock.sleep_until`).

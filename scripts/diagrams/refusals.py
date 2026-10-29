@@ -60,8 +60,6 @@ def answer(job: Job, calls: tuple[tuple[str, str], ...]) -> list[Fed]:
             return [reply(*calls)]
         case Job.RunCalls(calls=run):
             return [Fed.CallDone(c.id, Outcome.Ok("done"), Author.Tools()) for c in run]
-        case Job.Wait():
-            return [Fed.Waited()]
     raise AssertionError(f"no answer for {job}")
 
 
@@ -91,14 +89,14 @@ def fresh(directory: Path | None = None) -> Ctx:
     session = Session.create(Config("{}"), "sys", 0, directory)
     cursor = session.cursors()[0]
     ctx = Ctx(session, cursor)
-    ctx.item = session.add_item(cursor, ItemData.Extension("ext", "note"), 1)
+    ctx.item = session.add_item(cursor, ItemData.Extension("ext", "note"))
     session.set_label("main", cursor)
     rest(ctx)
     return ctx
 
 
 def started(ctx: Ctx) -> None:
-    ctx.session.send(ctx.cursor, "term", "hi", NOW)
+    ctx.session.send(ctx.cursor, "term", "hi")
 
 
 # Each state brings `fresh()`'s cursor to one place and returns the context.
@@ -110,7 +108,7 @@ def s_rest(ctx: Ctx) -> None:
 
 
 def s_rest_auto(ctx: Ctx) -> None:
-    ctx.session.set_auto(ctx.cursor, True, "term", NOW)
+    ctx.session.set_auto(ctx.cursor, True, "term")
     rest(ctx)
 
 
@@ -144,15 +142,6 @@ def s_post_result(ctx: Ctx) -> None:
     drive_to(ctx, at_hook(Hook.PostResult), (("a", "t"),))
 
 
-def s_throttle(ctx: Ctx) -> None:
-    """A step that commits nothing but saw an item added: it waits out the throttle."""
-    ctx.session.set_auto(ctx.cursor, True, "term", NOW)
-    drive_to(ctx, at_hook(Hook.PreStep))
-    ctx.session.add_item(ctx.cursor, ItemData.Extension("ext", "tick"), NOW)
-    ctx.session.feed(ctx.cursor, Fed.Hooks(), NOW)
-    drive_to(ctx, lambda job: isinstance(job, Job.Wait))
-
-
 def s_unknown_cursor(ctx: Ctx) -> None:
     ctx.cursor = 999
 
@@ -174,7 +163,6 @@ STATES: list[tuple[str, str, Callable[[Ctx], None]]] = [
     ("pending", "busy: calls out, one answered", s_pending),
     ("post_result", "busy: post_result hook out", s_post_result),
     ("post_step", "busy: post_step hook out", hook_state(Hook.PostStep)),
-    ("throttle", "busy: throttle wait out", s_throttle),
     ("unknown_cursor", "a cursor that is not open", s_unknown_cursor),
     ("closed", "session closed", s_closed),
 ]
@@ -186,7 +174,7 @@ def s_store_failed(ctx: Ctx, directory: Path) -> None:
     block = directory / "scratchpad.new"
     block.mkdir()  # the store cannot create its temporary scratchpad file here
     try:
-        ctx.session.input(ctx.cursor, "term", "x", NOW)
+        ctx.session.input(ctx.cursor, "term", "x")
     except OSError:
         pass
     else:
@@ -200,13 +188,13 @@ Call = Callable[[Ctx], object]
 
 # (group, name, call). A call returns what the API returned.
 CALLS: list[tuple[str, str, Call]] = [
-    ("frontend", "input", lambda c: c.session.input(c.cursor, "term", "hi", NOW)),
-    ("frontend", "send", lambda c: c.session.send(c.cursor, "term", "hi", NOW)),
-    ("frontend", "step", lambda c: c.session.step(c.cursor, "term", NOW)),
+    ("frontend", "input", lambda c: c.session.input(c.cursor, "term", "hi")),
+    ("frontend", "send", lambda c: c.session.send(c.cursor, "term", "hi")),
+    ("frontend", "step", lambda c: c.session.step(c.cursor, "term")),
     ("frontend", "go_to (an ancestor)", lambda c: c.session.go_to(c.cursor, 0, "term", NOW)),
     ("frontend", "go_to (not a node)", lambda c: c.session.go_to(c.cursor, 999, "term", NOW)),
-    ("frontend", "set_auto(on)", lambda c: c.session.set_auto(c.cursor, True, "term", NOW)),
-    ("frontend", "set_auto(off)", lambda c: c.session.set_auto(c.cursor, False, "term", NOW)),
+    ("frontend", "set_auto(on)", lambda c: c.session.set_auto(c.cursor, True, "term")),
+    ("frontend", "set_auto(off)", lambda c: c.session.set_auto(c.cursor, False, "term")),
     ("frontend", "abort", lambda c: c.session.abort(c.cursor)),
     ("frontend", "set_label", lambda c: c.session.set_label("other", c.cursor)),
     ("frontend", "remove_label", lambda c: c.session.remove_label("main")),
@@ -214,7 +202,7 @@ CALLS: list[tuple[str, str, Call]] = [
     (
         "extension",
         "add_item",
-        lambda c: c.session.add_item(c.cursor, ItemData.Extension("ext", "n"), NOW),
+        lambda c: c.session.add_item(c.cursor, ItemData.Extension("ext", "n")),
     ),
     ("extension", "remove_item", lambda c: c.session.remove_item(c.item)),
     (
@@ -242,7 +230,6 @@ CALLS: list[tuple[str, str, Call]] = [
         lambda c: c.session.hook_set_auto(c.cursor, True),
     ),
     ("driver", "feed Hooks", lambda c: c.session.feed(c.cursor, Fed.Hooks(), NOW)),
-    ("driver", "feed Waited", lambda c: c.session.feed(c.cursor, Fed.Waited(), NOW)),
     ("driver", "next_job", lambda c: c.session.next_job(c.cursor)),
     ("read", "at", lambda c: c.session.at(c.cursor)),
 ]

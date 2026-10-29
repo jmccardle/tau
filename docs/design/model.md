@@ -29,8 +29,9 @@ item, so a reload is a replay (I7).
   are, refusing only what would make the tree invalid (V2). A `pre_input`
   draft that delivers nothing writes its `User` node and leaves the input
   pending; the input phase offers each input once, so it cannot spin, and
-  `after`'s rules (throttle, an extension such as `StepLimit`) decide whether
-  another step runs. A draft a hook leaves as `None` commits nothing.
+  `after`'s rules (§6) decide whether another step runs: it moved the cursor,
+  so it does; the next one offers nothing and rests. A draft a hook leaves as
+  `None` commits nothing.
 - **A step is one pass of a fixed loop**: `pre_step`, then the input, sample,
   and tools phases (each if it applies), then `post_step` (§6).
 - **Every phase has one shape**: pre hook on the effect, the effect, pre hook
@@ -192,14 +193,14 @@ A move is the only way `at` changes, and it checks only that `to` is a node
 ```
 step = Step::wake(session, cursor, asked, now)     asked: a frontend's Session.step
 loop:
-    job = step.next_job(session)                   Hooks | Sample | RunCalls | Pending | Wait | Rest
-    perform it, then step.feed(session, fed, now)  Hooks | HookFailed | Sampled | CallDone | Waited
+    job = step.next_job(session)                   Hooks | Sample | RunCalls | Pending | Rest
+    perform it, then step.feed(session, fed, now)  Hooks | HookFailed | Sampled | CallDone
 abort: step.abort(session) -> must the driver cancel the effect in flight?
 ```
 
 Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
 `PreReply`, `PostReply`, `Tools`, `Calls`, `PostResult`, `PostStep`, then
-`Throttle` or `Rest`.
+`Rest`.
 
 | phase | applies when | jobs, in order | commits |
 |---|---|---|---|
@@ -217,8 +218,8 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
   nothing and the step carries on; it is not a failure. From `pre_sample`, a
   draft is a reply that **answers** the sample: no `Sample` job, straight to
   `pre_reply`. A step *committed* only through core's own writes (a phase's
-  draft, the join); a hook's `cursor.write` is not a commit, so a step whose
-  only writes are a hook's still throttles if it restarts.
+  draft, the join) or through a hook's `cursor.write`; either moves the cursor,
+  and the move is what `after` looks at (§6).
 - **`RunCalls`** hands the driver the batch. For each call the driver runs
   `pre_tool`, the tool, and `pre_result`, and feeds `CallDone` in any order.
   The step holds each outcome in its slot; when every slot is filled, the
@@ -239,24 +240,59 @@ A string from `post_step` only turns auto-step off.
 
 ### After `post_step`
 
-Another step starts if the ending is `Done` and either auto-step is on with
-work to do (`next != Wait`, or input pending) or an item was added to the
-cursor's scratchpad since this step woke (`Session::changes`; removing or
-delivering an item is not a change). A step that committed
-nothing (a hook's own writes do not count) waits first: `Job::Wait { until: started + THROTTLE }` (250 ms). An
-extension item left in place does not cause another step (an input left
-pending does: it is work, so with auto-step on the next step offers it again,
-until an extension such as `StepLimit` turns auto-step off). Otherwise `Job::Rest`.
+John's ruling, the rule the section below implements:
+
+> "If auto_step is on, and the cursor doesn't move, turn auto_step off. Hooks'
+> interaction with the draft is for that core behavior: sample the LLM (the
+> LLM's output is the draft and becomes the new node and the cursor's `at`) or
+> execute the tools (the tool results are the drafts and become the new node
+> and the cursor's `at`). The cursor should never spin in place — the mental
+> model of the cursor should be a state machine, and if its state results in
+> not moving then we should model that it's never going to move. … We can't
+> govern arbitrary behavior extensions are granted, so the best defense for
+> the cursor is to not try more than once."
+
+A step that ended `Done` has **work** if auto-step is on and `next != Wait`, or
+an input is pending. It **moved** if its cursor has a move record since the
+step woke (`Step::moves`, the same records as `cursor.moves(since_step=True)`:
+a commit, the join, and a hook's `cursor.move` or `cursor.write` all leave one;
+a draft a hook threw away leaves none). Core keeps no other flag; the question
+is answered from the move records alone.
+
+| ending | work | moved | after `post_step` |
+|---|---|---|---|
+| `Done` | yes, auto-step on | yes | the next step starts at once |
+| `Done` | yes, auto-step on | no | auto-step goes off; `Rest` |
+| anything else | | | `Rest` |
+
+A cursor never tries the same thing twice. A hook that declines every input,
+or throws every reply away, gets one step: the cursor does not move, auto-step
+goes off, and the input stays pending. Auto-step turned off this way is the
+same state as any other turn-off (`Session::auto`, read by a frontend, or by
+an extension through `cursor.auto`); `post_step` itself runs before core
+decides, so it still sees auto-step on.
+
+An item added to the cursor's scratchpad since this step woke
+(`Session::changes`; removing or delivering an item is not a change) is news
+from outside, not spinning: with a `Done` ending it starts a step even when
+the table says rest. That step follows the same rule: if it does not move the
+cursor either, it rests, with auto-step off if it was on and there was work.
+There is no delay and no timer.
+
+An input left pending after a step that moved is work: with auto-step on the
+next step offers it again. A hook that keeps leaving input pending while it
+commits each time moves the cursor every step, so only an extension such as
+`StepLimit` bounds it.
 
 **Wakes:** an item added to its scratchpad, opening, load (lease holder
 only), a go-to, `Session.step`, auto-step turned on. Busy means a step exists
 and is not resting. `machine::Machine` holds every cursor's step and starts
-one on a wake; a wake while busy, the throttle included, joins the step
-already there. `Session.step` on a busy cursor is refused (`Error::Busy`).
-Abort during the throttle cancels the restart.
+one on a wake; a wake while busy joins the step already there.
+`Session.step` on a busy cursor is refused (`Error::Busy`).
 
-**Runaway loops** are an extension's (D1): `StepLimit`, a `post_step` hook, turns
-auto-step off after N steps. Core keeps no count.
+**Runaway loops** where the cursor does move every step (a model that calls
+tools forever) are an extension's (D1): `StepLimit` counts steps in `pre_input`
+and `pre_step` and turns auto-step off in `post_step`. Core keeps no count.
 
 ## 7. Hooks
 
@@ -337,8 +373,7 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
 
 - **Abort** (`Step::abort`) turns auto-step off and ends the step `Aborted`, so
   no later phase applies. It returns true when the driver must cancel the
-  effect in flight (`Sample` or `Calls`) and feed what it got, or the
-  throttle's sleeper. Hooks are never cancelled; post hooks and `post_step`
+  effect in flight (`Sample` or `Calls`) and feed what it got. Hooks are never cancelled; post hooks and `post_step`
   run as usual. The driver declines the cursor's open questions (§7), so a
   hook awaiting one finishes.
   - During a sample with parts: the driver feeds the partial reply with

@@ -304,13 +304,13 @@ fn until(
 fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item() {
     let (s, c) = Session::create("{}", "sys", 0);
     let mut m = Machine::new(s);
-    m.send(c, "term".into(), "hi", 0).unwrap();
+    m.send(c, "term".into(), "hi").unwrap();
     until(&mut m, c, |j| *j == Job::Sample, |j| vec![echo(j)]);
     // The input was committed but not yet synced; its item was.
     let mut m = Machine::new(crash(&m.session));
     assert_eq!(m.session.next(c), tau_core::tree::Next::Wait);
     assert_eq!(m.session.items(c).count(), 1, "the input is pending again");
-    m.send(c, "term".into(), "", 0).unwrap();
+    m.send(c, "term".into(), "").unwrap();
     let mut sampled = 0;
     until(
         &mut m,
@@ -338,7 +338,7 @@ fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item()
 fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
     let (s, c) = Session::create("{}", "sys", 0);
     let mut m = Machine::new(s);
-    m.send(c, "term".into(), "look", 0).unwrap();
+    m.send(c, "term".into(), "look").unwrap();
     let call = |id: &str| Part::Call {
         id: id.into(),
         tool: "ls".into(),

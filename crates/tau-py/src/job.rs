@@ -131,9 +131,6 @@ pub enum Job {
         calls: Vec<RunCall>,
     },
     Pending {},
-    Wait {
-        until: u64,
-    },
     Rest {},
 }
 
@@ -155,7 +152,6 @@ impl From<step::Job> for Job {
                 calls: calls.into_iter().map(Into::into).collect(),
             },
             step::Job::Pending => Self::Pending {},
-            step::Job::Wait { until } => Self::Wait { until },
             step::Job::Rest => Self::Rest {},
         }
     }
@@ -182,7 +178,6 @@ pub enum Fed {
         outcome: Outcome,
         by: Author,
     },
-    Waited {},
 }
 
 impl From<Fed> for step::Fed {
@@ -202,7 +197,6 @@ impl From<Fed> for step::Fed {
                 outcome: outcome.into(),
                 by: by.into(),
             },
-            Fed::Waited {} => Self::Waited,
         }
     }
 }

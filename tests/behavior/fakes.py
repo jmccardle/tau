@@ -54,38 +54,16 @@ class Gate:
 
 
 class FakeClock:
-    """Time that moves only when told. Sleepers wake in `advance`."""
+    """Time that moves only when told."""
 
     def __init__(self, start: int = 1_000) -> None:
         self._now = start
-        self._sleepers: list[tuple[int, asyncio.Future[None]]] = []
 
     def now(self) -> int:
         return self._now
 
-    @property
-    def sleepers(self) -> int:
-        return len(self._sleepers)
-
-    async def sleep_until(self, t: int) -> None:
-        if t <= self._now:
-            return
-        waiter = asyncio.get_running_loop().create_future()
-        sleeper = (t, waiter)
-        self._sleepers.append(sleeper)
-        try:
-            await waiter
-        finally:
-            if sleeper in self._sleepers:
-                self._sleepers.remove(sleeper)
-
     def advance(self, ms: int) -> None:
         self._now += ms
-        due = [e for e in self._sleepers if e[0] <= self._now]
-        self._sleepers = [e for e in self._sleepers if e[0] > self._now]
-        for _, waiter in due:
-            if not waiter.done():
-                waiter.set_result(None)
 
 
 @dataclass(frozen=True)

@@ -118,7 +118,7 @@ async def test_the_api_key_is_sent_but_never_stored(tmp_path: Path) -> None:
     for file in directory.rglob("*"):
         if file.is_file():
             assert SECRET.encode() not in file.read_bytes(), f"the key is in {file}"
-    loaded = Session.load(directory, 0)
+    loaded = Session.load(directory)
     try:
         for node in nodes(loaded):
             assert SECRET not in repr(node)
