@@ -556,10 +556,78 @@ One type in eight kinds (`model.md` §9); observers cannot change anything.
 driver memory.
 
 ### driver
-Python `tau_next.driver` · new
+Python `tau_next.driver.Driver` · new
 
 Performs jobs and feeds results back with the time. Decides nothing. The only
-place that awaits.
+place that awaits. Built from a session, a provider, tools, extensions, and a
+clock. Its frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`,
+`abort`, `open`, `add_item`, `answer`) run on the loop thread, call the
+session, then poke the pump. Extensions are a list given to the constructor,
+in hook order; how `config_at` will name them is open.
+
+### pump
+`Driver._pump` · new
+
+The one coroutine per session that calls `next_job` and `feed` (D11 rejects a
+task per cursor). Loop: for each cursor with no effect out that is busy or
+due a poll, take its next job and start it as a unit; then await the queue and
+feed what arrives. `next_job` is not idempotent, so it is never called while a
+cursor has an effect out, except after a `CallDone` (expecting `Pending`).
+
+### unit
+`Driver` (`units`) · new
+
+One task performing one effect: a hooks job, a sample, one call of a batch, or
+a throttle sleeper. It reports `(cursor, Fed)` to the pump's queue when done.
+A cancelled unit reports nothing.
+
+### Outstanding
+`tau_next.Outstanding` · new
+
+A cursor's effect in flight: its units, and what abort needs to cancel them
+(the sample, the calls, whether it is the throttle). At most one per cursor.
+
+### poke, poll
+`Driver._poke`, `Driver._poll` · new
+
+A **poke** wakes the pump after a frontend call. A **poll** is one extra
+`next_job` for a cursor whose effect just fed, even if it now rests: a go-to
+waiting on its aborted step applies inside that `next_job`, and `busy` does
+not show it.
+
+### Subject
+`tau_next.Subject` · new
+
+The mutable holder a cursor hook receives: `draft` (`pre_input`,
+`pre_sample`, `pre_reply`), `node` (`post_reply`, `post_result`), `ending`
+(`post_step`). The hook's edits to `draft` are what is fed back.
+
+### CallDraft
+`tau_next.CallDraft` · new
+
+The call draft a tool hook receives: `{id, tool, args_raw, outcome?}`. Setting
+`outcome` in `pre_tool` answers the call; in `pre_result` it edits the outcome.
+The hook that changed the outcome is its `by`.
+
+### SampleError
+`tau_next.SampleError` · new
+
+What a provider raises to fail a sample. Parts it yielded first are kept: the
+reply is committed with `stop: Error` and `Sampled.error` set. With none,
+`Sampled { reply: None, error }`. Any other exception from a provider or the
+driver is a bug and surfaces through `Driver.check`.
+
+### Clock, SystemClock
+`tau_next.Clock`, `tau_next.SystemClock` · new
+
+`now() -> int` (milliseconds) and `async sleep_until(t)`. The driver reads time
+only through it, so tests move time themselves.
+
+### Question
+`tau_next.Question` · new
+
+An open question held by the driver: `{target, text, future}`. `answer` fills
+the oldest one for a cursor and calls `Session.answered`; `None` declines.
 
 ### record
 *spike* `tree::Record` · new
@@ -614,10 +682,47 @@ writes and runs steps; a second open is `Error::Leased`.
 ### Harness
 `tests/behavior/harness.py`
 
-The protocol every behavior test drives, shaped like `tau serve`.
+What every behavior test drives, shaped like `tau serve`: a session in a
+directory with a `Driver` over the fakes. `Harness.create`/`load`; a client's
+calls (`input`, `send`, `step`, `abort`, `go_to`, `set_auto`, `answer`, as
+client `term`); `settle`; `crash`; snapshots (`snapshot`, `bodies`, `nodes`,
+`notices`).
 
-### FakeProvider, FakeTool
-The only fakes allowed (rule 4): scripted samples, scripted outcomes.
+### settle
+`Harness.settle` · new
+
+Yield to the loop until the driver is quiet (no report or poke queued, no busy
+cursor without an effect out) and every unit is **parked**, on two passes in a
+row. Never sleeps and never advances the clock; re-raises what a unit died of.
+Gives up with an error after 10,000 passes.
+
+### parked
+A unit waiting on something only a test releases: a held `Gate`, a
+`FakeClock` sleeper, or an open question. `settle` compares the driver's unit
+count with the parked count.
+
+### crash
+`Harness.crash` · new
+
+Cancel every task without feeding, close the session unsynced, reopen it from
+disk, start a new driver on the same fakes.
+
+### Gate
+`tests/behavior/fakes.py` · new
+
+A latch a fake waits at. `held` counts waiters; `release()` lets them and all
+later arrivals through.
+
+### FakeProvider, FakeTool, FakeClock
+The only fakes allowed (rule 4): scripted samples (`Reply`, `Fail`; a `Gate` after
+`gate_after` parts; each request's walk ids and config recorded), scripted
+outcomes (calls recorded), and time that moves only on `advance`.
+
+### Recorder
+`tests/behavior/fakes.py` · new
+
+Not a fake: a real extension that records the hooks it is run at (`points`,
+`subjects`, `endings`) and returns the string a test gives it for a point.
 
 ## Retired terms
 

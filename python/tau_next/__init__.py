@@ -41,6 +41,18 @@ from tau_next._core import (
     Version,
     WrongFeed,
 )
+from tau_next.clock import SystemClock
+from tau_next.driver import Driver, Outstanding, Question
+from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
+from tau_next.protocols import (
+    Clock,
+    CursorHook,
+    Extension,
+    Provider,
+    SampleError,
+    Tool,
+    ToolHook,
+)
 
 __version__ = version("ffwf-tau-next")
 
@@ -49,13 +61,19 @@ __all__ = [
     "BadRecord",
     "Body",
     "Busy",
+    "CallDraft",
+    "Clock",
     "Closed",
     "Config",
     "Corrupt",
+    "Cursor",
+    "CursorHook",
     "Draft",
+    "Driver",
     "DuplicateCall",
     "Ending",
     "Exists",
+    "Extension",
     "Failed",
     "Fed",
     "Hook",
@@ -71,15 +89,24 @@ __all__ = [
     "NoSuchLabel",
     "NoSuchNode",
     "Node",
+    "NodeHandle",
     "NotASession",
     "Outcome",
+    "Outstanding",
     "Part",
     "Poisoned",
+    "Provider",
+    "Question",
     "RootNotConfig",
     "RunCall",
+    "SampleError",
     "Scratchpad",
     "Session",
     "Stop",
+    "Subject",
+    "SystemClock",
+    "Tool",
+    "ToolHook",
     "Version",
     "WrongFeed",
     "__version__",
