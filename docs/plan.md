@@ -10,15 +10,16 @@ This file holds only the phases and where we are. The original hand-off plan,
 with its model sketch (§1) and decisions table (§4), is in git history
 (`b07efb9` and earlier).
 
-## Status (2026-10-27)
+## Status (2026-10-29)
 
 | phase | state |
 |---|---|
 | 0 scaffold | **done.** Workspace, maturin, `cp312-abi3` + `cp314t` wheels, CI on forge.goblincorps.com, rule lint. |
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
-| 2 behavior spec | **folded into 3** (order below). No `Harness`, no fakes yet; the required scenarios marked ✓ below exist as Rust tests (`crates/tau-core/tests/`). |
-| 3 Rust core | **in progress**, growing the spike. |
-| 4–7 | not started. |
+| 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
+| 3 Rust core | **in progress**: core, store, and bindings work; 3d (as-built review, ratchet) not done. |
+| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. Missing: D13 config, the 4 exit review. |
+| 5–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
 - writes happen inside the Rust call; persistence is not a job (D11);
@@ -71,6 +72,13 @@ directly, so:
 | 7 | first tool round-trip | done (`examples/first_tool.py`): `@tool` makes a `Tool` from a function; tools are the driver's, handed to each `sample`, never recorded; the example defines its own `read_file` (no built-in toolset yet) |
 | 8 | cursor and tree bindings | done (2026-10-29): a cursor hook's `move`, `write`, `set_auto` (checked by the hook job's serial); `append`, `open`, `add_item`, `remove_item`, labels, and the reads `children`, `node_count`, `all_labels` from both handles and the driver; `tests/behavior/test_tree.py`. **Deferred:** update-an-item (an in-place update must not bump `changes`, as only an added item does); `show`/`tell` wait for the events of model.md §9; `opened_by` on `open` is not spiked |
 | 9 | base tools | done: `read`, `write`, `grep`, `bash` in Rust (`crates/tau-tools`), as `Tool`s (`tau_next.base_tools`); output limit with overflow file; `bash` kills its process group on cancel and timeout (`tests/tools/`, `tests/behavior/test_base_tools.py`). Bound by `tau-py` rather than shipped as a separate wheel (Phase 4 says otherwise): one wheel for now; revisit if the tools grow heavy dependencies |
+
+**Deferred (2026-10-29):**
+- Overflow-file pruning: a user config or an option of the base tools
+  extension, by age and/or total size (e.g. last 60 days, last 0.25 GB).
+- A macOS implementation of the base tools (`bash` finds leftover processes
+  through `/proc`, so it is Linux-only), and a `powershell` tool for Windows.
+
 4. **Config overhaul** (approved 2026-10-27), in Python: the config file
    parser and `tau config check`. Written up as D13 when it starts. Agreed so far:
    - the flat `{"model": {...}}` file stays valid; an object with `models` is
