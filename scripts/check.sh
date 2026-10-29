@@ -25,6 +25,7 @@ step "cargo test";   cargo test --workspace --locked
 step "build";        VIRTUAL_ENV="$(cd "$BIN/.." && pwd)" "$BIN/maturin" develop --release --locked
 step "rules";        "$PY" scripts/check_rules.py
 step "stubtest";     "$PY" -m mypy.stubtest tau_next._core
-step "ruff";         "$BIN/ruff" check . && "$BIN/ruff" format --check .
+step "ruff";         "$BIN/ruff" check .
+"$BIN/ruff" format --check .
 step "pyright";      "$BIN/pyright"
 step "pytest";       "$PY" -m pytest -q tests

@@ -10,7 +10,7 @@ use tau_store::Store;
 
 use crate::error::Failure;
 use crate::job::{Fed, Job};
-use crate::values::{Author, Config, Item, ItemData, Move, Next, Node, Scratchpad};
+use crate::values::{Author, Body, Config, Item, ItemData, Move, Next, Node, Scratchpad};
 
 #[derive(Debug)]
 struct Inner {
@@ -210,12 +210,110 @@ impl Session {
 
     // Extension and driver calls.
 
-    fn open(&self, py: Python<'_>, at: u64, by: Author, now: u64) -> PyResult<u64> {
-        self.write(py, |m| Ok(m.open(at, by.into(), now)?))
+    /// `hook`: `(cursor, serial)` of the hook job that makes this call, which then rides that
+    /// phase's sync; none for a frontend's or the driver's call, which syncs.
+    #[pyo3(signature = (at, by, now, hook = None))]
+    fn open(
+        &self,
+        py: Python<'_>,
+        at: u64,
+        by: Author,
+        now: u64,
+        hook: Option<(u64, u64)>,
+    ) -> PyResult<u64> {
+        self.write(py, |m| {
+            Ok(match hook {
+                Some((h, k)) => m.hook_open(h, k, at, by.into(), now)?,
+                None => m.open(at, by.into(), now)?,
+            })
+        })
     }
 
-    fn add_item(&self, py: Python<'_>, to: u64, data: ItemData, now: u64) -> PyResult<u64> {
-        self.write(py, |m| Ok(m.add_item(to, data.into(), now)?))
+    /// `hook` as for `open`.
+    #[pyo3(signature = (to, data, now, hook = None))]
+    fn add_item(
+        &self,
+        py: Python<'_>,
+        to: u64,
+        data: ItemData,
+        now: u64,
+        hook: Option<(u64, u64)>,
+    ) -> PyResult<u64> {
+        self.write(py, |m| {
+            Ok(match hook {
+                Some((h, k)) => m.hook_add_item(h, k, to, data.into(), now)?,
+                None => m.add_item(to, data.into(), now)?,
+            })
+        })
+    }
+
+    /// `hook` as for `open`.
+    #[pyo3(signature = (id, hook = None))]
+    fn remove_item(&self, py: Python<'_>, id: u64, hook: Option<(u64, u64)>) -> PyResult<()> {
+        self.write(py, |m| {
+            match hook {
+                Some((h, k)) => m.hook_remove_item(h, k, id),
+                None => m.remove_item(id),
+            }
+            .map_err(Failure::from)
+        })
+    }
+
+    /// Append a node under `parent` (none: a root) without moving any cursor.
+    /// `hook` as for `open`.
+    #[pyo3(signature = (parent, body, by, now, hook = None))]
+    fn append(
+        &self,
+        py: Python<'_>,
+        parent: Option<u64>,
+        body: Body,
+        by: Author,
+        now: u64,
+        hook: Option<(u64, u64)>,
+    ) -> PyResult<u64> {
+        self.write(py, |m| {
+            Ok(match hook {
+                Some((h, k)) => m.hook_append(h, k, parent, body.into(), by.into(), now)?,
+                None => m.append(parent, body.into(), by.into(), now)?,
+            })
+        })
+    }
+
+    // A cursor hook's calls on its own cursor: refused (`NotInHook`) unless the
+    // hook job with this `serial` (`Job.Hooks.serial`) is still out for it.
+
+    fn hook_move(
+        &self,
+        py: Python<'_>,
+        cursor: u64,
+        serial: u64,
+        to: u64,
+        by: Author,
+        now: u64,
+    ) -> PyResult<()> {
+        self.write(py, |m| {
+            Ok(m.hook_move(cursor, serial, to, by.into(), now)?)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)] // rules: allow: the binding mirrors the call's whole signature
+    fn hook_write(
+        &self,
+        py: Python<'_>,
+        cursor: u64,
+        serial: u64,
+        body: Body,
+        delivers: Vec<u64>,
+        by: Author,
+        now: u64,
+    ) -> PyResult<u64> {
+        self.write(py, |m| {
+            Ok(m.hook_write(cursor, serial, body.into(), delivers, by.into(), now)?)
+        })
+    }
+
+    fn hook_set_auto(&self, py: Python<'_>, cursor: u64, serial: u64, on: bool) -> PyResult<()> {
+        self.write(py, |m| Ok(m.hook_set_auto(cursor, serial, on)?))
     }
 
     fn ask(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
@@ -226,12 +324,34 @@ impl Session {
         self.write(py, |m| Ok(m.answered(cursor)?))
     }
 
-    fn set_label(&self, py: Python<'_>, label: &str, cursor: u64) -> PyResult<()> {
-        self.write(py, |m| Ok(m.set_label(label, cursor)?))
+    /// `hook` as for `open`.
+    #[pyo3(signature = (label, cursor, hook = None))]
+    fn set_label(
+        &self,
+        py: Python<'_>,
+        label: &str,
+        cursor: u64,
+        hook: Option<(u64, u64)>,
+    ) -> PyResult<()> {
+        self.write(py, |m| {
+            match hook {
+                Some((h, k)) => m.hook_set_label(h, k, label, cursor),
+                None => m.set_label(label, cursor),
+            }
+            .map_err(Failure::from)
+        })
     }
 
-    fn remove_label(&self, py: Python<'_>, label: &str) -> PyResult<()> {
-        self.write(py, |m| Ok(m.remove_label(label)?))
+    /// `hook` as for `open`.
+    #[pyo3(signature = (label, hook = None))]
+    fn remove_label(&self, py: Python<'_>, label: &str, hook: Option<(u64, u64)>) -> PyResult<()> {
+        self.write(py, |m| {
+            match hook {
+                Some((h, k)) => m.hook_remove_label(h, k, label),
+                None => m.remove_label(label),
+            }
+            .map_err(Failure::from)
+        })
     }
 
     // Driving.
@@ -293,6 +413,27 @@ impl Session {
             let s = &i.machine.session;
             s.node(node)?;
             Ok(s.walk(node).into_iter().cloned().map(Into::into).collect())
+        })
+    }
+
+    /// The children of `node`, in append order.
+    fn children(&self, py: Python<'_>, node: u64) -> PyResult<Vec<u64>> {
+        self.read(py, |i| Ok(i.machine.session.children(node)?.to_vec()))
+    }
+
+    /// How many nodes there are; ids are `0..node_count()`.
+    fn node_count(&self, py: Python<'_>) -> PyResult<usize> {
+        self.read(py, |i| Ok(i.machine.session.node_count()))
+    }
+
+    /// Every label with its cursor, in string order.
+    fn labels(&self, py: Python<'_>) -> PyResult<Vec<(String, u64)>> {
+        self.read(py, |i| {
+            Ok(i.machine
+                .session
+                .labels()
+                .map(|(l, c)| (l.to_owned(), c))
+                .collect())
         })
     }
 

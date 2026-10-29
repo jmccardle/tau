@@ -89,7 +89,7 @@ impl Driver {
             Job::Rest => return Ok(()),
             Job::Hooks { point, .. } => hook(m, c, *point, k, before)?,
             Job::Sample => sample(k),
-            Job::RunCalls(run) => {
+            Job::RunCalls { calls: run, .. } => {
                 let ids = run.iter().map(|r| r.id.clone()).collect();
                 return self.run_calls(m, c, ids);
             }

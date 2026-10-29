@@ -118,7 +118,7 @@ fn batch_answers_in_call_order_then_samples_again() {
             }]
         }
         // b finishes first
-        Job::RunCalls(_) => ["b", "a"]
+        Job::RunCalls { .. } => ["b", "a"]
             .map(|id| Fed::CallDone {
                 call: id.into(),
                 outcome: Outcome::Ok(id.into()),
@@ -168,7 +168,7 @@ fn each_outcome_records_who_produced_it() {
             }]
         }
         // a ran; b was denied by a permissions extension's pre_tool
-        Job::RunCalls(_) => vec![
+        Job::RunCalls { .. } => vec![
             Fed::CallDone {
                 call: "a".into(),
                 outcome: Outcome::Ok("listing".into()),
@@ -221,7 +221,7 @@ fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
                     error: None,
                 }]
             }
-            Job::RunCalls(_) => vec![Fed::CallDone {
+            Job::RunCalls { .. } => vec![Fed::CallDone {
                 call: "a".into(),
                 outcome: Outcome::Ok("x".into()),
                 by: Author::Tools,
@@ -270,7 +270,7 @@ fn crash_mid_batch() -> (Session, u64) {
                     0,
                 )
                 .unwrap(),
-            Job::RunCalls(_) => {
+            Job::RunCalls { .. } => {
                 step.feed(
                     &mut s,
                     Fed::CallDone {
@@ -308,7 +308,7 @@ fn after_a_crash_mid_batch_input_goes_under_the_unanswered_batch() {
         _ => vec![ok()],
     });
     assert!(
-        !jobs.iter().any(|j| matches!(j, Job::RunCalls(_))),
+        !jobs.iter().any(|j| matches!(j, Job::RunCalls { .. })),
         "input first: nothing reruns"
     );
     let b = bodies(&s, c);
@@ -324,7 +324,7 @@ fn after_a_crash_mid_batch_a_step_reruns_the_whole_batch() {
     let (mut s, c) = crash_mid_batch();
     let mut step = Step::wake(&s, c, true, 0);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
-        Job::RunCalls(run) => run
+        Job::RunCalls { calls: run, .. } => run
             .iter()
             .map(|r| Fed::CallDone {
                 call: r.id.clone(),
@@ -337,7 +337,7 @@ fn after_a_crash_mid_batch_a_step_reruns_the_whole_batch() {
     let ran: Vec<String> = jobs
         .iter()
         .filter_map(|j| {
-            if let Job::RunCalls(r) = j {
+            if let Job::RunCalls { calls: r, .. } = j {
                 Some(r.iter().map(|c| c.id.clone()))
             } else {
                 None
@@ -370,11 +370,11 @@ fn pre_input_string_refuses_with_a_notice() {
         }],
         _ => vec![ok()],
     });
-    assert!(jobs.contains(&Job::Hooks {
-        point: Hook::PostStep,
-        draft: None,
-        ending: Some(Ending::Halted("model: fast".into()))
-    }));
+    assert!(has_hook(
+        &jobs,
+        Hook::PostStep,
+        Some(&Ending::Halted("model: fast".into()))
+    ));
     assert_eq!(s.notices, [("term".into(), "model: fast".into())]);
     assert_eq!(
         (s.items(c).count(), s.auto[&c], bodies(&s, c).len()),
@@ -454,16 +454,8 @@ fn abort_during_sample_commits_the_partial_reply() {
         }
     };
     assert!(cancelled);
-    assert!(jobs.contains(&Job::Hooks {
-        point: Hook::PostReply,
-        draft: None,
-        ending: None
-    }));
-    assert!(jobs.contains(&Job::Hooks {
-        point: Hook::PostStep,
-        draft: None,
-        ending: Some(Ending::Aborted)
-    }));
+    assert!(has_hook(&jobs, Hook::PostReply, None));
+    assert!(has_hook(&jobs, Hook::PostStep, Some(&Ending::Aborted)));
     assert_eq!(
         bodies(&s, c).last().unwrap(),
         &Body::Assistant {
@@ -523,7 +515,7 @@ fn scripted(mut replies: Vec<Draft>) -> impl FnMut(&Job, &mut Session) -> Vec<Fe
             reply: Some(replies.pop().expect("a scripted reply")),
             error: None,
         }],
-        Job::RunCalls(run) => run
+        Job::RunCalls { calls: run, .. } => run
             .iter()
             .map(|r| Fed::CallDone {
                 call: r.id.clone(),
@@ -568,7 +560,7 @@ fn a_tool_error_is_an_outcome_and_the_model_sees_it() {
                 error: None,
             }]
         }
-        Job::RunCalls(_) => vec![Fed::CallDone {
+        Job::RunCalls { .. } => vec![Fed::CallDone {
             call: "a".into(),
             outcome: Outcome::Err("no such file".into()),
             by: Author::Tools,
@@ -619,11 +611,7 @@ fn a_mid_stream_error_commits_the_partial_reply_and_fails() {
         }],
         _ => vec![ok()],
     });
-    assert!(jobs.contains(&Job::Hooks {
-        point: Hook::PostReply,
-        draft: None,
-        ending: None
-    }));
+    assert!(has_hook(&jobs, Hook::PostReply, None));
     assert_eq!(ending(&jobs), Ending::Failed("connection reset".into()));
     assert_eq!(
         bodies(&s, c).last().unwrap(),
@@ -693,7 +681,7 @@ fn abort_during_tools_interrupts_unfinished_calls_and_runs_post_result_once() {
                     0,
                 )
                 .unwrap(),
-            Job::RunCalls(_) => {
+            Job::RunCalls { .. } => {
                 let done = |call: &str, outcome| Fed::CallDone {
                     call: call.into(),
                     outcome,
@@ -742,7 +730,7 @@ fn input_while_busy_waits_and_the_next_step_delivers_it_after_the_batch() {
         reply(vec![text("seen both")], Stop::End),
     ]);
     drive(&mut s, &mut step, |job, s| {
-        if matches!(job, Job::RunCalls(_)) {
+        if matches!(job, Job::RunCalls { .. }) {
             send(s, c, "also this");
         }
         script(job, s)
@@ -898,7 +886,7 @@ fn a_post_reply_move_changes_where_the_tools_phase_looks() {
     let ran: Vec<&str> = jobs
         .iter()
         .filter_map(|j| match j {
-            Job::RunCalls(r) => Some(r[0].id.as_str()),
+            Job::RunCalls { calls: r, .. } => Some(r[0].id.as_str()),
             _ => None,
         })
         .collect();
@@ -931,7 +919,7 @@ fn answered_batch() -> (Session, u64, u64) {
                     error: None,
                 }]
             }
-            Job::RunCalls(_) => vec![Fed::CallDone {
+            Job::RunCalls { .. } => vec![Fed::CallDone {
                 call: "a".into(),
                 outcome: Outcome::Ok("first".into()),
                 by: Author::Tools,
@@ -1097,7 +1085,7 @@ fn a_stop_while_calls_are_out_does_not_discard_the_batch() {
                     0,
                 )
                 .unwrap(),
-            Job::RunCalls(_) => break,
+            Job::RunCalls { .. } => break,
             _ => step.feed(&mut s, ok(), 0).unwrap(),
         }
     }
@@ -1172,4 +1160,11 @@ fn a_pre_input_draft_that_delivers_nothing_is_written_and_the_item_stays_pending
         1,
         "what the draft did not deliver stays"
     );
+}
+
+/// Whether `jobs` hold a hook job at `point` with this `ending`, whatever its serial.
+fn has_hook(jobs: &[Job], point: Hook, ending: Option<&Ending>) -> bool {
+    jobs.iter().any(|j| {
+        matches!(j, Job::Hooks { point: p, draft: None, ending: e, .. } if *p == point && e.as_ref() == ending)
+    })
 }

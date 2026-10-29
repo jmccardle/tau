@@ -22,7 +22,6 @@ from tau_next import (
     Item,
     ItemData,
     Node,
-    NoSuchNode,
     Session,
     Tool,
 )
@@ -190,12 +189,7 @@ class Harness:
     # Snapshots
 
     def nodes(self) -> list[Node]:
-        out: list[Node] = []
-        while True:
-            try:
-                out.append(self.session.node(len(out)))
-            except NoSuchNode:
-                return out
+        return [self.session.node(i) for i in range(self.session.node_count())]
 
     def bodies(self, cursor: int | None = None) -> list[Body]:
         c = self._c(cursor)

@@ -124,9 +124,11 @@ pub enum Job {
         point: Hook,
         draft: Option<Draft>,
         ending: Option<Ending>,
+        serial: u64,
     },
     Sample {},
     RunCalls {
+        node: u64,
         calls: Vec<RunCall>,
     },
     Pending {},
@@ -143,13 +145,16 @@ impl From<step::Job> for Job {
                 point,
                 draft,
                 ending,
+                serial,
             } => Self::Hooks {
                 point: point.into(),
                 draft: draft.map(Into::into),
                 ending: ending.map(Into::into),
+                serial,
             },
             step::Job::Sample => Self::Sample {},
-            step::Job::RunCalls(calls) => Self::RunCalls {
+            step::Job::RunCalls { node, calls } => Self::RunCalls {
+                node,
                 calls: calls.into_iter().map(Into::into).collect(),
             },
             step::Job::Pending => Self::Pending {},

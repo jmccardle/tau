@@ -171,6 +171,24 @@ class Driver:
         self._poke()
         return item
 
+    def set_label(self, label: str, cursor: int) -> None:
+        """Set `label` on `cursor`; a label set elsewhere moves."""
+        self.session.set_label(label, cursor)
+
+    def remove_label(self, label: str) -> None:
+        self.session.remove_label(label)
+
+    def children(self, node: int) -> list[int]:
+        """The children of `node`, in append order."""
+        return self.session.children(node)
+
+    def node_count(self) -> int:
+        return self.session.node_count()
+
+    def all_labels(self) -> dict[str, int]:
+        """Every label and its cursor."""
+        return dict(self.session.labels())
+
     def abort(self, cursor: int) -> bool:
         """Abort the cursor's step. True if core had effects in flight to cancel."""
         cancel = self.session.abort(cursor)
@@ -281,12 +299,13 @@ class Driver:
             case Job.Sample():
                 sample = SampleRun(self._provider, session, cursor, tuple(self._tools.values()))
                 self._out[cursor] = Outstanding([self._unit(cursor, sample.run)], sample=sample)
-            case Job.RunCalls(calls=calls):
-                node = session.at(cursor)
+            case Job.RunCalls(node=node, calls=calls):
+                if not calls:
+                    raise RuntimeError(f"cursor {cursor}: a batch with no calls at node {node}")
                 runs = [
                     CallRun(
                         c,
-                        lambda ext: NodeHandle(session, node, ext.name),
+                        lambda ext: NodeHandle(session, node, ext.name, self.clock.now, self._poke),
                         self._tools,
                         self._extensions,
                     )
@@ -301,8 +320,10 @@ class Driver:
             case _:
                 raise RuntimeError(f"cursor {cursor}: a job this driver does not know: {job}")
 
-    def _cursor_for(self, cursor: int) -> Callable[[Extension], Cursor]:
-        return lambda ext: Cursor(self.session, cursor, ext.name, self.ask)
+    def _cursor_for(self, cursor: int) -> Callable[[Extension, int], Cursor]:
+        return lambda ext, serial: Cursor(
+            self.session, cursor, ext.name, serial, self.ask, self.clock.now, self._poke
+        )
 
     def _cancel(self, cursor: int) -> None:
         """Core said abort cancels the effect: stop its tasks. Each call unit and the

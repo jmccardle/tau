@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use crate::step::{Fed, Job, Step};
-use crate::tree::{Author, CursorId, Error, ItemData, ItemId, Move, NodeId, Session};
+use crate::tree::{Author, Body, CursorId, Error, ItemData, ItemId, Move, NodeId, Session};
 
 #[derive(Debug)]
 pub struct Machine {
@@ -15,6 +15,8 @@ pub struct Machine {
     asking: BTreeMap<CursorId, u32>,
     /// A go-to on a busy cursor, applied once its aborted step rests.
     going: BTreeMap<CursorId, (NodeId, Author, u64)>,
+    /// The last serial given to a cursor hook job; never reused, not persisted.
+    serial: u64,
 }
 
 impl Machine {
@@ -25,6 +27,7 @@ impl Machine {
             steps: BTreeMap::new(),
             asking: BTreeMap::new(),
             going: BTreeMap::new(),
+            serial: 0,
         }
     }
 
@@ -163,25 +166,72 @@ impl Machine {
         Ok(())
     }
 
-    /// Set a label on a cursor; a label already set elsewhere moves. Syncs on return.
+    /// Set a label on a cursor; a label already set elsewhere moves. Syncs on return
+    /// (see `hook_set_label`).
     ///
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open.
     pub fn set_label(&mut self, label: &str, cursor: CursorId) -> Result<(), Error> {
+        self.set_label_from(None, label, cursor)
+    }
+
+    /// `set_label` from the hook job `serial` on `hook`: no sync while that job is out.
+    ///
+    /// # Errors
+    ///
+    /// As `set_label`.
+    pub fn hook_set_label(
+        &mut self,
+        hook: CursorId,
+        serial: u64,
+        label: &str,
+        cursor: CursorId,
+    ) -> Result<(), Error> {
+        self.set_label_from(Some((hook, serial)), label, cursor)
+    }
+
+    fn set_label_from(
+        &mut self,
+        hook: Option<(CursorId, u64)>,
+        label: &str,
+        cursor: CursorId,
+    ) -> Result<(), Error> {
         self.session.set_label(label, cursor)?;
-        self.session.sync();
+        self.sync_unless_hook(hook);
         Ok(())
     }
 
-    /// Remove a label. Syncs on return.
+    /// Remove a label. Syncs on return (see `hook_remove_label`).
     ///
     /// # Errors
     ///
     /// `NoSuchLabel` if `label` is not set.
     pub fn remove_label(&mut self, label: &str) -> Result<(), Error> {
+        self.remove_label_from(None, label)
+    }
+
+    /// `remove_label` from the hook running on `hook`: no sync while that job is out.
+    ///
+    /// # Errors
+    ///
+    /// As `remove_label`.
+    pub fn hook_remove_label(
+        &mut self,
+        hook: CursorId,
+        serial: u64,
+        label: &str,
+    ) -> Result<(), Error> {
+        self.remove_label_from(Some((hook, serial)), label)
+    }
+
+    fn remove_label_from(
+        &mut self,
+        hook: Option<(CursorId, u64)>,
+        label: &str,
+    ) -> Result<(), Error> {
         self.session.remove_label(label)?;
-        self.session.sync();
+        self.sync_unless_hook(hook);
         Ok(())
     }
 
@@ -205,31 +255,229 @@ impl Machine {
 
     // Extension and driver calls.
 
-    /// Open a cursor at `at`; opening wakes it (Q32). Syncs on return, unless
-    /// a cursor hook is running: then the write rides that phase's sync (D11).
+    /// Open a cursor at `at`; opening wakes it (Q32). Syncs on return (the
+    /// `hook_*` variant, called from a hook, rides that phase's sync instead, D11).
     ///
     /// # Errors
     ///
     /// `NoSuchNode` if `at` is not a node.
     pub fn open(&mut self, at: NodeId, by: Author, now: u64) -> Result<CursorId, Error> {
+        self.open_from(None, at, by, now)
+    }
+
+    /// `open` from the hook running on `hook`: no sync while that job is out.
+    ///
+    /// # Errors
+    ///
+    /// As `open`.
+    pub fn hook_open(
+        &mut self,
+        hook: CursorId,
+        serial: u64,
+        at: NodeId,
+        by: Author,
+        now: u64,
+    ) -> Result<CursorId, Error> {
+        self.open_from(Some((hook, serial)), at, by, now)
+    }
+
+    fn open_from(
+        &mut self,
+        hook: Option<(CursorId, u64)>,
+        at: NodeId,
+        by: Author,
+        now: u64,
+    ) -> Result<CursorId, Error> {
         let cursor = self.session.open(at, by, now)?;
         self.wake(cursor, false, now);
-        self.sync_outside_hooks();
+        self.sync_unless_hook(hook);
         Ok(cursor)
     }
 
-    /// Add an item to `to`'s scratchpad; wakes `to`. Syncs on return, unless
-    /// a cursor hook is running: then the write rides that phase's sync (D11).
+    /// Add an item to `to`'s scratchpad; wakes `to`. Syncs on return (the
+    /// `hook_*` variant, called from a hook, rides that phase's sync instead, D11).
     ///
     /// # Errors
     ///
     /// `NoSuchCursor` if `to` is not open.
     pub fn add_item(&mut self, to: CursorId, data: ItemData, now: u64) -> Result<ItemId, Error> {
+        self.add_item_from(None, to, data, now)
+    }
+
+    /// `add_item` from the hook running on `hook`: no sync while that job is out.
+    ///
+    /// # Errors
+    ///
+    /// As `add_item`.
+    pub fn hook_add_item(
+        &mut self,
+        hook: CursorId,
+        serial: u64,
+        to: CursorId,
+        data: ItemData,
+        now: u64,
+    ) -> Result<ItemId, Error> {
+        self.add_item_from(Some((hook, serial)), to, data, now)
+    }
+
+    fn add_item_from(
+        &mut self,
+        hook: Option<(CursorId, u64)>,
+        to: CursorId,
+        data: ItemData,
+        now: u64,
+    ) -> Result<ItemId, Error> {
         self.session.at(to)?;
         let id = self.session.add_item(to, data);
         self.wake(to, false, now);
-        self.sync_outside_hooks();
+        self.sync_unless_hook(hook);
         Ok(id)
+    }
+
+    /// Remove an item from its cursor's scratchpad. Wakes nothing and counts as
+    /// no change (only an added item does). Syncs on return.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchItem` if `id` is not in the scratchpad.
+    pub fn remove_item(&mut self, id: ItemId) -> Result<(), Error> {
+        self.remove_item_from(None, id)
+    }
+
+    /// `remove_item` from the hook running on `hook`: no sync while that job is out.
+    ///
+    /// # Errors
+    ///
+    /// As `remove_item`.
+    pub fn hook_remove_item(
+        &mut self,
+        hook: CursorId,
+        serial: u64,
+        id: ItemId,
+    ) -> Result<(), Error> {
+        self.remove_item_from(Some((hook, serial)), id)
+    }
+
+    fn remove_item_from(&mut self, hook: Option<(CursorId, u64)>, id: ItemId) -> Result<(), Error> {
+        if !self.session.scratchpad().items.iter().any(|i| i.id == id) {
+            return Err(Error::NoSuchItem(id));
+        }
+        self.session.remove_item(id);
+        self.sync_unless_hook(hook);
+        Ok(())
+    }
+
+    /// Append a node under `parent` (none: a root) without moving any cursor
+    /// (an extension's note). Syncs on return.
+    ///
+    /// # Errors
+    ///
+    /// As `Session::append`.
+    pub fn append(
+        &mut self,
+        parent: Option<NodeId>,
+        body: Body,
+        by: Author,
+        now: u64,
+    ) -> Result<NodeId, Error> {
+        self.append_from(None, parent, body, by, now)
+    }
+
+    /// `append` from the hook running on `hook`: no sync while that job is out.
+    ///
+    /// # Errors
+    ///
+    /// As `append`.
+    pub fn hook_append(
+        &mut self,
+        hook: CursorId,
+        serial: u64,
+        parent: Option<NodeId>,
+        body: Body,
+        by: Author,
+        now: u64,
+    ) -> Result<NodeId, Error> {
+        self.append_from(Some((hook, serial)), parent, body, by, now)
+    }
+
+    fn append_from(
+        &mut self,
+        hook: Option<(CursorId, u64)>,
+        parent: Option<NodeId>,
+        body: Body,
+        by: Author,
+        now: u64,
+    ) -> Result<NodeId, Error> {
+        let id = self.session.append(parent, by, body, vec![], now)?;
+        self.sync_unless_hook(hook);
+        Ok(id)
+    }
+
+    // A cursor hook's own-cursor calls (model.md section 7, Handles). Each is
+    // allowed only while the cursor hook job with that `serial` is out for `cursor`; none checks
+    // what the hook did (no hook edit limits), and none syncs, because the
+    // phase's own sync covers them (D11).
+
+    /// `cursor.move(to)`: applies at once. No record when already at `to`.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor` if `cursor` is not open; `NotInHook` if no cursor hook is
+    /// out for it; `NoSuchNode` if `to` is not a node.
+    pub fn hook_move(
+        &mut self,
+        cursor: CursorId,
+        serial: u64,
+        to: NodeId,
+        by: Author,
+        now: u64,
+    ) -> Result<(), Error> {
+        self.in_hook(cursor, serial)?;
+        self.session.move_to(cursor, to, by, now)
+    }
+
+    /// `cursor.write(body, delivers)`: append under `at` and move onto it.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor`, `NotInHook` as `hook_move`; else as `Session::write`.
+    pub fn hook_write(
+        &mut self,
+        cursor: CursorId,
+        serial: u64,
+        body: Body,
+        delivers: Vec<ItemId>,
+        by: Author,
+        now: u64,
+    ) -> Result<NodeId, Error> {
+        self.in_hook(cursor, serial)?;
+        self.session.write(cursor, body, delivers, by, now)
+    }
+
+    /// A hook sets its own cursor's auto-step. Unlike a frontend's, it does not
+    /// reset the `max_steps` count and needs no wake: the step is running.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchCursor`, `NotInHook` as `hook_move`.
+    pub fn hook_set_auto(&mut self, cursor: CursorId, serial: u64, on: bool) -> Result<(), Error> {
+        self.in_hook(cursor, serial)?;
+        self.session.auto.insert(cursor, on);
+        Ok(())
+    }
+
+    /// A hook job is out for `cursor` and it is the one with this `serial`.
+    fn in_hook(&self, cursor: CursorId, serial: u64) -> Result<(), Error> {
+        self.session.at(cursor)?;
+        if self
+            .steps
+            .get(&cursor)
+            .is_some_and(|s| s.in_hook() && s.serial() == serial)
+        {
+            Ok(())
+        } else {
+            Err(Error::NotInHook(cursor))
+        }
     }
 
     /// A hook asked a question on `cursor`: it is locked until answered.
@@ -278,7 +526,12 @@ impl Machine {
         let Some(step) = self.steps.get_mut(&cursor) else {
             return Ok(Job::Rest);
         };
-        let job = step.next_job(&mut self.session)?;
+        let mut job = step.next_job(&mut self.session)?;
+        if let Job::Hooks { serial, .. } = &mut job {
+            self.serial += 1;
+            *serial = self.serial;
+            step.set_serial(self.serial);
+        }
         match (job, self.going.remove(&cursor)) {
             (Job::Rest, Some((to, by, time))) => {
                 self.session.move_to(cursor, to, by, time)?;
@@ -322,10 +575,13 @@ impl Machine {
         Ok(())
     }
 
-    /// The sync a call outside a step owes on return; inside a cursor hook
-    /// the phase's own sync covers the write.
-    fn sync_outside_hooks(&mut self) {
-        if !self.steps.values().any(Step::in_hook) {
+    /// The sync a call owes on return. Only a call made from the cursor hook
+    /// running on `hook` skips it: that phase's own sync covers the write. A
+    /// frontend's or the driver's call (`None`) always syncs, whatever hook
+    /// another cursor has out.
+    fn sync_unless_hook(&mut self, hook: Option<(CursorId, u64)>) {
+        let in_hook = hook.is_some_and(|(c, serial)| self.in_hook(c, serial).is_ok());
+        if !in_hook {
             self.session.sync();
         }
     }

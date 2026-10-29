@@ -48,6 +48,24 @@ create_exception!(
 );
 create_exception!(
     tau_next._core,
+    NotInHook,
+    PyRuntimeError,
+    "A hook's move, write, or auto-step change when no cursor hook is running on that cursor."
+);
+create_exception!(
+    tau_next._core,
+    NoSuchItem,
+    PyLookupError,
+    "An item id that is not in the scratchpad."
+);
+create_exception!(
+    tau_next._core,
+    NotPending,
+    PyLookupError,
+    "A write that delivers an item not pending for that cursor."
+);
+create_exception!(
+    tau_next._core,
     RootNotConfig,
     PyValueError,
     "A root node that is not a Config (V1)."
@@ -155,21 +173,22 @@ impl From<Failure> for PyErr {
 }
 
 fn tree_err(e: &tree::Error) -> PyErr {
+    // One wording: `Display` in core, shared with a step's `Failed` reason.
+    let m = e.to_string();
     match e {
-        tree::Error::NoSuchNode(n) => NoSuchNode::new_err(format!("no node {n}")),
-        tree::Error::NoSuchCursor(c) => NoSuchCursor::new_err(format!("no cursor {c}")),
-        tree::Error::NoSuchLabel(l) => NoSuchLabel::new_err(format!("no label {l:?}")),
-        tree::Error::Busy(c) => Busy::new_err(format!("cursor {c} has a step running")),
-        tree::Error::Locked(c) => Locked::new_err(format!("cursor {c} has an open question")),
-        tree::Error::HookRunning(c) => {
-            HookRunning::new_err(format!("a cursor hook is running on cursor {c}"))
-        }
-        tree::Error::RootNotConfig => RootNotConfig::new_err("a root must be a Config"),
-        tree::Error::DuplicateCall => DuplicateCall::new_err("Results name a call twice"),
-        tree::Error::WrongFeed(c) => {
-            WrongFeed::new_err(format!("that feed answers no job on cursor {c}"))
-        }
-        tree::Error::BadRecord(at) => BadRecord::new_err(format!("record {at} does not replay")),
+        tree::Error::NoSuchNode(_) => NoSuchNode::new_err(m),
+        tree::Error::NoSuchCursor(_) => NoSuchCursor::new_err(m),
+        tree::Error::NoSuchLabel(_) => NoSuchLabel::new_err(m),
+        tree::Error::Busy(_) => Busy::new_err(m),
+        tree::Error::Locked(_) => Locked::new_err(m),
+        tree::Error::HookRunning(_) => HookRunning::new_err(m),
+        tree::Error::NotInHook(_) => NotInHook::new_err(m),
+        tree::Error::NoSuchItem(_) => NoSuchItem::new_err(m),
+        tree::Error::NotPending(_) => NotPending::new_err(m),
+        tree::Error::RootNotConfig => RootNotConfig::new_err(m),
+        tree::Error::DuplicateCall => DuplicateCall::new_err(m),
+        tree::Error::WrongFeed(_) => WrongFeed::new_err(m),
+        tree::Error::BadRecord(_) => BadRecord::new_err(m),
     }
 }
 
@@ -195,6 +214,9 @@ pub fn add_all(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("Busy", py.get_type::<Busy>())?;
     m.add("Locked", py.get_type::<Locked>())?;
     m.add("HookRunning", py.get_type::<HookRunning>())?;
+    m.add("NotInHook", py.get_type::<NotInHook>())?;
+    m.add("NoSuchItem", py.get_type::<NoSuchItem>())?;
+    m.add("NotPending", py.get_type::<NotPending>())?;
     m.add("RootNotConfig", py.get_type::<RootNotConfig>())?;
     m.add("DuplicateCall", py.get_type::<DuplicateCall>())?;
     m.add("BadRecord", py.get_type::<BadRecord>())?;

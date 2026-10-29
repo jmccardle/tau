@@ -69,6 +69,7 @@ directly, so:
 | 5 | OpenAI-compatible provider | done: walk to messages, streamed parts, stop normalized and kept raw (`finish_reason`), tools array, HTTP errors as failures |
 | 6 | first call | done (`examples/first_call.py`): a Python import example against local llama.cpp (`192.168.1.100:8100`), not a CLI |
 | 7 | first tool round-trip | done (`examples/first_tool.py`): `@tool` makes a `Tool` from a function; tools are the driver's, handed to each `sample`, never recorded; the example defines its own `read_file` (no built-in toolset yet) |
+| 8 | cursor and tree bindings | done (2026-10-29): a cursor hook's `move`, `write`, `set_auto` (checked by the hook job's serial); `append`, `open`, `add_item`, `remove_item`, labels, and the reads `children`, `node_count`, `all_labels` from both handles and the driver; `tests/behavior/test_tree.py`. **Deferred:** update-an-item (an in-place update must not bump `changes`, as only an added item does); `show`/`tell` wait for the events of model.md §9; `opened_by` on `open` is not spiked |
 4. **Config overhaul** (approved 2026-10-27), in Python: the config file
    parser and `tau config check`. Written up as D13 when it starts. Agreed so far:
    - the flat `{"model": {...}}` file stays valid; an object with `models` is

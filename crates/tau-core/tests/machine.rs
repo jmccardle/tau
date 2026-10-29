@@ -568,21 +568,22 @@ fn add_item_and_open_inside_a_pre_hook_ride_the_phases_sync() {
     let sys = m.session.at(c).unwrap();
     m.input(c, term(), "hi", 0).unwrap();
     assert!(m.session.synced());
-    let job = m.next_job(c).unwrap();
-    assert!(matches!(
-        job,
-        Job::Hooks {
-            point: Hook::PreStep,
-            ..
-        }
-    ));
+    let Job::Hooks {
+        point: Hook::PreStep,
+        serial,
+        ..
+    } = m.next_job(c).unwrap()
+    else {
+        panic!("a pre_step job");
+    };
     let tick = ItemData::Extension {
         name: "timer".into(),
         data: "tick".into(),
     };
-    m.add_item(c, tick.clone(), 0).unwrap();
+    m.hook_add_item(c, serial, c, tick.clone(), 0).unwrap();
     assert!(!m.session.synced(), "no early sync inside a hook");
-    m.open(sys, Author::Extension("ext".into()), 0).unwrap();
+    m.hook_open(c, serial, sys, Author::Extension("ext".into()), 0)
+        .unwrap();
     assert!(!m.session.synced());
     m.feed(c, ok(), 0).unwrap();
     run(&mut m, c, plain);
@@ -601,4 +602,222 @@ fn add_item_and_open_outside_a_step_sync_on_return() {
     assert!(m.session.synced());
     m.open(sys, Author::Extension("ext".into()), 0).unwrap();
     assert!(m.session.synced());
+}
+
+#[test]
+fn a_hook_acts_on_its_cursor_only_while_its_own_job_is_out() {
+    let (mut m, c) = machine();
+    let sys = m.session.at(c).unwrap();
+    let by = Author::Extension("x".into());
+    // Resting: no hook job is out.
+    assert_eq!(
+        m.hook_move(c, 1, sys, by.clone(), 0),
+        Err(Error::NotInHook(c))
+    );
+    assert_eq!(
+        m.hook_write(c, 1, note(), vec![], by.clone(), 0),
+        Err(Error::NotInHook(c))
+    );
+    assert_eq!(m.hook_set_auto(c, 1, true), Err(Error::NotInHook(c)));
+    m.step(c, term(), 0).unwrap();
+    let Job::Hooks { serial, .. } = m.next_job(c).unwrap() else {
+        panic!("a hook job");
+    };
+    // Another job's serial is stale.
+    assert_eq!(
+        m.hook_move(c, serial + 1, sys, by.clone(), 0),
+        Err(Error::NotInHook(c))
+    );
+    // This job is out: all three apply at once, with no sync of their own.
+    let written = m
+        .hook_write(c, serial, note(), vec![], by.clone(), 0)
+        .unwrap();
+    assert_eq!(m.session.at(c), Ok(written));
+    m.hook_move(c, serial, sys, by.clone(), 0).unwrap();
+    assert_eq!(m.session.at(c), Ok(sys));
+    assert_eq!(
+        m.hook_move(c, serial, 99, by.clone(), 0),
+        Err(Error::NoSuchNode(99))
+    );
+    m.hook_set_auto(c, serial, true).unwrap();
+    assert!(m.session.auto[&c]);
+    assert!(
+        !matches!(
+            m.session.outbox.last(),
+            Some(tau_core::tree::Record::Sync { .. })
+        ),
+        "the phase's own sync covers a hook's writes"
+    );
+    m.feed(c, ok(), 0).unwrap();
+    // The next job has a new serial; the old one stays refused.
+    let Job::Hooks { serial: next, .. } = m.next_job(c).unwrap() else {
+        panic!("a hook job");
+    };
+    assert_ne!(next, serial);
+    assert_eq!(m.hook_move(c, serial, sys, by, 0), Err(Error::NotInHook(c)));
+    m.feed(c, ok(), 0).unwrap();
+    run(&mut m, c, plain);
+}
+
+#[test]
+fn only_the_hooks_own_calls_skip_the_sync() {
+    let (mut m, c) = machine();
+    let sys = m.session.at(c).unwrap();
+    let other = m.open(sys, Author::Core, 0).unwrap();
+    run(&mut m, other, plain);
+    m.step(c, term(), 0).unwrap();
+    let Job::Hooks { serial, .. } = m.next_job(c).unwrap() else {
+        panic!("a hook job");
+    };
+    // Another caller's label rides no hook: it syncs now.
+    m.set_label("main", other).unwrap();
+    assert!(
+        m.session.synced(),
+        "a frontend call syncs while a hook is out"
+    );
+    // The hook's own call does not.
+    m.hook_set_label(c, serial, "mine", c).unwrap();
+    assert!(!m.session.synced());
+    // A stale serial is no hook: that call syncs.
+    m.hook_set_label(c, serial + 1, "stale", c).unwrap();
+    assert!(m.session.synced());
+    // Another cursor's hook does not cover this one's call.
+    assert!(matches!(m.next_job(other).unwrap(), Job::Rest));
+    m.feed(c, ok(), 0).unwrap();
+    run(&mut m, c, plain);
+}
+
+#[test]
+fn a_write_delivers_only_what_is_pending_for_its_own_cursor() {
+    let (mut m, c) = machine();
+    let sys = m.session.at(c).unwrap();
+    let other = m.open(sys, Author::Core, 0).unwrap();
+    let theirs = m
+        .add_item(
+            other,
+            ItemData::Extension {
+                name: "x".into(),
+                data: "d".into(),
+            },
+            0,
+        )
+        .unwrap();
+    let by = Author::Extension("x".into());
+    assert_eq!(
+        m.session.write(c, note(), vec![theirs], by.clone(), 0),
+        Err(Error::NotPending(theirs))
+    );
+    assert_eq!(
+        m.session.write(c, note(), vec![99], by, 0),
+        Err(Error::NotPending(99))
+    );
+    assert_eq!(m.session.items(other).count(), 1, "nothing was delivered");
+    assert_eq!(m.session.at(c), Ok(sys));
+}
+
+#[test]
+fn a_hook_that_delivered_the_input_itself_leaves_nothing_to_commit() {
+    let (mut m, c) = machine();
+    let item = m.send(c, term(), "hi", 0).unwrap();
+    let by = Author::Extension("x".into());
+    let mut writes = 0;
+    run(&mut m, c, |job, m| match job {
+        Job::Hooks {
+            point: Hook::PreInput,
+            draft,
+            serial,
+            ..
+        } => {
+            m.hook_write(c, *serial, note(), vec![item], by.clone(), 0)
+                .unwrap();
+            writes += 1;
+            vec![Fed::Hooks {
+                stop: None,
+                draft: draft.clone(),
+            }]
+        }
+        _ => plain(job, m),
+    });
+    assert_eq!(writes, 1);
+    let users = (0..m.session.node_count() as u64)
+        .filter(|n| matches!(m.session.node(*n).unwrap().body, Body::User(_)))
+        .count();
+    assert_eq!(users, 0, "the input was delivered once, by the hook");
+    assert_eq!(m.session.items(c).count(), 0);
+}
+
+#[test]
+fn removing_an_item_is_no_change_and_adding_one_is() {
+    let d = || ItemData::Extension {
+        name: "x".into(),
+        data: "d".into(),
+    };
+    let pre_steps = |jobs: &[Job]| points(jobs).iter().filter(|p| **p == Hook::PreStep).count();
+    // Remove an item while the step it woke is running: no second step.
+    let (mut m, c) = machine();
+    let item = m.add_item(c, d(), 0).unwrap();
+    let first = m.next_job(c).unwrap();
+    m.remove_item(item).unwrap();
+    m.feed(c, ok(), 0).unwrap();
+    let mut jobs = vec![first];
+    jobs.extend(run(&mut m, c, plain));
+    assert_eq!(pre_steps(&jobs), 1);
+    // Add one while it runs: the scratchpad changed, so another step follows.
+    let (mut m, c) = machine();
+    m.add_item(c, d(), 0).unwrap();
+    let first = m.next_job(c).unwrap();
+    m.add_item(c, d(), 0).unwrap();
+    m.feed(c, ok(), 0).unwrap();
+    let mut jobs = vec![first];
+    jobs.extend(run(&mut m, c, plain));
+    assert_eq!(pre_steps(&jobs), 2);
+}
+
+#[test]
+fn a_hook_reads_children_labels_and_the_node_count() {
+    let (mut m, c) = machine();
+    let sys = m.session.at(c).unwrap();
+    let a = m.append(Some(sys), note(), Author::Core, 0).unwrap();
+    let b = m.append(Some(sys), note(), Author::Core, 0).unwrap();
+    assert_eq!(m.session.children(sys).unwrap(), &[a, b]);
+    assert_eq!(m.session.children(0).unwrap(), &[sys]);
+    assert_eq!(m.session.children(99), Err(Error::NoSuchNode(99)));
+    assert_eq!(m.session.node_count(), 4);
+    m.set_label("main", c).unwrap();
+    assert_eq!(m.session.labels().collect::<Vec<_>>(), vec![("main", c)]);
+}
+
+#[test]
+fn an_extension_appends_a_note_and_removes_items() {
+    let (mut m, c) = machine();
+    let sys = m.session.at(c).unwrap();
+    let by = Author::Extension("x".into());
+    let body = Body::Custom {
+        kind: "note".into(),
+        data: "n".into(),
+    };
+    let note = m.append(Some(sys), body.clone(), by.clone(), 0).unwrap();
+    assert_eq!(m.session.at(c), Ok(sys), "no cursor moved");
+    assert_eq!(m.session.node(note).unwrap().parent, Some(sys));
+    assert_eq!(m.append(None, body, by, 0), Err(Error::RootNotConfig));
+    let item = m
+        .add_item(
+            c,
+            ItemData::Extension {
+                name: "x".into(),
+                data: "d".into(),
+            },
+            0,
+        )
+        .unwrap();
+    m.remove_item(item).unwrap();
+    assert_eq!(m.session.items(c).count(), 0);
+    assert_eq!(m.remove_item(item), Err(Error::NoSuchItem(item)));
+}
+
+fn note() -> Body {
+    Body::Custom {
+        kind: "note".into(),
+        data: "n".into(),
+    }
 }

@@ -157,6 +157,14 @@ pub enum Error {
     Locked(CursorId),
     /// A frontend's go-to while a cursor hook runs.
     HookRunning(CursorId),
+    /// A hook's move, write, or auto-step change on a cursor with no cursor
+    /// hook job out (a handle used after its hook returned).
+    NotInHook(CursorId),
+    /// Removing an item that is not in the scratchpad.
+    NoSuchItem(ItemId),
+    /// A write that delivers an item not pending for that cursor (not in the
+    /// scratchpad, or addressed to another cursor).
+    NotPending(ItemId),
     RootNotConfig,
     DuplicateCall,
     /// A record replay cannot apply: a node id or a cursor out of sequence, a
@@ -165,6 +173,28 @@ pub enum Error {
     /// A feed that answers no job: none is out for the cursor, or the result
     /// is not of the kind the job asked for. Nothing changed.
     WrongFeed(CursorId),
+}
+
+/// The one wording of core's refusals: the Python exception message and a
+/// step's `Failed` reason both come from here.
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSuchNode(n) => write!(f, "no node {n}"),
+            Self::NoSuchCursor(c) => write!(f, "no cursor {c}"),
+            Self::NoSuchLabel(l) => write!(f, "no label {l:?}"),
+            Self::Busy(c) => write!(f, "cursor {c} has a step running"),
+            Self::Locked(c) => write!(f, "cursor {c} has an open question"),
+            Self::HookRunning(c) => write!(f, "a cursor hook is running on cursor {c}"),
+            Self::NotInHook(c) => write!(f, "no cursor hook is running on cursor {c}"),
+            Self::NoSuchItem(i) => write!(f, "no item {i}"),
+            Self::NotPending(i) => write!(f, "item {i} is not pending for that cursor"),
+            Self::RootNotConfig => write!(f, "a root must be a Config"),
+            Self::DuplicateCall => write!(f, "Results name a call twice"),
+            Self::WrongFeed(c) => write!(f, "that feed answers no job on cursor {c}"),
+            Self::BadRecord(at) => write!(f, "record {at} does not replay"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,11 +209,13 @@ pub struct Session {
     nodes: Vec<Node>,
     /// Per node, by id: the nearest `Config` on its walk (`config_at`).
     configs: Vec<NodeId>,
+    /// Per node, by id: its children in append order.
+    kids: Vec<Vec<NodeId>>,
     at: BTreeMap<CursorId, NodeId>,
     labels: BTreeMap<String, CursorId>,
     pub auto: BTreeMap<CursorId, bool>,
     pad: Scratchpad,
-    /// Per cursor: bumped by every scratchpad change core did not make itself.
+    /// Per cursor: bumped by every item added (`add_item`); no other change.
     pub changes: BTreeMap<CursorId, u64>,
     pub moves: Vec<Move>,
     pub outbox: Vec<Record>,
@@ -275,6 +307,12 @@ impl Session {
         time: u64,
     ) -> Result<NodeId, Error> {
         let from = self.at(cursor)?;
+        if let Some(bad) = delivers
+            .iter()
+            .find(|d| !self.items(cursor).any(|i| i.id == **d))
+        {
+            return Err(Error::NotPending(*bad));
+        }
         let node = self.check(Some(from), by.clone(), body, delivers, time)?;
         let id = node.id;
         if !node.delivers.is_empty() {
@@ -335,6 +373,10 @@ impl Session {
             (_, Some(p)) => self.configs[usize::try_from(p).expect("a checked parent")],
         };
         self.configs.push(config);
+        self.kids.push(vec![]);
+        if let Some(p) = node.parent {
+            self.kids[usize::try_from(p).expect("a checked parent")].push(node.id);
+        }
         self.nodes.push(node);
     }
 
@@ -497,13 +539,44 @@ impl Session {
     /// node that is not Config or Custom decides.
     #[must_use]
     pub fn next(&self, cursor: CursorId) -> Next {
+        self.deciding(cursor).map_or(Next::Wait, |(next, _)| next)
+    }
+
+    /// `next`, with the node that decided it: the last node of the walk that is
+    /// not `Config` or `Custom`. `None` when there is none (then `next` is `Wait`).
+    /// A batch is read from this node, not from `at`.
+    #[must_use]
+    pub fn deciding(&self, cursor: CursorId) -> Option<(Next, NodeId)> {
         let last = self.at(cursor).ok().and_then(|a| {
             std::iter::successors(self.node(a).ok(), |x| {
                 x.parent.and_then(|p| self.node(p).ok())
             })
             .find(|n| !matches!(n.body, Body::Config(_) | Body::Custom { .. }))
-        });
-        decide(last)
+        })?;
+        Some((decide(Some(last)), last.id))
+    }
+
+    /// The children of `n`, in append order.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `n` is not a node.
+    pub fn children(&self, n: NodeId) -> Result<&[NodeId], Error> {
+        self.kids
+            .get(usize::try_from(n).unwrap_or(usize::MAX))
+            .map(Vec::as_slice)
+            .ok_or(Error::NoSuchNode(n))
+    }
+
+    /// How many nodes the session has; ids are `0..node_count`.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Every label with its cursor, in string order.
+    pub fn labels(&self) -> impl Iterator<Item = (&str, CursorId)> {
+        self.labels.iter().map(|(l, c)| (l.as_str(), *c))
     }
 
     /// Drain the notices queued for clients, oldest first.
@@ -522,9 +595,8 @@ impl Session {
 
     pub fn remove_item(&mut self, id: ItemId) {
         if let Some(i) = self.pad.items.iter().position(|i| i.id == id) {
-            let to = self.pad.items.remove(i).to;
+            self.pad.items.remove(i);
             self.touch_pad();
-            *self.changes.entry(to).or_default() += 1; // rules: allow(entry): BTreeMap API
         }
     }
 

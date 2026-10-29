@@ -341,7 +341,7 @@ fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
         |j| *j == Job::Pending && fed_a.get(),
         |j| match j {
             Job::Sample => vec![reply(vec![call("a"), call("b")], Stop::Tools)],
-            Job::RunCalls(_) => {
+            Job::RunCalls { .. } => {
                 fed_a.set(true);
                 vec![Fed::CallDone {
                     call: "a".into(),

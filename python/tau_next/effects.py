@@ -54,7 +54,7 @@ async def run_hooks(
     job: Job.Hooks,
     subject: Subject,
     extensions: Sequence[Extension],
-    cursor_for: Callable[[Extension], Cursor],
+    cursor_for: Callable[[Extension, int], Cursor],
 ) -> Fed:
     """Every extension's hook for the point, in order. The first string halts;
     an exception fails; otherwise the subject's draft comes back."""
@@ -63,10 +63,13 @@ async def run_hooks(
         hook = cast("CursorHook | None", getattr(ext, name, None))
         if hook is None:
             continue
+        cursor = cursor_for(ext, job.serial)
         try:
-            stop = await hook(cursor_for(ext), subject)
+            stop = await hook(cursor, subject)
         except Exception as e:
             return Fed.HookFailed(str(e))
+        finally:
+            cursor.retire()
         if stop is not None:
             return Fed.Hooks(stop, None)
     return Fed.Hooks(None, subject.draft)
@@ -215,10 +218,13 @@ class CallRun:
                 continue
             author = Author.Extension(ext.name)
             before = draft.outcome
+            handle = self._node(ext)
             try:
-                stop = await hook(self._node(ext), draft)
+                stop = await hook(handle, draft)
             except Exception as e:
                 raise _HookError(author) from e
+            finally:
+                handle.retire()
             if stop is not None:
                 draft.outcome = Outcome.Err(stop)
                 return author

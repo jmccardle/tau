@@ -82,7 +82,8 @@ Item   { id, to, data }   data = Input { client, text } | Extension { name, data
 
 `*` marks what is **not yet spiked**. `x?` is optional.
 
-- A node is written once (I2). `delivers` lists the item ids it consumed.
+- A node is written once (I2). `delivers` lists the item ids it consumed; a write
+  may deliver only items pending for its own cursor (`NotPending` otherwise).
   `copied_from` lists nodes it repeats verbatim; `derived_from` lists nodes
   whose walks its content was computed from.
 - `args_raw` is the argument text exactly as the model produced it, never
@@ -200,7 +201,7 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
 
 | phase | applies when | jobs, in order | commits |
 |---|---|---|---|
-| input | input is pending | `Hooks(PreInput, draft)` per item, oldest first; the items pending when the phase begins, each offered once | one `User` per item, `delivers: [item]`, by `Frontend(client)` |
+| input | input is pending | `Hooks(PreInput, draft)` per item, oldest first; the items pending when the phase begins, each offered once | one `User` per item, `delivers: [item]`, by `Frontend(client)`; an item a hook already delivered is skipped: the hook's write stands in for the commit and counts as it (the step committed, so it counts toward `max_steps`); any other `delivers` id goes to `write`, which refuses a non-pending one and fails the step |
 | sample | `next == Sample` | `Hooks(PreSample)`, `Sample`, `Hooks(PreReply, draft)`, `Hooks(PostReply)` | one `Assistant` |
 | tools | `next == RunTools` | `RunCalls(calls)`, `Pending` until every `CallDone`, `Hooks(PostResult)` | one `Results` at the join, by `Tools`; each outcome has its own `by` |
 
@@ -233,8 +234,9 @@ A string from `post_step` only turns auto-step off.
 ### After `post_step`
 
 Another step starts if the ending is `Done` and either auto-step is on with
-work to do (`next != Wait`, or input pending) or the cursor's scratchpad
-changed since this step woke (`Session::changes`). A step that committed
+work to do (`next != Wait`, or input pending) or an item was added to the
+cursor's scratchpad since this step woke (`Session::changes`; removing or
+delivering an item is not a change). A step that committed
 nothing waits first: `Job::Wait { until: started + THROTTLE }` (250 ms). An
 extension item left in place does not cause another step (an input left
 pending does: it is work, so with auto-step on the next step offers it again,
@@ -288,11 +290,14 @@ output. Outcomes core writes (`Interrupted`, `Err("hook error")`) skip `pre_resu
 **Handles.** A cursor handle may read the tree, cursors, labels, and move
 records; append anywhere; add, update, or remove any item; open cursors; set
 labels; ask, show, and tell (§9); sample a walk or run a tool outside any
-step. On its own cursor it may `move`, `write(body, delivers)`, and set
+step. On its own cursor, and only while its hook job is out, it may `move`, `write(body, delivers)`, and set
 `auto_step`. A node handle (tool hooks) is the same minus anything on the
 cursor. Every handle call goes into Rust at once (§11). An extension reads
 its own cursor's scratchpad in `pre_step` and `post_step`. Writes a hook
-makes trigger no hooks on its own step. The exact surface is Phase 4's.
+makes trigger no hooks on its own step. A handle lives exactly as long as its
+hook coroutine: once the hook returns (or its job is fed), the handle is
+**retired**. A retired handle still reads the tree; every write, `ask`, and
+own-cursor call raises `NotInHook`. The exact surface is Phase 4's.
 
 ### Input
 

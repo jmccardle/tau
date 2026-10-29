@@ -193,7 +193,7 @@ impl Agent {
                 rig.sample(c);
                 vec![self.reply(&rig.payloads)]
             }
-            Job::RunCalls(run) => run
+            Job::RunCalls { calls: run, .. } => run
                 .into_iter()
                 .map(|call| Fed::CallDone {
                     call: call.id,

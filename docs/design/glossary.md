@@ -151,7 +151,10 @@ Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
 (a feed that answers no job: none is out, it is of another kind, or it
 names a call that is not in the batch or already answered; nothing changes); and a frontend call's: `Busy`
 (step on a busy cursor), `Locked` (input, go-to, or step with a question
-open), `HookRunning` (go-to while a cursor hook runs). Each becomes a typed Python exception of the same name in `tau-py`, and so does
+open), `HookRunning` (go-to while a cursor hook runs); a hook's: `NotInHook` (a hook's
+move, write, or auto-step change on a cursor with no cursor hook job out), and
+`NoSuchItem` (removing an item not in the scratchpad), and `NotPending` (a
+write that delivers an item not pending for that cursor). Each becomes a typed Python exception of the same name in `tau-py`, and so does
 each `tau_store::Error` variant except `Io` (the builtin `OSError`) and `Core` (the
 inner error). Each subclasses the closest builtin (`_core.pyi` has them all);
 there is no common base class.
@@ -186,9 +189,10 @@ A cursor's input items not yet delivered or removed.
 ### changes
 *spike* `Session::changes` · new
 
-Per cursor, a counter bumped by `add_item` and `remove_item`. A step compares
-it with the value at its wake (`Step::seen`) to tell whether the scratchpad
-changed.
+Per cursor, a counter bumped by `add_item` and nothing else: removing an item
+(`remove_item`) or delivering one (`write`) is not a change, and wakes nothing. A
+step compares it with the value at its wake (`Step::seen`) to tell whether work
+was added to the scratchpad.
 
 ### notice
 *spike* `Session::notices` · new
@@ -226,7 +230,12 @@ Checks only that `to` is a node. Never looks below `to`.
 *spike* `Session::write` · new
 
 Append under `at` and move onto it, as one record; then drop the delivered
-items. Every commit, and a hook's `cursor.write`.
+items. Every commit, and a hook's `cursor.write`. Core checks the resulting
+state: every `delivers` id must be pending for that cursor (else `NotPending`,
+nothing written), so a write cannot take another cursor's item. The input
+phase's commit delivers only the input items still pending after the
+`pre_input` hooks; if a hook delivered the item itself, nothing is committed
+for it.
 
 ### commit
 *spike* (in `Step::feed`) · retires the plan's commit
@@ -361,13 +370,34 @@ Where a step is: `PreStep`, `Input`, `PreSample`, `Sample`, `PreReply`,
 
 What a walk needs: `Sample` (last message-bearing node is `User` or
 `Results`), `RunTools` (a batch), or `Wait`. Never looks below `at`.
+`Session::deciding` returns it with the node that decided it (the last node
+that is not `Config` or `Custom`); a batch is read from that node, not from
+`at`, which may be a `Custom` node written after the reply.
 
 ### job
 *spike* `Job` · new
 
-What the step asks the driver to do: `Hooks { point, draft, ending }`,
-`Sample`, `RunCalls(calls)`, `Pending` (calls outstanding), `Wait { until }`
-(the throttle), `Rest`. Only waits are jobs; writes never are.
+What the step asks the driver to do: `Hooks { point, draft, ending, serial }`,
+`Sample`, `RunCalls { node, calls }` (`node`: the `Assistant` node holding the
+batch; the driver refuses an empty one), `Pending` (calls outstanding),
+`Wait { until }` (the throttle), `Rest`. Only waits are jobs; writes never are.
+
+### serial
+*spike* `Job::Hooks.serial`, `Machine::serial` · new
+
+A number core gives each cursor hook job, never reused. A cursor handle carries
+the serial of the job it was made for. A hook's own-cursor calls (`hook_move`,
+`hook_write`, `hook_set_auto`) are refused with `NotInHook` unless that job is
+still the one out; its other writes (`hook_open`, `hook_add_item`, `hook_append`,
+`hook_remove_item`, `hook_set_label`, `hook_remove_label`) skip their sync only
+while that job is out, and sync otherwise.
+
+**Retired handle.** Python retires a handle (`TreeHandle.retire`) when its hook
+coroutine returns, before the job is fed. A retired handle can still read (`walk`,
+`items`, `children`, ...); it cannot write at all: every write, `ask`, and own-cursor
+call raises `NotInHook`. A node handle is retired when its tool hook returns. A
+handle from an earlier job, step, or cursor is retired by then, and core also refuses
+its serial.
 
 ### Fed
 *spike* `Fed` · new
@@ -458,8 +488,11 @@ so a later `Waited` is a `WrongFeed`). Never cancels a hook.
 ### in_hook
 *spike* `Step::in_hook` · new
 
-True while a cursor hook job is out and not yet fed. Core cannot see tool
-hooks inside `RunCalls`; a go-to then aborts and the hook finishes (Q34).
+True while a cursor hook job is out and not yet fed (`serial` says which). Core
+cannot see tool hooks inside `RunCalls`; a go-to then aborts and the hook
+finishes (Q34). A call made from a hook skips its sync only while its own
+cursor's job is out (`Machine::hook_*`); a frontend's or the driver's call
+always syncs.
 ### resume
 What a crash mid-batch leaves: the cursor at rest at the unanswered batch,
 every outcome lost (D4). Input goes under it; a step re-runs it.
@@ -533,19 +566,47 @@ on; a string stops. Hooks at a point run in `config_at(at)` order.
 ### cursor hook
 `async def hook(cursor, subject) -> str | None` · new
 
-May move its cursor, write under `at`, set auto-step.
+May move its cursor, write under `at`, set auto-step. Core allows these only
+while the hook's own job is out (`in_hook`, matched by its `serial`):
+`Machine::hook_move`, `hook_write`, `hook_set_auto` raise `NotInHook` otherwise,
+including for a handle kept from an earlier job. They apply at once and sync
+nothing; the phase's sync covers them. `set_auto(True)` in a step that is then
+aborted leaves the cursor at rest: it wakes nothing.
+Core checks no more than the tree's own rules (no hook edit limits), and a hook
+that sets auto-step does not reset the `max_steps` count (only a frontend does).
 
 ### tool hook
 `async def hook(node, call) -> str | None` · new
 
 Runs per call, in parallel. A string makes that call `Err(reason)`.
 
-### cursor handle, node handle
-Python `Cursor`, `NodeHandle` · retires `ExtensionAPI`
+### cursor handle, node handle, tree handle
+Python `Cursor`, `NodeHandle`, `TreeHandle` · retires `ExtensionAPI`
 
 What a hook acts through, bound to its extension (which fills in `by`). A
 node handle is a cursor handle without the cursor's own operations. Every
-call goes into Rust at once. Surface is Phase 4's.
+call goes into Rust at once. Both are a **tree handle**, which holds what they
+share. Reads: `get_node`, `lca`, `cursors`, `cursor_at`, `items_of`,
+`moves_of`, `labels_of`, `label`, `all_labels`, `children`, `node_count`
+(`Session::children`, `node_count`, `labels`: children in append order; ids are
+`0..node_count`). Writes that belong to no cursor: `append`
+(`Machine::append`: a node under any parent, moving nothing), `open`,
+`add_item` (an `ItemData.Extension` of this extension), `remove_item`
+(`Machine::remove_item`: any item, wakes nothing), `set_label`,
+`remove_label`. A cursor handle adds its own cursor's `at`, `auto`, `walk`,
+`config`, `items`, `labels`, `moves(since_step=)`, `move(to)`,
+`write(body, delivers)`, `set_auto(on)`, and `ask`. A handle's writes that
+belong to no cursor pass the hook's cursor to core (`hook`), so they skip their
+sync only while that cursor's own hook job is out. Not built: updating an item
+in place, `show`, `tell` (`docs/plan.md`, roadmap row 8).
+
+### Poke, Now
+Python aliases in `handles.py` · new
+
+`Poke = Callable[[], None]`: the driver's `_poke`, which tells the pump a handle
+call (`open`, `add_item`) may have woken a cursor. `Now = Callable[[], int]`:
+the driver's clock in milliseconds, so a handle fills in `time`. `Asker` is the
+driver's question call (see **question**).
 
 ### question
 the lock is *spike* (`Machine::ask`); the rest is the driver's · retires

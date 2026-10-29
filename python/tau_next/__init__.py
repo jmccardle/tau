@@ -27,9 +27,12 @@ from tau_next._core import (
     Next,
     Node,
     NoSuchCursor,
+    NoSuchItem,
     NoSuchLabel,
     NoSuchNode,
     NotASession,
+    NotInHook,
+    NotPending,
     Outcome,
     Part,
     Poisoned,
@@ -44,7 +47,7 @@ from tau_next._core import (
 from tau_next.clock import SystemClock
 from tau_next.config import ConfigError, ModelConfig
 from tau_next.driver import Driver, Outstanding, Question
-from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
+from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject, TreeHandle
 from tau_next.protocols import (
     Clock,
     CursorHook,
@@ -94,11 +97,14 @@ __all__ = [
     "Move",
     "Next",
     "NoSuchCursor",
+    "NoSuchItem",
     "NoSuchLabel",
     "NoSuchNode",
     "Node",
     "NodeHandle",
     "NotASession",
+    "NotInHook",
+    "NotPending",
     "Outcome",
     "Outstanding",
     "Part",
@@ -118,6 +124,7 @@ __all__ = [
     "ToolDefinitionError",
     "ToolError",
     "ToolHook",
+    "TreeHandle",
     "Version",
     "WrongFeed",
     "__version__",

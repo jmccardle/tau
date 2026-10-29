@@ -2,7 +2,7 @@
 //! `next_job` says what to do; the driver does it and `feed`s the result.
 
 use crate::tree::{
-    Author, Body, CursorId, Error, Item, ItemData, ItemId, Next, Outcome, Session, calls,
+    Author, Body, CursorId, Error, Item, ItemData, ItemId, Next, NodeId, Outcome, Session, calls,
 };
 
 pub const THROTTLE: u64 = 250;
@@ -47,10 +47,18 @@ pub enum Job {
         point: Hook,
         draft: Option<Draft>,
         ending: Option<Ending>,
+        /// Unique to this job, given by the `Machine` (0 from a bare `Step`): a
+        /// hook's own-cursor calls carry it, and are refused once the job is fed.
+        serial: u64,
     },
     Sample,
-    /// Each call: `pre_tool`, the tool, `pre_result`, in the driver.
-    RunCalls(Vec<RunCall>),
+    /// Each call: `pre_tool`, the tool, `pre_result`, in the driver. `node` is
+    /// the `Assistant` node holding the batch, which `at` may have moved past
+    /// (a `Custom` node written after the reply).
+    RunCalls {
+        node: NodeId,
+        calls: Vec<RunCall>,
+    },
     Pending,
     Wait {
         until: u64,
@@ -120,6 +128,10 @@ pub struct Step {
     /// `Session::moves.len()` when this step woke.
     first_move: usize,
     out: Out,
+    /// The input item the draft in `Pos::Input` offers.
+    offered: Option<ItemId>,
+    /// The serial of the cursor hook job last handed out.
+    serial: u64,
     draft: Option<Draft>,
     /// The input phase's work: the inputs pending when it began, oldest
     /// first, each offered once. `None` until the phase begins.
@@ -145,6 +157,8 @@ impl Step {
             seen,
             first_move: s.moves.len(),
             out: Out::Nothing,
+            offered: None,
+            serial: 0,
             draft: None,
             inputs: None,
             error: None,
@@ -163,7 +177,7 @@ impl Step {
         match job {
             Job::Hooks { .. } => self.out = Out::Hook,
             Job::Sample => self.out = Out::Sample,
-            Job::RunCalls(_) => self.out = Out::Calls,
+            Job::RunCalls { .. } => self.out = Out::Calls,
             Job::Wait { .. } => self.out = Out::Wait,
             Job::Pending => {}
             Job::Rest => self.out = Out::Nothing,
@@ -178,6 +192,7 @@ impl Step {
                 point,
                 draft,
                 ending: None,
+                serial: 0,
             };
             return Ok(match self.pos {
                 Pos::PreStep => hooks(Hook::PreStep, None),
@@ -211,6 +226,7 @@ impl Step {
                         self.pos = Pos::PreSample;
                         continue;
                     };
+                    self.offered = Some(id);
                     self.draft = Some(Draft {
                         body: Body::User(text),
                         delivers: vec![id],
@@ -243,15 +259,17 @@ impl Step {
                         None,
                     )
                 }
-                Pos::Tools if on && s.next(self.cursor) == Next::RunTools => {
-                    let run = self.start_batch(s)?;
-                    self.pos = Pos::Calls;
-                    Job::RunCalls(run)
-                }
-                Pos::Tools => {
-                    self.pos = Pos::PostStep;
-                    continue;
-                }
+                Pos::Tools => match s.deciding(self.cursor) {
+                    Some((Next::RunTools, node)) if on => {
+                        let calls = self.start_batch(s, node)?;
+                        self.pos = Pos::Calls;
+                        Job::RunCalls { node, calls }
+                    }
+                    _ => {
+                        self.pos = Pos::PostStep;
+                        continue;
+                    }
+                },
                 Pos::Calls => Job::Pending,
                 Pos::PostStep => {
                     s.sync();
@@ -259,6 +277,7 @@ impl Step {
                         point: Hook::PostStep,
                         draft: None,
                         ending: Some(self.ending.clone()),
+                        serial: 0,
                     }
                 }
                 Pos::Throttle => Job::Wait {
@@ -318,11 +337,7 @@ impl Step {
                 let d = draft
                     .or(self.draft.take())
                     .ok_or(Error::WrongFeed(self.cursor))?;
-                s.write(self.cursor, d.body, d.delivers, d.by, now)?;
-                self.committed = true;
-                if self.pos == Pos::PreReply {
-                    self.pos = Pos::PostReply;
-                }
+                self.commit(s, d, now);
             }
             (Pos::PreSample, Fed::Hooks { draft, .. }) => {
                 self.draft = draft;
@@ -407,6 +422,56 @@ impl Step {
         self.out == Out::Hook
     }
 
+    /// Write a phase's draft under `at`. Core validates the draft the hooks left: any
+    /// refusal from `write` (it changes nothing when it refuses) fails the step, its
+    /// reason the error's text.
+    fn commit(&mut self, s: &mut Session, d: Draft, now: u64) {
+        let mut delivers = d.delivers;
+        if self.pos == Pos::Input && self.delivered_by_a_hook(s, &mut delivers) {
+            // The hook's own write stood in for this commit: it counts as one.
+            self.committed = true;
+            return;
+        }
+        match s.write(self.cursor, d.body, delivers, d.by, now) {
+            Ok(_) => {
+                self.committed = true;
+                if self.pos == Pos::PreReply {
+                    self.pos = Pos::PostReply;
+                }
+            }
+            Err(e) => {
+                self.draft = None;
+                self.end(s, Ending::Failed(e.to_string()));
+            }
+        }
+    }
+
+    /// A hook may have delivered the offered input itself. Then that one id is
+    /// taken out of `delivers` (every other id goes to `write`, which refuses one
+    /// that is not pending); true when that leaves nothing to commit.
+    fn delivered_by_a_hook(&mut self, s: &Session, delivers: &mut Vec<ItemId>) -> bool {
+        let Some(id) = self.offered.take() else {
+            return false;
+        };
+        if s.items(self.cursor).any(|i| i.id == id) {
+            return false;
+        }
+        let was = delivers.len();
+        delivers.retain(|d| *d != id);
+        was != delivers.len() && delivers.is_empty()
+    }
+
+    /// The machine numbers the hook job it just took from `next_job`.
+    pub fn set_serial(&mut self, serial: u64) {
+        self.serial = serial;
+    }
+
+    /// The serial of the cursor hook job last handed out (valid while `in_hook`).
+    #[must_use]
+    pub fn serial(&self) -> u64 {
+        self.serial
+    }
+
     #[must_use]
     pub fn resting(&self) -> bool {
         self.pos == Pos::Rest
@@ -455,8 +520,8 @@ impl Step {
         };
     }
 
-    fn start_batch(&mut self, s: &Session) -> Result<Vec<RunCall>, Error> {
-        let run: Vec<RunCall> = calls(&s.node(s.at(self.cursor)?)?.body)
+    fn start_batch(&mut self, s: &Session, node: NodeId) -> Result<Vec<RunCall>, Error> {
+        let run: Vec<RunCall> = calls(&s.node(node)?.body)
             .into_iter()
             .map(|(id, tool, args_raw)| RunCall {
                 id: id.into(),

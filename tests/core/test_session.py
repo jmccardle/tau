@@ -343,19 +343,24 @@ def test_a_go_to_while_a_cursor_hook_runs_is_refused() -> None:
         session.go_to(cursor, 0, "term", 0)
 
 
-def test_a_results_draft_naming_a_call_twice_is_a_duplicate_call() -> None:
+def test_a_results_draft_naming_a_call_twice_fails_the_step_and_changes_nothing() -> None:
     session, cursor = new()
     session.send(cursor, "term", "hi", 0)
     twice = [("a", Outcome.Ok("1"), Author.Tools()), ("a", Outcome.Ok("2"), Author.Tools())]
     bad = Draft(Body.Results(twice), Author.Core(), [])
+    before = bodies(session, cursor)
 
     def corrupt(job: Job) -> list[Fed] | None:
         if isinstance(job, Job.Hooks) and job.point == Hook.PreInput:
             return [Fed.Hooks(draft=bad)]
         return None
 
-    with pytest.raises(tau_next.DuplicateCall):
-        run(session, cursor, on_job=corrupt)
+    jobs = run(session, cursor, on_job=corrupt)
+    endings = [j.ending for j in jobs if isinstance(j, Job.Hooks) and j.ending is not None]
+    assert endings == [Ending.Failed("Results name a call twice")]
+    assert bodies(session, cursor) == before, "the refused commit wrote nothing"
+    assert [i.data for i in session.items(cursor)] == [ItemData.Input("term", "hi")]
+    assert not session.auto(cursor)
 
 
 def test_a_feed_that_answers_no_job_is_refused_and_the_job_stays_out() -> None:
