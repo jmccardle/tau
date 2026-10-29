@@ -22,6 +22,8 @@ abi3 = ["pyo3/abi3-py312"]
 [dependencies]
 tau-core.workspace = true
 tau-store.workspace = true
+tau-tools.workspace = true
+serde_json.workspace = true
 # No `extension-module` feature: it is legacy in PyO3 0.30. maturin sets
 # PYO3_BUILD_EXTENSION_MODULE instead, which keeps `cargo test` linkable.
 pyo3.workspace = true

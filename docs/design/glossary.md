@@ -658,6 +658,101 @@ Raised by `Driver.__init__` for an object that is not a `Tool`, naming it: a
 missing or non-`str` `name` or `description`, `parameters` that is not a
 `Mapping`, a `call` that is not callable, or two tools with one name.
 
+### base tools: ReadTool, WriteTool, GrepTool, BashTool, base_tools
+`tau_next.ReadTool` and the others, `tau_next.base_tools(cwd, ...)` (`base_tools.py`) over `crates/tau-tools`, bound by `tau-py/src/tools.rs` · new
+
+Four `Tool`s whose logic is Rust (`tau-tools`: filesystem and process IO, no
+PyO3) and whose `call` runs it on a worker thread with the GIL released, so
+calls run in parallel (also on a free-threaded build) and never block the
+loop. `base_tools(cwd)` returns all four. `cwd` (default: the current
+directory, which must exist: `NotADirectoryError`) is what relative paths and
+the shell's working directory are relative to. An expected failure (bad
+arguments, a missing file, a nonzero exit, an overflow file that cannot be
+written) is `Err(message)`; nothing is raised out of `call`. The arguments
+are strict: an unknown or missing field is an `Err`.
+
+| tool | parameters | does |
+|---|---|---|
+| `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default 4096) | A text file, verbatim. `Err` for a missing file, a directory, an offset past the end, a binary file (NUL bytes; images are not supported). When `limit` stops it short of the end, a last line `[lines A-B were read; more follow, offset=N continues]` is appended. |
+| `write` | `path`, `content` | The whole file, UTF-8, atomically (a temp file beside it, then a rename), creating parent directories, keeping the mode of a file it replaces, writing through a symlink. Answers `Wrote N lines (B bytes) to <path>`. |
+| `grep` | `pattern`, `path` (file or directory, default `cwd`), `files` (list; overrides `path`; searched as named), `ignore_case`, `glob` | The Rust regex engine of ripgrep over a parallel, ignore-aware walk: `.gitignore` (in any tree, git repository or not), `.ignore`, hidden files and binary files are skipped. One `path:line:text` per match, path relative to the searched directory, sorted by path then line. No match: `No matches found in N file(s)`. Paths that could not be read add a last line `[N paths could not be searched; first: ...]`. |
+| `bash` | `command`, `timeout` (ms) | `bash -c command` in `cwd`, stdin closed, stdout and stderr on one pipe so they arrive in the order written. Exit 0: `Ok(output)`. Otherwise `Err(output + "\n\n" + "command exited with code N")` (or `killed by signal N`, `timed out after N ms and was killed`). |
+
+`write` has no output limit: its answer is one short line. The other three
+share the *output limit*.
+
+### output limit, max_output
+`max_output=` on `ReadTool`, `GrepTool`, `BashTool`, `base_tools` · new
+
+The most bytes of text the model gets from `read`, `grep` or `bash`: 10_000 by
+default, at least 1. It bounds the *kept text*; the truncation note is extra.
+Output at or under the limit is returned whole and writes no file.
+
+### kept end
+`Keep::Head`, `Keep::Tail` (`tau-tools/src/limit.rs`) · new
+
+Which end of an over-limit output the model keeps. **`read` and `grep` keep the
+head** (the start of a file, the first matches); **`bash` keeps the tail**
+(errors and the result of a command land at the end). A judgment call of the
+implementation, for John to overrule: it is one argument to `Sink::new` per
+tool. Cuts fall on line boundaries and never inside a UTF-8 character. If not
+one whole line fits (a single line longer than the limit), the cut is on a
+character boundary instead and the note says so.
+
+### overflow file, overflow_dir
+`overflow_dir=` (default `<temp dir>/tau`, from `std::env::temp_dir`) · new
+
+When output passes the limit, all of it (everything the tool would have
+answered, not just what it kept) is written to `<overflow_dir>/<id>.out`, `id`
+being 8 random characters from `a-z0-9`; the directory is created if missing.
+For `read` that is the lines selected by `offset` and `limit`; for `grep`, all
+matches (without a trailing newline); for `bash`, stdout and stderr interleaved,
+without the exit-code trailer. If the directory or the file cannot be created or
+written, the call is an `Err` saying so, and `bash` kills its command. Files are
+never deleted by the tool.
+
+### truncation note
+`limit.rs` · new
+
+One bracketed line telling the model what it did not get, after the kept text
+(head) or before it (tail):
+
+```
+<kept lines>
+[truncated: 2 lines omitted after these; full output (20 bytes) is in /tmp/tau/k3x9a0bz.out]
+
+[truncated: 2 lines omitted before these; full output (20 bytes) is in /tmp/tau/k3x9a0bz.out]
+<kept lines>
+```
+
+`1 line` in the singular. When a single long line was cut short, `, and one
+long line cut short` follows `these`. Lines are counted as newlines plus one
+for a last line without a newline.
+
+### BashRun, kill
+`tau_next._core.BashRun` · new
+
+A started `bash` command. `Bash.start(args_raw)` spawns it as the leader of its
+own process group and never raises (a bad call is a `BashRun` whose `wait`
+answers `Err`); `wait()` blocks, GIL released, and answers the `Outcome`;
+`kill()` may be called from any thread, any number of times: it sends SIGKILL
+to the whole group, so the shell, its pipeline and anything it backgrounded die
+together. `BashTool.call` kills when it is cancelled and waits for the command
+to be gone before the `CancelledError` goes on. The same kill ends a command
+that outlives `timeout` (default 30_000 ms, `timeout_ms=` on `BashTool`), and
+the group is killed when the shell exits, so a command cannot leave a process
+running behind it. A process that escapes the group (`setsid`) and keeps the
+output pipe open delays `wait`, and is not killed.
+
+### Read, Write, Grep, Bash (`_core`)
+`tau_next._core.Read` and the rest · new
+
+The native engines under the base tools: `__new__(cwd, max_output, overflow_dir)`
+(`Write`: `cwd` only; `Bash`: also `timeout_ms`), `name`, `description`,
+`parameters_json`, and `run(args_raw) -> Outcome` (`Bash`: `start`). A bad
+constructor argument raises `ValueError`. Python code uses the `Tool` classes
+above instead.
+
 ### Finish
 `tau_next.Finish` (`protocols.py`) · new
 

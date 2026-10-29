@@ -16,6 +16,8 @@ from typing_extensions import disjoint_base
 __all__ = [
     "Author",
     "BadRecord",
+    "Bash",
+    "BashRun",
     "Body",
     "Busy",
     "Closed",
@@ -27,6 +29,7 @@ __all__ = [
     "Exists",
     "Failed",
     "Fed",
+    "Grep",
     "Hook",
     "HookRunning",
     "Item",
@@ -44,12 +47,14 @@ __all__ = [
     "Outcome",
     "Part",
     "Poisoned",
+    "Read",
     "RootNotConfig",
     "RunCall",
     "Scratchpad",
     "Session",
     "Stop",
     "Version",
+    "Write",
     "WrongFeed",
 ]
 
@@ -536,3 +541,71 @@ class Session:
     def labels_of(self, cursor: int) -> list[str]: ...
     def moves_of(self, cursor: int, since: int = 0) -> list[Move]: ...
     def take_notices(self) -> list[tuple[str, str]]: ...
+
+# The base tools (crates/tau-tools). `run` and `wait` release the GIL.
+# `tau_next.base_tools` wraps these as `Tool`s.
+
+@final
+class Read:
+    def __new__(
+        cls,
+        cwd: str | PathLike[str],
+        max_output: int = ...,  # 10_000 (a const in the signature stubtest cannot see)
+        overflow_dir: str | PathLike[str] | None = None,
+    ) -> Read: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def parameters_json(self) -> str: ...
+    def run(self, args_raw: str) -> Outcome: ...
+
+@final
+class Write:
+    def __new__(cls, cwd: str | PathLike[str]) -> Write: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def parameters_json(self) -> str: ...
+    def run(self, args_raw: str) -> Outcome: ...
+
+@final
+class Grep:
+    def __new__(
+        cls,
+        cwd: str | PathLike[str],
+        max_output: int = ...,  # 10_000 (a const in the signature stubtest cannot see)
+        overflow_dir: str | PathLike[str] | None = None,
+    ) -> Grep: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def parameters_json(self) -> str: ...
+    def run(self, args_raw: str) -> Outcome: ...
+
+@final
+class Bash:
+    def __new__(
+        cls,
+        cwd: str | PathLike[str],
+        max_output: int = ...,  # 10_000 (a const in the signature stubtest cannot see)
+        overflow_dir: str | PathLike[str] | None = None,
+        timeout_ms: int = ...,  # 30_000
+    ) -> Bash: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def parameters_json(self) -> str: ...
+    def start(self, args_raw: str) -> BashRun: ...
+
+@final
+class BashRun:
+    def wait(self) -> Outcome: ...
+    def kill(self) -> None: ...

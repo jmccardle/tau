@@ -69,6 +69,7 @@ directly, so:
 | 5 | OpenAI-compatible provider | done: walk to messages, streamed parts, stop normalized and kept raw (`finish_reason`), tools array, HTTP errors as failures |
 | 6 | first call | done (`examples/first_call.py`): a Python import example against local llama.cpp (`192.168.1.100:8100`), not a CLI |
 | 7 | first tool round-trip | done (`examples/first_tool.py`): `@tool` makes a `Tool` from a function; tools are the driver's, handed to each `sample`, never recorded; the example defines its own `read_file` (no built-in toolset yet) |
+| 8 | base tools | done: `read`, `write`, `grep`, `bash` in Rust (`crates/tau-tools`), as `Tool`s (`tau_next.base_tools`); output limit with overflow file; `bash` kills its process group on cancel and timeout (`tests/tools/`, `tests/behavior/test_base_tools.py`). Bound by `tau-py` rather than shipped as a separate wheel (Phase 4 says otherwise): one wheel for now; revisit if the tools grow heavy dependencies |
 4. **Config overhaul** (approved 2026-10-27), in Python: the config file
    parser and `tau config check`. Written up as D13 when it starts. Agreed so far:
    - the flat `{"model": {...}}` file stays valid; an object with `models` is

@@ -41,6 +41,7 @@ from tau_next._core import (
     Version,
     WrongFeed,
 )
+from tau_next.base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
 from tau_next.clock import SystemClock
 from tau_next.config import ConfigError, ModelConfig
 from tau_next.driver import Driver, Outstanding, Question
@@ -63,6 +64,7 @@ __version__ = version("ffwf-tau-next")
 __all__ = [
     "Author",
     "BadRecord",
+    "BashTool",
     "Body",
     "Busy",
     "CallDraft",
@@ -83,6 +85,7 @@ __all__ = [
     "Fed",
     "Finish",
     "FunctionTool",
+    "GrepTool",
     "Hook",
     "HookRunning",
     "Item",
@@ -105,6 +108,7 @@ __all__ = [
     "Poisoned",
     "Provider",
     "Question",
+    "ReadTool",
     "RootNotConfig",
     "RunCall",
     "SampleError",
@@ -119,7 +123,9 @@ __all__ = [
     "ToolError",
     "ToolHook",
     "Version",
+    "WriteTool",
     "WrongFeed",
     "__version__",
+    "base_tools",
     "tool",
 ]
