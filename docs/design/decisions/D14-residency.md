@@ -72,8 +72,11 @@ measurement asks for it.
   walks, whatever the session's history. Measured (`cycles` in
   `benches/tree.rs`, `docs/benchmarks.md`): after 20 compactions of a
   1M-token session, 3.3 MB of bodies in memory instead of 83 MB, and the
-  process at 47 MB RSS instead of 150 MB. `walk` got faster; a go-to now
-  checks its target's walk (~20 µs instead of ~1 µs).
+  process at 47 MB RSS instead of 150 MB; reopened, 17 MB RSS (50 MB
+  peak) instead of 141 MB (283 MB), in 193 ms instead of 372 ms. `walk` got
+  faster; a go-to now checks its target's walk (~20 µs instead of ~1 µs);
+  a session with nothing off its walks opens ~1.6× slower (its walk
+  records are decoded twice).
 - **Open leaves the past in the log.** It streams the log once (never the
   whole file in memory), reading each `Write` without building its body
   (`Replay::Stored`) unless it is a `Config`, replays, then reads back only
@@ -84,7 +87,7 @@ measurement asks for it.
   without new crash cases.
 - A line appended with no cursor on it (a compaction's copy, before its
   move) is evicted by the next save and read back if the extension reads
-  it (~8–11 ms for a 1M-token compaction). An extension that builds a line
+  it (a few ms for a 1M-token compaction). An extension that builds a line
   under a cursor of its own keeps it in memory.
 - Disk is unchanged.
 - A go-to into an evicted line reads its bodies back (one read each).

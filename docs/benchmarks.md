@@ -57,7 +57,8 @@ format and is checked equal.
 
 Machine: 4 vCPU Intel Xeon @ 2.80 GHz, 15 GB, ext4 on a virtio disk (a cloud
 VM; fsync is fast, ~0.3 ms median), Linux 6.18, Rust 1.99. Tree bench at
-`33bd080`. Timings on this VM move by 10–30% from run to run; compare
+`33bd080`; `store`, `compact`, and `cycles` at `30bb9d1` (open streams the log
+and leaves the past in it). Timings on this VM move by 10–30% from run to run; compare
 shapes, and repeat a run before reading much into a small difference.
 
 ### D14: before and after, same machine, same day
@@ -75,10 +76,13 @@ shapes, and repeat a run before reading much into a small difference.
 | go-to to a recent node (`jump`) | 0.7 µs | 21 µs (p99 28 µs) |
 | first walk after it | 24 µs | 11 µs |
 | stored turn, chatty, 1M tokens | 4.6 ms | 4.2 ms |
-| compaction pause at 1M tokens (`compact`) | 13–20 ms | 24–29 ms |
+| compaction pause at 1M tokens (`compact`) | 13–20 ms | 21–35 ms |
 | walk p99 with 1–64 branched cursors (`cursors`) | 119–136 µs | 33–50 µs |
 | replay of 5 compactions (`load`) | 16.9 ms | 13.2 ms, then evict 8.2 ms |
-| reopen after 5 compactions (`compact`) | 80 ms | 93 ms, then evict ~7–12 ms |
+| reopen after 5 compactions (`compact`) | 80 ms | 60 ms |
+| reopen after 20 compactions (`cycles`): time / RSS / peak RSS | 372 ms / 141 MB / 283 MB | 193 ms / 17 MB / 50 MB |
+| reopen with no compaction, chatty / bulky, 1M tokens (`store`) | 12.6 / 4.1 ms | 20.5 / 6.3 ms |
+| go-to into a line evicted 20 compactions ago (5,350 bodies) | n/a | 12 ms |
 
 The "before" run's `cursors` rows for k = 1 and 4 overlapped a test build
 on the same machine; their save p99 (8–12 ms) is that, not the store.
@@ -97,18 +101,19 @@ What changed, and why:
   at 5k nodes, where it was a lookup.
 - **Compaction pays a reload.** The save of the copy evicts the new line,
   since no cursor is on it until the move; the summary reads it back
-  (1.7–3.3k bodies, ~8–11 ms). An extension that keeps a cursor on the line
+  (1.7–3.3k bodies, a few ms). An extension that keeps a cursor on the line
   it builds would not pay it.
-- **Going back is one read per body:** 5,350 bodies of a line evicted 20
-  compactions ago load in ~16 ms; the return to the main line, evicted
-  meanwhile, ~12 ms.
-- **Open is unchanged, and so is its memory.** Open still decodes the whole
-  log, then evicts: peak RSS is ~2.5× the log (283 MB at 110 MB), and RSS
-  stays at the open-time size (141 MB) after eviction frees 80 MB of
-  bodies. The allocator keeps freed small blocks for reuse rather than
-  returning them, so a session that is opened, not built, keeps its open
-  footprint. Opening without holding every body at once (replay in batches,
-  evicting as it goes) is the fix if that matters.
+- **Going back reads the line in log order:** 5,350 bodies of a line
+  evicted 20 compactions ago load in ~12 ms; the return to the main line,
+  evicted meanwhile, ~8 ms.
+- **Open leaves the past in the log.** It streams the log once, decodes
+  each node without building its body, then reads back only the cursors'
+  walks. After 20 compactions it opens in half the time at an eighth of
+  the memory (17 MB RSS, 50 MB peak, for a 110 MB log). The cost is a
+  session whose bodies are nearly all on the walks (no compaction): its
+  walk records are decoded twice, ~1.6× the old open. A first attempt,
+  decoding everything and then evicting, kept RSS at the open-time size:
+  the allocator keeps freed small blocks rather than returning them.
 
 ## Tree and store
 
@@ -151,33 +156,33 @@ What changed, and why:
 
 | shape | context | create over first half | turns | turn | syncing saves per turn | save p50 | save p99 | log | open | RSS after open |
 |---|---|---|---|---|---|---|---|---|---|---|
-| chatty | 100k (second half stored turn by turn) | 3.80 ms | 27 | 4.76 ms | 10.0 | 283.5 µs | 1.51 ms | 0.5 MB | 2.07 ms | 46 MB |
-| chatty | 1000k (second half stored turn by turn) | 19.96 ms | 267 | 4.16 ms | 10.0 | 235.7 µs | 1.25 ms | 5.4 MB | 12.63 ms | 46 MB |
-| bulky | 100k (second half stored turn by turn) | 1.96 ms | 3 | 3.74 ms | 10.0 | 258.4 µs | 933.2 µs | 0.4 MB | 369.4 µs | 46 MB |
-| bulky | 1000k (second half stored turn by turn) | 5.37 ms | 29 | 3.79 ms | 10.0 | 268.3 µs | 977.8 µs | 4.2 MB | 4.07 ms | 46 MB |
+| chatty | 100k (second half stored turn by turn) | 4.75 ms | 27 | 4.57 ms | 10.0 | 268.5 µs | 1.48 ms | 0.5 MB | 2.08 ms | 4 MB |
+| chatty | 1000k (second half stored turn by turn) | 10.23 ms | 267 | 5.09 ms | 10.0 | 288.7 µs | 1.61 ms | 5.4 MB | 20.46 ms | 11 MB |
+| bulky | 100k (second half stored turn by turn) | 2.77 ms | 3 | 4.23 ms | 10.0 | 311.9 µs | 884.0 µs | 0.4 MB | 588.1 µs | 11 MB |
+| bulky | 1000k (second half stored turn by turn) | 7.49 ms | 29 | 4.48 ms | 10.0 | 306.4 µs | 1.31 ms | 4.2 MB | 6.25 ms | 11 MB |
 
 ### compact: at 1M tokens classify, copy, summarize, move; 5 cycles (chatty, stored)
 
 | cycle | before | after | classify | copy (nodes) | save copy | reload, summarize, move, evict (reloaded) | pause total | next sample walk | log | bodies in memory |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | 1000k | 294k | 5.60 ms | 2.33 ms (1739) | 5.86 ms | 11.38 ms (1739) | 25.17 ms | 14.3 µs | 6.9 MB | 1.2 MB |
-| 2 | 1001k | 342k | 5.28 ms | 1.51 ms (2160) | 5.81 ms | 11.14 ms (2160) | 23.74 ms | 52.5 µs | 12.5 MB | 1.4 MB |
-| 3 | 1000k | 386k | 6.15 ms | 1.38 ms (2550) | 6.55 ms | 10.89 ms (2550) | 24.97 ms | 68.9 µs | 18.1 MB | 1.5 MB |
-| 4 | 1000k | 428k | 4.30 ms | 1.45 ms (2914) | 7.83 ms | 11.57 ms (2914) | 25.15 ms | 231.7 µs | 23.6 MB | 1.7 MB |
-| 5 | 1000k | 467k | 5.46 ms | 1.43 ms (3255) | 7.71 ms | 14.00 ms (3255) | 28.60 ms | 22.3 µs | 29.1 MB | 1.9 MB |
+| 1 | 1000k | 294k | 5.32 ms | 2.20 ms (1739) | 6.16 ms | 7.78 ms (1739) | 21.47 ms | 11.1 µs | 6.9 MB | 1.2 MB |
+| 2 | 1001k | 342k | 5.10 ms | 1.30 ms (2160) | 7.06 ms | 8.33 ms (2160) | 21.77 ms | 91.2 µs | 12.5 MB | 1.4 MB |
+| 3 | 1000k | 386k | 4.67 ms | 1.38 ms (2550) | 7.11 ms | 8.05 ms (2550) | 21.22 ms | 120.9 µs | 18.1 MB | 1.5 MB |
+| 4 | 1000k | 428k | 7.71 ms | 2.17 ms (2914) | 11.37 ms | 13.71 ms (2914) | 34.96 ms | 207.9 µs | 23.6 MB | 1.7 MB |
+| 5 | 1000k | 467k | 5.05 ms | 1.62 ms (3255) | 7.57 ms | 12.58 ms (3255) | 26.82 ms | 24.9 µs | 29.1 MB | 1.9 MB |
 
-Open after 5 cycles: 92.99 ms for 31665 nodes; RSS 41 MB.
+Open after 5 cycles: 59.59 ms for 31665 nodes; RSS 27 MB.
 
 ### cycles: 20 compactions at 1M tokens (chatty, stored), without and with eviction after every save
 
 | cycles | log | nodes | bodies in memory, kept → evicted | RSS, kept → evicted | evict after the move | open | evict on open | bodies after open → evict | RSS after open → evict | peak RSS, open |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | 6.9 MB | 7092 | 5.2 MB → 1.2 MB | 22 MB → 22 MB | 1.47 ms | 24.42 ms | 1.14 ms | 5.2 → 1.2 MB | 12 → 12 MB | 21 MB |
-| 5 | 29.1 MB | 31655 | 21.9 MB → 1.9 MB | 50 MB → 28 MB | 2.88 ms | 109.45 ms | 7.25 ms | 21.9 → 1.9 MB | 40 → 40 MB | 78 MB |
-| 10 | 56.5 MB | 64764 | 42.5 MB → 2.5 MB | 83 MB → 34 MB | 3.41 ms | 236.26 ms | 16.37 ms | 42.5 → 2.5 MB | 74 → 74 MB | 147 MB |
-| 20 | 110.2 MB | 135874 | 83.4 MB → 3.3 MB | 150 MB → 47 MB | 2.93 ms | 372.23 ms | 32.71 ms | 83.4 → 3.3 MB | 141 → 141 MB | 283 MB |
+| 1 | 6.9 MB | 7092 | 5.2 MB → 1.2 MB | 22 MB → 22 MB | 1.94 ms | 18.74 ms | 14.1 µs | 1.2 → 1.2 MB | 5 → 5 MB | 6 MB |
+| 5 | 29.1 MB | 31655 | 21.9 MB → 1.9 MB | 50 MB → 28 MB | 3.62 ms | 56.36 ms | 42.0 µs | 1.9 → 1.9 MB | 8 → 8 MB | 16 MB |
+| 10 | 56.5 MB | 64764 | 42.5 MB → 2.5 MB | 83 MB → 34 MB | 4.46 ms | 145.77 ms | 77.0 µs | 2.5 → 2.5 MB | 12 → 12 MB | 28 MB |
+| 20 | 110.2 MB | 135874 | 83.4 MB → 3.3 MB | 150 MB → 47 MB | 2.61 ms | 192.65 ms | 171.0 µs | 3.3 → 3.3 MB | 17 → 17 MB | 50 MB |
 
-After 20 cycles, a go-to to the tip of the first line: refused in 75.4 µs naming 5350 stored bodies, loaded in 15.54 ms, go-to 40.9 µs; a turn there (walk 68.7 µs). Back to the main line, now evicted too: 6266 bodies loaded in 11.80 ms; evicting the first line again 3.36 ms.
+After 20 cycles, a go-to to the tip of the first line: refused in 66.7 µs naming 5350 stored bodies, loaded in 11.81 ms, go-to 56.9 µs; a turn there (walk 34.0 µs). Back to the main line, now evicted too: 6266 bodies loaded in 7.63 ms; evicting the first line again 3.04 ms.
 
 ### cursors: k cursors branched off recent nodes of one 1M-token session, interleaved
 
