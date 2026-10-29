@@ -1,5 +1,5 @@
-//! What the driver is handed (`Job`) and what it feeds back (`Fed`), with the
-//! types they carry. A driver reads jobs and builds feeds; nothing here decides.
+//! What the driver is handed (`Job`) and what it answers with (`Answer`), with the
+//! types they carry. A driver reads jobs and builds answers; nothing here decides.
 
 use pyo3::prelude::*;
 use tau_core::step;
@@ -75,7 +75,7 @@ impl Draft {
     }
 }
 
-debug_repr!(RunCall, Ending, Job, Fed);
+debug_repr!(RunCall, Ending, Job, Answer);
 
 impl From<step::Draft> for Draft {
     fn from(d: step::Draft) -> Self {
@@ -157,10 +157,10 @@ impl From<step::Job> for Job {
     }
 }
 
-/// Python view of [`step::Fed`].
+/// Python view of [`step::Answer`].
 #[pyclass(frozen, eq, hash, from_py_object, module = "tau_next._core")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Fed {
+pub enum Answer {
     #[pyo3(constructor = (stop = None, draft = None))]
     Hooks {
         stop: Option<String>,
@@ -180,19 +180,19 @@ pub enum Fed {
     },
 }
 
-impl From<Fed> for step::Fed {
-    fn from(f: Fed) -> Self {
+impl From<Answer> for step::Answer {
+    fn from(f: Answer) -> Self {
         match f {
-            Fed::Hooks { stop, draft } => Self::Hooks {
+            Answer::Hooks { stop, draft } => Self::Hooks {
                 stop,
                 draft: draft.map(Into::into),
             },
-            Fed::HookFailed { error } => Self::HookFailed(error),
-            Fed::Sampled { reply, error } => Self::Sampled {
+            Answer::HookFailed { error } => Self::HookFailed(error),
+            Answer::Sampled { reply, error } => Self::Sampled {
                 reply: reply.map(Into::into),
                 error,
             },
-            Fed::CallDone { call, outcome, by } => Self::CallDone {
+            Answer::CallDone { call, outcome, by } => Self::CallDone {
                 call,
                 outcome: outcome.into(),
                 by: by.into(),

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::step::{Fed, Job, Step};
+use crate::step::{Answer, Job, Step};
 use crate::transitions;
 use crate::tree::{Author, Body, Config, CursorId, Error, ItemData, ItemId, Move, NodeId, Session};
 
@@ -60,17 +60,6 @@ impl Machine {
         let id = self.add_item(cursor, data, None)?;
         self.session.sync();
         Ok(id)
-    }
-
-    /// Input plus auto-step on.
-    ///
-    /// # Errors
-    ///
-    /// `NoSuchCursor` if `cursor` is not open.
-    pub fn send(&mut self, cursor: CursorId, client: String, text: &str) -> Result<ItemId, Error> {
-        self.session.at(cursor)?;
-        self.session.auto.insert(cursor, true);
-        self.input(cursor, client, text)
     }
 
     /// `Session.step`: run the phases once with auto-step off.
@@ -327,6 +316,15 @@ impl Machine {
         }
     }
 
+    /// Where in `Session::moves` the cursor's current step began; the end of
+    /// them when it has none.
+    #[must_use]
+    pub fn step_start(&self, cursor: CursorId) -> usize {
+        self.steps
+            .get(&cursor)
+            .map_or(self.session.moves.len(), Step::first_move)
+    }
+
     /// `cursor.moves(since_step=True)` for the cursor's current step.
     pub fn moves_since_step(&self, cursor: CursorId) -> impl Iterator<Item = &Move> {
         self.steps
@@ -368,20 +366,20 @@ impl Machine {
         }
     }
 
-    /// Feed the result of the job last handed out for `cursor`.
+    /// Answer the job last handed out for `cursor`.
     ///
     /// # Errors
     ///
-    /// `NoSuchCursor` if `cursor` is not open; what the step's `feed` returns;
-    /// `WrongFeed` if no step exists for `cursor`.
-    pub fn feed(&mut self, cursor: CursorId, fed: Fed, now: u64) -> Result<(), Error> {
-        let _span = tracing::info_span!("core.feed", cursor).entered();
+    /// `NoSuchCursor` if `cursor` is not open; what the step's `answer` returns;
+    /// `WrongAnswer` if no step exists for `cursor`.
+    pub fn answer(&mut self, cursor: CursorId, answer: Answer, now: u64) -> Result<(), Error> {
+        let _span = tracing::info_span!("core.answer", cursor).entered();
         self.session.at(cursor)?;
         let step = self
             .steps
             .get_mut(&cursor)
-            .ok_or(Error::WrongFeed(cursor))?;
-        step.feed(&mut self.session, fed, now)
+            .ok_or(Error::WrongAnswer(cursor))?;
+        step.answer(&mut self.session, answer, now)
     }
 
     /// The sync a call owes on return. Only a call made from the cursor hook

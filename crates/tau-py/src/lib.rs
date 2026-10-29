@@ -7,13 +7,14 @@ mod session;
 mod tools;
 mod trace;
 mod values;
+mod view;
 
 use pyo3::prelude::*;
 
 #[pymodule(gil_used = false)]
 mod _core {
     #[pymodule_export]
-    use super::job::{Draft, Ending, Fed, Hook, Job, RunCall};
+    use super::job::{Answer, Draft, Ending, Hook, Job, RunCall};
     #[pymodule_export]
     use super::session::Session;
     #[pymodule_export]
@@ -22,8 +23,10 @@ mod _core {
     use super::trace::{stop_trace, trace_clock, trace_to};
     #[pymodule_export]
     use super::values::{
-        Author, Body, Config, Item, ItemData, Move, Next, Node, Outcome, Part, Scratchpad, Stop,
+        Author, Body, Config, Item, ItemData, Move, Next, Node, Outcome, Part, Stop,
     };
+    #[pymodule_export]
+    use super::view::{CursorState, Tree};
 
     #[pymodule_init]
     fn init(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {

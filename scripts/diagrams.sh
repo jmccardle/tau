@@ -47,7 +47,7 @@ cargo run -q --release --locked --manifest-path "$D/shapes/Cargo.toml" -- \
     crates/tau-core/src/tree.rs:Session crates/tau-core/src/tree.rs:Outcome \
     crates/tau-core/src/tree.rs:Part crates/tau-core/src/machine.rs:Machine \
     crates/tau-core/src/step.rs:Step crates/tau-core/src/step.rs:Job \
-    crates/tau-core/src/step.rs:Fed crates/tau-core/src/step.rs:Pos \
+    crates/tau-core/src/step.rs:Answer crates/tau-core/src/step.rs:Pos \
     >"$TMP/types.json"
 "$PY" -I "$D/type_diagrams.py" "$TMP/types.json" "$GEN"
 

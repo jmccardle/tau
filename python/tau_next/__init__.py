@@ -3,6 +3,7 @@
 from importlib.metadata import version
 
 from tau_next._core import (
+    Answer,
     Author,
     BadRecord,
     Body,
@@ -10,11 +11,11 @@ from tau_next._core import (
     Closed,
     Config,
     Corrupt,
+    CursorState,
     Draft,
     DuplicateCall,
     Ending,
     Exists,
-    Fed,
     Hook,
     Item,
     ItemData,
@@ -34,12 +35,12 @@ from tau_next._core import (
     Part,
     Poisoned,
     RunCall,
-    Scratchpad,
     Session,
     Stop,
     TraceError,
+    Tree,
     Version,
-    WrongFeed,
+    WrongAnswer,
 )
 from tau_next.base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
 from tau_next.clock import SystemClock
@@ -63,6 +64,7 @@ from tau_next.tools import FunctionTool, ToolDefinitionError, ToolError, tool
 __version__ = version("ffwf-tau-next")
 
 __all__ = [
+    "Answer",
     "Author",
     "BadRecord",
     "BashTool",
@@ -76,13 +78,13 @@ __all__ = [
     "Corrupt",
     "Cursor",
     "CursorHook",
+    "CursorState",
     "Draft",
     "Driver",
     "DuplicateCall",
     "Ending",
     "Exists",
     "Extension",
-    "Fed",
     "Finish",
     "FunctionTool",
     "GrepTool",
@@ -112,7 +114,6 @@ __all__ = [
     "ReadTool",
     "RunCall",
     "SampleError",
-    "Scratchpad",
     "Session",
     "StepLimit",
     "Stop",
@@ -124,10 +125,11 @@ __all__ = [
     "ToolError",
     "ToolHook",
     "TraceError",
+    "Tree",
     "TreeHandle",
     "Version",
     "WriteTool",
-    "WrongFeed",
+    "WrongAnswer",
     "__version__",
     "base_tools",
     "tool",

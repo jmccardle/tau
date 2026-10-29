@@ -31,7 +31,7 @@ PASSES = 10_000
 
 
 @dataclass(frozen=True)
-class CursorState:
+class CursorSeen:
     at: int
     walk: tuple[Body, ...]
     items: tuple[Item, ...]
@@ -45,7 +45,7 @@ class Snapshot:
     """Everything a test may compare: the tree, each cursor, and the notices so far."""
 
     tree: tuple[tuple[int, int | None, Author, Body], ...]
-    cursors: dict[int, CursorState]
+    cursors: dict[int, CursorSeen]
     notices: tuple[tuple[str, str], ...]
 
 
@@ -137,8 +137,8 @@ class Harness:
     async def set_auto(self, on: bool, cursor: int | None = None) -> None:
         self.driver.set_auto(self._c(cursor), on)
 
-    async def answer(self, answer: str | None, cursor: int | None = None) -> None:
-        self.driver.answer(self._c(cursor), answer)
+    async def respond(self, response: str | None, cursor: int | None = None) -> None:
+        self.driver.respond(self._c(cursor), response)
 
     async def add_item(self, name: str, data: str, cursor: int | None = None) -> int:
         """An extension's item for the cursor: wakes it."""
@@ -175,7 +175,7 @@ class Harness:
         return sum(g.held for g in gates) + self.driver.open_questions
 
     async def crash(self) -> None:
-        """Drop memory, keep disk: cancel every task without feeding, close the
+        """Drop memory, keep disk: cancel every task without answering, close the
         session unsynced, reopen it, and start a new driver on the same fakes."""
         await self.driver.stop()
         self.session.close()
@@ -189,32 +189,32 @@ class Harness:
     # Snapshots
 
     def nodes(self) -> list[Node]:
-        return [self.session.node(i) for i in range(self.session.node_count())]
+        return [self.session.tree.node(i) for i in range(len(self.session.tree))]
 
     def bodies(self, cursor: int | None = None) -> list[Body]:
         c = self._c(cursor)
-        return [n.body for n in self.session.walk(self.session.at(c))]
+        return [n.body for n in self.session.tree.walk(self.session.cursor(c).at)]
 
     def notices(self) -> list[tuple[str, str]]:
         """Every notice so far, oldest first."""
         self._notices += self.session.take_notices()
         return list(self._notices)
 
+    def _seen(self, cursor: int) -> CursorSeen:
+        state = self.session.cursor(cursor)
+        return CursorSeen(
+            at=state.at,
+            walk=tuple(self.bodies(cursor)),
+            items=tuple(state.items),
+            labels=tuple(state.labels),
+            auto=state.auto,
+            busy=state.busy,
+        )
+
     def snapshot(self) -> Snapshot:
-        s = self.session
         return Snapshot(
             tree=tuple((n.id, n.parent, n.by, n.body) for n in self.nodes()),
-            cursors={
-                c: CursorState(
-                    at=s.at(c),
-                    walk=tuple(self.bodies(c)),
-                    items=tuple(s.items(c)),
-                    labels=tuple(s.labels_of(c)),
-                    auto=s.auto(c),
-                    busy=s.busy(c),
-                )
-                for c in s.cursors()
-            },
+            cursors={c: self._seen(c) for c in self.session.cursors()},
             notices=tuple(self.notices()),
         )
 

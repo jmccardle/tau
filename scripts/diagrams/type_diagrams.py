@@ -11,7 +11,7 @@ import re
 import sys
 from pathlib import Path
 
-SHOWN = ["Body", "Node", "Session", "Machine", "Step", "Job", "Fed", "Outcome", "Part"]
+SHOWN = ["Body", "Node", "Session", "Machine", "Step", "Job", "Answer", "Outcome", "Part"]
 
 
 def esc(text: str) -> str:

@@ -74,7 +74,7 @@ async def test_a_pre_reply_move_chooses_where_the_reply_lands(tmp_path: Path) ->
     assert h.bodies() == [*SYSTEM, Body.Assistant([Part.Text("hello")], Stop.End)]
     assert h.nodes()[2].body == Body.User("hi"), "the input is a side node now"
     assert h.nodes()[3].parent == SYS, "a branch: a sibling of the input"
-    moves = [(m.from_, m.to, m.by) for m in h.session.moves_of(h.cursor)]
+    moves = [(m.from_, m.to, m.by) for m in h.session.cursor(h.cursor).moves]
     assert (2, SYS, Author.Extension("nav")) in moves
     assert [(m.to, m.by) for m in seen[0] if m.from_ == 2] == [(SYS, Author.Extension("nav"))], (
         "a later hook sees the move in the same step"
@@ -101,7 +101,7 @@ async def test_a_hook_moves_to_a_node_that_does_not_exist_and_fails_the_step(
     await h.step()
     await h.settle()
     assert len(raised) == 1
-    assert h.session.at(h.cursor) == SYS
+    assert h.session.cursor(h.cursor).at == SYS
     assert recorder.endings == [Ending.Failed("no node 999")]
 
 
@@ -126,10 +126,10 @@ async def test_an_extension_writes_a_custom_node_that_delivers_its_item(tmp_path
     node = h.nodes()[2]
     assert node.by == Author.Extension("notes")
     assert node.delivers == [item]
-    assert h.session.items(h.cursor) == []
-    assert h.session.next(h.cursor) == tau_next.Next.Wait
+    assert h.session.cursor(h.cursor).items == []
+    assert h.session.cursor(h.cursor).next == tau_next.Next.Wait
     assert provider.requests == [], "a Custom node never reaches the model, and starts no sample"
-    assert h.session.at(h.cursor) == node.id
+    assert h.session.cursor(h.cursor).at == node.id
 
 
 @scenario
@@ -162,8 +162,8 @@ async def test_an_append_leaves_every_cursor_where_it_is(tmp_path: Path) -> None
     h = await Harness.create(tmp_path, extensions=[Scripted("side", post_step=side)])
     await h.step()
     await h.settle()
-    assert h.session.at(h.cursor) == SYS
-    node = h.session.node(made[0])
+    assert h.session.cursor(h.cursor).at == SYS
+    node = h.session.tree.node(made[0])
     assert (node.parent, node.by, node.body) == (
         SYS,
         Author.Extension("side"),
@@ -191,7 +191,7 @@ async def test_a_hook_opens_a_cursor_and_labels_it_and_the_label_survives_a_relo
     await h.settle()
     other = opened[0]
     assert h.session.label("worker") == other
-    assert h.session.labels_of(other) == ["worker"]
+    assert h.session.cursor(other).labels == ["worker"]
     assert ran.points.count("pre_step") == 2, "the opened cursor woke and ran its own step"
     await h.crash()
     assert h.session.label("worker") == other
@@ -218,10 +218,10 @@ async def test_a_hook_removes_an_item_without_waking_anything(tmp_path: Path) ->
     h = await Harness.create(tmp_path, extensions=[Scripted("purge", pre_step=purge), recorder])
     await h.add_item("other", "keep?")
     await h.settle()
-    assert h.session.items(h.cursor) == []
+    assert h.session.cursor(h.cursor).items == []
     assert len(refused) == 1
     assert recorder.points.count("pre_step") == 1, "the removal woke nothing"
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).busy
 
 
 @scenario
@@ -251,7 +251,7 @@ async def test_a_hook_turns_auto_step_back_on_after_a_crash(tmp_path: Path) -> N
         Body.User("hi"),
         Body.Assistant([Part.Text("hello")], Stop.End),
     ]
-    assert h.session.auto(h.cursor), "and it stays on"
+    assert h.session.cursor(h.cursor).auto, "and it stays on"
 
 
 @scenario
@@ -355,11 +355,13 @@ async def test_a_tool_hook_writes_through_its_node_handle(tmp_path: Path) -> Non
     )
     await h.send("go")
     await h.settle()
-    audit = h.session.node(wrote[0])
+    audit = h.session.tree.node(wrote[0])
     assert audit.body == Body.Custom("audit", "echo")
     assert audit.by == Author.Extension("audit")
     assert audit.parent == 3, "under the Assistant node holding the batch"
-    assert audit.id not in [n.id for n in h.session.walk(h.session.at(h.cursor))], "a side node"
+    assert audit.id not in [n.id for n in h.session.tree.walk(h.session.cursor(h.cursor).at)], (
+        "a side node"
+    )
 
 
 @scenario
@@ -375,14 +377,14 @@ async def test_a_frontend_go_to_while_a_cursor_hook_runs_aborts_and_moves_after_
     await h.settle()
     assert gate.held == 1
     assert not await h.go_to(0), "nothing to cancel: a hook is never cancelled"
-    assert h.session.at(h.cursor) == SYS, "the move waits for the step to end"
+    assert h.session.cursor(h.cursor).at == SYS, "the move waits for the step to end"
     gate.release()
     await h.settle()
     assert recorder.endings[0] == Ending.Aborted()
-    assert h.session.at(h.cursor) == 0
-    assert h.session.moves_of(h.cursor)[-1].by == Author.Frontend("term")
-    assert not h.session.auto(h.cursor)
-    assert [i.data for i in h.session.items(h.cursor)] == [ItemData.Input("term", "hi")], (
+    assert h.session.cursor(h.cursor).at == 0
+    assert h.session.cursor(h.cursor).moves[-1].by == Author.Frontend("term")
+    assert not h.session.cursor(h.cursor).auto
+    assert [i.data for i in h.session.cursor(h.cursor).items] == [ItemData.Input("term", "hi")], (
         "the input stays pending"
     )
 
@@ -391,11 +393,11 @@ async def test_a_frontend_go_to_while_a_cursor_hook_runs_aborts_and_moves_after_
 async def test_a_frontend_go_to_during_a_question_declines_it_then_moves(tmp_path: Path) -> None:
     """Section 7: a question is a hook awaiting; a go-to aborts that step through the
     abort path and declines the question, so the hook finishes with `None`."""
-    answers: list[str | None] = []
+    responses: list[str | None] = []
 
     async def ask(cursor: Cursor, subject: Subject) -> str | None:
-        if not answers:
-            answers.append(await cursor.ask("term", "ok?"))
+        if not responses:
+            responses.append(await cursor.ask("term", "ok?"))
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("asker", pre_step=ask)])
@@ -404,19 +406,19 @@ async def test_a_frontend_go_to_during_a_question_declines_it_then_moves(tmp_pat
     assert h.driver.open_questions == 1
     assert not await h.go_to(0), "nothing to cancel: the hook finishes"
     await h.settle()
-    assert answers == [None], "declined"
+    assert responses == [None], "declined"
     assert h.driver.open_questions == 0
-    assert h.session.at(h.cursor) == 0
+    assert h.session.cursor(h.cursor).at == 0
 
 
 @scenario
 async def test_an_abort_during_a_question_declines_it(tmp_path: Path) -> None:
     """Section 8: abort never cancels a hook; it declines the hook's open question, so the
     hook finishes and `post_step` gets `Aborted`."""
-    answers: list[str | None] = []
+    responses: list[str | None] = []
 
     async def ask(cursor: Cursor, subject: Subject) -> str | None:
-        answers.append(await cursor.ask("term", "send it?"))
+        responses.append(await cursor.ask("term", "send it?"))
         return None
 
     recorder = Recorder()
@@ -426,10 +428,10 @@ async def test_an_abort_during_a_question_declines_it(tmp_path: Path) -> None:
     assert [q.text for q in h.driver.questions(h.cursor)] == ["send it?"]
     assert not await h.abort(), "nothing to cancel: the hook finishes"
     await h.settle()
-    assert answers == [None]
+    assert responses == [None]
     assert h.driver.questions(h.cursor) == []
     assert recorder.endings == [Ending.Aborted()]
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).busy
 
 
 @scenario
@@ -471,9 +473,9 @@ async def test_a_post_reply_note_does_not_strand_the_tool_batch(tmp_path: Path) 
     )
     await h.send("go")
     await h.settle()
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).busy
     assert batch_nodes == [3], "the handle names the Assistant node, not the note"
-    assert h.session.node(3).body == Body.Assistant([Part.Call("1", "echo", "{}")], Stop.Tools)
+    assert h.session.tree.node(3).body == Body.Assistant([Part.Call("1", "echo", "{}")], Stop.Tools)
     assert h.bodies()[-5:] == [  # the hook writes a note after each reply
         Body.Assistant([Part.Call("1", "echo", "{}")], Stop.Tools),
         Body.Custom("note", "n"),
@@ -505,7 +507,7 @@ async def test_a_handle_from_an_earlier_hook_is_refused_in_a_later_one(tmp_path:
     assert gate.held == 1, "the second step's hook is running"
     with pytest.raises(tau_next.NotInHook):
         kept[0].move(0)
-    assert h.session.at(h.cursor) == SYS
+    assert h.session.cursor(h.cursor).at == SYS
     gate.release()
     await h.settle()
 
@@ -548,7 +550,7 @@ async def test_a_write_cannot_deliver_another_cursors_item(tmp_path: Path) -> No
     await h.step()
     await h.settle()
     assert refused == [tau_next.NotPending]
-    assert len(h.session.items(victim)) == 1
+    assert len(h.session.cursor(victim).items) == 1
     assert h.bodies() == SYSTEM
 
 
@@ -570,7 +572,7 @@ async def test_an_input_a_hook_delivered_itself_is_not_delivered_twice(tmp_path:
     await h.send("hi")
     await h.settle()
     assert h.bodies() == [*SYSTEM, Body.Custom("seen", "")]
-    assert h.session.items(h.cursor) == []
+    assert h.session.cursor(h.cursor).items == []
     assert provider.requests == []
     assert [n.delivers for n in h.nodes()[2:]] == [[0]]
 
@@ -598,10 +600,10 @@ async def test_a_lost_pre_hook_write_is_lost_with_its_commit(tmp_path: Path) -> 
     await h.send("hi")
     await h.settle()
     assert gate.held == 1
-    assert h.session.node_count() == 4, "in memory: system, the input, and the note"
+    assert len(h.session.tree) == 4, "in memory: system, the input, and the note"
     await h.crash()
     await h.settle()
-    assert h.session.node_count() == 2, "neither the note nor the input survived"
+    assert len(h.session.tree) == 2, "neither the note nor the input survived"
     assert h.bodies() == SYSTEM
 
 
@@ -658,9 +660,9 @@ async def test_a_pre_reply_draft_delivering_a_non_pending_item_fails_the_step(
     await h.settle()
     assert recorder.endings == [Ending.Failed("item 999 is not pending for that cursor")]
     assert h.bodies() == [*SYSTEM, Body.User("hi")], "the input committed; the reply did not"
-    assert h.session.items(h.cursor) == []
-    assert not h.session.auto(h.cursor)
-    assert not h.session.busy(h.cursor)
+    assert h.session.cursor(h.cursor).items == []
+    assert not h.session.cursor(h.cursor).auto
+    assert not h.session.cursor(h.cursor).busy
 
 
 @scenario
@@ -683,7 +685,7 @@ async def test_a_pre_sample_answer_delivering_a_non_pending_item_fails_the_step(
     assert recorder.endings == [Ending.Failed("item 999 is not pending for that cursor")]
     assert provider.requests == [], "the hook answered the sample"
     assert h.bodies() == [*SYSTEM, Body.User("hi")]
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).busy
 
 
 @scenario
@@ -712,10 +714,10 @@ async def test_an_input_draft_delivering_a_foreign_item_fails_the_step_and_does_
     await h.send("hi")
     await h.settle()
     assert recorder.endings[-1] == Ending.Failed("item 0 is not pending for that cursor")
-    assert not h.session.auto(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
     assert h.bodies() == SYSTEM
-    assert len(h.session.items(h.cursor)) == 1, "the input is still pending"
-    assert len(h.session.items(other)) == 1
+    assert len(h.session.cursor(h.cursor).items) == 1, "the input is still pending"
+    assert len(h.session.cursor(other).items) == 1
     runs = recorder.points.count("pre_input")
     h.clock.advance(1_000)
     await h.settle()
@@ -791,7 +793,7 @@ async def test_a_hook_that_delivers_the_offered_input_but_keeps_the_draft_fails_
     assert isinstance(ending, Ending.Failed)
     assert "not pending" in ending.error
     assert Body.User("hi") not in h.bodies()
-    assert not h.session.auto(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
 
 
 @scenario
@@ -823,13 +825,13 @@ async def test_a_hook_appends_a_detached_root_without_moving_any_cursor(tmp_path
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("d", pre_step=detach)])
-    at = h.session.at(h.cursor)
+    at = h.session.cursor(h.cursor).at
     await h.step()
     await h.settle()
     (root,) = made
-    node = h.session.node(root)
+    node = h.session.tree.node(root)
     assert node.parent is None
     assert node.body == Body.Config(Config("detached"))
     assert node.by == Author.Extension("d")
-    assert h.session.at(h.cursor) == at
-    assert h.session.lca(root, at) is None
+    assert h.session.cursor(h.cursor).at == at
+    assert h.session.tree.lca(root, at) is None

@@ -46,7 +46,7 @@ async def test_system_and_user_become_messages_and_config_nodes_are_skipped(
     await h.step()
     await h.settle()
     url, headers, body = OpenAIProvider(environ={}).request(
-        h.session.walk(h.session.at(h.cursor))[:-1], CONFIG, []
+        h.session.tree.walk(h.session.cursor(h.cursor).at)[:-1], CONFIG, []
     )
     assert url == f"{BASE_URL}/chat/completions"
     assert headers == {}
@@ -81,7 +81,7 @@ async def test_an_answered_batch_becomes_tool_calls_and_one_tool_message_per_out
     h = await Harness.create(tmp_path, provider=FakeProvider(script), tools=tools)
     await h.send("go")
     await h.settle()
-    walk = h.session.walk(h.session.at(h.cursor))
+    walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
     assert isinstance(walk[-1].body, Body.Assistant), "the second reply is last"
     _, _, body = OpenAIProvider(environ={}).request(walk[:-1], CONFIG, [])
     assert sent(body)[2:] == [
@@ -124,7 +124,7 @@ async def test_an_unanswered_batch_is_rendered_as_text_never_as_tool_calls(
     await h.settle()
     await h.step()
     await h.settle()
-    walk = h.session.walk(h.session.at(h.cursor))[:-1]
+    walk = h.session.tree.walk(h.session.cursor(h.cursor).at)[:-1]
     _, _, body = OpenAIProvider(environ={}).request(walk, CONFIG, [])
     assert sent(body)[2:] == [
         {"role": "assistant", "content": 'checking\n[tool call a: ta {"p": 1}]'},
@@ -142,7 +142,7 @@ async def test_a_cut_off_reply_with_calls_says_why_it_stopped(tmp_path: Path) ->
     await h.settle()
     await h.step()
     await h.settle()
-    walk = h.session.walk(h.session.at(h.cursor))
+    walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
     _, _, body = OpenAIProvider(environ={}).request(walk, CONFIG, [])
     assert sent(body)[1:] == [
         {"role": "user", "content": "look"},
@@ -161,7 +161,7 @@ async def test_results_that_answer_no_batch_become_a_user_message(tmp_path: Path
     await h.settle()
     await h.step()
     await h.settle()
-    walk = h.session.walk(h.session.at(h.cursor))
+    walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
     assert isinstance(walk[-1].body, Body.Results)
     _, _, body = OpenAIProvider(environ={}).request(walk, CONFIG, [])
     assert sent(body)[-1] == {"role": "user", "content": "[tool result zz: v]"}
@@ -172,7 +172,7 @@ async def test_results_that_answer_no_batch_become_a_user_message(tmp_path: Path
 async def test_the_key_is_read_from_the_named_variable_at_sample_time(tmp_path: Path) -> None:
     config = ModelConfig(MODEL, BASE_URL, KEY_ENV).to_config()
     h = await Harness.create(tmp_path, config=config)
-    walk = h.session.walk(h.session.at(h.cursor))
+    walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
     environ = {KEY_ENV: SECRET}
     _, headers, _ = OpenAIProvider(environ=environ).request(walk, config, [])
     assert headers == {"Authorization": f"Bearer {SECRET}"}

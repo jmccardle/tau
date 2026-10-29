@@ -25,7 +25,7 @@ Now = Callable[[], int]
 """The driver's clock, in milliseconds."""
 
 Asker = Callable[[int, str, str], Awaitable[str | None]]
-"""The driver's question call: `(cursor, target, question) -> answer or None`."""
+"""The driver's question call: `(cursor, target, question) -> response or None`."""
 
 
 @dataclass
@@ -95,25 +95,25 @@ class TreeHandle:
     # Reads
 
     def get_node(self, id: int) -> Node:
-        return self._session.node(id)
+        return self._session.tree.node(id)
 
     def lca(self, a: int, b: int) -> int | None:
-        return self._session.lca(a, b)
+        return self._session.tree.lca(a, b)
 
     def cursors(self) -> list[int]:
         return self._session.cursors()
 
     def cursor_at(self, cursor: int) -> int:
-        return self._session.at(cursor)
+        return self._session.cursor(cursor).at
 
     def items_of(self, cursor: int) -> list[Item]:
-        return self._session.items(cursor)
+        return self._session.cursor(cursor).items
 
-    def moves_of(self, cursor: int, since: int = 0) -> list[Move]:
-        return self._session.moves_of(cursor, since)
+    def moves_of(self, cursor: int) -> list[Move]:
+        return self._session.cursor(cursor).moves
 
     def labels_of(self, cursor: int) -> list[str]:
-        return self._session.labels_of(cursor)
+        return self._session.cursor(cursor).labels
 
     def label(self, label: str) -> int:
         """The cursor `label` is on; raises `NoSuchLabel`."""
@@ -125,11 +125,11 @@ class TreeHandle:
 
     def children(self, node: int) -> list[int]:
         """The children of `node`, in append order."""
-        return self._session.children(node)
+        return self._session.tree.children(node)
 
     def node_count(self) -> int:
         """How many nodes the session has; ids are `0..node_count()`."""
-        return self._session.node_count()
+        return len(self._session.tree)
 
     # Writes
 
@@ -185,13 +185,13 @@ class NodeHandle(TreeHandle):
 
     @property
     def node(self) -> Node:
-        return self._session.node(self.id)
+        return self._session.tree.node(self.id)
 
     def walk(self) -> list[Node]:
-        return self._session.walk(self.id)
+        return self._session.tree.walk(self.id)
 
     def config(self) -> Config:
-        return self._session.config_at(self.id)
+        return self._session.tree.config_at(self.id)
 
 
 class Cursor(TreeHandle):
@@ -219,33 +219,33 @@ class Cursor(TreeHandle):
 
     @property
     def at(self) -> int:
-        return self._session.at(self.id)
+        return self._session.cursor(self.id).at
 
     @property
     def auto(self) -> bool:
-        return self._session.auto(self.id)
+        return self._session.cursor(self.id).auto
 
     def node(self, id: int | None = None) -> Node:
-        return self._session.node(self.at if id is None else id)
+        return self._session.tree.node(self.at if id is None else id)
 
     def walk(self) -> list[Node]:
-        return self._session.walk(self.at)
+        return self._session.tree.walk(self.at)
 
     def config(self) -> Config:
-        return self._session.config_at(self.at)
+        return self._session.tree.config_at(self.at)
 
     def items(self) -> list[Item]:
-        return self._session.items(self.id)
+        return self._session.cursor(self.id).items
 
     def labels(self) -> list[str]:
-        return self._session.labels_of(self.id)
+        return self._session.cursor(self.id).labels
 
     def moves(self, *, since_step: bool = False) -> list[Move]:
         """This cursor's move records; with `since_step`, only those since the
         running step woke (other hooks' moves included)."""
         if since_step:
-            return self._session.moves_since_step(self.id)
-        return self._session.moves_of(self.id)
+            return self._session.cursor(self.id).moves_since_step
+        return self._session.cursor(self.id).moves
 
     def move(self, to: int) -> None:
         """Move to `to` at once; later hooks see the new `at`. Raises `NoSuchNode`."""
@@ -265,7 +265,7 @@ class Cursor(TreeHandle):
         self._session.hook_set_auto(self.id, on)
 
     async def ask(self, target: str, question: str) -> str | None:
-        """Wait for the answer, or `None` if declined. The hook's job stays out
+        """Wait for the response, or `None` if declined. The hook's job stays out
         meanwhile, so the cursor is busy; an abort or go-to declines it."""
         self._check()
         return await self._asker(self.id, target, question)

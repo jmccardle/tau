@@ -6,7 +6,7 @@
 //! stderr as a tab-separated `TAU-TRANSITION` line. A scenario is the test
 //! thread's name (a `cargo test` test), or the name given to [`scenario`].
 
-use crate::step::{Ending, Fed, Job};
+use crate::step::{Answer, Ending, Job};
 
 #[cfg(feature = "transitions")]
 mod on {
@@ -75,15 +75,15 @@ pub(crate) fn event(label: &str) {
     let _ = label;
 }
 
-/// The event is now this feed, without its payload.
-pub(crate) fn fed(fed: &Fed) {
+/// The event is now this answer, without its payload.
+pub(crate) fn answered(answer: &Answer) {
     #[cfg(feature = "transitions")]
-    on::set_event(match fed {
-        Fed::Hooks { stop: Some(_), .. } => "feed Hooks(stop)".into(),
-        Fed::Hooks { .. } => "feed Hooks".into(),
-        Fed::HookFailed(_) => "feed HookFailed".into(),
-        Fed::Sampled { reply, error } => format!(
-            "feed Sampled({})",
+    on::set_event(match answer {
+        Answer::Hooks { stop: Some(_), .. } => "answer Hooks(stop)".into(),
+        Answer::Hooks { .. } => "answer Hooks".into(),
+        Answer::HookFailed(_) => "answer HookFailed".into(),
+        Answer::Sampled { reply, error } => format!(
+            "answer Sampled({})",
             match (reply.is_some(), error.is_some()) {
                 (true, true) => "reply, error",
                 (true, false) => "reply",
@@ -91,10 +91,10 @@ pub(crate) fn fed(fed: &Fed) {
                 (false, false) => "none",
             }
         ),
-        Fed::CallDone { .. } => "feed CallDone".into(),
+        Answer::CallDone { .. } => "answer CallDone".into(),
     });
     #[cfg(not(feature = "transitions"))]
-    let _ = fed;
+    let _ = answer;
 }
 
 /// Add the step's ending to the event.

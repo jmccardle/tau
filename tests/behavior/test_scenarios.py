@@ -41,10 +41,10 @@ async def test_a_plain_turn(tmp_path: Path) -> None:
     await h.send("hi")
     await h.settle()
     assert h.bodies() == [*SYSTEM, Body.User("hi"), Body.Assistant([Part.Text("hello")], Stop.End)]
-    assert h.session.items(h.cursor) == []
+    assert h.session.cursor(h.cursor).items == []
     assert provider.requests[0].walk == (0, 1, 2)
     assert provider.requests[0].config == Config("{}")
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).busy
 
 
 @scenario
@@ -120,7 +120,7 @@ async def test_abort_during_a_sample_commits_the_partial_reply(tmp_path: Path) -
     assert h.bodies()[-1] == Body.Assistant([Part.Text("hel")], Stop.Interrupted)
     assert recorder.points.count("post_reply") == 1
     assert recorder.endings == [Ending.Aborted()]
-    assert not h.session.auto(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
 
 
 @scenario
@@ -160,7 +160,7 @@ async def test_a_crash_during_a_sample_redelivers_the_input_once(tmp_path: Path)
     await h.crash()
     await h.settle()
     assert h.bodies() == SYSTEM, "the unsynced input node is gone"
-    assert [i.data for i in h.session.items(h.cursor)] == [ItemData.Input("term", "hi")]
+    assert [i.data for i in h.session.cursor(h.cursor).items] == [ItemData.Input("term", "hi")]
     await h.step()
     await h.settle()
     assert h.bodies() == [
@@ -168,7 +168,7 @@ async def test_a_crash_during_a_sample_redelivers_the_input_once(tmp_path: Path)
         Body.User("hi"),
         Body.Assistant([Part.Text("hello")], Stop.End),
     ]
-    assert h.session.items(h.cursor) == []
+    assert h.session.cursor(h.cursor).items == []
     assert len(provider.requests) == 2
 
 
@@ -184,7 +184,7 @@ async def crashed_mid_batch(tmp_path: Path) -> tuple[Harness, FakeTool, FakeTool
     await h.crash()
     await h.settle()
     assert isinstance(h.bodies()[-1], Body.Assistant), "rests at the batch"
-    assert not h.session.auto(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
     gate.release()
     return h, ta, tb, provider
 
@@ -235,7 +235,7 @@ async def test_a_go_to_on_a_busy_cursor_aborts_then_moves(tmp_path: Path) -> Non
     assert gate.held == 1
     assert await h.go_to(1), "the sample in flight is cancelled"
     await h.settle()
-    assert h.session.at(h.cursor) == 1, "moved after post_step"
+    assert h.session.cursor(h.cursor).at == 1, "moved after post_step"
     assert recorder.endings == [
         Ending.Aborted(),
         Ending.Done(),
@@ -248,8 +248,8 @@ async def test_a_go_to_on_a_busy_cursor_aborts_then_moves(tmp_path: Path) -> Non
         "pre_step",  # the go-to's wake, auto-step off
         "post_step",
     ]
-    assert not h.session.auto(h.cursor)
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
+    assert not h.session.cursor(h.cursor).busy
     assert len(h.nodes()) == 3, "the input is committed; the reply never was"
 
 
@@ -267,11 +267,11 @@ async def test_a_reply_naming_a_call_id_twice_fails_the_step_and_changes_nothing
     )
     await h.send("go")
     await h.settle()
-    assert not h.session.busy(h.cursor), "the step ended"
+    assert not h.session.cursor(h.cursor).busy, "the step ended"
     assert recorder.endings == [Ending.Failed("a node names a call id twice")]
     assert h.bodies() == [*SYSTEM, Body.User("go")], "the reply was not written"
     assert tool.calls == []
-    assert not h.session.auto(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
 
 
 @scenario
@@ -283,8 +283,8 @@ async def test_a_pre_input_string_refuses_with_a_notice(tmp_path: Path) -> None:
     await h.send("/model fast")
     await h.settle()
     assert h.notices() == [("term", "model: fast")]
-    assert h.session.items(h.cursor) == []
-    assert not h.session.auto(h.cursor)
+    assert h.session.cursor(h.cursor).items == []
+    assert not h.session.cursor(h.cursor).auto
     assert h.bodies() == SYSTEM
     assert recorder.endings == [Ending.Halted("model: fast")]
     assert provider.requests == []
@@ -382,7 +382,7 @@ async def test_an_item_added_while_busy_causes_one_more_step(tmp_path: Path) -> 
     await h.add_item("timer", "tick")
     await h.settle()
     assert recorder.points.count("pre_step") == 2, "the item left in place does not spin"
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).busy
 
 
 @scenario
@@ -403,10 +403,10 @@ async def test_a_hook_that_declines_every_input_runs_one_step_and_auto_step_goes
     await h.settle()
     assert recorder.points.count("pre_step") == 1
     assert recorder.points.count("pre_input") == 1
-    assert not h.session.auto(h.cursor)
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
+    assert not h.session.cursor(h.cursor).busy
     assert h.bodies() == SYSTEM
-    assert [i.data for i in h.session.items(h.cursor)] == [ItemData.Input("term", "hi")]
+    assert [i.data for i in h.session.cursor(h.cursor).items] == [ItemData.Input("term", "hi")]
     assert provider.requests == []
 
 
@@ -432,7 +432,7 @@ async def test_a_hook_that_discards_the_reply_runs_one_step_and_auto_step_goes_o
     await h.settle()
     assert recorder.points.count("pre_step") == steps + 1
     assert len(provider.requests) == samples + 1
-    assert not h.session.auto(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
     assert h.bodies() == [*SYSTEM, Body.User("hi")], "no reply was ever written"
 
 
@@ -449,24 +449,24 @@ async def test_a_tool_loop_runs_sample_tools_sample_without_delay(tmp_path: Path
     assert len(provider.requests) == 2
     assert recorder.points.count("pre_step") == 2
     assert h.clock.now() == start
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).busy
 
 
 @scenario
-async def test_a_question_holds_its_step_until_it_is_answered(tmp_path: Path) -> None:
-    """A question is a hook awaiting its answer: the hook's job stays out, so the cursor
+async def test_a_question_holds_its_step_until_it_is_responded_to(tmp_path: Path) -> None:
+    """A question is a hook awaiting its response: the hook's job stays out, so the cursor
     is busy. Core's rules for a busy cursor apply: step is refused, input waits for the
     next step's input phase."""
 
     class Asker:
         name = "asker"
-        answers: list[str | None]
+        responses: list[str | None]
 
         def __init__(self) -> None:
-            self.answers = []
+            self.responses = []
 
         async def pre_input(self, cursor: Cursor, subject: Subject) -> str | None:
-            self.answers.append(await cursor.ask("term", "send it?"))
+            self.responses.append(await cursor.ask("term", "send it?"))
             return None
 
     asker = Asker()
@@ -476,17 +476,17 @@ async def test_a_question_holds_its_step_until_it_is_answered(tmp_path: Path) ->
     await h.send("hi")
     await h.settle()
     assert [q.text for q in h.driver.questions(h.cursor)] == ["send it?"]
-    assert h.session.busy(h.cursor)
+    assert h.session.cursor(h.cursor).busy
     with pytest.raises(tau_next.Busy):
         await h.step()
     await h.input("more")
-    await h.answer("yes")
+    await h.respond("yes")
     await h.settle()
-    assert asker.answers == ["yes"]
+    assert asker.responses == ["yes"]
     assert [q.text for q in h.driver.questions(h.cursor)] == ["send it?"], "the next step's"
-    await h.answer(None)
+    await h.respond(None)
     await h.settle()
-    assert asker.answers == ["yes", None]
+    assert asker.responses == ["yes", None]
     assert h.bodies()[2:] == [
         Body.User("hi"),
         Body.Assistant([Part.Text("ok")], Stop.End),

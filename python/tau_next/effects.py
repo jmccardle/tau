@@ -1,6 +1,6 @@
-"""The effects: what performing one job means, each ending in what to feed.
+"""The effects: what performing one job means, each ending in what to answer.
 
-No effect touches the session except to read it. The driver feeds.
+No effect touches the session except to read it. The driver answers.
 """
 
 import asyncio
@@ -9,10 +9,10 @@ from typing import cast
 
 from tau_next import trace
 from tau_next._core import (
+    Answer,
     Author,
     Body,
     Draft,
-    Fed,
     Hook,
     Job,
     Outcome,
@@ -46,7 +46,7 @@ HOOK_NAMES: dict[Hook, str] = {
 def subject_for(session: Session, cursor: int, job: Job.Hooks) -> Subject:
     """The subject of a `Hooks` job: the draft, the node at `at`, or the ending."""
     if job.point in (Hook.PostReply, Hook.PostResult):
-        return Subject(node=session.node(session.at(cursor)))
+        return Subject(node=session.tree.node(session.cursor(cursor).at))
     return Subject(draft=job.draft, ending=job.ending)
 
 
@@ -55,7 +55,7 @@ async def run_hooks(
     subject: Subject,
     extensions: Sequence[Extension],
     cursor_for: Callable[[Extension], Cursor],
-) -> Fed:
+) -> Answer:
     """Every extension's hook for the point, in order. The first string halts;
     an exception fails; otherwise the subject's draft comes back."""
     name = HOOK_NAMES[job.point]
@@ -68,12 +68,12 @@ async def run_hooks(
             with trace.span("hook", f"{name} {ext.name}"):
                 stop = await hook(cursor, subject)
         except Exception as e:
-            return Fed.HookFailed(str(e))
+            return Answer.HookFailed(str(e))
         finally:
             cursor.retire()
         if stop is not None:
-            return Fed.Hooks(stop, None)
-    return Fed.Hooks(None, subject.draft)
+            return Answer.Hooks(stop, None)
+    return Answer.Hooks(None, subject.draft)
 
 
 async def _finish[T](task: asyncio.Future[T]) -> None:
@@ -94,9 +94,9 @@ class SampleRun:
     ) -> None:
         # Read at dispatch: I1, the request is `walk(at)` and `config_at(at)` as `at` stands.
         with trace.span("driver", "request"):
-            at = session.at(cursor)
-            self._walk = session.walk(at)
-            self._config = session.config_at(at)
+            at = session.cursor(cursor).at
+            self._walk = session.tree.walk(at)
+            self._config = session.tree.config_at(at)
         self._provider = provider
         self._tools = tools
         self._parts: list[Part] = []
@@ -124,7 +124,7 @@ class SampleRun:
     def _reply(self, stop: Stop, finish_reason: str | None = None) -> Draft:
         return Draft(Body.Assistant(self._parts, stop, finish_reason), Author.Provider(), [])
 
-    async def run(self) -> Fed:
+    async def run(self) -> Answer:
         self._task = asyncio.ensure_future(self._stream())
         if self._cancelled:
             self._task.cancel()
@@ -132,15 +132,15 @@ class SampleRun:
             await _finish(self._task)
         if self._task.cancelled():
             if not self._parts:
-                return Fed.Sampled(None, None)
-            return Fed.Sampled(self._reply(Stop.Interrupted), None)
+                return Answer.Sampled(None, None)
+            return Answer.Sampled(self._reply(Stop.Interrupted), None)
         error = self._task.exception()
         if error is None:
             finish = self._task.result()
-            return Fed.Sampled(self._reply(finish.stop, finish.reason), None)
+            return Answer.Sampled(self._reply(finish.stop, finish.reason), None)
         if not isinstance(error, SampleError):
             raise error
-        return Fed.Sampled(self._reply(Stop.Error) if self._parts else None, str(error))
+        return Answer.Sampled(self._reply(Stop.Error) if self._parts else None, str(error))
 
 
 class _HookError(Exception):
@@ -178,9 +178,9 @@ class CallRun:
         if self._task is not None:
             self._task.cancel()
 
-    async def run(self) -> Fed:
+    async def run(self) -> Answer:
         outcome, by = await self._outcome()
-        return Fed.CallDone(self.id, outcome, by)
+        return Answer.CallDone(self.id, outcome, by)
 
     async def _outcome(self) -> tuple[Outcome, Author]:
         # Outcomes the driver writes itself skip `pre_result`.

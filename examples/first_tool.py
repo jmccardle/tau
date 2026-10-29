@@ -48,7 +48,7 @@ async def main(base_url: str, model: str) -> None:
         cursor = session.cursors()[0]
         driver.send(cursor, "example", f"Read the file {secret} and tell me the secret phrase.")
         await driver.rest(cursor)
-        for node in session.walk(session.at(cursor)):
+        for node in session.tree.walk(session.cursor(cursor).at):
             print(f"{type(node.body).__name__:<10} {node.by!r:<22} {text(node.body)}")
         await driver.stop()
         session.close()

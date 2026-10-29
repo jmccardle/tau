@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use proptest::prelude::*;
 use tau_core::machine::Machine;
-use tau_core::step::{Draft, Fed, Hook, Job};
+use tau_core::step::{Answer, Draft, Hook, Job};
 use tau_core::tree::{
     Author, Body, Config, CursorId, Error, Next, Node, NodeId, Outcome, Part, Record, Session,
     Stop, calls,
@@ -63,7 +63,7 @@ fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
 struct Batch {
     node: NodeId,
     calls: Vec<String>,
-    fed: BTreeMap<String, Outcome>,
+    answer: BTreeMap<String, Outcome>,
 }
 
 #[derive(Default)]
@@ -78,7 +78,7 @@ impl Driver {
     fn drive(&mut self, m: &mut Machine, c: CursorId, k: usize) -> Result<(), TestCaseError> {
         let job = m.next_job(c).unwrap();
         let before = nodes(&m.session).len();
-        let fed = match &job {
+        let answer = match &job {
             Job::Rest => return Ok(()),
             Job::Hooks { point, draft, .. } => hook(m, c, (*point, draft), k, before)?,
             Job::Sample => sample(k),
@@ -89,7 +89,7 @@ impl Driver {
             Job::Pending => self.call_done(c, k),
         };
         let at = m.session.at(c).unwrap();
-        m.feed(c, fed, 0).unwrap();
+        m.answer(c, answer, 0).unwrap();
         let after = nodes(&m.session);
         if matches!(
             job,
@@ -127,7 +127,7 @@ impl Driver {
             Batch {
                 node,
                 calls: ids,
-                fed: BTreeMap::new(),
+                answer: BTreeMap::new(),
             },
         );
         self.run += 1;
@@ -135,12 +135,12 @@ impl Driver {
     }
 
     /// One open call of `c`'s batch done, its outcome picked by `k`.
-    fn call_done(&mut self, c: CursorId, k: usize) -> Fed {
+    fn call_done(&mut self, c: CursorId, k: usize) -> Answer {
         let b = self.batches.get_mut(&c).expect("a batch is running");
         let open: Vec<&String> = b
             .calls
             .iter()
-            .filter(|id| !b.fed.contains_key(*id))
+            .filter(|id| !b.answer.contains_key(*id))
             .collect();
         let call = open[k % open.len()].clone();
         let outcome = match k / 8 % 3 {
@@ -148,15 +148,15 @@ impl Driver {
             1 => Outcome::Err(format!("{call} failed")),
             _ => Outcome::Interrupted,
         };
-        b.fed.insert(call.clone(), outcome.clone());
-        Fed::CallDone {
+        b.answer.insert(call.clone(), outcome.clone());
+        Answer::CallDone {
             call,
             outcome,
             by: Author::Tools,
         }
     }
 
-    /// After a `CallDone`: once every call of the batch is fed, `added` is
+    /// After a `CallDone`: once every call of the batch is answer, `added` is
     /// exactly its `Results` (I4).
     fn check_join(
         &mut self,
@@ -167,7 +167,7 @@ impl Driver {
         let Some(b) = self
             .batches
             .get(&c)
-            .filter(|b| b.fed.len() == b.calls.len())
+            .filter(|b| b.answer.len() == b.calls.len())
         else {
             return Ok(());
         };
@@ -176,7 +176,7 @@ impl Driver {
         let want: Vec<_> = b
             .calls
             .iter()
-            .map(|id| (id.clone(), b.fed[id].clone(), Author::Tools))
+            .map(|id| (id.clone(), b.answer[id].clone(), Author::Tools))
             .collect();
         prop_assert_eq!(added[0].parent, Some(b.node));
         prop_assert_eq!(&added[0].body, &Body::Results(want));
@@ -195,8 +195,8 @@ fn hook(
     (point, draft): (Hook, &Option<Draft>),
     k: usize,
     nn: usize,
-) -> Result<Fed, TestCaseError> {
-    let echo = || Fed::Hooks {
+) -> Result<Answer, TestCaseError> {
+    let echo = || Answer::Hooks {
         stop: None,
         draft: draft.clone(),
     };
@@ -205,11 +205,11 @@ fn hook(
         prop_assert_eq!(m.session.next(c), Next::Sample);
     }
     Ok(match k % 16 {
-        0 => Fed::Hooks {
+        0 => Answer::Hooks {
             stop: Some("halt".into()),
             draft: None,
         },
-        1 => Fed::HookFailed("boom".into()),
+        1 => Answer::HookFailed("boom".into()),
         2 => {
             // A hook's `cursor.move`, to a node that may not exist.
             let to = (k / 16) as NodeId % (nn as NodeId + 2);
@@ -221,7 +221,7 @@ fn hook(
             }
             echo()
         }
-        3 if point == Hook::PreSample => Fed::Hooks {
+        3 if point == Hook::PreSample => Answer::Hooks {
             stop: None,
             draft: Some(reply(vec![Part::Text("answered".into())], Stop::End)),
         },
@@ -231,9 +231,9 @@ fn hook(
 
 /// A provider's answer, picked by `k`: text, a batch of one to three calls,
 /// an error, or a cancel.
-fn sample(k: usize) -> Fed {
+fn sample(k: usize) -> Answer {
     match k % 4 {
-        0 => Fed::Sampled {
+        0 => Answer::Sampled {
             reply: Some(reply(vec![Part::Text("hi".into())], Stop::End)),
             error: None,
         },
@@ -245,16 +245,16 @@ fn sample(k: usize) -> Fed {
                     args_raw: "{}".into(),
                 })
                 .collect();
-            Fed::Sampled {
+            Answer::Sampled {
                 reply: Some(reply(parts, Stop::Tools)),
                 error: None,
             }
         }
-        2 => Fed::Sampled {
+        2 => Answer::Sampled {
             reply: None,
             error: Some("overloaded".into()),
         },
-        _ => Fed::Sampled {
+        _ => Answer::Sampled {
             reply: None,
             error: None,
         },
@@ -268,7 +268,10 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
     let node = |i: usize| i as NodeId % (nn + 2);
     let term = || "term".to_string();
     match *op {
-        Op::Send(i) => drop(m.send(cursor(i), term(), "hello").unwrap()),
+        Op::Send(i) => {
+            m.input(cursor(i), term(), "hello").unwrap();
+            m.set_auto(cursor(i), true).unwrap();
+        }
         Op::Input(i) => drop(m.input(cursor(i), term(), "more").unwrap()),
         Op::Step(i) => {
             let busy = m.busy(cursor(i));

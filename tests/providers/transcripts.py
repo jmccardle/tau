@@ -138,7 +138,7 @@ async def collect(
 def fresh_walk() -> list[Node]:
     """The walk of a new in-memory session: `Config`, `System`."""
     session = Session.create(CONFIG, "sys", 0)
-    walk = session.walk(session.at(session.cursors()[0]))
+    walk = session.tree.walk(session.cursor(session.cursors()[0]).at)
     session.close()
     return walk
 

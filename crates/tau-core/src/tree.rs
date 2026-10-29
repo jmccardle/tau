@@ -166,9 +166,9 @@ pub enum Error {
     /// A record replay cannot apply: a node id or a cursor out of sequence, a
     /// move from a node the cursor is not at. Its position in the log.
     BadRecord(usize),
-    /// A feed that answers no job: none is out for the cursor, or the result
+    /// An answer to no job: none is out for the cursor, or the result
     /// is not of the kind the job asked for. Nothing changed.
-    WrongFeed(CursorId),
+    WrongAnswer(CursorId),
 }
 
 /// The one wording of core's refusals: the Python exception message and a
@@ -184,7 +184,7 @@ impl std::fmt::Display for Error {
             Self::NoSuchItem(i) => write!(f, "no item {i}"),
             Self::NotPending(i) => write!(f, "item {i} is not pending for that cursor"),
             Self::DuplicateCall => write!(f, "a node names a call id twice"),
-            Self::WrongFeed(c) => write!(f, "that feed answers no job on cursor {c}"),
+            Self::WrongAnswer(c) => write!(f, "that answer answers no job on cursor {c}"),
             Self::BadRecord(at) => write!(f, "record {at} does not replay"),
         }
     }

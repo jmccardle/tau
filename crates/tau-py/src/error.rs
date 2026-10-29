@@ -38,7 +38,7 @@ exceptions! {
     Version: PyValueError = "A session file of a version this build does not read.";
     Corrupt: PyValueError = "A damaged scratchpad file.";
     Poisoned: PyRuntimeError = "A call panicked while it held the session; load the session again.";
-    WrongFeed: PyValueError = "A feed that answers no job; nothing changed.";
+    WrongAnswer: PyValueError = "An answer to no job; nothing changed.";
     Closed: PyRuntimeError = "The session was closed.";
 }
 
@@ -88,7 +88,7 @@ fn tree_err(e: &tree::Error) -> PyErr {
         tree::Error::NoSuchItem(_) => NoSuchItem::new_err(m),
         tree::Error::NotPending(_) => NotPending::new_err(m),
         tree::Error::DuplicateCall => DuplicateCall::new_err(m),
-        tree::Error::WrongFeed(_) => WrongFeed::new_err(m),
+        tree::Error::WrongAnswer(_) => WrongAnswer::new_err(m),
         tree::Error::BadRecord(_) => BadRecord::new_err(m),
     }
 }

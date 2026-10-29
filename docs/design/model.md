@@ -137,7 +137,7 @@ back from. Any node may be gone to.
 | I1 | A sample sends exactly `walk(at)` with `config_at(at)`, as `at` stands when the sample starts. Items and `Custom` nodes never reach the model. A reply is committed under `at` as it stands at the commit. | `FakeProvider` records each request (Phase 2); `pre_reply_move_chooses_where_the_reply_lands`; proptest `invariants_hold_under_any_driver` (the sample phase starts only where `next` is `Sample`; a reply lands under `at` at its commit) |
 | I2 | No node changes after it is appended. Pre hooks shape a draft before its commit. | no setters; frozen pyclass; proptest `invariants_hold_under_any_driver` (no node changes; the queued `Write`s equal the nodes) |
 | I3 | `at` is always a node of its session. | unit test: a move to an unknown id is refused (`Error::NoSuchNode`); proptest `invariants_hold_under_any_driver` (go-to, hook moves, and opens to unknown ids are refused and change nothing) |
-| I4 | The tools phase writes one `Results` per batch it runs, one outcome per call, in call order. Holds by construction. | `batch_answers_in_call_order_then_samples_again`; proptest `invariants_hold_under_any_driver` (outcomes fed in any order, aborts mid-batch; every batch run is answered once) |
+| I4 | The tools phase writes one `Results` per batch it runs, one outcome per call, in call order. Holds by construction. | `batch_answers_in_call_order_then_samples_again`; proptest `invariants_hold_under_any_driver` (outcomes answered in any order, aborts mid-batch; every batch run is answered once) |
 | I5 | Append checks only types: **V2** a `Results` node's outcomes, and an `Assistant` node's calls, name distinct call ids. A root is made by `append_root` (a `Config` by construction), so there is no V1; replay refuses a logged root that is not a `Config` as `BadRecord`. Wire legality is the provider's conversion (Q11). | `Error::DuplicateCall`; unit tests; proptest `appends_check_only_types` (refused only for V2, any other shape under any node taken; a refusal changes nothing) |
 | I6 | Retired (D5). | — |
 | I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`, `a_torn_tail_opens_as_the_last_sync_before_it`; `tree::load` |
@@ -194,7 +194,7 @@ A move is the only way `at` changes, and it checks only that `to` is a node
 step = Step::wake(session, cursor, asked, now)     asked: a frontend's Session.step
 loop:
     job = step.next_job(session)                   Hooks | Sample | RunCalls | Pending | Rest
-    perform it, then step.feed(session, fed, now)  Hooks | HookFailed | Sampled | CallDone
+    perform it, then step.answer(session, answer, now)  Hooks | HookFailed | Sampled | CallDone
 abort: step.abort(session) -> must the driver cancel the effect in flight?
 ```
 
@@ -213,7 +213,7 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
   phase. A `post_reply` hook that moves the cursor decides where the tools
   phase looks.
 - **Drafts.** A `Hooks` job carries the phase's `Draft {body, delivers, by}`;
-  `Fed::Hooks { draft }` returns the edited one, and core writes it under
+  `Answer::Hooks { draft }` returns the edited one, and core writes it under
   `at` with `Session::write`. A draft of `None` (a hook cleared it) commits
   nothing and the step carries on; it is not a failure. From `pre_sample`, a
   draft is a reply that **answers** the sample: no `Sample` job, straight to
@@ -221,7 +221,7 @@ Positions, in order (`Pos`): `PreStep`, `Input`, `PreSample`, `Sample`,
   draft, the join) or through a hook's `cursor.write`; either moves the cursor,
   and the move is what `after` looks at (§6).
 - **`RunCalls`** hands the driver the batch. For each call the driver runs
-  `pre_tool`, the tool, and `pre_result`, and feeds `CallDone` in any order.
+  `pre_tool`, the tool, and `pre_result`, and answers `CallDone` in any order.
   The step holds each outcome in its slot; when every slot is filled, the
   join writes `Results` in call order.
 
@@ -309,7 +309,7 @@ and `pre_step` and turns auto-step off in `post_step`. Core keeps no count.
 | `post_step` | cursor | `Hooks(PostStep, ending)` | the `Ending` |
 
 A `Hooks` job runs every hook at that point, in the order their extensions
-are listed in `config_at(at)`; the driver feeds back one `Fed::Hooks` (the
+are listed in `config_at(at)`; the driver answers with one `Answer::Hooks` (the
 first string, if any, and the final draft).
 
 **A string from a cursor hook** halts: later hooks at that point don't run,
@@ -323,7 +323,7 @@ committed stay.
 `pre_tool` the tool does not run. The other calls carry on. Core has no
 `Skipped`.
 
-**Errors.** A cursor hook that raises is `Fed::HookFailed`: the draft is
+**Errors.** A cursor hook that raises is `Answer::HookFailed`: the draft is
 discarded, `post_step` gets `Failed(error)`, and an input stays pending. A
 tool hook that raises gives its call `Err("hook error")`, withholding any raw
 output. Outcomes core writes (`Interrupted`, `Err("hook error")`) skip `pre_result`.
@@ -336,7 +336,7 @@ step. On its own cursor, and only while its hook job is out, it may `move`, `wri
 cursor. Every handle call goes into Rust at once (§11). An extension reads
 its own cursor's scratchpad in `pre_step` and `post_step`. Writes a hook
 makes trigger no hooks on its own step. A handle lives exactly as long as its
-hook coroutine: once the hook returns (or its job is fed), the handle is
+hook coroutine: once the hook returns (or its job is answered), the handle is
 **retired**. A retired handle still reads the tree; every write, `ask`, and
 own-cursor call raises `NotInHook`. Core has no handle identity: it allows
 own-cursor calls while a cursor hook job is out for that cursor, and the
@@ -345,15 +345,15 @@ retired handle is the driver's. The exact surface is Phase 4's.
 ### Input
 
 `Session.input(cursor, text)` adds an input item and wakes the cursor (the
-spike's `Session::add_item`). A **send** is input plus auto-step on. On a
+spike's `Session::add_item`). A **send** is input, then auto-step on: two calls, which the driver's `send` makes. On a
 busy cursor the item waits for the next step's input phase. After an abort it
 stays pending (Q42). Commands and gates are `pre_input` hooks.
 
 ### Questions (the driver's; core has none)
 
-`await cursor.ask(target, question)` returns the answer, or `None` if
+`await cursor.ask(target, question)` returns the response, or `None` if
 declined. A question is a hook awaiting a future the driver holds
-(`Driver.ask`, `answer`, `questions`); core knows nothing of it. The hook's
+(`Driver.ask`, `respond`, `questions`); core knows nothing of it. The hook's
 job stays out while it waits, so the cursor is **busy**, and core's rules
 for a busy cursor apply unchanged: input is accepted and waits for the next
 step's input phase, `Session.step` is `Busy`, auto-step on or off only sets
@@ -373,15 +373,15 @@ adds the task as an item, and waits until the cursor rests at `Wait`.
 
 - **Abort** (`Step::abort`) turns auto-step off and ends the step `Aborted`, so
   no later phase applies. It returns true when the driver must cancel the
-  effect in flight (`Sample` or `Calls`) and feed what it got. Hooks are never cancelled; post hooks and `post_step`
+  effect in flight (`Sample` or `Calls`) and answer what it got. Hooks are never cancelled; post hooks and `post_step`
   run as usual. The driver declines the cursor's open questions (§7), so a
   hook awaiting one finishes.
-  - During a sample with parts: the driver feeds the partial reply with
+  - During a sample with parts: the driver answers the partial reply with
     `stop: Interrupted`; it goes through `pre_reply`, is committed, and
     `post_reply` runs (`abort_during_sample_commits_the_partial_reply`).
     With no parts: `Sampled { reply: None, error: None }`, nothing is
     committed.
-  - During tools: the driver feeds `Interrupted` for every call that had not
+  - During tools: the driver answers `Interrupted` for every call that had not
     finished, and the join writes `Results`. A running `pre_tool` or
     `pre_result` finishes (Q34).
 - **A sample fails.** With output: the reply is committed with `stop: Error`,

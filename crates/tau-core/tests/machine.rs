@@ -2,13 +2,20 @@
 //! cursors. Driven by a scripted driver, as in `step.rs`.
 
 use tau_core::machine::Machine;
-use tau_core::step::{Draft, Ending, Fed, Hook, Job};
+use tau_core::step::{Answer, Draft, Ending, Hook, Job};
 use tau_core::tree::{Author, Body, Config, Error, ItemData, Part, Session, Stop};
 
+/// Input, then auto-step on: what a frontend does to send.
+fn send(m: &mut Machine, cursor: u64, client: String, text: &str) -> u64 {
+    let item = m.input(cursor, client, text).unwrap();
+    m.set_auto(cursor, true).unwrap();
+    item
+}
+
 /// The hooks' answer that changes nothing: a job's draft comes back as it was.
-fn echo(job: &Job) -> Fed {
+fn echo(job: &Job) -> Answer {
     match job {
-        Job::Hooks { draft, .. } => Fed::Hooks {
+        Job::Hooks { draft, .. } => Answer::Hooks {
             stop: None,
             draft: draft.clone(),
         },
@@ -16,15 +23,15 @@ fn echo(job: &Job) -> Fed {
     }
 }
 
-fn ok() -> Fed {
-    Fed::Hooks {
+fn ok() -> Answer {
+    Answer::Hooks {
         stop: None,
         draft: None,
     }
 }
 
-fn said(t: &str) -> Fed {
-    Fed::Sampled {
+fn said(t: &str) -> Answer {
+    Answer::Sampled {
         reply: Some(Draft {
             body: Body::Assistant {
                 parts: vec![Part::Text(t.into())],
@@ -42,11 +49,11 @@ fn term() -> String {
     "term".into()
 }
 
-/// Runs `cursor` until it rests, answering each job with `answer`.
+/// Runs `cursor` until it rests, answering each job with `script`.
 fn run(
     m: &mut Machine,
     cursor: u64,
-    mut answer: impl FnMut(&Job, &mut Machine) -> Vec<Fed>,
+    mut script: impl FnMut(&Job, &mut Machine) -> Vec<Answer>,
 ) -> Vec<Job> {
     let mut seen = vec![];
     for _ in 0..200 {
@@ -55,14 +62,14 @@ fn run(
         if job == Job::Rest {
             return seen;
         }
-        for fed in answer(&job, m) {
-            m.feed(cursor, fed, 0).unwrap();
+        for answer in script(&job, m) {
+            m.answer(cursor, answer, 0).unwrap();
         }
     }
     panic!("no rest: {seen:?}");
 }
 
-fn plain(job: &Job, _: &mut Machine) -> Vec<Fed> {
+fn plain(job: &Job, _: &mut Machine) -> Vec<Answer> {
     match job {
         Job::Sample => vec![said("ok")],
         _ => vec![echo(job)],
@@ -97,7 +104,7 @@ fn machine() -> (Machine, u64) {
 #[test]
 fn a_send_wakes_the_cursor_and_runs_a_turn() {
     let (mut m, c) = machine();
-    m.send(c, term(), "hi").unwrap();
+    send(&mut m, c, term(), "hi");
     assert!(m.busy(c));
     run(&mut m, c, plain);
     assert!(!m.busy(c));
@@ -112,7 +119,7 @@ fn a_send_wakes_the_cursor_and_runs_a_turn() {
 fn a_go_to_at_rest_moves_turns_auto_off_and_wakes_with_no_phase() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    m.send(c, term(), "hi").unwrap();
+    send(&mut m, c, term(), "hi");
     run(&mut m, c, plain);
     let user = m
         .session
@@ -134,7 +141,7 @@ fn a_go_to_at_rest_moves_turns_auto_off_and_wakes_with_no_phase() {
 #[test]
 fn a_go_to_while_a_hook_runs_aborts_lets_the_hook_finish_then_moves() {
     let (mut m, c) = machine();
-    m.send(c, term(), "hi").unwrap();
+    send(&mut m, c, term(), "hi");
     let job = m.next_job(c).unwrap();
     assert!(matches!(
         job,
@@ -148,7 +155,7 @@ fn a_go_to_while_a_hook_runs_aborts_lets_the_hook_finish_then_moves() {
         Ok(false),
         "nothing to cancel: the hook finishes"
     );
-    m.feed(c, ok(), 0).unwrap();
+    m.answer(c, ok(), 0).unwrap();
     let jobs = run(&mut m, c, plain);
     assert_eq!(ending(&jobs), Ending::Aborted);
     assert!(!jobs.contains(&Job::Sample), "aborted: no phase ran");
@@ -160,12 +167,12 @@ fn a_go_to_while_a_hook_runs_aborts_lets_the_hook_finish_then_moves() {
 fn a_go_to_on_a_busy_cursor_aborts_runs_post_hooks_then_moves() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    m.send(c, term(), "hi").unwrap();
+    send(&mut m, c, term(), "hi");
     let mut cancelled = None;
     let jobs = run(&mut m, c, |job, m| match job {
         Job::Sample if cancelled.is_none() => {
             cancelled = Some(m.go_to(c, sys, term(), 0).unwrap());
-            vec![Fed::Sampled {
+            vec![Answer::Sampled {
                 reply: None,
                 error: None,
             }]
@@ -270,7 +277,7 @@ fn frontend_calls_sync_on_return() {
 fn moves_since_step_are_the_running_steps() {
     let (mut m, c) = machine();
     let sys = m.session.at(c).unwrap();
-    m.send(c, term(), "hi").unwrap();
+    send(&mut m, c, term(), "hi");
     let job = m.next_job(c).unwrap();
     assert!(matches!(
         job,
@@ -286,7 +293,7 @@ fn moves_since_step_are_the_running_steps() {
         .unwrap();
     m.session.move_to(c, note, by, 0).unwrap();
     assert_eq!(m.moves_since_step(c).count(), 1);
-    m.feed(c, ok(), 0).unwrap();
+    m.answer(c, ok(), 0).unwrap();
     run(&mut m, c, plain);
 }
 
@@ -294,8 +301,8 @@ fn moves_since_step_are_the_running_steps() {
 fn a_feed_that_answers_nothing_is_refused_and_changes_nothing() {
     let (mut m, c) = machine();
     // No step yet.
-    assert_eq!(m.feed(c, ok(), 0), Err(Error::WrongFeed(c)));
-    m.send(c, term(), "hi").unwrap();
+    assert_eq!(m.answer(c, ok(), 0), Err(Error::WrongAnswer(c)));
+    send(&mut m, c, term(), "hi");
     let job = m.next_job(c).unwrap();
     assert!(matches!(
         job,
@@ -305,14 +312,14 @@ fn a_feed_that_answers_nothing_is_refused_and_changes_nothing() {
         }
     ));
     // A pre_step hook job is out: a sample result does not answer it.
-    assert_eq!(m.feed(c, said("x"), 0), Err(Error::WrongFeed(c)));
+    assert_eq!(m.answer(c, said("x"), 0), Err(Error::WrongAnswer(c)));
     assert_eq!(
         m.session.tree.walk(m.session.at(c).unwrap()).len(),
         2,
         "nothing committed"
     );
     // The hook job is still out: its own answer is still accepted.
-    m.feed(c, ok(), 0).unwrap();
+    m.answer(c, ok(), 0).unwrap();
     run(&mut m, c, plain);
 }
 
@@ -332,13 +339,13 @@ fn loading_wakes_every_cursor_for_pre_step_and_post_step_only() {
 }
 
 /// A `pre_input` hook that rewrites the input and delivers nothing.
-fn undelivering(job: &Job, m: &mut Machine) -> Vec<Fed> {
+fn undelivering(job: &Job, m: &mut Machine) -> Vec<Answer> {
     match job {
         Job::Hooks {
             point: Hook::PreInput,
             draft: Some(d),
             ..
-        } => vec![Fed::Hooks {
+        } => vec![Answer::Hooks {
             stop: None,
             draft: Some(Draft {
                 body: Body::User("edited".into()),
@@ -372,8 +379,8 @@ fn one_step(m: &mut Machine, c: u64) -> Vec<Job> {
                 ..
             } | Job::Rest
         );
-        for fed in undelivering(&job, m) {
-            m.feed(c, fed, 0).unwrap();
+        for answer in undelivering(&job, m) {
+            m.answer(c, answer, 0).unwrap();
         }
         if last {
             return seen;
@@ -385,8 +392,8 @@ fn one_step(m: &mut Machine, c: u64) -> Vec<Job> {
 #[test]
 fn a_hook_that_delivers_nothing_gets_each_pending_input_once_per_step() {
     let (mut m, c) = machine();
-    m.send(c, term(), "one").unwrap();
-    m.send(c, term(), "two").unwrap();
+    send(&mut m, c, term(), "one");
+    send(&mut m, c, term(), "two");
     let jobs = one_step(&mut m, c);
     let p = points(&jobs);
     assert_eq!(p.iter().filter(|h| **h == Hook::PreInput).count(), 2);
@@ -400,7 +407,7 @@ fn a_left_input_steps_and_samples_each_time_without_spinning() {
     // The hook's choice, predictable: every step makes progress (one User,
     // one sample); nothing but the hook ends it.
     let (mut m, c) = machine();
-    m.send(c, term(), "hi").unwrap();
+    send(&mut m, c, term(), "hi");
     for n in 1..=5 {
         let jobs = one_step(&mut m, c);
         let p = points(&jobs);
@@ -417,7 +424,7 @@ fn a_cursor_that_is_not_open_is_refused_by_every_call_and_nothing_is_recorded() 
     let before = m.session.clone();
     assert_eq!(m.abort(999), Err(Error::NoSuchCursor(999)));
     assert_eq!(m.next_job(999), Err(Error::NoSuchCursor(999)));
-    assert_eq!(m.feed(999, ok(), 0), Err(Error::NoSuchCursor(999)));
+    assert_eq!(m.answer(999, ok(), 0), Err(Error::NoSuchCursor(999)));
     assert_eq!(
         m.session, before,
         "no record for a cursor that is not there"
@@ -447,7 +454,7 @@ fn add_item_and_open_inside_a_pre_hook_ride_the_phases_sync() {
     m.open(sys, Author::Extension("ext".into()), 0, Some(c))
         .unwrap();
     assert!(!m.session.synced());
-    m.feed(c, ok(), 0).unwrap();
+    m.answer(c, ok(), 0).unwrap();
     run(&mut m, c, plain);
     assert!(m.session.synced(), "the phase's sync covered them");
 }
@@ -501,8 +508,8 @@ fn a_hook_acts_on_its_cursor_only_while_a_hook_job_is_out() {
         ),
         "the phase's own sync covers a hook's writes"
     );
-    m.feed(c, ok(), 0).unwrap();
-    // Fed, the job is no longer out; the step has handed out no other yet.
+    m.answer(c, ok(), 0).unwrap();
+    // Answer, the job is no longer out; the step has handed out no other yet.
     assert_eq!(m.hook_move(c, sys, by, 0), Err(Error::NotInHook(c)));
     run(&mut m, c, plain);
 }
@@ -531,7 +538,7 @@ fn only_the_hooks_own_calls_skip_the_sync() {
     assert!(m.session.synced());
     // Another cursor's hook does not cover this one's call.
     assert!(matches!(m.next_job(other).unwrap(), Job::Rest));
-    m.feed(c, ok(), 0).unwrap();
+    m.answer(c, ok(), 0).unwrap();
     run(&mut m, c, plain);
 }
 
@@ -566,7 +573,7 @@ fn a_write_delivers_only_what_is_pending_for_its_own_cursor() {
 #[test]
 fn a_hook_that_delivered_the_input_itself_leaves_no_draft_to_commit() {
     let (mut m, c) = machine();
-    let item = m.send(c, term(), "hi").unwrap();
+    let item = send(&mut m, c, term(), "hi");
     let by = Author::Extension("x".into());
     let mut writes = 0;
     run(&mut m, c, |job, m| match job {
@@ -588,7 +595,7 @@ fn a_hook_that_delivered_the_input_itself_leaves_no_draft_to_commit() {
 #[test]
 fn a_hook_that_delivered_the_input_but_kept_the_draft_fails_the_step() {
     let (mut m, c) = machine();
-    let item = m.send(c, term(), "hi").unwrap();
+    let item = send(&mut m, c, term(), "hi");
     let by = Author::Extension("x".into());
     let jobs = run(&mut m, c, |job, m| match job {
         Job::Hooks {
@@ -597,7 +604,7 @@ fn a_hook_that_delivered_the_input_but_kept_the_draft_fails_the_step() {
             ..
         } => {
             m.hook_write(c, note(), vec![item], by.clone(), 0).unwrap();
-            vec![Fed::Hooks {
+            vec![Answer::Hooks {
                 stop: None,
                 draft: draft.clone(),
             }]
@@ -625,7 +632,7 @@ fn removing_an_item_is_no_change_and_adding_one_is() {
     let item = m.add_item(c, d(), None).unwrap();
     let first = m.next_job(c).unwrap();
     m.remove_item(item, None).unwrap();
-    m.feed(c, ok(), 0).unwrap();
+    m.answer(c, ok(), 0).unwrap();
     let mut jobs = vec![first];
     jobs.extend(run(&mut m, c, plain));
     assert_eq!(pre_steps(&jobs), 1);
@@ -634,7 +641,7 @@ fn removing_an_item_is_no_change_and_adding_one_is() {
     m.add_item(c, d(), None).unwrap();
     let first = m.next_job(c).unwrap();
     m.add_item(c, d(), None).unwrap();
-    m.feed(c, ok(), 0).unwrap();
+    m.answer(c, ok(), 0).unwrap();
     let mut jobs = vec![first];
     jobs.extend(run(&mut m, c, plain));
     assert_eq!(pre_steps(&jobs), 2);

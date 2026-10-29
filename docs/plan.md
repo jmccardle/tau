@@ -188,7 +188,7 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
     and the frontend-call refusals, recorded by driving the scenario tests
     (not `next`, which is a three-row table); `Body`/`Node`/`Session`/`Machine`
     from a small `syn` script (for `uml.py`);
-  - traces: `tracing` spans around `write`, `append`, and `feed`, exported
+  - traces: `tracing` spans around `write`, `append`, and `answer`, exported
     with `tracing-chrome`.
   The rule 7 thresholds are set from this review.
 - **Exit:** property tests green; clippy gate green; ratchet on (rule 7); the

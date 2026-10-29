@@ -42,7 +42,7 @@ SECRET = "sk-test-0123456789"
 
 
 def bodies(session: Session, cursor: int) -> list[Body]:
-    return [n.body for n in session.walk(session.at(cursor))]
+    return [n.body for n in session.tree.walk(session.cursor(cursor).at)]
 
 
 @scenario
@@ -83,7 +83,7 @@ async def test_an_http_error_fails_the_step_and_records_a_sample_error(tmp_path:
     ):
         driver.send(c, "test", "hello")
         await driver.rest(c)
-        assert not s.auto(c), "a failed step turns auto-step off"
+        assert not s.cursor(c).auto, "a failed step turns auto-step off"
         records = [n for n in nodes(s) if isinstance(n.body, Body.Custom)]
         assert [r.body.kind for r in records if isinstance(r.body, Body.Custom)] == ["sample_error"]
         assert "HTTP 500" in custom_data(records[0])
@@ -148,7 +148,7 @@ def nodes(session: Session) -> list[Node]:
     out: list[Node] = []
     while True:
         try:
-            out.append(session.node(len(out)))
+            out.append(session.tree.node(len(out)))
         except LookupError:
             return out
 
@@ -240,7 +240,7 @@ async def test_a_tool_round_trip_renders_the_tools_array_and_the_tool_message(
         assert isinstance(walk[-3], Body.Assistant)
         assert walk[-3].finish_reason == "tool_calls"
         assert walk[-1] == Body.Assistant([Part.Text("Hello, how are you?")], Stop.End, "stop")
-        for node in session.walk(session.at(c)):
+        for node in session.tree.walk(session.cursor(c).at):
             if isinstance(node.body, Body.Config | Body.System | Body.User | Body.Custom):
                 assert "get_weather" not in repr(node.body), "tools are not recorded"
     finally:

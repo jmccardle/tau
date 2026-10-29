@@ -20,7 +20,11 @@ behavior. Never copy from it.
 4. Tests go through the `Harness` protocol or the public Python API. No `unittest.mock.patch`, no `_private` access from tests (both linted). Fakes live at the effect boundary only: `FakeProvider` (scripted samples), `FakeTool`.
 5. Each phase ends with a stop for review. Do not start the next phase without sign-off.
 6. Diagrams are generated from code after Phase 3. Hand-drawn diagrams exist only in Phase 1.
-7. Ratchet in CI from Phase 3: max function CC ≤ 15, no class over 25 methods, no file over 800 lines, banned-term count 0, I7 property test green.
+7. Ratchet in CI from Phase 3: max function CC ≤ 15, no file over 800 lines,
+   banned-term count 0, I7 property test green. A type past 25 methods either
+   splits along concept lines or carries a one-line justification naming the
+   single concept it is (`[justified]` in `scripts/ratchet-allow.toml`, which
+   the ratchet prints on every run so a review sees it).
 
 Rule 3 is enforced by `scripts/check_rules.py` (snake, kebab, and CamelCase),
 except `head` and `fork`, which have legitimate uses a regex cannot tell apart.

@@ -1,6 +1,6 @@
-"""The driver: performs each cursor's jobs and feeds the results back.
+"""The driver: performs each cursor's jobs and answers the results back.
 
-One pump coroutine per session is the only caller of `next_job` and `feed`
+One pump coroutine per session is the only caller of `next_job` and `answer`
 (D11). It decides nothing: every rule is in core.
 """
 
@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from functools import partial
 
 from tau_next import trace
-from tau_next._core import Author, Fed, ItemData, Job, Session
+from tau_next._core import Answer, Author, ItemData, Job, Session
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks, subject_for
 from tau_next.handles import Cursor, NodeHandle
@@ -19,7 +19,7 @@ from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools
 
 @dataclass
 class Question:
-    """An open question: who it is for, what it asks, and the future its answer fills."""
+    """An open question: who it is for, what it asks, and the future its response fills."""
 
     target: str
     text: str
@@ -40,7 +40,7 @@ class Driver:
     """Runs one session's cursors over a provider, tools, and extensions.
 
     Frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`,
-    `open`, `answer`) run on the loop thread and then poke the pump.
+    `open`, `respond`) run on the loop thread and then poke the pump.
     Extensions are listed in the constructor, in hook order; `model.md` does
     not yet say how `config_at` names them.
     """
@@ -58,7 +58,7 @@ class Driver:
         self._provider = provider
         self._tools: Mapping[str, Tool] = check_tools(tools)
         self._extensions = tuple(extensions)
-        self._queue: asyncio.Queue[tuple[int, Fed] | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[int, Answer] | None] = asyncio.Queue()
         self._out: dict[int, Outstanding] = {}
         self._poll: set[int] = set()
         self._questions: dict[int, list[Question]] = {}
@@ -74,7 +74,7 @@ class Driver:
         self._spawn(self._pump())
 
     async def stop(self) -> None:
-        """Cancel everything without feeding, as a crash would."""
+        """Cancel everything without answering, as a crash would."""
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()
@@ -101,7 +101,9 @@ class Driver:
         return (
             not self._queue.empty()
             or bool(self._poll)
-            or any(self.session.busy(c) and c not in self._out for c in self.session.cursors())
+            or any(
+                self.session.cursor(c).busy and c not in self._out for c in self.session.cursors()
+            )
         )
 
     def check(self) -> None:
@@ -121,7 +123,7 @@ class Driver:
             await watcher
 
     def _active(self, cursor: int) -> bool:
-        return self.session.busy(cursor) or cursor in self._out or cursor in self._poll
+        return self.session.cursor(cursor).busy or cursor in self._out or cursor in self._poll
 
     def _notify(self) -> None:
         watchers, self._watchers = self._watchers, []
@@ -141,8 +143,10 @@ class Driver:
         return item
 
     def send(self, cursor: int, client: str, text: str) -> int:
+        """Input with auto-step on."""
         with trace.span("driver", "send"):
-            item = self.session.send(cursor, client, text)
+            item = self.session.input(cursor, client, text)
+            self.session.set_auto(cursor, True)
         self._poke()
         return item
 
@@ -184,10 +188,10 @@ class Driver:
 
     def children(self, node: int) -> list[int]:
         """The children of `node`, in append order."""
-        return self.session.children(node)
+        return self.session.tree.children(node)
 
     def node_count(self) -> int:
-        return self.session.node_count()
+        return len(self.session.tree)
 
     def all_labels(self) -> dict[str, int]:
         """Every label and its cursor."""
@@ -203,15 +207,15 @@ class Driver:
         self._poke()
         return cancel
 
-    def answer(self, cursor: int, answer: str | None) -> None:
-        """Answer the cursor's oldest open question; `None` declines it."""
+    def respond(self, cursor: int, response: str | None) -> None:
+        """Respond to the cursor's oldest open question; `None` declines it."""
         open_ = self._questions.get(cursor)
         if not open_:
             raise LookupError(f"cursor {cursor} has no open question")
-        open_.pop(0).future.set_result(answer)
+        open_.pop(0).future.set_result(response)
 
     async def ask(self, cursor: int, target: str, text: str) -> str | None:
-        """`cursor.ask`: hold the question until it is answered or declined. Core
+        """`cursor.ask`: hold the question until it is responded to or declined. Core
         knows nothing of it: the hook awaiting it keeps its job out, so the cursor is busy."""
         question = Question(target, text, asyncio.get_running_loop().create_future())
         self._questions.setdefault(cursor, []).append(question)
@@ -248,18 +252,18 @@ class Driver:
     def _dispatch_ready(self) -> None:
         polls, self._poll = self._poll, set()
         for cursor in self.session.cursors():
-            if cursor not in self._out and (cursor in polls or self.session.busy(cursor)):
+            if cursor not in self._out and (cursor in polls or self.session.cursor(cursor).busy):
                 with trace.span("driver", "next_job"):
                     job = self.session.next_job(cursor)
                 self._dispatch(cursor, job)
 
-    def _deliver(self, cursor: int, fed: Fed) -> None:
+    def _deliver(self, cursor: int, answer: Answer) -> None:
         out = self._out.get(cursor)
         if out is None:
-            raise RuntimeError(f"cursor {cursor}: a result with no effect out: {fed}")
-        with trace.span("driver", "feed"):
-            self.session.feed(cursor, fed, self.clock.now())
-        if not isinstance(fed, Fed.CallDone):
+            raise RuntimeError(f"cursor {cursor}: a result with no effect out: {answer}")
+        with trace.span("driver", "answer"):
+            self.session.answer(cursor, answer, self.clock.now())
+        if not isinstance(answer, Answer.CallDone):
             del self._out[cursor]
             # Poll even if the cursor now rests: a go-to waiting on this step
             # applies in `next_job`, and `busy` does not show it.
@@ -277,8 +281,8 @@ class Driver:
         del self._out[cursor]
         self._dispatch(cursor, job)
 
-    def _unit(self, cursor: int, effect: Callable[[], Awaitable[Fed]]) -> asyncio.Task[None]:
-        """Run an effect as a task that reports `(cursor, Fed)` to the pump."""
+    def _unit(self, cursor: int, effect: Callable[[], Awaitable[Answer]]) -> asyncio.Task[None]:
+        """Run an effect as a task that reports `(cursor, Answer)` to the pump."""
 
         async def unit() -> None:
             try:
@@ -335,7 +339,7 @@ class Driver:
 
     def _cancel(self, cursor: int) -> None:
         """Core said abort cancels the effect: stop its tasks. Each call unit and the
-        sample feed what they have."""
+        sample answer with what they have."""
         out = self._out.get(cursor)
         if out is None:
             raise RuntimeError(f"cursor {cursor}: abort cancels an effect, but none is out")

@@ -2,7 +2,10 @@
 
 Checks:
   * function CC <= 15
-  * no type over 25 methods (inherent impls; trait impls are reported, not gated)
+  * no type over 25 methods (inherent impls; trait impls are reported, not gated),
+    unless the type carries a one-line justification naming the single concept it is
+    (`[justified]` in ratchet-allow.toml). The justification replaces the count for
+    that type and is printed on every run, so it shows in review.
   * no file over 800 lines
   * banned-term count 0 (scripts/check_rules.py)
   * the I7 property tests still exist (cargo test runs them; check.sh runs that)
@@ -13,7 +16,8 @@ a new violation appears, and when an allowed item is fixed or improved but its
 line is still there. `--tighten` rewrites the file to lower or remove lines
 (never to add or raise one).
 
-The allowlist file is itself guarded: it is compared with its version at a base
+The allowlist file is itself guarded (its numeric sections; a justification may be added,
+and the ratchet prints it): it is compared with its version at a base
 revision and the ratchet fails if any value rose or any line was added (see
 `base_revision`). There is no flag to skip that.
 
@@ -21,6 +25,7 @@ Measurement definitions: scripts/rustmetrics.py.
 """
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -39,6 +44,10 @@ SECTIONS = {
     "type_methods": "Inherent methods per type (crate::Type)",
     "file_lines": "Lines per file",
 }
+JUSTIFIED_TITLE = (
+    '# Types over the method limit that are one concept: crate::Type = "the one concept it is".\n'
+    "# Exempt from the count and printed on every run. Adding one needs a reviewer's yes."
+)
 I7_TESTS = [
     ("crates/tau-core/tests/replay.rs", "reload_at_any_sync_equals_the_state_at_that_sync"),
     ("crates/tau-store/tests/store.rs", "a_torn_tail_opens_as_the_last_sync_before_it"),
@@ -66,15 +75,44 @@ def load_allow() -> dict[str, dict[str, int]]:
     return {s: dict(data.get(s, {})) for s in SECTIONS}
 
 
+def load_justified() -> dict[str, str]:
+    """Type (crate::Type) -> the one-line reason it is exempt from the method count."""
+    return dict(tomllib.loads(ALLOW.read_text()).get("justified", {}))
+
+
+def check_justified(now: dict[str, dict[str, int]], justified: dict[str, str]) -> list[str]:
+    """A justification must name a real type over the limit, and say something."""
+    fails: list[str] = []
+    limit = LIMITS["type_methods"]
+    for key, reason in sorted(justified.items()):
+        count = now["type_methods"].get(key)
+        if not reason.strip():
+            fails.append(f"EMPTY    justified: {key} has no reason")
+        elif count is None:
+            fails.append(f"GONE     justified: {key} no longer exists; remove it from {ALLOW.name}")
+        elif count <= limit:
+            fails.append(
+                f"UNNEEDED justified: {key} has {count} methods (limit {limit}); "
+                f"remove it from {ALLOW.name}"
+            )
+    return fails
+
+
 def compare(
-    now: dict[str, dict[str, int]], allow: dict[str, dict[str, int]]
+    now: dict[str, dict[str, int]],
+    allow: dict[str, dict[str, int]],
+    justified: dict[str, str],
 ) -> tuple[list[str], dict]:
-    """Return (failures, tightened allowlist)."""
+    """Return (failures, tightened allowlist). A justified type is exempt from its count."""
     fails: list[str] = []
     tight: dict[str, dict[str, int]] = {s: {} for s in SECTIONS}
     for sec, limit in LIMITS.items():
         for key, val in sorted(now[sec].items()):
             allowed = allow[sec].get(key)
+            if sec == "type_methods" and key in justified:
+                if allowed is not None:
+                    fails.append(f"FIXED    {sec}: {key} is justified; remove it from {ALLOW.name}")
+                continue
             if val > limit and allowed is None:
                 fails.append(f"NEW      {sec}: {key} = {val} (limit {limit})")
             elif allowed is not None and val > allowed:
@@ -94,14 +132,17 @@ def compare(
     return fails, tight
 
 
-def write_allow(tight: dict[str, dict[str, int]]) -> None:
+def write_allow(tight: dict[str, dict[str, int]], justified: dict[str, str]) -> None:
     titles = {f"# {title}; limit {LIMITS[sec]}" for sec, title in SECTIONS.items()}
+    titles |= set(JUSTIFIED_TITLE.splitlines())
     lines = ALLOW.read_text().split("\n[", 1)[0].splitlines()
     head = "\n".join(line for line in lines if line not in titles).rstrip() + "\n"
     out = [head]
     for sec, title in SECTIONS.items():
         out.append(f"\n# {title}; limit {LIMITS[sec]}\n[{sec}]")
         out += [f'"{k}" = {v}' for k, v in sorted(tight[sec].items())]
+    out.append(f"\n{JUSTIFIED_TITLE}\n[justified]")
+    out += [f'"{k}" = {json.dumps(v)}' for k, v in sorted(justified.items())]
     ALLOW.write_text("\n".join(out) + "\n")
 
 
@@ -176,9 +217,11 @@ def main() -> int:
         "--tighten", action="store_true", help="lower or drop allowlist lines that improved"
     )
     args = ap.parse_args()
-    now, allow = measure(), load_allow()
-    fails, tight = compare(now, allow)
-    fails = guard_allow(allow, base_revision()) + fails
+    now, allow, justified = measure(), load_allow(), load_justified()
+    fails, tight = compare(now, allow, justified)
+    fails = guard_allow(allow, base_revision()) + check_justified(now, justified) + fails
+    for key, reason in sorted(justified.items()):
+        print(f"ratchet: JUSTIFIED {key} ({now['type_methods'].get(key, '?')} methods): {reason}")
     if args.tighten:
         # Only lines that still violate and did not get worse are kept, at their new value.
         if any(f.startswith(("NEW", "WORSE", "ADDED", "RAISED")) for f in fails):
@@ -187,7 +230,7 @@ def main() -> int:
                 file=sys.stderr,
             )
         else:
-            write_allow(tight)
+            write_allow(tight, justified)
             print(f"ratchet: rewrote {ALLOW.relative_to(ROOT)}")
             return 0
     fails += [f"BANNED   {b}" for b in banned_terms()] + [f"I7       {m}" for m in missing_i7()]

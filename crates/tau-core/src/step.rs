@@ -1,5 +1,5 @@
 //! One cursor's step: the phase loop of model.md §6 as a sans-IO machine.
-//! `next_job` says what to do; the driver does it and `feed`s the result.
+//! `next_job` says what to do; the driver does it and `answer`s the result.
 
 use crate::transitions;
 use crate::tree::{
@@ -60,7 +60,7 @@ pub enum Job {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Fed {
+pub enum Answer {
     /// `draft`: the edited draft; from `pre_sample`, a reply that answers the sample.
     Hooks {
         stop: Option<String>,
@@ -112,7 +112,7 @@ pub struct Step {
     /// `Session::moves.len()` when this step woke.
     first_move: usize,
     /// A job is out: handed out by `next_job` and not yet answered. Which kind
-    /// is `pos`'s; the batch stays out through `Pending` until its last call is fed.
+    /// is `pos`'s; the batch stays out through `Pending` until its last call is answered.
     out: bool,
     draft: Option<Draft>,
     /// The input phase's work: the inputs pending when it began, oldest
@@ -120,7 +120,7 @@ pub struct Step {
     inputs: Option<Vec<ItemId>>,
     error: Option<String>,
     ending: Ending,
-    /// The running batch's calls in call order, each with its outcome once fed.
+    /// The running batch's calls in call order, each with its outcome once answered.
     batch: Vec<(String, Option<(Outcome, Author)>)>,
 }
 
@@ -291,25 +291,25 @@ impl Step {
         }
     }
 
-    /// Feed the result of the job last handed out.
+    /// Answer the job last handed out.
     ///
     /// # Errors
     ///
     /// What a commit's `write` or `append` returns (`NoSuchCursor`);
-    /// `WrongFeed` if `fed` does not answer the job that is out (none, or one
+    /// `WrongAnswer` if `answer` does not answer the job that is out (none, or one
     /// of another kind, a call not in the batch, or a call already answered), with
     /// nothing changed. Core checks no edit a hook made, only the tree's rules.
-    pub fn feed(&mut self, s: &mut Session, fed: Fed, now: u64) -> Result<(), Error> {
-        if !self.answers(&fed) {
-            return Err(Error::WrongFeed(self.cursor));
+    pub fn answer(&mut self, s: &mut Session, answer: Answer, now: u64) -> Result<(), Error> {
+        if !self.accepts(&answer) {
+            return Err(Error::WrongAnswer(self.cursor));
         }
-        transitions::fed(&fed);
+        transitions::answered(&answer);
         self.out = false;
-        match fed {
-            Fed::HookFailed(e) => self.on_hook_failed(s, e),
-            Fed::Hooks { stop, draft } => self.on_hooks(s, stop, draft, now),
-            Fed::Sampled { reply, error } => self.on_sampled(s, reply, error, now)?,
-            Fed::CallDone { call, outcome, by } => self.on_call(s, &call, outcome, by, now)?,
+        match answer {
+            Answer::HookFailed(e) => self.on_hook_failed(s, e),
+            Answer::Hooks { stop, draft } => self.on_hooks(s, stop, draft, now),
+            Answer::Sampled { reply, error } => self.on_sampled(s, reply, error, now)?,
+            Answer::CallDone { call, outcome, by } => self.on_call(s, &call, outcome, by, now)?,
         }
         Ok(())
     }
@@ -324,7 +324,7 @@ impl Step {
         }
     }
 
-    /// A hook returned. `answers` admits it only at a hook position.
+    /// A hook returned. `accepts` admits it only at a hook position.
     fn on_hooks(&mut self, s: &mut Session, stop: Option<String>, draft: Option<Draft>, now: u64) {
         match (self.pos, stop) {
             (Pos::PostStep, stop) => {
@@ -349,7 +349,7 @@ impl Step {
             },
             (Pos::PostResult, None) => self.go(Pos::PostStep),
             (Pos::Sample | Pos::Tools | Pos::Calls | Pos::Rest, None) => {
-                unreachable!("answers admits Hooks only at a hook position")
+                unreachable!("accepts admits Hooks only at a hook position")
             }
         }
     }
@@ -420,12 +420,12 @@ impl Step {
         Ok(())
     }
 
-    /// Whether `fed` answers the job that is out. Decided before anything changes.
-    fn answers(&self, fed: &Fed) -> bool {
-        match (self.pos, fed) {
-            (_, Fed::Hooks { .. } | Fed::HookFailed(_)) => self.in_hook(),
-            (Pos::Sample, Fed::Sampled { .. }) => self.out,
-            (Pos::Calls, Fed::CallDone { call, .. }) => {
+    /// Whether `answer` answers the job that is out. Decided before anything changes.
+    fn accepts(&self, answer: &Answer) -> bool {
+        match (self.pos, answer) {
+            (_, Answer::Hooks { .. } | Answer::HookFailed(_)) => self.in_hook(),
+            (Pos::Sample, Answer::Sampled { .. }) => self.out,
+            (Pos::Calls, Answer::CallDone { call, .. }) => {
                 self.out && self.batch.iter().any(|c| c.0 == *call && c.1.is_none())
             }
             _ => false,
@@ -433,7 +433,7 @@ impl Step {
     }
 
     /// Abort: auto-step off, no later effect. Returns true if the driver must
-    /// cancel the effect in flight and feed what it got (partial reply, `Interrupted`s).
+    /// cancel the effect in flight and answer what it got (partial reply, `Interrupted`s).
     pub fn abort(&mut self, s: &mut Session) -> bool {
         s.auto.insert(self.cursor, false);
         if self.ending == Ending::Done {
@@ -477,7 +477,7 @@ impl Step {
         });
     }
 
-    /// A move inside `job` that no job or feed causes: logged under `why`.
+    /// A move inside `job` that no job or answer causes: logged under `why`.
     fn hop(&mut self, why: &str, to: Pos) {
         transitions::event(why);
         self.go(to);
@@ -492,6 +492,12 @@ impl Step {
     #[must_use]
     pub fn resting(&self) -> bool {
         self.pos == Pos::Rest
+    }
+
+    /// Where in `Session::moves` this step began.
+    #[must_use]
+    pub fn first_move(&self) -> usize {
+        self.first_move
     }
 
     /// `cursor.moves(since_step=True)`: this cursor's moves since the step woke.

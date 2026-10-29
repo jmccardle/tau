@@ -1,6 +1,6 @@
 //! The tree's views and label records, without the step machine.
 
-use tau_core::step::{Fed, Job, Step};
+use tau_core::step::{Answer, Job, Step};
 use tau_core::tree::{Author, Body, Config, Error, Node, Record, Scratchpad, Session};
 
 fn user(s: &mut Session, c: u64, t: &str) -> u64 {
@@ -89,9 +89,9 @@ fn a_step_sees_its_cursor_moves_since_it_woke() {
         .unwrap();
     s.move_to(c, note, by.clone(), 0).unwrap();
     s.move_to(d, note, by, 0).unwrap(); // another cursor's move: not shown
-    step.feed(
+    step.answer(
         &mut s,
-        Fed::Hooks {
+        Answer::Hooks {
             stop: None,
             draft: None,
         },

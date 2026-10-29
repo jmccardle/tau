@@ -7,6 +7,10 @@
 #
 # Keys: function_cc is file::Type::fn (or file::fn); type_methods is
 # crate::Type, inherent impl blocks only, summed across blocks.
+#
+# [justified] is the other way past the method limit: a type that is one
+# concept, named in one line. Exempt from the count; the ratchet prints every
+# one on every run. Nothing here shrinks a number, so a reviewer must say yes.
 
 
 # Function cyclomatic complexity (crate-relative file::Type::fn); limit 15
@@ -14,7 +18,10 @@
 
 # Inherent methods per type (crate::Type); limit 25
 [type_methods]
-"tau-py::Session" = 44
 
 # Lines per file; limit 800
 [file_lines]
+
+# Types over the method limit that are one concept: crate::Type = "the one concept it is".
+# Exempt from the count and printed on every run. Adding one needs a reviewer's yes.
+[justified]

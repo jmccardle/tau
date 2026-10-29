@@ -7,9 +7,9 @@ files are rendered from the `.dot` files (graphviz `dot`) and are not compared.
 
 | file | what it shows | made from |
 |---|---|---|
-| `step-positions.svg` (`.dot`, `.md`) | every position one cursor's step passes through, the job each hands out, the feed or event on each edge | the transitions the test suites made |
+| `step-positions.svg` (`.dot`, `.md`) | every position one cursor's step passes through, the job each hands out, the answer or event on each edge | the transitions the test suites made |
 | `frontend-refusals.svg` (`.dot`, `.md`) | each frontend, extension, hook and driver call against each cursor state: accepted, or the typed refusal | making every call in every state |
-| `types.svg` (`.dot`) | fields and variants of `Body`, `Node`, `Session`, `Machine`, `Step`, `Job`, `Fed`, `Outcome`, `Part` | the Rust source, parsed with `syn` |
+| `types.svg` (`.dot`) | fields and variants of `Body`, `Node`, `Session`, `Machine`, `Step`, `Job`, `Answer`, `Outcome`, `Part` | the Rust source, parsed with `syn` |
 
 ## 1. Step position graph
 
@@ -18,10 +18,10 @@ means in words and the job it hands out to the driver, with the number of
 scenarios that saw that job. Each arrow is a change of position; its label is
 what caused it, and in brackets how many scenarios made that move.
 
-- Causes starting `feed` are the driver answering a job (`feed Hooks`, a
-  `Sampled` reply, a `CallDone`). `feed Hooks(stop)` is a hook that returned a
-  string (halts the step); `feed HookFailed` is a hook that raised.
-- Causes without `feed` are the core deciding with no job in between: "no input
+- Causes starting `answer` are the driver answering a job (`answer Hooks`, a
+  `Sampled` reply, a `CallDone`). `answer Hooks(stop)` is a hook that returned a
+  string (halts the step); `answer HookFailed` is a hook that raised.
+- Causes without `answer` are the core deciding with no job in between: "no input
   to offer", "sample does not apply", "tools apply", "tools do not apply",
   "commit refused" (a draft that would make the tree invalid fails the step).
 - Out of `PostStep` the cause is the step's ending (`Done`, `Halted`, `Failed`,
@@ -39,7 +39,7 @@ stderr. The scenario is the name of the test: the `cargo test` thread for the
 Rust suite in `crates/tau-core/tests/`, a pytest id for `tests/behavior` and
 `tests/core` (run against the same core through the bindings, built with the
 feature into `target/diagrams`, so the normal build is untouched). This was
-chosen over deriving transitions from the job/feed sequence because the
+chosen over deriving transitions from the job/answer sequence because the
 sequence cannot show the moves with no job in between (`Input` to `PreSample`
 with nothing to offer, `PreSample` to `Tools`), and these are the interesting
 ones. It adds one small private method (`Step::go`) and one-line calls; with
@@ -57,10 +57,10 @@ review of `step.rs` are what cover that.
 Rows are calls, columns are states of a cursor. Every cell was produced by
 building a fresh session through the public Python API, bringing the cursor to
 the state (for example "calls out, one answered" is reached by running a step
-to a batch of two calls and feeding one outcome), making the call once, and
+to a batch of two calls and answering with one outcome), making the call once, and
 recording what came back. Green: accepted (`ok, cancel` also tells the driver
 to cancel the effect in flight). Yellow: refused because of what the cursor is
-doing (`Busy`, `Locked`, `HookRunning`, `NotInHook`, `WrongFeed`). Grey: the
+doing (`Busy`, `Locked`, `HookRunning`, `NotInHook`, `WrongAnswer`). Grey: the
 cursor or node does not exist. Pink: the session is closed or its store failed.
 `frontend-refusals.md` has the same table as text.
 
@@ -77,9 +77,9 @@ Things to look at; none has been changed.
 
 1. **Every position and every allowed move is reached by a named test or a
    property test.** Nine moves are reached only by the property test
-   `invariants_hold_under_any_driver`: a hook halting (`feed Hooks(stop)`) at
+   `invariants_hold_under_any_driver`: a hook halting (`answer Hooks(stop)`) at
    `PreStep`, `PreReply`, `PostReply` or `PostResult`, and a hook raising
-   (`feed HookFailed`) at `Input`, `PreSample`, `PreReply`, `PostReply` and
+   (`answer HookFailed`) at `Input`, `PreSample`, `PreReply`, `PostReply` and
    `PostResult`. No named scenario pins them; they are the orange edges.
 2. **`Tools` hands out no job.** It is a pure decision point (`tools apply` or
    `tools do not apply`), as are the other "core decides" moves. It is the one
@@ -93,7 +93,7 @@ Things to look at; none has been changed.
 5. **`answered` is accepted with no question open**, silently. A stray answer
    does nothing; `ask`, which has no caller check either (accepted in any state,
    including with no hook running), can be counted up without limit.
-6. **After a failed save, `abort`, `next_job`, `feed`, `ask` and `answered` all
+6. **After a failed save, `abort`, `next_job`, `answer`, `ask` and `respond` all
    raise `Failed`.** Only reads still work. So a busy cursor cannot be aborted
    once the store has failed, though the refusal is by design ("open the session
    again").

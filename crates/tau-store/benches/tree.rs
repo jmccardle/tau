@@ -15,7 +15,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use tau_core::machine::Machine;
-use tau_core::step::{Draft, Fed, Job};
+use tau_core::step::{Answer, Draft, Job};
 use tau_core::tree::{
     Author, Body, CursorId, Node, NodeId, Outcome, Part, Record, Scratchpad, Session, Stop,
 };
@@ -115,7 +115,7 @@ struct Stats {
     syncs: Vec<Duration>,
     /// `Store::save` calls that wrote more than one `Sync` (one fsync each).
     multi_sync: usize,
-    /// Time in the machine: `next_job`, `feed`, `send`.
+    /// Time in the machine: `next_job`, `answer`, `input`.
     core: Duration,
 }
 
@@ -173,41 +173,42 @@ impl Agent {
         let job = rig.m.next_job(c).unwrap();
         rig.stats.core += start.elapsed();
         rig.now += 1;
-        let fed = match job {
+        let answer = match job {
             Job::Rest if self.turns == 0 => return false,
             Job::Rest => {
                 self.turns -= 1;
                 self.rounds = rig.payloads.shape.rounds;
                 let start = Instant::now();
-                rig.m.send(c, "bench".into(), &rig.payloads.user).unwrap();
+                rig.m.input(c, "bench".into(), &rig.payloads.user).unwrap();
+                rig.m.set_auto(c, true).unwrap();
                 rig.stats.core += start.elapsed();
                 vec![]
             }
-            Job::Hooks { draft, .. } => vec![Fed::Hooks { stop: None, draft }],
+            Job::Hooks { draft, .. } => vec![Answer::Hooks { stop: None, draft }],
             Job::Sample => {
                 rig.sample(c);
                 vec![self.reply(&rig.payloads)]
             }
             Job::RunCalls { calls: run, .. } => run
                 .into_iter()
-                .map(|call| Fed::CallDone {
+                .map(|call| Answer::CallDone {
                     call: call.id,
                     outcome: Outcome::Ok(rig.payloads.results.clone()),
                     by: Author::Tools,
                 })
                 .collect(),
-            Job::Pending => unreachable!("every call is fed with its batch"),
+            Job::Pending => unreachable!("every call is answer with its batch"),
         };
         let start = Instant::now();
-        for f in fed {
-            rig.m.feed(c, f, rig.now).unwrap();
+        for f in answer {
+            rig.m.answer(c, f, rig.now).unwrap();
         }
         rig.stats.core += start.elapsed();
         rig.save();
         true
     }
 
-    fn reply(&mut self, p: &Payloads) -> Fed {
+    fn reply(&mut self, p: &Payloads) -> Answer {
         let mut parts = vec![Part::Text(p.assistant.clone())];
         let stop = if self.rounds > 0 {
             self.rounds -= 1;
@@ -221,7 +222,7 @@ impl Agent {
         } else {
             Stop::End
         };
-        Fed::Sampled {
+        Answer::Sampled {
             reply: Some(Draft {
                 body: Body::Assistant {
                     parts,

@@ -39,8 +39,8 @@ async def test_it_stops_a_continue_loop_after_n_steps(tmp_path: Path) -> None:
     await h.send("go")
     await h.settle()
     assert len(h.provider.requests) == 2
-    assert not h.session.auto(h.cursor)
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
+    assert not h.session.cursor(h.cursor).busy
 
 
 @scenario
@@ -56,8 +56,8 @@ async def test_it_stops_a_model_that_calls_tools_every_step(tmp_path: Path) -> N
     await h.send("go")
     await h.settle()
     assert len(h.provider.requests) == 3
-    assert not h.session.auto(h.cursor)
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
+    assert not h.session.cursor(h.cursor).busy
 
 
 @scenario
@@ -69,7 +69,7 @@ async def test_a_new_input_starts_the_count_over(tmp_path: Path) -> None:
     await h.send("again")
     await h.settle()
     assert len(h.provider.requests) == 4, "the send gave another two steps"
-    assert not h.session.auto(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
 
 
 @scenario
@@ -81,7 +81,7 @@ async def test_resuming_with_set_auto_gets_a_fresh_count(tmp_path: Path) -> None
     await h.set_auto(True)
     await h.settle()
     assert len(h.provider.requests) == 4
-    assert not h.session.auto(h.cursor)
+    assert not h.session.cursor(h.cursor).auto
 
 
 @scenario
@@ -104,4 +104,4 @@ async def test_a_run_that_ends_by_itself_is_left_alone(tmp_path: Path) -> None:
     await h.send("hi")
     await h.settle()
     assert len(h.provider.requests) == 1
-    assert not h.session.busy(h.cursor)
+    assert not h.session.cursor(h.cursor).busy

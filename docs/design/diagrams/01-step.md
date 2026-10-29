@@ -1,6 +1,6 @@
 # 01 The step, as the spike runs it
 
-`step::Step` hands out a `Job`; the driver does it and feeds a `Fed` back.
+`step::Step` hands out a `Job`; the driver does it and answers with an `Answer`.
 The tests in `crates/tau-core/tests/step.rs` are the worked examples; this
 page is the shape they share.
 
@@ -9,17 +9,17 @@ page is the shape they share.
 ```
  Step::wake(session, cursor, asked, now)
    │
-   ▼ PreStep ──── Job::Hooks(PreStep) ───────────────────────── Fed::Hooks
+   ▼ PreStep ──── Job::Hooks(PreStep) ───────────────────────── Answer::Hooks
    ▼ Input        while input is pending (and auto-step on, or asked):
    │                Job::Hooks(PreInput, draft{User(text), delivers [item]})
-   │                Fed::Hooks{draft} ─▶ Session::write: User under at + move
+   │                Answer::Hooks{draft} ─▶ Session::write: User under at + move
    ▼ PreSample    if next == Sample:  Job::Hooks(PreSample)
-   │                Fed::Hooks{draft: Some(reply)} answers it ─▶ skip to PreReply
-   ▼ Sample       Job::Sample ──────────────────────────────── Fed::Sampled{reply, error}
-   ▼ PreReply     Job::Hooks(PreReply, reply) ─────────────── Fed::Hooks ─▶ write under at
+   │                Answer::Hooks{draft: Some(reply)} answers it ─▶ skip to PreReply
+   ▼ Sample       Job::Sample ──────────────────────────────── Answer::Sampled{reply, error}
+   ▼ PreReply     Job::Hooks(PreReply, reply) ─────────────── Answer::Hooks ─▶ write under at
    ▼ PostReply    Job::Hooks(PostReply)
    ▼ Tools        if next == RunTools:  Job::RunCalls([RunCall…])
-   ▼ Calls        Job::Pending until a Fed::CallDone for every call
+   ▼ Calls        Job::Pending until an Answer::CallDone for every call
    │                join: Results in call order ─▶ Session::write
    ▼ PostResult   Job::Hooks(PostResult)
    ▼ PostStep     Job::Hooks(PostStep, ending)
@@ -32,7 +32,7 @@ page is the shape they share.
 ```
 
 Each phase checks its condition when it starts, against `at` as hooks left
-it. A string in any `Fed::Hooks` before `PostStep`, or a `Fed::HookFailed`,
+it. A string in any `Answer::Hooks` before `PostStep`, or an `Answer::HookFailed`,
 jumps straight to `PostStep` with `Halted` or `Failed`, and auto-step goes
 off.
 
@@ -62,9 +62,9 @@ sequenceDiagram
     and
         D->>T: c5
     end
-    D-->>C: Fed::CallDone(c5) (finished first)
+    D-->>C: Answer::CallDone(c5) (finished first)
     C->>D: Job::Pending
-    D-->>C: Fed::CallDone(c3)
+    D-->>C: Answer::CallDone(c3)
     Note over C: join: Results [c3, c5] under a1, move onto it, one record
     C->>D: Job::Hooks(PostResult)
 ```
@@ -73,10 +73,10 @@ sequenceDiagram
 
 ```
  Step::abort(session) ─▶ auto-step off; no later phase applies
-   returns true at Sample or Calls: cancel the effect and feed what arrived
-     Sample: Fed::Sampled{reply: partial, stop Interrupted} ─▶ pre_reply, commit, post_reply
-             nothing arrived: Fed::Sampled{None, None} ─▶ PostStep(Aborted)
-     Calls:  Fed::CallDone(Interrupted) for each unfinished call ─▶ join as usual
+   returns true at Sample or Calls: cancel the effect and answer what arrived
+     Sample: Answer::Sampled{reply: partial, stop Interrupted} ─▶ pre_reply, commit, post_reply
+             nothing arrived: Answer::Sampled{None, None} ─▶ PostStep(Aborted)
+     Calls:  Answer::CallDone(Interrupted) for each unfinished call ─▶ join as usual
    returns false at a hook: the hook finishes; later effects don't start
 ```
 

@@ -25,7 +25,7 @@ async def test_a_trace_holds_native_and_driver_spans_of_one_turn(tmp_path: Path)
         await h.settle()
     await h.close()
     seen = names(out)
-    assert {"core.write", "core.feed", "py.feed", "store.fsync_log"} <= seen
+    assert {"core.write", "core.answer", "py.answer", "store.fsync_log"} <= seen
     assert {"provider", "pre_step recorder"} <= seen
     events = json.loads(out.read_text())
     cats = {e["cat"] for e in events if e["ph"] == "X"}

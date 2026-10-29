@@ -64,7 +64,7 @@ Answered by one `Results` node.
 A node answering a batch: one `(call id, outcome, by)` per call, in call
 order, written at the join, `by: Tools`. Each outcome's `by` is `Tools` if the
 tool ran unedited, else the extension whose `pre_tool` answered it or whose
-`pre_result` last edited it (fed in `CallDone`). Final; another answer is a
+`pre_result` last edited it (answered in `Answer::CallDone`). Final; another answer is a
 sibling (Q10).
 
 ### outcome
@@ -108,7 +108,7 @@ time)` writes the root `Config` and a `System` node and opens the first
 cursor (Q5). The nodes live in its `Tree`.
 
 ### Tree
-*spike* `tree::Tree`, `Session::tree` · new
+*spike* `tree::Tree`, `Session::tree`; Python `tau_next.Tree` (`Session.tree`) · new
 
 The append-only forest of nodes and the reads over it: `node`, `walk`,
 `config_at`, `lca`, `children`, `node_count`, `deciding`, plus the private
@@ -116,6 +116,9 @@ The append-only forest of nodes and the reads over it: `node`, `walk`,
 `nodes`, `configs` (per node, its nearest `Config`), `kids` (per node, its
 children). It knows no cursor, label, or scratchpad; `Session::next` and
 `Session::deciding` take a cursor and ask `Tree::deciding` about its node.
+The Python `Session.tree` is a frozen view that shares the session's lock:
+`node`, `walk`, `children`, `len()`, `config_at`, `lca` (the reads that were
+on `Session`).
 Replay is the free functions `tree::load` and `tree::reconcile`, which
 rebuild a `Session` and so stand where `Session::load` and `Session::reconcile` were.
 
@@ -167,8 +170,8 @@ call ids) over a whole walk, for tests. `append` checks each node (`Tree::check`
 
 Core's refusals: `NoSuchNode`, `NoSuchCursor`, `NoSuchLabel`,
 `DuplicateCall` (V2: a `Results` or `Assistant` node naming a call id twice; checked
-on every append and write), `BadRecord` (load); a driver's: `WrongFeed`
-(a feed that answers no job: none is out, it is of another kind, or it
+on every append and write), `BadRecord` (load); a driver's: `WrongAnswer`
+(an answer to no job: none is out, it is of another kind, or it
 names a call that is not in the batch or already answered; nothing changes); and a frontend call's: `Busy`
 (step on a busy cursor); a hook's: `NotInHook` (a hook's
 move, write, or auto-step change on a cursor with no cursor hook job out), and
@@ -182,7 +185,7 @@ there is no common base class.
 
 ### scratchpad
 *spike* `tree::Scratchpad { items, next_item }`, `Session::scratchpad`,
-`Session::items` · retires submission queue, steering queue, follow-up queue
+`Session::items`; Python `CursorState.items` · retires submission queue, steering queue, follow-up queue
 
 A session's persistent, modifiable list of items, off the tree. A
 **cursor's scratchpad** is the items addressed to it, oldest first. Anyone
@@ -257,13 +260,14 @@ offered item itself must also leave the draft `None`, else the commit names a
 gone item and `write` refuses it (`NotPending`), failing the step.
 
 ### commit
-*spike* (in `Step::feed`) · retires the plan's commit
+*spike* (in `Step::answer`) · retires the plan's commit
 
 A phase writing its draft with `Session::write`; a draft of `None` (cleared by a
 hook) writes nothing, and the step moved no further than the hooks moved it.
 
 ### cursor.moves
-*spike* `Session::moves_of`, `Step::moves` · new
+*spike* `Session::moves_of`, `Step::moves`; Python `CursorState.moves`,
+`CursorState.moves_since_step` · new
 
 A cursor's move records; with `since_step=True` (`Step::moves`), only those
 since the step woke (Q44).
@@ -301,14 +305,14 @@ on that cursor writes nothing.
 ### machine
 *spike* `machine::Machine` · new
 
-The session plus every cursor's step: the frontend calls (`input`, `send`,
+The session plus every cursor's step: the frontend calls (`input`,
 `step`, `go_to`, `set_auto`, `abort`), the extension calls (`open`,
 `add_item`, `remove_item`, `append`, `set_label`, `remove_label`), a hook's
 own-cursor calls (`hook_move`, `hook_write`, `hook_set_auto`), and
-`next_job`/`feed` per cursor. Each extension call takes `hook: Option<CursorId>`,
+`next_job`/`answer` per cursor. Each extension call takes `hook: Option<CursorId>`,
 the cursor whose hook makes it: it syncs on return unless a cursor hook job
 is out for that cursor (then the phase's sync covers it); a frontend or the
-driver passes `None`. `abort`, `next_job`, `feed` check the cursor:
+driver passes `None`. `abort`, `next_job`, `answer` check the cursor:
 `NoSuchCursor`. Holds a busy go-to until its aborted step
 rests (`going`). Each frontend call syncs on return.
 What `tau-py` exposes; `Session`'s own mutators are for core and tests.
@@ -329,7 +333,24 @@ session drops them. A failed save is a crash: the call raises the OS error
 and the session closes itself (see **close**). Cursor ids are checked
 by core: an unknown one is `NoSuchCursor`. The value classes have a `__repr__`
 (the Rust `Debug` text).
-`cursors()` lists the open cursors; `take_notices()` drains the notices.
+The calls are the machine's (**machine**) with these differences. `send` is
+not one: it was `input` plus auto-step on, which a frontend does itself
+(`input`, then `set_auto(cursor, True)`; `Driver.send` does both). The reads
+are `tree` (a **Tree**, the nodes), `cursor(c)` (a **CursorState**, one
+cursor), `cursors()` (the open cursors), `label(l)` and `labels()` (the labels),
+and `take_notices()` (drains the notices). There is no whole-scratchpad read
+(`scratchpad()` repeated every cursor's `items`) and no `dropped()`.
+
+### CursorState
+Python `tau_next.CursorState` (`Session.cursor(c)`) · new
+
+A frozen snapshot of one cursor, all read under one lock: `at`, `auto`,
+`busy`, `next`, `items`, `labels`, `moves`, `moves_since_step`. Later changes
+do not reach it, so `busy` and `at` cannot disagree. It replaces the separate
+per-cursor reads (`at`, `auto`, `busy`, `next`, `items`, `labels_of`,
+`moves_of`, `moves_since_step`). The lists are Python objects only when read.
+A snapshot costs a copy of the cursor's lists, so it grows with its
+move count. Not the hook's `Cursor` handle, which acts; this only reads.
 
 ### close, Closed
 `Session.close`, `tau_next.Closed` · new
@@ -359,7 +380,7 @@ Never stored; every cursor loads at rest.
 submission, cycle
 
 One pass of the phase loop for one cursor, `pre_step` to `post_step`.
-`Step::wake(session, cursor, asked)` starts one; `next_job` and `feed`
+`Step::wake(session, cursor, asked)` starts one; `next_job` and `answer`
 drive it; `abort` and `resting` are its other calls. Private state:
 `cursor`, `pos`, `asked`, `seen`, `first_move`, `out` (a job is
 handed out and not yet answered; which kind is `pos`'s), `draft`, `error`,
@@ -387,7 +408,7 @@ Where a step is: `PreStep`, `Input`, `PreSample`, `Sample`, `PreReply`,
 *spike* `tau_core::transitions`, cargo feature `transitions` · new
 
 Off by default and absent from every wheel. With it on, each position change
-of a step (`Pos` to `Pos`, the job handed out or the feed that caused it) is
+of a step (`Pos` to `Pos`, the job handed out or the answer that caused it) is
 written once per scenario to stderr as a `TAU-TRANSITION` line. It exists so
 `scripts/diagrams.sh` can draw the step's position graph from what the tests
 actually did (`docs/as-built/diagrams/`). It changes no behavior.
@@ -413,18 +434,18 @@ batch; the driver refuses an empty one), `Pending` (calls outstanding),
 Python `TreeHandle.retire` · new
 
 Python retires a handle when its hook coroutine returns, before the job is
-fed. A retired handle can still read (`walk`, `items`, `children`, ...); it
+answered. A retired handle can still read (`walk`, `items`, `children`, ...); it
 cannot write at all: every write, `ask`, and own-cursor call raises
 `NotInHook`. A node handle is retired when its tool hook returns. A handle
 from an earlier job, step, or cursor is retired by then. This is the only
 check of handle identity: core knows only whether a cursor hook job is out
 for a cursor (`in_hook`).
 
-### Fed
-*spike* `Fed` · new
+### Answer
+*spike* `Answer` · new
 
-What the driver feeds back: `Hooks { stop, draft }`, `HookFailed(error)`,
-`Sampled { reply, error }`, `CallDone { call, outcome }`. Each is accepted only while the job it answers is out; any other feed is `WrongFeed`.
+What the driver answers with: `Hooks { stop, draft }`, `HookFailed(error)`,
+`Sampled { reply, error }`, `CallDone { call, outcome }`. Each is accepted only while the job it answers is out; any other answer is `WrongAnswer`.
 
 ### RunCall
 *spike* `RunCall` · new
@@ -435,13 +456,15 @@ One call handed out in `Job::RunCalls`: `{id, tool, args_raw}`.
 *spike* `Draft` · retires the plan's draft under `target`
 
 What the current phase will commit: `{body, delivers, by}`. Carried in a
-`Hooks` job; the edited one comes back in `Fed::Hooks`, and a hook that leaves
+`Hooks` job; the edited one comes back in `Answer::Hooks`, and a hook that leaves
 none (`None`) means commit nothing. A halt discards it; an abort commits it. Python subjects: input draft, sample draft, reply
 draft, call draft (Phase 4).
 
 ### answer
 A pre hook supplying the effect's result so it does not run: a reply from
-`pre_sample`, an outcome from `pre_tool`. Not a question's answer.
+`pre_sample`, an outcome from `pre_tool`. The same relation as `Answer` to a
+job, one step earlier: the result stands in for the effect. (A question's reply
+is a *response*.)
 
 ### effect
 The outside work of a phase: the sample, or running the calls. Abort
@@ -520,7 +543,7 @@ the effect in flight. Never cancels a hook.
 ### in_hook
 *spike* `Step::in_hook` · new
 
-True while a cursor hook job is out and not yet fed. A hook's own-cursor
+True while a cursor hook job is out and not yet answered. A hook's own-cursor
 calls (`Machine::hook_*`) are allowed only then, and a call made with
 `hook: Some(cursor)` skips its sync only then; a frontend's or the driver's
 call always syncs. A go-to or abort during a hook, cursor or tool, aborts
@@ -639,10 +662,10 @@ the driver's clock in milliseconds, so a handle fills in `time`. `Asker` is the
 driver's question call (see **question**).
 
 ### question
-`Driver.ask`, `answer`, `questions`, `Question` (driver memory; not core) ·
+`Driver.ask`, `respond`, `questions`, `Question` (driver memory; not core) ·
 retires `request_user_action`
 
-`await cursor.ask(target, question)` returns the answer, or `None` if
+`await cursor.ask(target, question)` returns the response, or `None` if
 declined. The hook awaiting it keeps its job out, so the cursor is busy and
 core's busy rules apply (model.md §7). `Driver.abort` and `Driver.go_to`
 decline the cursor's open questions.
@@ -925,27 +948,27 @@ driver memory.
 ### driver
 Python `tau_next.driver.Driver` · new
 
-Performs jobs and feeds results back with the time. Decides nothing. The only
+Performs jobs and answers each with its result and the time. Decides nothing. The only
 place that awaits. Built from a session, a provider, tools, extensions, and a
 clock. Its frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`,
-`abort`, `open`, `add_item`, `answer`) run on the loop thread, call the
+`abort`, `open`, `add_item`, `respond`) run on the loop thread, call the
 session, then poke the pump. Extensions are a list given to the constructor,
 in hook order; how `config_at` will name them is open.
 
 ### pump
 `Driver._pump` · new
 
-The one coroutine per session that calls `next_job` and `feed` (D11 rejects a
+The one coroutine per session that calls `next_job` and `answer` (D11 rejects a
 task per cursor). Loop: for each cursor with no effect out that is busy or
 due a poll, take its next job and start it as a unit; then await the queue and
-feed what arrives. `next_job` is not idempotent, so it is never called while a
+answer with what arrives. `next_job` is not idempotent, so it is never called while a
 cursor has an effect out, except after a `CallDone` (expecting `Pending`).
 
 ### unit
 `Driver` (`units`) · new
 
 One task performing one effect: a hooks job, a sample, or one call of a batch.
-It reports `(cursor, Fed)` to the pump's queue when done.
+It reports `(cursor, Answer)` to the pump's queue when done.
 A cancelled unit reports nothing.
 
 ### Outstanding
@@ -958,7 +981,7 @@ A cursor's effect in flight: its units, and what abort needs to cancel them
 `Driver._poke`, `Driver._poll` · new
 
 A **poke** wakes the pump after a frontend call. A **poll** is one extra
-`next_job` for a cursor whose effect just fed, even if it now rests: a go-to
+`next_job` for a cursor whose effect just ended, even if it now rests: a go-to
 waiting on its aborted step applies inside that `next_job`, and `busy` does
 not show it.
 
@@ -967,7 +990,7 @@ not show it.
 
 The mutable holder a cursor hook receives: `draft` (`pre_input`,
 `pre_sample`, `pre_reply`), `node` (`post_reply`, `post_result`), `ending`
-(`post_step`). The hook's edits to `draft` are what is fed back.
+(`post_step`). The hook's edits to `draft` are what the hook answers with.
 
 ### CallDraft
 `tau_next.CallDraft` · new
@@ -1000,8 +1023,8 @@ move time themselves.
 ### Question
 `tau_next.Question` · new
 
-An open question held by the driver: `{target, text, future}`. `answer` fills
-the oldest one for a cursor and calls `Session.answered`; `None` declines.
+An open question held by the driver: `{target, text, future}`. `respond` fills
+the oldest one for a cursor with the response; `None` declines.
 
 ### record
 *spike* `tree::Record` · new
@@ -1044,7 +1067,9 @@ never the store of record.
 Whatever follows the log's last good `Sync` on open: a record cut short,
 one failing its checksum, records never synced, damage. Open cuts it (so a
 session goes on from its last sync) and keeps the bytes as
-`dropped-<offset>` in the session directory; `dropped` is how many.
+`dropped-<offset>` in the session directory; `dropped` is how many. Rust only:
+the Python `Session.dropped` was removed, because nothing but a test asserting
+`0` ever read it.
 
 ### lease
 *spike* in `Store` · retires `SessionWriteLock`
@@ -1059,7 +1084,7 @@ writes and runs steps; a second open is `Error::Leased`.
 
 What every behavior test drives, shaped like `tau serve`: a session in a
 directory with a `Driver` over the fakes. `Harness.create`/`load`; a client's
-calls (`input`, `send`, `step`, `abort`, `go_to`, `set_auto`, `answer`, as
+calls (`input`, `send`, `step`, `abort`, `go_to`, `set_auto`, `respond`, as
 client `term`); `settle`; `crash`; snapshots (`snapshot`, `bodies`, `nodes`,
 `notices`).
 
@@ -1079,7 +1104,7 @@ count with the parked count.
 ### crash
 `Harness.crash` · new
 
-Cancel every task without feeding, close the session unsynced, reopen it from
+Cancel every task without answering, close the session unsynced, reopen it from
 disk, start a new driver on the same fakes.
 
 ### Gate
@@ -1117,7 +1142,7 @@ in the model. Findings are in `docs/as-built/traces/`.
 
 A named interval in the code, made with the `tracing` facade, which costs a
 static check and nothing else while no subscriber is installed. Names are
-`core.*` (the machine: `write`, `append`, `feed`, `next_job`), `store.*`
+`core.*` (the machine: `write`, `append`, `answer`, `next_job`), `store.*`
 (`save`, `append`, `fsync_log`, `write_pad`, `fsync_pad`, `fsync_dir`), and
 `py.*` (a `Session` method's whole body, with `py.lock`, `py.machine`, and
 `py.save` inside it). `tau-core` only makes spans: it installs no subscriber
@@ -1177,4 +1202,4 @@ extension, `deliver`, `combine`, returned input, run, batch states,
 journal, journal item, `idempotent`, `Result`, fast-forward, claim,
 `Session.rerun`, `Skipped`, refuse/handled/pass, restating `Config`, label on
 the move record, `post_open`, `post_input`, interrupt, scratch, the throttle
-(`THROTTLE`, `Pos::Throttle`, `Job::Wait`, `Fed::Waited`, `Clock.sleep_until`).
+(`THROTTLE`, `Pos::Throttle`, `Job::Wait`, `Answer::Waited`, `Clock.sleep_until`).

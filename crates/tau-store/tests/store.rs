@@ -6,9 +6,16 @@ use std::path::Path;
 
 use proptest::prelude::*;
 use tau_core::machine::Machine;
-use tau_core::step::{Draft, Fed, Hook, Job};
+use tau_core::step::{Answer, Draft, Hook, Job};
 use tau_core::tree::{Author, Body, ItemData, Part, Session, Stop};
 use tau_store::{Error, HEADER, Store, VERSION};
+
+/// Input, then auto-step on: what a frontend does to send.
+fn send(m: &mut Machine, cursor: u64, client: String, text: &str) -> u64 {
+    let item = m.input(cursor, client, text).unwrap();
+    m.set_auto(cursor, true).unwrap();
+    item
+}
 
 /// `s` as a load gives it back: nothing queued, every cursor at rest with
 /// auto-step off, no in-memory counts or notices.
@@ -317,14 +324,14 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let mut m = Machine::new(s);
-    m.send(c, "term".into(), "hi").unwrap();
+    send(&mut m, c, "term".into(), "hi");
     store = store.save(&mut m.session).unwrap();
     loop {
         let job = m.next_job(c).unwrap();
         store = store.save(&mut m.session).unwrap();
-        let fed = match job {
+        let answer = match job {
             Job::Rest => break,
-            Job::Sample => Fed::Sampled {
+            Job::Sample => Answer::Sampled {
                 reply: Some(Draft {
                     body: Body::Assistant {
                         parts: vec![Part::Text("hello".into())],
@@ -336,10 +343,10 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
                 }),
                 error: None,
             },
-            Job::Hooks { draft, .. } => Fed::Hooks { stop: None, draft },
+            Job::Hooks { draft, .. } => Answer::Hooks { stop: None, draft },
             other => panic!("a plain turn has no {other:?}"),
         };
-        m.feed(c, fed, 0).unwrap();
+        m.answer(c, answer, 0).unwrap();
         store = store.save(&mut m.session).unwrap();
     }
     assert!(m.session.synced());
@@ -397,7 +404,7 @@ fn load_wakes_a_cursor_with_input_pending_for_its_hooks_only() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     let mut store = Store::create(d.path(), &mut s).unwrap();
     let mut m = Machine::new(s);
-    m.send(c, "term".into(), "hi").unwrap();
+    send(&mut m, c, "term".into(), "hi");
     store = store.save(&mut m.session).unwrap();
     drop(m);
     drop(store); // closed before the step ran
@@ -411,9 +418,9 @@ fn load_wakes_a_cursor_with_input_pending_for_its_hooks_only() {
             break;
         }
         jobs.push(job);
-        m.feed(
+        m.answer(
             c,
-            Fed::Hooks {
+            Answer::Hooks {
                 stop: None,
                 draft: None,
             },

@@ -15,11 +15,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tau_next import (
+    Answer,
     Author,
     Body,
     Config,
     Draft,
-    Fed,
     Hook,
     ItemData,
     Job,
@@ -43,36 +43,36 @@ class Ctx:
     held: list[Session] = field(default_factory=list)
 
 
-def reply(*calls: tuple[str, str]) -> Fed:
+def reply(*calls: tuple[str, str]) -> Answer:
     if calls:
         parts = [Part.Call(i, t, "{}") for i, t in calls]
         body = Body.Assistant(parts, Stop.Tools)
     else:
         body = Body.Assistant([Part.Text("ok")], Stop.End)
-    return Fed.Sampled(Draft(body, Author.Provider(), []), None)
+    return Answer.Sampled(Draft(body, Author.Provider(), []), None)
 
 
-def answer(job: Job, calls: tuple[tuple[str, str], ...]) -> list[Fed]:
+def result_for(job: Job, calls: tuple[tuple[str, str], ...]) -> list[Answer]:
     match job:
         case Job.Hooks(draft=draft):
-            return [Fed.Hooks(None, draft)]
+            return [Answer.Hooks(None, draft)]
         case Job.Sample():
             return [reply(*calls)]
         case Job.RunCalls(calls=run):
-            return [Fed.CallDone(c.id, Outcome.Ok("done"), Author.Tools()) for c in run]
+            return [Answer.CallDone(c.id, Outcome.Ok("done"), Author.Tools()) for c in run]
     raise AssertionError(f"no answer for {job}")
 
 
 def drive_to(ctx: Ctx, stop: Callable[[Job], bool], calls: tuple[tuple[str, str], ...] = ()) -> Job:
-    """Perform jobs until `stop(job)`; that job stays out, not fed."""
+    """Perform jobs until `stop(job)`; that job stays out, not answer."""
     for _ in range(100):
         job = ctx.session.next_job(ctx.cursor)
         if stop(job):
             return job
         if isinstance(job, Job.Rest):
             raise AssertionError("the step ended before the state was reached")
-        for fed in answer(job, calls):
-            ctx.session.feed(ctx.cursor, fed, NOW)
+        for answer in result_for(job, calls):
+            ctx.session.answer(ctx.cursor, answer, NOW)
     raise AssertionError("state not reached")
 
 
@@ -96,7 +96,8 @@ def fresh(directory: Path | None = None) -> Ctx:
 
 
 def started(ctx: Ctx) -> None:
-    ctx.session.send(ctx.cursor, "term", "hi")
+    ctx.session.input(ctx.cursor, "term", "hi")
+    ctx.session.set_auto(ctx.cursor, True)
 
 
 # Each state brings `fresh()`'s cursor to one place and returns the context.
@@ -132,7 +133,7 @@ def s_calls(ctx: Ctx) -> None:
 
 def s_pending(ctx: Ctx) -> None:
     s_calls(ctx)
-    ctx.session.feed(ctx.cursor, Fed.CallDone("a", Outcome.Ok("x"), Author.Tools()), NOW)
+    ctx.session.answer(ctx.cursor, Answer.CallDone("a", Outcome.Ok("x"), Author.Tools()), NOW)
     job = ctx.session.next_job(ctx.cursor)
     assert isinstance(job, Job.Pending), job
 
@@ -189,7 +190,6 @@ Call = Callable[[Ctx], object]
 # (group, name, call). A call returns what the API returned.
 CALLS: list[tuple[str, str, Call]] = [
     ("frontend", "input", lambda c: c.session.input(c.cursor, "term", "hi")),
-    ("frontend", "send", lambda c: c.session.send(c.cursor, "term", "hi")),
     ("frontend", "step", lambda c: c.session.step(c.cursor)),
     ("frontend", "go_to (an ancestor)", lambda c: c.session.go_to(c.cursor, 0, "term", NOW)),
     ("frontend", "go_to (not a node)", lambda c: c.session.go_to(c.cursor, 999, "term", NOW)),
@@ -209,7 +209,7 @@ CALLS: list[tuple[str, str, Call]] = [
         "extension",
         "append (under at)",
         lambda c: c.session.append(
-            c.session.at(c.cursor), Body.Custom("note", ""), Author.Core(), NOW
+            c.session.cursor(c.cursor).at, Body.Custom("note", ""), Author.Core(), NOW
         ),
     ),
     (
@@ -229,9 +229,9 @@ CALLS: list[tuple[str, str, Call]] = [
         "hook_set_auto",
         lambda c: c.session.hook_set_auto(c.cursor, True),
     ),
-    ("driver", "feed Hooks", lambda c: c.session.feed(c.cursor, Fed.Hooks(), NOW)),
+    ("driver", "answer Hooks", lambda c: c.session.answer(c.cursor, Answer.Hooks(), NOW)),
     ("driver", "next_job", lambda c: c.session.next_job(c.cursor)),
-    ("read", "at", lambda c: c.session.at(c.cursor)),
+    ("read", "cursor", lambda c: c.session.cursor(c.cursor)),
 ]
 
 

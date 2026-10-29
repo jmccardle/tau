@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from drive import run, say
+from drive import run, say, send
 
 from tau_next import Author, Body, Config, Session
 
@@ -32,22 +32,22 @@ def test_import_keeps_gil_disabled() -> None:
 @pytest.mark.parametrize("on_disk", [False, True], ids=["memory", "directory"])
 def test_threads_share_one_session(tmp_path: Path, on_disk: bool) -> None:
     session = Session.create(Config("{}"), "sys", 0, tmp_path / "s" if on_disk else None)
-    root = session.at(session.cursors()[0])
+    root = session.cursor(session.cursors()[0]).at
     cursors = [session.open(root, Author.Core(), 0) for _ in range(THREADS)]
 
     def turns(cursor: int) -> int:
         run(session, cursor)  # the open's own wake
         for n in range(TURNS):
-            session.send(cursor, "term", f"hi {n}")
+            send(session, cursor, "term", f"hi {n}")
             run(session, cursor, iter([say(f"re {n}")]), n)
             session.cursors()
-            session.walk(session.at(cursor))
-        return len(session.walk(session.at(cursor)))
+            session.tree.walk(session.cursor(cursor).at)
+        return len(session.tree.walk(session.cursor(cursor).at))
 
     with ThreadPoolExecutor(max_workers=THREADS) as pool:
         lengths = list(pool.map(turns, cursors))
     assert lengths == [2 + 2 * TURNS] * THREADS
     for cursor in cursors:
-        walk = session.walk(session.at(cursor))
+        walk = session.tree.walk(session.cursor(cursor).at)
         texts = [n.body.text for n in walk if isinstance(n.body, Body.User)]
         assert texts == [f"hi {n}" for n in range(TURNS)]

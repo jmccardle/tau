@@ -14,7 +14,7 @@ COLOURS = {
     "argument": "gray88",  # refused because the cursor or node is not there
     "dead": "mistyrose",  # refused because the session is closed
 }
-STATE_REFUSALS = {"Busy", "NotInHook", "WrongFeed"}
+STATE_REFUSALS = {"Busy", "NotInHook", "WrongAnswer"}
 ARGUMENT_REFUSALS = {"NoSuchCursor", "NoSuchNode", "NoSuchItem", "NoSuchLabel", "NotPending"}
 SHOWN = {"ok (true)": "ok, cancel"}
 

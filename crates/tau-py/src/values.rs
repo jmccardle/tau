@@ -372,23 +372,6 @@ impl From<tree::Item> for Item {
     }
 }
 
-/// Python view of [`tree::Scratchpad`].
-#[pyclass(frozen, eq, hash, get_all, module = "tau_next._core")]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Scratchpad {
-    items: Vec<Item>,
-    next_item: u64,
-}
-
-impl From<tree::Scratchpad> for Scratchpad {
-    fn from(s: tree::Scratchpad) -> Self {
-        Self {
-            items: s.items.into_iter().map(Into::into).collect(),
-            next_item: s.next_item,
-        }
-    }
-}
-
 /// Python view of [`tree::Next`].
 #[pyclass(frozen, eq, eq_int, hash, module = "tau_next._core")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -408,6 +391,4 @@ impl From<tree::Next> for Next {
     }
 }
 
-debug_repr!(
-    Part, Outcome, Author, Body, Node, Move, ItemData, Item, Scratchpad
-);
+debug_repr!(Part, Outcome, Author, Body, Node, Move, ItemData, Item);

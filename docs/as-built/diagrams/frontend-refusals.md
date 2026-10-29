@@ -25,7 +25,6 @@ Each cell is what the call returned in a fresh session whose cursor was brought 
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | **frontend** | | | | | | | | | | | | | | | |
 | input | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
-| send | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
 | step | ok | ok | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | Busy | NoSuchCursor | Closed | Closed |
 | go_to (an ancestor) | ok | ok | ok | ok | ok | ok, cancel | ok | ok | ok, cancel | ok, cancel | ok | ok | NoSuchCursor | Closed | Closed |
 | go_to (not a node) | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchNode | NoSuchCursor | Closed | Closed |
@@ -44,7 +43,7 @@ Each cell is what the call returned in a fresh session whose cursor was brought 
 | hook_write | NotInHook | NotInHook | ok | ok | ok | NotInHook | ok | ok | NotInHook | NotInHook | ok | ok | NoSuchCursor | Closed | Closed |
 | hook_set_auto | NotInHook | NotInHook | ok | ok | ok | NotInHook | ok | ok | NotInHook | NotInHook | ok | ok | NoSuchCursor | Closed | Closed |
 | **driver** | | | | | | | | | | | | | | | |
-| feed Hooks | WrongFeed | WrongFeed | ok | ok | ok | WrongFeed | ok | ok | WrongFeed | WrongFeed | ok | ok | NoSuchCursor | Closed | Closed |
+| answer Hooks | WrongAnswer | WrongAnswer | ok | ok | ok | WrongAnswer | ok | ok | WrongAnswer | WrongAnswer | ok | ok | NoSuchCursor | Closed | Closed |
 | next_job | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
 | **read** | | | | | | | | | | | | | | | |
-| at | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |
+| cursor | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | ok | NoSuchCursor | Closed | Closed |

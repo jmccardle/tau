@@ -3,11 +3,18 @@
 
 use proptest::prelude::*;
 use tau_core::machine::Machine;
-use tau_core::step::{Draft, Fed, Job};
+use tau_core::step::{Answer, Draft, Job};
 use tau_core::tree::{
     Author, Body, CursorId, Error, ItemData, NodeId, Outcome, Part, Record, Scratchpad, Session,
     Stop,
 };
+
+/// Input, then auto-step on: what a frontend does to send.
+fn send(m: &mut Machine, cursor: u64, client: String, text: &str) -> u64 {
+    let item = m.input(cursor, client, text).unwrap();
+    m.set_auto(cursor, true).unwrap();
+    item
+}
 
 /// What the store holds after a crash: the records up to the last `Sync` and
 /// the scratchpad from the last `Sync` that carried one.
@@ -249,8 +256,8 @@ fn labels_survive_a_reload() {
     );
 }
 
-fn reply(parts: Vec<Part>, stop: Stop) -> Fed {
-    Fed::Sampled {
+fn reply(parts: Vec<Part>, stop: Stop) -> Answer {
+    Answer::Sampled {
         reply: Some(Draft {
             body: Body::Assistant {
                 parts,
@@ -265,9 +272,9 @@ fn reply(parts: Vec<Part>, stop: Stop) -> Fed {
 }
 
 /// The hooks' answer that changes nothing: a job's draft comes back as it was.
-fn echo(job: &Job) -> Fed {
+fn echo(job: &Job) -> Answer {
     match job {
-        Job::Hooks { draft, .. } => Fed::Hooks {
+        Job::Hooks { draft, .. } => Answer::Hooks {
             stop: None,
             draft: draft.clone(),
         },
@@ -275,8 +282,8 @@ fn echo(job: &Job) -> Fed {
     }
 }
 
-fn ok() -> Fed {
-    Fed::Hooks {
+fn ok() -> Answer {
+    Answer::Hooks {
         stop: None,
         draft: None,
     }
@@ -287,7 +294,7 @@ fn until(
     m: &mut Machine,
     c: u64,
     mut stop: impl FnMut(&Job) -> bool,
-    mut answer: impl FnMut(&Job) -> Vec<Fed>,
+    mut script: impl FnMut(&Job) -> Vec<Answer>,
 ) {
     for _ in 0..200 {
         let job = m.next_job(c).unwrap();
@@ -295,8 +302,8 @@ fn until(
             return;
         }
         assert_ne!(job, Job::Rest, "rested before the crash point");
-        for fed in answer(&job) {
-            m.feed(c, fed, 0).unwrap();
+        for answer in script(&job) {
+            m.answer(c, answer, 0).unwrap();
         }
     }
     panic!("no crash point");
@@ -306,13 +313,13 @@ fn until(
 fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item() {
     let (s, c) = Session::create("{}", "sys", 0);
     let mut m = Machine::new(s);
-    m.send(c, "term".into(), "hi").unwrap();
+    send(&mut m, c, "term".into(), "hi");
     until(&mut m, c, |j| *j == Job::Sample, |j| vec![echo(j)]);
     // The input was committed but not yet synced; its item was.
     let mut m = Machine::new(crash(&m.session));
     assert_eq!(m.session.next(c), tau_core::tree::Next::Wait);
     assert_eq!(m.session.items(c).count(), 1, "the input is pending again");
-    m.send(c, "term".into(), "").unwrap();
+    send(&mut m, c, "term".into(), "");
     let mut sampled = 0;
     until(
         &mut m,
@@ -341,7 +348,7 @@ fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item()
 fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
     let (s, c) = Session::create("{}", "sys", 0);
     let mut m = Machine::new(s);
-    m.send(c, "term".into(), "look").unwrap();
+    send(&mut m, c, "term".into(), "look");
     let call = |id: &str| Part::Call {
         id: id.into(),
         tool: "ls".into(),
@@ -356,7 +363,7 @@ fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
             Job::Sample => vec![reply(vec![call("a"), call("b")], Stop::Tools)],
             Job::RunCalls { .. } => {
                 fed_a.set(true);
-                vec![Fed::CallDone {
+                vec![Answer::CallDone {
                     call: "a".into(),
                     outcome: Outcome::Ok("done".into()),
                     by: Author::Tools,

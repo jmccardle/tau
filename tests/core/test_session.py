@@ -3,16 +3,16 @@
 from pathlib import Path
 
 import pytest
-from drive import call, run, say
+from drive import call, run, say, send
 
 import tau_next
 from tau_next import (
+    Answer,
     Author,
     Body,
     Config,
     Draft,
     Ending,
-    Fed,
     Hook,
     ItemData,
     Job,
@@ -30,18 +30,17 @@ def new(directory: Path | None = None) -> tuple[Session, int]:
 
 
 def bodies(session: Session, cursor: int) -> list[Body]:
-    return [n.body for n in session.walk(session.at(cursor))]
+    return [n.body for n in session.tree.walk(session.cursor(cursor).at)]
 
 
 def state(session: Session) -> dict[str, object]:
     cursors = session.cursors()
     return {
         "cursors": cursors,
-        "at": {c: session.at(c) for c in cursors},
-        "walks": {c: session.walk(session.at(c)) for c in cursors},
-        "items": {c: session.items(c) for c in cursors},
-        "labels": {c: session.labels_of(c) for c in cursors},
-        "scratchpad": session.scratchpad(),
+        "at": {c: session.cursor(c).at for c in cursors},
+        "walks": {c: session.tree.walk(session.cursor(c).at) for c in cursors},
+        "items": {c: session.cursor(c).items for c in cursors},
+        "labels": {c: session.cursor(c).labels for c in cursors},
     }
 
 
@@ -51,16 +50,15 @@ def state(session: Session) -> dict[str, object]:
 def test_create_in_memory_has_a_config_root_a_system_node_and_one_cursor() -> None:
     session, cursor = new()
     assert session.cursors() == [0]
-    root, system = session.walk(session.at(cursor))
+    root, system = session.tree.walk(session.cursor(cursor).at)
     assert root.parent is None
     assert root.body == Body.Config(Config("{}"))
     assert system.parent == root.id
     assert system.body == Body.System("sys")
-    assert session.config_at(system.id) == Config("{}")
-    assert session.next(cursor) == Next.Wait
-    assert not session.auto(cursor)
-    assert not session.busy(cursor)
-    assert session.dropped() == 0
+    assert session.tree.config_at(system.id) == Config("{}")
+    assert session.cursor(cursor).next == Next.Wait
+    assert not session.cursor(cursor).auto
+    assert not session.cursor(cursor).busy
 
 
 def test_create_in_a_directory_is_loadable_at_once(tmp_path: Path) -> None:
@@ -82,10 +80,10 @@ def test_create_refuses_a_directory_that_holds_a_session(tmp_path: Path) -> None
 
 def test_a_plain_turn_reaches_rest_with_a_reply() -> None:
     session, cursor = new()
-    item = session.send(cursor, "term", "hi")
-    assert session.busy(cursor)
-    assert session.auto(cursor)
-    assert session.items(cursor)[0].data == ItemData.Input("term", "hi")
+    item = send(session, cursor, "term", "hi")
+    assert session.cursor(cursor).busy
+    assert session.cursor(cursor).auto
+    assert session.cursor(cursor).items[0].data == ItemData.Input("term", "hi")
     jobs = run(session, cursor, iter([say("hello")]), 6)
     points = [j.point for j in jobs if isinstance(j, Job.Hooks)]
     assert points == [
@@ -98,28 +96,28 @@ def test_a_plain_turn_reaches_rest_with_a_reply() -> None:
     ]
     assert Job.Sample() in jobs
     assert isinstance(jobs[-1], Job.Rest)
-    assert not session.busy(cursor)
-    _, _, user, reply = session.walk(session.at(cursor))
+    assert not session.cursor(cursor).busy
+    _, _, user, reply = session.tree.walk(session.cursor(cursor).at)
     assert user.body == Body.User("hi")
     assert user.by == Author.Frontend("term")
     assert user.delivers == [item]
     assert user.time == 6
     assert reply.body == Body.Assistant([Part.Text("hello")], Stop.End)
     assert reply.by == Author.Provider()
-    assert session.items(cursor) == []
-    assert session.next(cursor) == Next.Wait
+    assert session.cursor(cursor).items == []
+    assert session.cursor(cursor).next == Next.Wait
 
 
 def test_the_input_draft_reaches_pre_input_and_an_edit_is_committed() -> None:
     session, cursor = new()
-    session.send(cursor, "term", "hi")
+    send(session, cursor, "term", "hi")
 
-    def edit(job: Job) -> list[Fed] | None:
+    def edit(job: Job) -> list[Answer] | None:
         if isinstance(job, Job.Hooks) and job.point == Hook.PreInput:
             assert job.draft is not None
             assert job.draft.body == Body.User("hi")
             edited = Draft(Body.User("HI"), job.draft.by, job.draft.delivers)
-            return [Fed.Hooks(draft=edited)]
+            return [Answer.Hooks(draft=edited)]
         return None
 
     run(session, cursor, iter([say("ok")]), on_job=edit)
@@ -128,33 +126,33 @@ def test_the_input_draft_reaches_pre_input_and_an_edit_is_committed() -> None:
 
 def test_a_halting_pre_input_hook_removes_the_item_and_notifies_the_client() -> None:
     session, cursor = new()
-    session.send(cursor, "term", "/nope")
+    send(session, cursor, "term", "/nope")
 
-    def halt(job: Job) -> list[Fed] | None:
+    def halt(job: Job) -> list[Answer] | None:
         if isinstance(job, Job.Hooks) and job.point == Hook.PreInput:
-            return [Fed.Hooks(stop="no commands")]
+            return [Answer.Hooks(stop="no commands")]
         return None
 
     jobs = run(session, cursor, on_job=halt)
     last = [j for j in jobs if isinstance(j, Job.Hooks)][-1]
     assert last.point == Hook.PostStep
     assert last.ending == Ending.Halted("no commands")
-    assert session.items(cursor) == []
+    assert session.cursor(cursor).items == []
     assert session.take_notices() == [("term", "no commands")]
     assert session.take_notices() == []
-    assert not session.auto(cursor)
+    assert not session.cursor(cursor).auto
 
 
 def test_a_failed_sample_ends_the_step_failed() -> None:
     session, cursor = new()
-    session.send(cursor, "term", "hi")
-    failed = iter([Fed.Sampled(None, "boom")])
+    send(session, cursor, "term", "hi")
+    failed = iter([Answer.Sampled(None, "boom")])
     jobs = run(session, cursor, failed)
     last = [j for j in jobs if isinstance(j, Job.Hooks)][-1]
     assert last.ending == Ending.Failed("boom")
     # A side node: written under the user node, the cursor stays where it was.
-    side = session.node(session.at(cursor) + 1)
-    assert side.parent == session.at(cursor)
+    side = session.tree.node(session.cursor(cursor).at + 1)
+    assert side.parent == session.cursor(cursor).at
     assert side.body == Body.Custom("sample_error", "boom")
 
 
@@ -163,14 +161,14 @@ def test_a_failed_sample_ends_the_step_failed() -> None:
 
 def test_a_tool_batch_is_answered_by_one_results_node_in_call_order() -> None:
     session, cursor = new()
-    session.send(cursor, "term", "use tools")
+    send(session, cursor, "term", "use tools")
     samples = iter([call(("a", "read"), ("b", "write")), say("done")])
     jobs = run(session, cursor, samples)
     batches = [j for j in jobs if isinstance(j, Job.RunCalls)]
     assert [[c.id for c in b.calls] for b in batches] == [["a", "b"]]
     assert batches[0].calls[0].tool == "read"
     assert batches[0].calls[0].args_raw == "{}"
-    _, _, _, assistant, results, final = session.walk(session.at(cursor))
+    _, _, _, assistant, results, final = session.tree.walk(session.cursor(cursor).at)
     assert isinstance(assistant.body, Body.Assistant)
     assert assistant.body.stop == Stop.Tools
     assert results.by == Author.Tools()
@@ -185,13 +183,13 @@ def test_a_tool_batch_is_answered_by_one_results_node_in_call_order() -> None:
 
 def test_calls_may_finish_in_any_order() -> None:
     session, cursor = new()
-    session.send(cursor, "term", "go")
+    send(session, cursor, "term", "go")
     samples = iter([call(("a", "t"), ("b", "t")), say("done")])
 
-    def backwards(job: Job) -> list[Fed] | None:
+    def backwards(job: Job) -> list[Answer] | None:
         if isinstance(job, Job.RunCalls):
-            done: list[Fed] = [
-                Fed.CallDone(c.id, Outcome.Err(c.id), Author.Extension("x")) for c in job.calls
+            done: list[Answer] = [
+                Answer.CallDone(c.id, Outcome.Err(c.id), Author.Extension("x")) for c in job.calls
             ]
             return done[::-1]
         return None
@@ -205,14 +203,14 @@ def test_calls_may_finish_in_any_order() -> None:
 
 def test_abort_during_calls_asks_the_driver_to_cancel_them() -> None:
     session, cursor = new()
-    session.send(cursor, "term", "go")
+    send(session, cursor, "term", "go")
     samples = iter([call(("a", "t"))])
     cancelled: list[bool] = []
 
-    def abort(job: Job) -> list[Fed] | None:
+    def abort(job: Job) -> list[Answer] | None:
         if isinstance(job, Job.RunCalls):
             cancelled.append(session.abort(cursor))
-            return [Fed.CallDone("a", Outcome.Interrupted(), Author.Tools())]
+            return [Answer.CallDone("a", Outcome.Interrupted(), Author.Tools())]
         return None
 
     run(session, cursor, samples, on_job=abort)
@@ -220,7 +218,7 @@ def test_abort_during_calls_asks_the_driver_to_cancel_them() -> None:
     results = bodies(session, cursor)[-1]
     assert isinstance(results, Body.Results)
     assert results.outcomes[0][1] == Outcome.Interrupted()
-    assert not session.auto(cursor)
+    assert not session.cursor(cursor).auto
 
 
 # Cursors, items, labels, moves
@@ -228,57 +226,76 @@ def test_abort_during_calls_asks_the_driver_to_cancel_them() -> None:
 
 def test_open_wakes_a_cursor_and_go_to_moves_it() -> None:
     session, first = new()
-    system = session.at(first)
+    system = session.cursor(first).at
     other = session.open(system, Author.Extension("ext"), 3)
     assert session.cursors() == [first, other]
-    assert session.busy(other)
-    assert session.moves_of(other)[0].from_ is None
+    assert session.cursor(other).busy
+    assert session.cursor(other).moves[0].from_ is None
     run(session, other)
-    session.send(first, "term", "hi")
+    send(session, first, "term", "hi")
     run(session, first, iter([say("hey")]))
-    assert session.go_to(other, session.at(first), "term", 4) is False
+    assert session.go_to(other, session.cursor(first).at, "term", 4) is False
     run(session, other)
-    assert session.at(other) == session.at(first)
-    assert not session.auto(other)
-    assert session.moves_of(other)[-1].by == Author.Frontend("term")
-    assert session.lca(session.at(first), system) == system
+    assert session.cursor(other).at == session.cursor(first).at
+    assert not session.cursor(other).auto
+    assert session.cursor(other).moves[-1].by == Author.Frontend("term")
+    assert session.tree.lca(session.cursor(first).at, system) == system
+
+
+def test_a_cursor_snapshot_does_not_see_a_move_made_after_it() -> None:
+    session, cursor = new()
+    run(session, cursor)
+    send(session, cursor, "term", "hi")
+    run(session, cursor, iter([say("hey")]))
+    before = session.cursor(cursor)
+    moves = before.moves
+    assert len(moves) >= 2
+    session.go_to(cursor, 0, "term", 5)
+    run(session, cursor)
+    after = session.cursor(cursor)
+    assert after.at == 0
+    assert before.moves == moves, "the snapshot ends where it was taken"
+    assert before.at != 0
+    assert len(after.moves) == len(moves) + 1
+    session.close()
+    with pytest.raises(tau_next.Closed):
+        _ = before.moves
 
 
 def test_an_extension_item_wakes_its_cursor_and_stays_in_the_scratchpad() -> None:
     session, cursor = new()
     item = session.add_item(cursor, ItemData.Extension("timer", "tick"))
-    assert session.busy(cursor)
+    assert session.cursor(cursor).busy
     run(session, cursor)
-    assert [i.id for i in session.items(cursor)] == [item]
-    assert session.scratchpad().items == session.items(cursor)
-    assert session.scratchpad().next_item == item + 1
+    assert [i.id for i in session.cursor(cursor).items] == [item]
+    assert session.add_item(cursor, ItemData.Extension("timer", "tock")) == item + 1
 
 
 def test_labels_set_move_and_remove() -> None:
     session, first = new()
-    other = session.open(session.at(first), Author.Core(), 0)
+    other = session.open(session.cursor(first).at, Author.Core(), 0)
     session.set_label("main", first)
     session.set_label("side", first)
-    assert session.labels_of(first) == ["main", "side"]
+    assert session.cursor(first).labels == ["main", "side"]
     session.set_label("main", other)
     assert session.label("main") == other
-    assert session.labels_of(first) == ["side"]
+    assert session.cursor(first).labels == ["side"]
     session.remove_label("side")
-    assert session.labels_of(first) == []
+    assert session.cursor(first).labels == []
 
 
 def test_moves_since_step_lists_the_moves_the_step_made() -> None:
     session, cursor = new()
-    session.send(cursor, "term", "hi")
+    send(session, cursor, "term", "hi")
     seen: list[int] = []
 
-    def watch(job: Job) -> list[Fed] | None:
+    def watch(job: Job) -> list[Answer] | None:
         if isinstance(job, Job.Hooks) and job.point == Hook.PostReply:
-            seen.extend(m.to for m in session.moves_since_step(cursor))
+            seen.extend(m.to for m in session.cursor(cursor).moves_since_step)
         return None
 
     run(session, cursor, iter([say("x")]), on_job=watch)
-    user, reply = session.at(cursor) - 1, session.at(cursor)
+    user, reply = session.cursor(cursor).at - 1, session.cursor(cursor).at
     assert seen == [user, reply]
 
 
@@ -288,11 +305,11 @@ def test_moves_since_step_lists_the_moves_the_step_made() -> None:
 def test_unknown_ids_raise_lookup_errors() -> None:
     session, cursor = new()
     with pytest.raises(tau_next.NoSuchNode):
-        session.node(99)
+        session.tree.node(99)
     with pytest.raises(tau_next.NoSuchNode):
         session.go_to(cursor, 99, "term", 0)
     with pytest.raises(tau_next.NoSuchCursor):
-        session.at(7)
+        session.cursor(7)
     with pytest.raises(tau_next.NoSuchCursor):
         session.input(7, "term", "hi")
     with pytest.raises(tau_next.NoSuchCursor):
@@ -308,54 +325,54 @@ def test_unknown_ids_raise_lookup_errors() -> None:
 
 def test_a_step_on_a_busy_cursor_is_busy() -> None:
     session, cursor = new()
-    session.send(cursor, "term", "hi")
+    send(session, cursor, "term", "hi")
     with pytest.raises(tau_next.Busy):
         session.step(cursor)
 
 
 def test_a_go_to_while_a_cursor_hook_runs_aborts_and_moves_once_the_step_rests() -> None:
     session, cursor = new()
-    system = session.at(cursor)
-    session.send(cursor, "term", "hi")
+    system = session.cursor(cursor).at
+    send(session, cursor, "term", "hi")
     assert isinstance(session.next_job(cursor), Job.Hooks)
     assert not session.go_to(cursor, 0, "term", 0), "nothing to cancel: the hook finishes"
-    assert session.at(cursor) == system
+    assert session.cursor(cursor).at == system
     jobs = run(session, cursor)
     endings = [j.ending for j in jobs if isinstance(j, Job.Hooks) and j.ending is not None]
     assert endings[0] == Ending.Aborted()
     assert not any(isinstance(j, Job.Sample) for j in jobs)
-    assert session.at(cursor) == 0
+    assert session.cursor(cursor).at == 0
 
 
 def test_a_results_draft_naming_a_call_twice_fails_the_step_and_changes_nothing() -> None:
     session, cursor = new()
-    session.send(cursor, "term", "hi")
+    send(session, cursor, "term", "hi")
     twice = [("a", Outcome.Ok("1"), Author.Tools()), ("a", Outcome.Ok("2"), Author.Tools())]
     bad = Draft(Body.Results(twice), Author.Core(), [])
     before = bodies(session, cursor)
 
-    def corrupt(job: Job) -> list[Fed] | None:
+    def corrupt(job: Job) -> list[Answer] | None:
         if isinstance(job, Job.Hooks) and job.point == Hook.PreInput:
-            return [Fed.Hooks(draft=bad)]
+            return [Answer.Hooks(draft=bad)]
         return None
 
     jobs = run(session, cursor, on_job=corrupt)
     endings = [j.ending for j in jobs if isinstance(j, Job.Hooks) and j.ending is not None]
     assert endings == [Ending.Failed("a node names a call id twice")]
     assert bodies(session, cursor) == before, "the refused commit wrote nothing"
-    assert [i.data for i in session.items(cursor)] == [ItemData.Input("term", "hi")]
-    assert not session.auto(cursor)
+    assert [i.data for i in session.cursor(cursor).items] == [ItemData.Input("term", "hi")]
+    assert not session.cursor(cursor).auto
 
 
 def test_a_feed_that_answers_no_job_is_refused_and_the_job_stays_out() -> None:
     session, cursor = new()
-    with pytest.raises(tau_next.WrongFeed):
-        session.feed(cursor, say("x"), 0)
-    session.send(cursor, "term", "hi")
+    with pytest.raises(tau_next.WrongAnswer):
+        session.answer(cursor, say("x"), 0)
+    send(session, cursor, "term", "hi")
     assert isinstance(session.next_job(cursor), Job.Hooks)
-    with pytest.raises(tau_next.WrongFeed):
-        session.feed(cursor, say("x"), 0)
-    session.feed(cursor, Fed.Hooks(), 0)  # the hook job was still out
+    with pytest.raises(tau_next.WrongAnswer):
+        session.answer(cursor, say("x"), 0)
+    session.answer(cursor, Answer.Hooks(), 0)  # the hook job was still out
     run(session, cursor, iter([say("x")]))
 
 
@@ -363,9 +380,9 @@ def test_a_closed_session_raises_closed() -> None:
     session, cursor = new()
     session.close()
     with pytest.raises(tau_next.Closed):
-        session.at(cursor)
+        session.cursor(cursor)
     with pytest.raises(tau_next.Closed):
-        session.send(cursor, "term", "hi")
+        send(session, cursor, "term", "hi")
     with pytest.raises(tau_next.Closed):
         session.close()
 
@@ -416,9 +433,9 @@ def test_a_damaged_scratchpad_file_is_corrupt(tmp_path: Path) -> None:
 
 def test_reopening_a_session_gives_the_state_before(tmp_path: Path) -> None:
     session, first = new(tmp_path / "s")
-    session.send(first, "term", "hi")
+    send(session, first, "term", "hi")
     run(session, first, iter([call(("a", "t")), say("done")]), 2)
-    other = session.open(session.at(first) - 2, Author.Extension("ext"), 3)
+    other = session.open(session.cursor(first).at - 2, Author.Extension("ext"), 3)
     run(session, other)
     session.add_item(other, ItemData.Extension("timer", "tick"))
     run(session, other)
@@ -431,41 +448,40 @@ def test_reopening_a_session_gives_the_state_before(tmp_path: Path) -> None:
     session.close()
     after = Session.load(tmp_path / "s")
     assert state(after) == before
-    assert after.dropped() == 0
 
 
 def test_a_send_is_durable_on_return_and_a_loaded_cursor_has_auto_off(tmp_path: Path) -> None:
     session, cursor = new(tmp_path / "s")
-    session.send(cursor, "term", "hi")
+    send(session, cursor, "term", "hi")
     session.close()
     loaded = Session.load(tmp_path / "s")
-    assert [i.data for i in loaded.items(cursor)] == [ItemData.Input("term", "hi")]
-    assert not loaded.auto(cursor)
+    assert [i.data for i in loaded.cursor(cursor).items] == [ItemData.Input("term", "hi")]
+    assert not loaded.cursor(cursor).auto
 
 
 def test_load_wakes_a_cursor_with_input_pending_for_pre_step_and_post_step_only(
     tmp_path: Path,
 ) -> None:
     session, cursor = new(tmp_path / "s")
-    session.send(cursor, "term", "hi")  # auto-step on, durable on return
+    send(session, cursor, "term", "hi")  # auto-step on, durable on return
     session.close()  # before the step ran
     loaded = Session.load(tmp_path / "s")
-    assert loaded.busy(cursor)
-    assert not loaded.auto(cursor)
+    assert loaded.cursor(cursor).busy
+    assert not loaded.cursor(cursor).auto
     jobs = run(loaded, cursor)
     assert [j.point for j in jobs if isinstance(j, Job.Hooks)] == [Hook.PreStep, Hook.PostStep]
     assert not any(isinstance(j, Job.Sample) for j in jobs)
-    assert [i.data for i in loaded.items(cursor)] == [ItemData.Input("term", "hi")]
-    assert len(loaded.walk(loaded.at(cursor))) == 2  # no User node, no reply
+    assert [i.data for i in loaded.cursor(cursor).items] == [ItemData.Input("term", "hi")]
+    assert len(loaded.tree.walk(loaded.cursor(cursor).at)) == 2  # no User node, no reply
 
 
 def test_close_drops_what_was_not_synced_as_a_crash_would(tmp_path: Path) -> None:
     session, cursor = new(tmp_path / "s")
-    session.send(cursor, "term", "hi")
+    send(session, cursor, "term", "hi")
     before = state(session)
     committed: list[Job] = []
 
-    def crash(job: Job) -> list[Fed] | None:
+    def crash(job: Job) -> list[Answer] | None:
         if isinstance(job, Job.Sample):
             committed.append(job)
             session.close()
@@ -480,17 +496,17 @@ def test_close_drops_what_was_not_synced_as_a_crash_would(tmp_path: Path) -> Non
 
 def test_post_hooks_see_synced_data(tmp_path: Path) -> None:
     session, cursor = new(tmp_path / "s")
-    session.send(cursor, "term", "hi")
+    send(session, cursor, "term", "hi")
     on_disk: list[int] = []
 
-    def peek(job: Job) -> list[Fed] | None:
+    def peek(job: Job) -> list[Answer] | None:
         if isinstance(job, Job.Hooks) and job.point == Hook.PostReply:
             copy = tmp_path / "copy"
             copy.mkdir(exist_ok=True)
             for name in ("log", "scratchpad"):
                 if (tmp_path / "s" / name).exists():
                     (copy / name).write_bytes((tmp_path / "s" / name).read_bytes())
-            on_disk.append(len(Session.load(copy).walk(session.at(cursor))))
+            on_disk.append(len(Session.load(copy).tree.walk(session.cursor(cursor).at)))
         return None
 
     run(session, cursor, iter([say("x")]), on_job=peek)
@@ -502,12 +518,12 @@ def test_post_hooks_see_synced_data(tmp_path: Path) -> None:
 
 def test_open_and_add_item_outside_a_step_are_durable_on_return(tmp_path: Path) -> None:
     session, cursor = new(tmp_path / "s")
-    other = session.open(session.at(cursor), Author.Extension("ext"), 1)
+    other = session.open(session.cursor(cursor).at, Author.Extension("ext"), 1)
     item = session.add_item(cursor, ItemData.Extension("timer", "tick"))
     session.close()
     loaded = Session.load(tmp_path / "s")
     assert loaded.cursors() == [cursor, other]
-    assert [(i.id, i.data) for i in loaded.items(cursor)] == [
+    assert [(i.id, i.data) for i in loaded.cursor(cursor).items] == [
         (item, ItemData.Extension("timer", "tick"))
     ]
 
@@ -521,11 +537,11 @@ def test_a_failed_save_is_a_crash_the_session_closes_and_reloads_as_last_synced(
     block = tmp_path / "s" / "scratchpad.new"
     block.mkdir()  # the store cannot create its temporary scratchpad file here
     with pytest.raises(IsADirectoryError):
-        session.send(cursor, "term", "hi")
+        send(session, cursor, "term", "hi")
     # Closed, as `close` leaves it: every call raises `Closed`, reads included.
     for call_ in (
-        lambda: session.at(cursor),
-        lambda: session.items(cursor),
+        lambda: session.cursor(cursor).at,
+        lambda: session.cursor(cursor).items,
         lambda: session.abort(cursor),
         lambda: session.next_job(cursor),
         session.close,
@@ -535,13 +551,13 @@ def test_a_failed_save_is_a_crash_the_session_closes_and_reloads_as_last_synced(
     block.rmdir()
     loaded = Session.load(tmp_path / "s")  # the lease was released
     assert state(loaded) == synced
-    assert not loaded.auto(cursor)
+    assert not loaded.cursor(cursor).auto
 
 
-def edit_input_without_delivering(job: Job) -> list[Fed] | None:
+def edit_input_without_delivering(job: Job) -> list[Answer] | None:
     if isinstance(job, Job.Hooks) and job.point == Hook.PreInput and job.draft:
         edited = Draft(Body.User("edited"), job.draft.by, [])
-        return [Fed.Hooks(None, edited)]
+        return [Answer.Hooks(None, edited)]
     return None
 
 
@@ -561,7 +577,7 @@ def test_a_pre_input_draft_that_delivers_nothing_leaves_the_input_pending() -> N
     assert sum(isinstance(j, Job.Sample) for j in jobs) == 1
     users = [b for b in bodies(session, cursor) if isinstance(b, Body.User)]
     assert users == [Body.User("edited")]
-    assert [i.data for i in session.items(cursor)] == [ItemData.Input("term", "hi")]
+    assert [i.data for i in session.cursor(cursor).items] == [ItemData.Input("term", "hi")]
 
 
 def test_a_pre_input_hook_that_leaves_no_draft_commits_nothing() -> None:
@@ -570,14 +586,14 @@ def test_a_pre_input_hook_that_leaves_no_draft_commits_nothing() -> None:
     run(session, cursor)  # auto-step is off: the woken step offers no input
     session.step(cursor)
 
-    def take_the_draft(job: Job) -> list[Fed] | None:
+    def take_the_draft(job: Job) -> list[Answer] | None:
         if isinstance(job, Job.Hooks) and job.point == Hook.PreInput:
-            return [Fed.Hooks(None, None)]
+            return [Answer.Hooks(None, None)]
         return None
 
     jobs = run(session, cursor, iter(say("ok") for _ in range(10)), on_job=take_the_draft)
     assert not any(isinstance(b, Body.User) for b in bodies(session, cursor))
-    assert [i.data for i in session.items(cursor)] == [ItemData.Input("term", "hi")]
+    assert [i.data for i in session.cursor(cursor).items] == [ItemData.Input("term", "hi")]
     endings = [j.ending for j in jobs if isinstance(j, Job.Hooks) and j.ending is not None]
     assert endings == [Ending.Done()], "leaving no draft is not a failure"
 
@@ -589,20 +605,20 @@ def test_a_cursor_that_is_not_open_is_refused_and_leaves_no_record() -> None:
         with pytest.raises(tau_next.NoSuchCursor):
             method(999)
     with pytest.raises(tau_next.NoSuchCursor):
-        session.feed(999, Fed.Hooks(), 0)
+        session.answer(999, Answer.Hooks(), 0)
     assert session.cursors() == [cursor]
     assert state(session) == before
 
 
 def test_values_have_a_readable_repr() -> None:
     session, cursor = new()
-    session.send(cursor, "term", "hi")
+    send(session, cursor, "term", "hi")
     job = session.next_job(cursor)
     assert repr(Body.User("hello")) == 'User { text: "hello" }'
     assert "PreStep" in repr(job)
-    assert "hi" in repr(session.items(cursor)[0])
-    assert "System" in repr(session.walk(session.at(cursor))[-1])
+    assert "hi" in repr(session.cursor(cursor).items[0])
+    assert "System" in repr(session.tree.walk(session.cursor(cursor).at)[-1])
     assert "Ok" in repr(Outcome.Ok("fine"))
     assert "Frontend" in repr(Draft(Body.User("x"), Author.Frontend("term"), [1]))
     assert "Halted" in repr(Ending.Halted("why"))
-    assert "HookFailed" in repr(Fed.HookFailed("oops"))
+    assert "HookFailed" in repr(Answer.HookFailed("oops"))
