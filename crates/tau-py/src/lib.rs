@@ -4,6 +4,7 @@
 mod error;
 mod job;
 mod session;
+mod tools;
 mod values;
 
 use pyo3::prelude::*;
@@ -14,6 +15,8 @@ mod _core {
     use super::job::{Draft, Ending, Fed, Hook, Job, RunCall};
     #[pymodule_export]
     use super::session::Session;
+    #[pymodule_export]
+    use super::tools::{Bash, BashRun, Cancel, Grep, Read, Write};
     #[pymodule_export]
     use super::values::{
         Author, Body, Config, Item, ItemData, Move, Next, Node, Outcome, Part, Scratchpad, Stop,

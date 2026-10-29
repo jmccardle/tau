@@ -719,6 +719,122 @@ Raised by `Driver.__init__` for an object that is not a `Tool`, naming it: a
 missing or non-`str` `name` or `description`, `parameters` that is not a
 `Mapping`, a `call` that is not callable, or two tools with one name.
 
+### base tools: ReadTool, WriteTool, GrepTool, BashTool, base_tools
+`tau_next.ReadTool` and the others, `tau_next.base_tools(cwd, ...)` (`base_tools.py`) over `crates/tau-tools`, bound by `tau-py/src/tools.rs` · new
+
+Four `Tool`s whose logic is Rust (`tau-tools`: filesystem and process IO, no
+PyO3) and whose `call` runs it on a worker thread with the GIL released, so
+calls run in parallel (also on a free-threaded build) and never block the
+loop. `base_tools(cwd)` returns all four. `cwd` (default: the current
+directory, which must exist: `NotADirectoryError`) is what relative paths and
+the shell's working directory are relative to. An expected failure (bad
+arguments, a missing file, a nonzero exit, an overflow file that cannot be
+written) is `Err(message)`; nothing is raised out of `call`. The arguments
+are strict: an unknown or missing field is an `Err`.
+
+| tool | parameters | does |
+|---|---|---|
+| `read` | `path`, `offset` (1-based line, default 1), `limit` (lines, default 4096) | A text file, verbatim, scanned in buffer-sized pieces (a file of one huge line costs the output window, not the file). `Err` for a missing file, a directory, a pipe, device or socket, an offset past the end, a binary file (NUL bytes; images are not supported). When `limit` or the byte limit stops it short of the end, a last line `[showing lines A-B; offset=N continues]` is appended; after a byte cut, `B` is the last kept line. Bytes that are not UTF-8 become U+FFFD and a line says so. |
+| `write` | `path`, `content` | The whole file, UTF-8, atomically (a temp file beside it, then a rename), creating parent directories, following a symlink (dangling or not). Answers `Wrote N lines (B bytes) to <path>` (`1 line` in the singular). The new file gets the mode of the one it replaces before any content is written; the file and then the directory are synced. Hard links to the old file, its owner, group and ACLs are not kept. |
+| `grep` | `pattern`, `path` (file or directory, default `cwd`), `files` (list; overrides `path`; searched as named), `ignore_case`, `glob` (a filter of a directory walk: the file name, or the path below the searched directory if it has a `/`; ignore rules still apply; not with `files` or a file `path`) | The Rust regex engine of ripgrep over a parallel, ignore-aware walk: `.gitignore` (in any tree, git repository or not), `.ignore`, hidden files and binary files are skipped. One `path:line:text` per match, path relative to the tool's working directory (not the searched path), sorted by path then line; a line is cut at 500 bytes with ` [+N bytes]`. The search stops once the matches held reach the overflow cap (a note says so). No match: `No matches found in N file(s)`. Notes add last lines: `[skipped N binary file(s)]` (the names, for files named explicitly), `[matching in F stopped at a NUL byte at offset N; ...]` (binary detection works a buffer at a time), an invalid-UTF-8 note, `[N paths could not be searched; first: ...]`. |
+| `bash` | `command`, `timeout` (ms) | `bash -c command` in `cwd` as a session leader (no controlling terminal; run through `setsid(1)`, because `pre_exec` needs `unsafe`, which the workspace forbids), stdin closed, stdout and stderr on one pipe so they arrive in the order written. Exit 0: `Ok(output)`. Otherwise `Err(output + "\n\n" + "command exited with code N")` (or `killed by signal N`, `timed out after N ms and was terminated`). A `timeout` over the tool's maximum is an `Err` stating the maximum. |
+
+`write` has no output limit: its answer is one short line. The other three
+share the *output limit*.
+
+### output limit, max_output
+`max_output=` on `ReadTool`, `GrepTool`, `BashTool`, `base_tools` · new
+
+The most bytes of text the model gets from `read`, `grep` or `bash`: 10_000 by
+default, at least 1. It bounds the *kept text*; the truncation note is extra.
+Output at or under the limit is returned whole and writes no file.
+
+### kept end
+`Keep::Head`, `Keep::Tail` (`tau-tools/src/limit.rs`) · new
+
+Which end of an over-limit output the model keeps. **`read` and `grep` keep the
+head** (the start of a file, the first matches); **`bash` keeps the tail**
+(errors and the result of a command land at the end). A judgment call of the
+implementation, for John to overrule: it is one argument to `Sink::new` per
+tool. Cuts fall on line boundaries and never inside a UTF-8 character. If not
+one whole line fits (a single line longer than the limit), the cut is on a
+character boundary instead and the note says so.
+
+### overflow file, overflow_dir, max_overflow
+`overflow_dir=` (default `<temp dir>/tau-<euid>`, from `std::env::temp_dir` and the effective uid, e.g. `/tmp/tau-1000`), `max_overflow=` (default 64 MiB) · new
+
+When output passes the limit, the output (everything the tool would have
+answered, not just what it kept) is written to `<overflow_dir>/<id>.out`, `id`
+being 8 random characters from `a-z0-9`. The directory is created `0700` if
+missing, and then checked with `lstat`: it must be a directory (not a symlink),
+owned by the effective uid, with `mode & 0o077 == 0`; otherwise the call is an
+`Err` naming the problem. There is no fallback directory. Files are created
+`0600` with `create_new`, so an existing file is never touched. For `read` the
+output is the lines selected by `offset` and `limit`; for `grep`, all matches
+(without a trailing newline); for `bash`, stdout and stderr interleaved,
+without the exit-code trailer. The file holds at most `max_overflow` bytes
+(at least `max_output`); bytes and lines past it are still counted, and the
+note says the file holds only the first part. If the directory or file cannot
+be created or written, the call is an `Err` saying so, and `bash` terminates its
+command. Files are never deleted by the tool.
+
+### truncation note
+`limit.rs` · new
+
+One bracketed line telling the model what it did not get, after the kept text
+(head) or before it (tail):
+
+```
+<kept lines>
+[truncated: 2 lines omitted after these; full output (20 bytes) is in /tmp/tau-1000/k3x9a0bz.out]
+
+[truncated: 2 lines omitted before these; full output (20 bytes) is in /tmp/tau-1000/k3x9a0bz.out]
+<kept lines>
+```
+
+`1 line` in the singular. When the file was capped, the part after the line count reads `; the output is N bytes but <path> holds only the first 64 MiB]` (`N bytes` if not a whole number of MiB). When a single long line was cut short, `, and one
+long line cut short` follows `these`. Lines are counted as newlines plus one
+for a last line without a newline. Kept text that had bytes that are not UTF-8 shows them as U+FFFD and gets one more line, `[invalid UTF-8 in the output was replaced with U+FFFD]`, on the same side as the note.
+
+### BashRun, kill
+`tau_next._core.BashRun` · new
+
+A started `bash` command. `Bash.start(args_raw)` spawns it as a session leader
+(so its process group id is its pid) and never raises (a bad call is a
+`BashRun` whose `wait` answers `Err`); `wait()` blocks, GIL released, and answers
+the `Outcome`; `kill()` does not block and may be called from any thread, any
+number of times. Ending a command, by `kill()` or by the timeout, is: SIGTERM to
+the whole group, then SIGKILL after the grace period (`kill_grace_ms=`, default
+2000), so the shell, its pipeline and anything it backgrounded die together.
+The shell is waited for without being reaped (`waitid` with `WNOWAIT`, so its
+pid cannot be reused), the rest of its group is killed, and only then is it
+reaped; so a command cannot leave a process running behind it. A `killpg`
+failure other than "no such process" is an `Err`, never a panic. `timeout_ms=`
+is the timeout of a call that gives none (30_000); `max_timeout_ms=` (600_000)
+the most a call may ask for. `BashTool.call` kills when it is cancelled and waits
+for the command to be gone before the `CancelledError` goes on, and gives each
+call a thread of its own. A process that escaped the group (`setsid`) and holds
+the output pipe open is not killed: the pipe is read for 250 ms after the shell
+exits and then closed, and the answer says "a process outside the command's
+group still holds the output open" (an `Ok` with a note after a normal exit).
+A `BashRun` dropped without `wait` kills its group.
+
+### Cancel
+`tau_next._core.Cancel` · new
+
+A flag. `Read.run` and `Grep.run` take one; `ReadTool.call` and `GrepTool.call`
+set it when they are cancelled, and the read loop and the grep walk (and its
+searches, per match) check it and stop with an `Err`.
+
+### Read, Write, Grep, Bash (`_core`)
+`tau_next._core.Read` and the rest · new
+
+The native engines under the base tools: `__new__(cwd, max_output, overflow_dir, max_overflow)`
+(`Write`: `cwd` only; `Bash`: also `timeout_ms`, `max_timeout_ms`, `kill_grace_ms`), `name`, `description`,
+`parameters_json`, and `run(args_raw, cancel) -> Outcome` (`Write`: no `cancel`; `Bash`: `start`). A bad
+constructor argument raises `ValueError`. Python code uses the `Tool` classes
+above instead.
+
 ### Finish
 `tau_next.Finish` (`protocols.py`) · new
 

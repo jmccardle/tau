@@ -16,8 +16,11 @@ from typing_extensions import disjoint_base
 __all__ = [
     "Author",
     "BadRecord",
+    "Bash",
+    "BashRun",
     "Body",
     "Busy",
+    "Cancel",
     "Closed",
     "Config",
     "Corrupt",
@@ -27,6 +30,7 @@ __all__ = [
     "Exists",
     "Failed",
     "Fed",
+    "Grep",
     "Hook",
     "HookRunning",
     "Item",
@@ -47,12 +51,14 @@ __all__ = [
     "Outcome",
     "Part",
     "Poisoned",
+    "Read",
     "RootNotConfig",
     "RunCall",
     "Scratchpad",
     "Session",
     "Stop",
     "Version",
+    "Write",
     "WrongFeed",
 ]
 
@@ -567,3 +573,85 @@ class Session:
     def labels_of(self, cursor: int) -> list[str]: ...
     def moves_of(self, cursor: int, since: int = 0) -> list[Move]: ...
     def take_notices(self) -> list[tuple[str, str]]: ...
+
+# The base tools (crates/tau-tools). `run` and `wait` release the GIL.
+# `tau_next.base_tools` wraps these as `Tool`s.
+# Defaults shown as `...` are constants in the Rust signature: max_output 10_000,
+# max_overflow 64 MiB, timeout_ms 30_000, max_timeout_ms 600_000, kill_grace_ms 2_000.
+
+@final
+class Cancel:
+    def __new__(cls) -> Cancel: ...
+    def cancel(self) -> None: ...
+    @property
+    def cancelled(self) -> bool: ...
+
+@final
+class Read:
+    def __new__(
+        cls,
+        cwd: str | PathLike[str],
+        max_output: int = ...,
+        overflow_dir: str | PathLike[str] | None = None,
+        max_overflow: int = ...,
+    ) -> Read: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def parameters_json(self) -> str: ...
+    def run(self, args_raw: str, cancel: Cancel) -> Outcome: ...
+
+@final
+class Write:
+    def __new__(cls, cwd: str | PathLike[str]) -> Write: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def parameters_json(self) -> str: ...
+    def run(self, args_raw: str) -> Outcome: ...
+
+@final
+class Grep:
+    def __new__(
+        cls,
+        cwd: str | PathLike[str],
+        max_output: int = ...,
+        overflow_dir: str | PathLike[str] | None = None,
+        max_overflow: int = ...,
+    ) -> Grep: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def parameters_json(self) -> str: ...
+    def run(self, args_raw: str, cancel: Cancel) -> Outcome: ...
+
+@final
+class Bash:
+    def __new__(
+        cls,
+        cwd: str | PathLike[str],
+        max_output: int = ...,
+        overflow_dir: str | PathLike[str] | None = None,
+        max_overflow: int = ...,
+        timeout_ms: int = ...,
+        max_timeout_ms: int = ...,
+        kill_grace_ms: int = ...,
+    ) -> Bash: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def description(self) -> str: ...
+    @property
+    def parameters_json(self) -> str: ...
+    def start(self, args_raw: str) -> BashRun: ...
+
+@final
+class BashRun:
+    def wait(self) -> Outcome: ...
+    def kill(self) -> None: ...

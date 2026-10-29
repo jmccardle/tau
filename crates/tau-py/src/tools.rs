@@ -1,0 +1,281 @@
+//! The base tools of `tau-tools`, as Python classes. Conversion only: each
+//! `run`/`wait` releases the GIL for the whole of the work and answers an
+//! `Outcome`. The `Tool` protocol's `async call` is Python's, in
+//! `tau_next.base_tools`, which runs these off the event loop.
+
+// Properties are methods in Python, whether or not they read `self`.
+#![allow(clippy::unused_self)]
+
+use std::path::PathBuf;
+
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use tau_tools::bash::{Bash as BashTool, BashConfig, BashRun as Run};
+use tau_tools::grep::Grep as GrepTool;
+use tau_tools::read::Read as ReadTool;
+use tau_tools::write::Write as WriteTool;
+use tau_tools::{
+    Cancel as Flag, DEFAULT_MAX_OUTPUT, DEFAULT_MAX_OVERFLOW, Limits, ToolError, bash,
+};
+
+use crate::values::Outcome;
+
+fn outcome(result: Result<String, ToolError>) -> Outcome {
+    match result {
+        Ok(value) => Outcome::Ok { value },
+        Err(ToolError(error)) => Outcome::Err { error },
+    }
+}
+
+fn value_error(e: ToolError) -> PyErr {
+    PyValueError::new_err(e.0)
+}
+
+fn limits(
+    max_output: usize,
+    overflow_dir: Option<PathBuf>,
+    max_overflow: usize,
+) -> PyResult<Limits> {
+    let made = match overflow_dir {
+        Some(dir) => Limits::in_dir(max_output, dir),
+        None => Limits::new(max_output),
+    };
+    made.and_then(|l| l.with_max_overflow(max_overflow))
+        .map_err(value_error)
+}
+
+fn parameters_json(schema: &serde_json::Value) -> String {
+    schema.to_string()
+}
+
+/// A flag that stops a running `read` or `grep`.
+#[pyclass(frozen, module = "tau_next._core")]
+#[derive(Debug)]
+pub struct Cancel {
+    flag: Flag,
+}
+
+#[pymethods]
+impl Cancel {
+    #[new]
+    fn new() -> Self {
+        Self { flag: Flag::new() }
+    }
+
+    /// Set the flag; the call it was given to stops with an `Err`.
+    fn cancel(&self) {
+        self.flag.cancel();
+    }
+
+    #[getter]
+    fn cancelled(&self) -> bool {
+        self.flag.is_cancelled()
+    }
+}
+
+/// The `read` tool.
+#[pyclass(frozen, module = "tau_next._core")]
+#[derive(Debug)]
+pub struct Read {
+    inner: ReadTool,
+}
+
+#[pymethods]
+impl Read {
+    #[new]
+    #[pyo3(signature = (cwd, max_output=DEFAULT_MAX_OUTPUT, overflow_dir=None, max_overflow=DEFAULT_MAX_OVERFLOW))]
+    fn new(
+        cwd: PathBuf,
+        max_output: usize,
+        overflow_dir: Option<PathBuf>,
+        max_overflow: usize,
+    ) -> PyResult<Self> {
+        let limits = limits(max_output, overflow_dir, max_overflow)?;
+        Ok(Self {
+            inner: ReadTool::new(cwd, limits),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &'static str {
+        "read"
+    }
+
+    #[getter]
+    fn description(&self) -> String {
+        self.inner.description()
+    }
+
+    #[getter]
+    fn parameters_json(&self) -> String {
+        parameters_json(&ReadTool::parameters())
+    }
+
+    /// Run the call; releases the GIL.
+    fn run(&self, py: Python<'_>, args_raw: &str, cancel: &Cancel) -> Outcome {
+        outcome(py.detach(|| self.inner.run(args_raw, &cancel.flag)))
+    }
+}
+
+/// The `write` tool.
+#[pyclass(frozen, module = "tau_next._core")]
+#[derive(Debug)]
+pub struct Write {
+    inner: WriteTool,
+}
+
+#[pymethods]
+impl Write {
+    #[new]
+    fn new(cwd: PathBuf) -> Self {
+        Self {
+            inner: WriteTool::new(cwd),
+        }
+    }
+
+    #[getter]
+    fn name(&self) -> &'static str {
+        "write"
+    }
+
+    #[getter]
+    fn description(&self) -> String {
+        WriteTool::description()
+    }
+
+    #[getter]
+    fn parameters_json(&self) -> String {
+        parameters_json(&WriteTool::parameters())
+    }
+
+    /// Run the call; releases the GIL.
+    fn run(&self, py: Python<'_>, args_raw: &str) -> Outcome {
+        outcome(py.detach(|| self.inner.run(args_raw)))
+    }
+}
+
+/// The `grep` tool.
+#[pyclass(frozen, module = "tau_next._core")]
+#[derive(Debug)]
+pub struct Grep {
+    inner: GrepTool,
+}
+
+#[pymethods]
+impl Grep {
+    #[new]
+    #[pyo3(signature = (cwd, max_output=DEFAULT_MAX_OUTPUT, overflow_dir=None, max_overflow=DEFAULT_MAX_OVERFLOW))]
+    fn new(
+        cwd: PathBuf,
+        max_output: usize,
+        overflow_dir: Option<PathBuf>,
+        max_overflow: usize,
+    ) -> PyResult<Self> {
+        let limits = limits(max_output, overflow_dir, max_overflow)?;
+        Ok(Self {
+            inner: GrepTool::new(cwd, limits),
+        })
+    }
+
+    #[getter]
+    fn name(&self) -> &'static str {
+        "grep"
+    }
+
+    #[getter]
+    fn description(&self) -> String {
+        self.inner.description()
+    }
+
+    #[getter]
+    fn parameters_json(&self) -> String {
+        parameters_json(&GrepTool::parameters())
+    }
+
+    /// Run the call; releases the GIL.
+    fn run(&self, py: Python<'_>, args_raw: &str, cancel: &Cancel) -> Outcome {
+        outcome(py.detach(|| self.inner.run(args_raw, &cancel.flag)))
+    }
+}
+
+/// The `bash` tool.
+#[pyclass(frozen, module = "tau_next._core")]
+#[derive(Debug)]
+pub struct Bash {
+    inner: BashTool,
+}
+
+#[pymethods]
+impl Bash {
+    #[new]
+    #[pyo3(signature = (
+        cwd,
+        max_output=DEFAULT_MAX_OUTPUT,
+        overflow_dir=None,
+        max_overflow=DEFAULT_MAX_OVERFLOW,
+        timeout_ms=bash::DEFAULT_TIMEOUT_MS,
+        max_timeout_ms=bash::DEFAULT_MAX_TIMEOUT_MS,
+        kill_grace_ms=bash::DEFAULT_KILL_GRACE_MS,
+    ))]
+    fn new(
+        cwd: PathBuf,
+        max_output: usize,
+        overflow_dir: Option<PathBuf>,
+        max_overflow: usize,
+        timeout_ms: u64,
+        max_timeout_ms: u64,
+        kill_grace_ms: u64,
+    ) -> PyResult<Self> {
+        let limits = limits(max_output, overflow_dir, max_overflow)?;
+        let config = BashConfig {
+            default_timeout_ms: timeout_ms,
+            max_timeout_ms,
+            kill_grace_ms,
+        };
+        let inner = BashTool::new(cwd, limits, config).map_err(value_error)?;
+        Ok(Self { inner })
+    }
+
+    #[getter]
+    fn name(&self) -> &'static str {
+        "bash"
+    }
+
+    #[getter]
+    fn description(&self) -> String {
+        self.inner.description()
+    }
+
+    #[getter]
+    fn parameters_json(&self) -> String {
+        parameters_json(&BashTool::parameters())
+    }
+
+    /// Start the command. Never raises: a bad call is a `BashRun` whose `wait` answers `Err`.
+    fn start(&self, py: Python<'_>, args_raw: &str) -> BashRun {
+        BashRun {
+            inner: py.detach(|| self.inner.start(args_raw)),
+        }
+    }
+}
+
+/// A started command, killable from any thread.
+#[pyclass(frozen, module = "tau_next._core")]
+#[derive(Debug)]
+pub struct BashRun {
+    inner: Run,
+}
+
+#[pymethods]
+impl BashRun {
+    /// Block, GIL released, until the command ends, is killed, or times out.
+    fn wait(&self, py: Python<'_>) -> Outcome {
+        outcome(py.detach(|| self.inner.wait()))
+    }
+
+    /// Ask for the command and its process group to end (SIGTERM, then SIGKILL
+    /// after the grace period). Does not block; safe at any time, any number of times.
+    fn kill(&self) {
+        self.inner.kill();
+    }
+}
