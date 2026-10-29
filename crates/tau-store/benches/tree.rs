@@ -681,6 +681,9 @@ struct Compaction {
     save: Duration,
     summarize: Duration,
     kept: usize,
+    /// Bodies of the new line evicted by the save of the copy, before the
+    /// move puts a cursor on it, and loaded back for the summary.
+    reloaded: usize,
 }
 
 /// Classify the walk, copy the kept nodes as a new line under the system
@@ -695,6 +698,14 @@ fn compaction(rig: &mut Rig, c: CursorId) -> Compaction {
     rig.save();
     let save = t.elapsed();
     let t = Instant::now();
+    let reloaded = match rig.m.session.walk(tip) {
+        Err(Error::Stored(ids)) => {
+            let store = rig.store.as_mut().expect("only a store evicts");
+            store.load(&mut rig.m.session, &ids).unwrap();
+            ids.len()
+        }
+        _ => 0,
+    };
     let summary = summarize(&rig.m.session, tip);
     let s = &mut rig.m.session;
     let by = Author::Extension("compact".into());
@@ -710,6 +721,7 @@ fn compaction(rig: &mut Rig, c: CursorId) -> Compaction {
         save,
         summarize: t.elapsed(),
         kept: kept.len(),
+        reloaded,
     }
 }
 
@@ -717,7 +729,7 @@ fn compaction(rig: &mut Rig, c: CursorId) -> Compaction {
 fn compact() {
     heading("compact: at 1M tokens classify, copy, summarize, move; 5 cycles (chatty, stored)");
     println!(
-        "| cycle | before | after | classify | copy (nodes) | save copy | summarize, move, evict | pause total | next sample walk | log | bodies in memory |"
+        "| cycle | before | after | classify | copy (nodes) | save copy | reload, summarize, move, evict (reloaded) | pause total | next sample walk | log | bodies in memory |"
     );
     println!("|---|---|---|---|---|---|---|---|---|---|---|");
     let dir = tempfile::tempdir().unwrap();
@@ -735,7 +747,7 @@ fn compact() {
         agent.run(&mut rig);
         let (_, mb) = in_memory(&rig.m.session);
         println!(
-            "| {cycle} | {}k | {}k | {} | {} ({}) | {} | {} | {} | {} | {:.1} MB | {mb:.1} MB |",
+            "| {cycle} | {}k | {}k | {} | {} ({}) | {} | {} ({}) | {} | {} | {:.1} MB | {mb:.1} MB |",
             before / 1000,
             rig.tokens_at(c) / 1000,
             us(k.classify),
@@ -743,6 +755,7 @@ fn compact() {
             k.kept,
             us(k.save),
             us(k.summarize),
+            k.reloaded,
             us(k.classify + k.copy + k.save + k.summarize),
             us(rig.stats.samples[0].1),
             log_mb(dir.path()),
@@ -1058,14 +1071,27 @@ fn load() {
         .collect();
     let decode = t.elapsed();
     let t = Instant::now();
-    let session = Session::load(decoded, Scratchpad::default()).unwrap();
+    let mut session = Session::load(decoded, Scratchpad::default()).unwrap();
     let replay = t.elapsed();
+    let (_, all) = in_memory(&session);
+    let t = Instant::now();
+    session.evict(NodeId::MAX);
+    let evict = t.elapsed();
+    let (_, kept) = in_memory(&session);
     let t = Instant::now();
     drop(session);
     let free = t.elapsed();
-    println!("\n| decode JSON | replay (`Session::load`) | drop |");
-    println!("|---|---|---|");
-    println!("| {} | {} | {} |", us(decode), us(replay), us(free));
+    println!(
+        "\n| decode JSON | replay (`Session::load`) | evict | bodies in memory, replayed → evicted | drop |"
+    );
+    println!("|---|---|---|---|---|");
+    println!(
+        "| {} | {} | {} | {all:.1} → {kept:.1} MB | {} |",
+        us(decode),
+        us(replay),
+        us(evict),
+        us(free)
+    );
 }
 
 fn main() {
