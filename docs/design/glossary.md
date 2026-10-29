@@ -36,7 +36,14 @@ One piece of a reply in stream order: `Text`, `Thinking`, or
 
 Why a reply ended: `End`, `Tools`, `Length`, `Refused`, `Interrupted`,
 `Error`. Only `Tools` makes calls runnable. The provider's own string is
-`stop_raw` (not yet spiked).
+`finish_reason`.
+
+### finish_reason
+*spike* `Body::Assistant.finish_reason`, `Option<String>` · retires `stop_raw`
+
+The provider's own finish string for a reply, verbatim (`"stop"`,
+`"tool_calls"`, ...), kept beside the normalised `stop`. `None` when the
+provider sent none: an interrupted reply, a failed sample, a fake.
 
 ### call
 *spike* `Part::Call` · retires toolCall block, `BlockedCall`
@@ -562,8 +569,10 @@ to messages (`model.md` §10). The **model** is a name, as its API spells it.
 
 The provider for OpenAI-compatible `/chat/completions` (llama.cpp, vLLM, OpenAI).
 Reads `ModelConfig` from the sample's `config`. The request carries `model`,
-`messages`, and `stream: true` and nothing else; the config has no sampling
-settings and a provider is not handed tool definitions. Conversion: `System`
+`messages`, `stream: true`, and `tools` when the driver offers any (no
+`tool_choice`, no `parallel_tool_calls`); the config has no sampling settings.
+`tools` is `[{"type": "function", "function": {name, description, parameters}}]`,
+built from each `Tool` for that sample only and recorded nowhere. Conversion: `System`
 and `User` map to their roles; an `Assistant` to `assistant` with its text and
 `tool_calls` (`args_raw` sent as the `arguments` string); a `Results` that
 follows its batch to one `tool` message per outcome (`Err(e)` is `Error: e`,
@@ -578,18 +587,83 @@ its batch's is a conversion error (Q11). The response is read as SSE;
 `Call`s; each part is yielded once the next kind of part begins or the stream
 finishes. `finish_reason` maps `stop` to `End`, `tool_calls` to `Tools`,
 `length` to `Length`, `content_filter` to `Refused`; any other is an error. The
-raw string is dropped until `stop_raw` exists. Fails with `SampleError`: a
+raw string is kept as `finish_reason` (via `Finish`). Fails with `SampleError`: a
 non-200 status (the server's `error.message`), a transport error, malformed
 SSE, an error object in the stream, a stream ending without `finish_reason`.
-Parts begun before a failure are yielded first. Constructor: `transport`
+Parts begun before a failure are yielded first; a call cut off with no id or
+no name is not a part, so its raw argument text and whatever id and name arrived
+are appended to the `SampleError` message. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
-`timeout`. `request(walk, config)` returns the URL, headers, and body.
+`timeout`. `request(walk, config, tools)` returns the URL, headers, and body.
 
-### tool
-retires `AgentTool`, `ToolDefinition`, `ToolInfo`
+### tool, Tool
+`tau_next.Tool` (protocol, `protocols.py`) · retires `AgentTool`, `ToolDefinition`, `ToolInfo`
 
-A name, an argument schema, an `exclusive` flag, and an async function to an
-outcome.
+The contract the driver and providers depend on: `name`, `description`,
+`parameters` (a JSON Schema object for the arguments), and
+`async call(args_raw: str) -> Outcome`. The tool gets the call's raw JSON text
+and validates it itself, answering `Ok(text)` or `Err(message)`; an exception it
+raises is `Err(str(e))` for that call. Breaking the return contract (answering
+`Interrupted`, a `str`, `None`) is a programmer error, not a call's failure: the
+driver raises `TypeError` and stops, surfacing through `Driver.check`. A malformed
+`args_raw` is the tool's to answer (or a `pre_tool` hook's, which may rewrite
+`call.args_raw` before the tool runs; D7); neither the driver nor core parses it.
+The driver checks each tool when it is built (`ToolContractError`).
+Any object with these attributes is a tool, including one written in another
+language (a PyO3 class); `@tool` is one way to build one, and a test drives a
+hand-written class through the `Harness`. Tools are the driver's, not the
+history's: each sample is handed the driver's tools, and no `Config` or node
+records them.
+
+### tool (decorator), FunctionTool
+`tau_next.tool`, `tau_next.FunctionTool` (`tools.py`) · new
+
+`@tool` or `@tool(describe={...})` turns a sync or async function into a
+`FunctionTool`, a `Tool`. Name: the function's `__name__`. Description: its
+docstring, `inspect.cleandoc`'d. `parameters`: an object schema from the type
+hints (`str`, `int`, `float`, `bool`, `list[T]`, `Literal` of all `str` or all
+`int`, `T | None`); a parameter with a default is not `required`;
+`additionalProperties` is false. `call` parses `args_raw`, checks the top-level
+keys and each value's JSON type against the annotation, binds by keyword, runs
+the function, and requires a `str` back. A sync function runs in a worker
+thread, so it never blocks the loop; aborting the call stops waiting for it,
+not the thread, which finishes and is discarded. A function that `functools.wraps`
+an async one counts as async (`inspect.unwrap`). `FunctionTool.function` is the original function.
+
+### describe
+`tool(describe={"param": "text"})` · new
+
+Parameter descriptions for the schema (`"description"` on that property). It
+may cover some parameters or all; a name that is not a parameter is a
+`ToolDefinitionError`. Docstrings are not parsed for parameter docs.
+
+### ToolDefinitionError, ToolError
+`tau_next.ToolDefinitionError` (a `ValueError`), `tau_next.ToolError` · new
+
+`ToolDefinitionError`, at decoration, naming the function and parameter: no
+docstring, a missing or unsupported annotation, `*args`/`**kwargs`,
+positional-only parameters, a bad `describe`, an annotation that cannot
+be resolved, and a default that does not fit its annotation (`s: str = None`
+says to annotate `str | None`). `ToolError` is how `FunctionTool`
+fails a call (malformed JSON, missing, extra, or wrongly typed arguments, an
+exception from the function, a non-`str` return); `call` answers it as
+`Err(message)`, so the model reads it, and it does not escape `call`. A tool
+function may raise `ToolError("msg")` itself: the call answers `Err("msg")`
+exactly, with no type prefix (any other exception is `Err("Type: msg")`).
+
+### ToolContractError
+`tau_next.ToolContractError` (a `TypeError`), `check_tools` (`protocols.py`) · new
+
+Raised by `Driver.__init__` for an object that is not a `Tool`, naming it: a
+missing or non-`str` `name` or `description`, `parameters` that is not a
+`Mapping`, a `call` that is not callable, or two tools with one name.
+
+### Finish
+`tau_next.Finish` (`protocols.py`) · new
+
+What a provider yields last: `Finish(stop, reason)`, the normalised `Stop` and
+the provider's own string (`None` if it has none). The driver builds the reply
+draft with both.
 
 ### extension
 retires `ExtensionRunner`, `ExtensionState`, bucket

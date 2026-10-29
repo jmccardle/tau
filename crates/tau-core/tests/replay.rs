@@ -112,6 +112,7 @@ fn apply(s: &mut Session, op: &Op) {
             let body = Body::Assistant {
                 parts,
                 stop: Stop::Tools,
+                finish_reason: None,
             };
             s.write(cursor(i), body, vec![], Author::Provider, 0)
                 .unwrap();
@@ -250,7 +251,11 @@ fn labels_survive_a_reload() {
 fn reply(parts: Vec<Part>, stop: Stop) -> Fed {
     Fed::Sampled {
         reply: Some(Draft {
-            body: Body::Assistant { parts, stop },
+            body: Body::Assistant {
+                parts,
+                stop,
+                finish_reason: None,
+            },
             delivers: vec![],
             by: Author::Provider,
         }),

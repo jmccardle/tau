@@ -330,6 +330,7 @@ fn a_turn_saved_after_every_call_reopens_at_its_reply() {
                     body: Body::Assistant {
                         parts: vec![Part::Text("hello".into())],
                         stop: Stop::End,
+                        finish_reason: Some("stop".into()),
                     },
                     delivers: vec![],
                     by: Author::Provider,

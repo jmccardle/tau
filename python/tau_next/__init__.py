@@ -49,11 +49,14 @@ from tau_next.protocols import (
     Clock,
     CursorHook,
     Extension,
+    Finish,
     Provider,
     SampleError,
     Tool,
+    ToolContractError,
     ToolHook,
 )
+from tau_next.tools import FunctionTool, ToolDefinitionError, ToolError, tool
 
 __version__ = version("ffwf-tau-next")
 
@@ -78,6 +81,8 @@ __all__ = [
     "Extension",
     "Failed",
     "Fed",
+    "Finish",
+    "FunctionTool",
     "Hook",
     "HookRunning",
     "Item",
@@ -109,8 +114,12 @@ __all__ = [
     "Subject",
     "SystemClock",
     "Tool",
+    "ToolContractError",
+    "ToolDefinitionError",
+    "ToolError",
     "ToolHook",
     "Version",
     "WrongFeed",
     "__version__",
+    "tool",
 ]

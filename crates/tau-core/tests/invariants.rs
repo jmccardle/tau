@@ -49,7 +49,11 @@ fn cursors(s: &Session) -> u64 {
 
 fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
     Draft {
-        body: Body::Assistant { parts, stop },
+        body: Body::Assistant {
+            parts,
+            stop,
+            finish_reason: None,
+        },
         delivers: vec![],
         by: Author::Provider,
     }
@@ -374,6 +378,7 @@ fn body() -> impl Strategy<Value = Body> {
         Just(Body::Assistant {
             parts: vec![Part::Text("a".into())],
             stop: Stop::End,
+            finish_reason: None
         }),
         Just(Body::Custom {
             kind: "note".into(),

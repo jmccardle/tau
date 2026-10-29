@@ -4,7 +4,6 @@ No effect touches the session except to read it. The driver feeds.
 """
 
 import asyncio
-import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
@@ -26,6 +25,7 @@ from tau_next.protocols import (
     Clock,
     CursorHook,
     Extension,
+    Finish,
     Provider,
     SampleError,
     Tool,
@@ -90,14 +90,17 @@ async def _finish[T](task: asyncio.Future[T]) -> None:
 class SampleRun:
     """One sample: streams the provider into parts; `cancel` stops it."""
 
-    def __init__(self, provider: Provider, session: Session, cursor: int) -> None:
+    def __init__(
+        self, provider: Provider, session: Session, cursor: int, tools: Sequence[Tool]
+    ) -> None:
         # Read at dispatch: I1, the request is `walk(at)` and `config_at(at)` as `at` stands.
         at = session.at(cursor)
         self._provider = provider
         self._walk = session.walk(at)
         self._config = session.config_at(at)
+        self._tools = tools
         self._parts: list[Part] = []
-        self._task: asyncio.Future[Stop] | None = None
+        self._task: asyncio.Future[Finish] | None = None
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -105,21 +108,21 @@ class SampleRun:
         if self._task is not None:
             self._task.cancel()
 
-    async def _stream(self) -> Stop:
-        stop: Stop | None = None
-        async for item in self._provider.sample(self._walk, self._config):
-            if stop is not None:
-                raise SampleError("provider yielded after its stop")
-            if isinstance(item, Stop):
-                stop = item
+    async def _stream(self) -> Finish:
+        finish: Finish | None = None
+        async for item in self._provider.sample(self._walk, self._config, self._tools):
+            if finish is not None:
+                raise SampleError("provider yielded after its finish")
+            if isinstance(item, Finish):
+                finish = item
             else:
                 self._parts.append(item)
-        if stop is None:
-            raise SampleError("provider ended without a stop")
-        return stop
+        if finish is None:
+            raise SampleError("provider ended without a finish")
+        return finish
 
-    def _reply(self, stop: Stop) -> Draft:
-        return Draft(Body.Assistant(self._parts, stop), Author.Provider(), [])
+    def _reply(self, stop: Stop, finish_reason: str | None = None) -> Draft:
+        return Draft(Body.Assistant(self._parts, stop, finish_reason), Author.Provider(), [])
 
     async def run(self) -> Fed:
         self._task = asyncio.ensure_future(self._stream())
@@ -132,20 +135,11 @@ class SampleRun:
             return Fed.Sampled(self._reply(Stop.Interrupted), None)
         error = self._task.exception()
         if error is None:
-            return Fed.Sampled(self._reply(self._task.result()), None)
+            finish = self._task.result()
+            return Fed.Sampled(self._reply(finish.stop, finish.reason), None)
         if not isinstance(error, SampleError):
             raise error
         return Fed.Sampled(self._reply(Stop.Error) if self._parts else None, str(error))
-
-
-def parse_args(args_raw: str) -> dict[str, object] | None:
-    try:
-        value = json.loads(args_raw)
-    except ValueError:
-        return None
-    if not isinstance(value, dict):
-        return None
-    return cast("dict[str, object]", value)
 
 
 class _HookError(Exception):
@@ -175,7 +169,7 @@ class CallRun:
         self._node = node
         self._tools = tools
         self._extensions = extensions
-        self._task: asyncio.Future[str] | None = None
+        self._task: asyncio.Future[Outcome] | None = None
         self._aborted = False
 
     def abort(self) -> None:
@@ -189,9 +183,6 @@ class CallRun:
 
     async def _outcome(self) -> tuple[Outcome, Author]:
         # Outcomes the driver writes itself skip `pre_result`.
-        args = parse_args(self._args_raw)
-        if args is None:
-            return Outcome.Err("invalid arguments"), Author.Core()
         if self._aborted:
             return Outcome.Interrupted(), Author.Tools()
         draft = CallDraft(self.id, self._tool, self._args_raw)
@@ -203,7 +194,7 @@ class CallRun:
             if draft.outcome is None:
                 if self._aborted:
                     return Outcome.Interrupted(), Author.Tools()
-                draft.outcome = await self._run(args)
+                draft.outcome = await self._run(draft.args_raw)
                 if isinstance(draft.outcome, Outcome.Interrupted):
                     return draft.outcome, Author.Tools()
             edited = await self._hooks("pre_result", draft, stop_at_outcome=False)
@@ -237,11 +228,11 @@ class CallRun:
                     return changed
         return changed
 
-    async def _run(self, args: Mapping[str, object]) -> Outcome:
+    async def _run(self, args_raw: str) -> Outcome:
         tool = self._tools.get(self._tool)
         if tool is None:
             return Outcome.Err(f"unknown tool: {self._tool}")
-        self._task = asyncio.ensure_future(tool.call(args))
+        self._task = asyncio.ensure_future(tool.call(args_raw))
         if self._aborted:
             self._task.cancel()
         await _finish(self._task)
@@ -250,4 +241,7 @@ class CallRun:
         error = self._task.exception()
         if error is not None:
             return Outcome.Err(str(error))
-        return Outcome.Ok(self._task.result())
+        outcome = self._task.result()
+        if not isinstance(outcome, Outcome.Ok | Outcome.Err):
+            raise TypeError(f"tool {self._tool!r} answered {outcome!r}, not an Ok or Err")
+        return outcome

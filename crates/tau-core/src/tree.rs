@@ -44,6 +44,9 @@ pub enum Body {
     Assistant {
         parts: Vec<Part>,
         stop: Stop,
+        /// The provider's own finish string, verbatim; `None` when it sent none
+        /// (an interrupted reply, a failed sample).
+        finish_reason: Option<String>,
     },
     /// One `(call id, outcome, by)` per call, in call order. `by` is who
     /// produced that outcome: `Tools`, or the extension that answered or edited it.
@@ -642,6 +645,7 @@ pub fn calls(body: &Body) -> Vec<(&str, &str, &str)> {
         Body::Assistant {
             parts,
             stop: Stop::Tools,
+            ..
         } => parts
             .iter()
             .filter_map(|p| match p {

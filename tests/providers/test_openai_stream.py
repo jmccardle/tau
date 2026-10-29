@@ -18,7 +18,7 @@ from transcripts import (
     sse_text,
 )
 
-from tau_next import Part, Stop
+from tau_next import Finish, Part, Stop
 from tau_next.providers.openai import OpenAIProvider
 
 DONE = "data: [DONE]\n\n"
@@ -37,24 +37,24 @@ async def test_a_plain_reply_is_one_text_part_then_end() -> None:
     server = sse("plain")
     items, error = await collect(provider(server), fresh_walk())
     assert error is None
-    assert items == [Part.Text("Hello, how are you?"), Stop.End]
+    assert items == [Part.Text("Hello, how are you?"), Finish(Stop.End, "stop")]
 
 
 @scenario
 async def test_reasoning_content_is_a_thinking_part_before_the_text() -> None:
     items, error = await collect(provider(sse("reasoning")), fresh_walk())
     assert error is None
-    assert items == [Part.Thinking(REASONING), Part.Text("51"), Stop.End]
+    assert items == [Part.Thinking(REASONING), Part.Text("51"), Finish(Stop.End, "stop")]
 
 
 @scenario
 async def test_a_tool_call_arrives_whole_with_its_arguments_byte_for_byte() -> None:
     items, error = await collect(provider(sse("tool_call")), fresh_walk())
     assert error is None
-    thinking, call, stop = items
+    thinking, call, finish = items
     assert isinstance(thinking, Part.Thinking)
     assert call == Part.Call("y23a03Z82TN0yjGdHOY18qoUF5gVGfNV", "get_weather", '{"city":"Paris"}')
-    assert stop == Stop.Tools
+    assert finish == Finish(Stop.Tools, "tool_calls")
 
 
 @scenario
@@ -63,10 +63,10 @@ async def test_a_part_is_yielded_once_complete_not_when_the_stream_ends() -> Non
     head = (chunk({"reasoning_content": "hm"}) + chunk({"content": "he"})).encode()
     tail = (chunk({"content": "llo"}) + chunk({}, "stop") + DONE).encode()
     response = httpx.Response(200, stream=GatedStream(head, gate, tail))
-    stream = provider(Server(response)).sample(fresh_walk(), CONFIG)
+    stream = provider(Server(response)).sample(fresh_walk(), CONFIG, [])
     assert await anext(stream) == Part.Thinking("hm"), "complete once the text began"
     gate.set()
-    assert [item async for item in stream] == [Part.Text("hello"), Stop.End]
+    assert [item async for item in stream] == [Part.Text("hello"), Finish(Stop.End, "stop")]
 
 
 @scenario
@@ -83,7 +83,11 @@ async def test_parallel_calls_are_separate_parts_in_order() -> None:
     )
     items, error = await collect(provider(sse_text(text)), fresh_walk())
     assert error is None
-    assert items == [Part.Call("a", "ta", '{"x": 1}'), Part.Call("b", "tb", "{}"), Stop.Tools]
+    assert items == [
+        Part.Call("a", "ta", '{"x": 1}'),
+        Part.Call("b", "tb", "{}"),
+        Finish(Stop.Tools, "tool_calls"),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -99,7 +103,7 @@ async def test_parallel_calls_are_separate_parts_in_order() -> None:
 async def test_finish_reasons_normalize_to_stops(finish: str, stop: Stop) -> None:
     server = sse_text(chunk({"content": "x"}, finish))
     items, error = await collect(provider(server), fresh_walk())
-    assert (items, error) == ([Part.Text("x"), stop], None)
+    assert (items, error) == ([Part.Text("x"), Finish(stop, finish)], None)
 
 
 @scenario
@@ -107,7 +111,7 @@ async def test_sse_comments_other_fields_and_missing_spaces_are_tolerated() -> N
     event = chunk({"content": "x"}, "stop").removeprefix("data: ")
     server = sse_text(f": keep-alive\n\nevent: message\ndata:{event}")
     items, error = await collect(provider(server), fresh_walk())
-    assert (items, error) == ([Part.Text("x"), Stop.End], None)
+    assert (items, error) == ([Part.Text("x"), Finish(Stop.End, "stop")], None)
 
 
 @scenario
@@ -156,7 +160,7 @@ async def test_a_stream_that_ends_without_a_finish_fails_and_keeps_its_text() ->
 @scenario
 async def test_a_stream_that_ends_without_done_after_its_finish_is_complete() -> None:
     items, error = await collect(provider(sse_text(chunk({"content": "x"}, "stop"))), fresh_walk())
-    assert (items, error) == ([Part.Text("x"), Stop.End], None)
+    assert (items, error) == ([Part.Text("x"), Finish(Stop.End, "stop")], None)
 
 
 @pytest.mark.parametrize(

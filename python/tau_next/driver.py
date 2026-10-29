@@ -13,7 +13,7 @@ from tau_next._core import Author, Fed, ItemData, Job, Session
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks, subject_for, wait
 from tau_next.handles import Cursor, NodeHandle
-from tau_next.protocols import Clock, Extension, Provider, Tool
+from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools
 
 
 @dataclass
@@ -56,7 +56,7 @@ class Driver:
         self.session = session
         self.clock: Clock = clock if clock is not None else SystemClock()
         self._provider = provider
-        self._tools: Mapping[str, Tool] = {t.name: t for t in tools}
+        self._tools: Mapping[str, Tool] = check_tools(tools)
         self._extensions = tuple(extensions)
         self._queue: asyncio.Queue[tuple[int, Fed] | None] = asyncio.Queue()
         self._out: dict[int, Outstanding] = {}
@@ -279,7 +279,7 @@ class Driver:
                 )
                 self._out[cursor] = Outstanding([self._unit(cursor, effect)])
             case Job.Sample():
-                sample = SampleRun(self._provider, session, cursor)
+                sample = SampleRun(self._provider, session, cursor, tuple(self._tools.values()))
                 self._out[cursor] = Outstanding([self._unit(cursor, sample.run)], sample=sample)
             case Job.RunCalls(calls=calls):
                 node = session.at(cursor)

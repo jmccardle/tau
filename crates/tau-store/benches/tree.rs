@@ -229,7 +229,11 @@ impl Agent {
         };
         Fed::Sampled {
             reply: Some(Draft {
-                body: Body::Assistant { parts, stop },
+                body: Body::Assistant {
+                    parts,
+                    stop,
+                    finish_reason: None,
+                },
                 delivers: vec![],
                 by: Author::Provider,
             }),

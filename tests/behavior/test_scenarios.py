@@ -11,6 +11,7 @@ import tau_next
 from tau_next import (
     Author,
     Body,
+    CallDraft,
     Config,
     Cursor,
     Ending,
@@ -273,7 +274,8 @@ async def test_a_pre_input_string_refuses_with_a_notice(tmp_path: Path) -> None:
 
 @scenario
 async def test_bad_arguments_and_an_unknown_tool_are_outcomes(tmp_path: Path) -> None:
-    """model.md section 2 and D7 (not yet a Rust scenario): neither call reaches a tool."""
+    """model.md section 2 and D7 (not yet a Rust scenario): the tool answers its own bad
+    arguments; a name nobody has is unknown."""
     tool = FakeTool("ta", "A")
     provider = FakeProvider(
         [
@@ -287,11 +289,34 @@ async def test_bad_arguments_and_an_unknown_tool_are_outcomes(tmp_path: Path) ->
     *_, results, _ = h.bodies()
     assert results == Body.Results(
         [
-            ("a", Outcome.Err("invalid arguments"), Author.Core()),
+            ("a", Outcome.Err("arguments are not valid JSON"), Author.Tools()),
             ("b", Outcome.Err("unknown tool: nope"), Author.Tools()),
         ]
     )
     assert tool.calls == []
+
+
+@scenario
+async def test_a_pre_tool_hook_can_repair_bad_arguments(tmp_path: Path) -> None:
+    """D7: the tool, or a `pre_tool` hook, answers an `args_raw` it cannot use."""
+
+    def repair(subject: Subject | CallDraft) -> None:
+        assert isinstance(subject, CallDraft)
+        subject.args_raw = '{"fixed": true}'
+
+    tool = FakeTool("ta", "A")
+    provider = FakeProvider([Reply([Part.Call("a", "ta", "not json")], Stop.Tools), text("ok")])
+    h = await Harness.create(
+        tmp_path,
+        provider=provider,
+        tools=[tool],
+        extensions=[Recorder(on={"pre_tool": repair})],
+    )
+    await h.send("go")
+    await h.settle()
+    assert tool.calls == [{"fixed": True}]
+    assert h.bodies()[-2] == Body.Results([("a", Outcome.Ok("A"), Author.Tools())])
+    await h.close()
 
 
 @scenario

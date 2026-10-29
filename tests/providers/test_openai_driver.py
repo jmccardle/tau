@@ -8,16 +8,32 @@ import pytest
 from harness import scenario
 from transcripts import (
     BASE_URL,
+    CONFIG,
     MODEL,
     CutStream,
     Server,
     chunk,
+    collect,
+    fresh_walk,
     recorded_error,
     running,
+    sent,
     sse,
+    sse_sequence,
 )
 
-from tau_next import Body, ModelConfig, Node, Part, Session, Stop
+from tau_next import (
+    Body,
+    Driver,
+    FunctionTool,
+    ModelConfig,
+    Node,
+    Part,
+    Session,
+    Stop,
+    SystemClock,
+    tool,
+)
 from tau_next.providers.openai import OpenAIProvider
 
 KEY_ENV = "TAU_TEST_KEY"
@@ -36,7 +52,7 @@ async def test_a_plain_turn_through_the_driver(tmp_path: Path) -> None:
         await driver.rest(c)
         assert bodies(s, c)[2:] == [
             Body.User("hello"),
-            Body.Assistant([Part.Text("Hello, how are you?")], Stop.End),
+            Body.Assistant([Part.Text("Hello, how are you?")], Stop.End, "stop"),
         ]
     assert server.bodies[0]["messages"][-1] == {"role": "user", "content": "hello"}  # type: ignore[index]
 
@@ -81,7 +97,7 @@ async def test_a_stream_cut_mid_reply_commits_the_partial_reply_as_an_error(
     async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (s, driver, c):
         driver.send(c, "test", "hello")
         await driver.rest(c)
-        assert bodies(s, c)[-1] == Body.Assistant([Part.Text("par")], Stop.Error)
+        assert bodies(s, c)[-1] == Body.Assistant([Part.Text("par")], Stop.Error, None)
 
 
 @scenario
@@ -93,7 +109,9 @@ async def test_the_api_key_is_sent_but_never_stored(tmp_path: Path) -> None:
     async with running(directory, provider, config) as (s, driver, c):
         driver.send(c, "test", "hello")
         await driver.rest(c)
-        assert bodies(s, c)[-1] == Body.Assistant([Part.Text("Hello, how are you?")], Stop.End)
+        assert bodies(s, c)[-1] == Body.Assistant(
+            [Part.Text("Hello, how are you?")], Stop.End, "stop"
+        )
     assert server.requests[0].headers["authorization"] == f"Bearer {SECRET}"
     assert KEY_ENV in repr(config), "the variable's name is in the Config"
     for file in directory.rglob("*"):
@@ -152,4 +170,147 @@ async def test_live_a_plain_turn(tmp_path: Path) -> None:
         reply = bodies(s, c)[-1]
         assert isinstance(reply, Body.Assistant)
         assert reply.stop == Stop.End
+        assert reply.finish_reason == "stop"
         assert any(isinstance(p, Part.Text) and p.text.strip() for p in reply.parts)
+
+
+def get_weather_tool() -> FunctionTool:
+    @tool(describe={"city": "city name"})
+    def get_weather(city: str) -> str:
+        """Current weather in a city."""
+        return f"sunny in {city}"
+
+    return get_weather
+
+
+@scenario
+async def test_a_tool_round_trip_renders_the_tools_array_and_the_tool_message(
+    tmp_path: Path,
+) -> None:
+    """The recorded `tool_call` response, run, and the follow-up request that answers it."""
+    server = sse_sequence("tool_call", "plain")
+    weather = get_weather_tool()
+    session = Session.create(CONFIG, "sys", SystemClock().now(), tmp_path / "s")
+    driver = Driver(session, OpenAIProvider(server.transport, {}), tools=[weather])
+    driver.start()
+    c = session.cursors()[0]
+    try:
+        driver.send(c, "test", "weather in Paris?")
+        await driver.rest(c)
+        first, second = server.bodies
+        expected_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Current weather in a city.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string", "description": "city name"}},
+                        "additionalProperties": False,
+                        "required": ["city"],
+                    },
+                },
+            }
+        ]
+        assert first["tools"] == expected_tools
+        assert second["tools"] == expected_tools
+        assert "tool_choice" not in first
+        assert "parallel_tool_calls" not in first
+        assert sent(second)[-2:] == [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "y23a03Z82TN0yjGdHOY18qoUF5gVGfNV",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "y23a03Z82TN0yjGdHOY18qoUF5gVGfNV",
+                "content": "sunny in Paris",
+            },
+        ]
+        walk = bodies(session, c)
+        assert isinstance(walk[-3], Body.Assistant)
+        assert walk[-3].finish_reason == "tool_calls"
+        assert walk[-1] == Body.Assistant([Part.Text("Hello, how are you?")], Stop.End, "stop")
+        for node in session.walk(session.at(c)):
+            if isinstance(node.body, Body.Config | Body.System | Body.User | Body.Custom):
+                assert "get_weather" not in repr(node.body), "tools are not recorded"
+    finally:
+        await driver.stop()
+        session.close()
+
+
+@scenario
+async def test_no_tools_means_no_tools_key(tmp_path: Path) -> None:
+    server = sse("plain")
+    async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (_, driver, c):
+        driver.send(c, "test", "hello")
+        await driver.rest(c)
+    assert "tools" not in server.bodies[0]
+
+
+@scenario
+async def test_a_cut_off_call_with_no_id_or_name_is_recorded_in_the_failure(
+    tmp_path: Path,
+) -> None:
+    delta: dict[str, object] = {"tool_calls": [{"index": 0, "function": {"arguments": '{"ci'}}]}
+    server = Server(httpx.Response(200, stream=CutStream(chunk(delta).encode())))
+    async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (s, driver, c):
+        driver.send(c, "test", "hello")
+        await driver.rest(c)
+        records = [n for n in nodes(s) if isinstance(n.body, Body.Custom)]
+        data = custom_data(records[0])
+        assert "ReadError" in data
+        assert '{"ci' in data, "the raw argument text is kept"
+        assert "no id or no name" in data
+
+
+@scenario
+async def test_a_cut_off_call_with_a_name_keeps_the_name_in_the_failure(tmp_path: Path) -> None:
+    function = {"name": "get_weather", "arguments": '{"ci'}
+    delta: dict[str, object] = {"tool_calls": [{"index": 0, "function": function}]}
+    server = Server(httpx.Response(200, stream=CutStream(chunk(delta).encode())))
+    items, error = await collect(OpenAIProvider(server.transport, {}), fresh_walk())
+    assert items == []
+    assert error is not None
+    assert "'get_weather'" in str(error)
+    assert '{"ci' in str(error)
+
+
+@pytest.mark.skipif("TAU_LIVE_BASE_URL" not in os.environ, reason="set TAU_LIVE_BASE_URL")
+@scenario
+async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
+    """Against a real server (see `test_live_a_plain_turn`): the model reads a secret by tool."""
+    model = os.environ.get("TAU_LIVE_MODEL")
+    assert model, "TAU_LIVE_MODEL must name the model when TAU_LIVE_BASE_URL is set"
+    secret = tmp_path / "secret.txt"
+    secret.write_text("the phrase is: violet-anchor-42\n")
+
+    @tool(describe={"path": "path of the file to read"})
+    def read_file(path: str) -> str:
+        """Read a text file and return its contents."""
+        return Path(path).read_text()
+
+    config = ModelConfig(model, os.environ["TAU_LIVE_BASE_URL"]).to_config(max_steps=6)
+    session = Session.create(config, "Use tools when needed.", SystemClock().now(), tmp_path / "s")
+    driver = Driver(session, OpenAIProvider(), tools=[read_file])
+    driver.start()
+    c = session.cursors()[0]
+    try:
+        driver.send(c, "test", f"Read {secret} and tell me the phrase in it.")
+        await driver.rest(c)
+        walk = bodies(session, c)
+        assert any(isinstance(b, Body.Results) for b in walk)
+        reply = walk[-1]
+        assert isinstance(reply, Body.Assistant)
+        assert any(isinstance(p, Part.Text) and "violet-anchor-42" in p.text for p in reply.parts)
+    finally:
+        await driver.stop()
+        session.close()

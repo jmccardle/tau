@@ -65,7 +65,7 @@ Node   { id, parent?, time, by, body, delivers, copied_from*, derived_from* }
 
 body   = System(text)
        | User(text, images*)
-       | Assistant { parts, stop, stop_raw* }
+       | Assistant { parts, stop, finish_reason? }
        | Results(outcomes)                  [(call id, outcome, by)], in call order
        | Config { max_steps?, data }      data: opaque to core
        | Custom { kind, data }
@@ -106,8 +106,8 @@ runnable; the provider renders them as text (§10).
 
 - A batch is answered by one `Results` node, written at the join when every
   call has an outcome, under the batch, in call order.
-- An `args_raw` that doesn't parse is `Err("invalid arguments")` without
-  running. Not yet spiked (the spike hands every call to the driver).
+- The tool, or a `pre_tool` hook, answers an `args_raw` it cannot use; core
+  and the driver do not parse it (D7, 2026-10-29).
 - Each `Results` node is final. Going back to the batch and stepping writes a
   sibling `Results` (Q10). Two cursors at one batch each run it (Q13).
 
@@ -283,8 +283,7 @@ committed stay.
 **Errors.** A cursor hook that raises is `Fed::HookFailed`: the draft is
 discarded, `post_step` gets `Failed(error)`, and an input stays pending. A
 tool hook that raises gives its call `Err("hook error")`, withholding any raw
-output. Outcomes core writes (`Interrupted`, `Err("invalid arguments")`,
-`Err("hook error")`) skip `pre_result`.
+output. Outcomes core writes (`Interrupted`, `Err("hook error")`) skip `pre_result`.
 
 **Handles.** A cursor handle may read the tree, cursors, labels, and move
 records; append anywhere; add, update, or remove any item; open cursors; set
@@ -368,7 +367,8 @@ Each provider is a Python adapter for one API family. It owes the driver:
 
 1. Parts streamed in order as `stream_delta`s; the driver builds the reply
    draft and each call's `args_raw`.
-2. `stop` normalised, the raw string kept as `stop_raw`.
+2. `stop` normalised, the provider's own string kept as `finish_reason`
+   (`Finish`); the sample is handed the driver's tools, which are never recorded.
 3. Faithful replay: text verbatim, `args_raw` byte for byte where the wire
    takes a string; parsed only where the wire needs an object.
 4. Thinking sent back as the API requires; an unsigned cut-off thinking part
@@ -423,7 +423,7 @@ Q19, Q29, Q35, Q36, Q38, Q40, Q41.
 | Q17 | Input at an unanswered batch | goes under it (D4) |
 | Q18 | After a pre hook answers | the draft's pre hooks still run |
 | Q20 | "Keep going", runaway loops | a `post_reply` hook writes a `User` node; `max_steps` |
-| Q21 | Parallel calls | yes; an `exclusive` tool runs alone |
+| Q21 | Parallel calls | yes; an `exclusive` tool runs alone (not built yet: `Tool` has no `exclusive`) |
 | Q22 | Approve one call, deny another | `cursor.ask` from `pre_tool`; declined returns a reason |
 | Q23 | Lifecycle hooks | none until Phase 5 needs one |
 | Q24 | Record a rewritten call? | not by core |

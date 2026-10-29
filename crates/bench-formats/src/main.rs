@@ -90,16 +90,14 @@ fn turn(s: &mut Session, c: CursorId, text: &mut Text, calls: &mut u64) {
         ];
         let reply = Body::Assistant {
             parts,
-            stop: Stop::Tools,
-        };
+            stop: Stop::Tools, finish_reason: None };
         s.write(c, reply, vec![], Author::Provider, 0).unwrap();
         let results = Body::Results(vec![(id, Outcome::Ok(text.take(RESULT)), Author::Tools)]);
         s.write(c, results, vec![], Author::Tools, 0).unwrap();
     }
     let done = Body::Assistant {
         parts: vec![Part::Text(text.take(FINAL))],
-        stop: Stop::End,
-    };
+        stop: Stop::End, finish_reason: None };
     s.write(c, done, vec![], Author::Provider, 0).unwrap();
     s.sync();
 }

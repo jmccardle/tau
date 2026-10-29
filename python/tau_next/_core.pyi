@@ -315,11 +315,15 @@ class Body:
     @final
     class Assistant(Body):
         __match_args__: ClassVar[tuple[str, ...]]
-        def __new__(cls, parts: Sequence[Part], stop: Stop) -> Body.Assistant: ...
+        def __new__(
+            cls, parts: Sequence[Part], stop: Stop, finish_reason: str | None = None
+        ) -> Body.Assistant: ...
         @property
         def parts(self) -> list[Part]: ...
         @property
         def stop(self) -> Stop: ...
+        @property
+        def finish_reason(self) -> str | None: ...
 
     @final
     class Results(Body):

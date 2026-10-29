@@ -18,6 +18,7 @@ fn said(t: &str) -> Fed {
             body: Body::Assistant {
                 parts: vec![Part::Text(t.into())],
                 stop: Stop::End,
+                finish_reason: None,
             },
             delivers: vec![],
             by: Author::Provider,

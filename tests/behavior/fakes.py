@@ -1,6 +1,7 @@
 """The fakes at the effect boundary (rule 4), and the clock and gates they need."""
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -9,12 +10,15 @@ from tau_next import (
     Config,
     Cursor,
     Ending,
+    Finish,
     Node,
     NodeHandle,
+    Outcome,
     Part,
     SampleError,
     Stop,
     Subject,
+    Tool,
 )
 
 
@@ -92,6 +96,7 @@ class Reply:
     stop: Stop = Stop.End
     gate: Gate | None = None
     gate_after: int = 0
+    finish_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -104,10 +109,15 @@ class Fail:
 
 @dataclass(frozen=True)
 class Request:
-    """What a sample was asked: the walk's node ids and the config (I1)."""
+    """What a sample was asked: the walk's node ids, the config (I1), and the tools offered."""
 
     walk: tuple[int, ...]
     config: Config
+    tools: tuple[Tool, ...] = ()
+
+    @property
+    def tool_names(self) -> list[str]:
+        return [t.name for t in self.tools]
 
 
 class FakeProvider:
@@ -122,21 +132,23 @@ class FakeProvider:
     def gates(self) -> list[Gate]:
         return [e.gate for e in self._script if isinstance(e, Reply) and e.gate is not None]
 
-    async def sample(self, walk: Sequence[Node], config: Config) -> AsyncIterator[Part | Stop]:
-        self.requests.append(Request(tuple(n.id for n in walk), config))
+    async def sample(
+        self, walk: Sequence[Node], config: Config, tools: Sequence[Tool]
+    ) -> AsyncIterator[Part | Finish]:
+        self.requests.append(Request(tuple(n.id for n in walk), config, tuple(tools)))
         if self._next >= len(self._script):
             raise AssertionError(f"FakeProvider: no scripted reply for sample {self._next + 1}")
         scripted = self._script[self._next]
         self._next += 1
         match scripted:
-            case Reply(parts=parts, stop=stop, gate=gate, gate_after=after):
+            case Reply(parts=parts, stop=stop, gate=gate, gate_after=after, finish_reason=reason):
                 for i, part in enumerate(parts):
                     if gate is not None and i == after:
                         await gate.wait()
                     yield part
                 if gate is not None and after >= len(parts):
                     await gate.wait()
-                yield stop
+                yield Finish(stop, reason)
             case Fail(error=error, parts=parts):
                 for part in parts:
                     yield part
@@ -144,32 +156,47 @@ class FakeProvider:
 
 
 class FakeTool:
-    """Records each call's arguments, waits at its gate, then returns or raises `result`."""
+    """Records each call's parsed arguments, waits at its gate, then answers `Ok(result)`
+    or raises `result`. Checks only that the arguments are JSON."""
 
     def __init__(
         self,
         name: str,
         result: str | Exception | Callable[[Mapping[str, object]], str],
         gate: Gate | None = None,
+        description: str = "A fake tool.",
     ) -> None:
         self._name = name
         self._result = result
         self.gate = gate
+        self._description = description
         self.calls: list[Mapping[str, object]] = []
 
     @property
     def name(self) -> str:
         return self._name
 
-    async def call(self, args: Mapping[str, object]) -> str:
+    @property
+    def description(self) -> str:
+        return self._description
+
+    @property
+    def parameters(self) -> Mapping[str, object]:
+        return {"type": "object", "properties": {}}
+
+    async def call(self, args_raw: str) -> Outcome:
+        try:
+            args: Mapping[str, object] = json.loads(args_raw)
+        except ValueError:
+            return Outcome.Err("arguments are not valid JSON")
         self.calls.append(args)
         if self.gate is not None:
             await self.gate.wait()
         if isinstance(self._result, Exception):
             raise self._result
         if isinstance(self._result, str):
-            return self._result
-        return self._result(args)
+            return Outcome.Ok(self._result)
+        return Outcome.Ok(self._result(args))
 
 
 class Recorder:

@@ -16,13 +16,14 @@ import httpx
 from tau_next import (
     Config,
     Driver,
+    Finish,
     ModelConfig,
     Node,
     Part,
     SampleError,
     Session,
-    Stop,
     SystemClock,
+    Tool,
 )
 from tau_next.providers.openai import OpenAIProvider
 
@@ -33,10 +34,11 @@ CONFIG = ModelConfig(MODEL, BASE_URL).to_config()
 
 
 class Server:
-    """A transport that answers every request with `respond` and keeps each request seen."""
+    """A transport that answers requests with `response` and keeps each request seen. Given
+    a list, it answers the first request with the first, and so on, then repeats the last."""
 
-    def __init__(self, response: httpx.Response | Exception) -> None:
-        self._response = response
+    def __init__(self, response: httpx.Response | Exception | list[httpx.Response]) -> None:
+        self._responses = response if isinstance(response, list) else [response]
         self.requests: list[httpx.Request] = []
 
     @property
@@ -45,9 +47,10 @@ class Server:
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
-        if isinstance(self._response, Exception):
-            raise self._response
-        return self._response
+        response = self._responses[min(len(self.requests), len(self._responses)) - 1]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     @property
     def bodies(self) -> list[dict[str, object]]:
@@ -59,6 +62,17 @@ def sse(name: str) -> Server:
     content = (FIXTURES / f"{name}.sse").read_bytes()
     return Server(
         httpx.Response(200, headers={"content-type": "text/event-stream"}, content=content)
+    )
+
+
+def sse_sequence(*names: str) -> Server:
+    """A server that streams `fixtures/<name>.sse` for each request in turn, the last repeated."""
+    headers = {"content-type": "text/event-stream"}
+    return Server(
+        [
+            httpx.Response(200, headers=headers, content=(FIXTURES / f"{name}.sse").read_bytes())
+            for name in names
+        ]
     )
 
 
@@ -106,12 +120,15 @@ def chunk(delta: dict[str, object], finish: str | None = None) -> str:
 
 
 async def collect(
-    provider: OpenAIProvider, walk: Sequence[Node], config: Config = CONFIG
-) -> tuple[list[Part | Stop], SampleError | None]:
+    provider: OpenAIProvider,
+    walk: Sequence[Node],
+    config: Config = CONFIG,
+    tools: Sequence[Tool] = (),
+) -> tuple[list[Part | Finish], SampleError | None]:
     """Everything `sample` yielded, and the `SampleError` it ended with, if any."""
-    items: list[Part | Stop] = []
+    items: list[Part | Finish] = []
     try:
-        async for item in provider.sample(walk, config):
+        async for item in provider.sample(walk, config, tools):
             items.append(item)
     except SampleError as e:
         return items, e

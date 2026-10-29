@@ -24,6 +24,7 @@ from tau_next import (
     Node,
     NoSuchNode,
     Session,
+    Tool,
 )
 
 CLIENT = "term"
@@ -55,7 +56,7 @@ class Harness:
         directory: Path,
         session: Session,
         provider: FakeProvider,
-        tools: Sequence[FakeTool],
+        tools: Sequence[Tool],
         extensions: Sequence[Extension],
         clock: FakeClock,
         gates: Sequence[Gate],
@@ -84,7 +85,7 @@ class Harness:
         config: Config | None = None,
         system: str = "sys",
         provider: FakeProvider | None = None,
-        tools: Sequence[FakeTool] = (),
+        tools: Sequence[Tool] = (),
         extensions: Sequence[Extension] = (),
         clock: FakeClock | None = None,
         gates: Sequence[Gate] = (),
@@ -104,7 +105,7 @@ class Harness:
         tmp_path: Path,
         *,
         provider: FakeProvider | None = None,
-        tools: Sequence[FakeTool] = (),
+        tools: Sequence[Tool] = (),
         extensions: Sequence[Extension] = (),
         clock: FakeClock | None = None,
         gates: Sequence[Gate] = (),
@@ -171,7 +172,7 @@ class Harness:
 
     def parked(self) -> int:
         gates = {*self.provider.gates, *self.gates}
-        gates.update(t.gate for t in self.tools if t.gate is not None)
+        gates.update(t.gate for t in self.tools if isinstance(t, FakeTool) and t.gate is not None)
         return sum(g.held for g in gates) + self.clock.sleepers + self.driver.open_questions
 
     async def crash(self) -> None:

@@ -1,7 +1,8 @@
 """The OpenAI-compatible provider: chat completions over SSE (llama.cpp, vLLM, OpenAI).
 
 Walk to request in `messages`, response to parts in `_Stream`, one per reply. The request carries
-only what the walk and `ModelConfig` say: `model`, `messages`, `stream`.
+only what the walk, the tools, and `ModelConfig` say: `model`, `messages`, `stream`, and
+`tools` when there are any.
 """
 
 import json
@@ -14,7 +15,7 @@ import httpx
 
 from tau_next._core import Body, Config, Node, Outcome, Part, Stop
 from tau_next.config import ConfigError, ModelConfig
-from tau_next.protocols import SampleError
+from tau_next.protocols import Finish, SampleError, Tool
 
 Json = dict[str, object]
 HTTP_OK = 200
@@ -143,7 +144,10 @@ class _Open:
         if self.kind == "text":
             return Part.Text(text)
         if not self.id or not self.tool:
-            raise SampleError(f"tool call {self.index} has no id or no name")
+            raise SampleError(
+                f"tool call {self.index} has no id or no name "
+                f"(id {self.id!r}, name {self.tool!r}, arguments so far {text!r})"
+            )
         return Part.Call(self.id, self.tool, text)
 
 
@@ -215,13 +219,28 @@ class _Stream:
             out += self.close()
         return out
 
-    def stop(self) -> Stop:
+    def stop(self) -> Finish:
         if self.finish is None:
             raise SampleError("the stream ended without a finish_reason")
         stop = STOPS.get(self.finish)
         if stop is None:
             raise SampleError(f"unknown finish_reason {self.finish!r}")
-        return stop
+        return Finish(stop, self.finish)
+
+
+def _tools(tools: Sequence[Tool]) -> list[Json]:
+    """The `tools` array: each tool as a function the model may call."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": dict(t.parameters),
+            },
+        }
+        for t in tools
+    ]
 
 
 def _json(value: object, what: str) -> Json:
@@ -276,8 +295,11 @@ class OpenAIProvider:
         self._environ = os.environ if environ is None else environ
         self._timeout = timeout or httpx.Timeout(10.0, read=300.0)
 
-    def request(self, walk: Sequence[Node], config: Config) -> tuple[str, dict[str, str], Json]:
-        """The URL, headers, and JSON body of the request for this sample.
+    def request(
+        self, walk: Sequence[Node], config: Config, tools: Sequence[Tool]
+    ) -> tuple[str, dict[str, str], Json]:
+        """The URL, headers, and JSON body of the request for this sample. `tools` become the
+        `tools` array, omitted when there are none.
 
         Raises `SampleError` for a config or walk that cannot be sent.
         """
@@ -288,12 +310,16 @@ class OpenAIProvider:
             raise SampleError(str(e)) from e
         headers = {} if key is None else {"Authorization": f"Bearer {key}"}
         body: Json = {"model": model.model, "messages": messages(walk), "stream": True}
+        if tools:
+            body["tools"] = _tools(tools)
         return model.base_url.rstrip("/") + "/chat/completions", headers, body
 
-    async def sample(self, walk: Sequence[Node], config: Config) -> AsyncIterator[Part | Stop]:
-        """Yield each part once complete, then the stop. A failure raises `SampleError`
+    async def sample(
+        self, walk: Sequence[Node], config: Config, tools: Sequence[Tool]
+    ) -> AsyncIterator[Part | Finish]:
+        """Yield each part once complete, then the `Finish`. A failure raises `SampleError`
         after yielding every part the stream had finished or begun."""
-        url, headers, body = self.request(walk, config)
+        url, headers, body = self.request(walk, config, tools)
         reply = _Stream()
         try:
             async with (
@@ -313,18 +339,19 @@ class OpenAIProvider:
                         yield part
                     if reply.finish is not None:
                         break
-            stop = reply.stop()
+            finish = reply.stop()
         except httpx.HTTPError as e:
             error = SampleError(f"{type(e).__name__}: {e}")
         except SampleError as e:
             error = e
         else:
-            yield stop
+            yield finish
             return
         try:
             leftover = reply.close()
-        except SampleError:
-            leftover = []  # a cut-off call with no id or name has nothing to keep
+        except SampleError as cut_off:
+            # A cut-off call with no id or name is not a part; the failure records what arrived.
+            raise SampleError(f"{error}; {cut_off}") from error
         for part in leftover:
             yield part
         raise error

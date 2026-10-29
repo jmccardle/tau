@@ -5,7 +5,11 @@ use tau_core::tree::{Author, Body, Error, ItemData, Outcome, Part, Record, Sessi
 
 fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
     Draft {
-        body: Body::Assistant { parts, stop },
+        body: Body::Assistant {
+            parts,
+            stop,
+            finish_reason: None,
+        },
         delivers: vec![],
         by: Author::Provider,
     }
@@ -86,7 +90,8 @@ fn plain_turn() {
             Body::User("hi".into()),
             Body::Assistant {
                 parts: vec![text("hello")],
-                stop: Stop::End
+                stop: Stop::End,
+                finish_reason: None
             }
         ]
     );
@@ -134,7 +139,8 @@ fn batch_answers_in_call_order_then_samples_again() {
         b[5],
         Body::Assistant {
             parts: vec![text("done")],
-            stop: Stop::End
+            stop: Stop::End,
+            finish_reason: None
         }
     );
     assert_eq!(s.items(c).count(), 0, "nothing left behind");
@@ -411,7 +417,8 @@ fn pre_reply_move_chooses_where_the_reply_lands() {
             Body::User("(reminder)".into()),
             Body::Assistant {
                 parts: vec![text("hello")],
-                stop: Stop::End
+                stop: Stop::End,
+                finish_reason: None
             }
         ]
     );
@@ -461,7 +468,8 @@ fn abort_during_sample_commits_the_partial_reply() {
         bodies(&s, c).last().unwrap(),
         &Body::Assistant {
             parts: vec![text("hel")],
-            stop: Stop::Interrupted
+            stop: Stop::Interrupted,
+            finish_reason: None
         }
     );
     assert!(!s.auto[&c]);
@@ -621,7 +629,8 @@ fn a_mid_stream_error_commits_the_partial_reply_and_fails() {
         bodies(&s, c).last().unwrap(),
         &Body::Assistant {
             parts: vec![text("hel")],
-            stop: Stop::Error
+            stop: Stop::Error,
+            finish_reason: None
         }
     );
 }
@@ -841,7 +850,8 @@ fn a_pre_sample_move_chooses_what_is_sampled_and_where_the_reply_lands() {
             Body::User("(be brief)".into()),
             Body::Assistant {
                 parts: vec![text("hello")],
-                stop: Stop::End
+                stop: Stop::End,
+                finish_reason: None
             }
         ]
     );
@@ -859,6 +869,7 @@ fn a_post_reply_move_changes_where_the_tools_phase_looks() {
             Body::Assistant {
                 parts: vec![call("old")],
                 stop: Stop::Tools,
+                finish_reason: None,
             },
             vec![],
             0,

@@ -21,8 +21,10 @@ its own time. How do calls and answers sit in the tree?
   batch.
 - I4 holds by construction. Core's only check is V2: distinct calls.
 - The provider expands `Results` into one tool message per call.
-- An `args_raw` that doesn't parse is `Err("invalid arguments")` without
-  running (not yet spiked).
+- The tool, or a `pre_tool` hook, answers an `args_raw` it cannot use. Core and
+  the driver do not parse it. (Changed 2026-10-29: it was `Err("invalid
+  arguments")` by `Core` without running; that stopped a hook from repairing
+  the arguments.)
 - A re-run writes a sibling `Results`; each is final (Q10).
 
 ## Alternatives

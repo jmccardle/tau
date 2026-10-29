@@ -66,9 +66,9 @@ directly, so:
 | 2 | minimal driver | performs every job, cancels on abort; provider, tool, hook protocols |
 | 3 | `Harness`, `FakeProvider`, `FakeTool` | the first Rust scenarios pass as Python tests (`tests/behavior/`); review starts here |
 | 4 | minimal config | done: a `Config` holds model, base URL, and the *name* of the API-key variable; full D13 later |
-| 5 | OpenAI-compatible provider | done (raw stop not kept: no `stop_raw` yet): walk to messages, streamed parts, stop normalized and kept raw, HTTP errors as failures |
+| 5 | OpenAI-compatible provider | done: walk to messages, streamed parts, stop normalized and kept raw (`finish_reason`), tools array, HTTP errors as failures |
 | 6 | first call | done (`examples/first_call.py`): a Python import example against local llama.cpp (`192.168.1.100:8100`), not a CLI |
-| 7 | first tool round-trip | one built-in tool called and answered |
+| 7 | first tool round-trip | done (`examples/first_tool.py`): `@tool` makes a `Tool` from a function; tools are the driver's, handed to each `sample`, never recorded; the example defines its own `read_file` (no built-in toolset yet) |
 4. **Config overhaul** (approved 2026-10-27), in Python: the config file
    parser and `tau config check`. Written up as D13 when it starts. Agreed so far:
    - the flat `{"model": {...}}` file stays valid; an object with `models` is
