@@ -27,6 +27,10 @@ jobs:
         python: ["3.12", "3.14t"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # scripts/ratchet.py compares ratchet-allow.toml with its version at
+          # the merge-base (or HEAD~1 on master): it needs history.
+          fetch-depth: 0
       - name: toolchain
         run: scripts/ci-toolchain.sh ${{ matrix.python }}
       - name: dev group

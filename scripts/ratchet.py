@@ -13,11 +13,16 @@ a new violation appears, and when an allowed item is fixed or improved but its
 line is still there. `--tighten` rewrites the file to lower or remove lines
 (never to add or raise one).
 
+The allowlist file is itself guarded: it is compared with its version at a base
+revision and the ratchet fails if any value rose or any line was added (see
+`base_revision`). There is no flag to skip that.
+
 Measurement definitions: scripts/rustmetrics.py.
 """
 
 import argparse
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -116,6 +121,49 @@ def missing_i7() -> list[str]:
     ]
 
 
+def git(*args: str) -> str:
+    r = subprocess.run(["git", *args], check=False, cwd=ROOT, capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit(f"ratchet: git {' '.join(args)} failed: {r.stderr.strip()}")
+    return r.stdout.strip()
+
+
+def base_revision() -> str:
+    """The revision the allowlist may only shrink from.
+
+    The merge-base of HEAD and origin/master. On master itself that is HEAD,
+    which would compare the file with itself, so the base is then HEAD~1 (the
+    last commit; CI runs on pushes to master). Without origin/master (a clone
+    that never fetched it), HEAD~1 as well. CI must fetch full history.
+    """
+    head = git("rev-parse", "HEAD")
+    try:
+        base = git("merge-base", "HEAD", "origin/master")
+    except SystemExit:
+        base = head
+    return git("rev-parse", "HEAD~1") if base == head else base
+
+
+def guard_allow(allow: dict[str, dict[str, int]], base: str) -> list[str]:
+    """Lines added to, or raised in, the allowlist since `base`."""
+    rel = ALLOW.relative_to(ROOT).as_posix()
+    old = tomllib.loads(git("show", f"{base}:{rel}"))
+    fails: list[str] = []
+    for sec in SECTIONS:
+        before = old.get(sec, {})
+        for key, val in sorted(allow[sec].items()):
+            if key not in before:
+                fails.append(f"ADDED    {sec}: {key} = {val} is not in {rel} at {base[:12]}")
+            elif val > before[key]:
+                fails.append(f"RAISED   {sec}: {key} {before[key]} -> {val} since {base[:12]}")
+    if fails:
+        fails.append(
+            f"{rel} only shrinks. Fix the code instead; a rule change goes through "
+            "CLAUDE.md and John, not through this file."
+        )
+    return fails
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -124,9 +172,10 @@ def main() -> int:
     args = ap.parse_args()
     now, allow = measure(), load_allow()
     fails, tight = compare(now, allow)
+    fails = guard_allow(allow, base_revision()) + fails
     if args.tighten:
         # Only lines that still violate and did not get worse are kept, at their new value.
-        if any(f.startswith(("NEW", "WORSE")) for f in fails):
+        if any(f.startswith(("NEW", "WORSE", "ADDED", "RAISED")) for f in fails):
             print(
                 "ratchet: refusing to tighten while there are NEW or WORSE violations",
                 file=sys.stderr,
