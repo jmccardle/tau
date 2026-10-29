@@ -1,103 +1,67 @@
-# D14: Bodies off every cursor's walk leave memory
+# D14: Loading a subset of a long history
 
-Status: **accepted** (2026-10-29), built in `tau-core` and `tau-store`.
-Amends D12. Shapes the `tau-py` boundary.
+Status: **deferred** (2026-10-28). Every body stays in memory, and open
+replays the whole log (D12). Revisit when a real session's memory or open
+time is a problem.
 
 ## Context
 
 A session keeps every node it ever wrote: abandoned branches, the line a
-compaction departed from, and every compaction copy (D3). Before D14 all of
-it stayed in memory. The measurements (`docs/benchmarks.md`) showed:
-
-- After 5 compactions of a 1M-token session, the log is ~30 MB for a
-  ~460k-token context, and all of it was resident. Each cycle adds
-  ~5.5 MB; a session that compacts 100 times would hold ~0.5 GB.
-- Core decides from little: a node's kind and calls at the tip (`next`,
-  `start_batch`), the nearest `Config` (`config_at`), the body being
-  written (V2). The driver reads whole walks, but only cursors' walks.
+compaction departed from, and every compaction copy (D3). All of it is in
+memory, and open replays the whole log. `docs/benchmarks.md` measures it:
+after 20 compactions of a 1M-token session, 83 MB of bodies and 150 MB of
+process memory; open takes 372 ms (141 MB, 283 MB peak). Each compaction
+adds ~5.5 MB to the log.
 
 Pruning is not an option: node ids are permanent, any node can be gone to,
 and the log is the only copy of the tree.
 
-## Decision
+## What was tried
 
-One rule, no tuning:
+A first version (built, then reverted; `61a8083`..`21de4d4`): a body is in
+memory only while it is on some cursor's walk, is a `Config`, or is not yet
+synced. A call that needs a stored body is refused with `Stored(ids)`; the
+driver loads them and makes the call again. Measured on the same machine:
 
-- **A body is resident** (in memory) while it is on some cursor's walk, is
-  a `Config`, or is not yet synced. Every other body is **stored**: only
-  the log holds it. `Store::evict(session)` drops them; the driver calls it
-  after each save. It does work only after a move or an append, since a
-  write at a tip makes nothing cold.
-- No budget, no eviction order, no least-recently-used list. Nothing marks
-  a line cold: a line goes cold when every cursor has left it, whatever made
-  them leave. No assumption about how agents behave.
-- **The store keeps each node's offset** in the log, filled as it writes and
-  as it scans on open. Core holds no positions. A stored body is one read at
-  a known offset, usually from the kernel's page cache: the OS is the cache.
-- **Open reads only what the rule keeps.** It reads every node's id,
-  parent, and delivers, and the bodies of `Config`s and of the cursors'
-  walks; every other body stays in the log, as if just evicted.
-- **A stored node keeps its id and parent** in memory, so `parent`, `lca`,
-  `config_at`, and `append` under it work without its body.
-- **Core refuses, the driver loads.** A call that needs stored bodies
-  (`node`, `walk`, a move, `open`, a go-to) is refused with
-  `Error::Stored(ids)`, every stored body it needs, root first, and nothing
-  changes. The driver calls `Store::load(session, ids)` and makes the call
-  again. A go-to waiting on a busy cursor whose line was evicted meanwhile
-  is refused from `next_job` and still waits. So every cursor's walk is
-  always resident, a step never waits on disk, and core stays free of IO
-  without a new job.
-- **Residency is not state:** not persisted, not compared (I7).
-  `Session`'s equality leaves out `cooled`; a stored node equals only a
-  stored one, so tests compare sessions after loading every body back.
+| | all in memory | that version |
+|---|---|---|
+| bodies in memory after 20 compactions | 83 MB | 3.3 MB |
+| process memory after 20 compactions | 150 MB | 47 MB |
+| open after 20 compactions: time / memory / peak | 372 ms / 141 MB / 283 MB | 193 ms / 17 MB / 50 MB |
+| open with no compaction (1M tokens) | 12.6 ms | 20.5 ms |
+| go-to | ~1 µs | ~20 µs |
 
-## Alternatives
+Rejected for its costs, not its numbers:
 
-| option | why not |
+- **It widened the core/driver protocol.** Reading a node, a walk, a move,
+  or a go-to could be refused, and every caller needed a load-and-retry.
+  The core stopped being "the data is here".
+- **It evicted a compaction while it was being written.** The copy has no
+  cursor on it until the move, so its save evicted it and the summary read
+  it straight back.
+
+## Requirements for a later version
+
+- **Load the appropriate subset of a long history:** what the session's
+  cursors need, not every line ever written.
+- **No new refusal or retry at the core/driver boundary.** What core holds,
+  it holds; the driver never catches "not loaded".
+- **Nothing a cursor or an extension is building leaves memory.** A
+  compaction's copy is not evicted before its move.
+- Disk format unchanged unless a measurement asks for it.
+
+An option that fits: decide residency at **open** only (read the node
+headers and the cursors' walks; leave the rest in the log), and load
+another line through an explicit call that happens before core sees it,
+never as a refusal. Not designed yet.
+
+## Alternatives considered with the first version
+
+| option | why not, then |
 |---|---|
-| A memory budget with an eviction order (the first draft) | Knobs to tune, and a cache to build; the rule above leaves only what must stay. |
-| A `Job::Load` before a sample | A cursor's walk is always resident, so no sample waits; the only load is at a go-to, where a refusal suffices. |
-| Text stored by content (hash-keyed, shared) | Mostly a disk saving; under the rule, a compaction's originals leave memory anyway. |
+| A memory budget with an eviction order | Knobs to tune, and a cache to build. |
+| A `Job::Load` before a sample | A new job kind for the same reason as the refusal. |
+| Text stored by content (hash-keyed, shared) | Mostly a disk saving. |
 | Segmented, compressed, indexed log | Disk is cheap; it only speeds open. |
 | A faster encoding | Decode speed only. |
-| Delete or rotate away old records | Loses nodes; any node can be gone to. |
 | SQLite or another store | A second durability model (D12). |
-
-Each deferred option can come later behind the same boundary if a
-measurement asks for it.
-
-## Consequences
-
-- Memory is node ids and parents (~32 bytes a node) plus the cursors'
-  walks, whatever the session's history. Measured (`cycles` in
-  `benches/tree.rs`, `docs/benchmarks.md`): after 20 compactions of a
-  1M-token session, 3.3 MB of bodies in memory instead of 83 MB, and the
-  process at 47 MB RSS instead of 150 MB; reopened, 17 MB RSS (50 MB
-  peak) instead of 141 MB (283 MB), in 193 ms instead of 372 ms. `walk` got
-  faster; a go-to now checks its target's walk (~20 µs instead of ~1 µs);
-  a session with nothing off its walks opens ~1.6× slower (its walk
-  records are decoded twice).
-- **Open leaves the past in the log.** It streams the log once (never the
-  whole file in memory), reading each `Write` without building its body
-  (`Replay::Stored`) unless it is a `Config`, replays, then reads back only
-  the bodies on the cursors' walks. V2 for a body left in the log is
-  checked when it is restored. Open still reads every byte (the CRC); a
-  **header cache** (node ids, parents, and offsets up to a log position,
-  checksummed, rebuilt by a full scan when missing or bad) would cut that,
-  without new crash cases.
-- A line appended with no cursor on it (a compaction's copy, before its
-  move) is evicted by the next save and read back if the extension reads
-  it (a few ms for a 1M-token compaction). An extension that builds a line
-  under a cursor of its own keeps it in memory.
-- Disk is unchanged.
-- A go-to into an evicted line reads its bodies back (one read each).
-- `tau-py`: a node's body may not be in memory; `Stored` becomes a typed
-  exception the driver handles by loading, never the user. Nodes never
-  change, so a Python cache keyed by node id stays valid.
-- D12's store gains `offsets`, `evict`, and `load`; the log format is
-  unchanged.
-- Enforced by `crates/tau-store/tests/residency.rs`: a session evicting
-  after every save, across reopens, equals one that never evicts once its
-  bodies are loaded back, and every cursor's walk stays resident; a go-to
-  into a cold line is refused, then loads; a waiting go-to survives
-  eviction of its line.

@@ -5,9 +5,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-mod resident;
-use resident::slot;
-
 pub type NodeId = u64;
 pub type CursorId = u64;
 pub type ItemId = u64;
@@ -146,25 +143,6 @@ pub enum Record {
     },
 }
 
-/// What load replays: a record, or a `Write` whose body was left in the
-/// log (D14). The store reads that body back when it is needed (`restore`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Replay {
-    Record(Record),
-    Stored {
-        id: NodeId,
-        parent: Option<NodeId>,
-        delivers: Vec<ItemId>,
-        mv: Option<Move>,
-    },
-}
-
-impl From<Record> for Replay {
-    fn from(r: Record) -> Self {
-        Self::Record(r)
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     NoSuchNode(NodeId),
@@ -178,9 +156,6 @@ pub enum Error {
     HookRunning(CursorId),
     RootNotConfig,
     DuplicateCall,
-    /// Bodies this call needs are on disk, not in memory: the store loads
-    /// them (`Store::load`), then the call is made again. Root first.
-    Stored(Vec<NodeId>),
     /// A record replay cannot apply: a node id or a cursor out of sequence, a
     /// move from a node the cursor is not at. Its position in the log.
     BadRecord(usize),
@@ -193,19 +168,11 @@ pub enum Next {
     RunTools,
 }
 
-/// Equal by state (I7): which bodies are in memory is not state, so
-/// `cooled` is left out; a stored body equals only another stored one.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Session {
-    /// Per node, by id: the node, or `None` while its body is stored.
-    nodes: Vec<Option<Box<Node>>>,
-    /// Per node, by id: its parent, resident or stored.
-    parents: Vec<Option<NodeId>>,
+    nodes: Vec<Node>,
     /// Per node, by id: the nearest `Config` on its walk (`config_at`).
     configs: Vec<NodeId>,
-    /// A cursor moved, or a node was appended, since the last `evict`:
-    /// something may be on no cursor's walk.
-    cooled: bool,
     at: BTreeMap<CursorId, NodeId>,
     labels: BTreeMap<String, CursorId>,
     pub auto: BTreeMap<CursorId, bool>,
@@ -257,10 +224,9 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// `NoSuchNode` if `at` is not a node; `Stored` for bodies on its walk
-    /// not in memory.
+    /// `NoSuchNode` if `at` is not a node.
     pub fn open(&mut self, at: NodeId, by: Author, time: u64) -> Result<CursorId, Error> {
-        self.resident(at)?;
+        self.node(at)?;
         let id = self.at.len() as CursorId;
         self.auto.insert(id, false);
         self.place(id, None, at, by, time);
@@ -285,7 +251,6 @@ impl Session {
         let node = self.check(parent, by, body, delivers, time)?;
         let id = node.id;
         self.push(node.clone());
-        self.cooled = true;
         self.queue(Record::Write { node, mv: None });
         Ok(id)
     }
@@ -328,8 +293,7 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// `NoSuchNode` if `to` is not a node; `NoSuchCursor` if `cursor` is not
-    /// open; `Stored` for bodies on `walk(to)` not in memory.
+    /// `NoSuchNode` if `to` is not a node; `NoSuchCursor` if `cursor` is not open.
     pub fn move_to(
         &mut self,
         cursor: CursorId,
@@ -337,7 +301,7 @@ impl Session {
         by: Author,
         time: u64,
     ) -> Result<(), Error> {
-        self.resident(to)?;
+        self.node(to)?;
         let from = self.at(cursor)?;
         if from != to {
             self.place(cursor, Some(from), to, by, time);
@@ -355,7 +319,6 @@ impl Session {
         };
         self.at.insert(cursor, to);
         self.moves.push(mv.clone());
-        self.cooled = true;
         self.queue(Record::Move(mv));
     }
 
@@ -363,11 +326,10 @@ impl Session {
     fn push(&mut self, node: Node) {
         let config = match (&node.body, node.parent) {
             (Body::Config(_), _) | (_, None) => node.id,
-            (_, Some(p)) => self.configs[slot(p)],
+            (_, Some(p)) => self.configs[usize::try_from(p).expect("a checked parent")],
         };
         self.configs.push(config);
-        self.parents.push(node.parent);
-        self.nodes.push(Some(Box::new(node)));
+        self.nodes.push(node);
     }
 
     fn check(
@@ -381,9 +343,13 @@ impl Session {
         match (parent, &body) {
             (None, Body::Config(_)) => {}
             (None, _) => return Err(Error::RootNotConfig),
-            (Some(p), _) => drop(self.parent(p)?),
+            (Some(p), _) => drop(self.node(p)?),
         }
-        v2(&body)?;
+        if let Body::Results(out) = &body
+            && (1..out.len()).any(|i| out[..i].iter().any(|(c, ..)| *c == out[i].0))
+        {
+            return Err(Error::DuplicateCall); // V2
+        }
         Ok(Node {
             id: self.nodes.len() as NodeId,
             parent,
@@ -397,13 +363,11 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// `NoSuchNode` if `id` is not a node; `Stored` if its body is not in memory.
+    /// `NoSuchNode` if `id` is not a node.
     pub fn node(&self, id: NodeId) -> Result<&Node, Error> {
         self.nodes
-            .get(slot(id))
-            .ok_or(Error::NoSuchNode(id))?
-            .as_deref()
-            .ok_or_else(|| Error::Stored(vec![id]))
+            .get(usize::try_from(id).unwrap_or(usize::MAX))
+            .ok_or(Error::NoSuchNode(id))
     }
 
     ///
@@ -417,24 +381,14 @@ impl Session {
             .ok_or(Error::NoSuchCursor(cursor))
     }
 
-    /// `walk(n)`: root to `n`. Every cursor's walk is in memory (`evict`).
-    ///
-    /// # Errors
-    ///
-    /// `NoSuchNode` if `n` is not a node; `Stored` as `resident`.
-    pub fn walk(&self, n: NodeId) -> Result<Vec<&Node>, Error> {
-        self.parent(n)?;
-        let mut out = vec![];
-        let mut at = Some(n);
-        while let Some(i) = at {
-            match self.nodes[slot(i)].as_deref() {
-                Some(node) => out.push(node),
-                None => return Err(self.resident(n).unwrap_err()),
-            }
-            at = self.parents[slot(i)];
-        }
+    #[must_use]
+    pub fn walk(&self, n: NodeId) -> Vec<&Node> {
+        let mut out: Vec<&Node> = std::iter::successors(self.node(n).ok(), |x| {
+            x.parent.and_then(|p| self.node(p).ok())
+        })
+        .collect();
         out.reverse();
-        Ok(out)
+        out
     }
 
     /// The nearest `Config` on `walk(n)`; always defined, since every root is
@@ -448,8 +402,9 @@ impl Session {
     ///
     /// If a root is not `Config`, which V1 rules out.
     pub fn config_at(&self, n: NodeId) -> Result<&Config, Error> {
-        self.parent(n)?;
-        match &self.node(self.configs[slot(n)])?.body {
+        self.node(n)?;
+        let config = self.configs[usize::try_from(n).expect("a node id")];
+        match &self.node(config)?.body {
             Body::Config(c) => Ok(c),
             _ => panic!("a root is Config (V1)"),
         }
@@ -459,15 +414,17 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// `NoSuchNode` if `a` or `b` is not a node. Bodies need not be in memory.
+    /// `NoSuchNode` if `a` or `b` is not a node.
     pub fn lca(&self, a: NodeId, b: NodeId) -> Result<Option<NodeId>, Error> {
-        self.parent(b)?;
-        let up = |n| std::iter::successors(Some(n), |&x| self.parents[slot(x)]);
-        let on_a: std::collections::BTreeSet<NodeId> = {
-            self.parent(a)?;
-            up(a).collect()
-        };
-        Ok(up(b).find(|id| on_a.contains(id)))
+        self.node(b)?;
+        let on_a: std::collections::BTreeSet<NodeId> =
+            self.walk(self.node(a)?.id).iter().map(|n| n.id).collect();
+        Ok(self
+            .walk(b)
+            .iter()
+            .rev()
+            .map(|n| n.id)
+            .find(|id| on_a.contains(id)))
     }
 
     /// Set a label on a cursor; a label already set elsewhere moves.
@@ -588,55 +545,24 @@ impl Session {
     }
 
     /// Load (I7): replay the log's records, take the scratchpad file, then
-    /// reconcile: every cursor at rest with auto-step off, and every item a
-    /// node delivers dropped. A `Replay::Stored` node is replayed with its
-    /// body stored. Pure; the store reads the files. Nothing is queued.
+    /// `reconcile`. Pure; the store reads the files. Nothing is queued.
     ///
     /// # Errors
     ///
-    /// `BadRecord` with its position for the first record replay cannot
-    /// apply; a stored root among them (V1 needs its body).
-    pub fn load(
-        records: impl IntoIterator<Item = impl Into<Replay>>,
-        pad: Scratchpad,
-    ) -> Result<Self, Error> {
+    /// `BadRecord` with its position for the first record replay cannot apply.
+    pub fn load(records: impl IntoIterator<Item = Record>, pad: Scratchpad) -> Result<Self, Error> {
         let mut s = Self::default();
-        let mut delivered = std::collections::BTreeSet::new();
         for (i, r) in records.into_iter().enumerate() {
-            s.replay(r.into(), &mut delivered)
-                .map_err(|_| Error::BadRecord(i))?;
+            s.replay(r).map_err(|_| Error::BadRecord(i))?;
         }
         s.pad = pad;
-        s.auto.values_mut().for_each(|a| *a = false);
-        s.pad.items.retain(|i| !delivered.contains(&i.id));
+        s.reconcile();
         s.outbox.clear();
         s.unsynced = false;
-        s.cooled = true;
         Ok(s)
     }
 
-    fn replay(
-        &mut self,
-        r: Replay,
-        delivered: &mut std::collections::BTreeSet<ItemId>,
-    ) -> Result<(), Error> {
-        let r = match r {
-            Replay::Record(r) => r,
-            Replay::Stored {
-                id,
-                parent: Some(p),
-                delivers,
-                mv,
-            } if id == self.nodes.len() as NodeId => {
-                self.parent(p)?;
-                self.configs.push(self.configs[slot(p)]);
-                self.parents.push(Some(p));
-                self.nodes.push(None);
-                delivered.extend(delivers);
-                return mv.map_or(Ok(()), |m| self.replay_move(m));
-            }
-            Replay::Stored { .. } => return Err(Error::BadRecord(0)),
-        };
+    fn replay(&mut self, r: Record) -> Result<(), Error> {
         match r {
             Record::Write { node, mv } => {
                 let checked = self.check(
@@ -649,7 +575,6 @@ impl Session {
                 if checked != node {
                     return Err(Error::BadRecord(0));
                 }
-                delivered.extend(node.delivers.iter().copied());
                 self.push(node);
                 mv.map_or(Ok(()), |m| self.replay_move(m))
             }
@@ -666,7 +591,7 @@ impl Session {
     }
 
     fn replay_move(&mut self, m: Move) -> Result<(), Error> {
-        self.parent(m.to)?;
+        self.node(m.to)?;
         let ok = match m.from {
             None => m.cursor == self.at.len() as CursorId,
             Some(f) => self.at(m.cursor) == Ok(f),
@@ -691,28 +616,15 @@ impl Session {
     }
 
     /// What load does after replay (I7): every cursor at rest with auto-step
-    /// off, and every item a resident node delivers dropped.
+    /// off, and every item a node delivers dropped.
     pub fn reconcile(&mut self) {
         self.auto.values_mut().for_each(|a| *a = false);
         let delivered: Vec<ItemId> = self
             .nodes
             .iter()
-            .flatten()
             .flat_map(|n| n.delivers.iter().copied())
             .collect();
         self.pad.items.retain(|i| !delivered.contains(&i.id));
-    }
-}
-
-/// V2: a `Results` node names each call once.
-fn v2(body: &Body) -> Result<(), Error> {
-    match body {
-        Body::Results(out)
-            if (1..out.len()).any(|i| out[..i].iter().any(|(c, ..)| *c == out[i].0)) =>
-        {
-            Err(Error::DuplicateCall)
-        }
-        _ => Ok(()),
     }
 }
 

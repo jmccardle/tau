@@ -6,20 +6,15 @@
 //! A record on disk is its payload's length (`u32` LE), a CRC-32 of the
 //! length and the payload (`u32` LE), then the payload: the `Record` (or, in
 //! the scratchpad file, the `Scratchpad`) as JSON.
-//!
-//! The store also keeps each node's offset in the log, so a body evicted
-//! from memory (`Store::evict`) can be read back (`Store::load`) (D14).
-//! Open streams the log once, reading each node without its body unless
-//! it is a `Config`, then reads back only the bodies on the cursors' walks.
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use serde::de::{DeserializeOwned, IgnoredAny};
-use serde::{Deserialize, Serialize};
-use tau_core::tree::{CursorId, ItemId, Move, NodeId, Record, Replay, Scratchpad, Session};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use tau_core::tree::{Record, Scratchpad, Session};
 
 const LOG: &str = "log";
 const PAD: &str = "scratchpad";
@@ -41,9 +36,8 @@ pub enum Error {
     NotASession(PathBuf),
     /// A file of a version this build does not read.
     Version(u32),
-    /// A scratchpad file that fails its checksum or decode (the file is
-    /// replaced by rename, so this is damage, never a crash), or a log
-    /// record that does not read back as the node `load` asked for.
+    /// A scratchpad file that fails its checksum or decode. The file is
+    /// replaced by rename, so this is damage, never a crash.
     Corrupt(PathBuf),
     /// An earlier write failed; what reached the log is unknown. Open the
     /// session again.
@@ -66,7 +60,7 @@ impl fmt::Display for Error {
             Self::Exists => f.write_str("a session already exists here"),
             Self::NotASession(p) => write!(f, "not a τ session file: {}", p.display()),
             Self::Version(v) => write!(f, "session file version {v}; this build reads {VERSION}"),
-            Self::Corrupt(p) => write!(f, "damaged session file: {}", p.display()),
+            Self::Corrupt(p) => write!(f, "damaged scratchpad file: {}", p.display()),
             Self::Failed => f.write_str("an earlier write failed; open the session again"),
             Self::Core(e) => write!(f, "the log does not replay: {e:?}"),
         }
@@ -83,11 +77,6 @@ pub struct Store {
     log: File,
     /// Encoded records since the last `Sync`, not yet written.
     pending: Vec<u8>,
-    /// Bytes of the log on disk, all synced.
-    len: u64,
-    /// Per node, by id: where its `Write` record starts in the log, counting
-    /// records still in `pending`.
-    offsets: Vec<u64>,
     failed: bool,
     /// Bytes cut from the log's tail by `open`: a torn or unsynced tail. Kept
     /// in the session directory as `dropped-<offset>`.
@@ -109,18 +98,15 @@ impl Store {
         // to replace one. The lease is on the file, so it holds through the link.
         let tmp = dir.join(format!("{LOG}.new-{}", std::process::id()));
         let log = OpenOptions::new()
-            .read(true)
-            .append(true)
+            .write(true)
             .create(true)
+            .truncate(true)
             .open(&tmp)?;
         lease(&log)?;
-        log.set_len(0)?;
         let mut store = Self {
             dir: dir.into(),
             log,
             pending: header(LOG_MAGIC),
-            len: 0,
-            offsets: vec![],
             failed: false,
             dropped: 0,
         };
@@ -139,55 +125,40 @@ impl Store {
     /// Takes the lease and loads the session (I7): the log's records up to
     /// its last `Sync`, and the scratchpad file. Anything after that `Sync`
     /// (a torn tail, records never synced, damage) is cut and kept aside.
-    /// Only the bodies on the cursors' walks and `Config`s are read into
-    /// memory; the rest are stored, as after `evict`.
     ///
     /// # Errors
     ///
     /// `Leased` if another store holds the lease; `NotASession` for bad magic
     /// or a log with no `Sync`; `Version`; `Corrupt` for a damaged scratchpad
-    /// file or a body on a cursor's walk that does not read back; `Core` for
-    /// records that do not replay; `Io`.
+    /// file; `Core` for records that do not replay; `Io`.
     pub fn open(dir: &Path) -> Result<(Self, Session), Error> {
         let path = dir.join(LOG);
         let mut log = OpenOptions::new().read(true).append(true).open(&path)?;
         lease(&log)?;
-        let size = log.metadata()?.len();
-        let mut head = vec![];
-        (&log).take(HEADER as u64).read_to_end(&mut head)?;
-        check_header(&head, LOG_MAGIC, &path)?;
-        let scanned = scan(BufReader::new(&log), size)?;
-        if scanned.replays.is_empty() {
+        let mut bytes = vec![];
+        log.read_to_end(&mut bytes)?;
+        check_header(&bytes, LOG_MAGIC, &path)?;
+        let (records, kept) = scan(&bytes[HEADER..]);
+        if records.is_empty() {
             return Err(Error::NotASession(path));
         }
-        let end = scanned.kept;
-        if end < size {
-            let mut tail = vec![];
-            log.seek(SeekFrom::Start(end))?;
-            log.read_to_end(&mut tail)?;
+        let end = HEADER + kept;
+        if end < bytes.len() {
             let aside = dir.join(format!("dropped-{end}"));
-            File::create(&aside)?.write_all(&tail)?;
+            File::create(&aside)?.write_all(&bytes[end..])?;
             File::open(&aside)?.sync_all()?;
-            log.set_len(end)?;
+            log.set_len(end as u64)?;
             log.sync_all()?;
         }
         let pad = read_pad(&dir.join(PAD))?;
-        let mut session = Session::load(scanned.replays, pad).map_err(Error::Core)?;
-        let mut store = Self {
+        let session = Session::load(records, pad).map_err(Error::Core)?;
+        let store = Self {
             dir: dir.into(),
             log,
             pending: vec![],
-            len: end,
-            offsets: scanned.offsets,
             failed: false,
-            dropped: size - end,
+            dropped: (bytes.len() - end) as u64,
         };
-        let cursors = (0..).map_while(|c: CursorId| session.at(c).ok());
-        for tip in cursors.collect::<Vec<_>>() {
-            if let Err(tau_core::tree::Error::Stored(ids)) = session.resident(tip) {
-                store.load(&mut session, &ids)?;
-            }
-        }
         Ok((store, session))
     }
 
@@ -209,10 +180,6 @@ impl Store {
         let mut through = None;
         for r in session.outbox.drain(..) {
             let Record::Sync { pad } = r else {
-                if let Record::Write { node, .. } = &r {
-                    debug_assert_eq!(node.id, self.offsets.len() as NodeId, "writes in id order");
-                    self.offsets.push(self.len + self.pending.len() as u64);
-                }
                 encode(&r, &mut self.pending);
                 continue;
             };
@@ -226,64 +193,11 @@ impl Store {
         self.failed = true;
         self.log.write_all(&self.pending[..end])?;
         self.log.sync_data()?;
-        self.len += end as u64;
         self.pending.drain(..end);
         if let Some(pad) = pad {
             self.write_pad(&pad)?;
         }
         self.failed = false;
-        Ok(())
-    }
-
-    /// Drop from memory every body the log holds synced that is on no
-    /// cursor's walk and is not `Config` (`Session::evict`). Returns how many.
-    pub fn evict(&self, session: &mut Session) -> usize {
-        let durable = self.offsets.partition_point(|&o| o < self.len);
-        session.evict(durable as NodeId)
-    }
-
-    /// Read the stored bodies of `ids` back from the log into `session`, as
-    /// asked by `tree::Error::Stored`. Bodies in memory are skipped.
-    ///
-    /// # Errors
-    ///
-    /// `Core(NoSuchNode)` for an id this store never synced; `Corrupt` for a
-    /// record that does not read back as that node; `Io`.
-    ///
-    /// # Panics
-    ///
-    /// Never: offsets and lengths are far below `i64::MAX`.
-    pub fn load(&mut self, session: &mut Session, ids: &[NodeId]) -> Result<(), Error> {
-        let mut wanted = vec![];
-        for &id in ids.iter().filter(|&&id| session.node(id).is_err()) {
-            let at = usize::try_from(id)
-                .ok()
-                .and_then(|i| self.offsets.get(i))
-                .copied()
-                .filter(|&o| o < self.len)
-                .ok_or(Error::Core(tau_core::tree::Error::NoSuchNode(id)))?;
-            wanted.push((at, id));
-        }
-        // In log order through one buffer: a line's bodies are mostly
-        // written in order, so most reads skip forward within it.
-        wanted.sort_unstable();
-        let mut log = BufReader::with_capacity(1 << 16, &self.log);
-        let mut pos = log.seek(SeekFrom::Start(wanted.first().map_or(0, |w| w.0)))?;
-        let mut buf = vec![];
-        for (at, id) in wanted {
-            log.seek_relative(i64::try_from(at).unwrap() - i64::try_from(pos).unwrap())?;
-            buf.resize(8, 0);
-            log.read_exact(&mut buf)?;
-            let len = u32::from_le_bytes(buf[..4].try_into().unwrap()) as usize;
-            buf.resize(8 + len, 0);
-            log.read_exact(&mut buf[8..])?;
-            pos = at + buf.len() as u64;
-            let restored = match decode::<Record>(&buf, 0) {
-                Some((Record::Write { node, .. }, _)) if node.id == id => session.restore(node),
-                _ => Err(tau_core::tree::Error::BadRecord(0)),
-            };
-            restored.map_err(|_| Error::Corrupt(self.dir.join(LOG)))?;
-        }
         Ok(())
     }
 
@@ -359,104 +273,21 @@ fn decode<T: DeserializeOwned>(bytes: &[u8], at: usize) -> Option<(T, usize)> {
     Some((serde_json::from_slice(payload).ok()?, end))
 }
 
-/// What open reads from the log.
-struct Scanned {
-    /// The records up to the last `Sync` before the first bad record; each
-    /// `Write` but a `Config` without its body.
-    replays: Vec<Replay>,
-    /// Where each of their `Write`s starts.
-    offsets: Vec<u64>,
-    /// Where the last of them ends.
-    kept: u64,
-}
-
-/// The log after its header, one record at a time, to `size`. A record cut
-/// short, failing its checksum, or not decoding ends the scan.
-fn scan(mut log: impl Read, size: u64) -> io::Result<Scanned> {
-    let (mut replays, mut batch) = (vec![], vec![]);
-    let (mut offsets, mut writes) = (vec![], vec![]);
-    let (mut at, mut kept) = (HEADER as u64, HEADER as u64);
-    let mut payload = vec![];
-    while at + 8 <= size {
-        let mut head = [0; 8];
-        log.read_exact(&mut head)?;
-        let [l0, l1, l2, l3, c0, c1, c2, c3] = head;
-        let len = u64::from(u32::from_le_bytes([l0, l1, l2, l3]));
-        if at + 8 + len > size {
-            break;
-        }
-        payload.resize(usize::try_from(len).expect("a record under 4 GiB"), 0);
-        log.read_exact(&mut payload)?;
-        if checksum(&head[..4], &payload) != u32::from_le_bytes([c0, c1, c2, c3]) {
-            break;
-        }
-        let Some(record) = light(&payload) else {
-            break;
-        };
-        let sync = matches!(record, Replay::Record(Record::Sync { .. }));
-        if matches!(
-            record,
-            Replay::Stored { .. } | Replay::Record(Record::Write { .. })
-        ) {
-            writes.push(at);
-        }
-        batch.push(record);
-        at += 8 + len;
+/// The records up to the last `Sync` before the first bad record, and the
+/// bytes they span.
+fn scan(bytes: &[u8]) -> (Vec<Record>, usize) {
+    let (mut records, mut batch) = (vec![], vec![]);
+    let (mut at, mut kept) = (0, 0);
+    while let Some((r, next)) = decode::<Record>(bytes, at) {
+        let sync = matches!(r, Record::Sync { .. });
+        batch.push(r);
+        at = next;
         if sync {
-            replays.append(&mut batch);
-            offsets.append(&mut writes);
+            records.append(&mut batch);
             kept = at;
         }
     }
-    Ok(Scanned {
-        replays,
-        offsets,
-        kept,
-    })
-}
-
-/// A `Record` as open reads it: a `Write` without its body.
-#[derive(Deserialize)]
-enum Light {
-    Write { node: LightNode, mv: Option<Move> },
-}
-
-/// A node's id, parent, and delivers, and which kind of body it has.
-#[derive(Deserialize)]
-struct LightNode {
-    id: NodeId,
-    parent: Option<NodeId>,
-    body: LightBody,
-    delivers: Vec<ItemId>,
-}
-
-/// A body's kind, its content skipped unbuilt. Mirrors `Body`; a body that
-/// does not match is read whole instead.
-#[derive(Deserialize)]
-enum LightBody {
-    System(IgnoredAny),
-    User(IgnoredAny),
-    Assistant(IgnoredAny),
-    Results(IgnoredAny),
-    Config(IgnoredAny),
-    Custom(IgnoredAny),
-}
-
-/// `payload` as open replays it: a `Write` of anything but a `Config`
-/// without its body; anything else, or anything `Light` does not match,
-/// whole. `None` if it does not decode.
-fn light(payload: &[u8]) -> Option<Replay> {
-    match serde_json::from_slice(payload) {
-        Ok(Light::Write { node, mv }) if !matches!(node.body, LightBody::Config(_)) => {
-            Some(Replay::Stored {
-                id: node.id,
-                parent: node.parent,
-                delivers: node.delivers,
-                mv,
-            })
-        }
-        _ => serde_json::from_slice(payload).ok().map(Replay::Record),
-    }
+    (records, kept)
 }
 
 fn read_pad(path: &Path) -> Result<Scratchpad, Error> {
