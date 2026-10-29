@@ -42,7 +42,7 @@ mod on {
 
     pub fn log(kind: &str, from: &str, event: &str, to: &str) {
         let name = SCENARIO.lock().unwrap().clone().unwrap_or_else(|| {
-            std::thread::current()
+            std::thread::current() // core-io: allow(test-only `transitions` feature; never shipped)
                 .name()
                 .unwrap_or("unnamed")
                 .to_string()

@@ -8,8 +8,8 @@ was optimized.
 ```python
 from tau_next import trace
 
-with trace.capture("turn.json"):   # or trace.start(path) ... trace.stop()
-    ...                            # drive a session / Driver as usual
+with trace.capture("turn.json"):  # or trace.start(path) ... trace.stop()
+    ...  # drive a session / Driver as usual
 ```
 
 `trace.start` makes `tau_next._core` record its `tracing` spans (`core.*`,

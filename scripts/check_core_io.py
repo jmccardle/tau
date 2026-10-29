@@ -7,7 +7,9 @@ Two checks, both from CLAUDE.md's layout table ("No IO, no async runtime, no PyO
    listed). Prints the closure.
 2. A text scan of crates/tau-core/src for std::fs, std::net, std::process,
    std::io, std::thread, std::env and `async`/`.await`. Test modules in src
-   are scanned too.
+   are scanned too. A line may opt out only with a reason on the same line:
+   `// core-io: allow(<reason>)`, for code that never ships (a test-only
+   feature such as `transitions`).
 """
 
 import json
@@ -89,6 +91,8 @@ def main() -> int:
     for f in sorted((ROOT / "crates" / CRATE / "src").rglob("*.rs")):
         for n, line in enumerate(f.read_text().splitlines(), 1):
             code = line.split("//")[0]
+            if re.search(r"core-io: allow\(.+\)", line):
+                continue
             for label, pat in SOURCE_PATTERNS.items():
                 if re.search(pat, code):
                     problems.append(f"{f.relative_to(ROOT)}:{n}: uses {label}")
