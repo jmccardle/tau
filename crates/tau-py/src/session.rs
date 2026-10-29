@@ -168,10 +168,8 @@ impl Session {
         })
     }
 
-    fn step(&self, py: Python<'_>, cursor: u64, client: String) -> PyResult<()> {
-        self.write(py, tracing::info_span!("py.step"), |m| {
-            Ok(m.step(cursor, client)?)
-        })
+    fn step(&self, py: Python<'_>, cursor: u64) -> PyResult<()> {
+        self.write(py, tracing::info_span!("py.step"), |m| Ok(m.step(cursor)?))
     }
 
     /// Returns whether the driver must cancel the effect in flight.
@@ -188,9 +186,9 @@ impl Session {
         })
     }
 
-    fn set_auto(&self, py: Python<'_>, cursor: u64, on: bool, client: String) -> PyResult<()> {
+    fn set_auto(&self, py: Python<'_>, cursor: u64, on: bool) -> PyResult<()> {
         self.write(py, tracing::info_span!("py.set_auto"), |m| {
-            Ok(m.set_auto(cursor, on, client)?)
+            Ok(m.set_auto(cursor, on)?)
         })
     }
 
@@ -387,7 +385,7 @@ impl Session {
 
     fn node(&self, py: Python<'_>, id: u64) -> PyResult<Node> {
         self.read(py, tracing::info_span!("py.node"), |i| {
-            Ok(i.machine.session.node(id)?.clone().into())
+            Ok(i.machine.session.tree.node(id)?.clone().into())
         })
     }
 
@@ -395,22 +393,27 @@ impl Session {
     fn walk(&self, py: Python<'_>, node: u64) -> PyResult<Vec<Node>> {
         self.read(py, tracing::info_span!("py.walk"), |i| {
             let s = &i.machine.session;
-            s.node(node)?;
-            Ok(s.walk(node).into_iter().cloned().map(Into::into).collect())
+            s.tree.node(node)?;
+            Ok(s.tree
+                .walk(node)
+                .into_iter()
+                .cloned()
+                .map(Into::into)
+                .collect())
         })
     }
 
     /// The children of `node`, in append order.
     fn children(&self, py: Python<'_>, node: u64) -> PyResult<Vec<u64>> {
         self.read(py, tracing::info_span!("py.children"), |i| {
-            Ok(i.machine.session.children(node)?.to_vec())
+            Ok(i.machine.session.tree.children(node)?.to_vec())
         })
     }
 
     /// How many nodes there are; ids are `0..node_count()`.
     fn node_count(&self, py: Python<'_>) -> PyResult<usize> {
         self.read(py, tracing::info_span!("py.node_count"), |i| {
-            Ok(i.machine.session.node_count())
+            Ok(i.machine.session.tree.node_count())
         })
     }
 
@@ -427,14 +430,14 @@ impl Session {
 
     fn config_at(&self, py: Python<'_>, node: u64) -> PyResult<Config> {
         self.read(py, tracing::info_span!("py.config_at"), |i| {
-            Ok(i.machine.session.config_at(node)?.clone().into())
+            Ok(i.machine.session.tree.config_at(node)?.clone().into())
         })
     }
 
     /// The deepest node on both walks; `None` across trees.
     fn lca(&self, py: Python<'_>, a: u64, b: u64) -> PyResult<Option<u64>> {
         self.read(py, tracing::info_span!("py.lca"), |i| {
-            Ok(i.machine.session.lca(a, b)?)
+            Ok(i.machine.session.tree.lca(a, b)?)
         })
     }
 

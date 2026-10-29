@@ -102,11 +102,22 @@ its content was computed from (a summary, a sub-agent's answer).
 *spike* `Session` · retires `AgentSession`, `SessionManager`, catalog
 
 One conversation: a forest of nodes, its cursors, labels, and scratchpad.
-Spike fields: `nodes`, `configs` (per node, its nearest `Config`), `at`
-(cursor → node), `auto`, `items`, `next_item`, `changes`, `moves`, `outbox`,
-`notices`. `Session::create(config, system,
+Spike fields: `tree`, `at` (cursor → node), `auto`, `items`, `next_item`,
+`changes`, `moves`, `outbox`, `notices`. `Session::create(config, system,
 time)` writes the root `Config` and a `System` node and opens the first
-cursor (Q5).
+cursor (Q5). The nodes live in its `Tree`.
+
+### Tree
+*spike* `tree::Tree`, `Session::tree` · new
+
+The append-only forest of nodes and the reads over it: `node`, `walk`,
+`config_at`, `lca`, `children`, `node_count`, `deciding`, plus the private
+`push` and `check` (V2) that `Session::append` and replay share. Spike fields:
+`nodes`, `configs` (per node, its nearest `Config`), `kids` (per node, its
+children). It knows no cursor, label, or scratchpad; `Session::next` and
+`Session::deciding` take a cursor and ask `Tree::deciding` about its node.
+Replay is the free functions `tree::load` and `tree::reconcile`, which
+rebuild a `Session` and so stand where `Session::load` and `Session::reconcile` were.
 
 ### root, detached root
 a view · retires session header, side-completion sessions
@@ -122,14 +133,14 @@ a view · new
 A node no cursor's walk passes through. Nothing marks it.
 
 ### walk
-*spike* `Session::walk` · retires fold, path, splice
+*spike* `Tree::walk` · retires fold, path, splice
 
 `walk(n)`: the nodes root → … → `n`, inclusive. Nothing spliced or filtered.
 Its last node is its **tip**; seen as a path through the tree, it is a
 **line**.
 
 ### LCA
-*spike* `Session::lca` · new
+*spike* `Tree::lca` · new
 
 Lowest common ancestor of two nodes; none across trees.
 
@@ -149,7 +160,7 @@ not a `Body`, so it has nothing to refuse.
 not yet spiked
 
 V2 (a `Results` node's outcomes, and an `Assistant` node's calls, name distinct
-call ids) over a whole walk, for tests. `append` checks each node (`Session::check`).
+call ids) over a whole walk, for tests. `append` checks each node (`Tree::check`).
 
 ### Error
 *spike* `tree::Error`
@@ -525,7 +536,7 @@ What load does after replay: every cursor's auto-step off, and every
 delivered item dropped (I7).
 
 ### load
-*spike* `Session::load(records, scratchpad)` · new
+*spike* `tree::load(records, scratchpad)` · new
 
 Reload (I7): replay the log's records in order, take the scratchpad file,
 `reconcile`. Pure; the store reads the files. A record that cannot apply (a
@@ -540,7 +551,7 @@ A **sample** is one provider request over the **context**, `walk(at)`, with
 `config_at(at)` (I1). A **message** is the provider's wire unit, never stored.
 
 ### config
-*spike* `tree::Config`, `Body::Config`, `Session::config_at` · retires config
+*spike* `tree::Config`, `Body::Config`, `Tree::config_at` · retires config
 entry, `CONFIG_KEYS`, `Settings`, model entry
 
 A full snapshot of how a step runs. `config_at(n)` is the nearest `Config`
@@ -607,7 +618,7 @@ node handle is a cursor handle without the cursor's own operations. Every
 call goes into Rust at once. Both are a **tree handle**, which holds what they
 share. Reads: `get_node`, `lca`, `cursors`, `cursor_at`, `items_of`,
 `moves_of`, `labels_of`, `label`, `all_labels`, `children`, `node_count`
-(`Session::children`, `node_count`, `labels`: children in append order; ids are
+(`Tree::children`, `node_count`, `labels`: children in append order; ids are
 `0..node_count`). Writes that belong to no cursor: `append`
 (`Machine::append`: a node under any parent, moving nothing), `open`,
 `add_item` (an `ItemData.Extension` of this extension), `remove_item`

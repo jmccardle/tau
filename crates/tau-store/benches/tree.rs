@@ -257,7 +257,7 @@ impl Rig {
     fn sample(&mut self, c: CursorId) {
         let s = &self.m.session;
         let t = Instant::now();
-        let walk = s.walk(s.at(c).unwrap());
+        let walk = s.tree.walk(s.at(c).unwrap());
         let walked = t.elapsed();
         let json = if self.read == Read::Json {
             let t = Instant::now();
@@ -293,7 +293,7 @@ impl Rig {
 
     fn tokens_at(&self, c: CursorId) -> usize {
         let s = &self.m.session;
-        tokens(&s.walk(s.at(c).unwrap()))
+        tokens(&s.tree.walk(s.at(c).unwrap()))
     }
 
     /// Turns on `c` until its context reaches `target` tokens.
@@ -315,7 +315,7 @@ impl Rig {
     /// A random node among the last `recent` on `c`'s walk.
     fn recent(&self, c: CursorId, recent: usize, seed: &mut u64) -> NodeId {
         let s = &self.m.session;
-        let walk = s.walk(s.at(c).unwrap());
+        let walk = s.tree.walk(s.at(c).unwrap());
         let from = walk.len().saturating_sub(recent).max(2);
         let span = (walk.len() - from) as u64;
         walk[from + usize::try_from(rand(seed) % span.max(1)).unwrap()].id
@@ -327,7 +327,7 @@ fn node_count(s: &Session) -> u64 {
     let (mut lo, mut hi) = (0u64, 1u64 << 40);
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        if s.node(mid).is_ok() {
+        if s.tree.node(mid).is_ok() {
             lo = mid + 1;
         } else {
             hi = mid;
@@ -409,7 +409,7 @@ fn depth() {
             let json = mean(&tail.iter().map(|x| x.2).collect::<Vec<_>>());
             let core = rig.stats.core / turns.max(1);
             let at = rig.m.session.at(c).unwrap();
-            let nodes = rig.m.session.walk(at).len();
+            let nodes = rig.m.session.tree.walk(at).len();
             println!(
                 "| {} | {}k→{}k | {nodes} | {} | {} | {} |",
                 shape.name,
@@ -492,7 +492,7 @@ fn jump() {
         agent.run(&mut rig);
         first.push(rig.stats.samples[0].1);
     }
-    let nodes = rig.m.session.walk(rig.m.session.at(c).unwrap()).len();
+    let nodes = rig.m.session.tree.walk(rig.m.session.at(c).unwrap()).len();
     println!("| go-to | first walk after it | nodes on walk | nodes in session |");
     println!("|---|---|---|---|");
     println!(
@@ -720,7 +720,7 @@ fn compact() {
 /// is kept whole: its assistant node with its results.
 fn classify(s: &Session, c: CursorId) -> (Vec<Body>, Duration) {
     let start = Instant::now();
-    let walk = s.walk(s.at(c).unwrap());
+    let walk = s.tree.walk(s.at(c).unwrap());
     let recent = walk.len() * 3 / 4;
     let mut kept = vec![];
     let mut i = 2; // past Config and System
@@ -765,7 +765,7 @@ fn copy(s: &mut Session, kept: &[Body], now: u64) -> NodeId {
 
 /// A mock summary of the walk at `tip`: reads it all as JSON, returns 8 KB.
 fn summarize(s: &Session, tip: NodeId) -> String {
-    let json = serde_json::to_vec(&s.walk(tip)).unwrap();
+    let json = serde_json::to_vec(&s.tree.walk(tip)).unwrap();
     std::hint::black_box(json.len());
     text(8_000)
 }
@@ -785,7 +785,7 @@ fn lookup() {
     }
     let s = &rig.m.session;
     let total = node_count(s);
-    let n = s.walk(tips[0]).len() as u64;
+    let n = s.tree.walk(tips[0]).len() as u64;
     let time = |f: &mut dyn FnMut(u64)| {
         let t = Instant::now();
         for i in 0..10_000u64 {
@@ -794,9 +794,12 @@ fn lookup() {
         t.elapsed() / 10_000
     };
     let mut out = String::new();
-    let by_id = time(&mut |i| drop(std::hint::black_box(s.node(i * 7919 % n))));
-    let config = time(&mut |i| drop(s.config_at(tips[(i % 64) as usize])));
-    let lca = time(&mut |i| drop(s.lca(tips[(i % 64) as usize], tips[(i * 13 % 64) as usize])));
+    let by_id = time(&mut |i| drop(std::hint::black_box(s.tree.node(i * 7919 % n))));
+    let config = time(&mut |i| drop(s.tree.config_at(tips[(i % 64) as usize])));
+    let lca = time(&mut |i| {
+        let (a, b) = (tips[(i % 64) as usize], tips[(i * 13 % 64) as usize]);
+        drop(s.tree.lca(a, b));
+    });
     writeln!(
         out,
         "| node(id) | config_at(tip) | lca(tip, tip) | depth | nodes |"
@@ -877,12 +880,12 @@ fn load() {
         .collect();
     let decode = t.elapsed();
     let t = Instant::now();
-    let session = Session::load(decoded, Scratchpad::default()).unwrap();
+    let session = tau_core::tree::load(decoded, Scratchpad::default()).unwrap();
     let replay = t.elapsed();
     let t = Instant::now();
     drop(session);
     let free = t.elapsed();
-    println!("\n| decode JSON | replay (`Session::load`) | drop |");
+    println!("\n| decode JSON | replay (`tree::load`) | drop |");
     println!("|---|---|---|");
     println!("| {} | {} | {} |", us(decode), us(replay), us(free));
 }

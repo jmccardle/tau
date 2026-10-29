@@ -40,7 +40,7 @@ fn op() -> impl Strategy<Value = Op> {
 }
 
 fn nodes(s: &Session) -> Vec<Node> {
-    (0..).map_while(|n| s.node(n).ok().cloned()).collect()
+    (0..).map_while(|n| s.tree.node(n).ok().cloned()).collect()
 }
 
 fn cursors(s: &Session) -> u64 {
@@ -117,7 +117,7 @@ impl Driver {
         ids: Vec<String>,
     ) -> Result<(), TestCaseError> {
         let node = m.session.at(c).unwrap();
-        let batch: Vec<String> = calls(&m.session.node(node).unwrap().body)
+        let batch: Vec<String> = calls(&m.session.tree.node(node).unwrap().body)
             .into_iter()
             .map(|(id, ..)| id.to_string())
             .collect();
@@ -272,7 +272,7 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
         Op::Input(i) => drop(m.input(cursor(i), term(), "more").unwrap()),
         Op::Step(i) => {
             let busy = m.busy(cursor(i));
-            let stepped = m.step(cursor(i), term());
+            let stepped = m.step(cursor(i));
             prop_assert_eq!(
                 stepped,
                 if busy {
@@ -293,7 +293,7 @@ fn apply(m: &mut Machine, driver: &mut Driver, op: &Op) -> Result<(), TestCaseEr
                 Ok(_) => prop_assert!(node(t) < nn),
             }
         }
-        Op::Auto(i, on) => m.set_auto(cursor(i), on, term()).unwrap(),
+        Op::Auto(i, on) => m.set_auto(cursor(i), on).unwrap(),
         Op::Abort(i) => drop(m.abort(cursor(i))),
         Op::Open(t) => match m.open(node(t), Author::Core, 0, None) {
             Err(e) => prop_assert_eq!(e, Error::NoSuchNode(node(t))),
@@ -326,7 +326,7 @@ proptest! {
             prop_assert_eq!(&now[..old.len()], &old[..]);
             // I3: every cursor is at a node of its session.
             for c in 0..cursors(&m.session) {
-                prop_assert!(m.session.node(m.session.at(c).unwrap()).is_ok());
+                prop_assert!(m.session.tree.node(m.session.at(c).unwrap()).is_ok());
             }
         }
         // Rest every cursor: abort, then answer whatever the step still asks.
@@ -396,7 +396,7 @@ fn body() -> impl Strategy<Value = Body> {
 
 /// What I5 says an append under `parent` gives: V2, and nothing else.
 fn expected(s: &Session, parent: NodeId, body: &Body) -> Result<NodeId, Error> {
-    s.node(parent)?;
+    s.tree.node(parent)?;
     let mut ids: Vec<&String> = match body {
         Body::Results(out) => out.iter().map(|(c, ..)| c).collect(),
         Body::Assistant { parts, .. } => parts

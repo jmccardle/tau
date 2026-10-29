@@ -95,6 +95,14 @@ enum Pos {
     Rest,
 }
 
+fn hooks(point: Hook, draft: Option<Draft>) -> Job {
+    Job::Hooks {
+        point,
+        draft,
+        ending: None,
+    }
+}
+
 #[derive(Debug)]
 pub struct Step {
     pub cursor: CursorId,
@@ -152,97 +160,134 @@ impl Step {
         loop {
             // An aborted step's ending is no longer `Done`: no later phase applies.
             let on = self.ending == Ending::Done && (self.asked || s.auto[&self.cursor]);
-            let hooks = |point, draft| Job::Hooks {
-                point,
-                draft,
-                ending: None,
+            // `None`: the position hopped on without a job.
+            let job = match self.pos {
+                Pos::PreStep | Pos::Input | Pos::PreSample | Pos::Sample | Pos::PreReply => {
+                    self.job_before_reply(s, on)
+                }
+                _ => self.job_after_reply(s, on)?,
             };
-            return Ok(match self.pos {
-                Pos::PreStep => hooks(Hook::PreStep, None),
-                Pos::Input => {
-                    let cursor = self.cursor;
-                    let queue = self.inputs.get_or_insert_with(|| {
-                        let inputs = s
-                            .items(cursor)
-                            .filter(|i| matches!(i.data, ItemData::Input { .. }));
-                        if on {
-                            inputs.map(|i| i.id).collect()
-                        } else {
-                            vec![]
-                        }
-                    });
-                    // An input a hook already delivered is gone from the pad.
-                    let next = loop {
-                        if queue.is_empty() {
-                            break None;
-                        }
-                        let id = queue.remove(0);
-                        if let Some(Item {
-                            data: ItemData::Input { client, text },
-                            ..
-                        }) = s.items(cursor).find(|i| i.id == id)
-                        {
-                            break Some((id, client.clone(), text.clone()));
-                        }
-                    };
-                    let Some((id, client, text)) = next else {
-                        self.hop("no input to offer", Pos::PreSample);
-                        continue;
-                    };
-                    self.draft = Some(Draft {
-                        body: Body::User(text),
-                        delivers: vec![id],
-                        by: Author::Frontend(client),
-                    });
-                    hooks(Hook::PreInput, self.draft.clone())
-                }
-                Pos::PreSample if on && s.next(self.cursor) == Next::Sample => {
-                    hooks(Hook::PreSample, None)
-                }
-                Pos::PreSample => {
-                    self.hop("sample does not apply", Pos::Tools);
-                    continue;
-                }
-                Pos::Sample if self.draft.is_some() => {
-                    self.hop("pre_sample draft answers the sample", Pos::PreReply);
-                    continue;
-                }
-                Pos::Sample => Job::Sample,
-                Pos::PreReply => hooks(Hook::PreReply, self.draft.clone()),
-                // Post hooks run on data that is on disk.
-                Pos::PostReply | Pos::PostResult => {
-                    s.sync();
-                    hooks(
-                        if self.pos == Pos::PostReply {
-                            Hook::PostReply
-                        } else {
-                            Hook::PostResult
-                        },
-                        None,
-                    )
-                }
-                Pos::Tools => match s.deciding(self.cursor) {
-                    Some((Next::RunTools, node)) if on => {
-                        let calls = self.start_batch(s, node)?;
-                        self.hop("tools apply", Pos::Calls);
-                        Job::RunCalls { node, calls }
-                    }
-                    _ => {
-                        self.hop("tools do not apply", Pos::PostStep);
-                        continue;
-                    }
-                },
-                Pos::Calls => Job::Pending,
-                Pos::PostStep => {
-                    s.sync();
-                    Job::Hooks {
-                        point: Hook::PostStep,
-                        draft: None,
-                        ending: Some(self.ending.clone()),
-                    }
-                }
-                Pos::Rest => Job::Rest,
-            });
+            if let Some(job) = job {
+                return Ok(job);
+            }
+        }
+    }
+
+    /// The jobs up to the reply's hooks.
+    fn job_before_reply(&mut self, s: &Session, on: bool) -> Option<Job> {
+        match self.pos {
+            Pos::Input => self.input_job(s, on),
+            Pos::PreSample if on && s.next(self.cursor) == Next::Sample => {
+                Some(hooks(Hook::PreSample, None))
+            }
+            Pos::PreSample => {
+                self.hop("sample does not apply", Pos::Tools);
+                None
+            }
+            Pos::Sample if self.draft.is_some() => {
+                self.hop("pre_sample draft answers the sample", Pos::PreReply);
+                None
+            }
+            Pos::Sample => Some(Job::Sample),
+            Pos::PreReply => Some(hooks(Hook::PreReply, self.draft.clone())),
+            Pos::PreStep => Some(hooks(Hook::PreStep, None)),
+            Pos::PostReply
+            | Pos::PostResult
+            | Pos::Tools
+            | Pos::Calls
+            | Pos::PostStep
+            | Pos::Rest => unreachable!("job_at sends these to job_after_reply"),
+        }
+    }
+
+    /// The jobs from the reply's post hooks on.
+    fn job_after_reply(&mut self, s: &mut Session, on: bool) -> Result<Option<Job>, Error> {
+        Ok(match self.pos {
+            // Post hooks run on data that is on disk.
+            Pos::PostReply => {
+                s.sync();
+                Some(hooks(Hook::PostReply, None))
+            }
+            Pos::PostResult => {
+                s.sync();
+                Some(hooks(Hook::PostResult, None))
+            }
+            Pos::Tools => self.tools_job(s, on)?,
+            Pos::Calls => Some(Job::Pending),
+            Pos::PostStep => {
+                s.sync();
+                Some(Job::Hooks {
+                    point: Hook::PostStep,
+                    draft: None,
+                    ending: Some(self.ending.clone()),
+                })
+            }
+            Pos::Rest => Some(Job::Rest),
+            Pos::PreStep | Pos::Input | Pos::PreSample | Pos::Sample | Pos::PreReply => {
+                unreachable!("job_at sends these to job_before_reply")
+            }
+        })
+    }
+
+    /// The input phase: offer the next input still on the pad, or hop on.
+    fn input_job(&mut self, s: &Session, on: bool) -> Option<Job> {
+        let cursor = self.cursor;
+        let queue = self.inputs.get_or_insert_with(|| {
+            let inputs = s
+                .items(cursor)
+                .filter(|i| matches!(i.data, ItemData::Input { .. }));
+            if on {
+                inputs.map(|i| i.id).collect()
+            } else {
+                vec![]
+            }
+        });
+        // An input a hook already delivered is gone from the pad.
+        let next = loop {
+            if queue.is_empty() {
+                break None;
+            }
+            let id = queue.remove(0);
+            if let Some(Item {
+                data: ItemData::Input { client, text },
+                ..
+            }) = s.items(cursor).find(|i| i.id == id)
+            {
+                break Some((id, client.clone(), text.clone()));
+            }
+        };
+        let Some((id, client, text)) = next else {
+            self.hop("no input to offer", Pos::PreSample);
+            return None;
+        };
+        self.draft = Some(Draft {
+            body: Body::User(text),
+            delivers: vec![id],
+            by: Author::Frontend(client),
+        });
+        Some(hooks(Hook::PreInput, self.draft.clone()))
+    }
+
+    /// The tools phase: start the batch the reply decided, or hop to `post_step`.
+    fn tools_job(&mut self, s: &Session, on: bool) -> Result<Option<Job>, Error> {
+        match s.deciding(self.cursor) {
+            Some((Next::RunTools, node)) if on => {
+                let calls: Vec<RunCall> = calls(&s.tree.node(node)?.body)
+                    .into_iter()
+                    .map(|(id, tool, args_raw)| RunCall {
+                        id: id.into(),
+                        tool: tool.into(),
+                        args_raw: args_raw.into(),
+                    })
+                    .collect();
+                self.batch = calls.iter().map(|c| (c.id.clone(), None)).collect();
+                self.hop("tools apply", Pos::Calls);
+                Ok(Some(Job::RunCalls { node, calls }))
+            }
+            _ => {
+                self.hop("tools do not apply", Pos::PostStep);
+                Ok(None)
+            }
         }
     }
 
@@ -260,86 +305,117 @@ impl Step {
         }
         transitions::fed(&fed);
         self.out = false;
-        match (self.pos, fed) {
-            (Pos::PostStep, Fed::Hooks { stop, .. }) => {
+        match fed {
+            Fed::HookFailed(e) => self.on_hook_failed(s, e),
+            Fed::Hooks { stop, draft } => self.on_hooks(s, stop, draft, now),
+            Fed::Sampled { reply, error } => self.on_sampled(s, reply, error, now)?,
+            Fed::CallDone { call, outcome, by } => self.on_call(s, &call, outcome, by, now)?,
+        }
+        Ok(())
+    }
+
+    /// A hook raised. At `post_step` the step is ending anyway.
+    fn on_hook_failed(&mut self, s: &mut Session, e: String) {
+        if self.pos == Pos::PostStep {
+            self.after(s);
+        } else {
+            self.draft = None;
+            self.end(s, Ending::Failed(e));
+        }
+    }
+
+    /// A hook returned. `answers` admits it only at a hook position.
+    fn on_hooks(&mut self, s: &mut Session, stop: Option<String>, draft: Option<Draft>, now: u64) {
+        match (self.pos, stop) {
+            (Pos::PostStep, stop) => {
                 if stop.is_some() {
                     s.auto.insert(self.cursor, false);
                 }
                 self.after(s);
             }
-            (Pos::PostStep, Fed::HookFailed(_)) => self.after(s),
-            (_, Fed::HookFailed(e)) => {
-                self.draft = None;
-                self.end(s, Ending::Failed(e));
-            }
-            (
-                pos,
-                Fed::Hooks {
-                    stop: Some(reason), ..
-                },
-            ) => {
-                if let (Pos::Input, Some(d)) = (pos, self.draft.take()) {
-                    s.remove_item(d.delivers[0]);
-                    if let Author::Frontend(client) = d.by {
-                        s.notices.push((client, reason.clone()));
-                    }
-                }
-                self.draft = None;
-                self.end(s, Ending::Halted(reason));
-            }
-            (Pos::PreStep, Fed::Hooks { .. }) => self.go(Pos::Input),
-            (Pos::Input | Pos::PreReply, Fed::Hooks { draft, .. }) => {
+            (_, Some(reason)) => self.on_hook_stop(s, reason),
+            (Pos::PreStep, None) => self.go(Pos::Input),
+            (Pos::Input | Pos::PreReply, None) => {
                 self.draft = None;
                 self.commit(s, draft, now);
             }
-            (Pos::PreSample, Fed::Hooks { draft, .. }) => {
+            (Pos::PreSample, None) => {
                 self.draft = draft;
                 self.go(Pos::Sample);
             }
-            (
-                Pos::Sample,
-                Fed::Sampled {
-                    reply: Some(reply),
-                    error,
-                },
-            ) => {
+            (Pos::PostReply, None) => match self.error.take() {
+                Some(e) => self.end(s, Ending::Failed(e)),
+                None => self.go(Pos::Tools),
+            },
+            (Pos::PostResult, None) => self.go(Pos::PostStep),
+            (Pos::Sample | Pos::Tools | Pos::Calls | Pos::Rest, None) => {
+                unreachable!("answers admits Hooks only at a hook position")
+            }
+        }
+    }
+
+    /// A hook halted the step. At `pre_input` the offered item is removed and
+    /// its client told why.
+    fn on_hook_stop(&mut self, s: &mut Session, reason: String) {
+        if let (Pos::Input, Some(d)) = (self.pos, self.draft.take()) {
+            s.remove_item(d.delivers[0]);
+            if let Author::Frontend(client) = d.by {
+                s.notices.push((client, reason.clone()));
+            }
+        }
+        self.draft = None;
+        self.end(s, Ending::Halted(reason));
+    }
+
+    /// The sample came back: a reply (maybe with an error), an error, or nothing (aborted).
+    fn on_sampled(
+        &mut self,
+        s: &mut Session,
+        reply: Option<Draft>,
+        error: Option<String>,
+        now: u64,
+    ) -> Result<(), Error> {
+        match (reply, error) {
+            (Some(reply), error) => {
                 self.draft = Some(reply);
                 self.error = error;
                 self.go(Pos::PreReply);
             }
-            (Pos::Sample, Fed::Sampled { reply: None, error }) => match error {
-                Some(e) => {
-                    let at = s.at(self.cursor)?;
-                    s.append(
-                        at,
-                        Author::Core,
-                        Body::Custom {
-                            kind: "sample_error".into(),
-                            data: e.clone(),
-                        },
-                        vec![],
-                        now,
-                    )?;
-                    self.end(s, Ending::Failed(e));
-                }
-                None => self.end(s, Ending::Aborted),
-            },
-            (Pos::PostReply, Fed::Hooks { .. }) => match self.error.take() {
-                Some(e) => self.end(s, Ending::Failed(e)),
-                None => self.go(Pos::Tools),
-            },
-            (Pos::Calls, Fed::CallDone { call, outcome, by }) => {
-                if let Some(slot) = self.batch.iter_mut().find(|c| c.0 == call) {
-                    slot.1 = Some((outcome, by));
-                }
-                self.join(s, now)?;
-                if self.pos == Pos::Calls {
-                    self.out = true;
-                    self.go(Pos::Calls); // calls still out
-                }
+            (None, Some(e)) => {
+                let at = s.at(self.cursor)?;
+                s.append(
+                    at,
+                    Author::Core,
+                    Body::Custom {
+                        kind: "sample_error".into(),
+                        data: e.clone(),
+                    },
+                    vec![],
+                    now,
+                )?;
+                self.end(s, Ending::Failed(e));
             }
-            (Pos::PostResult, Fed::Hooks { .. }) => self.go(Pos::PostStep),
-            _ => return Err(Error::WrongFeed(self.cursor)),
+            (None, None) => self.end(s, Ending::Aborted),
+        }
+        Ok(())
+    }
+
+    /// One call of the batch finished; the last one joins the batch.
+    fn on_call(
+        &mut self,
+        s: &mut Session,
+        call: &str,
+        outcome: Outcome,
+        by: Author,
+        now: u64,
+    ) -> Result<(), Error> {
+        if let Some(slot) = self.batch.iter_mut().find(|c| c.0 == call) {
+            slot.1 = Some((outcome, by));
+        }
+        self.join(s, now)?;
+        if self.pos == Pos::Calls {
+            self.out = true;
+            self.go(Pos::Calls); // calls still out
         }
         Ok(())
     }
@@ -457,19 +533,6 @@ impl Step {
         } else {
             self.go(Pos::Rest);
         }
-    }
-
-    fn start_batch(&mut self, s: &Session, node: NodeId) -> Result<Vec<RunCall>, Error> {
-        let run: Vec<RunCall> = calls(&s.node(node)?.body)
-            .into_iter()
-            .map(|(id, tool, args_raw)| RunCall {
-                id: id.into(),
-                tool: tool.into(),
-                args_raw: args_raw.into(),
-            })
-            .collect();
-        self.batch = run.iter().map(|c| (c.id.clone(), None)).collect();
-        Ok(run)
     }
 
     /// The join, once every call has its outcome: one `Results` node, in call order.

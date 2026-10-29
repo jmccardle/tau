@@ -78,7 +78,7 @@ impl Machine {
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open; `Busy` if a step is running.
-    pub fn step(&mut self, cursor: CursorId, _client: String) -> Result<(), Error> {
+    pub fn step(&mut self, cursor: CursorId) -> Result<(), Error> {
         self.session.at(cursor)?;
         if self.busy(cursor) {
             return Err(Error::Busy(cursor));
@@ -104,7 +104,7 @@ impl Machine {
         now: u64,
     ) -> Result<bool, Error> {
         self.session.at(cursor)?;
-        self.session.node(to)?;
+        self.session.tree.node(to)?;
         let by = Author::Frontend(client);
         let cancel = if let Some(step) = self.steps.get_mut(&cursor).filter(|s| !s.resting()) {
             self.going.insert(cursor, (to, by, now));
@@ -124,7 +124,7 @@ impl Machine {
     /// # Errors
     ///
     /// `NoSuchCursor` if `cursor` is not open.
-    pub fn set_auto(&mut self, cursor: CursorId, on: bool, _client: String) -> Result<(), Error> {
+    pub fn set_auto(&mut self, cursor: CursorId, on: bool) -> Result<(), Error> {
         self.session.at(cursor)?;
         self.session.auto.insert(cursor, on);
         if on {

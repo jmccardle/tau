@@ -50,9 +50,9 @@ fn config_at_is_the_nearest_config_on_the_walk() {
     s.write(c, Body::Config(fast.clone()), vec![], Author::Core, 0)
         .unwrap();
     let b = user(&mut s, c, "b");
-    assert_eq!(s.config_at(a).unwrap(), &Config::from("{}"));
-    assert_eq!(s.config_at(b).unwrap(), &fast);
-    assert_eq!(s.config_at(77), Err(Error::NoSuchNode(77)));
+    assert_eq!(s.tree.config_at(a).unwrap(), &Config::from("{}"));
+    assert_eq!(s.tree.config_at(b).unwrap(), &fast);
+    assert_eq!(s.tree.config_at(77), Err(Error::NoSuchNode(77)));
 }
 
 #[test]
@@ -63,10 +63,10 @@ fn lca_is_the_deepest_shared_node_and_none_across_trees() {
     s.move_to(c, a, Author::Core, 0).unwrap();
     let b2 = user(&mut s, c, "b2");
     let b2x = user(&mut s, c, "b2x");
-    assert_eq!(s.lca(b1, b2x), Ok(Some(a)));
-    assert_eq!(s.lca(b2, b2x), Ok(Some(b2)));
+    assert_eq!(s.tree.lca(b1, b2x), Ok(Some(a)));
+    assert_eq!(s.tree.lca(b2, b2x), Ok(Some(b2)));
     let other = s.append_root(Author::Core, "{}".into(), 0);
-    assert_eq!(s.lca(b1, other), Ok(None));
+    assert_eq!(s.tree.lca(b1, other), Ok(None));
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn a_logged_root_that_is_not_a_config_does_not_replay() {
         mv: None,
     }];
     assert_eq!(
-        Session::load(log, Scratchpad::default()).map(|_| ()),
+        tau_core::tree::load(log, Scratchpad::default()).map(|_| ()),
         Err(Error::BadRecord(0))
     );
 }

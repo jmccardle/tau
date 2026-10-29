@@ -147,7 +147,7 @@ impl Store {
             log.sync_all()?;
         }
         let pad = read_pad(&dir.join(PAD))?;
-        let session = Session::load(records, pad).map_err(Error::Core)?;
+        let session = tau_core::tree::load(records, pad).map_err(Error::Core)?;
         let store = Self {
             dir: dir.into(),
             log,

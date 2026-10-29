@@ -66,7 +66,8 @@ fn drive(
 }
 
 fn bodies(s: &Session, cursor: u64) -> Vec<Body> {
-    s.walk(s.at(cursor).unwrap())
+    s.tree
+        .walk(s.at(cursor).unwrap())
         .into_iter()
         .map(|n| n.body.clone())
         .collect()
@@ -155,7 +156,7 @@ fn batch_answers_in_call_order_then_samples_again() {
         }
     );
     assert_eq!(s.items(c).count(), 0, "nothing left behind");
-    let results = s.walk(s.at(c).unwrap())[4];
+    let results = s.tree.walk(s.at(c).unwrap())[4];
     assert_eq!(results.by, Author::Tools);
 }
 
@@ -298,7 +299,7 @@ fn crash_mid_batch() -> (Session, u64) {
         }
     }
     drop(step);
-    s.reconcile();
+    tau_core::tree::reconcile(&mut s);
     (s, c)
 }
 
@@ -644,7 +645,7 @@ fn an_http_error_leaves_a_side_node_and_the_cursor_where_it_was() {
     });
     assert_eq!(ending(&jobs), Ending::Failed("HTTP 500".into()));
     assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
-    let side = s.node(s.at(c).unwrap() + 1).unwrap();
+    let side = s.tree.node(s.at(c).unwrap() + 1).unwrap();
     assert_eq!(side.parent, Some(s.at(c).unwrap()));
     assert!(matches!(&side.body, Body::Custom { kind, .. } if kind == "sample_error"));
     assert!(!s.auto[&c]);
@@ -978,7 +979,7 @@ fn answered_batch() -> (Session, u64, u64) {
             _ => vec![echo(job)],
         }
     });
-    let batch = s.node(s.at(c).unwrap()).unwrap().parent.unwrap();
+    let batch = s.tree.node(s.at(c).unwrap()).unwrap().parent.unwrap();
     (s, c, batch)
 }
 
@@ -986,12 +987,12 @@ fn results_under(s: &Session, batch: u64, cursors: &[u64]) -> Vec<Body> {
     let mut seen: Vec<u64> = cursors
         .iter()
         .map(|&c| s.at(c).unwrap())
-        .filter(|&n| s.node(n).unwrap().parent == Some(batch))
+        .filter(|&n| s.tree.node(n).unwrap().parent == Some(batch))
         .collect();
     seen.sort_unstable();
     seen.dedup();
     seen.into_iter()
-        .map(|n| s.node(n).unwrap().body.clone())
+        .map(|n| s.tree.node(n).unwrap().body.clone())
         .collect()
 }
 
@@ -1005,9 +1006,9 @@ fn going_to_a_batch_and_stepping_writes_a_sibling_results() {
     drive(&mut s, &mut step, scripted(vec![]));
     let second = s.at(c).unwrap();
     assert_ne!(first, second);
-    assert_eq!(s.node(second).unwrap().parent, Some(batch));
+    assert_eq!(s.tree.node(second).unwrap().parent, Some(batch));
     assert_eq!(
-        s.node(first).unwrap().body,
+        s.tree.node(first).unwrap().body,
         Body::Results(vec![(
             "a".into(),
             Outcome::Ok("first".into()),
@@ -1291,4 +1292,129 @@ fn has_hook(jobs: &[Job], point: Hook, ending: Option<&Ending>) -> bool {
     jobs.iter().any(|j| {
         matches!(j, Job::Hooks { point: p, draft: None, ending: e, .. } if *p == point && e.as_ref() == ending)
     })
+}
+
+/// One turn that calls a tool, with `answer` fed at the first hook job at `point`
+/// and every other job answered plainly. Returns the session, the cursor, and the
+/// jobs seen.
+fn turn_with_hook_answer(point: Hook, answer: Fed) -> (Session, u64, Vec<Job>) {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false);
+    let mut script = scripted(vec![
+        reply(vec![call("a")], Stop::Tools),
+        reply(vec![text("done")], Stop::End),
+    ]);
+    let mut answer = Some(answer);
+    let jobs = drive(&mut s, &mut step, |job, s| match job {
+        Job::Hooks { point: p, .. } if *p == point && answer.is_some() => {
+            vec![answer.take().unwrap()]
+        }
+        _ => script(job, s),
+    });
+    (s, c, jobs)
+}
+
+fn halting(reason: &str) -> Fed {
+    Fed::Hooks {
+        stop: Some(reason.into()),
+        draft: None,
+    }
+}
+
+fn raised(why: &str) -> Fed {
+    Fed::HookFailed(why.into())
+}
+
+fn ran(jobs: &[Job], point: Hook) -> bool {
+    jobs.iter()
+        .any(|j| matches!(j, Job::Hooks { point: p, .. } if *p == point))
+}
+
+#[test]
+fn a_pre_step_hook_string_halts_before_any_input() {
+    let (s, c, jobs) = turn_with_hook_answer(Hook::PreStep, halting("not now"));
+    assert_eq!(ending(&jobs), Ending::Halted("not now".into()));
+    assert!(!ran(&jobs, Hook::PreInput));
+    assert_eq!(s.items(c).count(), 1, "the input is still pending");
+    assert!(!s.auto[&c]);
+}
+
+#[test]
+fn a_pre_input_hook_that_raises_fails_the_step_and_leaves_the_input_pending() {
+    let (s, c, jobs) = turn_with_hook_answer(Hook::PreInput, raised("boom"));
+    assert_eq!(ending(&jobs), Ending::Failed("boom".into()));
+    assert!(!jobs.contains(&Job::Sample));
+    assert_eq!(s.items(c).count(), 1, "the input is still pending");
+    assert_eq!(bodies(&s, c).len(), 2, "only the config and system nodes");
+    assert!(!s.auto[&c]);
+}
+
+#[test]
+fn a_pre_sample_hook_that_raises_fails_the_step_without_sampling() {
+    let (s, c, jobs) = turn_with_hook_answer(Hook::PreSample, raised("boom"));
+    assert_eq!(ending(&jobs), Ending::Failed("boom".into()));
+    assert!(!jobs.contains(&Job::Sample));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert!(!s.auto[&c]);
+}
+
+#[test]
+fn a_pre_reply_hook_that_raises_drops_the_reply_and_fails_the_step() {
+    let (s, c, jobs) = turn_with_hook_answer(Hook::PreReply, raised("boom"));
+    assert_eq!(ending(&jobs), Ending::Failed("boom".into()));
+    assert!(!ran(&jobs, Hook::PostReply));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert!(!s.auto[&c]);
+}
+
+#[test]
+fn a_pre_reply_hook_string_drops_the_reply_and_halts_the_step() {
+    let (s, c, jobs) = turn_with_hook_answer(Hook::PreReply, halting("no reply"));
+    assert_eq!(ending(&jobs), Ending::Halted("no reply".into()));
+    assert!(!ran(&jobs, Hook::PostReply));
+    assert_eq!(bodies(&s, c).last().unwrap(), &Body::User("hi".into()));
+    assert!(!s.auto[&c]);
+}
+
+#[test]
+fn a_post_reply_hook_that_raises_fails_the_step_before_any_tool_runs() {
+    let (s, c, jobs) = turn_with_hook_answer(Hook::PostReply, raised("boom"));
+    assert_eq!(ending(&jobs), Ending::Failed("boom".into()));
+    assert!(!jobs.iter().any(|j| matches!(j, Job::RunCalls { .. })));
+    assert!(matches!(
+        bodies(&s, c).last().unwrap(),
+        Body::Assistant { .. }
+    ));
+    assert!(!s.auto[&c]);
+}
+
+#[test]
+fn a_post_reply_hook_string_halts_the_step_before_any_tool_runs() {
+    let (s, c, jobs) = turn_with_hook_answer(Hook::PostReply, halting("enough"));
+    assert_eq!(ending(&jobs), Ending::Halted("enough".into()));
+    assert!(!jobs.iter().any(|j| matches!(j, Job::RunCalls { .. })));
+    assert!(matches!(
+        bodies(&s, c).last().unwrap(),
+        Body::Assistant { .. }
+    ));
+    assert!(!s.auto[&c]);
+}
+
+#[test]
+fn a_post_result_hook_that_raises_fails_the_step_with_the_results_kept() {
+    let (s, c, jobs) = turn_with_hook_answer(Hook::PostResult, raised("boom"));
+    assert_eq!(ending(&jobs), Ending::Failed("boom".into()));
+    assert_eq!(jobs.iter().filter(|j| **j == Job::Sample).count(), 1);
+    assert!(matches!(bodies(&s, c).last().unwrap(), Body::Results(_)));
+    assert!(!s.auto[&c]);
+}
+
+#[test]
+fn a_post_result_hook_string_halts_the_step_with_the_results_kept() {
+    let (s, c, jobs) = turn_with_hook_answer(Hook::PostResult, halting("enough"));
+    assert_eq!(ending(&jobs), Ending::Halted("enough".into()));
+    assert_eq!(jobs.iter().filter(|j| **j == Job::Sample).count(), 1);
+    assert!(matches!(bodies(&s, c).last().unwrap(), Body::Results(_)));
+    assert!(!s.auto[&c]);
 }

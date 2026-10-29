@@ -146,8 +146,8 @@ class Driver:
         self._poke()
         return item
 
-    def step(self, cursor: int, client: str) -> None:
-        self.session.step(cursor, client)
+    def step(self, cursor: int) -> None:
+        self.session.step(cursor)
         self._poke()
 
     def go_to(self, cursor: int, to: int, client: str) -> bool:
@@ -160,8 +160,8 @@ class Driver:
         self._poke()
         return cancel
 
-    def set_auto(self, cursor: int, on: bool, client: str) -> None:
-        self.session.set_auto(cursor, on, client)
+    def set_auto(self, cursor: int, on: bool) -> None:
+        self.session.set_auto(cursor, on)
         self._poke()
 
     def open(self, at: int, by: Author) -> int:

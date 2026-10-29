@@ -310,7 +310,7 @@ def test_a_step_on_a_busy_cursor_is_busy() -> None:
     session, cursor = new()
     session.send(cursor, "term", "hi")
     with pytest.raises(tau_next.Busy):
-        session.step(cursor, "term")
+        session.step(cursor)
 
 
 def test_a_go_to_while_a_cursor_hook_runs_aborts_and_moves_once_the_step_rests() -> None:
@@ -554,7 +554,7 @@ def test_a_pre_input_draft_that_delivers_nothing_leaves_the_input_pending() -> N
     session, cursor = new()
     session.input(cursor, "term", "hi")
     run(session, cursor)  # auto-step is off: the woken step offers no input
-    session.step(cursor, "term")
+    session.step(cursor)
     jobs = run(
         session, cursor, iter(say("ok") for _ in range(10)), on_job=edit_input_without_delivering
     )
@@ -568,7 +568,7 @@ def test_a_pre_input_hook_that_leaves_no_draft_commits_nothing() -> None:
     session, cursor = new()
     session.input(cursor, "term", "hi")
     run(session, cursor)  # auto-step is off: the woken step offers no input
-    session.step(cursor, "term")
+    session.step(cursor)
 
     def take_the_draft(job: Job) -> list[Fed] | None:
         if isinstance(job, Job.Hooks) and job.point == Hook.PreInput:

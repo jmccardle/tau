@@ -145,7 +145,7 @@ Open after 5 cycles: 87.83 ms for 31665 nodes; RSS 57 MB.
 
 Body text is 21.9 MB of the 29.7 MB; the context at the tip is 458k tokens.
 
-| decode JSON | replay (`Session::load`) | drop |
+| decode JSON | replay (`tree::load`) | drop |
 |---|---|---|
 | 46.73 ms | 12.69 ms | 12.74 ms |
 

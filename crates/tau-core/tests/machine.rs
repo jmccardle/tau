@@ -103,7 +103,7 @@ fn a_send_wakes_the_cursor_and_runs_a_turn() {
     assert!(!m.busy(c));
     let s = &m.session;
     assert!(matches!(
-        s.node(s.at(c).unwrap()).unwrap().body,
+        s.tree.node(s.at(c).unwrap()).unwrap().body,
         Body::Assistant { .. }
     ));
 }
@@ -116,6 +116,7 @@ fn a_go_to_at_rest_moves_turns_auto_off_and_wakes_with_no_phase() {
     run(&mut m, c, plain);
     let user = m
         .session
+        .tree
         .node(m.session.at(c).unwrap())
         .unwrap()
         .parent
@@ -191,10 +192,10 @@ fn a_go_to_on_a_busy_cursor_aborts_runs_post_hooks_then_moves() {
 fn a_frontend_step_is_refused_on_a_busy_cursor_and_runs_once_at_rest() {
     let (mut m, c) = machine();
     m.input(c, term(), "hi").unwrap(); // input, auto-step off
-    assert_eq!(m.step(c, term()), Err(Error::Busy(c)));
+    assert_eq!(m.step(c), Err(Error::Busy(c)));
     let jobs = run(&mut m, c, plain);
     assert_eq!(points(&jobs), [Hook::PreStep, Hook::PostStep]);
-    m.step(c, term()).unwrap();
+    m.step(c).unwrap();
     let jobs = run(&mut m, c, plain);
     assert!(jobs.contains(&Job::Sample), "asked: the phases ran");
     assert_eq!(
@@ -306,7 +307,7 @@ fn a_feed_that_answers_nothing_is_refused_and_changes_nothing() {
     // A pre_step hook job is out: a sample result does not answer it.
     assert_eq!(m.feed(c, said("x"), 0), Err(Error::WrongFeed(c)));
     assert_eq!(
-        m.session.walk(m.session.at(c).unwrap()).len(),
+        m.session.tree.walk(m.session.at(c).unwrap()).len(),
         2,
         "nothing committed"
     );
@@ -351,7 +352,8 @@ fn undelivering(job: &Job, m: &mut Machine) -> Vec<Fed> {
 
 fn users(m: &Machine, c: u64) -> usize {
     let s = &m.session;
-    s.walk(s.at(c).unwrap())
+    s.tree
+        .walk(s.at(c).unwrap())
         .iter()
         .filter(|n| matches!(n.body, Body::User(_)))
         .count()
@@ -477,7 +479,7 @@ fn a_hook_acts_on_its_cursor_only_while_a_hook_job_is_out() {
         Err(Error::NotInHook(c))
     );
     assert_eq!(m.hook_set_auto(c, true), Err(Error::NotInHook(c)));
-    m.step(c, term()).unwrap();
+    m.step(c).unwrap();
     let Job::Hooks { .. } = m.next_job(c).unwrap() else {
         panic!("a hook job");
     };
@@ -511,7 +513,7 @@ fn only_the_hooks_own_calls_skip_the_sync() {
     let sys = m.session.at(c).unwrap();
     let other = m.open(sys, Author::Core, 0, None).unwrap();
     run(&mut m, other, plain);
-    m.step(c, term()).unwrap();
+    m.step(c).unwrap();
     let Job::Hooks { .. } = m.next_job(c).unwrap() else {
         panic!("a hook job");
     };
@@ -644,10 +646,10 @@ fn a_hook_reads_children_labels_and_the_node_count() {
     let sys = m.session.at(c).unwrap();
     let a = m.append(sys, note(), Author::Core, 0, None).unwrap();
     let b = m.append(sys, note(), Author::Core, 0, None).unwrap();
-    assert_eq!(m.session.children(sys).unwrap(), &[a, b]);
-    assert_eq!(m.session.children(0).unwrap(), &[sys]);
-    assert_eq!(m.session.children(99), Err(Error::NoSuchNode(99)));
-    assert_eq!(m.session.node_count(), 4);
+    assert_eq!(m.session.tree.children(sys).unwrap(), &[a, b]);
+    assert_eq!(m.session.tree.children(0).unwrap(), &[sys]);
+    assert_eq!(m.session.tree.children(99), Err(Error::NoSuchNode(99)));
+    assert_eq!(m.session.tree.node_count(), 4);
     m.set_label("main", c, None).unwrap();
     assert_eq!(m.session.labels().collect::<Vec<_>>(), vec![("main", c)]);
 }
@@ -663,9 +665,9 @@ fn an_extension_appends_a_note_and_removes_items() {
     };
     let note = m.append(sys, body.clone(), by.clone(), 0, None).unwrap();
     assert_eq!(m.session.at(c), Ok(sys), "no cursor moved");
-    assert_eq!(m.session.node(note).unwrap().parent, Some(sys));
+    assert_eq!(m.session.tree.node(note).unwrap().parent, Some(sys));
     let root = m.append_root(Config::from("{}"), by, 0, None);
-    assert_eq!(m.session.node(root).unwrap().parent, None);
+    assert_eq!(m.session.tree.node(root).unwrap().parent, None);
     assert_eq!(m.session.at(c), Ok(sys), "no cursor moved");
     let item = m
         .add_item(

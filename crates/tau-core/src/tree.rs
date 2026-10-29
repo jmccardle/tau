@@ -5,6 +5,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+mod replay;
+
+pub use replay::{load, reconcile};
+
 pub type NodeId = u64;
 pub type CursorId = u64;
 pub type ItemId = u64;
@@ -193,13 +197,20 @@ pub enum Next {
     RunTools,
 }
 
+/// The append-only forest of nodes and the reads over it: no cursors, labels,
+/// or scratchpad. Every node was checked when it was added.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Session {
+pub struct Tree {
     nodes: Vec<Node>,
     /// Per node, by id: the nearest `Config` on its walk (`config_at`).
     configs: Vec<NodeId>,
     /// Per node, by id: its children in append order.
     kids: Vec<Vec<NodeId>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Session {
+    pub tree: Tree,
     at: BTreeMap<CursorId, NodeId>,
     labels: BTreeMap<String, CursorId>,
     pub auto: BTreeMap<CursorId, bool>,
@@ -243,7 +254,7 @@ impl Session {
     ///
     /// `NoSuchNode` if `at` is not a node.
     pub fn open(&mut self, at: NodeId, by: Author, time: u64) -> Result<CursorId, Error> {
-        self.node(at)?;
+        self.tree.node(at)?;
         let id = self.at.len() as CursorId;
         self.auto.insert(id, false);
         self.place(id, None, at, by, time);
@@ -265,9 +276,9 @@ impl Session {
         time: u64,
     ) -> Result<NodeId, Error> {
         let _span = tracing::info_span!("core.append").entered();
-        let node = self.check(Some(parent), by, body, delivers, time)?;
+        let node = self.tree.check(Some(parent), by, body, delivers, time)?;
         let id = node.id;
-        self.push(node.clone());
+        self.tree.push(node.clone());
         self.queue(Record::Write { node, mv: None });
         Ok(id)
     }
@@ -277,7 +288,7 @@ impl Session {
     pub fn append_root(&mut self, by: Author, config: Config, time: u64) -> NodeId {
         let _span = tracing::info_span!("core.append_root").entered();
         let node = Node {
-            id: self.nodes.len() as NodeId,
+            id: self.tree.node_count() as NodeId,
             parent: None,
             time,
             by,
@@ -285,7 +296,7 @@ impl Session {
             delivers: vec![],
         };
         let id = node.id;
-        self.push(node.clone());
+        self.tree.push(node.clone());
         self.queue(Record::Write { node, mv: None });
         id
     }
@@ -311,7 +322,9 @@ impl Session {
         {
             return Err(Error::NotPending(*bad));
         }
-        let node = self.check(Some(from), by.clone(), body, delivers, time)?;
+        let node = self
+            .tree
+            .check(Some(from), by.clone(), body, delivers, time)?;
         let id = node.id;
         if !node.delivers.is_empty() {
             self.pad.items.retain(|i| !node.delivers.contains(&i.id));
@@ -324,7 +337,7 @@ impl Session {
             by,
             time,
         };
-        self.push(node.clone());
+        self.tree.push(node.clone());
         self.at.insert(cursor, node.id);
         self.moves.push(mv.clone());
         self.queue(Record::Write { node, mv: Some(mv) });
@@ -343,7 +356,7 @@ impl Session {
         by: Author,
         time: u64,
     ) -> Result<(), Error> {
-        self.node(to)?;
+        self.tree.node(to)?;
         let from = self.at(cursor)?;
         if from != to {
             self.place(cursor, Some(from), to, by, time);
@@ -364,65 +377,6 @@ impl Session {
         self.queue(Record::Move(mv));
     }
 
-    /// Add a checked node, with its nearest `Config`.
-    fn push(&mut self, node: Node) {
-        let config = match (&node.body, node.parent) {
-            (Body::Config(_), _) | (_, None) => node.id,
-            (_, Some(p)) => self.configs[usize::try_from(p).expect("a checked parent")],
-        };
-        self.configs.push(config);
-        self.kids.push(vec![]);
-        if let Some(p) = node.parent {
-            self.kids[usize::try_from(p).expect("a checked parent")].push(node.id);
-        }
-        self.nodes.push(node);
-    }
-
-    fn check(
-        &self,
-        parent: Option<NodeId>,
-        by: Author,
-        body: Body,
-        delivers: Vec<ItemId>,
-        time: u64,
-    ) -> Result<Node, Error> {
-        if let Some(p) = parent {
-            self.node(p)?;
-        }
-        let ids: Vec<&str> = match &body {
-            Body::Results(out) => out.iter().map(|(c, ..)| c.as_str()).collect(),
-            Body::Assistant { parts, .. } => parts
-                .iter()
-                .filter_map(|p| match p {
-                    Part::Call { id, .. } => Some(id.as_str()),
-                    _ => None,
-                })
-                .collect(),
-            _ => vec![],
-        };
-        if (1..ids.len()).any(|i| ids[..i].contains(&ids[i])) {
-            return Err(Error::DuplicateCall); // V2
-        }
-        Ok(Node {
-            id: self.nodes.len() as NodeId,
-            parent,
-            time,
-            by,
-            body,
-            delivers,
-        })
-    }
-
-    ///
-    /// # Errors
-    ///
-    /// `NoSuchNode` if `id` is not a node.
-    pub fn node(&self, id: NodeId) -> Result<&Node, Error> {
-        self.nodes
-            .get(usize::try_from(id).unwrap_or(usize::MAX))
-            .ok_or(Error::NoSuchNode(id))
-    }
-
     ///
     /// # Errors
     ///
@@ -432,52 +386,6 @@ impl Session {
             .get(&cursor)
             .copied()
             .ok_or(Error::NoSuchCursor(cursor))
-    }
-
-    #[must_use]
-    pub fn walk(&self, n: NodeId) -> Vec<&Node> {
-        let mut out: Vec<&Node> = std::iter::successors(self.node(n).ok(), |x| {
-            x.parent.and_then(|p| self.node(p).ok())
-        })
-        .collect();
-        out.reverse();
-        out
-    }
-
-    /// The nearest `Config` on `walk(n)`; always defined, since every root is
-    /// one. Constant time: each node records its own when added.
-    ///
-    /// # Errors
-    ///
-    /// `NoSuchNode` if `n` is not a node.
-    ///
-    /// # Panics
-    ///
-    /// If a root is not `Config`, which `append_root` and replay rule out.
-    pub fn config_at(&self, n: NodeId) -> Result<&Config, Error> {
-        self.node(n)?;
-        let config = self.configs[usize::try_from(n).expect("a node id")];
-        match &self.node(config)?.body {
-            Body::Config(c) => Ok(c),
-            _ => panic!("a root is a Config"),
-        }
-    }
-
-    /// The deepest node on both walks; `None` across trees.
-    ///
-    /// # Errors
-    ///
-    /// `NoSuchNode` if `a` or `b` is not a node.
-    pub fn lca(&self, a: NodeId, b: NodeId) -> Result<Option<NodeId>, Error> {
-        self.node(b)?;
-        let on_a: std::collections::BTreeSet<NodeId> =
-            self.walk(self.node(a)?.id).iter().map(|n| n.id).collect();
-        Ok(self
-            .walk(b)
-            .iter()
-            .rev()
-            .map(|n| n.id)
-            .find(|id| on_a.contains(id)))
     }
 
     /// Set a label on a cursor; a label already set elsewhere moves.
@@ -513,6 +421,21 @@ impl Session {
         Ok(())
     }
 
+    /// `next` from the end of the walk, without building it: only the last
+    /// node that is not Config or Custom decides.
+    #[must_use]
+    pub fn next(&self, cursor: CursorId) -> Next {
+        self.deciding(cursor).map_or(Next::Wait, |(next, _)| next)
+    }
+
+    /// `next`, with the node that decided it: the last node of the walk that is
+    /// not `Config` or `Custom`. `None` when there is none (then `next` is `Wait`).
+    /// A batch is read from this node, not from `at`.
+    #[must_use]
+    pub fn deciding(&self, cursor: CursorId) -> Option<(Next, NodeId)> {
+        self.tree.deciding(self.at(cursor).ok()?)
+    }
+
     /// The cursor `label` is on.
     ///
     /// # Errors
@@ -538,45 +461,6 @@ impl Session {
         self.moves[since.min(self.moves.len())..]
             .iter()
             .filter(move |m| m.cursor == cursor)
-    }
-
-    /// `next` from the end of the walk, without building it: only the last
-    /// node that is not Config or Custom decides.
-    #[must_use]
-    pub fn next(&self, cursor: CursorId) -> Next {
-        self.deciding(cursor).map_or(Next::Wait, |(next, _)| next)
-    }
-
-    /// `next`, with the node that decided it: the last node of the walk that is
-    /// not `Config` or `Custom`. `None` when there is none (then `next` is `Wait`).
-    /// A batch is read from this node, not from `at`.
-    #[must_use]
-    pub fn deciding(&self, cursor: CursorId) -> Option<(Next, NodeId)> {
-        let last = self.at(cursor).ok().and_then(|a| {
-            std::iter::successors(self.node(a).ok(), |x| {
-                x.parent.and_then(|p| self.node(p).ok())
-            })
-            .find(|n| !matches!(n.body, Body::Config(_) | Body::Custom { .. }))
-        })?;
-        Some((decide(Some(last)), last.id))
-    }
-
-    /// The children of `n`, in append order.
-    ///
-    /// # Errors
-    ///
-    /// `NoSuchNode` if `n` is not a node.
-    pub fn children(&self, n: NodeId) -> Result<&[NodeId], Error> {
-        self.kids
-            .get(usize::try_from(n).unwrap_or(usize::MAX))
-            .map(Vec::as_slice)
-            .ok_or(Error::NoSuchNode(n))
-    }
-
-    /// How many nodes the session has; ids are `0..node_count`.
-    #[must_use]
-    pub fn node_count(&self) -> usize {
-        self.nodes.len()
     }
 
     /// Every label with its cursor, in string order.
@@ -627,70 +511,6 @@ impl Session {
         &self.pad
     }
 
-    /// Load (I7): replay the log's records, take the scratchpad file, then
-    /// `reconcile`. Pure; the store reads the files. Nothing is queued.
-    ///
-    /// # Errors
-    ///
-    /// `BadRecord` with its position for the first record replay cannot apply.
-    pub fn load(records: impl IntoIterator<Item = Record>, pad: Scratchpad) -> Result<Self, Error> {
-        let mut s = Self::default();
-        for (i, r) in records.into_iter().enumerate() {
-            s.replay(r).map_err(|_| Error::BadRecord(i))?;
-        }
-        s.pad = pad;
-        s.reconcile();
-        s.outbox.clear();
-        s.unsynced = false;
-        Ok(s)
-    }
-
-    fn replay(&mut self, r: Record) -> Result<(), Error> {
-        match r {
-            Record::Write { node, mv } => {
-                if node.parent.is_none() && !matches!(node.body, Body::Config(_)) {
-                    return Err(Error::BadRecord(0)); // a root is a Config
-                }
-                let checked = self.check(
-                    node.parent,
-                    node.by.clone(),
-                    node.body.clone(),
-                    node.delivers.clone(),
-                    node.time,
-                )?;
-                if checked != node {
-                    return Err(Error::BadRecord(0));
-                }
-                self.push(node);
-                mv.map_or(Ok(()), |m| self.replay_move(m))
-            }
-            Record::Move(m) => self.replay_move(m),
-            Record::Label { label, cursor } => {
-                match cursor {
-                    Some(c) => drop(self.labels.insert(label, self.at(c).map(|_| c)?)),
-                    None => drop(self.labels.remove(&label)),
-                }
-                Ok(())
-            }
-            Record::Sync { .. } => Ok(()),
-        }
-    }
-
-    fn replay_move(&mut self, m: Move) -> Result<(), Error> {
-        self.node(m.to)?;
-        let ok = match m.from {
-            None => m.cursor == self.at.len() as CursorId,
-            Some(f) => self.at(m.cursor) == Ok(f),
-        };
-        if !ok {
-            return Err(Error::BadRecord(0));
-        }
-        self.auto.entry(m.cursor).or_insert(false); // rules: allow(entry): BTreeMap API
-        self.at.insert(m.cursor, m.to);
-        self.moves.push(m);
-        Ok(())
-    }
-
     /// True when every queued record is covered by a `Sync`.
     #[must_use]
     pub fn synced(&self) -> bool {
@@ -700,17 +520,144 @@ impl Session {
     pub fn items(&self, cursor: CursorId) -> impl Iterator<Item = &Item> {
         self.pad.items.iter().filter(move |i| i.to == cursor)
     }
+}
 
-    /// What load does after replay (I7): every cursor at rest with auto-step
-    /// off, and every item a node delivers dropped.
-    pub fn reconcile(&mut self) {
-        self.auto.values_mut().for_each(|a| *a = false);
-        let delivered: Vec<ItemId> = self
-            .nodes
+impl Tree {
+    /// Add a checked node, with its nearest `Config`.
+    fn push(&mut self, node: Node) {
+        let config = match (&node.body, node.parent) {
+            (Body::Config(_), _) | (_, None) => node.id,
+            (_, Some(p)) => self.configs[usize::try_from(p).expect("a checked parent")],
+        };
+        self.configs.push(config);
+        self.kids.push(vec![]);
+        if let Some(p) = node.parent {
+            self.kids[usize::try_from(p).expect("a checked parent")].push(node.id);
+        }
+        self.nodes.push(node);
+    }
+
+    /// The node `push` would add: V2 (I5) is the only check.
+    fn check(
+        &self,
+        parent: Option<NodeId>,
+        by: Author,
+        body: Body,
+        delivers: Vec<ItemId>,
+        time: u64,
+    ) -> Result<Node, Error> {
+        if let Some(p) = parent {
+            self.node(p)?;
+        }
+        let ids: Vec<&str> = match &body {
+            Body::Results(out) => out.iter().map(|(c, ..)| c.as_str()).collect(),
+            Body::Assistant { parts, .. } => parts
+                .iter()
+                .filter_map(|p| match p {
+                    Part::Call { id, .. } => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect(),
+            _ => vec![],
+        };
+        if (1..ids.len()).any(|i| ids[..i].contains(&ids[i])) {
+            return Err(Error::DuplicateCall); // V2
+        }
+        Ok(Node {
+            id: self.nodes.len() as NodeId,
+            parent,
+            time,
+            by,
+            body,
+            delivers,
+        })
+    }
+
+    /// The node `id`.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `id` is not a node.
+    pub fn node(&self, id: NodeId) -> Result<&Node, Error> {
+        self.nodes
+            .get(usize::try_from(id).unwrap_or(usize::MAX))
+            .ok_or(Error::NoSuchNode(id))
+    }
+
+    /// The nodes root to `n`, inclusive; empty if `n` is not a node.
+    #[must_use]
+    pub fn walk(&self, n: NodeId) -> Vec<&Node> {
+        let mut out: Vec<&Node> = std::iter::successors(self.node(n).ok(), |x| {
+            x.parent.and_then(|p| self.node(p).ok())
+        })
+        .collect();
+        out.reverse();
+        out
+    }
+
+    /// The nearest `Config` on `walk(n)`; always defined, since every root is
+    /// one. Constant time: each node records its own when added.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `n` is not a node.
+    ///
+    /// # Panics
+    ///
+    /// If a root is not `Config`, which `append_root` and replay rule out.
+    pub fn config_at(&self, n: NodeId) -> Result<&Config, Error> {
+        self.node(n)?;
+        let config = self.configs[usize::try_from(n).expect("a node id")];
+        match &self.node(config)?.body {
+            Body::Config(c) => Ok(c),
+            _ => panic!("a root is a Config"),
+        }
+    }
+
+    /// The deepest node on both walks; `None` across trees.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `a` or `b` is not a node.
+    pub fn lca(&self, a: NodeId, b: NodeId) -> Result<Option<NodeId>, Error> {
+        self.node(b)?;
+        let on_a: std::collections::BTreeSet<NodeId> =
+            self.walk(self.node(a)?.id).iter().map(|n| n.id).collect();
+        Ok(self
+            .walk(b)
             .iter()
-            .flat_map(|n| n.delivers.iter().copied())
-            .collect();
-        self.pad.items.retain(|i| !delivered.contains(&i.id));
+            .rev()
+            .map(|n| n.id)
+            .find(|id| on_a.contains(id)))
+    }
+
+    /// The children of `n`, in append order.
+    ///
+    /// # Errors
+    ///
+    /// `NoSuchNode` if `n` is not a node.
+    pub fn children(&self, n: NodeId) -> Result<&[NodeId], Error> {
+        self.kids
+            .get(usize::try_from(n).unwrap_or(usize::MAX))
+            .map(Vec::as_slice)
+            .ok_or(Error::NoSuchNode(n))
+    }
+
+    /// How many nodes the tree has; ids are `0..node_count`.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// `next`, with the node that decided it, for the walk ending at `at`: the
+    /// last node that is not `Config` or `Custom`.
+    #[must_use]
+    pub fn deciding(&self, at: NodeId) -> Option<(Next, NodeId)> {
+        let last = std::iter::successors(self.node(at).ok(), |x| {
+            x.parent.and_then(|p| self.node(p).ok())
+        })
+        .find(|n| !matches!(n.body, Body::Config(_) | Body::Custom { .. }))?;
+        Some((decide(Some(last)), last.id))
     }
 }
 

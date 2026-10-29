@@ -120,8 +120,8 @@ runnable; the provider renders them as text (§10).
 | view | definition |
 |---|---|
 | `walk(n)` | root → … → `n` by `parent`, inclusive |
-| `LCA(a, b)` | the deepest node on both walks; none across trees (`Session::lca`) |
-| `config_at(n)` | the body of the nearest `Config` on `walk(n)` (`Session::config_at`) |
+| `LCA(a, b)` | the deepest node on both walks; none across trees (`Tree::lca`) |
+| `config_at(n)` | the body of the nearest `Config` on `walk(n)` (`Tree::config_at`) |
 | `next` | §6 |
 | a cursor's scratchpad | its items, in the order added (`Session::items`) |
 | pending input | the input items in it |
@@ -140,7 +140,7 @@ back from. Any node may be gone to.
 | I4 | The tools phase writes one `Results` per batch it runs, one outcome per call, in call order. Holds by construction. | `batch_answers_in_call_order_then_samples_again`; proptest `invariants_hold_under_any_driver` (outcomes fed in any order, aborts mid-batch; every batch run is answered once) |
 | I5 | Append checks only types: **V2** a `Results` node's outcomes, and an `Assistant` node's calls, name distinct call ids. A root is made by `append_root` (a `Config` by construction), so there is no V1; replay refuses a logged root that is not a `Config` as `BadRecord`. Wire legality is the provider's conversion (Q11). | `Error::DuplicateCall`; unit tests; proptest `appends_check_only_types` (refused only for V2, any other shape under any node taken; a refusal changes nothing) |
 | I6 | Retired (D5). | — |
-| I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`, `a_torn_tail_opens_as_the_last_sync_before_it`; `Session::load` |
+| I7 | Reload is replay: state is a pure function of nodes, moves, labels, and items. No heuristics, no repair. | proptests `reload_at_any_sync_equals_the_state_at_that_sync`, `an_older_scratchpad_never_redelivers`, `a_torn_tail_opens_as_the_last_sync_before_it`; `tree::load` |
 
 **Not persisted (I7):** auto-step (every cursor loads with it off), busy (every
 cursor loads at rest), open questions (driver memory), shown state, a
@@ -446,7 +446,7 @@ Core queues what must be made durable in `Session::outbox` as `Record`s
 composing core with `tau-store` hands them to the store inside the call
 (D11). The store may buffer up to a `Sync`; at a `Sync` it syncs the log,
 then, if `pad` is set, rewrites the scratchpad file with it. The log never
-holds items. Load is `Session::load(records, scratchpad)`. The step queues a `Sync` before each post hook and when the
+holds items. Load is `tree::load(records, scratchpad)`. The step queues a `Sync` before each post hook and when the
 step ends; calls outside a step (a frontend's input, go-to) sync on return.
 A crash loses at most the writes since the last sync, and never a post hook's
 view. A failed save is a crash (§8): `Store::save` consumes the store, and

@@ -126,7 +126,7 @@ class Harness:
         return self.driver.send(self._c(cursor), CLIENT, text)
 
     async def step(self, cursor: int | None = None) -> None:
-        self.driver.step(self._c(cursor), CLIENT)
+        self.driver.step(self._c(cursor))
 
     async def abort(self, cursor: int | None = None) -> bool:
         return self.driver.abort(self._c(cursor))
@@ -135,7 +135,7 @@ class Harness:
         return self.driver.go_to(self._c(cursor), to, CLIENT)
 
     async def set_auto(self, on: bool, cursor: int | None = None) -> None:
-        self.driver.set_auto(self._c(cursor), on, CLIENT)
+        self.driver.set_auto(self._c(cursor), on)
 
     async def answer(self, answer: str | None, cursor: int | None = None) -> None:
         self.driver.answer(self._c(cursor), answer)

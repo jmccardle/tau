@@ -108,7 +108,7 @@ def s_rest(ctx: Ctx) -> None:
 
 
 def s_rest_auto(ctx: Ctx) -> None:
-    ctx.session.set_auto(ctx.cursor, True, "term")
+    ctx.session.set_auto(ctx.cursor, True)
     rest(ctx)
 
 
@@ -190,11 +190,11 @@ Call = Callable[[Ctx], object]
 CALLS: list[tuple[str, str, Call]] = [
     ("frontend", "input", lambda c: c.session.input(c.cursor, "term", "hi")),
     ("frontend", "send", lambda c: c.session.send(c.cursor, "term", "hi")),
-    ("frontend", "step", lambda c: c.session.step(c.cursor, "term")),
+    ("frontend", "step", lambda c: c.session.step(c.cursor)),
     ("frontend", "go_to (an ancestor)", lambda c: c.session.go_to(c.cursor, 0, "term", NOW)),
     ("frontend", "go_to (not a node)", lambda c: c.session.go_to(c.cursor, 999, "term", NOW)),
-    ("frontend", "set_auto(on)", lambda c: c.session.set_auto(c.cursor, True, "term")),
-    ("frontend", "set_auto(off)", lambda c: c.session.set_auto(c.cursor, False, "term")),
+    ("frontend", "set_auto(on)", lambda c: c.session.set_auto(c.cursor, True)),
+    ("frontend", "set_auto(off)", lambda c: c.session.set_auto(c.cursor, False)),
     ("frontend", "abort", lambda c: c.session.abort(c.cursor)),
     ("frontend", "set_label", lambda c: c.session.set_label("other", c.cursor)),
     ("frontend", "remove_label", lambda c: c.session.remove_label("main")),

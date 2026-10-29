@@ -14,7 +14,7 @@ use tau_store::{Error, HEADER, Store, VERSION};
 /// auto-step off, no in-memory counts or notices.
 fn as_loaded(s: &Session) -> Session {
     let mut s = s.clone();
-    s.reconcile();
+    tau_core::tree::reconcile(&mut s);
     s.outbox.clear();
     s.changes.clear();
     s.notices.clear();
@@ -55,7 +55,7 @@ fn count(f: impl Fn(u64) -> bool) -> u64 {
 
 fn apply(s: &mut Session, op: &Op) {
     let nc = count(|c| s.at(c).is_ok());
-    let nn = count(|n| s.node(n).is_ok());
+    let nn = count(|n| s.tree.node(n).is_ok());
     let cursor = move |i: usize| i as u64 % nc;
     let node = move |i: usize| i as u64 % nn;
     let by = Author::Core;
@@ -182,7 +182,7 @@ fn a_session_reopens_as_it_was_synced() {
     assert_eq!(loaded.label("main"), Ok(c));
     assert_eq!(loaded.items(c).count(), 1);
     assert!(matches!(
-        loaded.node(loaded.at(c).unwrap()).unwrap().body,
+        loaded.tree.node(loaded.at(c).unwrap()).unwrap().body,
         Body::System(_)
     ));
 }
@@ -430,7 +430,7 @@ fn load_wakes_a_cursor_with_input_pending_for_its_hooks_only() {
         .collect();
     assert_eq!(points, [Hook::PreStep, Hook::PostStep]);
     assert_eq!(m.session.items(c).count(), 1, "the input is still pending");
-    assert_eq!(m.session.walk(m.session.at(c).unwrap()).len(), 2);
+    assert_eq!(m.session.tree.walk(m.session.at(c).unwrap()).len(), 2);
 }
 
 #[test]

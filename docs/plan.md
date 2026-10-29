@@ -38,7 +38,7 @@ the session machine over every cursor, taking frontend calls (go-to on a busy
 cursor, `Session.step`, wakes). The I1–I5
 proptests (`tests/invariants.rs`) drive it with random frontend calls and
 random answers to every job, hooks that move the cursor included. A turn costs
-~15–30 µs at any session depth. Replay (`Session::load`) and the I7
+~15–30 µs at any session depth. Replay (`tree::load`) and the I7
 proptests are in. The store (3b, `crates/tau-store`, ~270 lines) writes the
 log and the scratchpad file, holds the lease, and cuts torn tails; a stored
 turn costs ~3 ms (fsyncs). The clippy gate (pedantic, `-D warnings`) is

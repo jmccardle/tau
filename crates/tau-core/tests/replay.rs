@@ -31,14 +31,14 @@ fn on_disk(s: &Session) -> (Vec<Record>, Scratchpad) {
 
 fn crash(s: &Session) -> Session {
     let (log, pad) = on_disk(s);
-    Session::load(log, pad).unwrap()
+    tau_core::tree::load(log, pad).unwrap()
 }
 
 /// `s` as a load would give it back: nothing queued, every cursor at rest
 /// with auto-step off, no in-memory counts or notices.
 fn as_loaded(s: &Session) -> Session {
     let mut s = s.clone();
-    s.reconcile();
+    tau_core::tree::reconcile(&mut s);
     s.outbox.clear();
     s.changes.clear();
     s.notices.clear();
@@ -84,7 +84,9 @@ fn cursors(s: &Session) -> u64 {
 }
 
 fn nodes(s: &Session) -> u64 {
-    (0..NodeId::MAX).take_while(|n| s.node(*n).is_ok()).count() as u64
+    (0..NodeId::MAX)
+        .take_while(|n| s.tree.node(*n).is_ok())
+        .count() as u64
 }
 
 /// Applies `op` with every index taken modulo what exists; ops that do not
@@ -119,7 +121,7 @@ fn apply(s: &mut Session, op: &Op) {
         Op::Answer(i) => {
             let cur = cursor(i);
             let at = s.at(cur).unwrap();
-            let out: Vec<_> = tau_core::tree::calls(&s.node(at).unwrap().body)
+            let out: Vec<_> = tau_core::tree::calls(&s.tree.node(at).unwrap().body)
                 .into_iter()
                 .map(|(id, ..)| (id.to_string(), Outcome::Ok("x".into()), Author::Tools))
                 .collect();
@@ -201,10 +203,10 @@ proptest! {
         s.sync();
         let (log, _) = on_disk(&s);
         for pad in pads {
-            let loaded = Session::load(log.clone(), pad).unwrap();
+            let loaded = tau_core::tree::load(log.clone(), pad).unwrap();
             for item in &loaded.scratchpad().items {
                 let delivered = (0..nodes(&loaded))
-                    .any(|n| loaded.node(n).unwrap().delivers.contains(&item.id));
+                    .any(|n| loaded.tree.node(n).unwrap().delivers.contains(&item.id));
                 prop_assert!(!delivered, "item {} pending and delivered", item.id);
             }
         }
@@ -219,13 +221,13 @@ fn a_record_out_of_sequence_is_refused_with_its_position() {
     let mut log = s.outbox.clone();
     log.swap(0, 1); // the System node before its Config root
     assert_eq!(
-        Session::load(log, Scratchpad::default()),
+        tau_core::tree::load(log, Scratchpad::default()),
         Err(Error::BadRecord(0))
     );
     let mut log = s.outbox.clone();
     log.remove(2); // the cursor's opening move
     assert_eq!(
-        Session::load(log, Scratchpad::default()),
+        tau_core::tree::load(log, Scratchpad::default()),
         Err(Error::BadRecord(2))
     );
 }
@@ -327,6 +329,7 @@ fn crash_during_a_sample_loses_the_unsynced_input_node_and_redelivers_its_item()
     assert_eq!(sampled, 1);
     let users = m
         .session
+        .tree
         .walk(m.session.at(c).unwrap())
         .iter()
         .filter(|n| matches!(&n.body, Body::User(t) if t == "hi"))
@@ -363,7 +366,7 @@ fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
         },
     );
     let loaded = crash(&m.session);
-    let at = loaded.node(loaded.at(c).unwrap()).unwrap();
+    let at = loaded.tree.node(loaded.at(c).unwrap()).unwrap();
     assert!(
         matches!(
             at.body,
