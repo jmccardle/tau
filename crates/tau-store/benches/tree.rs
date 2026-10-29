@@ -816,34 +816,56 @@ fn cycles() {
     // Back to the tip of the first line, long evicted: a go-to, the load it
     // asks for, the go-to again, and a turn there.
     let main = rig.m.session.at(c).unwrap();
-    let t = Instant::now();
-    let Err(Error::Stored(ids)) = rig.m.go_to(c, old, "bench".into(), rig.now) else {
-        panic!("the first line is evicted");
-    };
-    let refused = t.elapsed();
-    let t = Instant::now();
-    rig.store
-        .as_mut()
-        .unwrap()
-        .load(&mut rig.m.session, &ids)
-        .unwrap();
-    let load = t.elapsed();
-    rig.m.go_to(c, old, "bench".into(), rig.now).unwrap();
+    let there = rig.go_loading(c, old);
     rig.save();
     rig.stats = Stats::default();
     Agent::new(c, 1).run(&mut rig);
     let walk = rig.stats.samples[0].1;
-    rig.m.go_to(c, main, "bench".into(), rig.now).unwrap();
+    let back = rig.go_loading(c, main);
     rig.stats.evicts.clear();
     rig.save();
     println!(
-        "\nA go-to into the first line after {CYCLES} cycles: refused in {} naming {} stored bodies; loaded in {}; then a turn there (walk {}). Going back to the main line evicts them again in {}.",
-        us(refused),
-        ids.len(),
-        us(load),
+        "\nAfter {CYCLES} cycles, a go-to to the tip of the first line: refused in {} naming {} stored bodies, loaded in {}, go-to {}; a turn there (walk {}). Back to the main line, now evicted too: {} bodies loaded in {}; evicting the first line again {}.",
+        us(there.refused),
+        there.ids,
+        us(there.load),
+        us(there.go),
         us(walk),
+        back.ids,
+        us(back.load),
         us(rig.stats.evicts.iter().copied().max().unwrap_or_default()),
     );
+}
+
+/// A go-to as a driver makes it: refused with `Stored`, load, again.
+struct Went {
+    refused: Duration,
+    ids: usize,
+    load: Duration,
+    go: Duration,
+}
+
+impl Rig {
+    fn go_loading(&mut self, c: CursorId, to: NodeId) -> Went {
+        let t = Instant::now();
+        let ids = match self.m.go_to(c, to, "bench".into(), self.now) {
+            Err(Error::Stored(ids)) => ids,
+            r => panic!("expected a refusal: {r:?}"),
+        };
+        let refused = t.elapsed();
+        let t = Instant::now();
+        let store = self.store.as_mut().expect("only a store evicts");
+        store.load(&mut self.m.session, &ids).unwrap();
+        let load = t.elapsed();
+        let t = Instant::now();
+        self.m.go_to(c, to, "bench".into(), self.now).unwrap();
+        Went {
+            refused,
+            ids: ids.len(),
+            load,
+            go: t.elapsed(),
+        }
+    }
 }
 
 /// What a child process saw opening a copy of a session.
