@@ -130,6 +130,8 @@ struct Rig {
     read: Read,
     stats: Stats,
     payloads: Payloads,
+    /// `Store::evict` after every save; off only to measure without it.
+    evict: bool,
 }
 
 /// Bodies built once per shape and cloned per node.
@@ -255,6 +257,7 @@ impl Rig {
             read,
             stats: Stats::default(),
             payloads: Payloads::new(shape),
+            evict: true,
         };
         (rig, cursor)
     }
@@ -295,7 +298,7 @@ impl Rig {
             self.stats.multi_sync += 1;
         }
         let t = Instant::now();
-        if store.evict(&mut self.m.session) > 0 {
+        if self.evict && store.evict(&mut self.m.session) > 0 {
             self.stats.evicts.push(t.elapsed());
         }
     }
@@ -777,14 +780,58 @@ fn compact() {
 /// back into an evicted line costs. Opens run in a child process on a copy
 /// of the session, so their RSS is theirs alone.
 fn cycles() {
-    const CYCLES: u32 = 20;
-    heading("cycles: 20 compactions at 1M tokens (chatty, stored, evicting after every save)");
-    println!(
-        "| cycles | log | nodes | bodies in memory | evict after the move | open | evict on open | bodies after open → evict | RSS after open → evict | peak RSS |"
+    heading(
+        "cycles: 20 compactions at 1M tokens (chatty, stored), without and with eviction after every save",
     );
-    println!("|---|---|---|---|---|---|---|---|---|---|");
+    println!(
+        "| cycles | log | nodes | bodies in memory, kept → evicted | RSS, kept → evicted | evict after the move | open | evict on open | bodies after open → evict | RSS after open → evict | peak RSS, open |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|---|---|");
+    let run = |mode: &str| -> Vec<Vec<String>> {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["cycles-run", mode])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|l| l.split('\t').map(String::from).collect())
+            .collect()
+    };
+    let kept = run("keep");
+    for row in run("evict") {
+        match &row[..] {
+            [tag, note] if tag == "note" => println!("\n{note}"),
+            [_, cycle, log, nodes, mb, rss, rest @ ..] => {
+                let k = kept
+                    .iter()
+                    .find(|k| &k[1] == cycle)
+                    .expect("the same cycles");
+                println!(
+                    "| {cycle} | {log} | {nodes} | {} → {mb} | {} → {rss} | {} |",
+                    k[4],
+                    k[5],
+                    rest.join(" | ")
+                );
+            }
+            _ => panic!("{row:?}"),
+        }
+    }
+}
+
+/// One `cycles` run in its own process, so its RSS is its own. Prints tab
+/// separated rows: `row`, cycle, log, nodes, bodies, RSS, then (evicting)
+/// the eviction and reopen cells; then a `note`.
+fn cycles_run(evict: bool) {
+    const CYCLES: u32 = 20;
     let dir = tempfile::tempdir().unwrap();
     let (mut rig, c) = Rig::new(CHATTY, Read::Walk);
+    rig.evict = evict;
     rig.grow(c, 1_000_000);
     rig.persist(dir.path());
     let old = rig.m.session.at(c).unwrap();
@@ -798,20 +845,32 @@ fn cycles() {
             continue;
         }
         let (_, mb) = in_memory(&rig.m.session);
-        let r = reopen_elsewhere(dir.path());
-        println!(
-            "| {cycle} | {:.1} MB | {} | {mb:.1} MB | {} | {} | {} | {:.1} → {:.1} MB | {:.0} → {:.0} MB | {:.0} MB |",
+        let mut row = format!(
+            "row\t{cycle}\t{:.1} MB\t{}\t{mb:.1} MB\t{:.0} MB",
             log_mb(dir.path()),
             node_count(&rig.m.session),
-            us(rig.stats.evicts.iter().copied().max().unwrap_or_default()),
-            us(r.open),
-            us(r.evict),
-            r.bodies.0,
-            r.bodies.1,
-            r.rss.0,
-            r.rss.1,
-            r.peak,
+            rss_mb(),
         );
+        if evict {
+            let r = reopen_elsewhere(dir.path());
+            write!(
+                row,
+                "\t{}\t{}\t{}\t{:.1} → {:.1} MB\t{:.0} → {:.0} MB\t{:.0} MB",
+                us(rig.stats.evicts.iter().copied().max().unwrap_or_default()),
+                us(r.open),
+                us(r.evict),
+                r.bodies.0,
+                r.bodies.1,
+                r.rss.0,
+                r.rss.1,
+                r.peak,
+            )
+            .unwrap();
+        }
+        println!("{row}");
+    }
+    if !evict {
+        return;
     }
     // Back to the tip of the first line, long evicted: a go-to, the load it
     // asks for, the go-to again, and a turn there.
@@ -825,7 +884,7 @@ fn cycles() {
     rig.stats.evicts.clear();
     rig.save();
     println!(
-        "\nAfter {CYCLES} cycles, a go-to to the tip of the first line: refused in {} naming {} stored bodies, loaded in {}, go-to {}; a turn there (walk {}). Back to the main line, now evicted too: {} bodies loaded in {}; evicting the first line again {}.",
+        "note\tAfter {CYCLES} cycles, a go-to to the tip of the first line: refused in {} naming {} stored bodies, loaded in {}, go-to {}; a turn there (walk {}). Back to the main line, now evicted too: {} bodies loaded in {}; evicting the first line again {}.",
         us(there.refused),
         there.ids,
         us(there.load),
@@ -1121,11 +1180,10 @@ fn main() {
         .skip(1)
         .filter(|a| !a.starts_with('-'))
         .collect();
-    if let [mode, dir] = &args[..]
-        && mode == "reopen"
-    {
-        reopen(Path::new(dir));
-        return;
+    match &args[..] {
+        [mode, dir] if mode == "reopen" => return reopen(Path::new(dir)),
+        [mode, how] if mode == "cycles-run" => return cycles_run(how == "evict"),
+        _ => {}
     }
     let all: [(&str, fn()); 9] = [
         ("depth", depth),
