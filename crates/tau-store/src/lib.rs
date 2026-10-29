@@ -176,6 +176,7 @@ impl Store {
         if self.failed {
             return Err(Error::Failed);
         }
+        let _span = tracing::info_span!("store.save").entered();
         // Through the last `Sync`: its end in `pending`, and the newest pad.
         let mut through = None;
         for r in session.outbox.drain(..) {
@@ -191,8 +192,14 @@ impl Store {
             return Ok(());
         };
         self.failed = true;
-        self.log.write_all(&self.pending[..end])?;
-        self.log.sync_data()?;
+        {
+            let _span = tracing::info_span!("store.append", bytes = end).entered();
+            self.log.write_all(&self.pending[..end])?;
+        }
+        {
+            let _span = tracing::info_span!("store.fsync_log").entered();
+            self.log.sync_data()?;
+        }
         self.pending.drain(..end);
         if let Some(pad) = pad {
             self.write_pad(&pad)?;
@@ -209,13 +216,18 @@ impl Store {
     }
 
     fn write_pad(&self, pad: &Scratchpad) -> Result<(), Error> {
+        let _span = tracing::info_span!("store.write_pad").entered();
         let tmp = self.dir.join(format!("{PAD}.new"));
         let mut bytes = header(PAD_MAGIC);
         encode(pad, &mut bytes);
         let mut f = File::create(&tmp)?;
         f.write_all(&bytes)?;
-        f.sync_data()?;
+        {
+            let _span = tracing::info_span!("store.fsync_pad").entered();
+            f.sync_data()?;
+        }
         fs::rename(&tmp, self.dir.join(PAD))?;
+        let _span = tracing::info_span!("store.fsync_dir").entered();
         sync_dir(&self.dir)
     }
 }

@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 
+from tau_next import trace
 from tau_next._core import Author, Fed, ItemData, Job, Session
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks, subject_for, wait
@@ -135,12 +136,14 @@ class Driver:
     # Frontend calls
 
     def input(self, cursor: int, client: str, text: str) -> int:
-        item = self.session.input(cursor, client, text, self.clock.now())
+        with trace.span("driver", "input"):
+            item = self.session.input(cursor, client, text, self.clock.now())
         self._poke()
         return item
 
     def send(self, cursor: int, client: str, text: str) -> int:
-        item = self.session.send(cursor, client, text, self.clock.now())
+        with trace.span("driver", "send"):
+            item = self.session.send(cursor, client, text, self.clock.now())
         self._poke()
         return item
 
@@ -241,13 +244,16 @@ class Driver:
         polls, self._poll = self._poll, set()
         for cursor in self.session.cursors():
             if cursor not in self._out and (cursor in polls or self.session.busy(cursor)):
-                self._dispatch(cursor, self.session.next_job(cursor))
+                with trace.span("driver", "next_job"):
+                    job = self.session.next_job(cursor)
+                self._dispatch(cursor, job)
 
     def _deliver(self, cursor: int, fed: Fed) -> None:
         out = self._out.get(cursor)
         if out is None:
             raise RuntimeError(f"cursor {cursor}: a result with no effect out: {fed}")
-        self.session.feed(cursor, fed, self.clock.now())
+        with trace.span("driver", "feed"):
+            self.session.feed(cursor, fed, self.clock.now())
         if not isinstance(fed, Fed.CallDone):
             del self._out[cursor]
             # Poll even if the cursor now rests: a go-to waiting on this step
@@ -255,7 +261,8 @@ class Driver:
             self._poll.add(cursor)
             return
         out.remaining -= 1
-        job = self.session.next_job(cursor)  # Pending until the join; then the next job
+        with trace.span("driver", "next_job"):
+            job = self.session.next_job(cursor)  # Pending until the join; then the next job
         if isinstance(job, Job.Pending):
             if out.remaining == 0:
                 raise RuntimeError(f"cursor {cursor}: every call is done but the batch is open")

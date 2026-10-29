@@ -286,6 +286,7 @@ impl Session {
         delivers: Vec<ItemId>,
         time: u64,
     ) -> Result<NodeId, Error> {
+        let _span = tracing::info_span!("core.append").entered();
         let node = self.check(parent, by, body, delivers, time)?;
         let id = node.id;
         self.push(node.clone());
@@ -306,6 +307,7 @@ impl Session {
         by: Author,
         time: u64,
     ) -> Result<NodeId, Error> {
+        let _span = tracing::info_span!("core.write", cursor).entered();
         let from = self.at(cursor)?;
         if let Some(bad) = delivers
             .iter()

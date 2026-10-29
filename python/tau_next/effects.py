@@ -7,6 +7,7 @@ import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
+from tau_next import trace
 from tau_next._core import (
     Author,
     Body,
@@ -65,7 +66,8 @@ async def run_hooks(
             continue
         cursor = cursor_for(ext, job.serial)
         try:
-            stop = await hook(cursor, subject)
+            with trace.span("hook", f"{name} {ext.name}"):
+                stop = await hook(cursor, subject)
         except Exception as e:
             return Fed.HookFailed(str(e))
         finally:
@@ -97,10 +99,11 @@ class SampleRun:
         self, provider: Provider, session: Session, cursor: int, tools: Sequence[Tool]
     ) -> None:
         # Read at dispatch: I1, the request is `walk(at)` and `config_at(at)` as `at` stands.
-        at = session.at(cursor)
+        with trace.span("driver", "request"):
+            at = session.at(cursor)
+            self._walk = session.walk(at)
+            self._config = session.config_at(at)
         self._provider = provider
-        self._walk = session.walk(at)
-        self._config = session.config_at(at)
         self._tools = tools
         self._parts: list[Part] = []
         self._task: asyncio.Future[Finish] | None = None
@@ -131,7 +134,8 @@ class SampleRun:
         self._task = asyncio.ensure_future(self._stream())
         if self._cancelled:
             self._task.cancel()
-        await _finish(self._task)
+        with trace.span("sample", "provider"):
+            await _finish(self._task)
         if self._task.cancelled():
             if not self._parts:
                 return Fed.Sampled(None, None)
@@ -220,7 +224,8 @@ class CallRun:
             before = draft.outcome
             handle = self._node(ext)
             try:
-                stop = await hook(handle, draft)
+                with trace.span("hook", f"{name} {ext.name}"):
+                    stop = await hook(handle, draft)
             except Exception as e:
                 raise _HookError(author) from e
             finally:
@@ -241,7 +246,8 @@ class CallRun:
         self._task = asyncio.ensure_future(tool.call(args_raw))
         if self._aborted:
             self._task.cancel()
-        await _finish(self._task)
+        with trace.span("tool", self._tool):
+            await _finish(self._task)
         if self._task.cancelled():
             return Outcome.Interrupted()
         error = self._task.exception()

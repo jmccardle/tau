@@ -12,6 +12,7 @@ tau-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 crc32fast.workspace = true
+tracing = { version = "0.1.44", default-features = false }
 
 [dev-dependencies]
 proptest.workspace = true

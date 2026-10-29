@@ -30,6 +30,9 @@ serde_json.workspace = true
 # No `extension-module` feature: it is legacy in PyO3 0.30. maturin sets
 # PYO3_BUILD_EXTENSION_MODULE instead, which keeps `cargo test` linkable.
 pyo3.workspace = true
+tracing = { version = "0.1.44", default-features = false }
+tracing-chrome = { version = "0.7.2", default-features = false }
+tracing-subscriber = { version = "0.3.23", default-features = false }
 
 [lints]
 workspace = true
