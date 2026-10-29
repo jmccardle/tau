@@ -45,7 +45,8 @@ def test_hidden_files_and_binary_files_are_skipped(tmp_path: Path) -> None:
     (tmp_path / ".dir" / "x.txt").write_text("needle")
     (tmp_path / "blob.bin").write_bytes(b"needle\x00\x01\x02")
     (tmp_path / "ok.txt").write_text("needle")
-    assert call(GrepTool(tmp_path), pattern="needle") == Outcome.Ok("ok.txt:1:needle")
+    out = call(GrepTool(tmp_path), pattern="needle")
+    assert out == Outcome.Ok("ok.txt:1:needle\n[skipped 1 binary file(s)]")
 
 
 def test_files_are_searched_as_named_even_when_ignored(tmp_path: Path) -> None:

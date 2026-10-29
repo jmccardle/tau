@@ -27,7 +27,8 @@ def err(outcome: Outcome) -> str:
 NOTE = re.compile(
     r"\[truncated: (?P<omitted>\d+) lines? omitted (?P<where>before|after) these"
     r"(?P<cut>, and one long line cut short)?; "
-    r"full output \((?P<size>\d+) bytes\) is in (?P<path>[^\]]+\.out)\]"
+    r"(?:full output \((?P<size>\d+) bytes\) is in|the output is (?P<size2>\d+) bytes but)"
+    r" (?P<path>[^\] ]+\.out)(?: holds only the first \d+ bytes)?\]"
 )
 
 
@@ -60,7 +61,7 @@ def parse_truncated(text: str) -> Truncated:
         kept=kept,
         omitted=int(found["omitted"]),
         where=found["where"],
-        size=int(found["size"]),
+        size=int(found["size"] or found["size2"]),
         path=Path(found["path"]),
         cut=found["cut"] is not None,
     )

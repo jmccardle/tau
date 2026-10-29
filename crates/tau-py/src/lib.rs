@@ -16,7 +16,7 @@ mod _core {
     #[pymodule_export]
     use super::session::Session;
     #[pymodule_export]
-    use super::tools::{Bash, BashRun, Grep, Read, Write};
+    use super::tools::{Bash, BashRun, Cancel, Grep, Read, Write};
     #[pymodule_export]
     use super::values::{
         Author, Body, Config, Item, ItemData, Move, Next, Node, Outcome, Part, Scratchpad, Stop,

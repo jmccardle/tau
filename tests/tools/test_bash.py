@@ -16,7 +16,7 @@ def test_the_tool_describes_itself() -> None:
     assert tool.name == "bash"
     assert tool.parameters["required"] == ["command"]
     assert "30000" in tool.description
-    assert "killed" in tool.description
+    assert "terminated" in tool.description
 
 
 def test_output_arrives_interleaved_in_the_working_directory(tmp_path: Path) -> None:
@@ -61,7 +61,7 @@ def test_a_timeout_kills_the_command_and_what_it_started(tmp_path: Path) -> None
     started = time.monotonic()
     out = call(tool, command="echo before; sleep 300 & echo $! > child.pid; wait", timeout=300)
     assert time.monotonic() - started < 10
-    assert out == Outcome.Err("before\n\ncommand timed out after 300 ms and was killed")
+    assert out == Outcome.Err("before\n\ncommand timed out after 300 ms and was terminated")
     assert gone(int((tmp_path / "child.pid").read_text()))
 
 

@@ -20,6 +20,7 @@ __all__ = [
     "BashRun",
     "Body",
     "Busy",
+    "Cancel",
     "Closed",
     "Config",
     "Corrupt",
@@ -544,14 +545,24 @@ class Session:
 
 # The base tools (crates/tau-tools). `run` and `wait` release the GIL.
 # `tau_next.base_tools` wraps these as `Tool`s.
+# Defaults shown as `...` are constants in the Rust signature: max_output 10_000,
+# max_overflow 64 MiB, timeout_ms 30_000, max_timeout_ms 600_000, kill_grace_ms 2_000.
+
+@final
+class Cancel:
+    def __new__(cls) -> Cancel: ...
+    def cancel(self) -> None: ...
+    @property
+    def cancelled(self) -> bool: ...
 
 @final
 class Read:
     def __new__(
         cls,
         cwd: str | PathLike[str],
-        max_output: int = ...,  # 10_000 (a const in the signature stubtest cannot see)
+        max_output: int = ...,
         overflow_dir: str | PathLike[str] | None = None,
+        max_overflow: int = ...,
     ) -> Read: ...
     @property
     def name(self) -> str: ...
@@ -559,7 +570,7 @@ class Read:
     def description(self) -> str: ...
     @property
     def parameters_json(self) -> str: ...
-    def run(self, args_raw: str) -> Outcome: ...
+    def run(self, args_raw: str, cancel: Cancel) -> Outcome: ...
 
 @final
 class Write:
@@ -577,8 +588,9 @@ class Grep:
     def __new__(
         cls,
         cwd: str | PathLike[str],
-        max_output: int = ...,  # 10_000 (a const in the signature stubtest cannot see)
+        max_output: int = ...,
         overflow_dir: str | PathLike[str] | None = None,
+        max_overflow: int = ...,
     ) -> Grep: ...
     @property
     def name(self) -> str: ...
@@ -586,16 +598,19 @@ class Grep:
     def description(self) -> str: ...
     @property
     def parameters_json(self) -> str: ...
-    def run(self, args_raw: str) -> Outcome: ...
+    def run(self, args_raw: str, cancel: Cancel) -> Outcome: ...
 
 @final
 class Bash:
     def __new__(
         cls,
         cwd: str | PathLike[str],
-        max_output: int = ...,  # 10_000 (a const in the signature stubtest cannot see)
+        max_output: int = ...,
         overflow_dir: str | PathLike[str] | None = None,
-        timeout_ms: int = ...,  # 30_000
+        max_overflow: int = ...,
+        timeout_ms: int = ...,
+        max_timeout_ms: int = ...,
+        kill_grace_ms: int = ...,
     ) -> Bash: ...
     @property
     def name(self) -> str: ...

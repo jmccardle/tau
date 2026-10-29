@@ -1,5 +1,6 @@
 """Output limits: read and grep keep the head, bash keeps the tail, the whole goes to a file."""
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -74,7 +75,9 @@ def test_the_note_text(tmp_path: Path, overflow: Path) -> None:
     head = ok(call(ReadTool(tmp_path, max_output=10, overflow_dir=overflow), path="f.txt"))
     path = parse_truncated(head).path
     assert head == (
-        f"aaaa\nbbbb\n[truncated: 2 lines omitted after these; full output (20 bytes) is in {path}]"
+        "aaaa\nbbbb\n[truncated: 2 lines omitted after these; "
+        f"full output (20 bytes) is in {path}]\n"
+        "[showing lines 1-2; offset=3 continues]"
     )
     tail = ok(call(BashTool(tmp_path, max_output=10, overflow_dir=overflow), command="cat f.txt"))
     path = parse_truncated(tail).path
@@ -137,7 +140,7 @@ def test_the_default_limit_is_10_kb_and_the_default_directory_is_the_temp_dir() 
         Path(work, "big.txt").write_text("0123456789\n" * 3000)
         answer = parse_truncated(ok(call(ReadTool(work), path="big.txt")))
     try:
-        assert answer.path.parent == Path(tempfile.gettempdir()) / "tau"
+        assert answer.path.parent == Path(tempfile.gettempdir()) / f"tau-{os.geteuid()}"
         assert 9_000 < len(answer.kept.encode()) <= 10_000
         assert answer.size == 33_000
     finally:
@@ -160,4 +163,4 @@ def test_the_overflow_file_cannot_be_written_is_an_error_not_a_silent_cut(
 
 def test_the_write_tool_has_no_limit_to_exceed(tmp_path: Path) -> None:
     out = ok(call(WriteTool(tmp_path), path="f.txt", content="x" * 100_000))
-    assert out == "Wrote 1 lines (100000 bytes) to f.txt"
+    assert out == "Wrote 1 line (100000 bytes) to f.txt"

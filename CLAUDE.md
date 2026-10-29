@@ -37,7 +37,8 @@ holds it to the built module.
 | path | what |
 |---|---|
 | `crates/tau-core` | Pure Rust. No IO, no async runtime, no PyO3. Behavior lives here. |
-| `crates/tau-store` | The only Rust crate that touches the filesystem. |
+| `crates/tau-store` | The only Rust crate that touches the filesystem for sessions (logs, scratchpads). |
+| `crates/tau-tools` | The base tools (`read`, `write`, `grep`, `bash`): filesystem and process IO for the model's tools, no PyO3. |
 | `crates/tau-py` | PyO3 bindings, built as `tau_next._core`. Conversion and error mapping only. |
 | `python/tau_next` | Python package. `_core.pyi` is the hand-written stub for the native module. |
 | `tests/behavior` | Phase 2: behavior suite through the `Harness` protocol. Carried into τ 0.16 as its test suite. |

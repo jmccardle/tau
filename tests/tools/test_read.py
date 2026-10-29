@@ -35,7 +35,7 @@ def test_offset_and_limit_select_lines_and_say_how_to_continue(tmp_path: Path) -
     (tmp_path / "n.txt").write_text("".join(f"{i}\n" for i in range(1, 11)))
     tool = ReadTool(tmp_path)
     middle = call(tool, path="n.txt", offset=3, limit=2)
-    assert middle == Outcome.Ok("3\n4\n\n[lines 3-4 were read; more follow, offset=5 continues]")
+    assert middle == Outcome.Ok("3\n4\n\n[showing lines 3-4; offset=5 continues]")
     assert call(tool, path="n.txt", offset=9) == Outcome.Ok("9\n10\n")
     assert call(tool, path="n.txt", offset=9, limit=2) == Outcome.Ok("9\n10\n")
 

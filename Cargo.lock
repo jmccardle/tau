@@ -690,6 +690,7 @@ name = "tau-tools"
 version = "0.16.0-dev.0"
 dependencies = [
  "fastrand",
+ "globset",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
