@@ -57,8 +57,8 @@ async def test_a_project_dotenv_never_reaches_the_environment_of_a_command(
     """Loading config returns the `.env` keys in a mapping of their own; nothing writes
     `os.environ`, which is what a `bash` command inherits."""
     root = world.project(config=models(p={}))
-    trust(world, root)
     (root / ".env").write_text("TAU_DOTENV_MARKER=from-dotenv\n", encoding="utf-8")
+    trust(world, root)  # after the .env: approval pins its bytes
     before = dict(os.environ)
     loaded = load_config(root, world.environ, ask=None)
     assert loaded.environ["TAU_DOTENV_MARKER"] == "from-dotenv"
