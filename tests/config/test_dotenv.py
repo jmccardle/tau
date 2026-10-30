@@ -4,24 +4,24 @@ errors that name file and line, never the value."""
 from pathlib import Path
 
 import pytest
-from world import World, models, tau, trust
+from world import World, models, tau, trust, yes
 
-from tau_next import DotenvError, UntrustedProject, load_config
+from tau_next import TrustError, UntrustedProject, load_config
 
 SECRET = "sk-secret-123"
 
 
-def trusted_project(world: World) -> Path:
+def project_with_dotenv(world: World, text: str | bytes) -> Path:
+    """A project whose `.env` is `text`, not yet trusted (approval pins the `.env` too)."""
     root = world.project(config=models(p={}))
-    trust(world, root)
+    (root / ".env").write_bytes(text if isinstance(text, bytes) else text.encode())
     return root
 
 
 def dotenv(world: World, text: str | bytes) -> dict[str, str]:
     """What `text` as a trusted project's `.env` adds to the shell environment."""
-    root = trusted_project(world)
-    path = root / ".env"
-    path.write_bytes(text if isinstance(text, bytes) else text.encode())
+    root = project_with_dotenv(world, text)
+    trust(world, root)
     environ = load_config(root, world.environ, ask=None).environ
     return {k: v for k, v in environ.items() if k not in world.environ}
 
@@ -63,8 +63,8 @@ def test_a_byte_order_mark_is_tolerated_and_a_later_line_wins(world: World) -> N
 
 
 def test_the_shell_overrides_dotenv(world: World) -> None:
-    root = trusted_project(world)
-    (root / ".env").write_text("KEY=from-file\nONLY=file\n", encoding="utf-8")
+    root = project_with_dotenv(world, "KEY=from-file\nONLY=file\n")
+    trust(world, root)
     environ = {**world.environ, "KEY": "from-shell"}
     merged = load_config(root, environ, ask=None).environ
     assert merged["KEY"] == "from-shell"
@@ -96,22 +96,34 @@ def test_an_untrusted_projects_dotenv_is_not_read(world: World) -> None:
 def test_a_malformed_line_names_file_and_line_and_never_the_value(
     world: World, text: str, line: int
 ) -> None:
-    root = trusted_project(world)
+    root = project_with_dotenv(world, text + f"\n# {SECRET}\n")
     path = root / ".env"
-    path.write_text(text + f"\n# {SECRET}\n", encoding="utf-8")
-    with pytest.raises(DotenvError) as caught:
-        load_config(root, world.environ, ask=None)
-    assert str(caught.value).startswith(f"{path}:{line}:")
+    refused = tau(world, "trust", cwd=root)
+    assert refused.code == 1
+    assert f"{path}:{line}:" in refused.err
+    assert SECRET not in refused.both
+    with pytest.raises(TrustError, match=f"{path}:{line}:") as caught:
+        load_config(root, world.environ, ask=yes)
+    assert not isinstance(caught.value, UntrustedProject)
     checked = tau(world, "config", "check", cwd=root)
     assert checked.code == 1
-    assert f"{path}: error: " in checked.out or f"{path}:{line}:" in checked.out
+    assert "tau trust" in checked.out
     assert "Traceback" not in checked.err
 
 
 def test_a_secret_on_a_malformed_line_is_not_echoed(world: World) -> None:
-    root = trusted_project(world)
-    (root / ".env").write_text(f"{SECRET} oops\n", encoding="utf-8")
-    with pytest.raises(DotenvError) as caught:
+    root = project_with_dotenv(world, f"{SECRET} oops\n")
+    assert SECRET not in tau(world, "trust", cwd=root).both
+    assert SECRET not in tau(world, "config", "check", cwd=root).both
+    with pytest.raises(UntrustedProject) as caught:
         load_config(root, world.environ, ask=None)
     assert SECRET not in str(caught.value)
-    assert SECRET not in tau(world, "config", "check", cwd=root).both
+
+
+def test_a_quoted_value_keeps_the_characters_splitlines_would_split_on(world: World) -> None:
+    value = "a\x0bb\x1cc\x85d\u2028e"
+    assert dotenv(world, f"A='{value}'\nB=2\n") == {"A": value, "B": "2"}
+
+
+def test_windows_line_endings_end_lines_without_leaving_a_carriage_return(world: World) -> None:
+    assert dotenv(world, "C=1\r\nD='2'\r\n") == {"C": "1", "D": "2"}

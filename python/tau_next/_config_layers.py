@@ -64,9 +64,8 @@ class ConfigProblem:
         where = self.source or "config"
         if self.line is not None:
             where += f":{self.line}:{self.column}"
-        if self.path:
-            where += f" at {self.path}"
-        return f"{self.severity}: {where}: {self.message}"
+        at = f"{self.path}: " if self.path else ""
+        return f"{where}: {self.severity}: {at}{self.message}"
 
 
 @dataclass(frozen=True)
@@ -247,7 +246,7 @@ def _load_layer(source: str, text: str, problems: _Problems) -> _Tree | None:
 
 def _merge(base: _Tree, over: _Tree) -> _Tree:
     """Objects by key; anything else replaces. A null stays as a tombstone: it also
-    drops what a group passes down. Setting one of `api_key`/`api_key_env` drops the other."""
+    drops what a group passes down."""
     out = dict(base)
     for key, value in over.items():
         if isinstance(value, _Leaf):
@@ -255,6 +254,13 @@ def _merge(base: _Tree, over: _Tree) -> _Tree:
         else:
             inherited = out.get(key)
             out[key] = _merge(inherited if isinstance(inherited, dict) else {}, value)
+    return out
+
+
+def _merge_settings(base: _Tree, over: _Tree) -> _Tree:
+    """`_merge` for the keys of a model or group: setting one of `api_key`/`api_key_env`
+    drops the other."""
+    out = _merge(base, over)
     for key, other in _EXCLUSIVE.items():
         if _is_set(over.get(key)) and other not in over:
             out.pop(other, None)
@@ -270,116 +276,87 @@ def _forget(kinds: _Kinds, path: tuple[str, ...]) -> None:
         del kinds[known]
 
 
-def _merge_layer(base: _Tree, over: _Tree, kinds: _Kinds, problems: _Problems, layer: str) -> _Tree:
-    out = _merge(
-        {k: v for k, v in base.items() if k != "models"},
-        {k: v for k, v in over.items() if k != "models"},
-    )
-    if "models" in over:
-        out["models"] = _merge_models(
-            base.get("models"), over["models"], kinds, (), problems, layer
-        )
-    elif "models" in base:
-        out["models"] = base["models"]
-    return out
+def _without_models(node: _Tree) -> _Tree:
+    return {k: v for k, v in node.items() if k != "models"}
 
 
-def _merge_models(  # noqa: PLR0913, PLR0917 - the layer's whole merge state
-    base: _Tree | _Leaf | None,
-    over: _Tree | _Leaf,
-    kinds: _Kinds,
-    path: tuple[str, ...],
-    problems: _Problems,
-    layer: str,
-) -> _Tree | _Leaf:
-    """Merge two `models` objects. Each layer says per name whether it is a model or
-    a group (it has a `models` key); a name that is both across layers is an error."""
-    if isinstance(over, _Leaf):
-        if over.value is None:
-            _forget(kinds, path)
-        return over
-    out = dict(base) if isinstance(base, dict) else {}
-    for name, node in over.items():
-        here = (*path, name)
+@dataclass
+class _LayerMerge:
+    """Folding one layer into what the layers before it made. Each layer says per name
+    whether it is a model or a group (it has a `models` key); a name that is both across
+    layers is an error."""
+
+    kinds: _Kinds
+    problems: _Problems
+    layer: str
+
+    def node(self, base: _Tree, over: _Tree, path: tuple[str, ...]) -> _Tree:
+        """A group (or the top level) over another: its settings, then its `models`."""
+        out = _merge_settings(_without_models(base), _without_models(over))
+        if "models" in over:
+            out["models"] = self.models(base.get("models"), over["models"], path)
+        elif "models" in base:
+            out["models"] = base["models"]
+        return out
+
+    def models(
+        self, base: _Tree | _Leaf | None, over: _Tree | _Leaf, path: tuple[str, ...]
+    ) -> _Tree | _Leaf:
+        if isinstance(over, _Leaf):
+            if over.value is None:
+                _forget(self.kinds, path)
+            return over
+        out = dict(base) if isinstance(base, dict) else {}
+        for name, node in over.items():
+            merged = self.named(out.get(name), node, (*path, name))
+            if merged is not None:
+                out[name] = merged
+        return out
+
+    def named(
+        self, existing: _Tree | _Leaf | None, node: _Tree | _Leaf, here: tuple[str, ...]
+    ) -> _Tree | _Leaf | None:
+        """One name's merge; `None`: it is a model here and a group there (reported)."""
         if isinstance(node, _Leaf):
             if node.value is None:
-                _forget(kinds, here)
-            out[name] = node
-            continue
-        source = _source_of(node) or layer
-        prev = kinds.get(here)
+                _forget(self.kinds, here)
+            return node
+        source = _source_of(node) or self.layer
+        prev = self.kinds.get(here)
         if prev is not None and prev[0] == "model" and "models" in node:
-            msg = f"{name!r} is a model in {prev[1]} and a group in {source}"
-            problems.add("error", msg, source, _dotted(here))
-            continue
+            msg = f"{here[-1]!r} is a model in {prev[1]} and a group in {source}"
+            self.problems.add("error", msg, source, _dotted(here))
+            return None
         # The first layer to define a name sets its kind (`models` makes a group);
         # later layers without `models` just tune whichever it is.
         kind = prev[0] if prev is not None else ("group" if "models" in node else "model")
-        kinds.setdefault(here, (kind, source))
-        existing = out.get(name)
+        self.kinds.setdefault(here, (kind, source))
         mine = existing if isinstance(existing, dict) else {}
-        if kind == "model":
-            out[name] = _merge(mine, node)
-            continue
-        group = _merge(
-            {k: v for k, v in mine.items() if k != "models"},
-            {k: v for k, v in node.items() if k != "models"},
-        )
-        if "models" in node:
-            group["models"] = _merge_models(
-                mine.get("models"), node["models"], kinds, here, problems, layer
-            )
-        elif "models" in mine:
-            group["models"] = mine["models"]
-        out[name] = group
-    return out
+        return _merge_settings(mine, node) if kind == "model" else self.node(mine, node, here)
 
 
 def _plain(node: _Tree | _Leaf) -> object:
-    """A merged subtree as the JSON it came from (a `null` stays a `None`)."""
+    """A merged subtree as the JSON it came from, its nulls dropped."""
     if isinstance(node, _Leaf):
         return node.value
-    return {k: _plain(v) for k, v in node.items()}
-
-
-def _merge_plain(base: dict[str, object], over: dict[str, object]) -> dict[str, object]:
-    """Objects by key, anything else replaces: `_merge` on plain JSON."""
-    out = dict(base)
-    for key, value in over.items():
-        inherited = out.get(key)
-        if isinstance(value, dict) and isinstance(inherited, dict):
-            out[key] = _merge_plain(
-                cast("dict[str, object]", inherited), cast("dict[str, object]", value)
-            )
-        else:
-            out[key] = value
-    return out
-
-
-def _without_nulls(value: object) -> object:
-    if not isinstance(value, dict):
-        return value
-    obj = cast("dict[str, object]", value)
-    return {k: _without_nulls(v) for k, v in obj.items() if v is not None}
+    return {k: _plain(v) for k, v in node.items() if not (isinstance(v, _Leaf) and v.value is None)}
 
 
 def _combine(inherited: _Settings, own: _Settings) -> _Settings:
     """`own` over `inherited`: a null removes the key, and setting one of
     `api_key`/`api_key_env` removes the other. `options` merge as objects."""
     out = dict(inherited)
-    for key, setting in own.items():
-        value = setting
-        if value[0].value is None:
+    for key, (leaf, group) in own.items():
+        if leaf.value is None:
             out.pop(key, None)
             continue
         before: object = out[key][0].value if key in out else None
-        mine: object = setting[0].value
+        mine: object = leaf.value
         if key == "options" and isinstance(before, dict) and isinstance(mine, dict):
-            merged = _merge_plain(
-                cast("dict[str, object]", before), cast("dict[str, object]", mine)
-            )
-            value = (_Leaf(merged, setting[0].source), setting[1])
-        out[key] = value
+            merged = _merge(cast("_Tree", before), cast("_Tree", mine))
+            out[key] = (_Leaf(merged, leaf.source), group)
+        else:
+            out[key] = (leaf, group)
         other = _EXCLUSIVE.get(key)
         if other is not None and other not in own:
             out.pop(other, None)
@@ -410,46 +387,41 @@ class _Resolver:
         self.declared: list[str] = []
 
     def checked(self, key: str, value: _Tree | _Leaf, label: str, here: str) -> _Leaf:
-        """`value` if it is a good setting; else report it once and return a placeholder."""
+        """`value` if it is a good setting; else report it once and return a placeholder.
+        What `ModelConfig` checks of the resolved value (empty, a range) is left to it."""
         source = _source_of(value) or CLI
         bad = _Leaf(_INVALID, source)
-        if not isinstance(value, _Leaf) or not isinstance(value.value, str):
+        text = value.value if isinstance(value, _Leaf) else None
+        if key == "max_tokens":
+            if not isinstance(text, int):
+                self.problems.add("error", "'max_tokens' must be a positive integer", source, here)
+                return bad
+        elif not isinstance(text, str):
             self.problems.add("error", f"{key!r} must be a string", source, here)
             return bad
-        text = value.value
-        if not text:
-            self.problems.add("error", f"{key!r} must not be empty", source, here)
-        elif key == "api_key_env" and not _VAR_NAME.fullmatch(text):
+        if key == "api_key_env" and not _VAR_NAME.fullmatch(cast("str", text)):
             msg = (
                 f"api_key_env of {label!r} is not a variable name "
                 '(did you paste the key itself? use api_key_env: "NAME")'
             )
             self.problems.add("error", msg, source, here)
-        elif key == "base_url" and (bad_url := url_problem(text)) is not None:
+        elif key == "base_url" and (bad_url := url_problem(cast("str", text))) is not None:
             self.problems.add("error", bad_url, source, here)
         elif key == "provider" and self.providers is not None and text not in self.providers:
             msg = f"unknown provider {text!r}; known providers are {sorted(self.providers)}"
             self.problems.add("error", msg, source, here)
         else:
-            return value
+            return value if isinstance(value, _Leaf) else bad
         return bad
 
-    def max_tokens(self, value: _Tree | _Leaf, here: str) -> _Leaf:
-        n = value.value if isinstance(value, _Leaf) else None
-        if isinstance(n, int) and not isinstance(n, bool) and n >= 1:
-            return value if isinstance(value, _Leaf) else _Leaf(n, CLI)
-        source = _source_of(value) or CLI
-        self.problems.add("error", "'max_tokens' must be a positive integer", source, here)
-        return _Leaf(_INVALID, source)
-
     def options(self, value: _Tree | _Leaf, here: str) -> _Leaf:
-        """The provider's own settings as a plain object (the loader never looks inside; a
+        """The provider's own settings as an object tree (the loader never looks inside; a
         `null` inside stays until the layers are combined)."""
         source = _source_of(value) or CLI
         if isinstance(value, _Leaf):
             self.problems.add("error", "'options' must be an object", source, here)
             return _Leaf(_INVALID, source)
-        return _Leaf(_plain(value), source)
+        return _Leaf(value, source)
 
     def settings(self, node: _Tree, path: str, label: str, group: str | None) -> _Settings:
         """The model keys set directly on `node`, each checked. A null passes through."""
@@ -465,8 +437,6 @@ class _Resolver:
                 self.problems.add("error", msg, _source_of(value), here)
             elif isinstance(value, _Leaf) and value.value is None:
                 out[key] = (value, group)
-            elif key == "max_tokens":
-                out[key] = (self.max_tokens(value, here), group)
             elif key == "options":
                 out[key] = (self.options(value, here), group)
             else:
@@ -531,7 +501,7 @@ class _Resolver:
         self.warn(qualified, merged, texts, here)
         options = cast(
             "dict[str, object]",
-            _without_nulls(merged["options"][0].value) if "options" in merged else {},
+            _plain(cast("_Tree", merged["options"][0].value)) if "options" in merged else {},
         )
         try:
             config = ModelConfig(
@@ -625,7 +595,7 @@ def _read_layers(
     for source, text in texts:
         tree = _load_layer(source, text, problems)
         if tree is not None:
-            merged = _merge_layer(merged, tree, kinds, problems, source)
+            merged = _LayerMerge(kinds, problems, source).node(merged, tree, ())
     return merged, kinds
 
 

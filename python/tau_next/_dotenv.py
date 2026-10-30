@@ -47,7 +47,9 @@ def parse_dotenv(text: str, source: str = ".env") -> dict[str, str]:
     Raises `DotenvError` naming `source` and the line number.
     """
     found: dict[str, str] = {}
-    for number, raw in enumerate(text.removeprefix("\ufeff").splitlines(), start=1):
+    # Only \n ends a line: splitlines() would also split a quoted value on \x0b, \x1c, \x85, ...
+    lines = text.removeprefix("\ufeff").replace("\r\n", "\n").split("\n")
+    for number, raw in enumerate(lines, start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue

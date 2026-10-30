@@ -764,24 +764,22 @@ frontend settings will widen it in a later part.
 D13 · new
 
 A project directory whose `.tau/` the user approved, listed in
-`$TAU_HOME/trusted.json` with a hash of its `.tau/config.json`; a changed
-hash is untrusted again. The project is the nearest `.tau/` upward from the
+`$TAU_HOME/trusted.json` with a hash of its `.tau/config.json` and of its `.env`;
+a changed hash is untrusted again. The project is the nearest `.tau/` upward from the
 working directory, stopping at `$HOME`. Only a trusted directory's project config and `.env`
 are read. Approval also makes `.tau/` the user's, mode `700`, with a
 `.gitignore` of `*`.
 
-### safe_block, safe_text, read_project_config, user_config_path
+### safe_block, safe_text, user_config_path
 module `tau_next._trust`; only `safe_block` is exported · D13 · new
 
 `safe_block` is exported for a frontend that prints an exception from config
 loading (the examples do): the exceptions carry file text unescaped. `safe_text(text)` (internal) writes every control, format (such as U+202E), line/paragraph separator and surrogate character as an escape (`\x1b`, `\u202e`; a byte that was not UTF-8 in a name as `\xff`), so output always encodes; `safe_block(text)` does it line by line, splitting only on `\n`; everything printed from config
 data goes through it (the trust report, `tau config check`, `--show`, suggestions, the pick menu). Model
-and group names may not contain control characters (the checker errors at that path). `read_project_config(root)` reads
-a project's config once through the safe reader and returns it as a `LayerText` (`None`: no file); it
-shows what an untrusted project says and nothing read this way is used. `user_config_path(home)` is
+and group names may not contain control characters (the checker errors at that path). `user_config_path(home)` is
 `<home>/config.json` or `None`.
 
-### tau_home, find_project, skipped_project, project_config_path, is_trusted, trust_report, approve_project, ensure_trusted, Trusted, UntrustedProject, TrustError, is_interactive, terminal_ask, project_environment, LayerText
+### tau_home, find_project, ProjectSearch, refuse_special, create_project, project_config_path, ensure_trusted, Trusted, UntrustedProject, TrustError, is_interactive, terminal_ask, project_environment, LayerText
 module `tau_next._trust` (`LayerText`: `tau_next._config_layers`); only `Trusted`, `UntrustedProject`, and `TrustError` are exported · D13 · new
 
 Everything here but those three names is internal: the outside reaches it
@@ -789,46 +787,48 @@ through `load_config` (finding, trusting, `.env`), `tau trust` (approval and the
 report), and `tau config check`. Tests do the same.
 
 - `tau_home(environ)`: `$TAU_HOME` or `~/.tau` (`~` from `environ["HOME"]`).
-- `find_project(start, environ)`: the nearest directory upward whose `.tau/` is
-  a real directory owned by you, or `None`. A symlinked or foreign `.tau` is
-  skipped and the search goes on. `$HOME` itself and the directory whose `.tau`
-  is `TAU_HOME` are never a project; the search stops at `$HOME` (outside it,
-  runs to `/`). `skipped_project(start, environ)` says why the nearest `.tau`
-  `find_project` skipped is not a project (a symlink, or not owned by you), so
-  `tau trust` reports that instead of "no .tau/ found".
+- `find_project(start, environ)` returns a **`ProjectSearch`** (`root`, `skipped`): the
+  nearest directory upward whose `.tau/` is a real directory owned by you, or `root` of
+  `None` and in `skipped` why the nearest `.tau` the one walk passed over is not a
+  project (a symlink, or not owned by you), so `tau trust` says that instead of making a
+  project beside it. A symlinked or foreign `.tau` is skipped and the search goes on.
+  `$HOME` itself and the directory whose `.tau` is `TAU_HOME` are never a project; the
+  search stops at `$HOME` (outside it, runs to `/`). `refuse_special(path, environ)` is
+  `TrustError` for `$HOME`, `TAU_HOME`, anything inside it, and the parent of a `TAU_HOME`
+  named `.tau`. `create_project(root)` makes `<root>/.tau/` (mode `700`).
   `project_config_path(root)` is `<root>/.tau/config.json`.
-- `trusted.json` (in `TAU_HOME`, written atomically) holds per project the
-  sha256 of the approved config bytes, which decides, and a redacted copy
+- `trusted.json` (in `TAU_HOME`, written atomically) holds per project the sha256 of the
+  approved config bytes and of the approved `.env` bytes (each behind a marker byte, so an
+  absent file differs from an empty one), which decide, and a redacted copy of the config
   (every `api_key` value replaced by `(secret)`, canonical JSON) for diffs.
-  `is_trusted(root, home)` is hash equality; the hash covers a marker byte, so an absent
-  config differs from an empty one.
-- `trust_report(root, home)` is what the user reads before agreeing: what the
-  project config changes in the user config per qualified model (old to new;
-  a literal `api_key` only as `(set)`), the variable names (never values) its
-  `.env` sets, the `.tau/` checks, and for a changed project a unified diff of
-  the redacted copies ("a secret value changed" when only a secret did).
-- `approve_project(root, home)`: sets `.tau/` to `700`, writes `.tau/.gitignore`
-  (`*`, mode `644`) if missing, records the config. `ensure_trusted(root, home,
-  *, ask)` returns a frozen **`Trusted`** (`root`, `config_text`, `layer()` as a
-  `LayerText`, and `read_models(user=, cli=)` returning the catalog from the approved
-  text; callers use these, never `project_config_path`, which is for display) if trusted;
-  otherwise `ask(report)` decides, and no `ask` (no live terminal) or a no
-  raises **`UntrustedProject`** (message: the report and `tau trust <root>`).
-  **`TrustError`** (a `PermissionError`) is every other refusal.
-  `terminal_ask(stdin, stdout)` and `is_interactive(stdin, stdout)` are the
-  terminal side. `project_environment(trusted, environ)` overlays
-  `environ` on the `.env` of a `Trusted` project (`None`: just `environ`). A **`LayerText`** is a config
-  layer already read (source and text), accepted where a layer takes a `Path`.
+- `ensure_trusted(root, home, *, ask)` returns a frozen **`Trusted`** (`root`,
+  `config_text`, `env_text`, `layer()` as a `LayerText`, and `read_models(user=, cli=)`
+  returning the catalog from the approved text; callers use these, never
+  `project_config_path`, which is for display) if both hashes match. Otherwise it builds
+  the report, the text a user reads before agreeing: the project config itself with
+  `api_key` values blanked, the variable names (never values) its `.env` sets, the `.tau/`
+  checks (mode, `.gitignore`), and for a changed project a unified diff of the redacted
+  configs ("a secret value changed" when only a secret did) and ".env changed since you
+  approved it". With no `ask` (no live terminal), or on a no, it raises
+  **`UntrustedProject`** (message: the report and `tau trust <root>`, the path
+  shell-quoted; `layer`: the config it holds, to show its problems). On a yes it sets
+  `.tau/` to `700`, writes `.tau/.gitignore` (`*`, mode `644`) if missing, and records the
+  hashes. With an `ask`, a config or `.env` with errors cannot be approved: **`TrustError`**
+  (a `PermissionError`, with `where`: the path it is about, if any) is every other refusal.
+  `terminal_ask(stdin, stdout)` and `is_interactive(stdin, stdout)` are the terminal side.
+  `project_environment(trusted, environ)` overlays `environ` on the approved `.env` of a
+  `Trusted` project (`None`: just `environ`). A **`LayerText`** is a config layer already
+  read (source and text), accepted where a layer takes a `Path`.
 
-Rules. (A) The config is read once per `ensure_trusted`; report, question, and
+Rules. (A) The config and `.env` are read once per `ensure_trusted`; report, question, and
 approval use those bytes, and approval refuses ("changed while you were
-reading; run again") if the file differs. (B) Everything read inside a project
+reading; run again") if either differs. (B) Everything read inside a project
 goes through one helper that refuses symlinks and non-regular files (naming the
-path, never the content), opens with `O_NOFOLLOW`, and checks the descriptor
-against `lstat`. (C) As above: hash decides, redacted copy shows. (D) A config
+path, never the content): it opens with `O_NOFOLLOW` and checks the descriptor, with no
+earlier look to race. (C) As above: hash decides, redacted copy shows. (D) A config
 with errors (or a malformed `.env`) cannot be approved; the report lists them.
-(E) `.env` is not content-pinned; it is refused if a symlink or not yours.
-(F) A foreign `.tau` is not a project. (G) `TAU_HOME` or `trusted.json`
+(E) `.env` is content-pinned like the config; content decides, so neither file has an
+owner check. (F) A foreign `.tau` directory is not a project. (G) `TAU_HOME` or `trusted.json`
 writable by group or others refuses all trust operations with the `chmod` to
 run; tau never changes them. (I) Every project-supplied string in a report or
 trust error is shown with control characters (C0, DEL, C1) as `\xNN` escapes.
@@ -842,7 +842,8 @@ module `tau_next._dotenv`; only `DotenvError` is exported · D13 · new
 Our own `.env` reader: `KEY=value` lines, optional `export `, `#` comments (a
 `#` starts one only at line start or after whitespace, so `K=#x` is `#x`),
 single-quoted values literal, double-quoted values with `\n`, `\"`, `\\`,
-unquoted values trimmed of a trailing ` # comment`; a BOM is tolerated. A
+unquoted values trimmed of a trailing ` # comment`; a BOM is tolerated. Only `\n` (or `\r\n`)
+ends a line, so a quoted value may hold `\x0b` or U+2028. A
 malformed line is a `DotenvError` naming the file and line, never the value.
 
 ### load_config, LoadedConfig
@@ -887,7 +888,8 @@ and the project config and prints each problem as `file:line:col: severity: mess
 dotted path before the message when there is no line). The project's problems
 are reported even if it is not trusted, each tagged `[untrusted project: ...]`; an untrusted
 project is never used, and it is itself an error (startup would refuse it), even with no
-config file. Its `.env` problems (malformed, symlink, foreign-owned) are reported, trusted or not. A trusted one is checked from the approved
+config file. A refused file (symlink, not a regular file) is reported under its own path;
+`tau trust` shows a malformed `.env`. A trusted one is checked from the approved
 text, and its `.env` counts toward unset-variable warnings. Exit 1 if any error,
 0 otherwise (warnings print). `--show MODEL` (after a check with no errors; warnings are fine) selects as
 `select_model` does and prints the qualified name, then each resolved key, its
@@ -896,10 +898,13 @@ value, and `[file or cli or default, group G]`. A literal `api_key` shows as
 
 `tau trust [DIR]` finds the project by walking up from DIR (a relative DIR is
 taken from the working directory; default: the working directory), as startup
-does. It refuses `$HOME`, `TAU_HOME`, and (when `TAU_HOME` is named `.tau`) its parent, as the start directory or the project found, and a directory with no
-project (one line, exit 1). An already trusted, unchanged project prints
-`already trusted: <root>` and exits 0. Otherwise it approves and prints
-`trust_report`; it is the explicit command, so there is no y/N prompt. A
+does. It refuses `$HOME`, `TAU_HOME`, anything inside `TAU_HOME`, and (when `TAU_HOME`
+is named `.tau`) its parent, as the start directory. If no `.tau/` is found it makes
+`DIR/.tau/` (mode `700`) and trusts that; a symlinked or foreign `.tau` passed over is
+a one-line "no project: ..." error instead. One read: it goes through `ensure_trusted`
+with an `ask` that prints the report and says yes. An already trusted, unchanged project
+prints `already trusted: <root>` and exits 0; otherwise it prints the report and
+`trusted <root>`; it is the explicit command, so there is no y/N prompt. A
 config with errors cannot be approved: the report and the refusal go to stderr,
 exit 1.
 
