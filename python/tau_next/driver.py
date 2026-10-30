@@ -15,6 +15,7 @@ rules about performing one effect:
 """
 
 import asyncio
+import weakref
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -76,7 +77,7 @@ class Driver:
             if provider.name != name:
                 raise ValueError(f"provider {provider.name!r} is given as {name!r}")
         self._providers = dict(providers)
-        self._streams: set[EventStream] = set()
+        self._streams: weakref.WeakSet[EventStream] = weakref.WeakSet()
         self._catalog = catalog
         self._tools: Mapping[str, Tool] = check_tools(tools)
         self._extensions = tuple(extensions)
@@ -101,6 +102,12 @@ class Driver:
     def subscribers(self) -> int:
         """Event streams open now."""
         return len(self._streams)
+
+    def _fail(self, failure: Exception) -> None:
+        """Record what the pump or an effect died of and end every event stream with it."""
+        self._failure = failure
+        for stream in tuple(self._streams):
+            stream.end(failure)
 
     def _emit(self, event: Event) -> None:
         for stream in tuple(self._streams):
@@ -180,7 +187,7 @@ class Driver:
     def input(self, cursor: int, client: str, text: str) -> int:
         with trace.span("driver", "input"):
             item = self.session.input(cursor, client, text)
-        self._poke()
+        self._changed(cursor)
         return item
 
     def send(self, cursor: int, client: str, text: str) -> int:
@@ -188,12 +195,12 @@ class Driver:
         with trace.span("driver", "send"):
             item = self.session.input(cursor, client, text)
             self.session.set_auto(cursor, True)
-        self._poke()
+        self._changed(cursor)
         return item
 
     def step(self, cursor: int) -> None:
         self.session.step(cursor)
-        self._poke()
+        self._changed(cursor)
 
     def go_to(self, cursor: int, to: int, client: str) -> bool:
         """Move, aborting a busy step first (which declines its open questions). True if
@@ -202,22 +209,22 @@ class Driver:
         if cancel:
             self._cancel(cursor)
         self._decline(cursor)
-        self._poke()
+        self._changed(cursor)
         return cancel
 
     def set_auto(self, cursor: int, on: bool) -> None:
         self.session.set_auto(cursor, on)
-        self._poke()
+        self._changed(cursor)
 
     def open(self, at: int, by: Author) -> int:
         cursor = self.session.open(at, by, self.clock.now())
-        self._poke()
+        self._changed(cursor)
         return cursor
 
     def add_item(self, to: int, data: ItemData) -> int:
         """Add an item to a cursor's scratchpad (an extension's call): wakes it."""
         item = self.session.add_item(to, data)
-        self._poke()
+        self._changed(to)
         return item
 
     def abort(self, cursor: int) -> bool:
@@ -227,7 +234,7 @@ class Driver:
         if cancel:
             self._cancel(cursor)
         self._decline(cursor)
-        self._poke()
+        self._changed(cursor)
         return cancel
 
     def respond(self, cursor: int, response: str | None) -> None:
@@ -250,6 +257,11 @@ class Driver:
 
     # The pump
 
+    def _changed(self, cursor: int) -> None:
+        """A frontend call changed the tree or the cursor with no answer: say so, wake the pump."""
+        self._emit(Saved(cursor))
+        self._poke()
+
     def _poke(self) -> None:
         self._queue.put_nowait(None)
 
@@ -268,7 +280,7 @@ class Driver:
                 if item is not None:
                     self._deliver(*item)
         except Exception as e:
-            self._failure = e
+            self._fail(e)
         finally:
             self._notify()
 
@@ -302,7 +314,7 @@ class Driver:
             try:
                 self._queue.put_nowait((cursor, await effect()))
             except Exception as e:
-                self._failure = self._failure or e
+                self._fail(self._failure or e)
                 self._poke()
 
         self._units += 1

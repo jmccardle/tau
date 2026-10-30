@@ -7,7 +7,7 @@ only what the walk, the tools, and `ModelConfig` say: `model`, `messages`, `stre
 
 import json
 import os
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -361,7 +361,7 @@ class OpenAIProvider:
 
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
-    ) -> AsyncIterator[Part | Finish]:
+    ) -> AsyncGenerator[Part | Finish, None]:
         """Yield each part once complete, then the `Finish`. A failure raises `SampleError`
         after yielding every part the stream had finished or begun; it carries the meta fields
         that had arrived. Once `finish_reason` has arrived the reply is done: the stream is

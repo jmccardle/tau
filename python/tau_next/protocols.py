@@ -1,7 +1,7 @@
 """What the driver asks of providers, tools, extensions, and the clock."""
 
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
@@ -99,7 +99,7 @@ class Provider(Protocol):
 
     def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence["Tool"]
-    ) -> AsyncIterator[Part | Finish | Delta]:
+    ) -> AsyncGenerator[Part | Finish | Delta, None]:
         """`model` is the session's named model, resolved by the driver at this sample. Yield,
         interleaved: deltas as text arrives (`TextDelta`, `ThinkingDelta`, `CallNamed` then
         `CallArgs`), each whole part as it finishes, then the `Finish`, then end. The driver
@@ -107,9 +107,14 @@ class Provider(Protocol):
         of the next part; a delta that breaks this fails the sample. `tools` are the driver's,
         offered to the model for this sample only; they are never recorded.
 
+        The driver calls `check(model)` first and fails the sample, with the problems listed,
+        if it returns any; `sample` may rely on a model that passed. It closes the generator
+        when it stops reading.
+
         Raise `SampleError` to fail; parts yielded before it are kept. If the sample is
         cancelled or fails, the driver saves the text or thinking whose deltas arrived but
-        whose part never did.
+        whose part never did. A part yielded while deltas are open must be the part those deltas
+        were building (same kind, same text), and `Finish` may not come with deltas open.
         """
         ...
 

@@ -18,6 +18,7 @@ from tau_next import (
     ModelConfig,
     check_config,
     load_config,
+    read_models,
 )
 
 OLD_KEY = "backend"  # rules: allow(backend): τ 0.15's key, which D13 rejects by name
@@ -416,6 +417,38 @@ def test_max_tokens_and_options_merge_by_layer_and_down_through_groups(world: Wo
     assert (n.max_tokens, n.options) == (8, {"delay_ms": 9, "reply": "hi"})
     assert m.base_url is None
     assert {o.key: o.source for o in catalog.explain("g:m")}["max_tokens"] == "cli"
+
+
+def test_options_that_are_not_an_object_are_a_problem_even_under_a_group_of_objects(
+    tmp_path: Path,
+) -> None:
+    config = {
+        "models": {
+            "g": {
+                "provider": "mock",
+                "options": {"delay_ms": 1},
+                "models": {"m": {"model": "m", "options": 5}},
+            }
+        }
+    }
+    assert only_error(check(tmp_path, config)).path == "models.g.models.m.options"
+    with pytest.raises(ConfigError, match="'options' must be an object"):
+        read_models(cli=config)
+
+
+def test_a_resolved_models_options_cannot_be_changed_through_the_catalog(world: World) -> None:
+    config = {"models": {"m": {"model": "m", "provider": "mock", "options": {"a": {"b": [1]}}}}}
+    catalog = load(world, config)
+    options = catalog.resolve("m").options
+    with pytest.raises(TypeError):
+        options["a"] = 1  # type: ignore[index]
+    with pytest.raises(TypeError):
+        options["a"]["b"] = 1  # type: ignore[index]
+    assert options == catalog.resolve("m").options == {"a": {"b": (1,)}}
+    given = {"x": [1]}
+    model = ModelConfig("m", options=given)
+    given["x"].append(2)
+    assert model.options == {"x": (1,)}
 
 
 def test_bad_max_tokens_and_options_are_problems_at_their_key(tmp_path: Path) -> None:

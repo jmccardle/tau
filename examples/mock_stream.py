@@ -31,31 +31,35 @@ from tau_next import (
 async def main(name: str, loaded: LoadedConfig) -> None:
     clock = SystemClock()
     providers = builtin_providers(loaded.environ)
-    with tempfile.TemporaryDirectory() as tmp:
-        session = Session.create(model_config(name), "You are terse.", clock.now(), Path(tmp) / "s")
-        driver = Driver(session, providers, loaded.catalog, clock=clock)
-        driver.start()
-        cursor = session.cursors()[0]
-        events = driver.events(cursor)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session.create(
+                model_config(name), "You are terse.", clock.now(), Path(tmp) / "s"
+            )
+            driver = Driver(session, providers, loaded.catalog, clock=clock)
+            driver.start()
+            cursor = session.cursors()[0]
+            events = driver.events(cursor)
 
-        async def show() -> None:
-            async for event in events:
-                match event:
-                    case Live(delta=TextDelta(text=text)):
-                        print(f"live  {text!r}")
-                    case Saved():
-                        print("saved (the tree changed)")
+            async def show() -> None:
+                async for event in events:
+                    match event:
+                        case Live(delta=TextDelta(text=text)):
+                            print(f"live  {text!r}")
+                        case Saved():
+                            print("saved (the tree changed)")
 
-        shown = asyncio.ensure_future(show())
-        driver.send(cursor, "example", "the quick brown fox jumps over the lazy dog")
-        await rest(driver, session, cursor)
-        reply = session.tree.node(session.cursor(cursor).at).body
-        await driver.stop()  # ends the event stream after what it holds
-        await shown
-        assert isinstance(reply, Body.Assistant)
-        print(f"reply {reply.parts}")
+            shown = asyncio.ensure_future(show())
+            driver.send(cursor, "example", "the quick brown fox jumps over the lazy dog")
+            await rest(driver, session, cursor)
+            reply = session.tree.node(session.cursor(cursor).at).body
+            await driver.stop()  # ends the event stream after what it holds
+            await shown
+            assert isinstance(reply, Body.Assistant)
+            print(f"reply {reply.parts}")
+            session.close()
+    finally:
         await close_all(providers)
-        session.close()
 
 
 if __name__ == "__main__":

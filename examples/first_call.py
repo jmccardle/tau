@@ -36,20 +36,22 @@ def text(body: Body) -> str:
 async def main(name: str, loaded: LoadedConfig) -> None:
     clock = SystemClock()
     providers = builtin_providers(loaded.environ)
-    with tempfile.TemporaryDirectory() as tmp:
-        session = Session.create(
-            model_config(name), "You are terse.", clock.now(), Path(tmp) / "session"
-        )
-        driver = Driver(session, providers, loaded.catalog, clock=clock)
-        driver.start()
-        cursor = session.cursors()[0]
-        driver.send(cursor, "example", "hello")
-        await rest(driver, session, cursor)
-        for node in session.tree.walk(session.cursor(cursor).at):
-            print(f"{type(node.body).__name__:<10} {node.by!r:<22} {text(node.body)}")
-        await driver.stop()
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session.create(
+                model_config(name), "You are terse.", clock.now(), Path(tmp) / "session"
+            )
+            driver = Driver(session, providers, loaded.catalog, clock=clock)
+            driver.start()
+            cursor = session.cursors()[0]
+            driver.send(cursor, "example", "hello")
+            await rest(driver, session, cursor)
+            for node in session.tree.walk(session.cursor(cursor).at):
+                print(f"{type(node.body).__name__:<10} {node.by!r:<22} {text(node.body)}")
+            await driver.stop()
+            session.close()
+    finally:
         await close_all(providers)
-        session.close()
 
 
 if __name__ == "__main__":

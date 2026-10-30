@@ -620,7 +620,8 @@ URL; a provider that needs one says so in its `check`), optional `api_key_env`,
 the *name* of the environment variable holding the API
 key, `provider` (default `"openai"`; a name in the driver's provider map), for a
 literal `api_key` in a file `literal_api_key` (hidden from `repr`), `max_tokens`
-(optional positive integer) and `options` (see *options*). Invalid values raise
+(optional positive integer) and `options` (see *options*; stored as a deep read-only
+copy: objects become read-only mappings, lists tuples). Invalid values raise
 `ConfigError` (a `ValueError`), which also reports a `Config` that is not a
 model name and a name the catalog lacks (`model 'x' is not in your config`);
 the driver turns those into a failed sample. `api_key(environ)` reads the key
@@ -634,7 +635,9 @@ A JSON object only the named provider reads (a thinking budget, `delay_ms` for t
 mock). Layers merge it like any object, and a group's passes down to its models
 and merges with theirs; a `null` inside drops that key. The loader checks only that
 it is an object; the provider's `check` checks what is inside, so a misspelt option
-fails `tau config check`.
+fails `tau config check`. The driver also calls `check` before every sample and fails the
+sample with the problems listed, so a bad option never reaches `sample`. An `options` that
+is not an object is a problem at its key, whatever the group above it holds.
 
 ### api_key_env
 `ModelConfig.api_key_env` · a model's key in the config files
@@ -917,7 +920,12 @@ calls it); `check(model) -> list[str]` (problems with the model's settings as th
 provider reads them, empty if fine; a model whose `provider` is not its own is
 one); `sample(walk, model, tools)` (an async stream of live deltas and whole parts,
 then one `Finish`; `model` is the `ModelConfig` the driver resolved for this
-sample, and the provider reads no node data); `aclose()`. A part is yielded before
+sample, and the provider reads no node data); `aclose()`. Before each sample the driver
+calls `check` and fails the sample (the cursor survives) if it returns problems; it closes
+the `sample` generator when it stops reading. A part yielded while deltas are open must be
+the part they were building (same kind, same text; a call: same id, tool and arguments),
+and `Finish` may not come with deltas open; a violation fails the sample, and the open
+text is saved. A part is yielded before
 the first delta of the next part. If a sample is cancelled or fails, the driver
 saves the text or thinking whose deltas arrived without a part.
 The **model** is a name, as its API spells it.
@@ -976,7 +984,7 @@ Hits no network and needs no key. It streams a reply as `TextDelta`s, a word and
 space after it each, with a delay before each; then yields the whole `Text` and a
 `Finish` (`End`, finish reason `"stop"`) with normalized `usage` (word counts) in
 `meta`. `check` refuses `base_url` and any option but `reply` (a string: the text to
-stream; default `mock: ` and the walk's last user text) and `delay_ms` (a
+stream, non-empty; default `mock: ` and the walk's last user text) and `delay_ms` (a
 non-negative integer, default 30). `max_tokens` caps the chunks streamed and ends the
 reply with the `Length` stop. Cancelling it mid-stream leaves an `Interrupted` reply
 holding exactly the text streamed. It fails the sample if the walk has no user text
@@ -1238,18 +1246,25 @@ A frontend draws it as a layer over the cursor and drops the layer at the next
 `tau_next.Saved(cursor)` · D15 · new
 
 The tree changed for this cursor: look at it. Emitted after the driver applies each
-answer (hooks, sample, call) to core. Never dropped from a subscriber's buffer; an
-equal `Saved` just before it absorbs it. Finer kinds are a later slice.
+answer (hooks, sample, call) to core, and by the frontend calls that change the tree or a
+cursor with no answer (`input`, `send`, `step`, `go_to`, `set_auto`, `open`, `add_item`,
+`abort`), so a second frontend hears of them. Never dropped from a subscriber's buffer;
+it replaces that cursor's buffered `Live` events and earlier `Saved`. Finer kinds are a later slice.
 
 ### EventStream
 `tau_next.EventStream` · D15 · new
 
 One subscriber's async iterator of `Event` (`Live | Saved`) from `driver.events()`:
-an optional cursor filter and a bounded buffer of its own. `offer` never waits, so a
-subscriber cannot slow the pump. A full buffer drops `Live` events; a `Saved` is
-merged into an equal one before it or takes the oldest `Live`'s place, and only a
-buffer of nothing but `Saved` grows past its bound. `aclose()` unsubscribes (and may
-be called twice); `async with` closes it; the driver's `stop()` ends it after what it holds.
+an optional cursor filter and a bounded buffer of its own, for one consumer (a second
+concurrent `anext` raises `RuntimeError`). `offer` never waits, so a subscriber cannot
+slow the pump. A buffer holding `capacity` events drops further `Live` events. A `Saved(c)`
+is never dropped: it first removes the buffered `Live`s for `c` and any earlier `Saved(c)`
+(the frontend drops that cursor's live layer at `Saved(c)` anyway), then joins the end. So
+the buffer never exceeds `capacity` plus one `Saved` per cursor. `aclose()` unsubscribes
+(and may be called twice); `async with` closes it; the driver holds streams weakly, so one
+abandoned without `aclose()` is collected. The driver's `stop()` ends it after what it
+holds; if the driver fails (the pump or an effect died), `anext` raises that failure after
+what it holds.
 
 ### driver
 Python `tau_next.driver.Driver` · new

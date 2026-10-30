@@ -96,23 +96,31 @@ whose `provider` is not its own.
    being cancelled, so the driver does it: it keeps the live text and thinking whose
    part has not arrived, and on cancel or failure saves them as one `Text` or
    `Thinking` part. This forces a rule on providers: a part is yielded before the
-   first live event of the next part (a provider that breaks it fails the sample).
+   first live event of the next part, a part yielded while deltas are open must be the
+   part they were building (same kind and text; a call: same id, tool, arguments), and
+   `Finish` may not come with deltas open (a provider that breaks any of these fails
+   the sample, and the open text is saved).
    A call still forming at the cancel is not saved (its arguments are not a part).
 2. **Live events have no cursor at the provider.** A provider does not know which
    cursor it serves, so it yields cursor-less deltas (`TextDelta`, `ThinkingDelta`,
    `CallNamed`, `CallArgs`) and the driver wraps each as `Live(cursor, delta)`. "Every
    event names its cursor" holds for what `driver.events()` yields.
 3. **Saved events start as one kind.** `Saved(cursor)` means "the tree changed for
-   this cursor, look at it", emitted after the driver applies each answer to core. The
+   this cursor, look at it", emitted after the driver applies each answer to core and
+   by the frontend calls that change a cursor with no answer (`input`, `go_to`, `open`,
+   `add_item`, ...), so a second frontend hears of them. The
    fine-grained kinds (node added, cursor moved, label changed, item changed, busy or
    idle, question, notice) are a later slice.
 4. **Subscribing is immediate.** `driver.events()` is a plain call that subscribes
    when called (an async generator would subscribe at its first `anext`, after
    events could be missed). The stream is an `EventStream`: its own bounded buffer,
-   `aclose()` unsubscribes, an `async with` works. A full buffer drops `Live`; a
-   `Saved` merges into an equal `Saved` just before it, or takes the place of the
-   oldest `Live`; only a buffer of nothing but `Saved` grows past its bound.
-   Stopping the driver ends every stream after what it holds.
+   `aclose()` unsubscribes, an `async with` works, and the driver holds streams weakly so
+   an abandoned one is collected. One consumer per stream. A buffer holding `capacity`
+   events drops further `Live`; a `Saved(c)` removes the buffered `Live`s of `c` and
+   any earlier `Saved(c)` (the frontend drops that layer at `Saved(c)` anyway) and joins
+   the end, so a buffer never exceeds capacity plus one `Saved` per cursor. Stopping the
+   driver ends every stream after what it holds; a driver that fails (pump or effect)
+   ends them by raising the failure from `anext`.
 5. **`Provider.close()` is `aclose()`**, and a provider has a `name`; the driver's map
    must key each provider by its own name (checked at construction).
 6. **`check_config` takes the map as a required keyword**; `read_models` (no
@@ -120,12 +128,20 @@ whose `provider` is not its own.
    outside `tau config check` fails that sample, with the known names in the error.
 7. **`builtin_providers(environ)`** builds the built-in providers (`openai`, `mock`);
    the CLI and examples use it.
-8. **`max_tokens`** is sent by the OpenAI provider as `max_tokens` (its one change, so
+8. **Settings are checked at run time too.** `tau config check` is not the only caller
+   of `Provider.check`: the driver calls it before every sample and fails that sample
+   with the problems listed, so an ill-typed option never reaches `sample`.
+   `ModelConfig.options` is a deep read-only copy.
+9. **`max_tokens`** is sent by the OpenAI provider as `max_tokens` (its one change, so
    a setting is not silently ignored); `options` it refuses until it has some.
 
 ## Open
 
 - Fine-grained saved events (item 3).
+- A provider-check problem points at the model's path even when the option came from
+  a group or another layer.
+- `tau config check` and `tau trust` know only the built-in providers, so a third-party
+  provider cannot be checked from the CLI yet.
 - A call forming at a cancel (item 1): is a partial `Call` part with partial
   `args_raw` right, given `partial_calls`?
 

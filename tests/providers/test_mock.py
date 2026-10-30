@@ -11,6 +11,7 @@ from tau_next import (
     Body,
     Driver,
     Event,
+    EventStream,
     Live,
     Part,
     Saved,
@@ -51,22 +52,31 @@ def replies(session: Session) -> list[Body.Assistant]:
     ]
 
 
+async def listen(stream: EventStream, seen: list[Event], heard: asyncio.Event, n: int) -> None:
+    """Collect the stream; set `heard` at the `n`th live event. A reader that keeps up sees
+    every live event: a `Saved` clears the ones it has not read."""
+    async for event in stream:
+        seen.append(event)
+        if sum(isinstance(e, Live) for e in seen) == n:
+            heard.set()
+
+
 @scenario
 async def test_the_reply_streams_as_several_deltas_then_is_saved_whole() -> None:
-    async with mock_session(options={"delay_ms": 0}) as (session, driver, cursor):
-        stream = driver.events(cursor)
+    async with mock_session(options={"delay_ms": 1}) as (session, driver, cursor):
+        seen: list[Event] = []
+        listener = asyncio.ensure_future(listen(driver.events(cursor), seen, asyncio.Event(), 0))
         driver.send(cursor, "term", "hello brave new world")
         await driver.rest(cursor)
         (reply,) = replies(session)
         await driver.stop()  # ends the stream after what it holds
-        events: list[Event] = [e async for e in stream]
-    deltas = [
-        e.delta.text for e in events if isinstance(e, Live) and isinstance(e.delta, TextDelta)
-    ]
+        await listener
+    deltas = [e.delta.text for e in seen if isinstance(e, Live) and isinstance(e.delta, TextDelta)]
     assert len(deltas) == 5
     assert "".join(deltas) == "mock: hello brave new world"
     assert reply.parts == [Part.Text("mock: hello brave new world")]
-    assert isinstance(events[-1], Saved)
+    assert seen.index(Saved(cursor)) < len(seen), "a Saved follows"
+    assert isinstance(seen[-1], Saved)
 
 
 @scenario
@@ -98,19 +108,11 @@ async def test_max_tokens_caps_the_words_and_ends_with_the_length_stop() -> None
 
 
 @scenario
-async def test_an_aborted_sample_leaves_an_interrupted_reply_equal_to_the_deltas_seen() -> None:
-    async with mock_session(options={"delay_ms": 0, "reply": WORDS}) as (session, driver, cursor):
-        stream = driver.events(cursor)
+async def test_an_aborted_sample_leaves_an_interrupted_reply_holding_the_text_streamed() -> None:
+    async with mock_session(options={"delay_ms": 1, "reply": WORDS}) as (session, driver, cursor):
         seen: list[Event] = []
         heard_two = asyncio.Event()
-
-        async def listen() -> None:
-            async for event in stream:
-                seen.append(event)
-                if sum(isinstance(e, Live) for e in seen) == 2:
-                    heard_two.set()
-
-        listener = asyncio.ensure_future(listen())
+        listener = asyncio.ensure_future(listen(driver.events(cursor), seen, heard_two, 2))
         driver.send(cursor, "term", "go")
         await heard_two.wait()
         driver.abort(cursor)
@@ -118,9 +120,30 @@ async def test_an_aborted_sample_leaves_an_interrupted_reply_equal_to_the_deltas
         (reply,) = replies(session)
         await driver.stop()
         await listener
-    streamed = "".join(
+    seen_text = "".join(
         e.delta.text for e in seen if isinstance(e, Live) and isinstance(e.delta, TextDelta)
     )
     assert reply.stop == Stop.Interrupted
-    assert reply.parts == [Part.Text(streamed)]
-    assert 0 < len(streamed) < len(WORDS)
+    (part,) = reply.parts
+    assert isinstance(part, Part.Text)
+    # Everything seen is in the reply (a delta not yet read is cleared by the Saved, but
+    # the reply holds it), and the reply ends on a word the mock had streamed.
+    assert part.text.startswith(seen_text)
+    assert seen_text
+    assert WORDS.startswith(part.text)
+    assert part.text.endswith(" ")
+    assert len(part.text) < len(WORDS)
+
+
+@scenario
+async def test_a_bad_option_fails_that_sample_and_the_cursor_survives() -> None:
+    for bad in ({"delay_ms": "fast"}, {"reply": 5}, {"dealy_ms": 1}, {"reply": ""}):
+        async with mock_session(options=bad) as (session, driver, cursor):
+            driver.send(cursor, "term", "go")
+            await driver.rest(cursor)  # raises if the driver died
+            driver.check()
+            notes = [n.body for n in (session.tree.node(i) for i in range(len(session.tree)))]
+            errors = [b.data for b in notes if isinstance(b, Body.Custom)]
+            assert len(errors) == 1
+            assert "(mock)" in errors[0]
+            assert not any(isinstance(b, Body.Assistant) and b.parts for b in notes)

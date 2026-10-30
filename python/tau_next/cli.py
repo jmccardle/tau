@@ -157,7 +157,7 @@ def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
         "model": config.model,
         "base_url": config.base_url,
         "max_tokens": config.max_tokens,
-        "options": json.dumps(config.options),
+        "options": json.dumps(config.options, default=dict),
         "provider": config.provider,
         "api_key_env": config.api_key_env,
         "api_key": "(set)" if config.literal_api_key is not None else None,

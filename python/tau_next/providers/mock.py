@@ -9,7 +9,8 @@ caps the words streamed and ends the reply with the length stop.
 import asyncio
 import json
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
+from typing import cast
 
 from tau_next._config import ModelConfig
 from tau_next._core import Body, Node, Part, Stop
@@ -44,8 +45,10 @@ class MockProvider:
             for key in model.options
             if key not in _OPTIONS
         ]
-        if "reply" in model.options and not isinstance(model.options["reply"], str):
-            problems.append("option 'reply' must be a string")
+        if "reply" in model.options and (
+            not isinstance(model.options["reply"], str) or not model.options["reply"]
+        ):
+            problems.append("option 'reply' must be a non-empty string")
         if "delay_ms" in model.options and not _is_count(model.options["delay_ms"]):
             problems.append("option 'delay_ms' must be a non-negative integer")
         return problems
@@ -54,9 +57,8 @@ class MockProvider:
         """Nothing is held open."""
 
     def _reply(self, walk: Sequence[Node], model: ModelConfig) -> str:
-        fixed = model.options.get("reply")
-        if isinstance(fixed, str):
-            return fixed
+        if "reply" in model.options:  # `check` held it to a non-empty string
+            return cast("str", model.options["reply"])
         for node in reversed(walk):
             if isinstance(node.body, Body.User):
                 return f"mock: {node.body.text}"
@@ -64,7 +66,7 @@ class MockProvider:
 
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
-    ) -> AsyncIterator[Part | Finish | Delta]:
+    ) -> AsyncGenerator[Part | Finish | Delta, None]:
         """Stream the reply's chunks (a word and the space after it) as `TextDelta`s, then the
         whole `Text`, then the `Finish` with normalized `usage` in `meta`."""
         chunks = _CHUNK.findall(self._reply(walk, model))
@@ -72,8 +74,7 @@ class MockProvider:
         if model.max_tokens is not None and len(chunks) > model.max_tokens:
             chunks = chunks[: model.max_tokens]
             stop = Stop.Length
-        delay = model.options.get("delay_ms", DEFAULT_DELAY_MS)
-        assert isinstance(delay, int)  # `check` held the option to a count
+        delay = cast("int", model.options.get("delay_ms", DEFAULT_DELAY_MS))  # held by `check`
         for chunk in chunks:
             await asyncio.sleep(delay / 1000)
             yield TextDelta(chunk)

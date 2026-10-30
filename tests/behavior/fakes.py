@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from tau_next import (
@@ -138,7 +138,7 @@ class FakeProvider:
 
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
-    ) -> AsyncIterator[Part | Finish | Delta]:
+    ) -> AsyncGenerator[Part | Finish | Delta, None]:
         self.requests.append(Request(tuple(n.id for n in walk), model, tuple(tools)))
         if self._next >= len(self._script):
             raise AssertionError(f"FakeProvider: no scripted reply for sample {self._next + 1}")

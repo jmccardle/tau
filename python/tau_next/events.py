@@ -67,13 +67,18 @@ Event = Live | Saved
 
 
 class EventStream:
-    """One subscriber's events: an async iterator with its own bounded buffer.
+    """One subscriber's events: an async iterator with its own bounded buffer, for a single
+    consumer (a second concurrent `anext` raises `RuntimeError`).
 
-    A `Live` that arrives when the buffer is full is dropped. A `Saved` never is: it is
-    merged into an equal `Saved` just before it, or takes the place of the oldest `Live` in
-    the buffer; only when the buffer holds nothing but `Saved` events does it grow past
-    `capacity`. `aclose()` unsubscribes; a driver that stops ends the stream after what it
-    holds.
+    A `Live` that arrives when the buffer holds `capacity` events is dropped. A `Saved(c)`
+    is never dropped: it first removes every `Live` for cursor `c` and any earlier
+    `Saved(c)` in the buffer (the frontend drops that cursor's live layer at `Saved(c)`
+    anyway, and "look at the tree" needs saying once), then joins the end. So the buffer
+    never holds more than `capacity` plus one `Saved` per cursor.
+
+    `aclose()` unsubscribes. The driver holds streams weakly, so one abandoned without
+    `aclose()` is collected. When the driver stops the stream ends after what it holds;
+    when the driver fails, `anext` raises the failure after what it holds.
     """
 
     def __init__(
@@ -86,6 +91,7 @@ class EventStream:
         self._release = release
         self._buffer: list[Event] = []
         self._ended = False
+        self._failure: Exception | None = None
         self._waiter: asyncio.Future[None] | None = None
 
     def offer(self, event: Event) -> None:
@@ -93,37 +99,31 @@ class EventStream:
         if self._ended or (self.cursor is not None and event.cursor != self.cursor):
             return
         if isinstance(event, Saved):
-            if self._buffer and self._buffer[-1] == event:
-                return
-            if len(self._buffer) >= self.capacity:
-                self._evict_live()
-                if self._buffer and self._buffer[-1] == event:
-                    return
+            self._buffer = [
+                held
+                for held in self._buffer
+                if held.cursor != event.cursor  # this cursor's `Live`s and earlier `Saved`
+            ]
         elif len(self._buffer) >= self.capacity:
             return
         self._buffer.append(event)
         self._wake()
 
-    def _evict_live(self) -> None:
-        for i, held in enumerate(self._buffer):
-            if isinstance(held, Live):
-                del self._buffer[i]
-                if 0 < i < len(self._buffer) and self._buffer[i - 1] == self._buffer[i]:
-                    del self._buffer[i]  # two equal `Saved` now touch
-                return
-
     def _wake(self) -> None:
         if self._waiter is not None and not self._waiter.done():
             self._waiter.set_result(None)
 
-    def end(self) -> None:
-        """No more events will arrive; what is buffered is still delivered."""
+    def end(self, failure: Exception | None = None) -> None:
+        """No more events will arrive; what is buffered is still delivered, then `anext`
+        raises `failure` (or ends, if there is none)."""
         self._ended = True
+        self._failure = failure
         self._wake()
 
     async def aclose(self) -> None:
         """Unsubscribe and drop what is buffered."""
         self._buffer.clear()
+        self._failure = None
         self.end()
         self._release(self)
 
@@ -135,7 +135,11 @@ class EventStream:
             if self._buffer:
                 return self._buffer.pop(0)
             if self._ended:
+                if self._failure is not None:
+                    raise self._failure
                 raise StopAsyncIteration
+            if self._waiter is not None:
+                raise RuntimeError("an EventStream has one consumer; another is waiting on it")
             self._waiter = asyncio.get_running_loop().create_future()
             try:
                 await self._waiter

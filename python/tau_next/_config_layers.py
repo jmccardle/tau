@@ -348,9 +348,10 @@ def _combine(inherited: _Settings, own: _Settings) -> _Settings:
             out.pop(key, None)
             continue
         before: object = out[key][0].value if key in out else None
-        if key == "options" and isinstance(before, dict):
+        mine: object = setting[0].value
+        if key == "options" and isinstance(before, dict) and isinstance(mine, dict):
             merged = _merge_plain(
-                cast("dict[str, object]", before), cast("dict[str, object]", setting[0].value)
+                cast("dict[str, object]", before), cast("dict[str, object]", mine)
             )
             value = (_Leaf(merged, setting[0].source), setting[1])
         out[key] = value

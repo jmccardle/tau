@@ -9,6 +9,7 @@ is the resolved model a provider is handed. `read_models` and `check_config` (in
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import cast
 from urllib.parse import urlparse
 
@@ -37,6 +38,16 @@ def url_problem(value: str) -> str | None:
     if url.scheme not in ("http", "https") or not url.netloc:
         return f"config 'base_url' must be an http(s) URL, not {value!r}"
     return None
+
+
+def _freeze(value: object) -> object:
+    """`value` (JSON) with every object read-only and every list a tuple, as a copy."""
+    if isinstance(value, Mapping):
+        items = cast("Mapping[str, object]", value)
+        return MappingProxyType({k: _freeze(v) for k, v in items.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_freeze(v) for v in cast("list[object]", value))
+    return value
 
 
 @dataclass(frozen=True)
@@ -77,6 +88,8 @@ class ModelConfig:
             raise ConfigError(
                 f"config 'options' must be an object, not {type(self.options).__name__}"
             )
+        # A deep read-only copy: neither the caller's dict nor the catalog can change under us.
+        object.__setattr__(self, "options", _freeze(self.options))
         if self.api_key_env is not None:
             _text(self.api_key_env, "api_key_env")
         _text(self.provider, "provider")
