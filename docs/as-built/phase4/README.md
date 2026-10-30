@@ -143,11 +143,47 @@ The reviewers found about as much to delete as to fix. The main items:
 - **Still open, needed before Phase 5:** how `config_at` names extensions (decides whether
   hook order can differ per branch).
 
-## 6. Exit criteria (plan.md, Phase 4)
+## 6. Outcome (2026-10-30)
+
+John took every recommendation (R1-R8 and the defaults), with two changes made on the way:
+
+- **`Driver.add_item` came back** (with `set_label` and `remove_label`) as frontend calls.
+  Deleting it left a timer extension or `tau serve` no public way to add an item and wake
+  the driver; the harness had been poking the pump through `set_auto`.
+- **A failed cursor hook is a live `HookError` event, not saved** (John's ruling; D15
+  amendment 21). A full buffer never drops it; a newer one per cursor replaces an older.
+
+The work, all on master:
+
+| step | what |
+|---|---|
+| wave 1 | four packages (trust/config/CLI, driver/events, tools, boundary): bugs 1-13, the risks, R1-R7, the defaults, the subtraction in §4 |
+| R8 | `scripts/ratchet.py` measures `python/tau_next` (radon): 0 violations, empty allowlist |
+| re-review | two Opus reviewers re-ran every repro: wave 1 landed; they found a second layer (more permission tracebacks, a second signal orphaning `bash`, full-disk overflow, a parent `.tau` blocking `tau trust`, streams hanging after a stop, a plain-`def` tool killing the driver, a leaked `CancelledError` stranding a cursor, `hook=` bypassable through `TreeHandle`) |
+| wave 2 | two packages fixing all of those, plus `HookError` |
+| final check | an Opus reviewer verified each wave-2 claim by script; one left (a double Ctrl-C still orphaned `bash`), fixed in `f594a6b` with a test that failed before |
+
+Numbers after the waves: `python/tau_next` 7,457 lines; highest function CC 15; largest
+file 683 lines; `Driver` 25 methods (the limit: its next method needs a split); 831 tests
+pass, 4 skip; `scripts/check.sh` green including both ratchets.
+
+**Carried forward** (not blocking):
+
+- D15 Open: whether a refusal outranks the length limit (OpenAI), a configurable
+  timeout, the REPL client leak.
+- Before Phase 5: how `config_at` names extensions; whether trust's hash covers all of
+  `.tau/` or a file list once `.tau/` holds hooks.
+- `TooLarge` is refused at save time, after core changed memory: the session closes like
+  any failed save. A check where core produces the record waits until something can
+  produce a 4 GiB node.
+- `Poisoned` has no public-API test (no public call can panic).
+- `base_tools()` raising off Linux is untested (needs a non-Linux runner).
+
+## 7. Exit criteria (plan.md, Phase 4)
 
 | criterion | state |
 |---|---|
-| behavior suite green except later-phase tests | **met**: 736 passed; the coverage list is ticked, with one item for Phase 5 (approval in `pre_tool`) and one for Phase 6 (client detach) |
-| as-built review on `python/` | **this page** |
-| a traced turn across both languages | **met**: `traces/summary.md` |
-| sign-off | after the fix wave and R1-R8 |
+| behavior suite green except later-phase tests | **met**: 831 passed; the coverage list is ticked, with one item for Phase 5 (approval in `pre_tool`) and one for Phase 6 (client detach) |
+| as-built review on `python/` | **met**: this page, two fix waves, re-reviewed |
+| a traced turn across both languages | **met**: `traces/summary.md` (measured before the waves) |
+| sign-off | **John** |

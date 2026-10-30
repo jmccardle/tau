@@ -18,7 +18,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
-| 4 driver, provider, tools | **mostly built**: driver, `@tool`, base tools, D13 config, and D15 (providers and events: OpenAI-compatible, Anthropic, Gemini and mock providers, live and saved events, tool progress), **accepted 2026-10-30** after a layered review and live checks against every hosted provider, direct and through LiteLLM (`examples/cache_rate.py`). Retries are an example (`examples/retry.py`), not built in. D15's Open items remain. Missing: the 4 exit review. |
+| 4 driver, provider, tools | **built, awaiting sign-off**: driver, `@tool`, base tools, D13 config, D15 providers and events (accepted 2026-10-30). Exit review `docs/as-built/phase4/` (2026-10-30): four layered reviews, two fix waves, re-reviewed; the ratchet now covers `python/`. Waiting on John's sign-off. |
 | 5–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
