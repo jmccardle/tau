@@ -15,7 +15,6 @@ from tau_next._core import (
     Node,
     NoSuchLabel,
     NotInHook,
-    Outcome,
     Session,
     Tree,
 )
@@ -47,20 +46,6 @@ class Subject:
     draft: Draft | None = None
     node: Node | None = None
     ending: Ending | None = None
-
-
-@dataclass
-class CallDraft:
-    """The mutable call a tool hook works on.
-
-    Setting `outcome` in `pre_tool` answers the call (the tool does not run);
-    in `pre_result` it edits the outcome.
-    """
-
-    id: str
-    tool: str
-    args_raw: str
-    outcome: Outcome | None = None
 
 
 class TreeHandle:

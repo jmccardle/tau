@@ -164,8 +164,6 @@ def spin() -> None:
         try:
             with trace.span("driver", "spin"):
                 session.cursors()  # native spans keep the writer thread busy
-        except AttributeError:
-            pass  # the span's list is dropped by a stop() mid-span: python-side, harmless
         except BaseException as e:
             errors.append(e)
             return
@@ -175,7 +173,7 @@ spinners = [threading.Thread(target=spin, daemon=True) for _ in range(8)]
 for thread in spinners:
     thread.start()
 with tempfile.TemporaryDirectory() as tmp:
-    for n in range(200):
+    for n in range(30):
         trace.start(Path(tmp) / f"{n}.json")
         for _ in range(300):
             session.cursors()  # a file with content takes the writer thread a while

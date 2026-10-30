@@ -877,7 +877,7 @@ async def test_a_change_to_another_cursor_is_saved_for_that_cursor(
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("meddle", pre_step=meddle)])
-    other = h.driver.open(SYS, Author.Frontend("term"))
+    other = h.driver.open(SYS, "term")
     item = await h.add_item("x", "for-other", cursor=other)
     h.driver.session.set_label("theirs", other)
     await h.settle()

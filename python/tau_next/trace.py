@@ -50,11 +50,12 @@ class _Span:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        if _events is None:
+        events = _events  # read once: a `stop()` on another thread may clear it meanwhile
+        if events is None:
             return
         end = _core.trace_clock()
         track = _tracks.setdefault(self._task, FIRST_TRACK + len(_tracks))
-        _events.append(
+        events.append(
             {
                 "ph": "X",
                 "pid": 1,
