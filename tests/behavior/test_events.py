@@ -3,10 +3,12 @@
 import asyncio
 import gc
 import json
+import math
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from pathlib import Path
 
 import pytest
-from fakes import Fail, FakeProvider, Gate, Reply
+from fakes import Fail, FakeProvider, Gate, Recorder, Reply
 from harness import Harness, scenario
 
 from tau_next import (
@@ -14,14 +16,21 @@ from tau_next import (
     Body,
     CallArgs,
     CallNamed,
+    Delta,
     Event,
     EventStream,
+    Finish,
     Live,
+    ModelConfig,
+    Node,
+    Outcome,
     Part,
+    SampleError,
     Saved,
     Stop,
     TextDelta,
     ThinkingDelta,
+    Tool,
 )
 
 SYS = 1  # the system node's id: a new session is Config 0, System 1
@@ -65,7 +74,7 @@ async def test_live_deltas_are_read_as_they_arrive_and_the_saved_event_follows(
     gate.release()
     await h.settle()
     saved = await anext(stream)
-    assert saved == Saved(h.cursor)
+    assert saved == Saved(h.cursor, reply=True)
     assert isinstance(h.bodies()[-1], Body.Assistant), "Saved: the reply is in the tree"
     await stream.aclose()
     await h.close()
@@ -80,7 +89,7 @@ async def test_a_saved_event_clears_that_cursors_live_layer_and_earlier_saved(
     await h.send("hi")
     await h.settle()
     (events,) = await drain(h, stream)
-    assert events == [Saved(h.cursor)], "nothing was read: one saved event is all there is to say"
+    assert events == [Saved(h.cursor, reply=True)], "nothing read: one saved event says it all"
 
 
 @scenario
@@ -142,7 +151,7 @@ async def test_a_failed_sample_still_emits_saved(tmp_path: Path) -> None:
     await h.send("hi")
     await h.settle()
     (events,) = await drain(h, stream)
-    assert events == [Saved(h.cursor)]
+    assert events == [Saved(h.cursor, reply=True)]
 
 
 @scenario
@@ -207,24 +216,29 @@ async def test_a_second_consumer_of_one_stream_is_refused(tmp_path: Path) -> Non
 
 @scenario
 async def test_a_driver_that_fails_ends_every_stream_with_the_failure(tmp_path: Path) -> None:
-    class Boom(Exception):
-        pass
+    # A tool that breaks its return contract is the driver's own invariant breaking (the
+    # same as a provider's failure only if the provider is the one at fault).
+    class Broken:
+        name = "bad"
+        description = "Returns the wrong thing."
+        parameters: Mapping[str, object] = {"type": "object", "properties": {}}
 
-    # A provider that raises something other than SampleError is the crash path.
-    class Crashing(FakeProvider):
-        async def sample(self, walk, model, tools):  # type: ignore[no-untyped-def,override]
-            raise Boom("provider bug")
-            yield  # pragma: no cover
+        async def call(self, args_raw: str) -> Outcome:
+            return "text"  # type: ignore[return-value]
 
-    h = await Harness.create(tmp_path, provider=Crashing([]))
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([Reply([Part.Call("c", "bad", "{}")], Stop.Tools)]),
+        tools=[Broken()],
+    )
     stream = h.driver.events()
     waiting = asyncio.ensure_future(anext(stream))
     await h.send("hi")
-    with pytest.raises(Boom):
+    with pytest.raises(TypeError, match=r"tool .bad. answered"):
         await h.driver.rest(h.cursor)
     # buffered events are delivered first, then the failure
     assert await waiting == Saved(h.cursor)  # what was buffered comes first
-    with pytest.raises(Boom):
+    with pytest.raises(TypeError, match=r"tool .bad. answered"):
         await read_all(stream)
     await h.close()
 
@@ -285,6 +299,8 @@ VIOLATIONS = {
     ],
     "a call part for another call": [CallNamed(0, "c", "t"), Part.Call("d", "t", "")],
     "a second call before the first part": [CallNamed(0, "c", "t"), CallNamed(1, "d", "t")],
+    "call arguments with no call named": [CallArgs(0, "{")],
+    "call arguments for another call": [CallNamed(0, "c", "t"), CallArgs(1, "{")],
 }
 
 
@@ -319,3 +335,200 @@ async def test_a_cancelled_sample_keeps_the_text_streamed_so_far(
     await h.settle()
     assert next(b for b in h.bodies() if isinstance(b, Body.Assistant)).parts == [Part.Text("x")]
     await h.close()
+
+
+# Provider failures end one sample, not the driver
+
+
+class Rogue(FakeProvider):
+    """A provider whose `sample` is `script`, called with the sample's number, and whose `check`
+    raises `check_error` if given."""
+
+    def __init__(
+        self,
+        script: Callable[[int], AsyncGenerator[Part | Finish | Delta, None]],
+        check_error: Exception | None = None,
+    ) -> None:
+        super().__init__([])
+        self._rogue = script
+        self._check_error = check_error
+        self.samples = 0
+
+    @property
+    def gates(self) -> list[Gate]:
+        return [HELD]
+
+    def check(self, model: ModelConfig) -> list[str]:
+        if self._check_error is not None:
+            raise self._check_error
+        return []
+
+    async def sample(  # type: ignore[override]
+        self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
+    ) -> AsyncGenerator[Part | Finish | Delta, None]:
+        self.samples += 1
+        async for item in self._rogue(self.samples):
+            yield item
+
+
+def replies(h: Harness, cursor: int | None = None) -> list[Body.Assistant]:
+    return [b for b in h.bodies(cursor) if isinstance(b, Body.Assistant)]
+
+
+@scenario
+async def test_a_provider_that_raises_mid_stream_fails_that_sample_and_no_other(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def script(n: int) -> AsyncGenerator[Part | Finish | Delta, None]:
+        if n == 1:
+            yield ThinkingDelta("hm")
+            yield Part.Thinking("hm")
+            yield TextDelta("he")
+            raise RuntimeError("bug")
+        yield Part.Text("fine")
+        yield Finish(Stop.End)
+
+    h = await Harness.create(tmp_path, provider=Rogue(script))
+    other = h.driver.open(SYS, Author.Frontend("term"))
+    await h.send("hi")
+    await h.settle()
+    (reply,) = replies(h)
+    assert reply.stop == Stop.Error
+    assert reply.parts == [Part.Thinking("hm"), Part.Text("he")], "the parts are kept"
+    assert reply.meta is not None
+    assert json.loads(reply.meta) == {"error": {"message": "RuntimeError: bug", "internal": True}}
+    assert "RuntimeError: bug" in capsys.readouterr().err, "the traceback goes to stderr"
+    assert "Traceback" not in reply.meta
+    h.driver.send(other, "term", "hello")
+    await h.settle()
+    assert [r.parts for r in replies(h, other)] == [[Part.Text("fine")]], "the driver lives on"
+    await h.close()
+
+
+@scenario
+async def test_a_check_that_raises_fails_the_sample_and_not_the_driver(tmp_path: Path) -> None:
+    async def script(n: int) -> AsyncGenerator[Part | Finish | Delta, None]:
+        yield Finish(Stop.End)
+
+    h = await Harness.create(tmp_path, provider=Rogue(script, RuntimeError("check bug")))
+    await h.send("hi")
+    await h.settle()
+    h.driver.check()
+    assert Body.Custom("sample_error", "RuntimeError: check bug") in [n.body for n in h.nodes()]
+    await h.close()
+
+
+HELD = Gate()  # a provider parked here never gets past it
+
+
+async def resets(n: int) -> AsyncGenerator[Part | Finish | Delta, None]:
+    yield TextDelta("x")
+    try:
+        await HELD.wait()
+    except asyncio.CancelledError:
+        raise SampleError("connection reset") from None
+    yield Finish(Stop.End)  # pragma: no cover
+
+
+async def leaks(n: int) -> AsyncGenerator[Part | Finish | Delta, None]:
+    yield TextDelta("x")
+    try:
+        await HELD.wait()
+    finally:
+        raise OSError("cleanup failed")
+    yield Finish(Stop.End)  # pragma: no cover
+
+
+@pytest.mark.parametrize("script", [resets, leaks], ids=["connection reset", "cleanup fails"])
+@scenario
+async def test_an_abort_is_an_abort_whatever_the_provider_raises_while_cancelled(
+    tmp_path: Path, script: Callable[[int], AsyncGenerator[Part | Finish | Delta, None]]
+) -> None:
+    h = await Harness.create(tmp_path, provider=Rogue(script))
+    await h.send("hi")
+    await h.settle()
+    await h.abort()
+    await h.settle()
+    h.driver.check()
+    assert replies(h) == [Body.Assistant([Part.Text("x")], Stop.Interrupted)]
+    await h.close()
+
+
+@scenario
+async def test_a_failed_reply_is_strict_json_and_keeps_the_providers_own_error(
+    tmp_path: Path,
+) -> None:
+    said = json.dumps({"error": {"type": "overloaded", "code": 529}})
+
+    async def script(n: int) -> AsyncGenerator[Part | Finish | Delta, None]:
+        yield Part.Text("t")
+        if n == 1:
+            raise SampleError("slow down", said, status=529, retry_after=math.inf)
+        raise SampleError("again", retry_after=math.nan)
+
+    h = await Harness.create(tmp_path, provider=Rogue(script))
+    await h.send("hi")
+    await h.settle()
+    await h.send("again")
+    await h.settle()
+
+    def strict(constant: str) -> float:
+        raise AssertionError(f"meta holds {constant}, which is not JSON")
+
+    metas = [json.loads(r.meta or "", parse_constant=strict) for r in replies(h)]
+    assert metas[0] == {
+        "error": {
+            "message": "slow down",
+            "status": 529,
+            "provider": {"type": "overloaded", "code": 529},
+        }
+    }, "no infinite retry_after, and the provider's error is kept"
+    assert metas[1] == {"error": {"message": "again"}}
+    await h.close()
+
+
+@scenario
+async def test_typing_ahead_mid_stream_keeps_the_unread_deltas(tmp_path: Path) -> None:
+    gate = Gate()
+    script = [CallNamed(0, "c", "t"), CallArgs(0, "{}"), Part.Call("c", "t", "{}")]
+    h = await Harness.create(
+        tmp_path,
+        provider=FakeProvider([Reply(script, Stop.Tools, gate=gate, gate_after=len(script))]),
+    )
+    stream = h.driver.events()
+    await h.send("hi")
+    await h.settle()  # streamed, parked at the gate
+    await h.send("and also")  # a Saved that is not the reply
+    events: list[Event] = []
+    async with asyncio.timeout(1):
+        while len(events) < 3:
+            events.append(await anext(stream))
+    assert [e.delta for e in lives(events)] == script[:2]
+    assert events[2] == Saved(h.cursor), "the unread CallNamed and CallArgs are still there"
+    await stream.aclose()
+    gate.release()
+    await h.close()
+
+
+@scenario
+async def test_a_hook_answer_that_changed_nothing_is_not_announced(tmp_path: Path) -> None:
+    rec = Recorder("rec")
+    h = await Harness.create(
+        tmp_path, provider=FakeProvider([Reply([Part.Text("x")])]), extensions=[rec]
+    )
+    stream = h.driver.events()
+    seen: list[Event] = []
+
+    async def read() -> None:
+        async for event in stream:
+            seen.append(event)
+
+    reader = asyncio.ensure_future(read())
+    await h.send("hi")
+    await h.settle()
+    await h.close()
+    await reader
+    assert len(rec.points) == 6, "six hooks answered"
+    saved = [e for e in seen if isinstance(e, Saved)]
+    assert [s.reply for s in saved].count(True) == 1
+    assert len(saved) == 5, "the send, the input node, the reply, and two moves; not each hook"

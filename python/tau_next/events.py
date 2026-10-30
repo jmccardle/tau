@@ -60,7 +60,6 @@ class ToolProgress:
 
 Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs
 """What a provider yields while a part is still arriving."""
-DELTAS = (TextDelta, ThinkingDelta, CallNamed, CallArgs)
 LiveDelta = Delta | ToolProgress
 """What a `Live` carries: a provider's delta, or a tool's progress."""
 CallKey = tuple[int, str]
@@ -80,10 +79,14 @@ class Live:
 class Saved:
     """The tree changed for this cursor: look at it. `calls` are the calls, as `(node, call_id)`,
     whose results this save put in the tree (the `Results` node it added answers them): a
-    frontend drops their `ToolProgress` layers now, not before."""
+    frontend drops their `ToolProgress` layers now, not before. `reply` is true only when the
+    answer saved was a sample's (`Answer.Sampled`): the reply is in the tree, so the cursor's
+    live provider deltas are now stale. Any other `Saved` (typing ahead, a hook's write, a
+    tool result) leaves the sample streaming, and its deltas still unread-worthy."""
 
     cursor: int
     calls: tuple[CallKey, ...] = ()
+    reply: bool = False
 
 
 Event = Live | Saved
@@ -94,10 +97,10 @@ class EventStream:
     consumer (a second concurrent `anext` raises `RuntimeError`).
 
     A `Live` that arrives when the buffer holds `capacity` events is dropped, tool progress
-    included. A `Saved(c)` is never dropped: it first removes the provider deltas (text,
-    thinking, call) buffered for cursor `c` and any earlier `Saved(c)` (the frontend drops
-    that cursor's live layer at `Saved(c)` anyway, and "look at the tree" needs saying once),
-    then joins the end, carrying the `calls` of the `Saved(c)` it replaced. Buffered
+    included. A `Saved(c)` is never dropped: it first removes any earlier `Saved(c)` ("look at
+    the tree" needs saying once) and, only if it is a `Saved(c, reply=True)`, the provider
+    deltas (text, thinking, call) buffered for cursor `c`, then joins the end, carrying the
+    `calls` of the `Saved(c)` it replaced and the OR of their `reply`. Buffered
     `ToolProgress` of `c` survives it, except the progress of the calls in `Saved.calls`:
     those calls' results are now in the tree. The bound: at most `capacity` events, plus one
     `Saved` per cursor. A full buffer drops any `Live`, progress included, so progress that
@@ -127,25 +130,31 @@ class EventStream:
             return
         if isinstance(event, Saved):
             # An earlier `Saved(c)` is replaced, so its `calls` move to this one.
-            earlier = [
-                h.calls for h in self._buffer if isinstance(h, Saved) and h.cursor == event.cursor
-            ]
-            calls = tuple(dict.fromkeys(c for held in (*earlier, event.calls) for c in held))
-            event = Saved(event.cursor, calls)
-            self._buffer = [
-                held
-                for held in self._buffer
-                if held.cursor != event.cursor  # this cursor's `Live`s and earlier `Saved`...
-                or (
-                    isinstance(held, Live)  # ...but not progress of calls still unanswered
-                    and isinstance(held.delta, ToolProgress)
-                    and (held.delta.node, held.delta.call_id) not in event.calls
+            earlier = [h for h in self._buffer if isinstance(h, Saved) and h.cursor == event.cursor]
+            calls = tuple(
+                dict.fromkeys(
+                    c for held in (*(h.calls for h in earlier), event.calls) for c in held
                 )
-            ]
+            )
+            event = Saved(event.cursor, calls, event.reply or any(h.reply for h in earlier))
+            self._buffer = [held for held in self._buffer if self._survives(held, event)]
         elif len(self._buffer) >= self.capacity:
             return
         self._buffer.append(event)
         self._wake()
+
+    @staticmethod
+    def _survives(held: Event, saved: Saved) -> bool:
+        """Whether a buffered event outlives `saved`: another cursor's does; this cursor's
+        `Saved` does not; its `Live` stays unless `saved` is a reply (deltas) or answers the
+        call (progress)."""
+        if held.cursor != saved.cursor:
+            return True
+        if not isinstance(held, Live):
+            return False
+        if isinstance(held.delta, ToolProgress):
+            return (held.delta.node, held.delta.call_id) not in saved.calls
+        return not saved.reply
 
     def _wake(self) -> None:
         if self._waiter is not None and not self._waiter.done():

@@ -61,7 +61,7 @@ async def test_progress_arrives_live_tagged_with_the_call_before_its_result_is_s
     gate.release()
     await h.settle()
     assert h.bodies()[-2] == Body.Results([("c1", Outcome.Ok("finished"), Author.Tools())])
-    assert await anext(stream) == Saved(h.cursor, ((BATCH, "c1"),))
+    assert await anext(stream) == Saved(h.cursor, ((BATCH, "c1"),), reply=True)
     await stream.aclose()
     await h.close()
 
@@ -224,7 +224,7 @@ async def test_buffered_progress_survives_a_save_until_its_results_are_saved(
         assert [await anext(stream) for _ in range(3)] == [
             Live(h.cursor, ToolProgress(BATCH, "c1", "slow-1")),
             Live(h.cursor, ToolProgress(BATCH, "c1", "slow-2")),
-            Saved(h.cursor),
+            Saved(h.cursor, reply=True),
         ]
     assert slow.progress is not None
     slow.progress("slow-3")  # buffered again, then a save names no call
