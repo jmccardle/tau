@@ -1,13 +1,13 @@
-"""The minimal model config: what a `Config` node's `data` says about the model.
+"""Model configuration: the resolved `ModelConfig`, and reading it from config layers (D13).
 
-A small slice of the planned config overhaul (D13): one model, no groups, no
-merging, no file. `data` is a JSON object; core never reads it (glossary:
-config).
+`ModelConfig.parse` reads a `Config` node's `data` (a JSON object core never
+reads; glossary: config). `read_models` and `check_config` read the layered
+files: user, project, CLI overrides.
 """
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 from urllib.parse import urlparse
 
@@ -39,6 +39,8 @@ class ModelConfig:
     model: str
     base_url: str
     api_key_env: str | None = None
+    provider: str = "openai"
+    literal_api_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         _text(self.model, "model")
@@ -47,6 +49,9 @@ class ModelConfig:
             raise ConfigError(f"config 'base_url' must be an http(s) URL, not {self.base_url!r}")
         if self.api_key_env is not None:
             _text(self.api_key_env, "api_key_env")
+        _text(self.provider, "provider")
+        if self.literal_api_key is not None:
+            _text(self.literal_api_key, "api_key")
 
     @classmethod
     def parse(cls, config: Config) -> "ModelConfig":
@@ -81,8 +86,11 @@ class ModelConfig:
     def api_key(self, environ: Mapping[str, str]) -> str | None:
         """The key in `environ` named by `api_key_env`; `None` if no variable is named.
 
-        Raises `ConfigError` if one is named and is unset or empty.
+        A literal `api_key` from a config file wins. Raises `ConfigError` if a
+        variable is named and is unset or empty.
         """
+        if self.literal_api_key is not None:
+            return self.literal_api_key
         if self.api_key_env is None:
             return None
         key = environ.get(self.api_key_env)

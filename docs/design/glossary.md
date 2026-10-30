@@ -593,8 +593,10 @@ the environment variable holding the API key. `data` is a JSON object with
 exactly those keys. `ModelConfig.parse(config)` validates; unknown keys, wrong
 types, and missing keys raise `ConfigError` (a `ValueError`). `to_config()`
 builds the `Config`. `api_key(environ)` reads the key at sample time; it is
-never a field, so it reaches no node and no log (tested). No groups, merging,
-or file loading.
+never a field, so it reaches no node and no log (tested). It also carries
+`provider` (default `"openai"`, the only one) and, for a literal `api_key` in
+a file, `literal_api_key`, which `to_config` never writes. Groups, merging, and
+files are `read_models`.
 
 ### api_key_env
 `ModelConfig.api_key_env` · `Config` data key
@@ -619,6 +621,33 @@ every model inside, and groups nest. A model's **qualified name** is the path
 of group names and its own name joined by `:` (`free_tokens:gpt-6-sol`).
 Names may not contain `:`. A `Config` node stores a qualified name; a bare
 name is only a search term.
+
+### read_models, check_config, ModelCatalog, ResolvedModel, Origin, ConfigProblem
+`tau_next.config_layers` · D13 · new
+
+`read_models(user, project, cli)` reads the layers (each may be absent; `cli`
+is a mapping in the file's JSON shape), merges their raw trees (objects by
+key; lists and scalars replace; `null` drops, including a key a group passes
+down), then resolves every model. It raises `ConfigError` listing every
+error; it finds and trusts no file. It returns a **`ModelCatalog`**: `models`
+(qualified name to **`ResolvedModel`**: the `ModelConfig` and one **`Origin`**
+per key, the layer, file path or `"cli"`, and the group that set it, `None`
+for the model itself), `default_model`, `warnings`. `find(name)` returns the
+qualified names matching a qualified or bare name (0, 1, or many: the caller
+decides), `resolve(qualified)` the `ModelConfig`, `explain(qualified)` the
+origins. `check_config(user, project, cli, environ)` returns every
+**`ConfigProblem`** (severity `error` or `warning`; file, dotted path, and
+for JSON syntax errors line and column) instead of raising: syntax errors,
+duplicate keys, unknown keys with a suggestion, `:` in a name, a missing
+`model` or `base_url`, wrong types, an unknown `provider`, a `default_model`
+not in the config, 0.15's `backend` key, and as warnings a literal `api_key`
+and (given `environ`) an unset `api_key_env` variable. A literal `api_key`
+is held only in `ModelConfig.literal_api_key` (hidden from `repr`) and never
+in a problem, origin, or catalog text. `api_key` and `api_key_env` are one
+setting: the nearer one wins and drops the other. The first layer to define a name sets whether it is a model or a group; a later layer
+giving `models` to a model is an error, and otherwise only tunes it. `provider` unset shows in `explain`
+with source `"default"`. The top level takes `models` and `default_model`;
+frontend settings will widen it in a later part.
 
 ### trusted directory, trusted.json
 D13 · new
