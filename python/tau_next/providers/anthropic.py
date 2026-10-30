@@ -1,6 +1,6 @@
 """The Anthropic provider: the Messages API over SSE.
 
-Walk to request in `conversation` and `AnthropicProvider.request`, response to parts and deltas
+Walk to request in `conversation` and `AnthropicProvider._request`, response to parts and deltas
 in `_Stream`, one per reply. The request carries `model`, `max_tokens`, `messages`, `stream`,
 `system`, `tools` when there are any, the options (`_OPTIONS`), then `extra_body` last.
 
@@ -48,9 +48,6 @@ _OPTIONS = (
     "extra_body",
 )
 _OWNED_KEYS = ("model", "messages", "system", "stream", "tools", "max_tokens")
-_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-_THINKING_TYPES = ("adaptive", "enabled", "disabled", "between_tools")
-_DISPLAYS = ("summarized", "omitted")
 
 STOPS: dict[str, Stop] = {
     "end_turn": Stop.End,
@@ -155,7 +152,7 @@ class _Stream:
         the cumulative counts, so a later field replaces an earlier one."""
         if not isinstance(raw, dict):
             return
-        self.usage.update(cast("Json", raw))
+        self.usage.update({k: v for k, v in cast("Json", raw).items() if v is not None})
         self.meta["usage_raw"] = dict(self.usage)
         normal = _usage(self.usage)
         if normal is None:
@@ -241,17 +238,23 @@ class _Stream:
             return [CallArgs(block.call, args)] if args else []
         raise SampleError(f"a {kind!r} delta in a {block.kind} block")
 
-    def _end(self, _event: Json) -> list[Part | Delta]:
+    def _end(self, event: Json) -> list[Part | Delta]:
         """Complete the open block. A call with no arguments streamed gets `{}` as its
         arguments, as a delta first, so the part equals its deltas."""
-        block, self.open = self.open, None
+        block = self.open
         if block is None:
             raise SampleError("a content_block_stop with no block open")
+        if event.get("index") != block.index:
+            raise SampleError(
+                f"a content_block_stop for block {event.get('index')!r}, "
+                f"but block {block.index} is the open one"
+            )
         out: list[Part | Delta] = []
         if block.kind == "tool_use" and not block.chunks:
             block.chunks.append("{}")
             out.append(CallArgs(block.call, "{}"))
-        out.append(block.part())
+        out.append(block.part())  # if it raises, the block stays open for `close`
+        self.open = None
         return out
 
     def _message_delta(self, event: Json) -> list[Part | Delta]:
@@ -272,8 +275,6 @@ class _Stream:
         them over time)."""
         kind = event.get("type")
         if kind == "error":
-            if self.stop_reason is not None:
-                return []  # the reply is done; an error costs only the usage still to come
             raise stream_error(event)
         handlers: dict[str, Callable[[Json], list[Part | Delta]]] = {
             "message_start": self._start,
@@ -288,9 +289,16 @@ class _Stream:
     def close(self) -> list[Part | Delta]:
         """The open block as the part it had become, if it is one. Text and thinking are kept as
         far as they arrived, thinking unsigned (a signed part cut off is unsigned, D15); a
-        redacted block arrives whole; a call forming at a cut is not a part."""
+        redacted block arrives whole. A call forming at a cut is dropped whole: its raw text goes
+        in `meta["cut_off_call"]` (D1)."""
         block, self.open = self.open, None
-        if block is None or block.kind == "tool_use":
+        if block is None:
+            return []
+        if block.kind == "tool_use":
+            args = "".join(block.chunks)
+            self.meta["cut_off_call"] = (
+                f"tool_use {block.id} {block.tool}, arguments so far {args!r}"
+            )
             return []
         if block.kind == "redacted_thinking":
             try:
@@ -313,7 +321,10 @@ class _Stream:
 
 def stream_error(event: Json) -> SampleError:
     """The `SampleError` for an `error` event, with the status that error type stands for."""
-    fields = json_object(event.get("error"), "an error event's error")
+    error = event.get("error")
+    if not isinstance(error, dict):
+        return SampleError(f"the server sent an error in the stream: {error!r}", status=500)
+    fields = cast("Json", error)
     kind = fields.get("type")
     message = fields.get("message")
     status = ERROR_STATUS.get(kind) if isinstance(kind, str) else None
@@ -326,43 +337,31 @@ def stream_error(event: Json) -> SampleError:
 # Options
 
 
-def _beta_problems(thinking: object, where: str) -> list[str]:
-    """Settings of a `thinking` object that need an `anthropic-beta` header, which this
-    provider does not send: `display` `updates` and `block_binding` (beta
-    `thinking-display-updates-2026-08-18` and `thinking-binding-controls-2026-08-01`)."""
-    if not isinstance(thinking, Mapping):
-        return []
-    fields = cast("Mapping[str, object]", thinking)
-    problems: list[str] = []
-    if fields.get("display") == "updates":
-        problems.append(f"{where} display 'updates' needs a beta header this provider cannot send")
-    if "block_binding" in fields:
-        problems.append(f"{where} block_binding needs a beta header this provider cannot send")
-    return problems
-
-
 def _thinking_problems(value: object, max_tokens: int | None) -> list[str]:
+    """Types only: the API judges the values. The settings that need an `anthropic-beta` header,
+    which this provider does not send, are refused (they can never work here): `display`
+    `updates` and `block_binding` (betas `thinking-display-updates-2026-08-18` and
+    `thinking-binding-controls-2026-08-01`)."""
     if not isinstance(value, Mapping):
         return ["option 'thinking' must be an object"]
     fields = cast("Mapping[str, object]", value)
     kind = fields.get("type")
-    if kind not in _THINKING_TYPES:
-        return [f"option 'thinking' needs a 'type' of {list(_THINKING_TYPES)}"]
-    allowed = {"type"}
-    if kind in ("adaptive", "enabled"):
-        allowed.add("display")
-    if kind == "enabled":
-        allowed.add("budget_tokens")
-    problems = [
-        f"option 'thinking' of type {kind!r} may not set {k!r}" for k in fields if k not in allowed
-    ]
-    beta = _beta_problems(fields, "option 'thinking'")
-    problems += beta
+    if not (isinstance(kind, str) and kind):
+        return ["option 'thinking' needs a 'type' string"]
+    problems: list[str] = []
+    if "display" in fields and not isinstance(fields["display"], str):
+        problems.append("option 'thinking' display must be a string")
+    if fields.get("display") == "updates":
+        problems.append(
+            "option 'thinking' display 'updates' needs a beta header this provider cannot send"
+        )
     if "block_binding" in fields:
-        problems = [p for p in problems if "may not set 'block_binding'" not in p]
-    if "display" in fields and fields["display"] not in (*_DISPLAYS, "updates"):
-        problems.append(f"option 'thinking' display must be one of {list(_DISPLAYS)}")
-    if kind == "enabled":
+        problems.append(
+            "option 'thinking' block_binding needs a beta header this provider cannot send"
+        )
+    if "budget_tokens" in fields and not is_count(fields["budget_tokens"]):
+        problems.append("option 'thinking' budget_tokens must be a non-negative integer")
+    elif kind == "enabled":
         budget = fields.get("budget_tokens")
         if not is_count(budget) or cast("int", budget) < MIN_BUDGET:
             problems.append(
@@ -398,7 +397,11 @@ def _extra_body_problems(model: ModelConfig, extra: object) -> list[str]:
             if k in fields
         ]
         + [f"option 'extra_body' holds {bad!r}, which is not JSON" for bad in non_finite(fields)]
-        + _beta_problems(fields.get("thinking"), "option 'extra_body' thinking")
+        + (
+            ["option 'extra_body' may not set 'thinking'; the 'thinking' option covers it"]
+            if "thinking" in fields
+            else []
+        )
         + (
             ["option 'extra_body' sets 'context_management', which needs a beta header"]
             if "context_management" in fields
@@ -421,8 +424,8 @@ def _option_problems(model: ModelConfig) -> list[str]:
     ]
     if "top_k" in options and not is_count(options["top_k"]):
         problems.append("option 'top_k' must be a non-negative integer")
-    if "effort" in options and options["effort"] not in _EFFORTS:
-        problems.append(f"option 'effort' must be one of {list(_EFFORTS)}")
+    if "effort" in options and not (isinstance(options["effort"], str) and options["effort"]):
+        problems.append("option 'effort' must be a non-empty string")
     if "prompt_caching" in options and not isinstance(options["prompt_caching"], bool):
         problems.append("option 'prompt_caching' must be true or false")
     if "thinking" in options:
@@ -443,13 +446,13 @@ class AnthropicProvider:
 
     `check` requires a key (`api_key_env`) and `max_tokens` (the API requires it; there is no
     default), and reads the options in `_OPTIONS`, refusing any other: `thinking` (an object as
-    the API takes it: `type` `adaptive`, `enabled` with `budget_tokens`, `disabled`, or
-    `between_tools`, and for the first two a `display` of `summarized` or `omitted`; which a model
-    accepts is the API's to say), `effort` (`low` to `max`, sent as `output_config.effort`),
+    the API takes it: `type` a string, `budget_tokens` for `enabled`, `display`; the API judges
+    the values, and `check` refuses only what needs a beta header this provider cannot send),
+    `effort` (a string, sent as `output_config.effort`),
     `temperature`, `top_p` (numbers), `top_k` (an integer), `prompt_caching` (a boolean,
     default true: mark the system text and the last message for caching), and `extra_body` (an
     object merged into the request body last; it may not set `model`, `messages`, `system`,
-    `stream`, `tools`, `max_tokens`, or a key the model's settings set).
+    `stream`, `tools`, `max_tokens`, `thinking`, or a key the model's settings set).
     """
 
     def __init__(
@@ -489,18 +492,14 @@ class AnthropicProvider:
         """Close the client and its connections. Later samples fail."""
         await self._connection.aclose()
 
-    def request(
+    def _request(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> tuple[str, dict[str, str], Json]:
-        """The URL, headers, and JSON body of the request for this sample.
+        """The URL, headers, and JSON body of the request for this sample. `check` has passed
+        (the driver runs it first).
 
-        Raises `SampleError` if the model's settings fail `check` (options are checked again
-        here, so a caller that skipped the driver cannot send an ill-typed request) or its key
-        cannot be read.
+        Raises `SampleError` if the model's key cannot be read.
         """
-        problems = self.check(model)
-        if problems:
-            raise SampleError(f"model {model.model!r}: " + "; ".join(problems))
         try:
             key = model.api_key(self._environ)
         except ConfigError as e:
@@ -548,6 +547,6 @@ class AnthropicProvider:
         type) after yielding every part the stream had finished. Once `stop_reason` has arrived
         the reply is done: the stream is still read for the final `usage`, and a reset, an
         `error` event, or malformed SSE after it costs only the usage not yet received."""
-        url, headers, body = self.request(walk, model, tools)
+        url, headers, body = self._request(walk, model, tools)
         async for item in self._connection.sample(url, headers, body, _Stream()):
             yield item

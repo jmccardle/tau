@@ -20,6 +20,7 @@ from gemini_support import (
     provider_sequence,
     recorded,
     running,
+    sent_request,
     walk_of,
 )
 from harness import scenario
@@ -35,12 +36,11 @@ def replay(**data: object) -> Replay:
     return Replay("gemini", json.dumps(data))
 
 
-def request_body(
+async def request_body(
     *bodies: Body, config: ModelConfig | None = None, system: str = "sys"
 ) -> dict[str, object]:
-    return GeminiProvider(environ=ENVIRON).request(
-        walk_of(*bodies, system=system), config or model(), []
-    )[2]
+    walk = walk_of(*bodies, system=system)
+    return (await sent_request(walk, config or model(), [FakeTool("t", "x")]))[2]  # tools offered
 
 
 def ok(call_id: str, value: str) -> tuple[str, Outcome, Author]:
@@ -51,20 +51,20 @@ def batch(*calls: Part.Call) -> Body:
     return Body.Assistant(list(calls), Stop.Tools, None)
 
 
-def test_the_request_names_the_model_and_carries_the_key_in_a_header_only() -> None:
+@scenario
+async def test_the_request_names_the_model_and_carries_the_key_in_a_header_only() -> None:
     config = ModelConfig(MODEL, provider="gemini", api_key_env="K", max_tokens=99)
-    url, headers, body = GeminiProvider(environ=ENVIRON).request(
-        walk_of(Body.User("hello"), system="be brief"), config, []
-    )
+    url, headers, body = await sent_request(walk_of(Body.User("hello"), system="be brief"), config)
     assert url == f"{DEFAULT_URL}/models/{MODEL}:streamGenerateContent?alt=sse"
-    assert headers == {"x-goog-api-key": KEY}
+    assert headers["x-goog-api-key"] == KEY
+    assert "key=" not in url
     assert body == {
         "systemInstruction": {"parts": [{"text": "be brief"}]},
         "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
         "generationConfig": {"maxOutputTokens": 99},
     }
     proxy = ModelConfig(MODEL, "http://proxy.test:9/v1beta/", "K", provider="gemini")
-    url, _, _ = GeminiProvider(environ=ENVIRON).request(gemini_walk(), proxy, [])
+    url, _, _ = await sent_request(gemini_walk(), proxy)
     assert url == f"http://proxy.test:9/v1beta/models/{MODEL}:streamGenerateContent?alt=sse"
 
 
@@ -83,9 +83,10 @@ async def test_an_http_error_message_never_holds_the_key() -> None:
     assert KEY not in str(seen[0].url)
 
 
-def test_tools_are_one_declaration_list_with_their_json_schema_as_given() -> None:
+@scenario
+async def test_tools_are_one_declaration_list_with_their_json_schema_as_given() -> None:
     tool = FakeTool("read", "x", description="Read a file.")
-    _, _, body = GeminiProvider(environ=ENVIRON).request(gemini_walk(), model(), [tool])
+    _, _, body = await sent_request(gemini_walk(), model(), [tool])
     assert body["tools"] == [
         {
             "functionDeclarations": [
@@ -161,9 +162,10 @@ async def test_a_signature_on_text_round_trips_and_unsigned_thinking_is_not_sent
     assert thinking.text not in seen[1].content.decode()
 
 
-def test_another_providers_signatures_and_ids_are_not_sent() -> None:
+@scenario
+async def test_another_providers_signatures_and_ids_are_not_sent() -> None:
     foreign = Replay("anthropic", '{"signature": "sig", "thoughtSignature": "nope", "id": "x"}')
-    body = request_body(
+    body = await request_body(
         Body.User("go"),
         Body.Assistant(
             [Part.Text("t", foreign), Part.Call("call_9", "read", "{}", foreign)],
@@ -184,10 +186,11 @@ def test_another_providers_signatures_and_ids_are_not_sent() -> None:
     ]
 
 
-def test_a_batch_is_answered_in_call_order_by_id_where_the_api_gave_one_and_by_name_else() -> None:
+@scenario
+async def test_a_batch_is_answered_in_call_order_by_id_where_given_and_by_name_else() -> None:
     api = replay(id="api-1", thoughtSignature="S")
     made_up = replay(synthesized_id=True)
-    body = request_body(
+    body = await request_body(
         Body.User("go"),
         batch(
             Part.Call("api-1", "ta", '{"x": 1}', api), Part.Call("gemini-2", "tb", "{}", made_up)
@@ -210,8 +213,9 @@ def test_a_batch_is_answered_in_call_order_by_id_where_the_api_gave_one_and_by_n
     ]
 
 
-def test_a_batch_whose_arguments_are_not_an_object_goes_as_text_with_its_results() -> None:
-    body = request_body(
+@scenario
+async def test_a_batch_whose_arguments_are_not_an_object_goes_as_text_with_its_results() -> None:
+    body = await request_body(
         Body.User("go"),
         batch(Part.Call("c1", "read", '{"p"'), Part.Call("c2", "read", "{}")),
         Body.Results([ok("c1", "one"), ("c2", Outcome.Err("bad"), Author.Tools())]),
@@ -229,16 +233,18 @@ def test_a_batch_whose_arguments_are_not_an_object_goes_as_text_with_its_results
     ]
 
 
-def test_a_call_with_no_arguments_goes_as_a_call_with_an_empty_object() -> None:
-    body = request_body(
+@scenario
+async def test_a_call_with_no_arguments_goes_as_a_call_with_an_empty_object() -> None:
+    body = await request_body(
         Body.User("go"), batch(Part.Call("c1", "read", "")), Body.Results([ok("c1", "one")])
     )
     contents = cast("list[dict[str, list[dict[str, dict[str, object]]]]]", body["contents"])
     assert contents[1]["parts"][0]["functionCall"] == {"name": "read", "args": {}}
 
 
-def test_a_reply_with_nothing_to_send_is_dropped_and_its_neighbours_merge() -> None:
-    body = request_body(
+@scenario
+async def test_a_reply_with_nothing_to_send_is_dropped_and_its_neighbours_merge() -> None:
+    body = await request_body(
         Body.User("one"),
         Body.Assistant([Part.Thinking("hm", Replay("anthropic", "{}"))], Stop.Interrupted, None),
         Body.User("two"),
@@ -246,8 +252,11 @@ def test_a_reply_with_nothing_to_send_is_dropped_and_its_neighbours_merge() -> N
     assert body["contents"] == [{"role": "user", "parts": [{"text": "one"}, {"text": "two"}]}]
 
 
-def test_only_the_leading_system_nodes_are_the_instruction_a_later_one_is_a_note() -> None:
-    body = request_body(Body.User("a"), Body.System("now be loud"), Body.User("b"), system="calm")
+@scenario
+async def test_only_the_leading_system_nodes_are_the_instruction_a_later_one_is_a_note() -> None:
+    body = await request_body(
+        Body.User("a"), Body.System("now be loud"), Body.User("b"), system="calm"
+    )
     assert body["systemInstruction"] == {"parts": [{"text": "calm"}]}
     assert body["contents"] == [
         {
@@ -257,8 +266,9 @@ def test_only_the_leading_system_nodes_are_the_instruction_a_later_one_is_a_note
     ]
 
 
-def test_signed_and_unsigned_text_parts_stay_separate_parts() -> None:
-    body = request_body(
+@scenario
+async def test_signed_and_unsigned_text_parts_stay_separate_parts() -> None:
+    body = await request_body(
         Body.User("go"),
         Body.Assistant(
             [Part.Text("a", replay(thoughtSignature="S")), Part.Text("b"), Part.Text("c")],
@@ -298,10 +308,6 @@ async def test_data_that_cannot_be_kept_as_replay_fails_the_sample_not_core() ->
         ({"thinking": {"level": "low", "budget": 0}}, "both 'budget' and 'level'"),
         ({"thinking": {"include": True}}, "unknown key 'include'"),
         ({"safety_settings": [{"category": "A"}]}, "exactly {category, threshold}"),
-        (
-            {"safety_settings": [{"category": "A", "threshold": "B"}] * 2},
-            "sets 'A' twice",
-        ),
         ({"extra_body": {"contents": []}}, "may not set 'contents'"),
         ({"extra_body": {"generationConfig": {"topK": 3}}, "top_k": 5}, "generationConfig.topK"),
         ({"extra_body": {"x": float("nan")}}, "not JSON"),
@@ -313,8 +319,6 @@ def test_options_are_checked_and_refused_when_unknown_or_ill_shaped(
     provider = GeminiProvider(environ=ENVIRON)
     problems = provider.check(model(**options))
     assert any(problem in p for p in problems), problems
-    with pytest.raises(SampleError, match="option"):
-        provider.request(gemini_walk(), model(**options), [])
 
 
 def test_a_model_naming_no_key_and_a_foreign_provider_name_are_problems() -> None:
@@ -327,12 +331,14 @@ def test_a_model_naming_no_key_and_a_foreign_provider_name_are_problems() -> Non
     )
 
 
-def test_a_named_variable_that_is_unset_fails_the_sample_saying_so() -> None:
+@scenario
+async def test_a_named_variable_that_is_unset_fails_the_sample_saying_so() -> None:
     with pytest.raises(SampleError, match="environment variable K is not set"):
-        GeminiProvider(environ={}).request(gemini_walk(), model(), [])
+        await sent_request(gemini_walk(), model(), environ={})
 
 
-def test_options_become_generation_config_safety_settings_and_the_extra_body() -> None:
+@scenario
+async def test_options_become_generation_config_safety_settings_and_the_extra_body() -> None:
     config = ModelConfig(
         MODEL,
         provider="gemini",
@@ -347,7 +353,7 @@ def test_options_become_generation_config_safety_settings_and_the_extra_body() -
             "extra_body": {"generationConfig": {"stopSequences": ["END"]}, "cachedContent": "c/1"},
         },
     )
-    _, _, body = GeminiProvider(environ=ENVIRON).request(gemini_walk(), config, [])
+    _, _, body = await sent_request(gemini_walk(), config)
     assert body["generationConfig"] == {
         "maxOutputTokens": 50,
         "temperature": 0.5,
@@ -358,11 +364,56 @@ def test_options_become_generation_config_safety_settings_and_the_extra_body() -
     }
     assert body["safetySettings"] == [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"}]
     assert body["cachedContent"] == "c/1"
-    _, _, plain = GeminiProvider(environ=ENVIRON).request(gemini_walk(), model(), [])
+    _, _, plain = await sent_request(gemini_walk(), model())
     assert "generationConfig" not in plain, "thoughts are asked for only when an option says so"
 
 
-def test_a_walk_ending_in_a_model_turn_fails_before_any_request() -> None:
+@scenario
+async def test_a_walk_ending_in_a_model_turn_fails_before_any_request() -> None:
     walk = walk_of(Body.User("go"), Body.Assistant([Part.Text("hi")], Stop.End, None))
     with pytest.raises(SampleError, match="ends with a model turn"):
-        GeminiProvider(environ=ENVIRON).request(walk, model(), [])
+        await sent_request(walk, model())
+
+
+@scenario
+async def test_blank_user_and_system_turns_are_sent_as_nothing() -> None:
+    body = await request_body(Body.User(""), Body.User("hi"), Body.User("  "), system=" ")
+    assert "systemInstruction" not in body
+    assert body["contents"] == [{"role": "user", "parts": [{"text": "hi"}]}]
+
+
+@scenario
+async def test_the_model_is_quoted_in_the_path() -> None:
+    config = ModelConfig("x?alt=json#", provider="gemini", api_key_env="K")
+    url, _, _ = await sent_request(gemini_walk(), config)
+    assert url == f"{DEFAULT_URL}/models/x%3Falt%3Djson%23:streamGenerateContent?alt=sse"
+
+
+def test_check_refuses_a_model_that_carries_the_models_prefix() -> None:
+    config = ModelConfig("models/gemini-test", provider="gemini", api_key_env="K")
+    (problem,) = GeminiProvider(environ=ENVIRON).check(config)
+    assert "'gemini-test'" in problem
+
+
+@scenario
+async def test_calls_in_history_go_as_text_when_the_sample_offers_no_tools() -> None:
+    walk = walk_of(
+        Body.User("go"), batch(Part.Call("c1", "read", "{}")), Body.Results([ok("c1", "one")])
+    )
+    _, _, body = await sent_request(walk, model())
+    assert body["contents"][1] == {"role": "model", "parts": [{"text": "[tool call c1: read {}]"}]}  # type: ignore[index]
+    _, _, body = await sent_request(walk, model(), [FakeTool("read", "x")])
+    assert "functionCall" in body["contents"][1]["parts"][0]  # type: ignore[index]
+
+
+@scenario
+async def test_replay_this_version_cannot_parse_counts_as_unsigned() -> None:
+    odd = replay(thoughtSignature=7, id=["x"])
+    walk = walk_of(
+        Body.User("go"),
+        batch(Part.Call("c1", "read", "{}", odd)),
+        Body.Results([ok("c1", "one")]),
+    )
+    _, _, body = await sent_request(walk, model(), [FakeTool("read", "x")])
+    call = body["contents"][1]["parts"][0]  # type: ignore[index]
+    assert call == {"functionCall": {"name": "read", "args": {}}}

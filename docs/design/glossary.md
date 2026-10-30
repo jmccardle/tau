@@ -1003,7 +1003,8 @@ Is handed the resolved `ModelConfig` as `sample(walk, model, tools)`; it parses 
 `tool_choice`, no `parallel_tool_calls`); then `max_tokens` and the options below.
 `tools` is `[{"type": "function", "function": {name, description, parameters}}]`,
 built from each `Tool` for that sample only and recorded nowhere. Conversion: `System`
-and `User` map to their roles; an `Assistant` to `assistant` with its text and
+and `User` map to their roles (a `System` after the first non-`System` turn is a `user`
+message `[system note: ...]`); an `Assistant` to `assistant` with its text and
 `tool_calls` (`args_raw` sent as the `arguments` string); a `Results` that
 follows its batch to one `tool` message per outcome (`Err(e)` is `Error: e`,
 `Interrupted` is `Interrupted`); a `Results` that answers no batch to one
@@ -1054,7 +1055,7 @@ fails with `ProviderClosed`. A client belongs to the event loop that made it: on
 loop the provider drops it unawaited and makes a new one. The response body is read to its
 end, so the connection returns to the pool. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
-`timeout`. `request(walk, model, tools)` returns the URL, headers, and body.
+`timeout`. The request is built inside `sample` and is not public.
 
 ### AnthropicProvider
 `tau_next.providers.anthropic.AnthropicProvider`, name `"anthropic"` · D15 · new

@@ -139,3 +139,27 @@ async def running(
     finally:
         await driver.stop()
         session.close()
+
+
+async def sent_request(
+    walk: Sequence[Node],
+    config: ModelConfig | None = None,
+    tools: Sequence[Tool] = (),
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, dict[str, str], dict[str, object]]:
+    """The URL, headers and JSON body the provider posted for one sample of `walk`, against a
+    server that answers with a one-word reply. A sample that fails raises its `SampleError`."""
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=gemini_chunk([{"text": "ok"}], "STOP"),
+        )
+
+    gemini = GeminiProvider(httpx.MockTransport(handle), ENVIRON if environ is None else environ)
+    async for _ in gemini.sample(walk, config or model(), tools):
+        pass
+    return str(seen[0].url), dict(seen[0].headers), json.loads(seen[0].content)

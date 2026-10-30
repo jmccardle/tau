@@ -14,6 +14,7 @@ import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import cast
+from urllib.parse import quote
 
 import httpx
 
@@ -48,7 +49,9 @@ DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 _OPTIONS = ("temperature", "top_p", "top_k", "thinking", "safety_settings", "extra_body")
 _THINKING = ("include_thoughts", "budget", "level")
 _OWNED_KEYS = ("contents", "systemInstruction", "tools")  # `extra_body` may not set these
-_PART_KEYS = {"text", "thought", "thoughtSignature", "functionCall"}
+_DATA_KEYS = ("text", "functionCall")  # what a part carries; a part sets one
+_METADATA_KEYS = ("partMetadata", "mediaResolution", "mediaProcessing", "speechMetadata")
+_PART_KEYS = {*_DATA_KEYS, "thought", "thoughtSignature", *_METADATA_KEYS}
 _DELAY = re.compile(r"^(\d+(?:\.\d+)?)s$")  # Google's `retryDelay`: "30s", "0.5s"
 
 # Finish reasons that end a reply. `STOP` is `End`, or `Tools` when the reply made calls.
@@ -75,14 +78,11 @@ STOPS: dict[str, Stop] = {
 
 
 def _signature(part: Part) -> str | None:
-    """The signature this provider may send back for `part`: only Gemini's own."""
+    """The signature this provider may send back for `part`: only Gemini's own, and only as
+    this version wrote it (replay it cannot understand counts as unsigned)."""
     data = replay_for(part, NAME)
-    if data is None:
-        return None
-    signature = data.get("thoughtSignature")
-    if signature is not None and not (isinstance(signature, str) and signature):
-        raise SampleError(f"a part's replay data holds a malformed thoughtSignature: {data}")
-    return signature
+    signature = None if data is None else data.get("thoughtSignature")
+    return signature if isinstance(signature, str) and signature else None
 
 
 def _signed(wire: Json, signature: str | None) -> Json:
@@ -107,12 +107,8 @@ def _call_part(call: Part.Call) -> Json:
 
 def _wire_id(call: Part.Call) -> str | None:
     data = replay_for(call, NAME)
-    if data is None or "id" not in data:
-        return None
-    wire_id = data["id"]
-    if not (isinstance(wire_id, str) and wire_id):
-        raise SampleError(f"call {call.id}: replay data holds a malformed id: {data}")
-    return wire_id
+    wire_id = None if data is None else data.get("id")
+    return wire_id if isinstance(wire_id, str) and wire_id else None
 
 
 def _model_parts(turn: AssistantTurn) -> list[Json]:
@@ -156,7 +152,7 @@ def _responses(results: ToolResults, calls: Sequence[Part.Call]) -> list[Json]:
     return parts
 
 
-def contents(walk: Sequence[Node]) -> tuple[str | None, list[Json]]:
+def contents(walk: Sequence[Node], *, structured: bool) -> tuple[str | None, list[Json]]:
     """The system instruction text and the wire `contents` for a walk.
 
     The `System` nodes before any other node are the instruction (blank-line separated; `None`
@@ -164,16 +160,18 @@ def contents(walk: Sequence[Node]) -> tuple[str | None, list[Json]]:
     `[system note: <text>]`: `systemInstruction` is one string for the whole request, and a
     later node means "from here on". A reply with nothing to send (only unsigned thinking, cut
     off; no parts) is left out and its neighbours merge. A batch whose call arguments are not a
-    JSON object (`functionCall.args` must be one) goes as text with its results. `Config` and
-    `Custom` nodes never reach the model."""
+    JSON object (`functionCall.args` must be one), or any batch when `structured` is false (no
+    tools are offered), goes as text with its results. A blank `User` or `System` turn is left
+    out. `Config` and `Custom` nodes never reach the model."""
     messages = Messages("parts")
     calls: list[Part.Call] = []  # the previous reply's calls
-    for turn in turns(walk):
+    for turn in turns(walk, structured=structured):
         match turn:
             case SystemTurn(text=text):
-                messages.system(text, lambda note: {"text": note})
+                if text.strip():
+                    messages.system(text, lambda note: {"text": note})
             case UserTurn(text=text):
-                messages.add("user", [{"text": text}])
+                messages.add("user", [{"text": text}] if text.strip() else [])
             case AssistantTurn():
                 messages.add("model", _model_parts(turn))
                 calls = [p for p in turn.parts if isinstance(p, Part.Call)]
@@ -231,6 +229,15 @@ def _delay(error: Json) -> float | None:
     return None
 
 
+def _stream_signature(part: Json) -> str | None:
+    """The `thoughtSignature` of a streamed part: `None` for none, a `SampleError` for a
+    value that is not a non-empty string."""
+    signature = part.get("thoughtSignature")
+    if signature is not None and not (isinstance(signature, str) and signature):
+        raise SampleError(f"a part's thoughtSignature is not a string: {signature!r}")
+    return signature
+
+
 def _stream_error(error: object) -> SampleError:
     body = cast("Json", error) if isinstance(error, dict) else Json()
     code = body.get("code")
@@ -262,9 +269,11 @@ def _usage(raw: Json) -> Json | None:
 
 @dataclass
 class _Stream:
-    """One response being read. `feed` takes a decoded chunk and returns its parts and deltas."""
+    """One response being read. `feed` takes a decoded chunk and returns its parts and deltas.
+    What a `feed` built before it raised waits in `held` for `close`."""
 
     open: _Open | None = None
+    held: list[Part | Delta] = field(default_factory=lambda: [])
     calls: int = 0
     call_ids: set[str] = field(default_factory=lambda: set[str]())  # noqa: PLW0108 - typed for pyright
     finish: str | None = None
@@ -293,28 +302,35 @@ class _Stream:
             if isinstance(reason, str) and reason:
                 self.blocked = reason
 
-    def close(self) -> list[Part | Delta]:
+    def _end_run(self) -> list[Part | Delta]:
         """Complete the open run, if it has text or a signature."""
         if self.open is None:
             return []
         done, self.open = self.open, None
         return [done.part()] if done.chunks or done.signature is not None else []
 
+    def close(self) -> list[Part | Delta]:
+        """What `feed` built and could not return, then the open run. A call arrives whole, so
+        none is ever cut off."""
+        out, self.held = self.held, []
+        return out + self._end_run()
+
     def _text(self, part: Json) -> list[Part | Delta]:
         """Consecutive text (or thinking) parts are one run. A `thoughtSignature` ends the run:
         it comes on the last chunk of the text it signs (often with no text of its own), so
         the run up to and including that chunk is one saved part carrying it, and the text after
         it is a new part. Without signatures a whole run is one part."""
-        kind = "thinking" if part.get("thought") is True else "text"
+        thought = part.get("thought", False)
+        if not isinstance(thought, bool):
+            raise SampleError(f"a part's thought is not a boolean: {thought!r}")
+        kind = "thinking" if thought else "text"
         text = part.get("text", "")
-        signature = part.get("thoughtSignature")
+        signature = _stream_signature(part)
         if not isinstance(text, str):
             raise SampleError(f"a part's text is not a string: {text!r}")
-        if signature is not None and not (isinstance(signature, str) and signature):
-            raise SampleError(f"a part's thoughtSignature is not a string: {signature!r}")
         if not text and signature is None:
             return []  # live streams send an empty text part; it ends no run
-        out = self.close() if self.open is not None and self.open.kind != kind else []
+        out = self._end_run() if self.open is not None and self.open.kind != kind else []
         if text:
             if self.open is None:
                 self.open = _Open(kind)
@@ -324,7 +340,7 @@ class _Stream:
             if self.open is None:
                 self.open = _Open(kind)
             self.open.signature = signature
-            out += self.close()
+            out += self._end_run()
         return out
 
     def _call(self, part: Json) -> list[Part | Delta]:
@@ -346,27 +362,30 @@ class _Stream:
             raise SampleError(f"two calls in one reply have the id {call_id!r}")
         self.call_ids.add(call_id)
         replay: Json = {"id": wire_id} if wire_id else {"synthesized_id": True}
-        signature = part.get("thoughtSignature")
+        signature = _stream_signature(part)
         if signature is not None:
-            if not (isinstance(signature, str) and signature):
-                raise SampleError(f"a part's thoughtSignature is not a string: {signature!r}")
             replay["thoughtSignature"] = signature
-        out = self.close()
+        out = self._end_run()
         index, self.calls = self.calls, self.calls + 1
         args_raw = json.dumps(args, ensure_ascii=False)
         out += [CallNamed(index, call_id, name), CallArgs(index, args_raw)]
         out.append(Part.Call(call_id, name, args_raw, _replay(replay)))
         return out
 
-    def _parts(self, raw: object) -> list[Part | Delta]:
-        out: list[Part | Delta] = []
-        for item in cast("list[object]", raw) if isinstance(raw, list) else []:
+    def _parts(self, raw: object) -> None:
+        if raw is None:
+            return
+        if not isinstance(raw, list):
+            raise SampleError(f"a candidate's content.parts is not a list: {raw!r}")
+        for item in cast("list[object]", raw):
             part = json_object(item, "a part")
             extra = set(part) - _PART_KEYS
             if extra:
                 raise SampleError(f"a part this provider cannot read: {sorted(extra)}")
-            out += self._call(part) if "functionCall" in part else self._text(part)
-        return out
+            data = [k for k in _DATA_KEYS if k in part]
+            if len(data) > 1:
+                raise SampleError(f"a part sets more than one of {data}")
+            self.held += self._call(part) if "functionCall" in part else self._text(part)
 
     @property
     def done(self) -> bool:
@@ -374,14 +393,19 @@ class _Stream:
 
     def feed(self, chunk: Json) -> list[Part | Delta]:
         """The parts and deltas this chunk produced, in order: a part comes before the first
-        delta of whatever follows it."""
+        delta of whatever follows it. If it raises, what it had built waits for `close`."""
+        self._read(chunk)
+        out, self.held = self.held, []
+        return out
+
+    def _read(self, chunk: Json) -> None:
         error = chunk.get("error")
-        if error is not None and self.finish is None:
+        if error is not None:
             raise _stream_error(error)
         self._note(chunk)
         candidates = chunk.get("candidates")
-        if self.finish is not None or not candidates:
-            return []  # a prompt block or a usage-only chunk; after the finish only meta is read
+        if self.blocked is not None or not candidates:
+            return  # a blocked prompt has no reply; a usage-only chunk has no candidates
         if not isinstance(candidates, list) or len(cast("list[object]", candidates)) != 1:
             raise SampleError(
                 "the stream carries other than one candidate; this provider reads one"
@@ -390,15 +414,14 @@ class _Stream:
         if candidate.get("index", 0) != 0:
             raise SampleError("the stream carries a candidate other than index 0")
         content = json_object(candidate.get("content") or {}, "a candidate's content")
-        out = self._parts(content.get("parts"))
+        self._parts(content.get("parts"))
         message = candidate.get("finishMessage")
         if isinstance(message, str) and message:
             self.meta["finishMessage"] = message
         finish = candidate.get("finishReason")
         if isinstance(finish, str) and finish:
-            out += self.close()
+            self.held += self._end_run()
             self.finish = finish
-        return out
 
     def stop(self) -> Finish:
         if self.blocked is not None:
@@ -494,7 +517,6 @@ def _safety_problems(settings: object) -> list[str]:
     if not isinstance(settings, tuple | list):
         return ["option 'safety_settings' must be a list"]
     problems: list[str] = []
-    seen: set[str] = set()
     for i, item in enumerate(cast("tuple[object, ...]", settings)):
         if not isinstance(item, Mapping):
             problems.append(f"option 'safety_settings' item {i} must be an object")
@@ -508,10 +530,6 @@ def _safety_problems(settings: object) -> list[str]:
                 f"option 'safety_settings' item {i} must be exactly "
                 "{category, threshold}, both non-empty strings"
             )
-        elif category in seen:
-            problems.append(f"option 'safety_settings' sets {category!r} twice")
-        else:
-            seen.add(cast("str", category))
     return problems
 
 
@@ -565,6 +583,11 @@ class GeminiProvider:
             problems.append(f"provider is {model.provider!r}, not {NAME!r}")
         if model.api_key_env is None and model.literal_api_key is None:
             problems.append("needs an API key: set api_key_env (or api_key)")
+        if model.model.startswith("models/"):
+            problems.append(
+                f"model {model.model!r} starts with 'models/': this provider adds it, "
+                f"name the model {model.model.removeprefix('models/')!r}"
+            )
         options = model.options
         problems += [
             f"unknown option {key!r}; known options are {list(_OPTIONS)}"
@@ -591,22 +614,20 @@ class GeminiProvider:
         """Close the client and its connections. Later samples fail."""
         await self._connection.aclose()
 
-    def request(
+    def _request(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> tuple[str, dict[str, str], Json]:
-        """The URL, headers, and JSON body of the request for this sample.
+        """The URL, headers, and JSON body of the request for this sample. `check` has passed
+        (the driver runs it first).
 
-        Raises `SampleError` for settings `check` refuses, a walk with nothing to send, or one
-        the API would reject.
+        Raises `SampleError` for an unreadable key, a walk with nothing to send, or one the API
+        would reject.
         """
-        problems = self.check(model)
-        if problems:
-            raise SampleError("; ".join(problems))
         try:
             key = model.api_key(self._environ)
         except ConfigError as e:  # `tau config check` warns of an unset variable; sampling fails
             raise SampleError(str(e)) from e
-        system, history = contents(walk)
+        system, history = contents(walk, structured=bool(tools))
         if not history:
             raise SampleError("the walk has no user content to send")
         if history[-1]["role"] == "model":
@@ -635,7 +656,7 @@ class GeminiProvider:
         if "safety_settings" in options:
             body["safetySettings"] = plain(options["safety_settings"])
         body.update(extra)
-        name = model.model if "/" in model.model else f"models/{model.model}"
+        name = quote(model.model if "/" in model.model else f"models/{model.model}", safe="/")
         base = (model.base_url or DEFAULT_BASE_URL).rstrip("/")
         url = f"{base}/{name}:streamGenerateContent?alt=sse"
         return url, {"x-goog-api-key": cast("str", key)}, body
@@ -651,7 +672,7 @@ class GeminiProvider:
         after it costs only the meta not yet received. A prompt the API blocked (`promptFeedback`
         with a `blockReason`) ends as `Refused`, the reason in `finish_reason` and the block in
         `meta`."""
-        url, headers, body = self.request(walk, model, tools)
+        url, headers, body = self._request(walk, model, tools)
         async for item in self._connection.sample(url, headers, body, _Stream()):
             yield item
 

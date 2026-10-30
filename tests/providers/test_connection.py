@@ -13,7 +13,7 @@ from anthropic_streams import ENVIRON as ANTHROPIC_ENVIRON
 from anthropic_streams import KEY_ENV as ANTHROPIC_KEY_ENV
 from anthropic_streams import RESOLVED as ANTHROPIC_MODEL
 from anthropic_streams import delta as anthropic_delta
-from anthropic_streams import event, message, opened, start, text
+from anthropic_streams import event, message, opened, sent_request, start, text
 from anthropic_streams import finish as anthropic_finish
 from fakes import FakeTool
 from gemini_support import ENVIRON as GEMINI_ENVIRON
@@ -368,21 +368,20 @@ async def test_content_after_the_stop_is_dropped_and_the_reply_still_finishes() 
     assert items[-1].stop == Stop.End
 
 
-def sent_kinds(args_raw: str) -> list[str]:
+async def sent_kinds(args_raw: str) -> list[str]:
     """The block types Anthropic sends for a walk whose one call has `args_raw`."""
     walk = walk_of(
         Body.User("go"),
         Body.Assistant([Part.Call("a", "ta", args_raw)], Stop.Tools),
         Body.Results([("a", Outcome.Ok("done"), Author.Core())]),
     )
-    request = AnthropicProvider(None, ANTHROPIC_ENVIRON).request(
-        walk, ANTHROPIC_MODEL, [FakeTool("ta", "A")]
-    )
+    request = await sent_request(walk, ANTHROPIC_MODEL, [FakeTool("ta", "A")], ANTHROPIC_ENVIRON)
     messages: list[dict[str, list[dict[str, str]]]] = request[2]["messages"]  # type: ignore[assignment]
     return [block["type"] for message in messages for block in message["content"]]
 
 
-def test_arguments_with_a_nan_or_a_lone_surrogate_send_the_batch_as_text() -> None:
-    assert "tool_use" in sent_kinds('{"x": 1}')
+@scenario
+async def test_arguments_with_a_nan_or_a_lone_surrogate_send_the_batch_as_text() -> None:
+    assert "tool_use" in await sent_kinds('{"x": 1}')
     for bad in ('{"x": NaN}', '{"x": Infinity}', '{"x": "\\ud800"}'):
-        assert "tool_use" not in sent_kinds(bad), bad
+        assert "tool_use" not in await sent_kinds(bad), bad

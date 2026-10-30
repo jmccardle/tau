@@ -131,6 +131,9 @@ class CutStream(httpx.AsyncByteStream):
         raise httpx.ReadError("connection reset by peer")
 
 
+DONE_LINE = "data: [DONE]\n\n"
+
+
 def chunk(delta: dict[str, object], finish: str | None = None) -> str:
     """One SSE event in llama.cpp's shape."""
     choice = {"index": 0, "delta": delta, "finish_reason": finish}
@@ -170,6 +173,20 @@ def fresh_walk() -> list[Node]:
     walk = session.tree.walk(session.cursor(session.cursors()[0]).at)
     session.close()
     return walk
+
+
+async def posted(
+    walk: Sequence[Node],
+    model: ModelConfig = RESOLVED,
+    tools: Sequence[Tool] = (),
+    environ: dict[str, str] | None = None,
+) -> tuple[Server, SampleError | None]:
+    """Sample once against a server that answers a one-word reply, and return the server (its
+    `requests` and `bodies` hold what the provider sent) and the `SampleError`, if any."""
+    server = sse_text(chunk({"content": "ok"}, "stop") + "data: [DONE]\n\n")
+    provider = OpenAIProvider(server.transport, {} if environ is None else environ)
+    _, error = await collect_all(provider, walk, model, tools)
+    return server, error
 
 
 @asynccontextmanager
