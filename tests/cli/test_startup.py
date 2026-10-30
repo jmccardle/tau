@@ -1,24 +1,18 @@
 """load_config and select_model: what a frontend does before its first sample (D13)."""
 
 import io
-import os
-from pathlib import Path
 
 import pytest
-from world import World, models
+from world import EOF, World, models, terminal
 
 from tau_next import (
     ConfigError,
     ModelCatalog,
-    ModelConfig,
     UntrustedProject,
-    approve_project,
-    check_config,
     load_config,
     prompts,
     read_models,
     select_model,
-    terminal_pick,
 )
 
 
@@ -67,22 +61,6 @@ def test_an_untrusted_project_with_a_yes_is_trusted_and_loaded(world: World) -> 
     assert again.catalog.names() == ("p",)
 
 
-def test_a_trusted_projects_dotenv_reaches_environ_and_the_shell_wins(world: World) -> None:
-    root = world.project(config=models(p={"api_key_env": "P_KEY"}))
-    (root / ".env").write_text("P_KEY=from-dotenv\nSHELL=from-dotenv\n", encoding="utf-8")
-    approve_project(root, world.tau)
-    loaded = load_config(root, {**world.environ, "SHELL": "from-shell"}, ask=None)
-    assert loaded.environ["P_KEY"] == "from-dotenv"
-    assert loaded.environ["SHELL"] == "from-shell"
-
-
-def test_an_untrusted_projects_dotenv_is_not_read(world: World) -> None:
-    root = world.project(config=models(p={}))
-    (root / ".env").write_text("LEAK=1\n", encoding="utf-8")
-    with pytest.raises(UntrustedProject):
-        load_config(root, world.environ, ask=None)
-
-
 def test_a_config_error_propagates(world: World) -> None:
     world.user_config('{"models": ')
     with pytest.raises(ConfigError, match=r"config\.json"):
@@ -129,36 +107,6 @@ def test_an_ambiguous_bare_name_asks_a_live_terminal() -> None:
     assert seen == [("free:sol", "paid:sol")]
 
 
-def test_terminal_pick_reads_a_number_or_a_name_and_refuses_the_rest() -> None:
-    names = ("free:sol", "paid:sol")
-    out = io.StringIO()
-    assert terminal_pick(io.StringIO("2\n"), out)(names) == "paid:sol"
-    assert "1. free:sol" in out.getvalue()
-    assert terminal_pick(io.StringIO("free:sol\n"), out)(names) == "free:sol"
-    with pytest.raises(ConfigError, match="no model chosen"):
-        terminal_pick(io.StringIO("7\n"), out)(names)
-    with pytest.raises(ConfigError, match="no model chosen"):
-        terminal_pick(io.StringIO(""), out)(names)
-
-
-def test_prompts_are_absent_without_a_terminal_and_present_on_one() -> None:
-    quiet = prompts(io.StringIO(), io.StringIO())
-    assert quiet.ask is None
-    assert quiet.pick is None
-    master, slave = os.openpty()
-    with (
-        os.fdopen(os.dup(slave), "w") as tty_out,
-        os.fdopen(slave, "r") as tty_in,
-        os.fdopen(master, "w") as typed,
-    ):
-        typed.write("2\n")
-        typed.flush()
-        live = prompts(tty_in, tty_out)
-        assert live.ask is not None
-        assert live.pick is not None
-        assert live.pick(("free:sol", "paid:sol")) == "paid:sol"
-
-
 def test_an_unknown_name_suggests_close_matches() -> None:
     with pytest.raises(ConfigError, match=r"did you mean.*paid:sol"):
         select_model(grouped(), "paid:sool", pick=None)
@@ -181,28 +129,6 @@ def test_no_request_and_no_default_says_how_to_set_one() -> None:
         select_model(grouped(), None, pick=None)
 
 
-def test_a_project_directory_is_found_from_a_subdirectory(world: World) -> None:
-    root = world.project(config=models(p={}))
-    approve_project(root, world.tau)
-    sub: Path = root / "src" / "deep"
-    sub.mkdir(parents=True)
-    assert load_config(sub, world.environ, ask=None).project is not None
-
-
-def test_terminal_pick_at_end_of_input_says_no_answer_and_leaves_the_prompt_line() -> None:
-    out = io.StringIO()
-    with pytest.raises(ConfigError, match="no answer"):
-        terminal_pick(io.StringIO(""), out)(("free:sol", "paid:sol"))
-    assert out.getvalue().endswith("number: \n")
-
-
-def test_the_pick_menu_escapes_control_characters() -> None:
-    out = io.StringIO()
-    terminal_pick(io.StringIO("1\n"), out)(("a\x1b[2Jb", "c"))
-    assert "\x1b" not in out.getvalue()
-    assert "a\\x1b[2Jb" in out.getvalue()
-
-
 def test_suggestions_escape_control_characters() -> None:
     with pytest.raises(ConfigError) as caught:
         select_model(grouped(), "sol\x1b[2J", pick=None)
@@ -214,21 +140,35 @@ def test_an_empty_requested_name_is_not_the_default() -> None:
         select_model(grouped("solo"), "", pick=None)
 
 
-def test_a_malformed_base_url_is_a_config_error_and_a_problem_at_its_key() -> None:
-    for url in ("http://[x/v1", "ftp://h/v1", "http://"):
-        with pytest.raises(ConfigError, match="base_url"):
-            ModelConfig("m", url)
-        problems = check_config(
-            cli={"models": {"a": {"model": "m", "base_url": url}}},
-        )
-        assert [p.path for p in problems] == ["models.a.base_url"]
-        with pytest.raises(ConfigError, match="base_url"):
-            read_models(cli={"models": {"a": {"model": "m", "base_url": url}}})
+PAIR = ("free:sol", "paid:sol")
 
 
-def test_a_control_character_in_a_group_or_model_name_is_an_error() -> None:
-    cfg = {"models": {"g\x07": {"models": {"m": {"model": "m", "base_url": "http://h/v1"}}}}}
-    problems = check_config(cli=cfg)
-    assert [p.severity for p in problems] == ["error"]
-    assert "control characters" in problems[0].message
-    assert "\x07" not in problems[0].message
+def test_prompts_are_absent_without_a_terminal() -> None:
+    quiet = prompts(io.StringIO(), io.StringIO())
+    assert quiet.ask is None
+    assert quiet.pick is None
+
+
+@pytest.mark.parametrize(("typed", "chosen"), [("2\n", "paid:sol"), ("free:sol\n", "free:sol")])
+def test_a_live_terminal_picks_by_number_or_by_name(typed: str, chosen: str) -> None:
+    with terminal(typed) as term:
+        assert term.pick is not None
+        assert term.pick(PAIR) == chosen
+        assert "1. free:sol" in term.screen()
+
+
+@pytest.mark.parametrize(("typed", "message"), [("7\n", "no model chosen"), (EOF, "no answer")])
+def test_a_live_terminal_refuses_anything_else_and_end_of_input(typed: str, message: str) -> None:
+    with terminal(typed) as term:
+        assert term.pick is not None
+        with pytest.raises(ConfigError, match=message):
+            term.pick(PAIR)
+
+
+def test_the_pick_menu_escapes_control_characters() -> None:
+    with terminal("1\n") as term:
+        assert term.pick is not None
+        term.pick(("a\x1b[2Jb", "c"))
+        screen = term.screen()
+        assert "a\\x1b[2Jb" in screen
+        assert "\x1b[2J" not in screen

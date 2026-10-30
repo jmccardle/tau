@@ -9,7 +9,6 @@ never the value.
 """
 
 import re
-from pathlib import Path
 
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _EXPORT = re.compile(r"export\s+")
@@ -66,8 +65,3 @@ def parse_dotenv(text: str, source: str = ".env") -> dict[str, str]:
         else:
             found[key] = _COMMENT.sub("", rest).strip()
     return found
-
-
-def read_dotenv(path: Path) -> dict[str, str]:
-    """`parse_dotenv` of the file at `path`; `OSError` if it cannot be read."""
-    return parse_dotenv(path.read_text(encoding="utf-8-sig"), str(path))

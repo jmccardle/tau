@@ -24,9 +24,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO, cast
 
-from tau_next.config import ConfigError, ModelConfig
-from tau_next.config_layers import LayerText, ModelCatalog, check_config, read_models
-from tau_next.dotenv import DotenvError, parse_dotenv
+from tau_next._config import ConfigError, ModelConfig
+from tau_next._config_layers import LayerText, ModelCatalog, check_config, read_models
+from tau_next._dotenv import DotenvError, parse_dotenv
 
 TAU_DIR = ".tau"
 _GITIGNORE = "*\n"
@@ -598,18 +598,6 @@ def terminal_ask(stdin: TextIO, stdout: TextIO) -> Callable[[str], bool]:
         return line.strip().lower() in ("y", "yes")
 
     return ask
-
-
-def create_project_dir(root: Path, home: Path) -> Path:
-    """Create `<root>/.tau/` (mode 700, `.gitignore` of `*`) and trust it, since tau made it.
-    Raises `FileExistsError` if `.tau/` exists (a symlink counts)."""
-    tau = root / TAU_DIR
-    tau.mkdir(mode=_PRIVATE)
-    with _tau_dir(root) as (fd, _):
-        os.fchmod(fd, _PRIVATE)
-        _write_gitignore(fd)
-    _record(home, root, None)
-    return tau
 
 
 def project_environment(project: Trusted | None, environ: Mapping[str, str]) -> dict[str, str]:

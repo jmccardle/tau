@@ -8,6 +8,8 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
 from tau_next import trace
+from tau_next._config import ConfigError, model_name
+from tau_next._config_layers import ModelCatalog
 from tau_next._core import (
     Answer,
     Author,
@@ -21,8 +23,6 @@ from tau_next._core import (
     Session,
     Stop,
 )
-from tau_next.config import ConfigError, model_name
-from tau_next.config_layers import ModelCatalog
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 from tau_next.protocols import (
     CursorHook,

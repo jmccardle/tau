@@ -590,14 +590,14 @@ entry, `CONFIG_KEYS`, `Settings`, model entry
 How a step runs. Its data is exactly `{"model": "<qualified name>"}`: it names
 a model and holds nothing resolved from the config files (no URL, no key
 variable, no settings; D13). `model_config(name)` builds it and
-`model_name(config)` reads the name back, raising `ConfigError` for any other
-shape. `config_at(n)` is the nearest `Config` on `walk(n)` (D5), recorded per
+`model_name(config)` (internal, `tau_next._config`) reads the name back, raising
+`ConfigError` for any other shape; a driver turns that into a failed sample. `config_at(n)` is the nearest `Config` on `walk(n)` (D5), recorded per
 node when it is added (`Session::configs`), so it costs the same at any depth.
 Core reads nothing in it: `data` is opaque to core and read by the driver,
 which resolves the name in its `ModelCatalog` at each sample.
 
 ### ModelConfig, ConfigError
-`tau_next.ModelConfig`, `tau_next.ConfigError` (`config.py`) · new
+`tau_next.ModelConfig`, `tau_next.ConfigError` (module `tau_next._config`) · new
 
 The **resolved model**, built by the driver at each sample from the
 `ModelCatalog` and the name in `config_at(at)`; no node holds it. Fields:
@@ -636,7 +636,12 @@ Names may not contain `:`. A `Config` node stores a qualified name; a bare
 name is only a search term.
 
 ### read_models, check_config, ModelCatalog, ResolvedModel, Origin, ConfigProblem
-`tau_next.config_layers` · D13 · new
+module `tau_next._config_layers`; all but `Origin` exported · D13 · new
+
+`read_models` is the catalog without files or trust: how a program that embeds
+the driver builds a `ModelCatalog` from a mapping (`read_models(cli=...)`). A
+frontend that reads files calls `load_config`. `Origin` is internal: it is only
+the item type of `explain`, read by attribute (`key`, `source`, `group`).
 
 `read_models(user, project, cli)` reads the layers (each may be absent; `cli`
 is a mapping in the file's JSON shape), merges their raw trees (objects by
@@ -672,18 +677,23 @@ working directory, stopping at `$HOME`. Only a trusted directory's project confi
 are read. Approval also makes `.tau/` the user's, mode `700`, with a
 `.gitignore` of `*`.
 
-### safe_text, read_project_config, user_config_path
-`tau_next.trust` · D13 · new
+### safe_block, safe_text, read_project_config, user_config_path
+module `tau_next._trust`; only `safe_block` is exported · D13 · new
 
-`safe_text(text)` writes every control, format (such as U+202E), line/paragraph separator and surrogate character as an escape (`\x1b`, `\u202e`; a byte that was not UTF-8 in a name as `\xff`), so output always encodes; `safe_block(text)` does it line by line, splitting only on `\n`; everything printed from config
+`safe_block` is exported for a frontend that prints an exception from config
+loading (the examples do): the exceptions carry file text unescaped. `safe_text(text)` (internal) writes every control, format (such as U+202E), line/paragraph separator and surrogate character as an escape (`\x1b`, `\u202e`; a byte that was not UTF-8 in a name as `\xff`), so output always encodes; `safe_block(text)` does it line by line, splitting only on `\n`; everything printed from config
 data goes through it (the trust report, `tau config check`, `--show`, suggestions, the pick menu). Model
 and group names may not contain control characters (the checker errors at that path). `read_project_config(root)` reads
 a project's config once through the safe reader and returns it as a `LayerText` (`None`: no file); it
 shows what an untrusted project says and nothing read this way is used. `user_config_path(home)` is
 `<home>/config.json` or `None`.
 
-### tau_home, find_project, project_config_path, is_trusted, trust_report, approve_project, ensure_trusted, Trusted, UntrustedProject, TrustError, is_interactive, terminal_ask, create_project_dir, project_environment, LayerText
-`tau_next.trust` (`LayerText`: `tau_next.config_layers`) · D13 · new
+### tau_home, find_project, project_config_path, is_trusted, trust_report, approve_project, ensure_trusted, Trusted, UntrustedProject, TrustError, is_interactive, terminal_ask, project_environment, LayerText
+module `tau_next._trust` (`LayerText`: `tau_next._config_layers`); only `Trusted`, `UntrustedProject`, and `TrustError` are exported · D13 · new
+
+Everything here but those three names is internal: the outside reaches it
+through `load_config` (finding, trusting, `.env`), `tau trust` (approval and the
+report), and `tau config check`. Tests do the same.
 
 - `tau_home(environ)`: `$TAU_HOME` or `~/.tau` (`~` from `environ["HOME"]`).
 - `find_project(start, environ)`: the nearest directory upward whose `.tau/` is
@@ -710,8 +720,7 @@ shows what an untrusted project says and nothing read this way is used. `user_co
   raises **`UntrustedProject`** (message: the report and `tau trust <root>`).
   **`TrustError`** (a `PermissionError`) is every other refusal.
   `terminal_ask(stdin, stdout)` and `is_interactive(stdin, stdout)` are the
-  terminal side. `create_project_dir(root, home)` makes a `.tau/` tau owns and
-  trusts it in one step. `project_environment(trusted, environ)` overlays
+  terminal side. `project_environment(trusted, environ)` overlays
   `environ` on the `.env` of a `Trusted` project (`None`: just `environ`). A **`LayerText`** is a config
   layer already read (source and text), accepted where a layer takes a `Path`.
 
@@ -731,8 +740,8 @@ trust error is shown with control characters (C0, DEL, C1) as `\xNN` escapes.
 opened non-blocking, so a swapped-in FIFO cannot hang. (H) A `.gitignore` without a line of exactly `*`,
 or with a `!` line, is a `[warn]` in the report, neither blocked nor rewritten.
 
-### parse_dotenv, read_dotenv, DotenvError
-`tau_next.dotenv` · D13 · new
+### parse_dotenv, DotenvError
+module `tau_next._dotenv`; only `DotenvError` is exported · D13 · new
 
 Our own `.env` reader: `KEY=value` lines, optional `export `, `#` comments (a
 `#` starts one only at line start or after whitespace, so `K=#x` is `#x`),
@@ -741,11 +750,11 @@ unquoted values trimmed of a trailing ` # comment`; a BOM is tolerated. A
 malformed line is a `DotenvError` naming the file and line, never the value.
 
 ### load_config, LoadedConfig
-`tau_next.startup` · D13 · new
+module `tau_next._startup` · D13 · new
 
 What a frontend calls before its first sample. `load_config(cwd, environ, *, ask,
 cli=None)`: `tau_home(environ)`, the user config `<home>/config.json` (absent is
-fine; `user_config_path(home)`, in `tau_next.trust`, is that path or `None`), `find_project(cwd)`, and
+fine; `user_config_path(home)`, in `tau_next._trust`, is that path or `None`), `find_project(cwd)`, and
 for a project `ensure_trusted(root, home, ask=ask)` (no `ask`, no live terminal:
 `UntrustedProject`), then the catalog from the approved project text and the
 user file (`cli` overrides on top), and the environment from
@@ -755,7 +764,7 @@ trusted project's `.env`; the shell wins; pass it to the provider so keys come
 from it), `project` (the `Trusted`, or `None`), `home`.
 
 ### select_model, Pick, terminal_pick, Prompts, prompts
-`tau_next.startup` · D13 · new
+module `tau_next._startup`; `terminal_pick` is internal (reach it as `prompts(...).pick`) · D13 · new
 
 `select_model(catalog, requested=None, *, pick)` returns one qualified name:
 `requested` (`--model`), else `catalog.default_model`, else a `ConfigError` that

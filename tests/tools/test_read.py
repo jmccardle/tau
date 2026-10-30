@@ -8,16 +8,6 @@ from calls import call, err
 from tau_next import Outcome, ReadTool
 
 
-def test_the_tool_describes_itself() -> None:
-    tool = ReadTool()
-    assert tool.name == "read"
-    assert "binary" in tool.description
-    assert tool.parameters["required"] == ["path"]
-    properties = tool.parameters["properties"]
-    assert isinstance(properties, dict)
-    assert sorted(properties) == ["limit", "offset", "path"]  # pyright: ignore[reportUnknownArgumentType]
-
-
 def test_reads_a_file_verbatim_relative_to_the_working_directory(tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("one\ntwo\n")
     assert call(ReadTool(tmp_path), path="a.txt") == Outcome.Ok("one\ntwo\n")

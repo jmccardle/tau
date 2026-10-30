@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-from tau_next.config import ConfigError
-from tau_next.config_layers import ModelCatalog, read_models
-from tau_next.trust import (
+from tau_next._config import ConfigError
+from tau_next._config_layers import ModelCatalog, read_models
+from tau_next._trust import (
     Trusted,
     ensure_trusted,
     find_project,

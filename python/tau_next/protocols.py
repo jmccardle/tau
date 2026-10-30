@@ -5,8 +5,8 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, cast
 
+from tau_next._config import ModelConfig
 from tau_next._core import Node, Outcome, Part, Stop
-from tau_next.config import ModelConfig
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 
 

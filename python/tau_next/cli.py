@@ -14,11 +14,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
-from tau_next.config import ConfigError
-from tau_next.config_layers import ConfigProblem, LayerText, ModelCatalog, check_config
-from tau_next.dotenv import DotenvError
-from tau_next.startup import load_config, prompts, select_model
-from tau_next.trust import (
+from tau_next._config import ConfigError
+from tau_next._config_layers import ConfigProblem, LayerText, ModelCatalog, check_config
+from tau_next._dotenv import DotenvError
+from tau_next._startup import load_config, prompts, select_model
+from tau_next._trust import (
     TAU_DIR,
     Trusted,
     TrustError,

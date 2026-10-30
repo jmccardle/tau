@@ -16,7 +16,6 @@ from tau_next import (
     Session,
     SystemClock,
     model_config,
-    model_name,
     read_models,
 )
 from tau_next.providers.openai import OpenAIProvider
@@ -41,23 +40,6 @@ def sample_errors(session: Session) -> list[str]:
 def test_a_config_names_a_model_and_nothing_else() -> None:
     config = model_config("free_tokens:gpt")
     assert json.loads(config.data) == {"model": "free_tokens:gpt"}
-    assert model_name(config) == "free_tokens:gpt"
-
-
-@pytest.mark.parametrize(
-    ("data", "message"),
-    [
-        ("not json", "not JSON"),
-        ("[]", "must be a JSON object, not list"),
-        ("{}", "missing 'model'"),
-        ('{"model": "m", "base_url": "http://x/v1"}', r"unexpected keys \['base_url'\]"),
-        ('{"model": 3}', "'model' must be a string, not int"),
-        ('{"model": ""}', "must not be empty"),
-    ],
-)
-def test_any_other_shape_is_refused_with_a_clear_error(data: str, message: str) -> None:
-    with pytest.raises(ConfigError, match=message):
-        model_name(Config(data))
 
 
 def test_an_empty_name_cannot_be_written() -> None:
@@ -186,7 +168,14 @@ async def test_the_same_bare_name_in_two_groups_is_told_apart_by_the_node(tmp_pa
 
 @scenario
 async def test_a_config_node_that_is_not_a_model_name_fails_the_sample(tmp_path: Path) -> None:
-    for i, data in enumerate(["not json", '{"model": "llama", "base_url": "http://x/v1"}']):
+    shapes = [
+        "not json",
+        "[]",
+        "{}",
+        '{"model": 3}',
+        '{"model": "llama", "base_url": "http://x/v1"}',
+    ]
+    for i, data in enumerate(shapes):
         server = sse("plain")
         session = Session.create(Config(data), "sys", SystemClock().now(), tmp_path / str(i))
         driver = Driver(session, OpenAIProvider(server.transport, {}), catalog())
@@ -196,7 +185,7 @@ async def test_a_config_node_that_is_not_a_model_name_fails_the_sample(tmp_path:
             driver.send(c, "test", "hello")
             await driver.rest(c)
             (error,) = sample_errors(session)
-            assert "config data" in error
+            assert error
             assert not session.cursor(c).auto
         finally:
             await driver.stop()

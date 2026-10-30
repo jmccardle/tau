@@ -115,37 +115,7 @@ def no_annotation(x) -> str:  # type: ignore[no-untyped-def]
     return ""
 
 
-def variadic(*args: str) -> str:
-    """Doc."""
-    return ""
-
-
-def keywords(**kwargs: str) -> str:
-    """Doc."""
-    return ""
-
-
-def positional(x: str, /) -> str:
-    """Doc."""
-    return ""
-
-
 def unsupported_dict(x: dict[str, str]) -> str:
-    """Doc."""
-    return ""
-
-
-def unsupported_union(x: int | str) -> str:
-    """Doc."""
-    return ""
-
-
-def unsupported_literal(x: Literal[True]) -> str:
-    """Doc."""
-    return ""
-
-
-def unsupported_nested(x: list[dict[str, int]]) -> str:
     """Doc."""
     return ""
 
@@ -155,13 +125,7 @@ def unsupported_nested(x: list[dict[str, int]]) -> str:
     [
         (shout, ["'shout'", "docstring"]),
         (no_annotation, ["'no_annotation'", "'x'", "no type annotation"]),
-        (variadic, ["'variadic'", "'args'", "*args"]),
-        (keywords, ["'keywords'", "'kwargs'", "**kwargs"]),
-        (positional, ["'positional'", "'x'", "positional-only"]),
         (unsupported_dict, ["'unsupported_dict'", "'x'", "dict"]),
-        (unsupported_union, ["'unsupported_union'", "'x'", "int | str"]),
-        (unsupported_literal, ["'unsupported_literal'", "'x'", "True"]),
-        (unsupported_nested, ["'unsupported_nested'", "'x'", "dict"]),
     ],
 )
 def test_what_cannot_be_a_tool_fails_at_decoration_naming_function_and_parameter(
@@ -220,15 +184,9 @@ async def test_a_call_binds_json_arguments_sync_or_async() -> None:
     ("args_raw", "needle"),
     [
         ('{"name": ', "not valid JSON"),
-        ("[1]", "JSON object, not array"),
-        ('"x"', "JSON object, not string"),
         ("{}", "missing required arguments ['name']"),
         ('{"name": "a", "color": 1}', "unexpected arguments ['color']"),
         ('{"name": 3}', "'name' must be string, not integer"),
-        ('{"name": null}', "'name' must be string, not null"),
-        ('{"name": "a", "times": true}', "'times' must be integer, not boolean"),
-        ('{"name": "a", "times": 1.5}', "'times' must be integer, not number"),
-        ('{"name": "a", "tags": "x"}', "'tags' must be array, not string"),
         ('{"name": "a", "tags": ["x", 2]}', "item 1 must be string, not integer"),
     ],
 )

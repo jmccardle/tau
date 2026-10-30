@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from tau_next.config import ConfigError, ModelConfig, url_problem
+from tau_next._config import ConfigError, ModelConfig, url_problem
 
 Severity = Literal["error", "warning"]
 

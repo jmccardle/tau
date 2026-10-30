@@ -37,7 +37,7 @@ features = ["abi3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests/behavior", "tests/providers", "tests/cli"]
+pythonpath = ["tests/behavior", "tests/providers", "tests"]
 addopts = ["--strict-markers"]
 
 [tool.ruff]
@@ -66,4 +66,4 @@ strict = ["python"]
 pythonVersion = "3.12"
 venvPath = "."
 venv = ".venv"
-extraPaths = ["tests/behavior", "tests/providers", "tests/cli"]
+extraPaths = ["tests/behavior", "tests/providers", "tests"]

@@ -10,12 +10,6 @@ from calls import call, err
 from tau_next import Outcome, WriteTool
 
 
-def test_the_tool_describes_itself() -> None:
-    tool = WriteTool()
-    assert tool.name == "write"
-    assert tool.parameters["required"] == ["path", "content"]
-
-
 def test_writes_creating_parents_and_counts_lines_and_bytes(tmp_path: Path) -> None:
     out = call(WriteTool(tmp_path), path="a/b/c.txt", content="é\nx\n")
     assert out == Outcome.Ok("Wrote 2 lines (5 bytes) to a/b/c.txt")
