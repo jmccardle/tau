@@ -47,6 +47,7 @@ from tau_next.clock import SystemClock
 from tau_next.config import ConfigError, ModelConfig
 from tau_next.config_layers import (
     ConfigProblem,
+    LayerText,
     ModelCatalog,
     Origin,
     ResolvedModel,
@@ -70,6 +71,7 @@ from tau_next.protocols import (
 from tau_next.step_limit import StepLimit
 from tau_next.tools import FunctionTool, ToolDefinitionError, ToolError, tool
 from tau_next.trust import (
+    Trusted,
     TrustError,
     UntrustedProject,
     approve_project,
@@ -118,6 +120,7 @@ __all__ = [
     "Item",
     "ItemData",
     "Job",
+    "LayerText",
     "Leased",
     "ModelCatalog",
     "ModelConfig",
@@ -157,6 +160,7 @@ __all__ = [
     "Tree",
     "TreeHandle",
     "TrustError",
+    "Trusted",
     "UntrustedProject",
     "Version",
     "WriteTool",

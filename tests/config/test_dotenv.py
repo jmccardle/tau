@@ -26,7 +26,21 @@ def test_unquoted_value_loses_trailing_comment_only() -> None:
 
 
 def test_a_comment_may_follow_a_quoted_value() -> None:
-    assert parse_dotenv("A='x' # why\nB=\"y\"#z") == {"A": "x", "B": "y"}
+    assert parse_dotenv("A='x' # why\nB=\"y\"\t# z") == {"A": "x", "B": "y"}
+    with pytest.raises(DotenvError):
+        parse_dotenv('B="y"#z')
+
+
+def test_a_hash_starts_a_comment_only_after_whitespace() -> None:
+    parsed = parse_dotenv("K=#x\nL=a#b\nM= #c\nN=a\t#c")
+    assert parsed == {"K": "#x", "L": "a#b", "M": "", "N": "a"}
+
+
+def test_a_byte_order_mark_is_tolerated(tmp_path: Path) -> None:
+    assert parse_dotenv("\ufeffA=1\nB=2") == {"A": "1", "B": "2"}
+    path = tmp_path / ".env"
+    path.write_bytes(b"\xef\xbb\xbfA=1\n")
+    assert read_dotenv(path) == {"A": "1"}
 
 
 def test_value_may_contain_equals() -> None:

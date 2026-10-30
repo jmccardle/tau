@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from tau_next import (
+    LayerText,
+    TrustError,
     UntrustedProject,
     approve_project,
     create_project_dir,
@@ -18,6 +20,7 @@ from tau_next import (
     is_interactive,
     is_trusted,
     project_environment,
+    read_models,
     tau_home,
     terminal_ask,
     trust_report,
@@ -151,8 +154,10 @@ def test_a_changed_config_is_untrusted_again_with_a_diff(world: World) -> None:
 
 def test_a_corrupt_state_file_fails_loudly(world: World) -> None:
     root = world.project()
-    world.tau.mkdir()
-    (world.tau / "trusted.json").write_text("[1, 2", encoding="utf-8")
+    world.tau.mkdir(mode=0o700)
+    state = world.tau / "trusted.json"
+    state.write_text("[1, 2", encoding="utf-8")
+    state.chmod(0o600)
     with pytest.raises(ValueError, match=r"trusted\.json"):
         is_trusted(root, world.tau)
 
@@ -196,7 +201,7 @@ def test_report_never_prints_a_key(world: World) -> None:
 def test_report_lists_config_errors(world: World) -> None:
     root = world.project(config='{"models": {"bad": {"modle": "x"}}}')
     report = trust_report(root, world.tau)
-    assert "config errors" in report
+    assert "cannot be trusted until these are fixed" in report
     assert "modle" in report
 
 
@@ -313,3 +318,207 @@ def test_a_malformed_dotenv_in_a_trusted_project_fails_early(world: World) -> No
     (root / ".env").write_text("A=1\nnonsense\n", encoding="utf-8")
     with pytest.raises(ValueError, match=r"\.env:2:"):
         project_environment(root, world.tau, world.environ)
+
+
+# -- A: approve exactly what was shown
+
+
+def test_ensure_trusted_returns_the_approved_text_and_a_layer(world: World) -> None:
+    config = models(a={})
+    root = world.project(config=config)
+    result = ensure_trusted(root, world.tau, ask=terminal_ask(io.StringIO("y\n"), io.StringIO()))
+    assert result.root == root
+    assert json.loads(result.config_text or "") == config
+    layer = result.layer()
+    assert isinstance(layer, LayerText)
+    assert read_models(None, layer).names() == ("a",)
+    again = ensure_trusted(root, world.tau, ask=None)
+    assert again == result
+
+
+def test_a_project_without_config_has_no_layer(world: World) -> None:
+    root = world.project()
+    result = ensure_trusted(root, world.tau, ask=terminal_ask(io.StringIO("y\n"), io.StringIO()))
+    assert result.config_text is None
+    assert result.layer() is None
+
+
+def test_a_config_changed_while_the_user_read_the_report_is_refused(world: World) -> None:
+    root = world.project(config=models(a={}))
+
+    def ask_then_swap(report: str) -> bool:
+        assert "new model a" in report
+        (root / ".tau" / "config.json").write_text(
+            json.dumps(models(a={"base_url": "http://evil.example/v1"})), encoding="utf-8"
+        )
+        return True
+
+    with pytest.raises(TrustError, match="changed while you were reading; run again"):
+        ensure_trusted(root, world.tau, ask=ask_then_swap)
+    assert not is_trusted(root, world.tau)
+
+
+# -- B: symlinks are refused, never followed
+
+
+def test_a_symlinked_config_is_refused_without_its_content(world: World, tmp_path: Path) -> None:
+    root = world.project()
+    secret = tmp_path / "elsewhere.json"
+    secret.write_text('{"api_key": "' + LITERAL_KEY + '"}', encoding="utf-8")
+    (root / ".tau" / "config.json").symlink_to(secret)
+    with pytest.raises(TrustError, match="symlink") as caught:
+        ensure_trusted(root, world.tau, ask=None)
+    assert str(root / ".tau" / "config.json") in str(caught.value)
+    assert LITERAL_KEY not in str(caught.value)
+
+
+def test_a_symlinked_tau_dir_is_skipped_and_refused(world: World, tmp_path: Path) -> None:
+    real = tmp_path / "real_tau"
+    real.mkdir(mode=0o700)
+    root = world.home / "linked"
+    root.mkdir()
+    (root / ".tau").symlink_to(real)
+    assert find_project(root, world.environ) is None
+    with pytest.raises(TrustError, match="symlink"):
+        ensure_trusted(root, world.tau, ask=terminal_ask(io.StringIO("y\n"), io.StringIO()))
+    with pytest.raises(FileExistsError):
+        create_project_dir(root, world.tau)
+
+
+def test_a_symlinked_ignore_file_is_refused_at_approval(world: World, tmp_path: Path) -> None:
+    root = world.project()
+    victim = tmp_path / "victim"
+    victim.write_text("keep", encoding="utf-8")
+    (root / ".tau" / ".gitignore").symlink_to(victim)
+    with pytest.raises(TrustError, match="symlink"):
+        approve_project(root, world.tau)
+    assert victim.read_text(encoding="utf-8") == "keep"
+
+
+def test_a_symlinked_dotenv_is_refused(world: World, tmp_path: Path) -> None:
+    root = world.project()
+    approve_project(root, world.tau)
+    target = tmp_path / "real.env"
+    target.write_text("A=1\n", encoding="utf-8")
+    (root / ".env").symlink_to(target)
+    with pytest.raises(TrustError, match="symlink"):
+        project_environment(root, world.tau, world.environ)
+    with pytest.raises(TrustError, match="symlink"):
+        trust_report(root, world.tau)
+
+
+def test_a_created_ignore_file_is_mode_644(world: World) -> None:
+    root = world.project()
+    approve_project(root, world.tau)
+    assert stat.S_IMODE((root / ".tau" / ".gitignore").stat().st_mode) == 0o644
+
+
+# -- C: trusted.json holds a hash and a redacted copy
+
+
+def test_trusted_json_has_a_hash_and_no_secret(world: World) -> None:
+    inner = {"models": {"m": {"model": "m", "base_url": URL}}, "api_key": LITERAL_KEY}
+    root = world.project(config={"models": {"g": inner}})
+    approve_project(root, world.tau)
+    stored = (world.tau / "trusted.json").read_text(encoding="utf-8")
+    assert LITERAL_KEY not in stored
+    record = json.loads(stored)["projects"][str(root)]
+    assert len(record["sha256"]) == 64
+    assert json.loads(record["config"])["models"]["g"]["api_key"] == "(secret)"
+
+
+def test_a_changed_secret_alone_is_called_out(world: World) -> None:
+    root = world.project(config=models(a={"api_key": "sk-one"}))
+    approve_project(root, world.tau)
+    (root / ".tau" / "config.json").write_text(
+        json.dumps(models(a={"api_key": "sk-two"})), encoding="utf-8"
+    )
+    assert not is_trusted(root, world.tau)
+    report = trust_report(root, world.tau)
+    assert "a secret value changed" in report
+    assert "sk-one" not in report
+    assert "sk-two" not in report
+
+
+# -- D: a config with errors cannot be approved
+
+
+def test_a_config_with_errors_cannot_be_approved(world: World) -> None:
+    root = world.project(config='{"models": {"bad": {"modle": "x"}}}')
+    with pytest.raises(TrustError, match="modle") as caught:
+        ensure_trusted(root, world.tau, ask=terminal_ask(io.StringIO("y\n"), io.StringIO()))
+    assert not isinstance(caught.value, UntrustedProject)
+    with pytest.raises(TrustError, match="modle"):
+        approve_project(root, world.tau)
+    assert not is_trusted(root, world.tau)
+    (root / ".tau" / "config.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(TrustError, match="invalid JSON"):
+        approve_project(root, world.tau)
+
+
+# -- E: .env names in the report
+
+
+def test_the_report_lists_dotenv_names_never_values(world: World) -> None:
+    root = world.project()
+    (root / ".env").write_text("FIRST=sk-hidden-1\nexport SECOND='sk-hidden-2'\n", encoding="utf-8")
+    report = trust_report(root, world.tau)
+    assert "Its .env sets: FIRST, SECOND" in report
+    assert "sk-hidden" not in report
+
+
+def test_a_malformed_dotenv_blocks_approval(world: World) -> None:
+    root = world.project()
+    (root / ".env").write_text("nonsense\n", encoding="utf-8")
+    with pytest.raises(TrustError, match=r"\.env:1:"):
+        approve_project(root, world.tau)
+
+
+# -- F: a foreign .tau is not a project
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="needs root to make a directory another user owns")
+def test_a_foreign_tau_dir_is_skipped_by_the_search(world: World) -> None:
+    outer = world.project("outer")
+    inner = outer / "inner"
+    (inner / ".tau").mkdir(parents=True)
+    os.chown(inner / ".tau", 65534, 65534)
+    assert find_project(inner, world.environ) == outer
+
+
+# -- G: tau's own state must be private
+
+
+def test_a_group_readable_tau_home_is_refused_not_fixed(world: World) -> None:
+    root = world.project()
+    world.tau.mkdir(mode=0o700)
+    world.tau.chmod(0o750)
+    with pytest.raises(TrustError, match="chmod 700"):
+        approve_project(root, world.tau)
+    assert stat.S_IMODE(world.tau.stat().st_mode) == 0o750
+
+
+def test_a_readable_trusted_json_is_refused(world: World) -> None:
+    root = world.project()
+    approve_project(root, world.tau)
+    (world.tau / "trusted.json").chmod(0o644)
+    with pytest.raises(TrustError, match="chmod 600"):
+        is_trusted(root, world.tau)
+
+
+# -- H: an ignore file that does not ignore everything
+
+
+@pytest.mark.parametrize("content", ["config.json\n", "*\n!config.json\n", "**\n"])
+def test_a_weak_ignore_file_is_warned_about_not_blocked(world: World, content: str) -> None:
+    root = world.project()
+    (root / ".tau" / ".gitignore").write_text(content, encoding="utf-8")
+    assert "[warn] .tau/.gitignore does not ignore everything" in trust_report(root, world.tau)
+    approve_project(root, world.tau)
+    assert (root / ".tau" / ".gitignore").read_text(encoding="utf-8") == content
+
+
+def test_a_star_ignore_file_is_fine(world: World) -> None:
+    root = world.project()
+    (root / ".tau" / ".gitignore").write_text("# all\n*\n", encoding="utf-8")
+    assert "[ok] .tau/.gitignore exists" in trust_report(root, world.tau)

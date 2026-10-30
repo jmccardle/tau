@@ -30,6 +30,19 @@ _RENAMED_MESSAGE = "`backend` is now `provider`"  # rules: allow(backend): 0.15'
 
 
 @dataclass(frozen=True)
+class LayerText:
+    """A layer already read: its text and the `source` (file path) problems name.
+    Accepted wherever a layer takes a `Path`, so a caller that read and showed the
+    text reads exactly that text."""
+
+    source: str
+    text: str
+
+
+Layer = Path | LayerText
+
+
+@dataclass(frozen=True)
 class ConfigProblem:
     """One thing wrong (or suspicious) in the config layers.
 
@@ -438,11 +451,14 @@ class _Resolver:
 
 
 def _read_layers(
-    user: Path | None, project: Path | None, cli: Mapping[str, object] | None, problems: _Problems
+    user: Layer | None, project: Layer | None, cli: Mapping[str, object] | None, problems: _Problems
 ) -> tuple[_Tree, _Kinds]:
     texts: list[tuple[str, str]] = []
     for path in (user, project):
         if path is None:
+            continue
+        if isinstance(path, LayerText):
+            texts.append((path.source, path.text))
             continue
         try:
             texts.append((str(path), path.read_text(encoding="utf-8")))
@@ -483,8 +499,8 @@ def _default_model(merged: _Tree, declared: list[str], problems: _Problems) -> s
 
 
 def _build(
-    user: Path | None,
-    project: Path | None,
+    user: Layer | None,
+    project: Layer | None,
     cli: Mapping[str, object] | None,
     environ: Mapping[str, str] | None,
 ) -> tuple[ModelCatalog, tuple[ConfigProblem, ...]]:
@@ -509,8 +525,8 @@ def _build(
 
 
 def check_config(
-    user: Path | None = None,
-    project: Path | None = None,
+    user: Layer | None = None,
+    project: Layer | None = None,
     cli: Mapping[str, object] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> tuple[ConfigProblem, ...]:
@@ -523,8 +539,8 @@ def check_config(
 
 
 def read_models(
-    user: Path | None = None,
-    project: Path | None = None,
+    user: Layer | None = None,
+    project: Layer | None = None,
     cli: Mapping[str, object] | None = None,
 ) -> ModelCatalog:
     """Merge the layers (`user` < `project` < `cli`; each may be absent) and resolve.

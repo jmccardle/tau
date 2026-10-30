@@ -3,7 +3,8 @@
 Lines are `KEY=value`, optionally led by `export `. Blank lines and `#` lines
 are skipped. A single-quoted value is literal; a double-quoted value takes the
 escapes `\\n`, `\\"`, and `\\\\`; an unquoted value is trimmed and loses a
-trailing ` # comment`. Anything else is an error naming the file and line,
+trailing ` # comment` (a `#` starts a comment only at the line start
+or after whitespace; a BOM is tolerated). Anything else is an error naming the file and line,
 never the value.
 """
 
@@ -12,7 +13,7 @@ from pathlib import Path
 
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _EXPORT = re.compile(r"export\s+")
-_COMMENT = re.compile(r"(?:^|\s+)#.*$")
+_COMMENT = re.compile(r"\s#.*$")
 _ESCAPES = {"n": "\n", '"': '"', "\\": "\\"}
 
 
@@ -27,8 +28,8 @@ def _quoted(rest: str, where: str) -> str:
     while i < len(rest):
         c = rest[i]
         if c == quote:
-            tail = rest[i + 1 :].strip()
-            if tail and not tail.startswith("#"):
+            tail = rest[i + 1 :]
+            if tail.strip() and not (tail[0].isspace() and tail.strip().startswith("#")):
                 raise DotenvError(f"{where}: text after the closing {quote}")
             return "".join(out)
         if c == "\\" and quote == '"':
@@ -47,7 +48,7 @@ def parse_dotenv(text: str, source: str = ".env") -> dict[str, str]:
     Raises `DotenvError` naming `source` and the line number.
     """
     found: dict[str, str] = {}
-    for number, raw in enumerate(text.splitlines(), start=1):
+    for number, raw in enumerate(text.removeprefix("\ufeff").splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -60,9 +61,8 @@ def parse_dotenv(text: str, source: str = ".env") -> dict[str, str]:
             raise DotenvError(f"{where}: expected KEY=value")
         if not _KEY.fullmatch(key):
             raise DotenvError(f"{where}: invalid variable name")
-        rest = rest.lstrip()
-        if rest[:1] in ("'", '"'):
-            found[key] = _quoted(rest, where)
+        if rest.lstrip()[:1] in ("'", '"'):
+            found[key] = _quoted(rest.lstrip(), where)
         else:
             found[key] = _COMMENT.sub("", rest).strip()
     return found
@@ -70,4 +70,4 @@ def parse_dotenv(text: str, source: str = ".env") -> dict[str, str]:
 
 def read_dotenv(path: Path) -> dict[str, str]:
     """`parse_dotenv` of the file at `path`; `OSError` if it cannot be read."""
-    return parse_dotenv(path.read_text(encoding="utf-8"), str(path))
+    return parse_dotenv(path.read_text(encoding="utf-8-sig"), str(path))
