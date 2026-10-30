@@ -8,7 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from tau_next import Body, Driver, ModelConfig, Session, StepLimit, SystemClock, tool
+from tau_next import Body, Driver, Session, StepLimit, SystemClock, model_config, read_models, tool
 from tau_next.providers.openai import OpenAIProvider
 
 PHRASE = "violet anchor 42"
@@ -38,11 +38,18 @@ async def main(base_url: str, model: str) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         secret = Path(tmp) / "secret.txt"
         secret.write_text(f"The secret phrase is: {PHRASE}\n")
-        config = ModelConfig(model, base_url).to_config()
+        # Wave 3 reads a config file; until then the CLI layer holds the one model.
+        models = read_models(cli={"models": {"example": {"model": model, "base_url": base_url}}})
+        config = model_config("example")
         session = Session.create(config, "Use your tools when asked.", clock.now(), Path(tmp) / "s")
         # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
         driver = Driver(
-            session, OpenAIProvider(), tools=[read_file], extensions=[StepLimit(6)], clock=clock
+            session,
+            OpenAIProvider(),
+            models,
+            tools=[read_file],
+            extensions=[StepLimit(6)],
+            clock=clock,
         )
         driver.start()
         cursor = session.cursors()[0]

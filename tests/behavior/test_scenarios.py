@@ -4,7 +4,7 @@
 from pathlib import Path
 
 import pytest
-from fakes import Fail, FakeProvider, FakeTool, Gate, Recorder, Reply
+from fakes import FAKE_CONFIG, FAKE_MODEL, Fail, FakeProvider, FakeTool, Gate, Recorder, Reply
 from harness import Harness, scenario
 
 import tau_next
@@ -12,7 +12,6 @@ from tau_next import (
     Author,
     Body,
     CallDraft,
-    Config,
     Cursor,
     Ending,
     ItemData,
@@ -22,7 +21,7 @@ from tau_next import (
     Subject,
 )
 
-SYSTEM = [Body.Config(Config("{}")), Body.System("sys")]
+SYSTEM = [Body.Config(FAKE_CONFIG), Body.System("sys")]
 
 
 def text(t: str, stop: Stop = Stop.End) -> Reply:
@@ -43,7 +42,7 @@ async def test_a_plain_turn(tmp_path: Path) -> None:
     assert h.bodies() == [*SYSTEM, Body.User("hi"), Body.Assistant([Part.Text("hello")], Stop.End)]
     assert h.session.cursor(h.cursor).items == []
     assert provider.requests[0].walk == (0, 1, 2)
-    assert provider.requests[0].config == Config("{}")
+    assert provider.requests[0].model.model == FAKE_MODEL
     assert not h.session.cursor(h.cursor).busy
 
 

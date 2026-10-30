@@ -1,8 +1,9 @@
-"""Model configuration: the resolved `ModelConfig`, and reading it from config layers (D13).
+"""Model configuration (D13): a `Config` node names a model; the driver resolves it.
 
-`ModelConfig.parse` reads a `Config` node's `data` (a JSON object core never
-reads; glossary: config). `read_models` and `check_config` read the layered
-files: user, project, CLI overrides.
+`model_config` and `model_name` write and read a `Config` node's `data` (a JSON object
+core never reads; glossary: config): exactly `{"model": "<qualified name>"}`. `ModelConfig`
+is the resolved model a provider is handed. `read_models` and `check_config` (in
+`config_layers`) read the layered files: user, project, CLI overrides.
 """
 
 import json
@@ -13,11 +14,10 @@ from urllib.parse import urlparse
 
 from tau_next._core import Config
 
-KEYS = ("model", "base_url", "api_key_env")
-
 
 class ConfigError(ValueError):
-    """A `Config`'s data that is not a valid `ModelConfig`, or a key that cannot be read."""
+    """A `Config`'s data that does not name a model, a model that is not in the config, an
+    invalid resolved model, or a key that cannot be read."""
 
 
 def _text(value: object, key: str) -> str:
@@ -30,7 +30,8 @@ def _text(value: object, key: str) -> str:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """Which model to ask, where, and the *name* of the variable holding its API key.
+    """A resolved model: which model to ask, where, and the *name* of the variable holding
+    its API key. The driver builds it from the catalog at each sample; no node holds it.
 
     The key itself is never a field: it is read from the environment at sample
     time (`api_key`) and so never reaches a node or the log.
@@ -53,36 +54,6 @@ class ModelConfig:
         if self.literal_api_key is not None:
             _text(self.literal_api_key, "api_key")
 
-    @classmethod
-    def parse(cls, config: Config) -> "ModelConfig":
-        """Read and validate `config.data`. Unknown keys and wrong types raise `ConfigError`."""
-        try:
-            data: object = json.loads(config.data)
-        except ValueError as e:
-            raise ConfigError(f"config data is not JSON: {e}") from e
-        if not isinstance(data, dict):
-            raise ConfigError(f"config data must be a JSON object, not {type(data).__name__}")
-        fields = cast("dict[str, object]", data)
-        unknown = sorted(str(k) for k in fields if k not in KEYS)
-        if unknown:
-            raise ConfigError(f"unknown config keys {unknown}; known keys are {list(KEYS)}")
-        for required in ("model", "base_url"):
-            if required not in fields:
-                raise ConfigError(f"config is missing {required!r}")
-        env = fields.get("api_key_env")
-        return cls(
-            _text(fields["model"], "model"),
-            _text(fields["base_url"], "base_url"),
-            None if "api_key_env" not in fields else _text(env, "api_key_env"),
-        )
-
-    def to_config(self) -> Config:
-        """The `Config` node body holding this, ready for `Session.create`."""
-        data: dict[str, str] = {"model": self.model, "base_url": self.base_url}
-        if self.api_key_env is not None:
-            data["api_key_env"] = self.api_key_env
-        return Config(json.dumps(data))
-
     def api_key(self, environ: Mapping[str, str]) -> str | None:
         """The key in `environ` named by `api_key_env`; `None` if no variable is named.
 
@@ -97,3 +68,30 @@ class ModelConfig:
         if not key:
             raise ConfigError(f"environment variable {self.api_key_env} is not set")
         return key
+
+
+def model_config(qualified: str) -> Config:
+    """The `Config` node body naming the model `qualified` (a catalog's qualified name).
+    It holds that name and nothing resolved from the file."""
+    return Config(json.dumps({"model": _text(qualified, "model")}))
+
+
+def model_name(config: Config) -> str:
+    """The qualified name `config` holds. `ConfigError` for any other shape: not JSON,
+    not an object, a missing or non-string `model`, or any other key."""
+    try:
+        data: object = json.loads(config.data)
+    except ValueError as e:
+        raise ConfigError(f"config data is not JSON: {e}") from e
+    if not isinstance(data, dict):
+        raise ConfigError(f"config data must be a JSON object, not {type(data).__name__}")
+    fields = cast("dict[str, object]", data)
+    extra = sorted(str(k) for k in fields if k != "model")
+    if extra:
+        raise ConfigError(
+            f'config data must be exactly {{"model": name}}; unexpected keys {extra}; '
+            "a session from before D13 names no model: append a root with model_config(name)"
+        )
+    if "model" not in fields:
+        raise ConfigError("config is missing 'model'")
+    return _text(fields["model"], "model")

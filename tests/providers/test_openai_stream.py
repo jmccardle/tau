@@ -7,7 +7,7 @@ import httpx
 import pytest
 from harness import scenario
 from transcripts import (
-    CONFIG,
+    RESOLVED,
     CutStream,
     GatedStream,
     Server,
@@ -225,7 +225,7 @@ async def test_a_part_is_yielded_once_complete_not_when_the_stream_ends() -> Non
     head = (chunk({"reasoning_content": "hm"}) + chunk({"content": "he"})).encode()
     tail = (chunk({"content": "llo"}) + chunk({}, "stop") + DONE).encode()
     response = httpx.Response(200, stream=GatedStream(head, gate, tail))
-    stream = provider(Server(response)).sample(fresh_walk(), CONFIG, [])
+    stream = provider(Server(response)).sample(fresh_walk(), RESOLVED, [])
     assert await anext(stream) == Part.Thinking("hm"), "complete once the text began"
     gate.set()
     assert [item async for item in stream] == [Part.Text("hello"), Finish(Stop.End, "stop")]

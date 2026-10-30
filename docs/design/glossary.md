@@ -587,29 +587,32 @@ A **sample** is one provider request over the **context**, `walk(at)`, with
 *spike* `tree::Config`, `Body::Config`, `Tree::config_at` · retires config
 entry, `CONFIG_KEYS`, `Settings`, model entry
 
-How a step runs; under D13 its data names a model by qualified
-name instead of holding a full snapshot. `config_at(n)` is the nearest `Config`
-on `walk(n)` (D5), recorded per node when it is added (`Session::configs`),
-so it costs the same at any depth. Core reads nothing in it: `data` is opaque
-to core and typed by the driver.
+How a step runs. Its data is exactly `{"model": "<qualified name>"}`: it names
+a model and holds nothing resolved from the config files (no URL, no key
+variable, no settings; D13). `model_config(name)` builds it and
+`model_name(config)` reads the name back, raising `ConfigError` for any other
+shape. `config_at(n)` is the nearest `Config` on `walk(n)` (D5), recorded per
+node when it is added (`Session::configs`), so it costs the same at any depth.
+Core reads nothing in it: `data` is opaque to core and read by the driver,
+which resolves the name in its `ModelCatalog` at each sample.
 
 ### ModelConfig, ConfigError
 `tau_next.ModelConfig`, `tau_next.ConfigError` (`config.py`) · new
 
-The typed reading of a `Config` node's `data`, minimal subset of the planned
-config overhaul (plan.md, item 4): `model` (the name as its API spells it),
-`base_url` (an http or https URL), and optional `api_key_env`, the *name* of
-the environment variable holding the API key. `data` is a JSON object with
-exactly those keys. `ModelConfig.parse(config)` validates; unknown keys, wrong
-types, and missing keys raise `ConfigError` (a `ValueError`). `to_config()`
-builds the `Config`. `api_key(environ)` reads the key at sample time; it is
-never a field, so it reaches no node and no log (tested). It also carries
-`provider` (default `"openai"`, the only one) and, for a literal `api_key` in
-a file, `literal_api_key`, which `to_config` never writes. Groups, merging, and
-files are `read_models`.
+The **resolved model**, built by the driver at each sample from the
+`ModelCatalog` and the name in `config_at(at)`; no node holds it. Fields:
+`model` (the name as its API spells it), `base_url` (an http or https URL),
+optional `api_key_env`, the *name* of the environment variable holding the API
+key, `provider` (default `"openai"`, the only one) and, for a literal `api_key`
+in a file, `literal_api_key` (hidden from `repr`). Invalid values raise
+`ConfigError` (a `ValueError`), which also reports a `Config` that is not a
+model name and a name the catalog lacks (`model 'x' is not in your config`);
+the driver turns those into a failed sample. `api_key(environ)` reads the key
+at sample time (the provider's environ); it is never a field, so it reaches no
+node and no log (tested). Groups, merging, and files are `read_models`.
 
 ### api_key_env
-`ModelConfig.api_key_env` · `Config` data key
+`ModelConfig.api_key_env` · a model's key in the config files
 
 The name of the environment variable that holds the API key. Unset or empty
 when named is a `ConfigError`, which the provider reports as a failed sample.
@@ -752,15 +755,18 @@ retires backend (config key), `ProviderSpec`, `Model` descriptor,
 `model_spec`
 
 The **provider** is the Python adapter for one API family; it converts walks
-to messages (`model.md` §10). The **model** is a name, as its API spells it.
+to messages (`model.md` §10). Its contract is `sample(walk, model, tools)`: `model` is
+the `ModelConfig` the driver resolved for this sample, and the provider reads no node data.
+The **model** is a name, as its API spells it.
+API keys are read from the provider's environ.
 
 ### OpenAIProvider
 `tau_next.providers.openai.OpenAIProvider` · new
 
 The provider for OpenAI-compatible `/chat/completions` (llama.cpp, vLLM, OpenAI).
-Reads `ModelConfig` from the sample's `config`. The request carries `model`,
+Is handed the resolved `ModelConfig` as `sample(walk, model, tools)`; it parses no node data. The request carries `model`,
 `messages`, `stream: true`, and `tools` when the driver offers any (no
-`tool_choice`, no `parallel_tool_calls`); the config has no sampling settings.
+`tool_choice`, no `parallel_tool_calls`); the model has no sampling settings.
 `tools` is `[{"type": "function", "function": {name, description, parameters}}]`,
 built from each `Tool` for that sample only and recorded nowhere. Conversion: `System`
 and `User` map to their roles; an `Assistant` to `assistant` with its text and
@@ -788,7 +794,7 @@ Parts begun before a failure are yielded first; a call cut off with no id or
 no name is not a part, so its raw argument text and whatever id and name arrived
 are appended to the `SampleError` message. Constructor: `transport`
 (a test's `httpx.MockTransport`), `environ` (where keys are looked up),
-`timeout`. `request(walk, config, tools)` returns the URL, headers, and body.
+`timeout`. `request(walk, model, tools)` returns the URL, headers, and body.
 
 ### tool, Tool
 `tau_next.Tool` (protocol, `protocols.py`) · retires `AgentTool`, `ToolDefinition`, `ToolInfo`
@@ -1029,8 +1035,11 @@ driver memory.
 Python `tau_next.driver.Driver` · new
 
 Performs jobs and answers each with its result and the time. Decides nothing. The only
-place that awaits. Built from a session, a provider, tools, extensions, and a
-clock. Its frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`,
+place that awaits. `Driver(session, provider, catalog, *, tools, extensions, clock)`:
+built from a session, a provider, a `ModelCatalog` (where it resolves the model name in
+`config_at(at)` at each sample), tools, extensions, and a clock. `use_catalog(catalog)`
+replaces the catalog for samples dispatched after it (a frontend that reloads the config
+files calls it); a sample already running keeps the model it resolved. Its frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`,
 `abort`, `open`, `add_item`, `respond`) run on the loop thread, call the
 session, then poke the pump. Extensions are a list given to the constructor,
 in hook order; how `config_at` will name them is open.
@@ -1201,7 +1210,7 @@ later arrivals through.
 
 ### FakeProvider, FakeTool, FakeClock
 The only fakes allowed (rule 4): scripted samples (`Reply`, `Fail`; a `Gate` after
-`gate_after` parts; each request's walk ids and config recorded), scripted
+`gate_after` parts; each request's walk ids and resolved model recorded; `fake_catalog` and `FAKE_CONFIG` give the Harness its one model), scripted
 outcomes (calls recorded), and time that moves only on `advance`.
 
 ### Transcript

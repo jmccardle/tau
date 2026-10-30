@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fakes import FakeClock, FakeProvider, FakeTool, Gate
+from fakes import FAKE_CONFIG, FakeClock, FakeProvider, FakeTool, Gate, fake_catalog
 
 from tau_next import (
     Author,
@@ -21,6 +21,7 @@ from tau_next import (
     Extension,
     Item,
     ItemData,
+    ModelCatalog,
     Node,
     Session,
     Tool,
@@ -55,6 +56,7 @@ class Harness:
         directory: Path,
         session: Session,
         provider: FakeProvider,
+        catalog: ModelCatalog,
         tools: Sequence[Tool],
         extensions: Sequence[Extension],
         clock: FakeClock,
@@ -63,6 +65,7 @@ class Harness:
         self.directory = directory
         self.session = session
         self.provider = provider
+        self.catalog = catalog
         self.tools = tuple(tools)
         self.extensions = tuple(extensions)
         self.clock = clock
@@ -72,7 +75,14 @@ class Harness:
         self.driver = self._driver()
 
     def _driver(self) -> Driver:
-        driver = Driver(self.session, self.provider, self.tools, self.extensions, self.clock)
+        driver = Driver(
+            self.session,
+            self.provider,
+            self.catalog,
+            tools=self.tools,
+            extensions=self.extensions,
+            clock=self.clock,
+        )
         driver.start()
         return driver
 
@@ -84,6 +94,7 @@ class Harness:
         config: Config | None = None,
         system: str = "sys",
         provider: FakeProvider | None = None,
+        catalog: ModelCatalog | None = None,
         tools: Sequence[Tool] = (),
         extensions: Sequence[Extension] = (),
         clock: FakeClock | None = None,
@@ -93,9 +104,16 @@ class Harness:
         extensions wait at."""
         clock = clock or FakeClock()
         directory = tmp_path / "session"
-        session = Session.create(config or Config("{}"), system, clock.now(), directory)
+        session = Session.create(config or FAKE_CONFIG, system, clock.now(), directory)
         return cls(
-            directory, session, provider or FakeProvider([]), tools, extensions, clock, gates
+            directory,
+            session,
+            provider or FakeProvider([]),
+            catalog or fake_catalog(),
+            tools,
+            extensions,
+            clock,
+            gates,
         )
 
     @classmethod
@@ -104,6 +122,7 @@ class Harness:
         tmp_path: Path,
         *,
         provider: FakeProvider | None = None,
+        catalog: ModelCatalog | None = None,
         tools: Sequence[Tool] = (),
         extensions: Sequence[Extension] = (),
         clock: FakeClock | None = None,
@@ -114,7 +133,14 @@ class Harness:
         directory = tmp_path / "session"
         session = Session.load(directory)
         return cls(
-            directory, session, provider or FakeProvider([]), tools, extensions, clock, gates
+            directory,
+            session,
+            provider or FakeProvider([]),
+            catalog or fake_catalog(),
+            tools,
+            extensions,
+            clock,
+            gates,
         )
 
     # A client's calls (client "term")

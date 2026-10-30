@@ -13,7 +13,7 @@ from typing import cast
 
 import httpx
 
-from tau_next._core import Body, Config, Node, Outcome, Part, Stop
+from tau_next._core import Body, Node, Outcome, Part, Stop
 from tau_next.config import ConfigError, ModelConfig
 from tau_next.protocols import Finish, SampleError, Tool
 
@@ -298,7 +298,8 @@ async def _events(response: httpx.Response) -> AsyncIterator[str]:
 
 
 class OpenAIProvider:
-    """Samples an OpenAI-compatible `/chat/completions` endpoint named by the walk's `ModelConfig`.
+    """Samples an OpenAI-compatible `/chat/completions` endpoint for the `ModelConfig` the
+    driver resolved.
 
     `transport` replaces the network (a test's `httpx.MockTransport`); `environ` is where
     `api_key_env` is looked up, at sample time.
@@ -315,15 +316,14 @@ class OpenAIProvider:
         self._timeout = timeout or httpx.Timeout(10.0, read=300.0)
 
     def request(
-        self, walk: Sequence[Node], config: Config, tools: Sequence[Tool]
+        self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> tuple[str, dict[str, str], Json]:
         """The URL, headers, and JSON body of the request for this sample. `tools` become the
         `tools` array, omitted when there are none.
 
-        Raises `SampleError` for a config or walk that cannot be sent.
+        Raises `SampleError` if the model's key cannot be read.
         """
         try:
-            model = ModelConfig.parse(config)
             key = model.api_key(self._environ)
         except ConfigError as e:
             raise SampleError(str(e)) from e
@@ -339,7 +339,7 @@ class OpenAIProvider:
         return model.base_url.rstrip("/") + "/chat/completions", headers, body
 
     async def sample(
-        self, walk: Sequence[Node], config: Config, tools: Sequence[Tool]
+        self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> AsyncIterator[Part | Finish]:
         """Yield each part once complete, then the `Finish`. A failure raises `SampleError`
         after yielding every part the stream had finished or begun; it carries the meta fields
@@ -347,7 +347,7 @@ class OpenAIProvider:
         still read for `usage`, but content and tool-call deltas after it are ignored, and an
         error chunk, a reset, malformed SSE, or a missing `[DONE]` after it costs only the
         meta not yet received, never the reply."""
-        url, headers, body = self.request(walk, config, tools)
+        url, headers, body = self.request(walk, model, tools)
         reply = _Stream()
         error: SampleError | None = None
         try:

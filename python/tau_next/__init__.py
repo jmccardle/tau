@@ -45,7 +45,7 @@ from tau_next._core import (
 )
 from tau_next.base_tools import BashTool, GrepTool, ReadTool, WriteTool, base_tools
 from tau_next.clock import SystemClock
-from tau_next.config import ConfigError, ModelConfig
+from tau_next.config import ConfigError, ModelConfig, model_config, model_name
 from tau_next.config_layers import (
     ConfigProblem,
     ModelCatalog,
@@ -147,6 +147,8 @@ __all__ = [
     "__version__",
     "base_tools",
     "check_config",
+    "model_config",
+    "model_name",
     "read_models",
     "tool",
 ]

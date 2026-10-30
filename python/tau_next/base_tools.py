@@ -4,7 +4,7 @@ Each class satisfies `Tool`. The work runs on a worker thread with the GIL relea
 calls run in parallel, even on free-threaded builds, and never block the event loop.
 
     tools = base_tools(cwd="/work/project")
-    driver = Driver(session, provider, tools=tools)
+    driver = Driver(session, provider, catalog, tools=tools)
 
 `read`, `grep` and `bash` limit their output to `max_output` bytes (default 10_000): past
 it, the model gets the kept lines and a note naming the omitted line count and a file in

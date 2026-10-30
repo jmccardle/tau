@@ -14,7 +14,16 @@ import sys
 import tempfile
 from pathlib import Path
 
-from tau_next import Body, Driver, ModelConfig, Session, StepLimit, SystemClock, base_tools
+from tau_next import (
+    Body,
+    Driver,
+    Session,
+    StepLimit,
+    SystemClock,
+    base_tools,
+    model_config,
+    read_models,
+)
 from tau_next.providers.openai import OpenAIProvider
 
 
@@ -42,15 +51,17 @@ async def main(base_url: str, model: str) -> None:
     clock = SystemClock()
     with tempfile.TemporaryDirectory() as tmp:
         where = Path(tmp) / "session"
+        # Wave 3 reads a config file; until then the CLI layer holds the one model.
+        models = read_models(cli={"models": {"example": {"model": model, "base_url": base_url}}})
         session = Session.create(
-            ModelConfig(model, base_url).to_config(),
+            model_config("example"),
             "You are a terse assistant. Use your tools when asked.",
             clock.now(),
             where,
         )
         tools = base_tools(tmp)
         driver = Driver(
-            session, OpenAIProvider(), tools=tools, extensions=[StepLimit(6)], clock=clock
+            session, OpenAIProvider(), models, tools=tools, extensions=[StepLimit(6)], clock=clock
         )
         driver.start()
         cursor = session.cursors()[0]

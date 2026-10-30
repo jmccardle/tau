@@ -26,10 +26,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests" / "behavior"))
 
-from fakes import FakeClock, FakeProvider, Recorder, Reply  # noqa: E402
+from fakes import FAKE_CONFIG, FakeClock, FakeProvider, Recorder, Reply, fake_catalog  # noqa: E402
 from harness import Harness  # noqa: E402
 
-from tau_next import Config, Part, Session, Stop, base_tools, trace  # noqa: E402
+from tau_next import Part, Session, Stop, base_tools, trace  # noqa: E402
 
 TEXT = "violet-anchor-42\n"
 KINDS = ("core", "store", "py", "hook", "sample", "tool", "driver")
@@ -50,8 +50,10 @@ async def make(root: Path, *, stored: bool) -> tuple[Harness, Path]:
     tools = base_tools(work, overflow_dir=root / "overflow")
     clock = FakeClock()
     directory = root / "session"
-    session = Session.create(Config("{}"), "sys", clock.now(), directory if stored else None)
-    return Harness(directory, session, provider, tools, [Recorder()], clock, []), work
+    session = Session.create(FAKE_CONFIG, "sys", clock.now(), directory if stored else None)
+    return Harness(
+        directory, session, provider, fake_catalog(), tools, [Recorder()], clock, []
+    ), work
 
 
 async def turn(root: Path, *, stored: bool, out: Path | None) -> float:
