@@ -106,6 +106,20 @@ def counting(n: int, progress: Progress) -> str:
     return "counted"
 
 
+@tool
+def optional_progress(n: int, progress: Progress | None = None) -> str:
+    """Count to `n`, showing each number if anyone is listening."""
+    for i in range(n):
+        if progress is not None:
+            progress(f"{i} ")
+    return "counted"
+
+
+def test_progress_may_be_spelled_as_the_tool_protocol_spells_it() -> None:
+    assert list(optional_progress.parameters["properties"]) == ["n"]  # type: ignore[call-overload]
+    assert optional_progress.parameters["required"] == ["n"]
+
+
 @scenario
 async def test_a_tool_function_takes_progress_without_the_model_knowing(tmp_path: Path) -> None:
     provider = calling(Part.Call("c1", "counting", json.dumps({"n": 3})))

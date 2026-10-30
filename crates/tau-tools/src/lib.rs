@@ -24,9 +24,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde::de::DeserializeOwned;
 
-/// Default output limit, in bytes of kept text.
-pub const DEFAULT_MAX_OUTPUT: usize = 10_000;
-
 /// Why a call failed, in words for the model.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolError(pub String);
@@ -100,9 +97,6 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The most the overflow file holds, in bytes, unless the caller says otherwise.
-pub const DEFAULT_MAX_OVERFLOW: usize = 64 * 1024 * 1024;
-
 /// Where the tool's output is limited, and where the overflow goes.
 #[derive(Clone, Debug)]
 pub struct Limits {
@@ -113,45 +107,44 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// `max_bytes` of kept text; the overflow goes to `<temp dir>/tau-<euid>`.
+    /// `max_bytes` of kept text; the full output goes to files in `dir`, each
+    /// holding at most `max_overflow` bytes. The directory is checked when a
+    /// file is first needed, not here.
     ///
     /// # Errors
-    /// A limit of zero keeps nothing and is refused.
-    pub fn new(max_bytes: usize) -> Result<Self> {
-        let dir = std::env::temp_dir().join(format!("tau-{}", nix::unistd::Uid::effective()));
-        Self::in_dir(max_bytes, dir)
-    }
-
-    /// As [`Limits::new`], with the overflow directory chosen.
-    ///
-    /// # Errors
-    /// A limit of zero keeps nothing and is refused; so is an existing directory that
-    /// is a symlink, not ours, or open to others.
-    pub fn in_dir(max_bytes: usize, dir: PathBuf) -> Result<Self> {
+    /// A limit of zero keeps nothing; a cap below the limit would save less than
+    /// the model is shown.
+    pub fn new(max_bytes: usize, max_overflow: usize, dir: PathBuf) -> Result<Self> {
         if max_bytes == 0 {
             return Err("the output limit must be at least 1 byte".into());
         }
-        limit::check_existing_dir(&dir)?;
-        Ok(Self {
-            max_bytes,
-            dir,
-            max_overflow: DEFAULT_MAX_OVERFLOW.max(max_bytes),
-        })
-    }
-
-    /// As given, with the overflow file capped at `max_overflow` bytes.
-    ///
-    /// # Errors
-    /// A cap below the output limit would save less than the model is shown.
-    pub fn with_max_overflow(mut self, max_overflow: usize) -> Result<Self> {
-        if max_overflow < self.max_bytes {
+        if max_overflow < max_bytes {
             return Err(format!(
-                "the overflow cap ({max_overflow} bytes) must be at least the output limit ({} bytes)",
-                self.max_bytes
+                "the overflow cap ({max_overflow} bytes) must be at least the output limit \
+                 ({max_bytes} bytes)"
             )
             .into());
         }
-        self.max_overflow = max_overflow;
-        Ok(self)
+        Ok(Self {
+            max_bytes,
+            dir,
+            max_overflow,
+        })
+    }
+
+    /// The overflow directory when none is chosen: `$XDG_RUNTIME_DIR/tau` (private
+    /// to the user, cleared at logout) if that is set, else `<temp dir>/tau-<euid>`.
+    #[must_use]
+    pub fn default_dir() -> PathBuf {
+        match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
+            Some(runtime) => PathBuf::from(runtime).join("tau"),
+            None => std::env::temp_dir().join(format!("tau-{}", nix::unistd::Uid::effective())),
+        }
+    }
+
+    /// A limit with a cap that no test reaches by accident.
+    #[cfg(test)]
+    pub(crate) fn in_dir(max_bytes: usize, dir: PathBuf) -> Result<Self> {
+        Self::new(max_bytes, 64 * 1024 * 1024, dir)
     }
 }

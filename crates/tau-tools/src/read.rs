@@ -14,10 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::limit::{Finished, Keep, Sink};
-use crate::{Cancel, Limits, Result, ToolError, parse_args, resolve};
-
-/// Lines read when the call gives no `limit`.
-pub const DEFAULT_LINES: u64 = 4096;
+use crate::{Cancel, Result, ToolError, parse_args, resolve};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,24 +27,28 @@ struct Args {
 #[derive(Clone, Debug)]
 pub struct Read {
     cwd: PathBuf,
-    limits: Limits,
+    max_bytes: usize,
 }
 
 impl Read {
-    #[must_use]
-    pub fn new(cwd: PathBuf, limits: Limits) -> Self {
-        Self { cwd, limits }
+    /// # Errors
+    /// A limit of zero keeps nothing and is refused.
+    pub fn new(cwd: PathBuf, max_bytes: usize) -> Result<Self> {
+        if max_bytes == 0 {
+            return Err("the output limit must be at least 1 byte".into());
+        }
+        Ok(Self { cwd, max_bytes })
     }
 
     #[must_use]
     pub fn description(&self) -> String {
         format!(
             "Read a text file. `offset` is the 1-based line to start at and `limit` the number \
-             of lines (default {DEFAULT_LINES}). Output past {} bytes is cut after the last \
-             whole line that fits; the full text of the lines read is then saved to a file named \
-             in a note, and a last line gives the offset that continues. Images and other \
-             binary files cannot be read.",
-            self.limits.max_bytes
+             of lines. Output stops after the last whole line that fits in {} bytes, and a last \
+             line gives the offset that continues. Relative paths are relative to the working \
+             directory, which is a default, not a sandbox: absolute paths and `..` work. Images \
+             and other binary files cannot be read.",
+            self.max_bytes
         )
     }
 
@@ -58,7 +59,7 @@ impl Read {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path of the file to read (relative paths are relative to the working directory)"
+                    "description": "Path of the file to read (relative to the working directory, or absolute)"
                 },
                 "offset": {
                     "type": "integer",
@@ -66,7 +67,7 @@ impl Read {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": format!("Maximum number of lines to read (default {DEFAULT_LINES})")
+                    "description": "Maximum number of lines to read (default: as many as fit)"
                 }
             },
             "required": ["path"],
@@ -76,11 +77,11 @@ impl Read {
 
     /// # Errors
     /// Bad arguments, a missing, unreadable, binary or irregular file, an
-    /// offset past the end, a cancel, or a failure to write the overflow file.
+    /// offset past the end, or a cancel.
     pub fn run(&self, args_raw: &str, cancel: &Cancel) -> Result<String> {
         let args: Args = parse_args(args_raw)?;
         let offset = positive("offset", args.offset)?.unwrap_or(1);
-        let limit = positive("limit", args.limit)?.unwrap_or(DEFAULT_LINES);
+        let limit = positive("limit", args.limit)?.unwrap_or(u64::MAX);
         let mut reader = self.open(&args.path)?;
         let io = |e: std::io::Error| ToolError(format!("cannot read {}: {e}", args.path));
         let past_end = || {
@@ -92,12 +93,12 @@ impl Read {
         if !skip_lines(&mut reader, offset - 1, cancel)? {
             return Err(past_end());
         }
-        let mut sink = Sink::new(&self.limits, Keep::Head);
+        let mut sink = Sink::unspilled(self.max_bytes, Keep::Head);
         let read = read_lines(&mut reader, limit, &mut sink, cancel, &args.path)?;
-        if offset > 1 && read == 0 {
+        if offset > 1 && sink.total() == 0 {
             return Err(past_end());
         }
-        let more = read == limit && !reader.fill_buf().map_err(io)?.is_empty();
+        let more = !reader.fill_buf().map_err(io)?.is_empty();
         Ok(answer(sink.finish()?, offset, read, more))
     }
 
@@ -148,8 +149,7 @@ fn answer(finished: Finished, offset: u64, read: u64, more: bool) -> String {
         // No whole line fit: line `offset` is shown only in part.
         let _ = write!(
             text,
-            "\n[line {offset} is shown only in part; the rest of it is only in the \
-             overflow file; offset={} continues after it]",
+            "\n[line {offset} is shown only in part; offset={} continues after it]",
             offset + 1
         );
     } else {
@@ -188,7 +188,8 @@ fn skip_lines(reader: &mut BufReader<File>, n: u64, cancel: &Cancel) -> Result<b
     Ok(seen >= n)
 }
 
-/// Push up to `limit` lines into `sink`; the number of lines pushed.
+/// Push up to `limit` lines into `sink`, stopping once it is over its limit; the
+/// number of whole lines pushed.
 fn read_lines(
     reader: &mut BufReader<File>,
     limit: u64,
@@ -199,7 +200,7 @@ fn read_lines(
     let io = |e: std::io::Error| ToolError(format!("cannot read {shown}: {e}"));
     let mut read = 0;
     let mut mid_line = false;
-    while read < limit {
+    while read < limit && !sink.is_over() {
         cancel.check()?;
         let buf = reader.fill_buf().map_err(io)?;
         if buf.is_empty() {
@@ -244,8 +245,7 @@ mod tests {
 
     fn tool(max: usize) -> (Read, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let limits = Limits::in_dir(max, dir.path().join("out")).unwrap();
-        (Read::new(dir.path().to_owned(), limits), dir)
+        (Read::new(dir.path().to_owned(), max).unwrap(), dir)
     }
 
     fn call(tool: &Read, args: &Value) -> Result<String> {
@@ -345,20 +345,15 @@ mod tests {
             "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\nline 10\n";
         fs::write(dir.path().join("a.txt"), body).unwrap();
         let out = call(&tool, &json!({"path": "a.txt"})).unwrap();
-        assert!(
-            out.starts_with("line 1\nline 2\nline 3\n[truncated: 7 lines omitted after these;"),
-            "{out}"
+        assert_eq!(
+            out,
+            "line 1\nline 2\nline 3\n[showing lines 1-3; offset=4 continues]"
         );
-        assert!(
-            out.ends_with("\n[showing lines 1-3; offset=4 continues]"),
-            "{out}"
+        assert_eq!(
+            fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "no overflow file"
         );
-        let spilled = fs::read_dir(dir.path().join("out"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
-        assert_eq!(fs::read_to_string(spilled.path()).unwrap(), body);
         let out = call(&tool, &json!({"path": "a.txt", "offset": 4})).unwrap();
         assert!(out.starts_with("line 4\nline 5\nline 6\n"), "{out}");
         assert!(
@@ -376,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cut_first_line_says_the_rest_of_it_is_only_in_the_file() {
+    fn a_cut_first_line_says_where_to_go_on() {
         let (tool, dir) = tool(20);
         fs::write(
             dir.path().join("a.txt"),
@@ -384,14 +379,24 @@ mod tests {
         )
         .unwrap();
         let out = call(&tool, &json!({"path": "a.txt"})).unwrap();
-        assert!(out.contains("one long line cut short"), "{out}");
-        assert!(
-            out.ends_with(
-                "\n[line 1 is shown only in part; the rest of it is only in the overflow file; \
-                 offset=2 continues after it]"
-            ),
-            "{out}"
+        assert_eq!(
+            out,
+            format!(
+                "{}\n[line 1 is shown only in part; offset=2 continues after it]",
+                "x".repeat(20)
+            )
         );
         assert!(!out.contains("showing lines"), "{out}");
+    }
+
+    #[test]
+    fn without_a_limit_a_big_file_stops_at_the_byte_limit_not_after_the_whole_file() {
+        let (tool, dir) = tool(100);
+        let body = "12345\n".repeat(100_000);
+        fs::write(dir.path().join("big.txt"), &body).unwrap();
+        let out = call(&tool, &json!({"path": "big.txt", "offset": 50_000})).unwrap();
+        assert!(out.starts_with("12345\n12345\n"), "{out}");
+        assert!(out.contains("continues]"), "{out}");
+        assert!(out.len() < 200, "{out}");
     }
 }

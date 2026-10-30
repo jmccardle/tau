@@ -77,11 +77,11 @@ def test_each_call_has_its_own_thread(tmp_path: Path) -> None:
 MEASURE = """
 import asyncio, json, resource, sys
 from tau_next import ReadTool
-tool = ReadTool(sys.argv[1], overflow_dir=sys.argv[2], max_overflow=1_000_000)
+tool = ReadTool(sys.argv[1])
 before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 out = asyncio.run(tool.call(json.dumps({"path": "one.txt"})))
 after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-print((after - before) // 1024, "holds only the first 1000000 bytes" in out.value)
+print((after - before) // 1024, "line 1 is shown only in part" in out.value)
 """
 
 
@@ -91,14 +91,14 @@ def test_a_file_of_one_enormous_line_is_not_held_in_memory(tmp_path: Path) -> No
         for _ in range(200):
             f.write(b"x" * 1_000_000)
     done = subprocess.run(
-        [sys.executable, "-c", MEASURE, str(tmp_path), str(tmp_path / "ov")],
+        [sys.executable, "-c", MEASURE, str(tmp_path)],
         capture_output=True,
         text=True,
         check=True,
     )
-    grown_mb, capped = done.stdout.split()
+    grown_mb, cut = done.stdout.split()
     assert int(grown_mb) < 50, done.stdout
-    assert capped == "True"
+    assert cut == "True"
 
 
 def test_cancelling_a_grep_over_a_big_tree_returns_promptly(tmp_path: Path) -> None:

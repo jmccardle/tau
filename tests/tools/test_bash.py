@@ -2,13 +2,17 @@
 
 import asyncio
 import json
+import os
+import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 from calls import call, err, ok
 
-from tau_next import BashTool, Outcome
+from tau_next import BashTool, Outcome, base_tools
 
 
 def test_the_tool_describes_itself() -> None:
@@ -17,6 +21,13 @@ def test_the_tool_describes_itself() -> None:
     assert tool.parameters["required"] == ["command"]
     assert "30000" in tool.description
     assert "terminated" in tool.description
+    assert "no process outlives a call" in tool.description
+
+
+@pytest.mark.parametrize("name", ["read", "write", "grep"])
+def test_the_file_tools_say_the_working_directory_is_a_default_not_a_sandbox(name: str) -> None:
+    tool = {t.name: t for t in base_tools()}[name]
+    assert "not a sandbox" in tool.description
 
 
 def test_output_arrives_interleaved_in_the_working_directory(tmp_path: Path) -> None:
@@ -144,3 +155,60 @@ def gone(pid: int, within: float = 3.0) -> bool:
             return False
         time.sleep(0.02)
     return True
+
+
+EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+
+DIES_WITH_THE_SIGNAL = """
+import asyncio, json, sys
+sys.path.insert(0, sys.argv[1])
+from common import run_until_signalled
+from tau_next import BashTool
+
+async def main():
+    command = json.dumps({"command": "sleep " + sys.argv[2], "timeout": 600_000})
+    await BashTool(sys.argv[3]).call(command)
+
+run_until_signalled(main())
+"""
+
+
+def running(argument: str) -> list[int]:
+    """The live `sleep <argument>` processes, found by their command line."""
+    want = f"sleep\0{argument}\0".encode()
+    found = []
+    for proc in Path("/proc").iterdir():
+        if proc.name.isdigit():
+            try:
+                if proc.joinpath("cmdline").read_bytes() == want and alive(int(proc.name)):
+                    found.append(int(proc.name))
+            except OSError:
+                continue
+    return found
+
+
+@pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGHUP])
+def test_a_program_killed_by_sigterm_or_sighup_leaves_no_command_running(
+    tmp_path: Path, number: signal.Signals
+) -> None:
+    """The program installs the handlers `run_until_signalled` installs: the signal cancels
+    the call, which kills the command's session. The sleep's duration is unique to this run."""
+    duration = f"{1000 + number}.{os.getpid()}"
+    program = subprocess.Popen(
+        [sys.executable, "-c", DIES_WITH_THE_SIGNAL, str(EXAMPLES), duration, str(tmp_path)]
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not running(duration):
+            assert time.monotonic() < deadline, "the command never started"
+            time.sleep(0.02)
+        program.send_signal(number)
+        assert program.wait(timeout=10) == 128 + number
+        deadline = time.monotonic() + 5
+        while running(duration):
+            assert time.monotonic() < deadline, "the sleep outlived the program"
+            time.sleep(0.02)
+    finally:
+        program.kill()
+        for pid in running(duration):
+            os.kill(pid, signal.SIGKILL)

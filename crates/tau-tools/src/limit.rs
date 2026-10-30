@@ -4,23 +4,32 @@
 //! limit nothing is written anywhere. At the first byte past it, the output so
 //! far and everything after goes to `<dir>/<id>.out` (up to the overflow cap),
 //! and memory holds only the window the kept text comes from. [`Sink::finish`]
-//! cuts that window on a line boundary and adds the truncation note.
+//! cuts that window on a line boundary and adds the truncation note. A sink made
+//! with [`Sink::unspilled`] never writes a file (`read`: the file it reads is
+//! already on disk) and adds no note; its caller says where to go on.
 //!
-//! The overflow directory is private to us: created `0700`, and refused unless
-//! it is a real directory (not a symlink) owned by the effective user and
-//! closed to everyone else. Files are created `0600`, never overwritten.
+//! The overflow directory is private to us, and is checked each time a file is
+//! first needed, on the open directory itself: created `0700`, and refused unless
+//! it is a real directory (not a symlink) owned by the effective user and closed
+//! to everyone else. A directory that fails costs the overflow file, not the
+//! call: the answer still has the kept text, and its note says why the full
+//! output was not saved. Files are created `0600`, never overwritten, and files
+//! in the directory older than a day are removed whenever it is opened.
 
 use std::fmt::Write as _;
-use std::fs::{self, DirBuilder, File};
+use std::fs::{DirBuilder, File};
 use std::io::{BufWriter, Write};
+use std::mem;
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use nix::dir::Dir;
 use nix::errno::Errno;
-use nix::fcntl::{OFlag, open, openat};
-use nix::sys::stat::{Mode, fstat};
-use nix::unistd::Uid;
+use nix::fcntl::{AtFlags, OFlag, open, openat};
+use nix::sys::stat::{Mode, SFlag, fstat, fstatat};
+use nix::unistd::{Uid, UnlinkatFlags, unlinkat};
 
 use crate::{Limits, Result, ToolError};
 
@@ -37,6 +46,8 @@ const ID_LEN: usize = 8;
 const ID_CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 const ID_TRIES: usize = 16;
 const MIB: usize = 1024 * 1024;
+/// Overflow files older than this are removed when the directory is opened.
+const KEEP_FILES: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Added to an answer whose kept text had bytes that are not UTF-8.
 pub const LOSSY_NOTE: &str = "[invalid UTF-8 in the output was replaced with U+FFFD]";
@@ -46,7 +57,23 @@ struct Overflow {
     path: PathBuf,
     out: BufWriter<File>,
     written: usize,
+    cap: usize,
     capped: bool,
+}
+
+/// Where the full output goes.
+#[derive(Debug)]
+enum Spill {
+    /// Nowhere, ever.
+    Never,
+    /// A file in `dir`, made when the output first passes the limit.
+    Pending {
+        dir: PathBuf,
+        cap: usize,
+    },
+    /// The file could not be made; the reason goes in the note.
+    Failed(String),
+    Open(Overflow),
 }
 
 /// The answer a [`Sink`] makes.
@@ -67,48 +94,73 @@ pub struct Finished {
 pub struct Sink {
     keep: Keep,
     max: usize,
-    cap: usize,
-    dir: PathBuf,
+    spill: Spill,
     /// Head: the first `max + 1` bytes. Tail: at least the last `max + 1` bytes
     /// once the output passes `max`, and all of it before that.
     window: Vec<u8>,
     total: usize,
     newlines: usize,
     last: Option<u8>,
-    overflow: Option<Overflow>,
 }
 
 impl Sink {
     #[must_use]
     pub fn new(limits: &Limits, keep: Keep) -> Self {
+        let spill = Spill::Pending {
+            dir: limits.dir.clone(),
+            cap: limits.max_overflow,
+        };
+        Self::with(limits.max_bytes, keep, spill)
+    }
+
+    /// A sink that keeps `max` bytes and saves nothing.
+    #[must_use]
+    pub fn unspilled(max: usize, keep: Keep) -> Self {
+        Self::with(max, keep, Spill::Never)
+    }
+
+    fn with(max: usize, keep: Keep, spill: Spill) -> Self {
         Self {
             keep,
-            max: limits.max_bytes,
-            cap: limits.max_overflow,
-            dir: limits.dir.clone(),
+            max,
+            spill,
             window: Vec::new(),
             total: 0,
             newlines: 0,
             last: None,
-            overflow: None,
         }
+    }
+
+    /// Whether more than the limit has been pushed.
+    #[must_use]
+    pub fn is_over(&self) -> bool {
+        self.total > self.max
+    }
+
+    /// Bytes pushed so far.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.total
     }
 
     /// Take more output.
     ///
     /// # Errors
-    /// The overflow file could not be created or written.
+    /// The overflow file could not be written.
     pub fn push(&mut self, chunk: &[u8]) -> Result<()> {
         let Some(&last) = chunk.last() else {
             return Ok(());
         };
-        if self.overflow.is_none() && self.total + chunk.len() > self.max {
+        if matches!(self.spill, Spill::Pending { .. }) && self.total + chunk.len() > self.max {
             // The window still holds everything pushed so far (it holds
             // `2 * max` bytes at least, and the total has not passed `max`).
-            self.overflow = Some(self.create_overflow()?);
+            self.spill = match mem::replace(&mut self.spill, Spill::Never) {
+                Spill::Pending { dir, cap } => self.open_spill(&dir, cap)?,
+                other => other,
+            };
         }
-        if let Some(overflow) = &mut self.overflow {
-            let take = (self.cap - overflow.written).min(chunk.len());
+        if let Spill::Open(overflow) = &mut self.spill {
+            let take = (overflow.cap - overflow.written).min(chunk.len());
             overflow
                 .out
                 .write_all(&chunk[..take])
@@ -136,92 +188,55 @@ impl Sink {
         Ok(())
     }
 
-    /// Open `self.dir` (created `0700` if absent) as a directory fd, refusing a
-    /// symlink, and check with `fstat` on that fd that it is ours and private.
-    fn open_private_dir(&self) -> Result<OwnedFd> {
-        let shown = self.dir.display();
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&self.dir)
-            .map_err(|e| {
-                ToolError(format!(
-                    "output exceeds {} bytes and the directory for the full output could not be \
-                     created ({shown}): {e}",
-                    self.max
-                ))
-            })?;
-        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-        let fd = open(self.dir.as_path(), flags, Mode::empty()).map_err(|e| {
-            let problem = match fs::symlink_metadata(&self.dir) {
-                Ok(meta) if meta.file_type().is_symlink() => "is a symlink".to_owned(),
-                Ok(meta) if !meta.is_dir() => "is not a directory".to_owned(),
-                _ => format!("cannot be opened: {e}"),
-            };
-            self.dir_refused(&problem)
-        })?;
-        let stat = fstat(&fd).map_err(|e| {
-            ToolError(format!(
-                "cannot inspect the overflow directory {shown}: {e}"
-            ))
-        })?;
-        match dir_problem(stat.st_uid, stat.st_mode) {
-            Some(problem) => Err(self.dir_refused(&problem)),
-            None => Ok(fd),
-        }
-    }
-
-    fn dir_refused(&self, problem: &str) -> ToolError {
-        ToolError(format!(
-            "output exceeds {} bytes, but the overflow directory {} {problem}, so the full \
-             output was not saved",
-            self.max,
-            self.dir.display()
-        ))
-    }
-
-    fn create_overflow(&mut self) -> Result<Overflow> {
-        let dir = self.open_private_dir()?;
+    /// The overflow file, holding what has been pushed so far; or why there is none.
+    fn open_spill(&self, dir: &Path, cap: usize) -> Result<Spill> {
+        let dir_fd = match open_private_dir(dir) {
+            Ok(fd) => fd,
+            Err(reason) => return Ok(Spill::Failed(reason)),
+        };
         for _ in 0..ID_TRIES {
             let id: String = (0..ID_LEN)
                 .map(|_| char::from(ID_CHARS[fastrand::usize(..ID_CHARS.len())]))
                 .collect();
             let name = format!("{id}.out");
-            let path = self.dir.join(&name);
+            let path = dir.join(&name);
             // Relative to the fd we checked, so a swapped path cannot redirect us.
             let flags = OFlag::O_WRONLY
                 | OFlag::O_CREAT
                 | OFlag::O_EXCL
                 | OFlag::O_NOFOLLOW
                 | OFlag::O_CLOEXEC;
-            match openat(&dir, name.as_str(), flags, Mode::from_bits_truncate(0o600)) {
+            match openat(
+                &dir_fd,
+                name.as_str(),
+                flags,
+                Mode::from_bits_truncate(0o600),
+            ) {
                 Ok(fd) => {
                     let mut out = BufWriter::new(File::from(fd));
                     out.write_all(&self.window)
                         .map_err(|e| write_failed(&path, &e))?;
                     let written = self.window.len();
-                    return Ok(Overflow {
+                    return Ok(Spill::Open(Overflow {
                         path,
                         out,
                         written,
+                        cap,
                         capped: false,
-                    });
+                    }));
                 }
                 Err(Errno::EEXIST) => {}
                 Err(e) => {
-                    return Err(ToolError(format!(
-                        "output exceeds {} bytes and the file for the full output could not be \
-                         created ({}): {e}",
-                        self.max,
+                    return Ok(Spill::Failed(format!(
+                        "the file {} could not be created: {e}",
                         path.display()
                     )));
                 }
             }
         }
-        Err(ToolError(format!(
-            "output exceeds {} bytes and no unused file name was found in {}",
-            self.max,
-            self.dir.display()
+        Ok(Spill::Failed(format!(
+            "no unused file name was found in {}",
+            dir.display()
         )))
     }
 
@@ -231,7 +246,7 @@ impl Sink {
     /// # Errors
     /// The overflow file could not be completed.
     pub fn finish(mut self) -> Result<Finished> {
-        let Some(overflow) = self.overflow.take() else {
+        if !self.is_over() {
             let kept = self.window.as_slice();
             let text = self.compose(kept, None);
             return Ok(Finished {
@@ -240,21 +255,29 @@ impl Sink {
                 truncated: false,
                 cut_line: false,
             });
-        };
-        let Overflow {
-            path,
-            mut out,
-            capped,
-            ..
-        } = overflow;
-        out.flush().map_err(|e| write_failed(&path, &e))?;
-        drop(out);
+        }
+        let spill = mem::replace(&mut self.spill, Spill::Never);
         let (kept, cut_line) = match self.keep {
             Keep::Head => self.kept_head(),
             Keep::Tail => self.kept_tail(),
         };
-        let total_lines = self.newlines + usize::from(self.last != Some(b'\n'));
         let kept_lines = count_lines(kept);
+        let note = match spill {
+            Spill::Never => None,
+            spill => Some(self.truncation_note(spill, kept_lines, cut_line)?),
+        };
+        let text = self.compose(kept, note.as_deref());
+        Ok(Finished {
+            text,
+            kept_lines,
+            truncated: true,
+            cut_line,
+        })
+    }
+
+    /// The note of an answer that was cut: what was omitted and where the whole is.
+    fn truncation_note(&self, spill: Spill, kept_lines: usize, cut_line: bool) -> Result<String> {
+        let total_lines = self.newlines + usize::from(self.last != Some(b'\n'));
         let omitted = total_lines.saturating_sub(kept_lines);
         let mut note = format!("[truncated: {}", lines(omitted));
         note.push_str(match self.keep {
@@ -264,29 +287,43 @@ impl Sink {
         if cut_line {
             note.push_str(", and one long line cut short");
         }
-        let _ = if capped {
-            write!(
+        let _ = match spill {
+            Spill::Open(Overflow {
+                path,
+                mut out,
+                capped,
+                cap,
+                ..
+            }) => {
+                out.flush().map_err(|e| write_failed(&path, &e))?;
+                drop(out);
+                if capped {
+                    write!(
+                        note,
+                        "; the output is {} bytes but {} holds only the first {}]",
+                        self.total,
+                        path.display(),
+                        size_text(cap)
+                    )
+                } else {
+                    write!(
+                        note,
+                        "; full output ({} bytes) is in {}]",
+                        self.total,
+                        path.display()
+                    )
+                }
+            }
+            Spill::Failed(reason) => write!(
                 note,
-                "; the output is {} bytes but {} holds only the first {}]",
-                self.total,
-                path.display(),
-                size_text(self.cap)
-            )
-        } else {
-            write!(
-                note,
-                "; full output ({} bytes) is in {}]",
-                self.total,
-                path.display()
-            )
+                "; the full output ({} bytes) was not saved: {reason}]",
+                self.total
+            ),
+            Spill::Never | Spill::Pending { .. } => {
+                unreachable!("a sink past its limit has a file or a reason")
+            }
         };
-        let text = self.compose(kept, Some(&note));
-        Ok(Finished {
-            text,
-            kept_lines,
-            truncated: true,
-            cut_line,
-        })
+        Ok(note)
     }
 
     /// The kept bytes as text, with the truncation note and the invalid-UTF-8
@@ -352,6 +389,69 @@ impl Sink {
     }
 }
 
+/// Open `dir` (created `0700` if absent) as a directory fd, refusing a symlink,
+/// and check with `fstat` on that fd that it is ours and private. Then drop what
+/// is old in it. The error is the reason, for the note.
+fn open_private_dir(dir: &Path) -> std::result::Result<OwnedFd, String> {
+    let shown = dir.display();
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| format!("the overflow directory {shown} could not be created: {e}"))?;
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let fd = open(dir, flags, Mode::empty()).map_err(|e| match e {
+        // O_NOFOLLOW with O_DIRECTORY reports a symlink as ENOTDIR or ELOOP.
+        Errno::ELOOP | Errno::ENOTDIR => match std::fs::symlink_metadata(dir) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                format!("the overflow directory {shown} is a symlink")
+            }
+            _ => format!("the overflow directory {shown} is not a directory"),
+        },
+        e => format!("the overflow directory {shown} cannot be opened: {e}"),
+    })?;
+    let stat =
+        fstat(&fd).map_err(|e| format!("cannot inspect the overflow directory {shown}: {e}"))?;
+    if let Some(problem) = dir_problem(stat.st_uid, stat.st_mode) {
+        return Err(format!("the overflow directory {shown} {problem}"));
+    }
+    remove_old_files(&fd);
+    Ok(fd)
+}
+
+/// Remove the `.out` files in the directory `fd` that are older than [`KEEP_FILES`].
+/// Cleanup: a file that cannot be listed or removed stays, which costs disk and
+/// nothing else, so there is no one to tell.
+fn remove_old_files(fd: &OwnedFd) {
+    let Ok(listing) = fd
+        .try_clone()
+        .map_err(drop)
+        .and_then(|dup| Dir::from_fd(dup).map_err(drop))
+    else {
+        return;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut listing = listing;
+    let names: Vec<_> = listing
+        .iter()
+        .flatten()
+        .map(|item| item.file_name().to_owned())
+        .filter(|name| name.to_bytes().ends_with(b".out"))
+        .collect();
+    for name in names {
+        let Ok(stat) = fstatat(fd, name.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) else {
+            continue;
+        };
+        let regular = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFREG;
+        let age = now.saturating_sub(u64::try_from(stat.st_mtime).unwrap_or(0));
+        if regular && age > KEEP_FILES.as_secs() {
+            let _ = unlinkat(fd, name.as_c_str(), UnlinkatFlags::NoRemoveDir);
+        }
+    }
+}
+
 /// What is wrong with a directory of this owner and mode, if anything.
 fn dir_problem(uid: u32, mode: u32) -> Option<String> {
     if uid != Uid::effective().as_raw() {
@@ -363,38 +463,6 @@ fn dir_problem(uid: u32, mode: u32) -> Option<String> {
         ))
     } else {
         None
-    }
-}
-
-/// Check an overflow directory that exists already, by `lstat`: it must be a
-/// directory (not a symlink), ours, and closed to others. One that does not
-/// exist is fine; it is created `0700` when first needed.
-///
-/// # Errors
-/// The directory is there and unfit, or cannot be inspected.
-pub fn check_existing_dir(dir: &Path) -> Result<()> {
-    let shown = dir.display();
-    let meta = match fs::symlink_metadata(dir) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => {
-            return Err(ToolError(format!(
-                "cannot inspect the overflow directory {shown}: {e}"
-            )));
-        }
-    };
-    let problem = if meta.file_type().is_symlink() {
-        Some("is a symlink".to_owned())
-    } else if !meta.is_dir() {
-        Some("is not a directory".to_owned())
-    } else {
-        dir_problem(meta.uid(), meta.mode())
-    };
-    match problem {
-        Some(problem) => Err(ToolError(format!(
-            "the overflow directory {shown} {problem}"
-        ))),
-        None => Ok(()),
     }
 }
 
@@ -438,276 +506,4 @@ fn lines(n: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn limits(max: usize, dir: &tempfile::TempDir) -> Limits {
-        Limits::in_dir(max, dir.path().join("tau")).unwrap()
-    }
-
-    fn run<C: AsRef<[u8]>>(keep: Keep, max: usize, chunks: &[C]) -> (String, tempfile::TempDir) {
-        let dir = tempfile::tempdir().unwrap();
-        let mut sink = Sink::new(&limits(max, &dir), keep);
-        for chunk in chunks {
-            sink.push(chunk.as_ref()).unwrap();
-        }
-        (sink.finish().unwrap().text, dir)
-    }
-
-    fn overflow_of(dir: &tempfile::TempDir) -> Vec<u8> {
-        let mut files: Vec<_> = fs::read_dir(dir.path().join("tau")).unwrap().collect();
-        assert_eq!(files.len(), 1);
-        let path = files.pop().unwrap().unwrap().path();
-        assert_eq!(path.extension().unwrap(), "out");
-        assert_eq!(path.file_stem().unwrap().len(), ID_LEN);
-        fs::read(path).unwrap()
-    }
-
-    #[test]
-    fn within_the_limit_nothing_is_written() {
-        let (text, dir) = run(Keep::Head, 10, &[b"abc\n", b"def\n"][..]);
-        assert_eq!(text, "abc\ndef\n");
-        assert!(!dir.path().join("tau").exists());
-    }
-
-    #[test]
-    fn exactly_the_limit_is_not_truncated() {
-        let (text, dir) = run(Keep::Tail, 8, &[b"abc\ndef\n"]);
-        assert_eq!(text, "abc\ndef\n");
-        assert!(!dir.path().join("tau").exists());
-    }
-
-    #[test]
-    fn head_keeps_whole_lines_and_counts_the_rest() {
-        let (text, dir) = run(Keep::Head, 10, &[b"aaaa\nbbbb\ncccc\ndddd\n"]);
-        assert!(
-            text.starts_with("aaaa\nbbbb\n[truncated: 2 lines omitted after these;"),
-            "{text}"
-        );
-        assert!(text.contains("full output (20 bytes) is in "));
-        assert_eq!(overflow_of(&dir), b"aaaa\nbbbb\ncccc\ndddd\n");
-    }
-
-    #[test]
-    fn head_boundary_exactly_on_a_newline() {
-        let (text, _dir) = run(Keep::Head, 9, &[b"aaaa\nbbbb\ncccc\n"]);
-        assert!(
-            text.starts_with("aaaa\nbbbb\n[truncated: 1 line omitted"),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn tail_keeps_whole_lines_and_counts_the_rest() {
-        let (text, dir) = run(Keep::Tail, 10, &[b"aaaa\nbbbb\ncccc\ndddd\n"]);
-        assert!(
-            text.starts_with("[truncated: 2 lines omitted before these;"),
-            "{text}"
-        );
-        assert!(text.ends_with("]\ncccc\ndddd\n"), "{text}");
-        assert_eq!(overflow_of(&dir), b"aaaa\nbbbb\ncccc\ndddd\n");
-    }
-
-    #[test]
-    fn tail_with_a_last_line_lacking_a_newline() {
-        let (text, _dir) = run(Keep::Tail, 10, &[b"aaaa\nbbbb\ncccc\ndddd"]);
-        assert!(text.contains("2 lines omitted before"), "{text}");
-        assert!(text.ends_with("]\ncccc\ndddd"), "{text}");
-    }
-
-    #[test]
-    fn chunks_may_split_lines_and_the_file_equals_the_whole() {
-        let whole = b"one\ntwo\nthree\nfour\nfive\nsix\n";
-        let parts: Vec<&[u8]> = whole.chunks(3).collect();
-        for keep in [Keep::Head, Keep::Tail] {
-            let (text, dir) = run(keep, 12, &parts);
-            assert_eq!(overflow_of(&dir), whole);
-            assert!(text.contains("full output (28 bytes)"), "{text}");
-        }
-    }
-
-    #[test]
-    fn a_single_long_line_is_cut_on_a_character() {
-        // 'é' is two bytes: a limit of 5 must not split the third one.
-        let line = "ééééé\n".to_owned();
-        for keep in [Keep::Head, Keep::Tail] {
-            let (text, _dir) = run(keep, 5, &[line.as_bytes()]);
-            assert!(text.contains("one long line cut short"), "{text}");
-            assert!(std::str::from_utf8(text.as_bytes()).is_ok());
-            assert!(!text.contains('\u{FFFD}'), "{text}");
-        }
-    }
-
-    #[test]
-    fn multibyte_text_across_lines_is_never_split() {
-        let text = "日本語\n".repeat(20);
-        for keep in [Keep::Head, Keep::Tail] {
-            for max in 1..40 {
-                let (out, _dir) = run(keep, max, &[text.as_bytes()]);
-                assert!(!out.contains('\u{FFFD}'), "max {max}: {out}");
-            }
-        }
-    }
-
-    #[test]
-    fn tail_keeps_the_end_when_the_window_has_been_trimmed() {
-        let many: Vec<u8> = (0..1000)
-            .flat_map(|i| format!("line {i}\n").into_bytes())
-            .collect();
-        let chunks: Vec<&[u8]> = many.chunks(7).collect();
-        let (text, dir) = run(Keep::Tail, 50, &chunks);
-        assert!(text.ends_with("line 999\n"), "{text}");
-        assert_eq!(overflow_of(&dir), many);
-        let kept = text.split_once("]\n").unwrap().1;
-        assert!(kept.len() <= 50);
-        let first: usize = kept
-            .lines()
-            .next()
-            .unwrap()
-            .strip_prefix("line ")
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert!(
-            text.contains(&format!("{first} lines omitted before")),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn an_unwritable_overflow_directory_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let blocker = dir.path().join("blocker");
-        // Fine when the tool is built; a file takes the directory's place after.
-        let limits = Limits::in_dir(4, blocker.join("tau")).unwrap();
-        fs::write(&blocker, "x").unwrap();
-        let mut sink = Sink::new(&limits, Keep::Head);
-        let err = sink.push(b"too long for four").unwrap_err();
-        assert!(err.0.contains("could not be created"), "{err}");
-    }
-
-    #[test]
-    fn a_zero_limit_is_refused() {
-        assert!(Limits::new(0).is_err());
-    }
-
-    #[test]
-    fn the_directory_is_private_and_the_file_is_0600() {
-        use std::os::unix::fs::PermissionsExt;
-        let (_text, dir) = run(Keep::Head, 5, &[b"too long for five"]);
-        let tau = dir.path().join("tau");
-        assert_eq!(
-            fs::metadata(&tau).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        let file = fs::read_dir(&tau).unwrap().next().unwrap().unwrap().path();
-        assert_eq!(
-            fs::metadata(file).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn a_directory_open_to_others_is_refused_at_construction_and_at_use() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let open = dir.path().join("open");
-        fs::create_dir(&open).unwrap();
-        fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
-        let err = Limits::in_dir(4, open.clone()).unwrap_err();
-        assert!(err.0.contains("has mode 0755"), "{err}");
-        // Opened up after the tool was built:
-        let later = dir.path().join("later");
-        fs::create_dir(&later).unwrap();
-        fs::set_permissions(&later, fs::Permissions::from_mode(0o700)).unwrap();
-        let limits = Limits::in_dir(4, later.clone()).unwrap();
-        fs::set_permissions(&later, fs::Permissions::from_mode(0o755)).unwrap();
-        let mut sink = Sink::new(&limits, Keep::Head);
-        let err = sink.push(b"too long for four").unwrap_err();
-        assert!(err.0.contains("has mode 0755"), "{err}");
-        assert_eq!(fs::read_dir(&later).unwrap().count(), 0, "no fallback file");
-    }
-
-    #[test]
-    fn a_symlink_as_the_directory_is_refused_at_construction_and_at_use() {
-        let dir = tempfile::tempdir().unwrap();
-        let real = dir.path().join("real");
-        fs::create_dir(&real).unwrap();
-        let link = dir.path().join("link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
-        let err = Limits::in_dir(4, link.clone()).unwrap_err();
-        assert!(err.0.contains("is a symlink"), "{err}");
-        // Swapped for a symlink after the tool was built:
-        let swapped = dir.path().join("swapped");
-        let limits = Limits::in_dir(4, swapped.clone()).unwrap();
-        std::os::unix::fs::symlink(&real, &swapped).unwrap();
-        let mut sink = Sink::new(&limits, Keep::Head);
-        let err = sink.push(b"too long for four").unwrap_err();
-        assert!(err.0.contains("is a symlink"), "{err}");
-        assert_eq!(fs::read_dir(&real).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn the_overflow_file_is_capped_but_counting_goes_on() {
-        let dir = tempfile::tempdir().unwrap();
-        let limits = limits(10, &dir).with_max_overflow(25).unwrap();
-        let mut sink = Sink::new(&limits, Keep::Head);
-        let text =
-            "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\n"
-                .to_owned();
-        for chunk in text.as_bytes().chunks(7) {
-            sink.push(chunk).unwrap();
-        }
-        let finished = sink.finish().unwrap();
-        assert_eq!(overflow_of(&dir), &text.as_bytes()[..25]);
-        assert!(
-            finished
-                .text
-                .starts_with("line 0\n[truncated: 9 lines omitted after these;")
-        );
-        assert!(
-            finished.text.contains("the output is 70 bytes but ")
-                && finished.text.contains("holds only the first 25 bytes]"),
-            "{}",
-            finished.text
-        );
-    }
-
-    #[test]
-    fn the_cap_note_speaks_in_mib_when_it_can() {
-        let dir = tempfile::tempdir().unwrap();
-        let limits = limits(10, &dir).with_max_overflow(2 * MIB).unwrap();
-        let mut sink = Sink::new(&limits, Keep::Tail);
-        sink.push(&vec![b'x'; 3 * MIB]).unwrap();
-        assert!(
-            sink.finish()
-                .unwrap()
-                .text
-                .contains("holds only the first 2 MiB]")
-        );
-    }
-
-    #[test]
-    fn a_cap_below_the_limit_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(limits(100, &dir).with_max_overflow(99).is_err());
-    }
-
-    #[test]
-    fn invalid_utf8_is_replaced_and_said_so_on_the_side_of_the_omission() {
-        let (text, _dir) = run(Keep::Head, 100, &[b"caf\xe9\n"]);
-        assert_eq!(text, format!("caf\u{FFFD}\n\n{LOSSY_NOTE}"));
-        let (text, _dir) = run(Keep::Tail, 100, &[b"caf\xe9\n"]);
-        assert_eq!(text, format!("{LOSSY_NOTE}\ncaf\u{FFFD}\n"));
-    }
-
-    #[test]
-    fn finish_reports_the_lines_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut sink = Sink::new(&limits(10, &dir), Keep::Head);
-        sink.push(b"aaaa\nbbbb\ncccc\n").unwrap();
-        let finished = sink.finish().unwrap();
-        assert!(finished.truncated);
-        assert_eq!(finished.kept_lines, 2);
-    }
-}
+mod tests;

@@ -7,6 +7,7 @@ Each example is `python examples/X.py [--model NAME]`; copy examples/config.json
 import argparse
 import asyncio
 import os
+import signal
 import sys
 from collections.abc import Callable, Coroutine, Mapping
 from pathlib import Path
@@ -61,11 +62,40 @@ async def close_all(providers: Mapping[str, Provider]) -> None:
         await provider.aclose()
 
 
+def run_until_signalled(main: Coroutine[object, object, None]) -> None:
+    """`asyncio.run(main)`, where SIGTERM and SIGHUP (a closed terminal) end `main` as SIGINT
+    does: by cancelling it, so a running `bash` command is killed on the way out. Without
+    this the process dies at once, the command is left running in its own session, and its
+    timeout never fires. Any program that runs base tools must do the same. Exits 128 + the
+    signal number."""
+    caught: list[int] = []
+
+    async def guarded() -> None:
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        assert task is not None
+
+        def stop(number: int) -> None:
+            caught.append(number)
+            task.cancel()
+
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            loop.add_signal_handler(number, stop, number)
+        await main
+
+    try:
+        asyncio.run(guarded())
+    except asyncio.CancelledError:
+        if not caught:
+            raise
+        sys.exit(128 + caught[0])
+
+
 def run(main: Callable[[str, LoadedConfig], Coroutine[object, object, None]]) -> None:
     """Choose a model, run `main(name, loaded)`; on a failure print one line and exit 1."""
     try:
         name, loaded = choose_model(sys.argv[1:])
-        asyncio.run(main(name, loaded))
+        run_until_signalled(main(name, loaded))
     except (ConfigError, TrustError, DotenvError, SampleFailed) as e:
         sys.exit(f"{Path(sys.argv[0]).name}: {safe_block(str(e))}")
     except KeyboardInterrupt:

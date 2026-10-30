@@ -6,11 +6,16 @@ calls run in parallel, even on free-threaded builds, and never block the event l
     tools = base_tools(cwd="/work/project")
     driver = Driver(session, providers, catalog, tools=tools)
 
-`read`, `grep` and `bash` limit their output to `max_output` bytes (default 10_000): past
-it, the model gets the kept lines and a note naming the omitted line count and a file in
-`<temp dir>/tau-<euid>/` that holds the full output (up to `max_overflow` bytes, default
-64 MiB). `read` and `grep` keep the head, `bash` the tail. `write` answers one short line,
-so the limit does not apply to it.
+`grep` and `bash` limit their output to `max_output` bytes (default 10_000): past it, the model
+gets the kept lines and a note naming the omitted line count and a file that holds the full
+output (up to `max_overflow` bytes, default 64 MiB). `grep` keeps the head, `bash` the tail. The
+files live in `overflow_dir`, by default `$XDG_RUNTIME_DIR/tau` when that is set, else
+`<temp dir>/tau-<euid>`; the directory must be private to the user (a symlink, a directory of
+another user or one open to others is refused when a file is first needed, and the answer says
+the full output was not saved), and files in it older than a day are removed when it is opened.
+`read` limits its output to `max_output` bytes too, but writes no file: it stops after the last
+whole line that fits and says which `offset` continues. `write` answers one short line, so the
+limit does not apply to it.
 
 An expected failure (bad arguments, a missing file, a command that exits nonzero, an overflow
 file that cannot be written) answers `Outcome.Err` with a message for the model; nothing is
@@ -20,11 +25,21 @@ raised out of `call`. A bad constructor argument raises `ValueError` or `NotADir
 
 Cancelling `call` stops the work: `read` and `grep` stop at their next check, `bash` terminates
 its process group (SIGTERM, then SIGKILL after `kill_grace_ms`) and waits for it to end.
+
+A program that uses these tools must turn SIGTERM and SIGHUP (a closed terminal) into that
+cancellation, as `asyncio.run` already does for SIGINT: a Python process that dies from either
+leaves a running `bash` command orphaned in its own session, and its timeout never fires.
+`examples/common.py` (`run_until_signalled`) shows how: `loop.add_signal_handler` for both
+signals, cancelling the main task.
+
+`bash` needs Linux (it finds a command's processes by session in `/proc`); building it
+anywhere else raises `OSError`.
 """
 
 import asyncio
 import json
 import os
+import sys
 import threading
 from collections.abc import Callable, Mapping
 from functools import partial
@@ -133,10 +148,8 @@ class ReadTool(_Cancellable):
         cwd: str | os.PathLike[str] | None = None,
         *,
         max_output: int = DEFAULT_MAX_OUTPUT,
-        overflow_dir: str | os.PathLike[str] | None = None,
-        max_overflow: int = DEFAULT_MAX_OVERFLOW,
     ) -> None:
-        engine = _core.Read(_working_directory(cwd), max_output, overflow_dir, max_overflow)
+        engine = _core.Read(_working_directory(cwd), max_output)
         super().__init__(engine)
 
 
@@ -188,6 +201,11 @@ class BashTool(_Described):
         max_timeout_ms: int = DEFAULT_BASH_MAX_TIMEOUT_MS,
         kill_grace_ms: int = DEFAULT_KILL_GRACE_MS,
     ) -> None:
+        if not sys.platform.startswith("linux"):
+            raise OSError(
+                f"the bash tool needs Linux (it finds a command's processes in /proc), "
+                f"not {sys.platform}"
+            )
         engine = _core.Bash(
             _working_directory(cwd),
             max_output,
@@ -230,7 +248,7 @@ def base_tools(  # noqa: PLR0913 - the settings the four tools share
 ) -> list[ReadTool | WriteTool | GrepTool | BashTool]:
     """`read`, `write`, `grep` and `bash`, all working in `cwd` (default: the current directory)."""
     return [
-        ReadTool(cwd, max_output=max_output, overflow_dir=overflow_dir, max_overflow=max_overflow),
+        ReadTool(cwd, max_output=max_output),
         WriteTool(cwd),
         GrepTool(cwd, max_output=max_output, overflow_dir=overflow_dir, max_overflow=max_overflow),
         BashTool(
