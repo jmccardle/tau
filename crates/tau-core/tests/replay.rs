@@ -3,7 +3,7 @@
 
 use proptest::prelude::*;
 use tau_core::machine::Machine;
-use tau_core::step::{Answer, Draft, Job};
+use tau_core::step::{Answer, Draft, Job, SampleEnd};
 use tau_core::tree::{
     Author, Body, CursorId, Error, ItemData, NodeId, Outcome, Part, Record, Scratchpad, Session,
     Stop,
@@ -259,19 +259,16 @@ fn labels_survive_a_reload() {
 }
 
 fn reply(parts: Vec<Part>, stop: Stop) -> Answer {
-    Answer::Sampled {
-        reply: Some(Draft {
-            body: Body::Assistant {
-                parts,
-                stop,
-                finish_reason: None,
-                meta: None,
-            },
-            delivers: vec![],
-            by: Author::Provider,
-        }),
-        error: None,
-    }
+    sampled(Draft {
+        body: Body::Assistant {
+            parts,
+            stop,
+            finish_reason: None,
+            meta: None,
+        },
+        delivers: vec![],
+        by: Author::Provider,
+    })
 }
 
 /// The hooks' answer that changes nothing: a job's draft comes back as it was.
@@ -388,4 +385,25 @@ fn crash_mid_batch_rests_at_the_batch_after_a_real_reload() {
         "rests at the batch"
     );
     assert!(!loaded.auto[&c]);
+}
+
+/// A sample that finished with `d`'s body.
+fn sampled(d: Draft) -> Answer {
+    let Body::Assistant {
+        parts,
+        stop,
+        finish_reason,
+        meta,
+    } = d.body
+    else {
+        panic!("a reply is an Assistant body")
+    };
+    Answer::Sampled {
+        parts,
+        end: SampleEnd::Finished {
+            stop,
+            reason: finish_reason,
+            meta,
+        },
+    }
 }

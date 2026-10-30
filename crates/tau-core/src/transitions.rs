@@ -82,13 +82,18 @@ pub(crate) fn answered(answer: &Answer) {
         Answer::Hooks { stop: Some(_), .. } => "answer Hooks(stop)".into(),
         Answer::Hooks { .. } => "answer Hooks".into(),
         Answer::HookFailed(_) => "answer HookFailed".into(),
-        Answer::Sampled { reply, error } => format!(
+        // Named by what core makes of it: a reply, an error, both, or nothing.
+        Answer::Sampled { parts, end } => format!(
             "answer Sampled({})",
-            match (reply.is_some(), error.is_some()) {
-                (true, true) => "reply, error",
-                (true, false) => "reply",
-                (false, true) => "error",
-                (false, false) => "none",
+            match (end, parts.is_empty()) {
+                (
+                    crate::step::SampleEnd::Finished { .. } | crate::step::SampleEnd::Cancelled,
+                    false,
+                )
+                | (crate::step::SampleEnd::Finished { .. }, true) => "reply",
+                (crate::step::SampleEnd::Failed { .. }, false) => "reply, error",
+                (crate::step::SampleEnd::Failed { .. }, true) => "error",
+                (crate::step::SampleEnd::Cancelled, true) => "none",
             }
         ),
         Answer::CallDone { .. } => "answer CallDone".into(),

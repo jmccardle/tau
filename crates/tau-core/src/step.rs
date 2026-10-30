@@ -3,7 +3,8 @@
 
 use crate::transitions;
 use crate::tree::{
-    Author, Body, CursorId, Error, Item, ItemData, ItemId, Next, NodeId, Outcome, Session, calls,
+    Author, Body, CursorId, Error, Item, ItemData, ItemId, Next, NodeId, Outcome, Part, Session,
+    Stop, calls,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +16,22 @@ pub enum Hook {
     PostReply,
     PostResult,
     PostStep,
+}
+
+impl Hook {
+    /// The name an extension defines the hook by.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::PreStep => "pre_step",
+            Self::PreInput => "pre_input",
+            Self::PreSample => "pre_sample",
+            Self::PreReply => "pre_reply",
+            Self::PostReply => "post_reply",
+            Self::PostResult => "post_result",
+            Self::PostStep => "post_step",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,9 +59,13 @@ pub struct RunCall {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Job {
+    /// A cursor hook point and its subject, which is what the point is about:
+    /// `draft` at `pre_input`, `pre_sample`, `pre_reply`; `node` (the node at
+    /// `at`) at `post_reply`, `post_result`; `ending` at `post_step`; none at `pre_step`.
     Hooks {
         point: Hook,
         draft: Option<Draft>,
+        node: Option<NodeId>,
         ending: Option<Ending>,
     },
     Sample,
@@ -59,6 +80,21 @@ pub enum Job {
     Rest,
 }
 
+/// How a sample ended, as the driver saw it. Core decides what the tree records.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SampleEnd {
+    /// The provider finished: its stop, finish string and response metadata.
+    Finished {
+        stop: Stop,
+        reason: Option<String>,
+        meta: Option<String>,
+    },
+    /// The sample failed: the error's text, and the metadata the response carried.
+    Failed { error: String, meta: Option<String> },
+    /// The driver cancelled the sample (the cursor was aborted).
+    Cancelled,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
     /// `draft`: the edited draft; from `pre_sample`, a reply that answers the sample.
@@ -67,9 +103,12 @@ pub enum Answer {
         draft: Option<Draft>,
     },
     HookFailed(String),
+    /// `parts`: what streamed before `end`. Core decides the reply: a finish is
+    /// the reply; a failure with parts is a reply with `Error`, without, a
+    /// failed step; a cancel with parts is an `Interrupted` reply, without, nothing.
     Sampled {
-        reply: Option<Draft>,
-        error: Option<String>,
+        parts: Vec<Part>,
+        end: SampleEnd,
     },
     /// `by`: `Tools`, or the extension whose `pre_tool` answered the call or
     /// whose `pre_result` last edited the outcome.
@@ -99,6 +138,7 @@ fn hooks(point: Hook, draft: Option<Draft>) -> Job {
     Job::Hooks {
         point,
         draft,
+        node: None,
         ending: None,
     }
 }
@@ -204,13 +244,19 @@ impl Step {
     fn job_after_reply(&mut self, s: &mut Session, on: bool) -> Result<Option<Job>, Error> {
         Ok(match self.pos {
             // Post hooks run on data that is on disk.
-            Pos::PostReply => {
+            Pos::PostReply | Pos::PostResult => {
                 s.sync();
-                Some(hooks(Hook::PostReply, None))
-            }
-            Pos::PostResult => {
-                s.sync();
-                Some(hooks(Hook::PostResult, None))
+                let point = if self.pos == Pos::PostReply {
+                    Hook::PostReply
+                } else {
+                    Hook::PostResult
+                };
+                Some(Job::Hooks {
+                    point,
+                    draft: None,
+                    node: Some(s.at(self.cursor)?),
+                    ending: None,
+                })
             }
             Pos::Tools => self.tools_job(s, on)?,
             Pos::Calls => Some(Job::Pending),
@@ -219,6 +265,7 @@ impl Step {
                 Some(Job::Hooks {
                     point: Hook::PostStep,
                     draft: None,
+                    node: None,
                     ending: Some(self.ending.clone()),
                 })
             }
@@ -308,7 +355,7 @@ impl Step {
         match answer {
             Answer::HookFailed(e) => self.on_hook_failed(s, e),
             Answer::Hooks { stop, draft } => self.on_hooks(s, stop, draft, now),
-            Answer::Sampled { reply, error } => self.on_sampled(s, reply, error, now)?,
+            Answer::Sampled { parts, end } => self.on_sampled(s, parts, end, now)?,
             Answer::CallDone { call, outcome, by } => self.on_call(s, &call, outcome, by, now)?,
         }
         Ok(())
@@ -367,14 +414,35 @@ impl Step {
         self.end(s, Ending::Halted(reason));
     }
 
-    /// The sample came back: a reply (maybe with an error), an error, or nothing (aborted).
+    /// The sample ended: a reply (maybe with an error), an error, or nothing (aborted).
     fn on_sampled(
         &mut self,
         s: &mut Session,
-        reply: Option<Draft>,
-        error: Option<String>,
+        parts: Vec<Part>,
+        end: SampleEnd,
         now: u64,
     ) -> Result<(), Error> {
+        let reply = |parts, stop, finish_reason, meta| Draft {
+            body: Body::Assistant {
+                parts,
+                stop,
+                finish_reason,
+                meta,
+            },
+            delivers: vec![],
+            by: Author::Provider,
+        };
+        let (reply, error) = match end {
+            SampleEnd::Finished { stop, reason, meta } => {
+                (Some(reply(parts, stop, reason, meta)), None)
+            }
+            SampleEnd::Cancelled if parts.is_empty() => (None, None),
+            SampleEnd::Cancelled => (Some(reply(parts, Stop::Interrupted, None, None)), None),
+            SampleEnd::Failed { error, .. } if parts.is_empty() => (None, Some(error)),
+            SampleEnd::Failed { error, meta } => {
+                (Some(reply(parts, Stop::Error, None, meta)), Some(error))
+            }
+        };
         match (reply, error) {
             (Some(reply), error) => {
                 self.draft = Some(reply);

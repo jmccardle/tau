@@ -15,7 +15,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use tau_core::machine::Machine;
-use tau_core::step::{Answer, Draft, Job};
+use tau_core::step::{Answer, Draft, Job, SampleEnd};
 use tau_core::tree::{
     Author, Body, CursorId, Node, NodeId, Outcome, Part, Record, Scratchpad, Session, Stop,
 };
@@ -222,19 +222,16 @@ impl Agent {
         } else {
             Stop::End
         };
-        Answer::Sampled {
-            reply: Some(Draft {
-                body: Body::Assistant {
-                    parts,
-                    stop,
-                    finish_reason: None,
-                    meta: None,
-                },
-                delivers: vec![],
-                by: Author::Provider,
-            }),
-            error: None,
-        }
+        sampled(Draft {
+            body: Body::Assistant {
+                parts,
+                stop,
+                finish_reason: None,
+                meta: None,
+            },
+            delivers: vec![],
+            by: Author::Provider,
+        })
     }
 
     fn run(&mut self, rig: &mut Rig) {
@@ -915,5 +912,26 @@ fn main() {
         if args.is_empty() || args.iter().any(|a| a == name) {
             run();
         }
+    }
+}
+
+/// A sample that finished with `d`'s body.
+fn sampled(d: Draft) -> Answer {
+    let Body::Assistant {
+        parts,
+        stop,
+        finish_reason,
+        meta,
+    } = d.body
+    else {
+        panic!("a reply is an Assistant body")
+    };
+    Answer::Sampled {
+        parts,
+        end: SampleEnd::Finished {
+            stop,
+            reason: finish_reason,
+            meta,
+        },
     }
 }

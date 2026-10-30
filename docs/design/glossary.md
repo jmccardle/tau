@@ -380,8 +380,10 @@ more calls on possibly torn state.
 ### busy, at rest
 *spike* `Machine::busy`, `Step::resting` · new
 
-A cursor is busy while a `Step` exists for it that is not `resting()`.
-Never stored; every cursor loads at rest.
+A cursor is busy while a `Step` exists for it that is not `resting()`, or
+while a go-to waits for its aborted step to rest (the go-to applies in the
+next `next_job`). So a busy cursor always needs `next_job`, and a driver needs
+no separate poll. Never stored; every cursor loads at rest.
 
 ## The step
 
@@ -435,7 +437,8 @@ that is not `Config` or `Custom`); a batch is read from that node, not from
 ### job
 *spike* `Job` · new
 
-What the step asks the driver to do: `Hooks { point, draft, ending }`,
+What the step asks the driver to do: `Hooks { point, draft, node, ending }` (the
+subject is whichever of the three the point is about),
 `Sample`, `RunCalls { node, calls }` (`node`: the `Assistant` node holding the
 batch; the driver refuses an empty one), `Pending` (calls outstanding),
 `Rest`. Only waits are jobs; writes never are.
@@ -455,7 +458,18 @@ for a cursor (`in_hook`).
 *spike* `Answer` · new
 
 What the driver answers with: `Hooks { stop, draft }`, `HookFailed(error)`,
-`Sampled { reply, error }`, `CallDone { call, outcome }`. Each is accepted only while the job it answers is out; any other answer is `WrongAnswer`.
+`Sampled { parts, end }`, `CallDone { call, outcome }`. Each is accepted only while the job it answers is out; any other answer is `WrongAnswer`.
+
+### SampleEnd
+*spike* `SampleEnd` · new
+
+How a sample ended, as the driver saw it: `Finished { stop, reason, meta }`
+(the provider's finish), `Failed { error, meta }`, or `Cancelled` (the cursor
+was aborted). Answered with the parts streamed so far in `Answer::Sampled`.
+The driver reports what happened; core decides what the tree records: a
+finish is the reply, a cancel with parts an `Interrupted` reply, a failure
+with parts an `Error` reply (and the step fails), and a cancel or failure
+with no parts writes no reply (a failure leaves a `sample_error` side node).
 
 ### RunCall
 *spike* `RunCall` · new
@@ -1167,8 +1181,8 @@ in hook order; how `config_at` will name them is open.
 `Driver._pump` · new
 
 The one coroutine per session that calls `next_job` and `answer` (D11 rejects a
-task per cursor). Loop: for each cursor with no effect out that is busy or
-due a poll, take its next job and start it as a unit; then await the queue and
+task per cursor). Loop: for each cursor with no effect out that is busy,
+take its next job and start it as a unit; then await the queue and
 answer with what arrives. `next_job` is not idempotent, so it is never called while a
 cursor has an effect out, except after a `CallDone` (expecting `Pending`).
 
@@ -1183,15 +1197,13 @@ A cancelled unit reports nothing.
 `tau_next.Outstanding` · new
 
 A cursor's effect in flight: its units, and what abort needs to cancel them
-(the sample, the calls). At most one per cursor.
+(the sample, the calls). At most one per cursor. It counts nothing: core's
+batch knows which calls are out.
 
-### poke, poll
-`Driver._poke`, `Driver._poll` · new
+### poke
+`Driver._poke` · new
 
-A **poke** wakes the pump after a frontend call. A **poll** is one extra
-`next_job` for a cursor whose effect just ended, even if it now rests: a go-to
-waiting on its aborted step applies inside that `next_job`, and `busy` does
-not show it.
+A **poke** wakes the pump after a frontend call.
 
 ### Subject
 `tau_next.Subject` · new
@@ -1211,14 +1223,14 @@ The hook that changed the outcome is its `by`.
 `tau_next.SampleError` · new
 
 What a provider raises to fail a sample. Parts it yielded first are kept: the
-reply is committed with `stop: Error` and `Sampled.error` set. With none,
-`Sampled { reply: None, error }`. Any other exception from a provider or the
+reply is committed with `stop: Error` and the error's `meta`. The driver
+answers `Sampled { parts, end: Failed { error, meta } }`; core decides which. Any other exception from a provider or the
 driver is a bug and surfaces through `Driver.check`.
 
 ### rest
 `Driver.rest(cursor)` · new
 
-Await until the cursor is at rest: not busy, no effect out, no poll due.
+Await until the cursor is at rest: not busy, no effect out.
 Re-raises what an effect or the pump died of. A cursor held by an open
 question or a gate does not rest. The pump wakes its waiters after each pass.
 

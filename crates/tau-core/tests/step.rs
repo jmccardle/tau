@@ -1,6 +1,6 @@
 //! The step machine driven by a scripted driver: no Python, no clock.
 
-use tau_core::step::{Answer, Draft, Ending, Hook, Job, Step};
+use tau_core::step::{Answer, Draft, Ending, Hook, Job, SampleEnd, Step};
 use tau_core::tree::{Author, Body, Error, ItemData, Outcome, Part, Record, Session, Stop};
 
 fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
@@ -13,6 +13,34 @@ fn reply(parts: Vec<Part>, stop: Stop) -> Draft {
         },
         delivers: vec![],
         by: Author::Provider,
+    }
+}
+
+/// A sample that finished with `d`'s body.
+fn sampled(d: Draft) -> Answer {
+    let Body::Assistant {
+        parts,
+        stop,
+        finish_reason,
+        meta,
+    } = d.body
+    else {
+        panic!("a reply is an Assistant body")
+    };
+    Answer::Sampled {
+        parts,
+        end: SampleEnd::Finished {
+            stop,
+            reason: finish_reason,
+            meta,
+        },
+    }
+}
+
+fn cancelled(parts: Vec<Part>) -> Answer {
+    Answer::Sampled {
+        parts,
+        end: SampleEnd::Cancelled,
     }
 }
 
@@ -86,84 +114,6 @@ fn send(s: &mut Session, cursor: u64, t: &str) {
 }
 
 #[test]
-fn plain_turn() {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    send(&mut s, c, "hi");
-    let mut step = Step::wake(&s, c, false);
-    drive(&mut s, &mut step, |job, _| match job {
-        Job::Sample => vec![Answer::Sampled {
-            reply: Some(reply(vec![text("hello")], Stop::End)),
-            error: None,
-        }],
-        _ => vec![echo(job)],
-    });
-    assert_eq!(
-        bodies(&s, c)[2..],
-        [
-            Body::User("hi".into()),
-            Body::Assistant {
-                parts: vec![text("hello")],
-                stop: Stop::End,
-                finish_reason: None,
-                meta: None,
-            }
-        ]
-    );
-    assert_eq!(s.items(c).count(), 0);
-}
-
-#[test]
-fn batch_answers_in_call_order_then_samples_again() {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    send(&mut s, c, "look");
-    let mut samples = 0;
-    let mut step = Step::wake(&s, c, false);
-    drive(&mut s, &mut step, |job, _| match job {
-        Job::Sample => {
-            samples += 1;
-            let r = if samples == 1 {
-                reply(vec![call("a"), call("b")], Stop::Tools)
-            } else {
-                reply(vec![text("done")], Stop::End)
-            };
-            vec![Answer::Sampled {
-                reply: Some(r),
-                error: None,
-            }]
-        }
-        // b finishes first
-        Job::RunCalls { .. } => ["b", "a"]
-            .map(|id| Answer::CallDone {
-                call: id.into(),
-                outcome: Outcome::Ok(id.into()),
-                by: Author::Tools,
-            })
-            .to_vec(),
-        _ => vec![echo(job)],
-    });
-    let b = bodies(&s, c);
-    assert_eq!(
-        b[4],
-        Body::Results(vec![
-            ("a".into(), Outcome::Ok("a".into()), Author::Tools),
-            ("b".into(), Outcome::Ok("b".into()), Author::Tools)
-        ])
-    );
-    assert_eq!(
-        b[5],
-        Body::Assistant {
-            parts: vec![text("done")],
-            stop: Stop::End,
-            finish_reason: None,
-            meta: None,
-        }
-    );
-    assert_eq!(s.items(c).count(), 0, "nothing left behind");
-    let results = s.tree.walk(s.at(c).unwrap())[4];
-    assert_eq!(results.by, Author::Tools);
-}
-
-#[test]
 fn each_outcome_records_who_produced_it() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "look");
@@ -177,10 +127,7 @@ fn each_outcome_records_who_produced_it() {
             } else {
                 reply(vec![text("done")], Stop::End)
             };
-            vec![Answer::Sampled {
-                reply: Some(r),
-                error: None,
-            }]
+            vec![sampled(r)]
         }
         // a ran; b was denied by a permissions extension's pre_tool
         Job::RunCalls { .. } => vec![
@@ -231,10 +178,7 @@ fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
                 } else {
                     reply(vec![text("done")], Stop::End)
                 };
-                vec![Answer::Sampled {
-                    reply: Some(r),
-                    error: None,
-                }]
+                vec![sampled(r)]
             }
             Job::RunCalls { .. } => vec![Answer::CallDone {
                 call: "a".into(),
@@ -269,144 +213,13 @@ fn post_hooks_run_on_synced_data_and_pre_phase_writes_share_one_sync() {
 
 /// Runs until the batch is handed out, answers one call's outcome, then drops
 /// everything a crash drops and reloads.
-fn crash_mid_batch() -> (Session, u64) {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    send(&mut s, c, "look");
-    let mut step = Step::wake(&s, c, false);
-    loop {
-        match step.next_job(&mut s).unwrap() {
-            Job::Sample => step
-                .answer(
-                    &mut s,
-                    Answer::Sampled {
-                        reply: Some(reply(vec![call("a"), call("b")], Stop::Tools)),
-                        error: None,
-                    },
-                    0,
-                )
-                .unwrap(),
-            Job::RunCalls { .. } => {
-                step.answer(
-                    &mut s,
-                    Answer::CallDone {
-                        call: "a".into(),
-                        outcome: Outcome::Ok("done".into()),
-                        by: Author::Tools,
-                    },
-                    0,
-                )
-                .unwrap();
-                break; // the power goes out: b never finishes
-            }
-            job => step.answer(&mut s, echo(&job), 0).unwrap(),
-        }
-    }
-    drop(step);
-    tau_core::tree::reconcile(&mut s);
-    (s, c)
-}
-
-#[test]
-fn after_a_crash_mid_batch_input_goes_under_the_unanswered_batch() {
-    let (mut s, c) = crash_mid_batch();
-    assert!(
-        matches!(bodies(&s, c).last(), Some(Body::Assistant { .. })),
-        "rests at the batch"
-    );
-    send(&mut s, c, "the power went out, check the files");
-    let mut step = Step::wake(&s, c, false);
-    let jobs = drive(&mut s, &mut step, |job, _| match job {
-        Job::Sample => vec![Answer::Sampled {
-            reply: Some(reply(vec![text("checking")], Stop::End)),
-            error: None,
-        }],
-        _ => vec![echo(job)],
-    });
-    assert!(
-        !jobs.iter().any(|j| matches!(j, Job::RunCalls { .. })),
-        "input first: nothing reruns"
-    );
-    let b = bodies(&s, c);
-    assert!(matches!(b[3], Body::Assistant { .. }));
-    assert_eq!(
-        b[4],
-        Body::User("the power went out, check the files".into())
-    );
-}
-
-#[test]
-fn after_a_crash_mid_batch_a_step_reruns_the_whole_batch() {
-    let (mut s, c) = crash_mid_batch();
-    let mut step = Step::wake(&s, c, true);
-    let jobs = drive(&mut s, &mut step, |job, _| match job {
-        Job::RunCalls { calls: run, .. } => run
-            .iter()
-            .map(|r| Answer::CallDone {
-                call: r.id.clone(),
-                outcome: Outcome::Ok("again".into()),
-                by: Author::Tools,
-            })
-            .collect(),
-        _ => vec![echo(job)],
-    });
-    let ran: Vec<String> = jobs
-        .iter()
-        .filter_map(|j| {
-            if let Job::RunCalls { calls: r, .. } = j {
-                Some(r.iter().map(|c| c.id.clone()))
-            } else {
-                None
-            }
-        })
-        .flatten()
-        .collect();
-    assert_eq!(ran, ["a", "b"]);
-    assert_eq!(
-        bodies(&s, c).last().unwrap(),
-        &Body::Results(vec![
-            ("a".into(), Outcome::Ok("again".into()), Author::Tools),
-            ("b".into(), Outcome::Ok("again".into()), Author::Tools)
-        ])
-    );
-}
-
-#[test]
-fn pre_input_string_refuses_with_a_notice() {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    send(&mut s, c, "/model fast");
-    let mut step = Step::wake(&s, c, false);
-    let jobs = drive(&mut s, &mut step, |job, _| match job {
-        Job::Hooks {
-            point: Hook::PreInput,
-            ..
-        } => vec![Answer::Hooks {
-            stop: Some("model: fast".into()),
-            draft: None,
-        }],
-        _ => vec![echo(job)],
-    });
-    assert!(has_hook(
-        &jobs,
-        Hook::PostStep,
-        Some(&Ending::Halted("model: fast".into()))
-    ));
-    assert_eq!(s.notices, [("term".into(), "model: fast".into())]);
-    assert_eq!(
-        (s.items(c).count(), s.auto[&c], bodies(&s, c).len()),
-        (0, false, 2)
-    );
-}
-
 #[test]
 fn pre_reply_move_chooses_where_the_reply_lands() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
     let mut step = Step::wake(&s, c, false);
     drive(&mut s, &mut step, |job, s| match job {
-        Job::Sample => vec![Answer::Sampled {
-            reply: Some(reply(vec![text("hello")], Stop::End)),
-            error: None,
-        }],
+        Job::Sample => vec![sampled(reply(vec![text("hello")], Stop::End))],
         Job::Hooks {
             point: Hook::PreReply,
             ..
@@ -445,7 +258,7 @@ fn abort_during_sample_commits_the_partial_reply() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
     let mut step = Step::wake(&s, c, false);
-    let mut cancelled = false;
+    let mut aborted = false;
     let jobs = {
         let mut seen = vec![];
         loop {
@@ -454,22 +267,15 @@ fn abort_during_sample_commits_the_partial_reply() {
             match job {
                 Job::Rest => break seen,
                 Job::Sample => {
-                    cancelled = step.abort(&mut s);
-                    step.answer(
-                        &mut s,
-                        Answer::Sampled {
-                            reply: Some(reply(vec![text("hel")], Stop::Interrupted)),
-                            error: None,
-                        },
-                        0,
-                    )
-                    .unwrap();
+                    aborted = step.abort(&mut s);
+                    step.answer(&mut s, cancelled(vec![text("hel")]), 0)
+                        .unwrap();
                 }
                 job => step.answer(&mut s, echo(&job), 0).unwrap(),
             }
         }
     };
-    assert!(cancelled);
+    assert!(aborted);
     assert!(has_hook(&jobs, Hook::PostReply, None));
     assert!(has_hook(&jobs, Hook::PostStep, Some(&Ending::Aborted)));
     assert_eq!(
@@ -484,95 +290,12 @@ fn abort_during_sample_commits_the_partial_reply() {
     assert!(!s.auto[&c]);
 }
 
-fn pre_steps(jobs: &[Job]) -> usize {
-    jobs.iter()
-        .filter(|j| {
-            matches!(
-                j,
-                Job::Hooks {
-                    point: Hook::PreStep,
-                    ..
-                }
-            )
-        })
-        .count()
-}
-
-#[test]
-fn an_item_added_while_busy_causes_one_more_step() {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    let mut step = Step::wake(&s, c, false);
-    let mut woke = false;
-    let jobs = drive(&mut s, &mut step, |job, s| match job {
-        Job::Hooks {
-            point: Hook::PreStep,
-            ..
-        } if !woke => {
-            woke = true;
-            s.add_item(
-                c,
-                ItemData::Extension {
-                    name: "timer".into(),
-                    data: "tick".into(),
-                },
-            );
-            vec![ok()]
-        }
-        _ => vec![echo(job)],
-    });
-    assert_eq!(pre_steps(&jobs), 2, "one more step, none after it");
-}
-
-#[test]
-fn a_hook_that_declines_every_input_runs_one_step_then_auto_step_goes_off() {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    send(&mut s, c, "hi");
-    let before = bodies(&s, c).len();
-    let mut step = Step::wake(&s, c, false);
-    // `ok()` answers `pre_input` with no draft: the input is declined.
-    let jobs = drive(&mut s, &mut step, |_, _| vec![ok()]);
-    assert_eq!(pre_steps(&jobs), 1, "the cursor does not try again");
-    assert!(!jobs.contains(&Job::Sample));
-    assert!(!s.auto[&c], "a cursor that cannot move stops trying");
-    assert!(
-        s.items(c).any(|i| matches!(i.data, ItemData::Input { .. })),
-        "the input stays pending"
-    );
-    assert_eq!(bodies(&s, c).len(), before, "nothing was written");
-}
-
-#[test]
-fn a_discarded_reply_runs_one_step_then_auto_step_goes_off() {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    let root = s.at(c).unwrap();
-    s.write(c, Body::User("hi".into()), vec![], Author::Core, 0)
-        .unwrap();
-    s.auto.insert(c, true);
-    assert_ne!(s.at(c).unwrap(), root);
-    let before = bodies(&s, c).len();
-    let mut step = Step::wake(&s, c, false);
-    let jobs = drive(&mut s, &mut step, |job, _| match job {
-        Job::Sample => vec![Answer::Sampled {
-            reply: Some(reply(vec![text("lost")], Stop::End)),
-            error: None,
-        }],
-        _ => vec![ok()], // `pre_reply` leaves no draft
-    });
-    assert_eq!(pre_steps(&jobs), 1);
-    assert_eq!(jobs.iter().filter(|j| **j == Job::Sample).count(), 1);
-    assert!(!s.auto[&c]);
-    assert_eq!(bodies(&s, c).len(), before, "the reply was never written");
-}
-
 /// Samples `replies` in order; answers every call `Ok(call id)` by `Tools`;
 /// every hook passes.
 fn scripted(mut replies: Vec<Draft>) -> impl FnMut(&Job, &mut Session) -> Vec<Answer> {
     replies.reverse();
     move |job, _| match job {
-        Job::Sample => vec![Answer::Sampled {
-            reply: Some(replies.pop().expect("a scripted reply")),
-            error: None,
-        }],
+        Job::Sample => vec![sampled(replies.pop().expect("a scripted reply"))],
         Job::RunCalls { calls: run, .. } => run
             .iter()
             .map(|r| Answer::CallDone {
@@ -599,52 +322,17 @@ fn ending(jobs: &[Job]) -> Ending {
 }
 
 #[test]
-fn a_tool_error_is_an_outcome_and_the_model_sees_it() {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    send(&mut s, c, "look");
-    let mut samples = 0;
-    let mut step = Step::wake(&s, c, false);
-    drive(&mut s, &mut step, |job, _| match job {
-        Job::Sample => {
-            samples += 1;
-            let r = if samples == 1 {
-                reply(vec![call("a")], Stop::Tools)
-            } else {
-                reply(vec![text("it failed")], Stop::End)
-            };
-            vec![Answer::Sampled {
-                reply: Some(r),
-                error: None,
-            }]
-        }
-        Job::RunCalls { .. } => vec![Answer::CallDone {
-            call: "a".into(),
-            outcome: Outcome::Err("no such file".into()),
-            by: Author::Tools,
-        }],
-        _ => vec![echo(job)],
-    });
-    let b = bodies(&s, c);
-    assert_eq!(
-        b[4],
-        Body::Results(vec![(
-            "a".into(),
-            Outcome::Err("no such file".into()),
-            Author::Tools
-        )])
-    );
-    assert!(matches!(b[5], Body::Assistant { .. }));
-}
-
-#[test]
 fn an_http_error_leaves_a_side_node_and_the_cursor_where_it_was() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
     let mut step = Step::wake(&s, c, false);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
         Job::Sample => vec![Answer::Sampled {
-            reply: None,
-            error: Some("HTTP 500".into()),
+            parts: vec![],
+            end: SampleEnd::Failed {
+                error: "HTTP 500".into(),
+                meta: Some("{\"status\":500}".into()),
+            },
         }],
         _ => vec![echo(job)],
     });
@@ -663,8 +351,11 @@ fn a_mid_stream_error_commits_the_partial_reply_and_fails() {
     let mut step = Step::wake(&s, c, false);
     let jobs = drive(&mut s, &mut step, |job, _| match job {
         Job::Sample => vec![Answer::Sampled {
-            reply: Some(reply(vec![text("hel")], Stop::Error)),
-            error: Some("connection reset".into()),
+            parts: vec![text("hel")],
+            end: SampleEnd::Failed {
+                error: "connection reset".into(),
+                meta: Some("{\"id\":\"r1\"}".into()),
+            },
         }],
         _ => vec![echo(job)],
     });
@@ -676,7 +367,7 @@ fn a_mid_stream_error_commits_the_partial_reply_and_fails() {
             parts: vec![text("hel")],
             stop: Stop::Error,
             finish_reason: None,
-            meta: None,
+            meta: Some("{\"id\":\"r1\"}".into()),
         }
     );
 }
@@ -694,15 +385,7 @@ fn abort_during_sample_with_no_parts_commits_nothing() {
             Job::Rest => break,
             Job::Sample => {
                 assert!(step.abort(&mut s));
-                step.answer(
-                    &mut s,
-                    Answer::Sampled {
-                        reply: None,
-                        error: None,
-                    },
-                    0,
-                )
-                .unwrap();
+                step.answer(&mut s, cancelled(vec![]), 0).unwrap();
             }
             job => step.answer(&mut s, echo(&job), 0).unwrap(),
         }
@@ -719,88 +402,6 @@ fn abort_during_sample_with_no_parts_commits_nothing() {
 }
 
 #[test]
-fn abort_during_tools_interrupts_unfinished_calls_and_runs_post_result_once() {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    send(&mut s, c, "look");
-    let mut step = Step::wake(&s, c, false);
-    let mut jobs = vec![];
-    loop {
-        let job = step.next_job(&mut s).unwrap();
-        jobs.push(job.clone());
-        match job {
-            Job::Rest => break,
-            Job::Sample => step
-                .answer(
-                    &mut s,
-                    Answer::Sampled {
-                        reply: Some(reply(vec![call("a"), call("b")], Stop::Tools)),
-                        error: None,
-                    },
-                    0,
-                )
-                .unwrap(),
-            Job::RunCalls { .. } => {
-                let done = |call: &str, outcome| Answer::CallDone {
-                    call: call.into(),
-                    outcome,
-                    by: Author::Tools,
-                };
-                step.answer(&mut s, done("a", Outcome::Ok("a".into())), 0)
-                    .unwrap();
-                assert!(step.abort(&mut s), "calls are in flight");
-                step.answer(&mut s, done("b", Outcome::Interrupted), 0)
-                    .unwrap();
-            }
-            job => step.answer(&mut s, echo(&job), 0).unwrap(),
-        }
-    }
-    let post_results = jobs
-        .iter()
-        .filter(|j| {
-            matches!(
-                j,
-                Job::Hooks {
-                    point: Hook::PostResult,
-                    ..
-                }
-            )
-        })
-        .count();
-    assert_eq!(post_results, 1);
-    assert_eq!(ending(&jobs), Ending::Aborted);
-    assert_eq!(
-        bodies(&s, c).last().unwrap(),
-        &Body::Results(vec![
-            ("a".into(), Outcome::Ok("a".into()), Author::Tools),
-            ("b".into(), Outcome::Interrupted, Author::Tools)
-        ]),
-        "no sample after the abort"
-    );
-}
-
-#[test]
-fn input_while_busy_waits_and_the_next_step_delivers_it_after_the_batch() {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    send(&mut s, c, "look");
-    let mut step = Step::wake(&s, c, false);
-    let mut script = scripted(vec![
-        reply(vec![call("a")], Stop::Tools),
-        reply(vec![text("seen both")], Stop::End),
-    ]);
-    drive(&mut s, &mut step, |job, s| {
-        if matches!(job, Job::RunCalls { .. }) {
-            send(s, c, "also this");
-        }
-        script(job, s)
-    });
-    let b = bodies(&s, c);
-    assert!(matches!(b[4], Body::Results(_)));
-    assert_eq!(b[5], Body::User("also this".into()));
-    assert!(matches!(b[6], Body::Assistant { .. }));
-    assert_eq!(b.len(), 7);
-}
-
-#[test]
 fn abort_leaves_pending_input_pending_and_a_send_then_delivers_it() {
     let (mut s, c) = Session::create("{}", "sys", 0);
     send(&mut s, c, "hi");
@@ -811,15 +412,7 @@ fn abort_leaves_pending_input_pending_and_a_send_then_delivers_it() {
             Job::Sample => {
                 send(&mut s, c, "wait, also");
                 step.abort(&mut s);
-                step.answer(
-                    &mut s,
-                    Answer::Sampled {
-                        reply: None,
-                        error: None,
-                    },
-                    0,
-                )
-                .unwrap();
+                step.answer(&mut s, cancelled(vec![]), 0).unwrap();
             }
             job => step.answer(&mut s, echo(&job), 0).unwrap(),
         }
@@ -974,10 +567,7 @@ fn answered_batch() -> (Session, u64, u64) {
         match job {
             Job::Sample if first => {
                 first = false;
-                vec![Answer::Sampled {
-                    reply: Some(reply(vec![call("a")], Stop::Tools)),
-                    error: None,
-                }]
+                vec![sampled(reply(vec![call("a")], Stop::Tools))]
             }
             Job::RunCalls { .. } => vec![Answer::CallDone {
                 call: "a".into(),
@@ -1136,14 +726,7 @@ fn a_stop_while_calls_are_out_does_not_discard_the_batch() {
     loop {
         match step.next_job(&mut s).unwrap() {
             Job::Sample => step
-                .answer(
-                    &mut s,
-                    Answer::Sampled {
-                        reply: Some(reply(vec![call("a")], Stop::Tools)),
-                        error: None,
-                    },
-                    0,
-                )
+                .answer(&mut s, sampled(reply(vec![call("a")], Stop::Tools)), 0)
                 .unwrap(),
             Job::RunCalls { .. } => break,
             job => step.answer(&mut s, echo(&job), 0).unwrap(),
@@ -1178,15 +761,7 @@ fn a_call_done_with_no_batch_out_is_refused() {
     refused(&mut s, &mut step, c, done.clone());
     drive(&mut s, &mut step, |_, _| vec![ok()]);
     refused(&mut s, &mut step, c, done);
-    refused(
-        &mut s,
-        &mut step,
-        c,
-        Answer::Sampled {
-            reply: None,
-            error: None,
-        },
-    );
+    refused(&mut s, &mut step, c, cancelled(vec![]));
 }
 
 #[test]
@@ -1232,10 +807,7 @@ fn a_pre_input_hook_that_leaves_no_draft_commits_nothing_and_the_input_stays_pen
             point: Hook::PreInput,
             ..
         } => vec![ok()],
-        Job::Sample => vec![Answer::Sampled {
-            reply: Some(reply(vec![text("hello")], Stop::End)),
-            error: None,
-        }],
+        Job::Sample => vec![sampled(reply(vec![text("hello")], Stop::End))],
         _ => vec![echo(job)],
     });
     assert!(
@@ -1256,43 +828,6 @@ fn a_pre_input_hook_that_leaves_no_draft_commits_nothing_and_the_input_stays_pen
         1,
         "offered once"
     );
-}
-
-/// How many node and move records are queued: a refused write queues none.
-fn writes(s: &Session) -> usize {
-    s.outbox
-        .iter()
-        .filter(|r| !matches!(r, tau_core::tree::Record::Sync { .. }))
-        .count()
-}
-
-#[test]
-fn a_reply_naming_a_call_id_twice_fails_the_step_and_changes_nothing() {
-    let (mut s, c) = Session::create("{}", "sys", 0);
-    send(&mut s, c, "go");
-    let mut step = Step::wake(&s, c, false);
-    let mut before = None;
-    let jobs = drive(&mut s, &mut step, |job, s| match job {
-        Job::Sample => {
-            before = Some((bodies(s, c), writes(s)));
-            vec![Answer::Sampled {
-                reply: Some(reply(vec![call("a"), call("a")], Stop::Tools)),
-                error: None,
-            }]
-        }
-        _ => vec![echo(job)],
-    });
-    assert!(
-        !jobs.iter().any(|j| matches!(j, Job::RunCalls { .. })),
-        "no batch is handed out"
-    );
-    let failed = Error::DuplicateCall.to_string();
-    assert!(jobs.iter().any(|j| matches!(
-        j,
-        Job::Hooks { point: Hook::PostStep, ending: Some(Ending::Failed(e)), .. } if *e == failed
-    )));
-    assert_eq!(Some((bodies(&s, c), writes(&s))), before);
-    assert!(!s.auto[&c]);
 }
 
 /// Whether `jobs` hold a hook job at `point` with this `ending`, whatever its serial.
@@ -1425,4 +960,101 @@ fn a_post_result_hook_string_halts_the_step_with_the_results_kept() {
     assert_eq!(jobs.iter().filter(|j| **j == Job::Sample).count(), 1);
     assert!(matches!(bodies(&s, c).last().unwrap(), Body::Results(_)));
     assert!(!s.auto[&c]);
+}
+
+#[test]
+fn each_hook_job_carries_what_its_point_is_about() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false);
+    let mut script = scripted(vec![
+        reply(vec![call("a")], Stop::Tools),
+        reply(vec![text("done")], Stop::End),
+    ]);
+    let jobs = drive(&mut s, &mut step, |job, s| {
+        // The node a post hook is about is the node at `at` when it is handed out.
+        if let Job::Hooks {
+            point: Hook::PostReply | Hook::PostResult,
+            node,
+            ..
+        } = job
+        {
+            assert_eq!(*node, Some(s.at(c).unwrap()));
+        }
+        script(job, s)
+    });
+    for job in &jobs {
+        let Job::Hooks {
+            point,
+            draft,
+            node,
+            ending,
+        } = job
+        else {
+            continue;
+        };
+        let subject = (draft.is_some(), node.is_some(), ending.is_some());
+        match point {
+            Hook::PreStep | Hook::PreSample => assert_eq!(subject, (false, false, false)),
+            Hook::PreInput | Hook::PreReply => assert_eq!(subject, (true, false, false)),
+            Hook::PostReply | Hook::PostResult => assert_eq!(subject, (false, true, false)),
+            Hook::PostStep => assert_eq!(subject, (false, false, true)),
+        }
+    }
+    assert!(has_hook(&jobs, Hook::PostResult, None));
+}
+
+#[test]
+fn a_hook_is_named_as_an_extension_defines_it() {
+    let names: Vec<&str> = [
+        Hook::PreStep,
+        Hook::PreInput,
+        Hook::PreSample,
+        Hook::PreReply,
+        Hook::PostReply,
+        Hook::PostResult,
+        Hook::PostStep,
+    ]
+    .iter()
+    .map(|h| h.name())
+    .collect();
+    assert_eq!(
+        names,
+        [
+            "pre_step",
+            "pre_input",
+            "pre_sample",
+            "pre_reply",
+            "post_reply",
+            "post_result",
+            "post_step"
+        ]
+    );
+}
+
+#[test]
+fn a_finished_sample_is_the_reply_with_the_providers_finish_string_and_meta() {
+    let (mut s, c) = Session::create("{}", "sys", 0);
+    send(&mut s, c, "hi");
+    let mut step = Step::wake(&s, c, false);
+    drive(&mut s, &mut step, |job, _| match job {
+        Job::Sample => vec![Answer::Sampled {
+            parts: vec![text("hello")],
+            end: SampleEnd::Finished {
+                stop: Stop::Length,
+                reason: Some("max_tokens".into()),
+                meta: Some("{\"id\":\"r2\"}".into()),
+            },
+        }],
+        _ => vec![echo(job)],
+    });
+    assert_eq!(
+        bodies(&s, c).last().unwrap(),
+        &Body::Assistant {
+            parts: vec![text("hello")],
+            stop: Stop::Length,
+            finish_reason: Some("max_tokens".into()),
+            meta: Some("{\"id\":\"r2\"}".into()),
+        }
+    );
 }

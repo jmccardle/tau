@@ -1,7 +1,17 @@
 """The driver: performs each cursor's jobs and answers the results back.
 
 One pump coroutine per session is the only caller of `next_job` and `answer`
-(D11). It decides nothing: every rule is in core.
+(D11). Core decides every step: which job comes next, what a sample's end
+records, what a batch's join is, when a go-to applies. Python owns only the
+rules about performing one effect:
+
+- Hooks run in extension order; the first string a hook returns halts the
+  rest, and a hook that raises fails the job (a cursor hook) or makes the call
+  `Err("hook error")` (a tool hook).
+- A call's `pre_tool` hooks may answer it before the tool runs; a call that
+  names no tool is `Err("unknown tool: ...")`.
+- An interrupted call skips `pre_result`.
+- A question open when its cursor is aborted or sent elsewhere is declined.
 """
 
 import asyncio
@@ -13,8 +23,8 @@ from tau_next import trace
 from tau_next._core import Answer, Author, ItemData, Job, Session
 from tau_next.clock import SystemClock
 from tau_next.config_layers import ModelCatalog
-from tau_next.effects import CallRun, SampleRun, run_hooks, subject_for
-from tau_next.handles import Cursor, NodeHandle
+from tau_next.effects import CallRun, SampleRun, run_hooks
+from tau_next.handles import Cursor, NodeHandle, Subject
 from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools
 
 
@@ -34,7 +44,6 @@ class Outstanding:
     units: list[asyncio.Task[None]]
     sample: SampleRun | None = None
     calls: list[CallRun] = field(default_factory=lambda: [])
-    remaining: int = 0
 
 
 class Driver:
@@ -66,7 +75,6 @@ class Driver:
         self._extensions = tuple(extensions)
         self._queue: asyncio.Queue[tuple[int, Answer] | None] = asyncio.Queue()
         self._out: dict[int, Outstanding] = {}
-        self._poll: set[int] = set()
         self._questions: dict[int, list[Question]] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._units = 0
@@ -90,7 +98,6 @@ class Driver:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._out.clear()
-        self._poll.clear()
         self._questions.clear()
         self._queue = asyncio.Queue()
 
@@ -108,12 +115,8 @@ class Driver:
     def queued(self) -> bool:
         """The pump has something to do: a report or poke to take, or a busy cursor
         with no effect out."""
-        return (
-            not self._queue.empty()
-            or bool(self._poll)
-            or any(
-                self.session.cursor(c).busy and c not in self._out for c in self.session.cursors()
-            )
+        return not self._queue.empty() or any(
+            self.session.cursor(c).busy and c not in self._out for c in self.session.cursors()
         )
 
     def check(self) -> None:
@@ -133,7 +136,7 @@ class Driver:
             await watcher
 
     def _active(self, cursor: int) -> bool:
-        return self.session.cursor(cursor).busy or cursor in self._out or cursor in self._poll
+        return self.session.cursor(cursor).busy or cursor in self._out
 
     def _notify(self) -> None:
         watchers, self._watchers = self._watchers, []
@@ -189,24 +192,6 @@ class Driver:
         self._poke()
         return item
 
-    def set_label(self, label: str, cursor: int) -> None:
-        """Set `label` on `cursor`; a label set elsewhere moves."""
-        self.session.set_label(label, cursor)
-
-    def remove_label(self, label: str) -> None:
-        self.session.remove_label(label)
-
-    def children(self, node: int) -> list[int]:
-        """The children of `node`, in append order."""
-        return self.session.tree.children(node)
-
-    def node_count(self) -> int:
-        return len(self.session.tree)
-
-    def all_labels(self) -> dict[str, int]:
-        """Every label and its cursor."""
-        return dict(self.session.labels())
-
     def abort(self, cursor: int) -> bool:
         """Abort the cursor's step and decline its open questions. True if core had
         effects in flight to cancel."""
@@ -260,9 +245,8 @@ class Driver:
             self._notify()
 
     def _dispatch_ready(self) -> None:
-        polls, self._poll = self._poll, set()
         for cursor in self.session.cursors():
-            if cursor not in self._out and (cursor in polls or self.session.cursor(cursor).busy):
+            if cursor not in self._out and self.session.cursor(cursor).busy:
                 with trace.span("driver", "next_job"):
                     job = self.session.next_job(cursor)
                 self._dispatch(cursor, job)
@@ -275,21 +259,12 @@ class Driver:
             self.session.answer(cursor, answer, self.clock.now())
         if not isinstance(answer, Answer.CallDone):
             del self._out[cursor]
-            # Poll even if the cursor now rests: a go-to waiting on this step
-            # applies in `next_job`, and `busy` does not show it.
-            self._poll.add(cursor)
             return
-        out.remaining -= 1
         with trace.span("driver", "next_job"):
             job = self.session.next_job(cursor)  # Pending until the join; then the next job
-        if isinstance(job, Job.Pending):
-            if out.remaining == 0:
-                raise RuntimeError(f"cursor {cursor}: every call is done but the batch is open")
-            return
-        if out.remaining != 0:
-            raise RuntimeError(f"cursor {cursor}: {job} while calls are out")
-        del self._out[cursor]
-        self._dispatch(cursor, job)
+        if not isinstance(job, Job.Pending):
+            del self._out[cursor]
+            self._dispatch(cursor, job)
 
     def _unit(self, cursor: int, effect: Callable[[], Awaitable[Answer]]) -> asyncio.Task[None]:
         """Run an effect as a task that reports `(cursor, Answer)` to the pump."""
@@ -314,10 +289,9 @@ class Driver:
         match job:
             case Job.Rest():
                 return
-            case Job.Pending():
-                raise RuntimeError(f"cursor {cursor}: Pending with no calls out")
             case Job.Hooks():
-                subject = subject_for(session, cursor, job)
+                at = None if job.node is None else session.tree.node(job.node)
+                subject = Subject(draft=job.draft, node=at, ending=job.ending)
                 effect = partial(
                     run_hooks, job, subject, self._extensions, self._cursor_for(cursor)
                 )
@@ -340,7 +314,7 @@ class Driver:
                     for c in calls
                 ]
                 units = [self._unit(cursor, r.run) for r in runs]
-                self._out[cursor] = Outstanding(units, calls=runs, remaining=len(runs))
+                self._out[cursor] = Outstanding(units, calls=runs)
             case _:
                 raise RuntimeError(f"cursor {cursor}: a job this driver does not know: {job}")
 

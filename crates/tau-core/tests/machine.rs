@@ -2,7 +2,7 @@
 //! cursors. Driven by a scripted driver, as in `step.rs`.
 
 use tau_core::machine::Machine;
-use tau_core::step::{Answer, Draft, Ending, Hook, Job};
+use tau_core::step::{Answer, Draft, Ending, Hook, Job, SampleEnd};
 use tau_core::tree::{Author, Body, Config, Error, ItemData, Part, Session, Stop};
 
 /// Input, then auto-step on: what a frontend does to send.
@@ -31,19 +31,16 @@ fn ok() -> Answer {
 }
 
 fn said(t: &str) -> Answer {
-    Answer::Sampled {
-        reply: Some(Draft {
-            body: Body::Assistant {
-                parts: vec![Part::Text(t.into())],
-                stop: Stop::End,
-                finish_reason: None,
-                meta: None,
-            },
-            delivers: vec![],
-            by: Author::Provider,
-        }),
-        error: None,
-    }
+    sampled(Draft {
+        body: Body::Assistant {
+            parts: vec![Part::Text(t.into())],
+            stop: Stop::End,
+            finish_reason: None,
+            meta: None,
+        },
+        delivers: vec![],
+        by: Author::Provider,
+    })
 }
 
 fn term() -> String {
@@ -174,8 +171,8 @@ fn a_go_to_on_a_busy_cursor_aborts_runs_post_hooks_then_moves() {
         Job::Sample if cancelled.is_none() => {
             cancelled = Some(m.go_to(c, sys, term(), 0).unwrap());
             vec![Answer::Sampled {
-                reply: None,
-                error: None,
+                parts: vec![],
+                end: SampleEnd::Cancelled,
             }]
         }
         _ => plain(job, m),
@@ -696,5 +693,87 @@ fn note() -> Body {
     Body::Custom {
         kind: "note".into(),
         data: "n".into(),
+    }
+}
+
+/// A sample that finished with `d`'s body.
+fn sampled(d: Draft) -> Answer {
+    let Body::Assistant {
+        parts,
+        stop,
+        finish_reason,
+        meta,
+    } = d.body
+    else {
+        panic!("a reply is an Assistant body")
+    };
+    Answer::Sampled {
+        parts,
+        end: SampleEnd::Finished {
+            stop,
+            reason: finish_reason,
+            meta,
+        },
+    }
+}
+
+#[test]
+fn a_cursor_is_busy_while_a_go_to_waits_on_its_aborted_step() {
+    let (mut m, c) = machine();
+    send(&mut m, c, term(), "hi");
+    let _ = m.next_job(c).unwrap(); // pre_step is out
+    assert_eq!(m.go_to(c, 0, term(), 0), Ok(false));
+    m.answer(c, ok(), 0).unwrap();
+    // Answer the aborted step's post_step: it rests, but the go-to has not applied.
+    let post_step = m.next_job(c).unwrap();
+    assert!(matches!(
+        post_step,
+        Job::Hooks {
+            point: Hook::PostStep,
+            ..
+        }
+    ));
+    m.answer(c, ok(), 0).unwrap();
+    assert!(m.busy(c), "the go-to still waits for next_job");
+    assert_ne!(m.session.at(c), Ok(0));
+    assert_eq!(m.step(c), Err(Error::Busy(c)));
+    run(&mut m, c, plain);
+    assert!(!m.busy(c));
+    assert_eq!(m.session.at(c), Ok(0));
+}
+
+#[test]
+fn a_reply_naming_a_call_id_twice_is_refused_with_nothing_changed() {
+    let (mut m, c) = machine();
+    send(&mut m, c, term(), "hi");
+    let twice = Answer::Sampled {
+        parts: vec![call("a"), call("a")],
+        end: SampleEnd::Finished {
+            stop: Stop::Tools,
+            reason: None,
+            meta: None,
+        },
+    };
+    let jobs = run(&mut m, c, |job, m| match job {
+        Job::Sample => vec![twice.clone()],
+        _ => plain(job, m),
+    });
+    assert_eq!(
+        ending(&jobs),
+        Ending::Failed(Error::DuplicateCall.to_string())
+    );
+    assert!(!jobs.iter().any(|j| matches!(j, Job::RunCalls { .. })));
+    let at = m.session.at(c).unwrap();
+    assert_eq!(
+        m.session.tree.node(at).unwrap().body,
+        Body::User("hi".into())
+    );
+}
+
+fn call(id: &str) -> Part {
+    Part::Call {
+        id: id.into(),
+        tool: "ls".into(),
+        args_raw: "{}".into(),
     }
 }
