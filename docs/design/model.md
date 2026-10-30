@@ -316,7 +316,7 @@ and `pre_step` and turns auto-step off in `post_step`. Core keeps no count.
 | `pre_sample` | cursor | `Hooks(PreSample)` | the sample draft; a reply answers it |
 | `pre_reply` | cursor | `Hooks(PreReply, draft)` | the reply draft |
 | `post_reply` | cursor | `Hooks(PostReply)` | the `Assistant` node |
-| `pre_tool` | tool | inside `RunCalls` | the call draft; setting an outcome answers it |
+| `pre_tool` | tool | inside `RunCalls` | the call draft; setting an outcome answers it (later `pre_tool` hooks still run and may change it) |
 | `pre_result` | tool | inside `RunCalls` | the call draft with its outcome |
 | `post_result` | cursor | `Hooks(PostResult)` | the `Results` node |
 | `post_step` | cursor | `Hooks(PostStep, ending)` | the `Ending` |
@@ -333,13 +333,19 @@ command's reply (`pre_input_string_refuses_with_a_notice`). Inputs already
 committed stay.
 
 **A string from a tool hook** makes that call's outcome `Err(reason)`; in
-`pre_tool` the tool does not run. The other calls carry on. Core has no
+`pre_tool` the tool does not run. The other calls carry on. Every `pre_tool`
+hook runs even after an outcome is set (a later hook sees it and may change it), so a
+permissions extension cannot be bypassed by list order. Core has no
 `Skipped`.
 
-**Errors.** A cursor hook that raises is `Answer::HookFailed`: the draft is
+**Errors.** A cursor hook that raises is `Answer::HookFailed("Type: msg")`: the draft is
 discarded, `post_step` gets `Failed(error)`, and an input stays pending. A
-tool hook that raises gives its call `Err("hook error")`, withholding any raw
-output. Outcomes core writes (`Interrupted`, `Err("hook error")`) skip `pre_result`.
+tool hook that raises gives its call `Err("Type: msg")`, withholding any raw
+output. A hook or tool that breaks its return contract (a hook returning what is not a
+`str` or `None`, leaving a draft that is not a `Draft` or an outcome that is not an
+`Outcome`; a tool answering what is not `Ok` or `Err`) fails the same way: it costs one step
+or one call, never the driver. The traceback goes to stderr, not the log. Outcomes the
+driver writes itself (`Interrupted`, a failed hook's `Err`) skip `pre_result`.
 
 **Handles.** A cursor handle may read the tree, cursors, labels, and move
 records; append anywhere; add, update, or remove any item; open cursors; set

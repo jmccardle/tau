@@ -388,7 +388,7 @@ async def test_an_item_added_while_busy_causes_one_more_step(tmp_path: Path) -> 
         async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
             if not self.done:
                 self.done = True
-                h.driver.add_item(cursor.id, ItemData.Extension("timer", "tock"))
+                cursor.add_item(cursor.id, "tock")
             return None
 
     recorder = Recorder()

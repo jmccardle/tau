@@ -129,19 +129,21 @@ class EventStream:
         if self._ended or (self.cursor is not None and event.cursor != self.cursor):
             return
         if isinstance(event, Saved):
-            # An earlier `Saved(c)` is replaced, so its `calls` move to this one.
-            earlier = [h for h in self._buffer if isinstance(h, Saved) and h.cursor == event.cursor]
-            calls = tuple(
-                dict.fromkeys(
-                    c for held in (*(h.calls for h in earlier), event.calls) for c in held
-                )
-            )
-            event = Saved(event.cursor, calls, event.reply or any(h.reply for h in earlier))
+            event = self._merged(event)
             self._buffer = [held for held in self._buffer if self._survives(held, event)]
         elif len(self._buffer) >= self.capacity:
             return
         self._buffer.append(event)
         self._wake()
+
+    def _merged(self, saved: Saved) -> Saved:
+        """`saved`, carrying the `calls` of the buffered `Saved` of its cursor and their `reply`:
+        it replaces them."""
+        earlier = [h for h in self._buffer if isinstance(h, Saved) and h.cursor == saved.cursor]
+        calls = tuple(
+            dict.fromkeys(c for held in (*(h.calls for h in earlier), saved.calls) for c in held)
+        )
+        return Saved(saved.cursor, calls, saved.reply or any(h.reply for h in earlier))
 
     @staticmethod
     def _survives(held: Event, saved: Saved) -> bool:
@@ -162,7 +164,10 @@ class EventStream:
 
     def end(self, failure: Exception | None = None) -> None:
         """No more events will arrive; what is buffered is still delivered, then `anext`
-        raises `failure` (or ends, if there is none)."""
+        raises `failure` (or ends, if there is none). A stream that has ended stays as it ended:
+        a driver that failed and is then stopped does not turn the failure into a clean end."""
+        if self._ended:
+            return
         self._ended = True
         self._failure = failure
         self._wake()

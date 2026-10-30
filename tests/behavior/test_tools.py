@@ -418,14 +418,17 @@ class Returns:
 
 @pytest.mark.parametrize("answer", ["text", None, Outcome.Interrupted()])
 @scenario
-async def test_a_tool_that_breaks_the_return_contract_stops_the_driver(
-    tmp_path: Path, answer: object
+async def test_a_tool_that_breaks_the_return_contract_costs_one_call(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], answer: object
 ) -> None:
     provider = FakeProvider([Reply([Part.Call("a", "bad", "{}")], Stop.Tools), Reply([])])
     h = await Harness.create(tmp_path, provider=provider, tools=[Returns(answer)])
     await h.send("go")
-    with pytest.raises(TypeError, match="tool 'bad' answered"):
-        await h.settle()
+    await h.settle()  # the driver lives
+    (results,) = [b for b in h.bodies() if isinstance(b, Body.Results)]
+    message = f"TypeError: tool 'bad' answered {answer!r}, not an Ok or Err"
+    assert results.outcomes == [("a", Outcome.Err(message), Author.Tools())]
+    assert message in capsys.readouterr().err
     await h.close()
 
 

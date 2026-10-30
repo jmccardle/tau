@@ -9,7 +9,7 @@ from typing import Protocol, cast
 from tau_next._config import ModelConfig
 from tau_next._core import Node, Outcome, Part, Stop
 from tau_next.events import Delta
-from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
+from tau_next.handles import Cursor, NodeHandle, Subject
 
 
 @dataclass(frozen=True)
@@ -93,10 +93,12 @@ class ToolContractError(TypeError):
     with a name already taken. The message names the tool."""
 
 
-def check_tools(tools: Sequence[object]) -> dict[str, "Tool"]:
-    """The tools keyed by name, each checked against the `Tool` contract; raises
-    `ToolContractError` naming the tool for a missing or wrong attribute or a duplicate name."""
+def check_tools(tools: Sequence[object]) -> tuple[dict[str, "Tool"], frozenset[str]]:
+    """The tools keyed by name, each checked against the `Tool` contract, and the names of
+    those that take progress; raises `ToolContractError` naming the tool for a missing or
+    wrong attribute or a duplicate name."""
     out: dict[str, Tool] = {}
+    progress: set[str] = set()
     for i, candidate in enumerate(tools):
         name: object = getattr(candidate, "name", None)
         if not isinstance(name, str) or not name:
@@ -109,9 +111,10 @@ def check_tools(tools: Sequence[object]) -> dict[str, "Tool"]:
             raise ToolContractError(f"tool {name!r}: `call` must be callable")
         if name in out:
             raise ToolContractError(f"two tools are named {name!r}")
-        takes_progress(candidate)  # a malformed `progress` fails here, not at the first call
+        if takes_progress(candidate):  # a malformed `progress` fails here, not at the first call
+            progress.add(name)
         out[name] = cast("Tool", candidate)
-    return out
+    return out, frozenset(progress)
 
 
 def takes_progress(tool: object) -> bool:
@@ -220,12 +223,63 @@ class ProgressTool(Protocol):
     async def call(self, args_raw: str, *, progress: Progress) -> Outcome: ...
 
 
+CURSOR_POINTS = (
+    "pre_step",
+    "pre_input",
+    "pre_sample",
+    "pre_reply",
+    "post_reply",
+    "post_result",
+    "post_step",
+)
+"""The names of the cursor hook points, in the order a step reaches them."""
+TOOL_POINTS = ("pre_tool", "pre_result")
+"""The names of the tool hook points."""
+
+
 class CursorHook(Protocol):
+    """A cursor hook: an extension's method named for one of `CURSOR_POINTS`. A string it
+    returns halts the later hooks of the point; `None` goes on."""
+
     async def __call__(self, cursor: Cursor, subject: Subject, /) -> str | None: ...
 
 
 class ToolHook(Protocol):
-    async def __call__(self, node: NodeHandle, call: CallDraft, /) -> str | None: ...
+    """A tool hook: an extension's method named for one of `TOOL_POINTS`. A string it returns
+    becomes the call's `Err` and halts the later hooks of the point; `None` goes on."""
+
+    async def __call__(self, node: NodeHandle, call: "CallDraft", /) -> str | None: ...
+
+
+class CallDraft:
+    """The call a tool hook works on. `id` and `tool` are read-only: the call is already
+    named, and an edit to either would be ignored. `args_raw` and `outcome` may be set.
+
+    Setting `outcome` in `pre_tool` answers the call (the tool does not run, and later
+    `pre_tool` hooks still see it and may change it); in `pre_result` it edits the outcome.
+    """
+
+    __slots__ = ("_id", "_tool", "args_raw", "outcome")
+
+    def __init__(self, id: str, tool: str, args_raw: str, outcome: Outcome | None = None) -> None:
+        self._id = id
+        self._tool = tool
+        self.args_raw = args_raw
+        self.outcome = outcome
+
+    @property
+    def id(self) -> str:
+        return self._id
+
+    @property
+    def tool(self) -> str:
+        return self._tool
+
+    def __repr__(self) -> str:
+        return (
+            f"CallDraft(id={self._id!r}, tool={self._tool!r}, "
+            f"args_raw={self.args_raw!r}, outcome={self.outcome!r})"
+        )
 
 
 class Extension(Protocol):
@@ -233,11 +287,46 @@ class Extension(Protocol):
 
     Cursor hooks (`CursorHook`): `pre_step`, `pre_input`, `pre_sample`,
     `pre_reply`, `post_reply`, `post_result`, `post_step`. Tool hooks
-    (`ToolHook`): `pre_tool`, `pre_result`.
+    (`ToolHook`): `pre_tool`, `pre_result`. `name` is non-empty and unique among a
+    driver's extensions; an attribute named `pre_*` or `post_*` that is not a hook point is
+    refused when the driver is built (`ExtensionContractError`), so a misspelt hook cannot
+    sit silent.
     """
 
     @property
     def name(self) -> str: ...
+
+
+class ExtensionContractError(TypeError):
+    """An object given to the driver as an extension that does not satisfy `Extension`: a
+    missing or duplicate `name`, or a `pre_*`/`post_*` attribute that is not a callable hook
+    point. The message names the extension."""
+
+
+def check_extensions(extensions: Sequence[object]) -> tuple[Extension, ...]:
+    """The extensions, in order, each checked against the `Extension` contract; raises
+    `ExtensionContractError` naming the extension."""
+    names: set[str] = set()
+    for i, candidate in enumerate(extensions):
+        name: object = getattr(candidate, "name", None)
+        if not isinstance(name, str) or not name:
+            raise ExtensionContractError(
+                f"extension {i} ({candidate!r}): `name` must be a non-empty str"
+            )
+        if name in names:
+            raise ExtensionContractError(f"two extensions are named {name!r}")
+        names.add(name)
+        for attr in dir(candidate):
+            if not attr.startswith(("pre_", "post_")):
+                continue
+            if attr not in (*CURSOR_POINTS, *TOOL_POINTS):
+                raise ExtensionContractError(
+                    f"extension {name!r}: `{attr}` is not a hook point "
+                    f"(the points are {', '.join((*CURSOR_POINTS, *TOOL_POINTS))})"
+                )
+            if not callable(getattr(candidate, attr)):
+                raise ExtensionContractError(f"extension {name!r}: hook `{attr}` must be callable")
+    return tuple(cast("Extension", e) for e in extensions)
 
 
 class Clock(Protocol):

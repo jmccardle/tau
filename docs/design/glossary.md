@@ -917,14 +917,21 @@ A Python function an extension registers at one hook point. `None` carries
 on; a string stops. Hooks at a point run in `config_at(at)` order.
 
 ### hook point
-*spike* `Hook`, Python `tau_next.Hook` (the seven cursor points) · new
+*spike* `Hook` (the seven cursor points, exported from `tau_next` as `Hook`) · new
 
 `pre_step`, `pre_input`, `pre_sample`, `pre_reply`, `post_reply`,
 `post_result`, `post_step` (cursor hooks, each a `Job::Hooks`), and
-`pre_tool`, `pre_result` (tool hooks, run by the driver inside `RunCalls`).
+`pre_tool`, `pre_result` (tool hooks, run by the driver inside `RunCalls`). Python
+names them as strings: `protocols.CURSOR_POINTS` and `protocols.TOOL_POINTS`. An
+extension attribute named `pre_*` or `post_*` that is not one of these is refused when the
+driver is built (see **ExtensionContractError**), so a misspelt hook cannot sit silent.
 
-### cursor hook
-`async def hook(cursor, subject) -> str | None` · new
+### cursor hook, CursorHook
+`async def hook(cursor, subject) -> str | None`; `tau_next.CursorHook` is its `Protocol` · new
+
+A string halts the later hooks of the point. An exception, or a return that is not a `str`
+or `None`, or a `subject.draft` left as something that is not a `Draft`, fails the step:
+`HookFailed("Type: msg")`, the traceback on stderr (never the log). The driver lives.
 
 May move its cursor, write under `at`, set auto-step. Core allows these only
 while a cursor hook job is out for that cursor (`in_hook`):
@@ -934,10 +941,14 @@ nothing; the phase's sync covers them. `set_auto(True)` in a step that is then
 aborted leaves the cursor at rest: it wakes nothing.
 Core checks no more than the tree's own rules (no hook edit limits).
 
-### tool hook
-`async def hook(node, call) -> str | None` · new
+### tool hook, ToolHook
+`async def hook(node, call) -> str | None`; `tau_next.ToolHook` is its `Protocol` · new
 
-Runs per call, in parallel. A string makes that call `Err(reason)`.
+Runs per call, in parallel. A string makes that call `Err(reason)` and halts the later
+hooks of the point. Every `pre_tool` hook runs, even after one has set an outcome (the later
+hook sees it and may change it). An exception, a non-`str` return, a `call.outcome` that is
+not an `Outcome`, or a non-`str` `call.args_raw` makes the call `Err("Type: msg")`, blamed
+on that extension, the traceback on stderr (never the log); the driver lives.
 
 ### cursor handle, node handle, tree handle
 Python `Cursor`, `NodeHandle`, `TreeHandle` · retires `ExtensionAPI`
@@ -968,13 +979,15 @@ the driver's clock in milliseconds, so a handle fills in `time`. `Asker` is the
 driver's question call (see **question**).
 
 ### question
-`Driver.ask`, `respond`, `questions`, `Question` (driver memory; not core) ·
+`Driver.respond`, `questions`, `Question` (driver memory; not core) ·
 retires `request_user_action`
 
 `await cursor.ask(target, question)` returns the response, or `None` if
 declined. The hook awaiting it keeps its job out, so the cursor is busy and
 core's busy rules apply (model.md §7). `Driver.abort` and `Driver.go_to`
-decline the cursor's open questions.
+decline the cursor's open questions. A question lives only while its `ask` waits: a hook
+that gives up (`asyncio.timeout`, model.md Q9) or is cancelled removes it, so `respond` and
+`questions` see only live ones.
 
 
 ## Effects and edges
@@ -1235,8 +1248,9 @@ The contract the driver and providers depend on: `name`, `description`,
 `async call(args_raw: str) -> Outcome`. The tool gets the call's raw JSON text
 and validates it itself, answering `Ok(text)` or `Err(message)`; an exception it
 raises is `Err(str(e))` for that call. Breaking the return contract (answering
-`Interrupted`, a `str`, `None`) is a programmer error, not a call's failure: the
-driver raises `TypeError` and stops, surfacing through `Driver.check`. A malformed
+`Interrupted`, a `str`, `None`) is a programmer error, not a call's failure, but a bounded one: the
+driver turns it into that call's `Err("TypeError: tool 'x' answered ..., not an Ok or Err")`
+(blamed on the tools, explanation on stderr); it costs one call, never the driver. A malformed
 `args_raw` is the tool's to answer (or a `pre_tool` hook's, which may rewrite
 `call.args_raw` before the tool runs; D7); neither the driver nor core parses it.
 The driver checks each tool when it is built (`ToolContractError`).
@@ -1287,7 +1301,35 @@ exactly, with no type prefix (any other exception is `Err("Type: msg")`).
 
 Raised by `Driver.__init__` for an object that is not a `Tool`, naming it: a
 missing or non-`str` `name` or `description`, `parameters` that is not a
-`Mapping`, a `call` that is not callable, or two tools with one name.
+`Mapping`, a `call` that is not callable, or two tools with one name. `check_tools`
+returns the tools by name and the names of those that take progress.
+
+### ExtensionContractError
+`tau_next.ExtensionContractError` (a `TypeError`), `check_extensions` (`protocols.py`) · new
+
+Raised by `Driver.__init__` for an object that is not an `Extension`, naming it: a missing,
+non-`str` or empty `name`, two extensions with one name, or an attribute named `pre_*` or
+`post_*` that is not a hook point or is not callable.
+
+### CallKey
+`events.CallKey` = `tuple[int, str]` · D15 · new
+
+A call in a `Saved`: `(node, call_id)`, the batch's node and the call's id, as
+`ToolProgress` names it.
+
+### ProgressTool
+`protocols.ProgressTool` · D15 · new
+
+The `Protocol` of the `call` of a `Tool` that opted in to progress (see **progress
+callback**): `async call(args_raw, *, progress) -> Outcome`. The driver casts to it for the
+tools `check_tools` found taking progress.
+
+### check_meta
+`protocols.check_meta(meta)` · new
+
+What `Finish` and `SampleError` check `meta` with: `None`, or the text of a strict JSON
+object. `TypeError` for a non-`str`, `ValueError` for text that is not a JSON object
+(`NaN` and `Infinity` are not JSON).
 
 ### base tools: ReadTool, WriteTool, GrepTool, BashTool, base_tools
 `tau_next.ReadTool` and the others, `tau_next.base_tools(cwd, ...)` (`base_tools.py`) over `crates/tau-tools`, bound by `tau-py/src/tools.rs` · new
@@ -1459,7 +1501,9 @@ own fields (D15; the mock and all three hosted providers do so; the hosted provi
 ### extension
 retires `ExtensionRunner`, `ExtensionState`, bucket
 
-A Python module registering hooks and tools. No special standing in core.
+A Python module registering hooks and tools. No special standing in core. It has a
+non-empty `name`, unique among a driver's extensions, and hooks that are methods named for
+their hook points (`tau_next.Extension` is the `Protocol`).
 
 ### frontend, client
 retires head, `Backend`, `RemoteBackend`
@@ -1503,7 +1547,8 @@ buffer drops it), except that a `Saved` clears it only for the calls the `Saved`
 
 What a tool is given to show partial output: `progress(text)`. A tool opts in by giving
 `call` a parameter named `progress`, detected once when the driver is built
-(`takes_progress`); a `progress` that cannot be passed by keyword is a `ToolContractError`.
+(`takes_progress`, once, in `check_tools`); a `progress` that cannot be passed by keyword
+is a `ToolContractError`.
 Callable from any thread. After the call is over (returned, aborted, cancelled) it does
 nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A `@tool`
 function takes it as a parameter named `progress`, which is not one of the tool's
@@ -1528,9 +1573,9 @@ whose results the save put in the tree (the batch's `Results` node answers them)
 a frontend drops those calls' `ToolProgress` layers now. `reply` is true only when the answer
 saved was a sample's (`Answer.Sampled`). A call answered before its batch
 is whole adds no node, so it emits no `Saved`. Emitted after the driver applies each
-answer (hooks, sample, call) to core, and by the frontend calls that change the tree or a
-cursor with no answer (`input`, `send`, `step`, `go_to`, `set_auto`, `open`, `add_item`,
-`abort`), so a second frontend hears of them, and by each write a hook makes through its
+answer (hooks, sample, call) to core, and by the frontend calls (`input`, `send`, `step`,
+`go_to`, `set_auto`, `abort`) only when they changed what a frontend could see (an `abort`
+on a resting cursor says nothing), and by `open`, so a second frontend hears of them, and by each write a hook makes through its
 handle (`append`, `set_label`, `add_item`, a cursor hook's `write`, ...), when it is made. A hook's answer that left the tree, the labels, and the cursor's place,
 state and items as they were emits none. Never dropped from a subscriber's buffer; it removes
 that cursor's earlier `Saved` (their `calls` move to it, their `reply` is ORed in) and, only
@@ -1551,7 +1596,8 @@ never exceeds `capacity` plus one `Saved` per cursor. `aclose()` unsubscribes
 (and may be called twice); `async with` closes it; the driver holds streams weakly, so one
 abandoned without `aclose()` is collected. The driver's `stop()` ends it after what it
 holds; if the driver fails (the pump or an effect died), `anext` raises that failure after
-what it holds.
+what it holds. A stream ends once: ending it again (a `stop()` after the failure) changes
+nothing, so the frontend still learns the driver died.
 
 ### driver
 Python `tau_next.driver.Driver` · new
@@ -1564,11 +1610,15 @@ known names in the `sample_error`), a `ModelCatalog` (where it resolves the mode
 `config_at(at)` at each sample), tools, extensions, and a clock. `use_catalog(catalog)`
 replaces the catalog for samples dispatched after it (a frontend that reloads the config
 files calls it); a sample already running keeps the model it resolved. Its frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`,
-`abort`, `open`, `add_item`, `respond`) run on the loop thread, call the
-session, then poke the pump. Extensions are a list given to the constructor,
-in hook order; how `config_at` will name them is open. `events(cursor=None, *, buffer=256)`
-subscribes at once and returns an `EventStream`; `subscribers` counts the open ones;
-`stop()` ends them.
+`abort`, `open`, `respond`) run on the loop thread, call the
+session, then poke the pump; `open(at, client)` names the client like `input` and `go_to`.
+Extensions are a list given to the constructor, in hook order, checked there
+(**ExtensionContractError**); how `config_at` will name them is open.
+`events(cursor=None, *, buffer=256)` subscribes at once and returns an `EventStream`;
+`stop()` ends them. A failure of the pump or an effect cancels the effects still running,
+ends the streams with it, and makes `rest` raise it; after `stop()`, `rest` raises
+`RuntimeError`, also for a caller already waiting. Items are added through an extension's
+handle, not the driver. `state()` is the one read a harness needs (**DriverState**).
 
 ### pump
 `Driver._pump` · new
@@ -1580,18 +1630,20 @@ answer with what arrives. `next_job` is not idempotent, so it is never called wh
 cursor has an effect out, except after a `CallDone` (expecting `Pending`).
 
 ### unit
-`Driver` (`units`) · new
+`Driver` (`DriverState.units`) · new
 
 One task performing one effect: a hooks job, a sample, or one call of a batch.
 It reports `(cursor, Answer)` to the pump's queue when done.
 A cancelled unit reports nothing.
 
-### Outstanding
-`tau_next.Outstanding` · new
+### DriverState
+`tau_next.DriverState`, from `Driver.state()` · new
 
-A cursor's effect in flight: its units, and what abort needs to cancel them
-(the sample, the calls). At most one per cursor. It counts nothing: core's
-batch knows which calls are out.
+A frozen snapshot for a harness telling quiet from busy: `units` (effects running),
+`queued` (the pump has a report or poke to take, or a busy cursor with no effect out),
+`open_questions`, `subscribers` (event streams open), and `failure` (what the pump or an
+effect died of, else `None`). Replaces the separate reads and `Driver.check`; reading it
+needs the session open.
 
 ### poke
 `Driver._poke` · new
@@ -1606,19 +1658,22 @@ The mutable holder a cursor hook receives: `draft` (`pre_input`,
 (`post_step`). The hook's edits to `draft` are what the hook answers with.
 
 ### CallDraft
-`tau_next.CallDraft` · new
+`tau_next.CallDraft` (`protocols.py`) · new
 
-The call draft a tool hook receives: `{id, tool, args_raw, outcome?}`. Setting
-`outcome` in `pre_tool` answers the call; in `pre_result` it edits the outcome.
-The hook that changed the outcome is its `by`.
+The call draft a tool hook receives: `{id, tool, args_raw, outcome?}`. `id` and `tool` are
+read-only (an edit would be ignored, so setting one raises `AttributeError`); `args_raw` and
+`outcome` may be set. Setting `outcome` in `pre_tool` answers the call (later `pre_tool`
+hooks still run); in `pre_result` it edits the outcome. The hook that changed the outcome is
+its `by`.
 
 ### SampleError
 `tau_next.SampleError` · new
 
 What a provider raises to fail a sample. Parts it yielded first are kept: the
 reply is committed with `stop: Error` and the error's `meta`. The driver
-answers `Sampled { parts, end: Failed { error, meta } }`; core decides which. Any other exception from a provider or the
-driver is a bug and surfaces through `Driver.check`.
+answers `Sampled { parts, end: Failed { error, meta } }`; core decides which. Any other
+exception from a provider fails that one sample (D15); an invariant break in the driver
+stops it, surfacing through `DriverState.failure` and the event streams.
 
 `SampleError(message, meta, *, status=None, retry_after=None)`. `status` is the HTTP status
 of an error response (`None` when there was no response); `retry_after` is the seconds the

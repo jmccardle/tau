@@ -38,7 +38,7 @@ async def test_a_final_part_may_carry_replay_its_deltas_lacked(tmp_path: Path) -
     h = await Harness.create(tmp_path, provider=FakeProvider([Reply(script)]))
     await h.send("go")
     await h.settle()
-    h.driver.check()
+    h.check()
     reply = next(b for b in h.bodies() if isinstance(b, Body.Assistant))
     assert reply.parts == [Part.Thinking("hm", ANTHROPIC), Part.Text("hi", GEMINI)]
     await h.close()
@@ -94,7 +94,7 @@ async def test_a_bad_replay_from_a_provider_fails_that_sample_not_the_driver(
     h = await Harness.create(tmp_path, provider=BadReplayProvider([]))
     await h.send("go")
     await h.settle()
-    h.driver.check()
+    h.check()
     replies = [b for b in h.bodies() if isinstance(b, Body.Assistant)]
     assert [(r.stop, r.parts) for r in replies] == [(Stop.Error, [Part.Text("kept")])]
     await h.close()

@@ -18,6 +18,7 @@ from tau_next._config_layers import ModelCatalog
 from tau_next._core import (
     Answer,
     Author,
+    Draft,
     Job,
     Outcome,
     Part,
@@ -26,8 +27,9 @@ from tau_next._core import (
     Session,
 )
 from tau_next.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta, ToolProgress
-from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
+from tau_next.handles import Cursor, NodeHandle, Subject
 from tau_next.protocols import (
+    CallDraft,
     CursorHook,
     Extension,
     Finish,
@@ -46,8 +48,10 @@ async def run_hooks(
     extensions: Sequence[Extension],
     cursor_for: Callable[[Extension], Cursor],
 ) -> Answer:
-    """Every extension's hook for the point, in order. The first string halts;
-    an exception fails; otherwise the subject's draft comes back."""
+    """Every extension's hook for the point, in order. The first string halts; an exception, or
+    a hook that breaks its contract (returns what is not a `str` or `None`, leaves a `draft`
+    that is not a `Draft`), fails the step with `"Type: msg"` and its traceback on stderr;
+    otherwise the subject's draft comes back."""
     name = job.point.name
     for ext in extensions:
         hook = cast("CursorHook | None", getattr(ext, name, None))
@@ -57,13 +61,44 @@ async def run_hooks(
         try:
             with trace.span("hook", f"{name} {ext.name}"):
                 stop = await hook(cursor, subject)
+            _check_cursor_hook(name, ext, stop, subject)
         except Exception as e:
-            return Answer.HookFailed(str(e))
+            return Answer.HookFailed(_describe(e))
         finally:
             cursor.retire()
         if stop is not None:
             return Answer.Hooks(stop, None)
     return Answer.Hooks(None, subject.draft)
+
+
+def _describe(error: Exception) -> str:
+    """`"Type: msg"` for a failed hook, with its traceback on stderr (it has absolute paths, so
+    never in the log)."""
+    traceback.print_exception(error, file=sys.stderr)
+    return f"{type(error).__name__}: {error}"
+
+
+def _check_cursor_hook(point: str, ext: Extension, stop: object, subject: Subject) -> None:
+    if stop is not None and not isinstance(stop, str):
+        raise TypeError(f"{point} of extension {ext.name!r} returned {stop!r}, not a str or None")
+    if subject.draft is not None and not isinstance(subject.draft, Draft):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise TypeError(
+            f"{point} of extension {ext.name!r} left {subject.draft!r} as the draft, not a Draft"
+        )
+
+
+def _check_tool_hook(point: str, ext: Extension, stop: object, draft: CallDraft) -> None:
+    if stop is not None and not isinstance(stop, str):
+        raise TypeError(f"{point} of extension {ext.name!r} returned {stop!r}, not a str or None")
+    if draft.outcome is not None and not isinstance(draft.outcome, Outcome):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise TypeError(
+            f"{point} of extension {ext.name!r} set the outcome to {draft.outcome!r}, "
+            "not an Outcome"
+        )
+    if not isinstance(draft.args_raw, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+        raise TypeError(
+            f"{point} of extension {ext.name!r} set args_raw to {draft.args_raw!r}, not a str"
+        )
 
 
 async def _finish[T](task: asyncio.Future[T]) -> None:
@@ -142,11 +177,6 @@ def _failed(error: Exception, *, internal: bool = False) -> SampleEnd:
     if "error" in said:
         detail["provider"] = said["error"]
     return SampleEnd.Failed(message, json.dumps({**said, "error": detail}, allow_nan=False))
-
-
-class _DriverBreak(Exception):
-    """`on_delta` raised: the driver's own invariant broke. Carried out of the provider's
-    stream untouched, then re-raised as the original."""
 
 
 class SampleRun:
@@ -240,10 +270,7 @@ class SampleRun:
         else:
             self._open = self._open or _Run(kind)
             self._open.chunks.append(delta.text)
-        try:
-            self._on_delta(delta)
-        except Exception as e:
-            raise _DriverBreak from e
+        self._on_delta(delta)
 
     def _unfinished(self) -> list[Part]:
         """The parts so far, and the text or thinking whose deltas arrived without a part."""
@@ -257,16 +284,16 @@ class SampleRun:
             self._task.cancel()
         with trace.span("sample", "provider"):
             await _finish(self._task)
-        error = None if self._task.cancelled() else self._task.exception()
-        if isinstance(error, _DriverBreak):
-            raise error.__cause__ or error
-        if self._cancelled or self._task.cancelled():  # an abort is an abort, however it ended
+        if self._task.cancelled():
             return Answer.Sampled(self._unfinished(), SampleEnd.Cancelled())
-        if error is None:
+        error = self._task.exception()
+        if error is None:  # a sample that finished before the abort reached it stays whole
             finish = self._task.result()
             return Answer.Sampled(
                 self._parts, SampleEnd.Finished(finish.stop, finish.reason, finish.meta)
             )
+        if self._cancelled:  # a sample that failed after the abort is an abort
+            return Answer.Sampled(self._unfinished(), SampleEnd.Cancelled())
         if isinstance(error, SampleError):
             return Answer.Sampled(self._unfinished(), _failed(error))
         if not isinstance(error, Exception):
@@ -278,10 +305,10 @@ class SampleRun:
 
 
 class _HookError(Exception):
-    """A tool hook raised: the call is `Err("hook error")`, blamed on `author`."""
+    """A tool hook failed: the call is `Err(message)`, blamed on `author`."""
 
-    def __init__(self, author: Author) -> None:
-        super().__init__("hook error")
+    def __init__(self, author: Author, message: str) -> None:
+        super().__init__(message)
         self.author = author
 
 
@@ -335,8 +362,8 @@ class CallRun:
         draft = CallDraft(self.id, self._tool, self._args_raw)
         by: Author = Author.Tools()
         try:
-            answered = await self._hooks("pre_tool", draft, stop_at_outcome=True)
-            if isinstance(answered, Author.Extension):
+            answered = await self._hooks("pre_tool", draft)
+            if answered is not None:
                 by = answered
             if draft.outcome is None:
                 if self._aborted:
@@ -344,17 +371,19 @@ class CallRun:
                 draft.outcome = await self._run(draft.args_raw)
                 if isinstance(draft.outcome, Outcome.Interrupted):
                     return draft.outcome, Author.Tools()
-            edited = await self._hooks("pre_result", draft, stop_at_outcome=False)
-            if isinstance(edited, Author.Extension):
+            edited = await self._hooks("pre_result", draft)
+            if edited is not None:
                 by = edited
         except _HookError as e:
-            return Outcome.Err("hook error"), e.author
+            return Outcome.Err(str(e)), e.author
         assert draft.outcome is not None
         return draft.outcome, by
 
-    async def _hooks(self, name: str, draft: CallDraft, *, stop_at_outcome: bool) -> Author | None:
-        """Run each extension's tool hook. Returns the last extension that changed
-        the outcome. A string makes the outcome `Err(string)` and ends the hooks."""
+    async def _hooks(self, name: str, draft: CallDraft) -> Author | None:
+        """Run each extension's tool hook, every one even after the outcome is set (a later hook
+        sees it and may change it). Returns the last extension that changed the outcome. A string
+        makes the outcome `Err(string)` and ends the hooks. A hook that raises or breaks its
+        contract raises `_HookError`: `"Type: msg"`, its traceback on stderr."""
         changed: Author | None = None
         for ext in self._extensions:
             hook = cast("ToolHook | None", getattr(ext, name, None))
@@ -366,8 +395,9 @@ class CallRun:
             try:
                 with trace.span("hook", f"{name} {ext.name}"):
                     stop = await hook(handle, draft)
+                _check_tool_hook(name, ext, stop, draft)
             except Exception as e:
-                raise _HookError(author) from e
+                raise _HookError(author, _describe(e)) from e
             finally:
                 handle.retire()
             if stop is not None:
@@ -375,8 +405,6 @@ class CallRun:
                 return author
             if draft.outcome != before:
                 changed = author
-                if stop_at_outcome:
-                    return changed
         return changed
 
     def _progress(self) -> Progress:
@@ -424,5 +452,7 @@ class CallRun:
             return Outcome.Err(str(error))
         outcome = self._task.result()
         if not isinstance(outcome, Outcome.Ok | Outcome.Err):
-            raise TypeError(f"tool {self._tool!r} answered {outcome!r}, not an Ok or Err")
+            message = f"TypeError: tool {self._tool!r} answered {outcome!r}, not an Ok or Err"
+            print(message, file=sys.stderr)
+            return Outcome.Err(message)
         return outcome

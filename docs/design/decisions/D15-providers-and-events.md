@@ -396,8 +396,11 @@ it is merged except what is Open below. Decisions, with the reason in a line:
 - **Provider errors fail one sample, with `internal: true`.** Any `Exception` from `check`
   or `sample` that is not a `SampleError` keeps the parts, saves `meta.error` as
   `"Type: msg"` with `internal: true`, and prints the traceback to stderr, never the log.
-  Driver and core invariant breaks still kill the driver. An abort always saves
-  `Cancelled`.
+  Driver and core invariant breaks still kill the driver. An abort saves `Cancelled`
+  for a sample it cuts off, with the parts so far; a sample that had already finished (its
+  `Finish` yielded) before the abort reached it is answered as the complete reply it is, and
+  the abort still ends the step `Aborted`. A hook or tool that breaks its contract costs one
+  step or one call the same way (`Type: msg`, traceback on stderr).
 - **Strict JSON.** Server events and call arguments with `NaN` or infinity are invalid (a
   NaN argument counts as "not an object" and goes as text); `meta` is written with
   `allow_nan=False`; `retry_after` is `None` when not finite; a lone surrogate in an event
