@@ -57,7 +57,7 @@ provider that needs the exact text reads `part.replay.data`. A non-`Part` raises
 treated as unsigned (`model.md` §10.4), so no provider repeats the tag check.
 
 ### turns (the walk module)
-`tau_next.providers._walk.turns(walk)` · D15 · new
+`tau_next.providers._walk.turns(walk, ...)` · D15 · new
 
 The rules every provider shares (`model.md` §10.5 to §10.7), applied once to a walk:
 which nodes count (`Config` and `Custom` do not), which replies are runnable (a batch
@@ -67,8 +67,19 @@ note (`length`, `interrupted`, `error`) for calls that cannot run. It returns
 `SystemTurn`, `UserTurn`, `AssistantTurn(parts, runnable, note)` and
 `ToolResults(results)`, where each `CallResult` is `(id, tool, text, error)` in call
 order; a provider maps them to its own wire shapes. `call_markup`, `outcome_markup` and
-`stop_note` are the one text markup. The module is private to the package: its shapes may
-change with the next provider.
+`stop_note` are the one text markup, and `system_note` (`[system note: <text>]`) is the one
+spelling of a `System` node after the walk's start, for a provider whose single system
+instruction cannot hold it. Three options cover the rules only some APIs need, so each
+provider says whether it asks: `structured=False` (the request offers no tools, so no batch can
+go as calls), `object_args=True` (a batch whose call has `args_raw` that is not a JSON object,
+no arguments counting as `{}`, `call_object`), and `text_from` (a provider's own rule, given
+the turns, naming the index from which batches go as text; Anthropic's manual thinking). A
+batch any of them demotes goes as text (`runnable` false), and its `Results` becomes a
+`UserTurn` of `[tool result <id>: <text>]` lines, so a walk the API would refuse never fails
+every later sample. `Messages(items_key)` builds the wire messages from the turns: neighbouring
+turns of one role merge, a turn with nothing to send leaves none, and `System` turns before any
+message are the instruction. The module is private to the package: its shapes may change with
+the next provider.
 
 ### stop
 *spike* `Stop` · retires `stopReason`, `AgentEndReason`
@@ -1054,7 +1065,7 @@ is the API's to say), `effort` (`low` `medium` `high` `xhigh` `max`, sent as
 (boolean, default true: `cache_control: ephemeral` on the system text and on the last block of
 the last message), and `extra_body` (merged last; may not set `model`, `messages`, `system`,
 `stream`, `tools`, `max_tokens`, or a key the model's settings set). Request: the first
-`System` nodes are top-level `system`, one later is user text `[system: ...]`; turns of
+`System` nodes are top-level `system`, one later is user text `[system note: ...]`; turns of
 one role merge; `Thinking` parts are sent only with Anthropic replay data (`replay_for`), so
 unsigned, cut-off and foreign thinking never go; a reply with nothing left to send is dropped;
 a runnable batch is `tool_use` blocks (`input` the parsed `args_raw`, `{}` for none) and
@@ -1074,8 +1085,7 @@ as sent), `stop_details` when sent, and the `request-id` response header as `req
 failures too). The provider sends no `anthropic-beta` header, so `check` refuses what needs
 one: `thinking.display` `updates`, `thinking.block_binding`, and `extra_body.context_management`. Errors: an HTTP error or `error` event is a `SampleError`
 whose `status` is the response's, or for an event the status its `type` stands for (529 for
-`overloaded_error`), with `retry_after` from the header. Client handling is OpenAI's: one
-long-lived client, per event loop, `ProviderClosed` after `aclose()`.
+`overloaded_error`), with `retry_after` from the header. Client handling is `Connection`'s.
 
 ### _anthropic_request (the Anthropic request module)
 `tau_next.providers._anthropic_request` · D15 · new
@@ -1089,16 +1099,24 @@ Private: the shapes may change with the next provider.
 ### _wire (the provider helpers module)
 `tau_next.providers._wire` · D15 · new
 
-HTTP and JSON helpers an SSE provider needs: `retry_after` (a `Retry-After` header as seconds),
-`sse_data` (the `data` of each SSE event, reading the body to its end), `plain`, `non_finite`,
-`is_number`, `is_count`. `openai.py` has older copies; one pass moves every provider onto this
-module. Private to the package.
+What every hosted provider shares over HTTP: `retry_after` (a `Retry-After` header as
+seconds), `sse_data` and `events` (the SSE events as JSON objects, reading the body to its
+end), `error_text` (`HTTP <status>: <message>` from an `error` object, `typed` for
+`<type>: <message>`), and the JSON and number checks `plain`, `non_finite`, `is_number`,
+`is_count`, `count`. `Connection` holds the one `httpx.AsyncClient` a provider keeps (made on the
+first sample, one per event loop, dropped when its loop is gone, closed by `aclose()`, after
+which a sample raises `ProviderClosed`) and runs the sample loop: it POSTs, reads each event
+into a `ReplyReader`, maps an `httpx` error or a bad status to a `SampleError` with `status` and
+`retry_after`, and yields the parts left at a failure. A provider gives it only how its error
+bodies read (`typed_errors`, `body_wait` for a wait inside the body, `meta_headers`) and a
+`ReplyReader`: the one-response reader (`feed`, `done`, `stop`, `close`, `meta`) that each provider's
+`_Stream` is. Private to the package.
 
 ### GeminiProvider
 `tau_next.providers.gemini.GeminiProvider`, name `"gemini"` · D15 · new
 
 The provider for Google's `streamGenerateContent?alt=sse`. Built to the same contract as
-`OpenAIProvider` (one client per loop, `ProviderClosed`, `status` and `retry_after`, the
+`OpenAIProvider` (`Connection`: one client per loop, `ProviderClosed`, `status` and `retry_after`, the
 ordering rule, `usage_raw`). `base_url` defaults to `https://generativelanguage.googleapis.com/v1beta`
 (a proxy sets it); a key must be named (`api_key_env` or `api_key`; `check` says so; for an unset variable `tau config check` warns and sampling fails) and travels in the `x-goog-api-key`
 header, never the URL. The URL is `<base>/models/<model>:streamGenerateContent?alt=sse`.
@@ -1106,7 +1124,7 @@ Request: `systemInstruction` (the `System` nodes before any other node), `conten
 (`user` and `model`), `tools` (one `functionDeclarations` list, each tool's schema as
 `parametersJsonSchema`), `generationConfig` (`maxOutputTokens` from `max_tokens`, then the
 options), `safetySettings`, then `extra_body`. A `System` node later in the walk is a user
-turn `[system note: <text>]`. A `Results` that follows its batch is one `user` content of
+turn `[system note: <text>]` (`system_note`). A `Results` that follows its batch is one `user` content of
 `functionResponse` parts, in call order, `{"result": text}` or `{"error": text}`, with the call's
 `id` where the API gave one. A batch goes as text (the call markup, and its results as
 `[tool result <id>: <text>]` user text) when a call's `args_raw` is not a JSON object, so a

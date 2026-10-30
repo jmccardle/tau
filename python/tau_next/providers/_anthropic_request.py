@@ -5,7 +5,6 @@ the shapes may change with the next provider.
 """
 
 import hashlib
-import json
 import re
 from collections.abc import Sequence
 from dataclasses import replace
@@ -16,11 +15,13 @@ from tau_next.protocols import SampleError, Tool, replay_for
 from tau_next.providers._walk import (
     AssistantTurn,
     CallResult,
+    Messages,
     SystemTurn,
     ToolResults,
     Turn,
     UserTurn,
     call_markup,
+    call_object,
     stop_note,
     turns,
 )
@@ -32,19 +33,6 @@ _SIGNED_BLOCKS = (
     "redacted_thinking",
 )  # blocks only the model may write; no `cache_control`
 _CACHE = {"type": "ephemeral"}
-
-
-def _object_args(call: Part.Call) -> Json | None:
-    """The `input` object of a call: its `args_raw` parsed (no arguments is `{}`); `None` if
-    `args_raw` is not a JSON object, which `tool_use.input` must be (a call cut off, or one
-    another provider let through)."""
-    if not call.args_raw.strip():
-        return {}
-    try:
-        parsed: object = json.loads(call.args_raw)
-    except ValueError:
-        return None
-    return cast("Json", parsed) if isinstance(parsed, dict) else None
 
 
 _VALID_ID = re.compile(r"[a-zA-Z0-9_-]+")
@@ -83,7 +71,7 @@ def _text(text: str) -> Json:
 def _assistant(turn: AssistantTurn) -> list[Json]:
     """The content blocks of a reply, in reply order, so thinking stays ahead of the calls it
     led to. Calls are `tool_use` only when the turn is runnable (and the caller has checked
-    `_sendable`); otherwise they are text (`model.md` 10.6). The API refuses empty text, so a
+    `turns`); otherwise they are text (`model.md` 10.6). The API refuses empty text, so a
     blank part is left out."""
     blocks: list[Json] = []
     for part in turn.parts:
@@ -96,7 +84,7 @@ def _assistant(turn: AssistantTurn) -> list[Json]:
                 if text.strip():
                     blocks.append(_text(text))
             case Part.Call() if turn.runnable:
-                args = _object_args(part)
+                args = call_object(part)
                 if args is None:
                     raise SampleError(
                         f"call {part.id} ({part.tool}) would go as tool_use but its arguments "
@@ -112,11 +100,6 @@ def _assistant(turn: AssistantTurn) -> list[Json]:
     if turn.note is not None:
         blocks.append(_text(stop_note(turn.note)))
     return blocks
-
-
-def _args_ok(turn: AssistantTurn) -> bool:
-    """Whether every call of a batch has an object for arguments, as `tool_use.input` must be."""
-    return all(_object_args(p) is not None for p in turn.parts if isinstance(p, Part.Call))
 
 
 def _thinkless_loop(all_turns: list[Turn]) -> int | None:
@@ -147,16 +130,6 @@ def _thinkless_loop(all_turns: list[Turn]) -> int | None:
     return None
 
 
-def _result_markup(result: CallResult) -> str:
-    """A result as `outcome_markup` writes it (`CallResult.text` is its `outcome_text`)."""
-    return f"[tool result {result.id}: {result.text}]"
-
-
-def _system_note(text: str) -> str:
-    """A `System` node after the walk's start, which the API's one `system` cannot hold."""
-    return f"[system: {text}]"
-
-
 def conversation(
     walk: Sequence[Node], *, manual_thinking: bool = False, has_tools: bool = True
 ) -> tuple[str | None, list[Json]]:
@@ -164,50 +137,29 @@ def conversation(
     are one message (the API wants roles to alternate); a reply with nothing to send (empty,
     or only thinking that is not ours to send), blank user text, and an empty system are left
     out. `System` nodes that open the walk make `system`; one later is a user message
-    `[system: ...]`. `Config` and `Custom` nodes never reach the model. `manual_thinking` is
+    `[system note: ...]`. `Config` and `Custom` nodes never reach the model. `manual_thinking` is
     whether the request sets `thinking.type` `enabled` (see `_thinkless_loop`). `has_tools` is
     whether the request offers tools: the API refuses `tool_use` blocks without them, so with
-    none every batch goes as text."""
-    system: list[str] = []
-    out: list[Json] = []
-    all_turns = turns(walk)
-    text_from = _thinkless_loop(all_turns) if manual_thinking else None
-    results_as_text = False
-
-    def add(role: str, blocks: list[Json]) -> None:
-        if not blocks:
-            return
-        if out and out[-1]["role"] == role:
-            cast("list[Json]", out[-1]["content"]).extend(blocks)
-        else:
-            out.append({"role": role, "content": blocks})
-
-    for i, turn in enumerate(all_turns):
+    none every batch goes as text. A batch whose arguments are no object (`tool_use.input`
+    must be one) goes as text too."""
+    messages = Messages("content")
+    for turn in turns(
+        walk,
+        structured=has_tools,
+        object_args=True,
+        text_from=_thinkless_loop if manual_thinking else None,
+    ):
         match turn:
             case SystemTurn(text=text):
-                if out:
-                    add("user", [_text(_system_note(text))])
-                else:
-                    system.append(text)
+                messages.system(text, _text)
             case UserTurn(text=text):
-                add("user", [_text(text)] if text.strip() else [])
+                messages.add("user", [_text(text)] if text.strip() else [])
             case AssistantTurn():
-                shown = turn
-                as_text = not has_tools or (text_from is not None and i >= text_from)
-                if turn.runnable and (as_text or not _args_ok(turn)):
-                    shown = replace(turn, runnable=False)
-                    results_as_text = True
-                add("assistant", _assistant(shown))
-            case ToolResults(results=results) if results_as_text:
-                add(
-                    "user",
-                    [_text("\n".join(_result_markup(r) for r in results))] if results else [],
-                )
-                results_as_text = False
+                messages.add("assistant", _assistant(turn))
             case ToolResults(results=results):
-                add("user", [_tool_result(r) for r in results])
-    joined = "\n\n".join(system)
-    return (joined if joined.strip() else None), out
+                messages.add("user", [_tool_result(r) for r in results])
+    system = messages.instruction
+    return (system if system is not None and system.strip() else None), messages.out
 
 
 def _tool_result(result: CallResult) -> Json:

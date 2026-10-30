@@ -118,7 +118,7 @@ async def test_a_system_node_after_the_start_is_a_marked_user_message(tmp_path: 
     sent = messages(h.session.tree.walk(later))
     assert sent[-1] == {
         "role": "user",
-        "content": [{"type": "text", "text": "[system: be formal]"}],
+        "content": [{"type": "text", "text": "[system note: be formal]"}],
     }
     await h.close()
 

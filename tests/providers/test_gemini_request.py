@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -212,20 +213,28 @@ def test_a_batch_is_answered_in_call_order_by_id_where_the_api_gave_one_and_by_n
 def test_a_batch_whose_arguments_are_not_an_object_goes_as_text_with_its_results() -> None:
     body = request_body(
         Body.User("go"),
-        batch(Part.Call("c1", "read", ""), Part.Call("c2", "read", "{}")),
+        batch(Part.Call("c1", "read", '{"p"'), Part.Call("c2", "read", "{}")),
         Body.Results([ok("c1", "one"), ("c2", Outcome.Err("bad"), Author.Tools())]),
     )
     assert body["contents"] == [
         {"role": "user", "parts": [{"text": "go"}]},
         {
             "role": "model",
-            "parts": [{"text": "[tool call c1: read ]"}, {"text": "[tool call c2: read {}]"}],
+            "parts": [{"text": '[tool call c1: read {"p"]'}, {"text": "[tool call c2: read {}]"}],
         },
         {
             "role": "user",
             "parts": [{"text": "[tool result c1: one]\n[tool result c2: Error: bad]"}],
         },
     ]
+
+
+def test_a_call_with_no_arguments_goes_as_a_call_with_an_empty_object() -> None:
+    body = request_body(
+        Body.User("go"), batch(Part.Call("c1", "read", "")), Body.Results([ok("c1", "one")])
+    )
+    contents = cast("list[dict[str, list[dict[str, dict[str, object]]]]]", body["contents"])
+    assert contents[1]["parts"][0]["functionCall"] == {"name": "read", "args": {}}
 
 
 def test_a_reply_with_nothing_to_send_is_dropped_and_its_neighbours_merge() -> None:
@@ -351,37 +360,6 @@ def test_options_become_generation_config_safety_settings_and_the_extra_body() -
     assert body["cachedContent"] == "c/1"
     _, _, plain = GeminiProvider(environ=ENVIRON).request(gemini_walk(), model(), [])
     assert "generationConfig" not in plain, "thoughts are asked for only when an option says so"
-
-
-# One client
-
-
-class CountingTransport(httpx.AsyncBaseTransport):
-    def __init__(self, text: str) -> None:
-        self.requests = 0
-        self.closes = 0
-        self._text = text
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        self.requests += 1
-        return httpx.Response(200, text=self._text)
-
-    async def aclose(self) -> None:
-        self.closes += 1
-
-
-@scenario
-async def test_many_samples_share_one_client_until_aclose() -> None:
-    transport = CountingTransport(gemini_chunk([{"text": "hi"}], "STOP"))
-    provider = GeminiProvider(transport, ENVIRON)
-    for _ in range(4):
-        _, error = await collect(provider, gemini_walk())
-        assert error is None
-    assert (transport.requests, transport.closes) == (4, 0)
-    await provider.aclose()
-    assert transport.closes == 1
-    _, error = await collect(provider, gemini_walk())
-    assert type(error).__name__ == "ProviderClosed"
 
 
 def test_a_walk_ending_in_a_model_turn_fails_before_any_request() -> None:

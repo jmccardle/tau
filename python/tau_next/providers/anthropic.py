@@ -9,10 +9,9 @@ API must get it back: `{"type": "thinking", "signature": ...}` on a `Thinking` p
 the block's `thinking`), and `{"type": "redacted_thinking", "data": ...}` on a `Thinking("")`.
 """
 
-import asyncio
 import json
 import os
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -21,17 +20,18 @@ import httpx
 from tau_next._config import ConfigError, ModelConfig
 from tau_next._core import BadReplay, Node, Part, Replay, Stop
 from tau_next.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
-from tau_next.protocols import Finish, ProviderClosed, SampleError, Tool
+from tau_next.protocols import Finish, SampleError, Tool
 from tau_next.providers._anthropic_request import breakpoints, conversation, tools_array
 from tau_next.providers._wire import (
-    HTTP_OK,
+    Connection,
     Json,
+    count,
     is_count,
     is_number,
+    json_object,
+    meta_text,
     non_finite,
     plain,
-    retry_after,
-    sse_data,
 )
 
 NAME = "anthropic"
@@ -118,20 +118,10 @@ class _Block:
                 return Part.Call(self.id, self.tool, text or "{}")
 
 
-def _json(value: object, what: str) -> Json:
-    if not isinstance(value, dict):
-        raise SampleError(f"{what} is not a JSON object: {value!r}")
-    return cast("Json", value)
-
-
 def _str(value: object, what: str) -> str:
     if not isinstance(value, str):
         raise SampleError(f"{what} is not a string: {value!r}")
     return value
-
-
-def _count(value: object) -> int | None:
-    return value if isinstance(value, int) and is_count(value) else None
 
 
 def _usage(raw: Json) -> Json | None:
@@ -140,11 +130,11 @@ def _usage(raw: Json) -> Json | None:
     token: Anthropic's `input_tokens` counts only those after the last cache breakpoint, so the
     cache reads and the cache writes (`cache_creation_input_tokens`: prompt tokens that were
     processed and stored, not served from the cache) are added. `cached` is the reads alone."""
-    fresh, output = _count(raw.get("input_tokens")), _count(raw.get("output_tokens"))
+    fresh, output = count(raw.get("input_tokens")), count(raw.get("output_tokens"))
     if fresh is None or output is None:
         return None
     parts = [raw.get("cache_read_input_tokens"), raw.get("cache_creation_input_tokens")]
-    read, written = (0 if p is None else _count(p) for p in parts)
+    read, written = (0 if p is None else count(p) for p in parts)
     if read is None or written is None:
         return None
     return {"input": fresh + read + written, "output": output, "cached": read}
@@ -173,11 +163,12 @@ class _Stream:
         else:
             self.meta["usage"] = normal
 
-    def meta_text(self) -> str | None:
-        return json.dumps(self.meta) if self.meta else None
+    @property
+    def done(self) -> bool:
+        return self.stop_reason is not None
 
     def _start(self, event: Json) -> list[Part | Delta]:
-        message = _json(event.get("message"), "message_start's message")
+        message = json_object(event.get("message"), "message_start's message")
         for key in ("id", "model"):
             if isinstance(message.get(key), str):
                 self.meta[key] = message[key]
@@ -190,7 +181,7 @@ class _Stream:
             raise SampleError(f"a content block has no integer index: {index!r}")
         if self.open is not None:
             raise SampleError(f"content block {index} began while block {self.open.index} was open")
-        block = _json(event.get("content_block"), "a content block")
+        block = json_object(event.get("content_block"), "a content block")
         kind = _str(block.get("type"), "a content block's type")
         self.open = _Block(kind, index)
         out: list[Part | Delta] = []
@@ -234,7 +225,7 @@ class _Stream:
             raise SampleError(
                 f"a delta for block {event.get('index')!r}, which is not the open one"
             )
-        delta = _json(event.get("delta"), "a delta")
+        delta = json_object(event.get("delta"), "a delta")
         kind = delta.get("type")
         if kind == "text_delta" and block.kind == "text":
             return self._append(TextDelta, delta.get("text"))
@@ -266,7 +257,7 @@ class _Stream:
     def _message_delta(self, event: Json) -> list[Part | Delta]:
         if self.open is not None:
             raise SampleError(f"the message ended with content block {self.open.index} open")
-        delta = _json(event.get("delta"), "message_delta's delta")
+        delta = json_object(event.get("delta"), "message_delta's delta")
         reason = delta.get("stop_reason")
         if isinstance(reason, str):
             self.stop_reason = reason
@@ -317,12 +308,12 @@ class _Stream:
         stop = STOPS.get(self.stop_reason)
         if stop is None:
             raise SampleError(f"unknown stop_reason {self.stop_reason!r}")
-        return Finish(stop, self.stop_reason, self.meta_text())
+        return Finish(stop, self.stop_reason, meta_text(self.meta))
 
 
 def stream_error(event: Json) -> SampleError:
     """The `SampleError` for an `error` event, with the status that error type stands for."""
-    fields = _json(event.get("error"), "an error event's error")
+    fields = json_object(event.get("error"), "an error event's error")
     kind = fields.get("type")
     message = fields.get("message")
     status = ERROR_STATUS.get(kind) if isinstance(kind, str) else None
@@ -330,30 +321,6 @@ def stream_error(event: Json) -> SampleError:
         f"the server sent an error in the stream: {kind}: {message}",
         status=status,
     )
-
-
-def _error_text(status: int, body: bytes) -> str:
-    """`HTTP <status>: <error type>: <message>`, else the body."""
-    text = body.decode("utf-8", errors="replace").strip()
-    try:
-        parsed: object = json.loads(text)
-    except ValueError:
-        parsed = None
-    if isinstance(parsed, dict):
-        error = cast("Json", parsed).get("error")
-        if isinstance(error, dict):
-            fields = cast("Json", error)
-            text = f"{fields.get('type', 'error')}: {fields.get('message', text)}"
-    return f"HTTP {status}: {text[:500]}"
-
-
-async def _events(response: httpx.Response) -> AsyncIterator[Json]:
-    """The decoded events. The body is read to its end, so the connection is pooled."""
-    async for data in sse_data(response):
-        try:
-            yield _json(json.loads(data), "a stream event")
-        except ValueError as e:
-            raise SampleError(f"malformed SSE data {data[:200]!r}: {e}") from e
 
 
 # Options
@@ -470,12 +437,9 @@ class AnthropicProvider:
     resolved. `base_url` is the API's root, `https://api.anthropic.com` when unset (a proxy
     that speaks the same API may be named; give no `/v1`).
 
-    One `httpx.AsyncClient` serves every sample (httpx pools connections per host): made on the
-    first sample, closed by `aclose()`, after which a sample fails with `ProviderClosed`. A
-    client belongs to the event loop that made it: a sample on another loop drops it unawaited
-    and makes a new one, so a program may call `asyncio.run` once per command. `transport`
-    replaces the network (a test's `httpx.MockTransport`); `environ` is where `api_key_env` is
-    looked up, at sample time.
+    One client serves every sample (see `Connection`). `transport` replaces the network (a
+    test's `httpx.MockTransport`); `environ` is where `api_key_env` is looked up, at sample
+    time.
 
     `check` requires a key (`api_key_env`) and `max_tokens` (the API requires it; there is no
     default), and reads the options in `_OPTIONS`, refusing any other: `thinking` (an object as
@@ -494,12 +458,13 @@ class AnthropicProvider:
         environ: Mapping[str, str] | None = None,
         timeout: httpx.Timeout | None = None,
     ) -> None:
-        self._transport = transport
         self._environ = os.environ if environ is None else environ
-        self._timeout = timeout or httpx.Timeout(10.0, read=300.0)
-        self._http: httpx.AsyncClient | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None  # the loop `_http` belongs to
-        self._closed = False
+        self._connection = Connection(
+            transport,
+            timeout,
+            typed_errors=True,
+            meta_headers={"request-id": "request_id"},  # what support asks for
+        )
 
     @property
     def name(self) -> str:
@@ -522,22 +487,7 @@ class AnthropicProvider:
 
     async def aclose(self) -> None:
         """Close the client and its connections. Later samples fail."""
-        self._closed = True
-        client, self._http = self._http, None
-        if client is not None and self._loop is asyncio.get_running_loop():
-            await client.aclose()
-        # a client of another loop is dropped: that loop is gone, and it cannot be awaited here
-
-    def _client(self) -> httpx.AsyncClient:
-        if self._closed:
-            raise ProviderClosed("this provider was closed; build a new one to sample again")
-        loop = asyncio.get_running_loop()
-        if self._http is not None and self._loop is not loop:
-            self._http = None  # its loop is gone (a REPL runs `asyncio.run` per command)
-        if self._http is None:
-            self._http = httpx.AsyncClient(transport=self._transport, timeout=self._timeout)
-            self._loop = loop
-        return self._http
+        await self._connection.aclose()
 
     def request(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
@@ -589,22 +539,6 @@ class AnthropicProvider:
         base = API_URL if model.base_url is None else model.base_url.rstrip("/")
         return base + "/v1/messages", headers, body
 
-    @staticmethod
-    async def _refuse(response: httpx.Response) -> None:
-        """Raise the `SampleError` for an error response, with its status and `Retry-After`
-        taken before the body is read (a body that fails to read still has them)."""
-        status = response.status_code
-        wait = retry_after(response.headers.get("retry-after"))
-        try:
-            text = _error_text(status, await response.aread())
-        except httpx.HTTPError as e:
-            raise SampleError(
-                f"HTTP {status}: the error body could not be read ({type(e).__name__}: {e})",
-                status=status,
-                retry_after=wait,
-            ) from e
-        raise SampleError(text, status=status, retry_after=wait)
-
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
     ) -> AsyncGenerator[Part | Finish | Delta, None]:
@@ -615,34 +549,5 @@ class AnthropicProvider:
         the reply is done: the stream is still read for the final `usage`, and a reset, an
         `error` event, or malformed SSE after it costs only the usage not yet received."""
         url, headers, body = self.request(walk, model, tools)
-        client = self._client()
-        reply = _Stream()
-        error: SampleError | None = None
-        try:
-            async with client.stream("POST", url, headers=headers, json=body) as response:
-                request_id = response.headers.get("request-id")
-                if request_id:
-                    reply.meta["request_id"] = request_id  # what support asks for
-                if response.status_code != HTTP_OK:
-                    await self._refuse(response)
-                async for event in _events(response):
-                    for item in reply.feed(event):
-                        yield item
-        except httpx.HTTPError as e:
-            kind = ProviderClosed if self._closed else SampleError
-            error = kind(f"{type(e).__name__}: {e}")
-        except SampleError as e:
-            error = e
-        if error is None or reply.stop_reason is not None:
-            try:
-                finish = reply.stop()
-            except SampleError as e:
-                error = e
-            else:
-                yield finish
-                return
-        assert error is not None
-        error.meta = reply.meta_text()
-        for part in reply.close():
-            yield part
-        raise error
+        async for item in self._connection.sample(url, headers, body, _Stream()):
+            yield item
