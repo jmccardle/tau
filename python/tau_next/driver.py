@@ -22,7 +22,7 @@ from functools import partial
 
 from tau_next import trace
 from tau_next._config_layers import ModelCatalog
-from tau_next._core import Answer, Author, ItemData, Job, Session
+from tau_next._core import Answer, Author, Body, ItemData, Job, Session
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks
 from tau_next.events import Delta, Event, EventStream, Live, Saved
@@ -296,9 +296,12 @@ class Driver:
         out = self._out.get(cursor)
         if out is None:
             raise RuntimeError(f"cursor {cursor}: a result with no effect out: {answer}")
+        before = len(self.session.tree)
         with trace.span("driver", "answer"):
             self.session.answer(cursor, answer, self.clock.now())
-        self._emit(Saved(cursor))
+        # A call answered before its batch is whole only fills a slot in core: no node.
+        if len(self.session.tree) > before or not isinstance(answer, Answer.CallDone):
+            self._emit(Saved(cursor, self._answered(before)))
         if not isinstance(answer, Answer.CallDone):
             del self._out[cursor]
             return
@@ -307,6 +310,15 @@ class Driver:
         if not isinstance(job, Job.Pending):
             del self._out[cursor]
             self._dispatch(cursor, job)
+
+    def _answered(self, since: int) -> tuple[str, ...]:
+        """Ids of the calls answered by the `Results` nodes added since node count `since`."""
+        return tuple(
+            call
+            for i in range(since, len(self.session.tree))
+            if isinstance(body := self.session.tree.node(i).body, Body.Results)
+            for call, _, _ in body.outcomes
+        )
 
     def _unit(self, cursor: int, effect: Callable[[], Awaitable[Answer]]) -> asyncio.Task[None]:
         """Run an effect as a task that reports `(cursor, Answer)` to the pump."""

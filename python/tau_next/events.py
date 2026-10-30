@@ -70,9 +70,12 @@ class Live:
 
 @dataclass(frozen=True)
 class Saved:
-    """The tree changed for this cursor: look at it."""
+    """The tree changed for this cursor: look at it. `calls` are the ids of the calls whose
+    results this save put in the tree (the `Results` node it added answers them): a frontend
+    drops their `ToolProgress` layers now, not before."""
 
     cursor: int
+    calls: tuple[str, ...] = ()
 
 
 Event = Live | Saved
@@ -82,11 +85,15 @@ class EventStream:
     """One subscriber's events: an async iterator with its own bounded buffer, for a single
     consumer (a second concurrent `anext` raises `RuntimeError`).
 
-    A `Live` that arrives when the buffer holds `capacity` events is dropped. A `Saved(c)`
-    is never dropped: it first removes every `Live` for cursor `c` and any earlier
-    `Saved(c)` in the buffer (the frontend drops that cursor's live layer at `Saved(c)`
-    anyway, and "look at the tree" needs saying once), then joins the end. So the buffer
-    never holds more than `capacity` plus one `Saved` per cursor.
+    A `Live` that arrives when the buffer holds `capacity` events is dropped, tool progress
+    included. A `Saved(c)` is never dropped: it first removes the provider deltas (text,
+    thinking, call) buffered for cursor `c` and any earlier `Saved(c)` (the frontend drops
+    that cursor's live layer at `Saved(c)` anyway, and "look at the tree" needs saying once),
+    then joins the end, carrying the `calls` of the `Saved(c)` it replaced. Buffered
+    `ToolProgress` of `c` survives it, except the progress of the calls in `Saved.calls`:
+    those calls' results are now in the tree. The bound: at most `capacity` events, plus one
+    `Saved` per cursor. A full buffer drops any `Live`, progress included, so progress that
+    survives clears cannot grow it.
 
     `aclose()` unsubscribes. The driver holds streams weakly, so one abandoned without
     `aclose()` is collected. When the driver stops the stream ends after what it holds;
@@ -111,10 +118,21 @@ class EventStream:
         if self._ended or (self.cursor is not None and event.cursor != self.cursor):
             return
         if isinstance(event, Saved):
+            # An earlier `Saved(c)` is replaced, so its `calls` move to this one.
+            earlier = [
+                h.calls for h in self._buffer if isinstance(h, Saved) and h.cursor == event.cursor
+            ]
+            calls = tuple(dict.fromkeys(c for held in (*earlier, event.calls) for c in held))
+            event = Saved(event.cursor, calls)
             self._buffer = [
                 held
                 for held in self._buffer
-                if held.cursor != event.cursor  # this cursor's `Live`s and earlier `Saved`
+                if held.cursor != event.cursor  # this cursor's `Live`s and earlier `Saved`...
+                or (
+                    isinstance(held, Live)  # ...but not progress of calls still unanswered
+                    and isinstance(held.delta, ToolProgress)
+                    and held.delta.call_id not in event.calls
+                )
             ]
         elif len(self._buffer) >= self.capacity:
             return

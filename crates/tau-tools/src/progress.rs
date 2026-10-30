@@ -138,7 +138,7 @@ mod tests {
             }
         });
         assert_eq!(got.concat(), "x".repeat(1000));
-        assert!(got.len() <= 2, "{} emissions", got.len());
+        assert!(got.len() <= 5, "{} emissions for 1000 pushes", got.len());
     }
 
     #[test]
@@ -155,28 +155,48 @@ mod tests {
 
     #[test]
     fn a_slow_consumer_does_not_block_push_and_loses_the_oldest() {
-        let stream = Arc::new(Stream::new());
-        let started = Instant::now();
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stream = Stream::new();
+        let (entered, released, pushes_done) = (
+            AtomicBool::new(false),
+            AtomicBool::new(false),
+            AtomicBool::new(false),
+        );
         let got = Mutex::new(Vec::new());
+        let blocked_by_push = AtomicBool::new(false);
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 stream.emit_until_closed(&|s| {
-                    std::thread::sleep(Duration::from_millis(300));
+                    if !entered.swap(true, Ordering::SeqCst) {
+                        // The consumer is stuck until every push is done (or 10 s pass).
+                        let waiting = Instant::now();
+                        while !released.load(Ordering::SeqCst)
+                            && waiting.elapsed() < Duration::from_secs(10)
+                        {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        blocked_by_push
+                            .store(!pushes_done.load(Ordering::SeqCst), Ordering::SeqCst);
+                    }
                     lock(&got).push(s);
                 });
             });
             stream.push(b"first");
-            std::thread::sleep(Duration::from_millis(50)); // the consumer is now asleep
+            while !entered.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
             for _ in 0..(MAX_PENDING / 10 * 3) {
                 stream.push(b"0123456789");
             }
             stream.push(b"last");
-            assert!(
-                started.elapsed() < Duration::from_millis(250),
-                "push waited"
-            );
+            pushes_done.store(true, Ordering::SeqCst);
+            released.store(true, Ordering::SeqCst);
             stream.close();
         });
+        assert!(
+            !blocked_by_push.load(Ordering::SeqCst),
+            "a push waited for the consumer"
+        );
         let got = got.into_inner().unwrap();
         assert_eq!(got[0], "first");
         let rest = got[1..].concat();

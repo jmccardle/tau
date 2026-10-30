@@ -184,19 +184,28 @@ whose `provider` is not its own.
    answer (10 kB tail, overflow file) is the same with or without progress. `read`, `write`,
    `grep` take none.
 
-   *Found while building:* `Saved(c)` is emitted after every answer, and a batch answers
-   once per call, so `Saved(c)` fires while other calls of the batch still run. It wipes
-   that cursor's buffered `Live` events, tool progress included, and a frontend that drops
-   its live layer at `Saved(c)` loses the earlier output of calls still running. The rule is
-   unchanged here; see Open.
+   *Found while building:* `Saved(c)` was emitted after every answer, and a batch answers
+   once per call, so it fired while other calls of the batch still ran, and wiped that
+   cursor's buffered `Live` events, tool progress included. Fixed in item 15.
+
+15. **`Saved` names the calls it settled; progress outlives other saves.** A call answered
+   before its batch is whole only fills a slot in core: no node is added, so the driver now
+   emits no `Saved` for it (a `Saved` means the tree changed). The batch's `Results` node
+   is the save that answers its calls, and that `Saved` carries `calls`, the ids it
+   answered: `Saved(cursor, calls=())`. The buffer rule: `Saved(c)` still removes the
+   provider deltas (text, thinking, call) buffered for `c` and earlier `Saved(c)`; buffered
+   `ToolProgress` of `c` survives every `Saved` except for the calls in its `calls`. The
+   `calls` of a `Saved(c)` it replaces move onto it, so a subscriber that fell behind still
+   hears which calls settled. The frontend rule matches: draw a call's progress as a layer
+   keyed by call id and drop it when a `Saved` names the call (its result is in the tree),
+   not at every `Saved`. The bound is unchanged: a full buffer drops any `Live`, progress
+   included, so the buffer holds at most `capacity` events plus one `Saved` per cursor;
+   progress surviving a save does not enlarge it (a flood fills the buffer and the rest is
+   dropped, oldest kept). Other `Saved`s (frontend calls such as `set_auto`, hook answers)
+   can still arrive mid-batch with `calls=()`; progress survives them.
 
 ## Open
 
-- Tool progress and `Saved` mid-batch (item 14): `Saved(c)` wipes the progress of calls
-  still running. A fix to choose: a `Saved` clears only `ToolProgress` of calls whose result
-  it carries (the buffer cannot know that; the driver could emit `Saved(c)` with the call ids
-  just saved), or the buffer keeps `ToolProgress` and a frontend drops a call's layer when
-  its result is in the tree.
 - Fine-grained saved events (item 3).
 - A provider-check problem points at the model's path even when the option came from
   a group or another layer.
