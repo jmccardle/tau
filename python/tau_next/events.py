@@ -1,8 +1,9 @@
-"""What a frontend watches (D15): live events from the provider, saved events from the driver.
+"""What a frontend watches (D15): live events from providers and tools, saved ones from the driver.
 
 A provider's `sample` stream yields deltas (no cursor: the provider does not know which
-cursor it serves). The driver wraps each as a `Live` naming the cursor, and after applying
-each answer to core emits a `Saved` naming it. `Driver.events()` hands a frontend an
+cursor it serves), and a running tool reports `ToolProgress` through its `progress` callback.
+The driver wraps each as a `Live` naming the cursor, and after applying each answer to core
+emits a `Saved` naming it. `Driver.events()` hands a frontend an
 `EventStream` of both.
 """
 
@@ -43,14 +44,25 @@ class CallArgs:
     text: str
 
 
-Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs
-DELTAS = (TextDelta, ThinkingDelta, CallNamed, CallArgs)
+@dataclass(frozen=True)
+class ToolProgress:
+    """A running call showing partial output: `text` is new output since the last
+    `ToolProgress` of the call `call_id`, not the whole so far. Only the driver makes one (a
+    tool calls its `progress`); a provider that yields one fails its sample. What the call
+    saves is its `Outcome`, never this."""
+
+    call_id: str
+    text: str
+
+
+Delta = TextDelta | ThinkingDelta | CallNamed | CallArgs | ToolProgress
+DELTAS = (TextDelta, ThinkingDelta, CallNamed, CallArgs)  # what a provider may yield
 
 
 @dataclass(frozen=True)
 class Live:
-    """A delta, on the cursor whose sample produced it. Never saved: a frontend draws it as
-    a layer over the cursor and drops the layer when a `Saved` arrives."""
+    """A delta, on the cursor whose sample or tool call produced it. Never saved: a frontend
+    draws it as a layer over the cursor and drops the layer when a `Saved` arrives."""
 
     cursor: int
     delta: Delta

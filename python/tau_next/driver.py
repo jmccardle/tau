@@ -27,7 +27,7 @@ from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks
 from tau_next.events import Delta, Event, EventStream, Live, Saved
 from tau_next.handles import Cursor, NodeHandle, Subject
-from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools
+from tau_next.protocols import Clock, Extension, Provider, Tool, check_tools, takes_progress
 
 
 @dataclass
@@ -80,6 +80,7 @@ class Driver:
         self._streams: weakref.WeakSet[EventStream] = weakref.WeakSet()
         self._catalog = catalog
         self._tools: Mapping[str, Tool] = check_tools(tools)
+        self._progress_tools = frozenset(n for n, t in self._tools.items() if takes_progress(t))
         self._extensions = tuple(extensions)
         self._queue: asyncio.Queue[tuple[int, Answer] | None] = asyncio.Queue()
         self._out: dict[int, Outstanding] = {}
@@ -356,6 +357,8 @@ class Driver:
                         lambda ext: NodeHandle(session, node, ext.name, self.clock.now, self._poke),
                         self._tools,
                         self._extensions,
+                        progress_tools=self._progress_tools,
+                        on_progress=partial(self._live, cursor),
                     )
                     for c in calls
                 ]

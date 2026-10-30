@@ -2,7 +2,7 @@
 
 Status: candidate (2026-10-29): the first slice is built (provider contract, settings,
 live and saved events, mock provider), and the OpenAI provider keeps to the contract
-(item 10); replay data and tool progress are not built. Amends `model.md` §9 and §10.
+(item 10), and tool progress is built (item 14); replay data is not built. Amends `model.md` §9 and §10.
 
 "Live" replaces the first draft's "draft" event: `draft` already means the hook draft
 (glossary).
@@ -83,7 +83,7 @@ whose `provider` is not its own.
 - The provider's stream yields live events as they arrive and whole parts as
   they finish; the driver forwards the first and saves only the second.
 - A tool may take a `progress` callback; the driver turns each call into a
-  live event tagged with the call's id.
+  live event, `ToolProgress(call_id, text)`, tagged with the call's id (item 14).
 - Every event names its cursor. The driver offers one async stream
   (`driver.events()`) with an optional cursor filter.
 
@@ -161,8 +161,42 @@ whose `provider` is not its own.
    merging. `Retry-After` and the status are taken before an error body is read.
    A malformed cached count leaves `usage` out.
 
+14. **Tool progress (built).** A tool opts in by giving `call` a parameter named
+   `progress`, detected once when the driver is built (`takes_progress`); the driver then
+   passes a `Progress` (`Callable[[str], None]`) by keyword. A tool without it is called with
+   `args_raw` alone. Chosen over a context-local `tau_next.progress(text)` because it is
+   explicit in the signature (a bad `progress` fails when the driver is built), needs no
+   hidden state that a Rust thread or another language's tool cannot see, and "any object
+   with these attributes works" stays true: the attribute is the parameter. `progress` is
+   callable from any thread; each call is moved onto the loop and becomes
+   `Live(cursor, ToolProgress(call_id, text))` while the tool runs. After the call has
+   finished, been aborted or cancelled, it does nothing and raises nothing. `text` is new
+   output since the last event, not the whole so far. Empty text is dropped; a non-`str`
+   raises `TypeError` to the tool. Progress is never saved: the `Outcome` the tool returns is
+   what `Results` holds. A provider that yields a `ToolProgress` fails its sample. `@tool`
+   functions take a parameter named `progress` the same way; it is not an argument, so it is
+   not in `parameters`.
+   `bash` passes its output to `progress` as it arrives. The reader thread (Rust, no GIL)
+   only copies bytes into a buffer of at most 64 KiB; a thread of its own takes the GIL for
+   each call and passes the buffer on at most once per 100 ms (the first bytes after a quiet
+   spell at once), cutting only between UTF-8 characters. A slow consumer stalls that thread
+   alone: the buffer drops its oldest bytes, never blocking the command or the answer. The
+   answer (10 kB tail, overflow file) is the same with or without progress. `read`, `write`,
+   `grep` take none.
+
+   *Found while building:* `Saved(c)` is emitted after every answer, and a batch answers
+   once per call, so `Saved(c)` fires while other calls of the batch still run. It wipes
+   that cursor's buffered `Live` events, tool progress included, and a frontend that drops
+   its live layer at `Saved(c)` loses the earlier output of calls still running. The rule is
+   unchanged here; see Open.
+
 ## Open
 
+- Tool progress and `Saved` mid-batch (item 14): `Saved(c)` wipes the progress of calls
+  still running. A fix to choose: a `Saved` clears only `ToolProgress` of calls whose result
+  it carries (the buffer cannot know that; the driver could emit `Saved(c)` with the call ids
+  just saved), or the buffer keeps `ToolProgress` and a frontend drops a call's layer when
+  its result is in the tree.
 - Fine-grained saved events (item 3).
 - A provider-check problem points at the model's path even when the option came from
   a group or another layer.

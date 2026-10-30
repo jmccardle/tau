@@ -1259,10 +1259,30 @@ What a provider's `sample` yields while a part is still arriving, with no cursor
 `CallNamed(index, id, tool)` (a call begins forming), `CallArgs(index, text)` (more
 of its `args_raw`). `Delta` is their union. Never saved.
 
+### tool progress, ToolProgress
+`tau_next.ToolProgress(call_id, text)` (`events.py`) · D15 · new
+
+A `Delta` a running tool makes through its progress callback: `text` is the output that
+arrived since the previous `ToolProgress` of call `call_id`, not the whole so far. The driver
+wraps it as `Live(cursor, ToolProgress(...))` while the call runs. Never saved: `Results`
+holds only the `Outcome` the tool returns. Obeys the buffer rules of any `Live`. A provider
+that yields one fails its sample.
+
+### progress callback, Progress
+`tau_next.Progress` = `Callable[[str], None]` (`protocols.py`) · D15 · new
+
+What a tool is given to show partial output: `progress(text)`. A tool opts in by giving
+`call` a parameter named `progress`, detected once when the driver is built
+(`takes_progress`); a `progress` that cannot be passed by keyword is a `ToolContractError`.
+Callable from any thread. After the call is over (returned, aborted, cancelled) it does
+nothing and raises nothing; empty text is dropped; a non-`str` raises `TypeError`. A `@tool`
+function takes it as a parameter named `progress`, which is not one of the tool's
+`parameters`. `bash` calls it with its output, at most once per 100 ms.
+
 ### live event, Live
 `tau_next.Live(cursor, delta)` · D15 · new (the ADR's first draft said "draft event")
 
-A `Delta` on the cursor whose sample produced it, as `driver.events()` yields it.
+A `Delta` on the cursor whose sample (or tool call, for `ToolProgress`) produced it, as `driver.events()` yields it.
 A frontend draws it as a layer over the cursor and drops the layer at the next
 `Saved`. Never saved. A slow subscriber's buffer drops it.
 

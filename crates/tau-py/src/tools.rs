@@ -269,8 +269,25 @@ pub struct BashRun {
 #[pymethods]
 impl BashRun {
     /// Block, GIL released, until the command ends, is killed, or times out.
-    fn wait(&self, py: Python<'_>) -> Outcome {
-        outcome(py.detach(|| self.inner.wait()))
+    ///
+    /// With `progress`, a callable of one `str`, the output is also passed to it as it
+    /// arrives, coalesced to at most one call per 100 ms, from a thread of its own (so the
+    /// callable must be safe to call from any thread). The GIL is taken only for each call,
+    /// never in the loop that reads the command's output, and a slow `progress` slows
+    /// neither the command nor its answer. The last call returns before `wait` does.
+    #[pyo3(signature = (progress=None))]
+    fn wait(&self, py: Python<'_>, progress: Option<Py<PyAny>>) -> Outcome {
+        let Some(progress) = progress else {
+            return outcome(py.detach(|| self.inner.wait()));
+        };
+        let emit = |text: String| {
+            Python::attach(|py| {
+                if let Err(e) = progress.call1(py, (text,)) {
+                    e.write_unraisable(py, None);
+                }
+            });
+        };
+        outcome(py.detach(|| self.inner.wait_with(Some(&emit))))
     }
 
     /// Ask for the command and its process group to end (SIGTERM, then SIGKILL

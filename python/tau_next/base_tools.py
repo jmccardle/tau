@@ -16,6 +16,8 @@ An expected failure (bad arguments, a missing file, a command that exits nonzero
 file that cannot be written) answers `Outcome.Err` with a message for the model; nothing is
 raised out of `call`. A bad constructor argument raises `ValueError` or `NotADirectoryError`.
 
+`bash` also takes a `progress` callback (see `Tool`) and passes it the output as it arrives.
+
 Cancelling `call` stops the work: `read` and `grep` stop at their next check, `bash` terminates
 its process group (SIGTERM, then SIGKILL after `kill_grace_ms`) and waits for it to end.
 """
@@ -25,11 +27,13 @@ import json
 import os
 import threading
 from collections.abc import Callable, Mapping
+from functools import partial
 from pathlib import Path
 from typing import Protocol
 
 from tau_next import _core
 from tau_next._core import Outcome
+from tau_next.protocols import Progress
 
 DEFAULT_MAX_OUTPUT = 10_000
 DEFAULT_MAX_OVERFLOW = 64 * 1024 * 1024
@@ -196,9 +200,14 @@ class BashTool(_Described):
         super().__init__(engine)
         self._engine = engine
 
-    async def call(self, args_raw: str) -> Outcome:
+    async def call(self, args_raw: str, *, progress: Progress | None = None) -> Outcome:
+        """Run the command. With `progress`, the output also goes to it as it arrives: at
+        most one call per 100 ms, carrying all the text since the last, from a thread of the
+        engine's own. The answer is the same either way; `progress` is never waited for, and
+        a slow one loses the oldest output it has not yet been given (the answer keeps its
+        10 kB and the overflow file all of it)."""
         run = self._engine.start(args_raw)
-        waiting = asyncio.ensure_future(_in_own_thread(run.wait))
+        waiting = asyncio.ensure_future(_in_own_thread(partial(run.wait, progress)))
         try:
             return await asyncio.shield(waiting)
         except asyncio.CancelledError:

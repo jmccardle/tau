@@ -4,7 +4,7 @@ No effect touches the session except to read it. The driver answers.
 """
 
 import asyncio
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import aclosing
 from typing import cast
 
@@ -21,12 +21,14 @@ from tau_next._core import (
     SampleEnd,
     Session,
 )
-from tau_next.events import DELTAS, CallNamed, Delta, TextDelta, ThinkingDelta
+from tau_next.events import DELTAS, CallNamed, Delta, TextDelta, ThinkingDelta, ToolProgress
 from tau_next.handles import CallDraft, Cursor, NodeHandle, Subject
 from tau_next.protocols import (
     CursorHook,
     Extension,
     Finish,
+    Progress,
+    ProgressTool,
     Provider,
     SampleError,
     Tool,
@@ -172,6 +174,8 @@ class SampleRun:
                     finish = item
                 elif isinstance(item, DELTAS):
                     self._delta(item)
+                elif isinstance(item, ToolProgress):
+                    raise SampleError("provider yielded tool progress, which only tools make")
                 else:
                     if self._open is not None:
                         self._open.check(item)
@@ -237,15 +241,21 @@ class _HookError(Exception):
 class CallRun:
     """One call of a batch: `pre_tool` hooks, the tool, `pre_result` hooks.
 
-    `abort` cancels the tool; a hook that is running finishes (Q34).
+    `abort` cancels the tool; a hook that is running finishes (Q34). A tool that opted in
+    (`progress_tools` names it) is given a `Progress` that turns each call into
+    `on_progress(ToolProgress(call id, text))` on the loop while the tool runs, and does
+    nothing before or after.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - what one call needs to run
         self,
         call: RunCall,
         node: Callable[[Extension], NodeHandle],
         tools: Mapping[str, Tool],
         extensions: Sequence[Extension],
+        *,
+        progress_tools: Collection[str],
+        on_progress: Callable[[ToolProgress], None],
     ) -> None:
         self.id = call.id
         self._tool = call.tool
@@ -253,11 +263,15 @@ class CallRun:
         self._node = node
         self._tools = tools
         self._extensions = extensions
+        self._progress_tools = progress_tools
+        self._on_progress = on_progress
         self._task: asyncio.Future[Outcome] | None = None
         self._aborted = False
+        self._showing = False
 
     def abort(self) -> None:
         self._aborted = True
+        self._showing = False
         if self._task is not None:
             self._task.cancel()
 
@@ -316,15 +330,44 @@ class CallRun:
                     return changed
         return changed
 
+    def _progress(self) -> Progress:
+        """The tool's `Progress`: callable from any thread; the event is made on the loop,
+        and only if the call is still running there."""
+        loop = asyncio.get_running_loop()
+
+        def show(text: str) -> None:
+            if self._showing:
+                self._on_progress(ToolProgress(self.id, text))
+
+        def progress(text: str) -> None:
+            if not isinstance(text, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise TypeError(f"progress takes str, not {type(text).__name__}")
+            if not self._showing or not text:
+                return
+            try:
+                loop.call_soon_threadsafe(show, text)
+            except RuntimeError:  # the loop is closed: the call is over
+                return
+
+        return progress
+
     async def _run(self, args_raw: str) -> Outcome:
         tool = self._tools.get(self._tool)
         if tool is None:
             return Outcome.Err(f"unknown tool: {self._tool}")
-        self._task = asyncio.ensure_future(tool.call(args_raw))
+        if self._tool in self._progress_tools:
+            self._showing = True
+            call = cast("ProgressTool", tool).call(args_raw, progress=self._progress())
+        else:
+            call = tool.call(args_raw)
+        self._task = asyncio.ensure_future(call)
         if self._aborted:
             self._task.cancel()
-        with trace.span("tool", self._tool):
-            await _finish(self._task)
+        try:
+            with trace.span("tool", self._tool):
+                await _finish(self._task)
+        finally:
+            self._showing = False
         if self._task.cancelled():
             return Outcome.Interrupted()
         error = self._task.exception()
