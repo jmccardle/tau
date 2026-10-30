@@ -94,7 +94,9 @@ async def test_a_tool_error_is_an_outcome_and_the_model_sees_it(tmp_path: Path) 
     await h.send("look")
     await h.settle()
     *_, results, reply = h.bodies()
-    assert results == Body.Results([("a", Outcome.Err("no such file"), Author.Tools())])
+    assert results == Body.Results(
+        [("a", Outcome.Err("RuntimeError: no such file"), Author.Tools())]
+    )
     assert isinstance(reply, Body.Assistant)
     assert len(provider.requests) == 2
 

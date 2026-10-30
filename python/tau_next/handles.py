@@ -55,20 +55,21 @@ class TreeHandle:
     Every call goes into Rust at once. Nothing here moves a cursor.
     """
 
-    def __init__(  # noqa: PLR0913, PLR0917 - a handle's whole wiring
+    def __init__(
         self,
         session: Session,
         extension: str,
         now: Now,
         poke: Poke,
         changed: Changed,
-        hook: int | None = None,
     ) -> None:
         self._session = session
         self._now = now
         self._poke = poke
         self._changed = changed
-        self._writes = HandleWrites(session, hook)
+        # A tree handle's writes sync at once. Only `Cursor` rebinds them to a hook: nothing
+        # public takes a hook id, and `HandleWrites` is in the private `_core`.
+        self._writes = HandleWrites(session, None)
         self._live = True
         self.extension = extension
 
@@ -209,7 +210,8 @@ class Cursor(TreeHandle):
         poke: Poke,
         changed: Changed,
     ) -> None:
-        super().__init__(session, extension, now, poke, changed, hook=id)
+        super().__init__(session, extension, now, poke, changed)
+        self._writes = HandleWrites(session, id)  # the writes ride this hook's phase
         self._asker = asker
         self.id = id
 

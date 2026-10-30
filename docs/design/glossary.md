@@ -944,7 +944,9 @@ on; a string stops. Hooks at a point run in `config_at(at)` order.
 `pre_tool`, `pre_result` (tool hooks, run by the driver inside `RunCalls`). Python
 names them as strings: `protocols.CURSOR_POINTS` and `protocols.TOOL_POINTS`. An
 extension attribute named `pre_*` or `post_*` that is not one of these is refused when the
-driver is built (see **ExtensionContractError**), so a misspelt hook cannot sit silent.
+driver is built (see **ExtensionContractError**), so a misspelt hook cannot sit silent. The
+rule is on the name, not the kind: a dataclass field `pre_prompt` is refused too. Name such a
+field for what it holds (`prompt_prefix`), not with those prefixes.
 
 ### cursor hook, CursorHook
 `async def hook(cursor, subject) -> str | None`; `tau_next.CursorHook` is its `Protocol` · new
@@ -1001,16 +1003,22 @@ The same seven extension writes as `Session` (`open`, `add_item`,
 the cursor whose hook makes them (`None` for a tool hook). While that cursor's
 hook job is out they ride the phase's sync instead of syncing. Only the
 handles hold one; it is not exported from `tau_next`, and it is a type apart
-so the public `Session` cannot be given a hook to skip a sync with. Not built: updating an item
+so the public `Session` cannot be given a hook to skip a sync with. It stays constructible from
+Python (a `#[new]` taking `(session, hook)`) because `Cursor` builds it with its hook id; the
+only caller is `handles.py`, and nothing public takes a hook: `TreeHandle` (exported) has no
+`hook` parameter and always binds `None`, which syncs, and `_core` is a private module (rule 4
+keeps tests out of it). Not built: updating an item
 in place, `show`, `tell` (`docs/plan.md`, roadmap row 8).
 
-### Poke, Now
+### Poke, Now, Changed
 Python aliases in `handles.py` · new
 
-`Poke = Callable[[], None]`: the driver's `_poke`, which tells the pump a handle
+`Poke = Callable[[], None]`: the driver's poke, which tells the pump a handle
 call (`open`, `add_item`) may have woken a cursor. `Now = Callable[[], int]`:
 the driver's clock in milliseconds, so a handle fills in `time`. `Asker` is the
-driver's question call (see **question**).
+driver's question call (see **question**). `Changed = Callable[[int | None], None]` is the
+driver's `Saved` for a handle: `changed(cursor)` says `Saved(cursor)`, `changed(None)` says it
+for the handle's own cursor (the hook's, or the batch's).
 
 ### question
 `Driver.respond`, `questions`, `Question` (driver memory; not core) ·
@@ -1342,8 +1350,8 @@ returns the tools by name and the names of those that take progress.
 `tau_next.ExtensionContractError` (a `TypeError`), `check_extensions` (`protocols.py`) · new
 
 Raised by `Driver.__init__` for an object that is not an `Extension`, naming it: a missing,
-non-`str` or empty `name`, two extensions with one name, or an attribute named `pre_*` or
-`post_*` that is not a hook point or is not callable.
+non-`str` or empty `name`, two extensions with one name, or any attribute (method, field,
+class attribute) named `pre_*` or `post_*` that is not a hook point or is not callable.
 
 ### CallKey
 `events.CallKey` = `tuple[int, str]` · D15 · new
@@ -1644,15 +1652,21 @@ known names in the `sample_error`), a `ModelCatalog` (where it resolves the mode
 `config_at(at)` at each sample), tools, extensions, and a clock. `use_catalog(catalog)`
 replaces the catalog for samples dispatched after it (a frontend that reloads the config
 files calls it); a sample already running keeps the model it resolved. Its frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`,
-`abort`, `open`, `respond`) run on the loop thread, call the
+`abort`, `open`, `add_item`, `set_label`, `remove_label`, `respond`) run on the loop thread, call the
 session, then poke the pump; `open(at, client)` names the client like `input` and `go_to`.
+`add_item(to, data)` is for whoever has something to tell a resting cursor from outside a hook
+(a timer extension, `tau serve` relaying a webhook): any `ItemData` but `Input`, which only
+`input` and `send` add (they say who typed it). `set_label(label, cursor)` and
+`remove_label(label)` are the labels a frontend writes; a moved label is `Saved` for both cursors.
+Once the driver has failed or stopped, every frontend call raises (the failure, or `RuntimeError`),
+and an `events()` subscription ends at once (with the failure, or cleanly after a plain stop).
 Extensions are a list given to the constructor, in hook order, checked there
 (**ExtensionContractError**); how `config_at` will name them is open.
 `events(cursor=None, *, buffer=256)` subscribes at once and returns an `EventStream`;
 `stop()` ends them. A failure of the pump or an effect cancels the effects still running,
 ends the streams with it, and makes `rest` raise it; after `stop()`, `rest` raises
-`RuntimeError`, also for a caller already waiting. Items are added through an extension's
-handle, not the driver. `state()` is the one read a harness needs (**DriverState**).
+`RuntimeError`, also for a caller already waiting. A hook adds its extension's item through
+its handle. `state()` is the one read a harness needs (**DriverState**).
 
 ### pump
 `Driver._pump` · new

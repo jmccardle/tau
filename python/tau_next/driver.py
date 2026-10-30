@@ -27,7 +27,7 @@ from typing import cast
 
 from tau_next import trace
 from tau_next._config_layers import ModelCatalog
-from tau_next._core import Answer, Author, Body, Job, Session
+from tau_next._core import Answer, Author, Body, ItemData, Job, Session
 from tau_next.clock import SystemClock
 from tau_next.effects import CallRun, SampleRun, run_hooks
 from tau_next.events import CallKey, Event, EventStream, Live, LiveDelta, Saved
@@ -89,13 +89,17 @@ class _Streams:
 
     def __init__(self) -> None:
         self._open: weakref.WeakSet[EventStream] = weakref.WeakSet()
+        self._ended: tuple[Exception | None] | None = None
 
     def __len__(self) -> int:
         return len(self._open)
 
     def subscribe(self, cursor: int | None, buffer: int) -> EventStream:
         stream = EventStream(cursor, buffer, self._open.discard)
-        self._open.add(stream)
+        if self._ended is not None:  # too late for anything: it ends as the others did
+            stream.end(self._ended[0])
+        else:
+            self._open.add(stream)
         return stream
 
     def emit(self, event: Event) -> None:
@@ -103,9 +107,12 @@ class _Streams:
             stream.offer(event)
 
     def end(self, failure: Exception | None = None) -> None:
-        """End every stream (with `failure`, if any) and forget them."""
+        """End every stream (with `failure`, if any) and forget them. Streams subscribed later
+        end the same way; a stop after a failure does not turn it into a clean end."""
+        if self._ended is None:
+            self._ended = (failure,)
         for stream in tuple(self._open):
-            stream.end(failure)
+            stream.end(self._ended[0])
         self._open.clear()
 
 
@@ -134,12 +141,35 @@ class _Outstanding:
     sample: SampleRun | None = None
     calls: list[CallRun] = field(default_factory=lambda: [])
 
+    def cancel(self) -> None:
+        """Core said abort cancels the effect: stop it. Each call unit and the sample answer
+        with what they have."""
+        if self.sample is not None:
+            self.sample.cancel()
+        for call in self.calls:
+            call.abort()
+
+
+class _Tasks:
+    """Every task the driver runs: the pump and the effects (`effects`, the ones that answer)."""
+
+    def __init__(self) -> None:
+        self.all: set[asyncio.Task[None]] = set()
+        self.effects: set[asyncio.Task[None]] = set()
+
+    def spawn(self, coro: Coroutine[object, object, None], *, effect: bool = False) -> None:
+        task = asyncio.ensure_future(coro)
+        for held in (self.all, self.effects) if effect else (self.all,):
+            held.add(task)
+            task.add_done_callback(held.discard)
+
 
 @dataclass(frozen=True)
 class DriverState:
     """What a harness reads to tell quiet from busy: the effects running (`units`), whether the
     pump has something to do (`queued`: a report or poke to take, or a busy cursor with no
-    effect out), the questions open, the event streams open, and what the driver died of."""
+    effect out; never once the driver has failed or stopped, when the session may be closed),
+    the questions open, the event streams open, and what the driver died of."""
 
     units: int
     queued: bool
@@ -155,9 +185,11 @@ class Driver:
     sampled by; each must be named by its own `name`. The program that built them closes
     them. `catalog` is where a `Config` node's model name is resolved, at each sample.
 
-    Frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`,
-    `open`, `respond`) run on the loop thread and then poke the pump; each says `Saved` only
-    if something a frontend could see changed. Extensions are listed in the constructor, in
+    Frontend calls (`input`, `send`, `step`, `go_to`, `set_auto`, `abort`, `open`, `add_item`,
+    `set_label`, `remove_label`, `respond`) run on the loop thread and then poke the pump;
+    each says `Saved` only if something a frontend could see changed. Once the driver has
+    failed or stopped they raise (the failure, or `RuntimeError`), as `rest` does; an event
+    stream subscribed then ends at once. Extensions are listed in the constructor, in
     hook order, and checked there like tools (`ExtensionContractError`); `model.md` does
     not yet say how `config_at` names them.
     """
@@ -186,8 +218,8 @@ class Driver:
         self._queue: asyncio.Queue[tuple[int, Answer] | None] = asyncio.Queue()
         self._out: dict[int, _Outstanding] = {}
         self._questions = _Questions()
-        self._tasks: set[asyncio.Task[None]] = set()
-        self._effects: set[asyncio.Task[None]] = set()
+        self._tasks = _Tasks()
+        self._poke = partial(self._queue.put_nowait, None)  # wake the pump
         self._failure: Exception | None = None
         self._stopped = False
         self._rested = _Waiters()
@@ -201,10 +233,13 @@ class Driver:
 
     def _fail(self, failure: Exception) -> None:
         """Record what the pump or an effect died of, cancel the other effects (they would run
-        on, billing, until `stop`), and end every event stream with it."""
+        on, billing, until `stop`), and end every event stream with it. The first failure is
+        the root cause: a later one changes nothing."""
+        if self._failure is not None:
+            return
         self._failure = failure
         current = asyncio.current_task()
-        for effect in tuple(self._effects):
+        for effect in tuple(self._tasks.effects):
             if effect is not current:
                 effect.cancel()
         self._streams.end(failure)
@@ -217,19 +252,21 @@ class Driver:
 
     def start(self) -> None:
         """Start the pump. Call inside the running loop."""
-        self._spawn(self._pump())
+        self._tasks.spawn(self._pump())
 
     async def stop(self) -> None:
-        """Cancel everything without answering, as a crash would. `rest` raises from now on."""
+        """Cancel everything without answering, as a crash would. `rest` and every frontend
+        call raise from now on; event streams end, later ones at once."""
         self._stopped = True
-        tasks = list(self._tasks)
+        tasks = list(self._tasks.all)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         self._streams.end()
         self._out.clear()
         self._questions.clear()
-        self._queue = asyncio.Queue()
+        while not self._queue.empty():
+            self._queue.get_nowait()
         self._rested.wake()
 
     # What a harness needs to tell quiet from busy
@@ -237,10 +274,15 @@ class Driver:
     def state(self) -> DriverState:
         """A snapshot of the driver, for a harness."""
         return DriverState(
-            units=len(self._effects),
-            queued=not self._queue.empty()
-            or any(
-                self.session.cursor(c).busy and c not in self._out for c in self.session.cursors()
+            units=len(self._tasks.effects),
+            queued=self._failure is None
+            and not self._stopped
+            and (
+                not self._queue.empty()
+                or any(
+                    self.session.cursor(c).busy and c not in self._out
+                    for c in self.session.cursors()
+                )
             ),
             open_questions=self._questions.count(),
             subscribers=len(self._streams),
@@ -252,10 +294,7 @@ class Driver:
         pump died of, and `RuntimeError` once the driver is stopped (also if it is stopped
         meanwhile). A cursor held by an open question or a gate does not rest."""
         while True:
-            if self._failure is not None:
-                raise self._failure
-            if self._stopped:
-                raise RuntimeError("the driver is stopped")
+            _running(self._failure, self._stopped)
             if not (self.session.cursor(cursor).busy or cursor in self._out):
                 return
             await self._rested.wait()
@@ -269,7 +308,9 @@ class Driver:
     @contextmanager
     def _frontend(self, cursor: int) -> Generator[None]:
         """A frontend call that changes `cursor`: say `Saved` if what a frontend could see
-        changed, and wake the pump either way."""
+        changed, and wake the pump either way. Raises once the driver has failed or stopped:
+        nothing is left to run what the call would start."""
+        _running(self._failure, self._stopped)
         before = _seen(self.session, cursor)
         yield
         if _seen(self.session, cursor) != before:
@@ -297,7 +338,7 @@ class Driver:
         with self._frontend(cursor):
             cancel = self.session.go_to(cursor, to, client, self.clock.now())
             if cancel:
-                self._cancel(cursor)
+                _cancel(self._out, cursor)
             self._questions.decline(cursor)
         return cancel
 
@@ -307,10 +348,34 @@ class Driver:
 
     def open(self, at: int, client: str) -> int:
         """Open a cursor at `at` for `client`; it wakes."""
+        _running(self._failure, self._stopped)
         cursor = self.session.open(at, Author.Frontend(client), self.clock.now())
         self._streams.emit(Saved(cursor))
         self._poke()
         return cursor
+
+    def add_item(self, to: int, data: ItemData) -> int:
+        """Add an item to a cursor's scratchpad; the cursor wakes. For whoever has something
+        to tell a resting cursor from outside a hook: a timer extension, `tau serve` relaying a
+        webhook. An `ItemData.Input` is what `input` and `send` add (they say who typed it), so
+        it is refused here. A hook adds its extension's item with its handle's `add_item`."""
+        if isinstance(data, ItemData.Input):
+            raise TypeError("an input item is added with `input` or `send`, not `add_item`")
+        with self._frontend(to):
+            return self.session.add_item(to, data)
+
+    def set_label(self, label: str, cursor: int) -> None:
+        """Put `label` on `cursor`; a label set elsewhere moves (both cursors are `Saved`)."""
+        with self._frontend(cursor):
+            holder = dict(self.session.labels()).get(label)
+            self.session.set_label(label, cursor)
+        if holder is not None and holder != cursor:
+            self._streams.emit(Saved(holder))
+
+    def remove_label(self, label: str) -> None:
+        """Remove `label`; raises `NoSuchLabel`."""
+        with self._frontend(self.session.label(label)):
+            self.session.remove_label(label)
 
     def abort(self, cursor: int) -> bool:
         """Abort the cursor's step and decline its open questions. True if core had
@@ -318,7 +383,7 @@ class Driver:
         with self._frontend(cursor):
             cancel = self.session.abort(cursor)
             if cancel:
-                self._cancel(cursor)
+                _cancel(self._out, cursor)
             self._questions.decline(cursor)
         return cancel
 
@@ -327,15 +392,6 @@ class Driver:
         self._questions.respond(cursor, response)
 
     # The pump
-
-    def _poke(self) -> None:
-        self._queue.put_nowait(None)
-
-    def _spawn(self, coro: Coroutine[object, object, None]) -> asyncio.Task[None]:
-        task = asyncio.ensure_future(coro)
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-        return task
 
     async def _pump(self) -> None:
         try:
@@ -347,10 +403,14 @@ class Driver:
                         self._dispatch(cursor, job)
                 self._rested.wake()
                 item = await self._queue.get()
+                if self._failure is not None:  # a result after the failure is not delivered
+                    break
                 if item is not None:
                     self._deliver(*item)
-        except Exception as e:
-            self._fail(e)
+        except BaseException as e:
+            if isinstance(e, _PASSES):
+                raise
+            self._fail(_as_failure(e))
         finally:
             self._rested.wake()
 
@@ -382,13 +442,13 @@ class Driver:
         async def unit() -> None:
             try:
                 self._queue.put_nowait((cursor, await effect()))
-            except Exception as e:
-                self._fail(self._failure or e)
+            except BaseException as e:
+                if isinstance(e, _PASSES):
+                    raise
+                self._fail(_as_failure(e))
                 self._poke()
 
-        task = self._spawn(unit())
-        self._effects.add(task)
-        task.add_done_callback(self._effects.discard)
+        self._tasks.spawn(unit(), effect=True)
 
     def _dispatch(self, cursor: int, job: Job) -> None:
         session = self.session
@@ -449,16 +509,36 @@ class Driver:
             case _:
                 raise RuntimeError(f"cursor {cursor}: a job this driver does not know: {job}")
 
-    def _cancel(self, cursor: int) -> None:
-        """Core said abort cancels the effect: stop its tasks. Each call unit and the
-        sample answer with what they have."""
-        out = self._out.get(cursor)
-        if out is None:
-            raise RuntimeError(f"cursor {cursor}: abort cancels an effect, but none is out")
-        if out.sample is not None:
-            out.sample.cancel()
-        for call in out.calls:
-            call.abort()
+
+# What the pump and the effects never take for a failure: the driver's own cancelling, and the
+# process being told to go.
+_PASSES = (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)
+
+
+def _as_failure(error: BaseException) -> Exception:
+    """What the driver failed of. Core's panic reaches Python as PyO3's `PanicException`, a
+    `BaseException`; it is wrapped so every failure is an `Exception`."""
+    if isinstance(error, Exception):
+        return error
+    failure = RuntimeError(f"{type(error).__name__}: {error}")
+    failure.__cause__ = error
+    return failure
+
+
+def _running(failure: Exception | None, stopped: bool) -> None:
+    """Raise the failure the driver died of, or that it is stopped."""
+    if failure is not None:
+        raise failure
+    if stopped:
+        raise RuntimeError("the driver is stopped")
+
+
+def _cancel(outs: dict[int, _Outstanding], cursor: int) -> None:
+    """Core said abort cancels the effect out for `cursor`."""
+    out = outs.get(cursor)
+    if out is None:
+        raise RuntimeError(f"cursor {cursor}: abort cancels an effect, but none is out")
+    out.cancel()
 
 
 def _seen(session: Session, cursor: int) -> tuple[object, ...]:

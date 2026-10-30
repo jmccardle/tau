@@ -20,6 +20,7 @@ from tau_next import (
     Event,
     EventStream,
     Finish,
+    ItemData,
     Live,
     ModelConfig,
     Node,
@@ -48,6 +49,12 @@ async def failing_harness(tmp_path: Path) -> tuple[Harness, Gate]:
         tmp_path, provider=FakeProvider([reply]), tools=[FakeTool("wait", "ok", gate)]
     )
     return h, gate
+
+
+async def died(h: Harness) -> None:
+    """Wait until the driver has recorded what it died of (a stream subscribed first sees it)."""
+    with pytest.raises(Closed):
+        await asyncio.wait_for(read_all(h.driver.events()), 1)
 
 
 def held(gate: Gate) -> Reply:
@@ -608,3 +615,100 @@ async def test_a_hook_answer_that_changed_nothing_is_not_announced(tmp_path: Pat
     saved = [e for e in seen if isinstance(e, Saved)]
     assert [s.reply for s in saved].count(True) == 1
     assert len(saved) == 5, "the send, the input node, the reply, and two moves; not each hook"
+
+
+@scenario
+async def test_a_stream_subscribed_after_the_driver_failed_ends_with_the_failure(
+    tmp_path: Path,
+) -> None:
+    h, gate = await failing_harness(tmp_path)
+    await h.send("hi")
+    await h.settle()
+    h.session.close()
+    gate.release()
+    await died(h)
+    late = h.driver.events()
+    with pytest.raises(Closed):
+        await asyncio.wait_for(anext(late), 1)
+    assert h.driver.state().subscribers == 0
+    await h.driver.stop()
+    with pytest.raises(Closed):  # stopping does not turn it into a clean end
+        await asyncio.wait_for(anext(h.driver.events()), 1)
+
+
+@scenario
+async def test_a_stream_subscribed_after_a_stop_ends_cleanly(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path)
+    await h.driver.stop()
+    assert [e async for e in h.driver.events()] == []
+    assert h.driver.state().subscribers == 0
+    h.session.close()
+
+
+@scenario
+async def test_frontend_calls_on_a_stopped_driver_raise_and_change_nothing(tmp_path: Path) -> None:
+    h = await Harness.create(tmp_path)
+    await h.driver.stop()
+    before = h.snapshot()
+    calls: list[Callable[[], object]] = [
+        lambda: h.driver.send(h.cursor, "term", "anyone?"),
+        lambda: h.driver.input(h.cursor, "term", "anyone?"),
+        lambda: h.driver.step(h.cursor),
+        lambda: h.driver.go_to(h.cursor, SYS, "term"),
+        lambda: h.driver.set_auto(h.cursor, True),
+        lambda: h.driver.abort(h.cursor),
+        lambda: h.driver.open(SYS, "term"),
+        lambda: h.driver.add_item(h.cursor, ItemData.Extension("x", "y")),
+        lambda: h.driver.set_label("main", h.cursor),
+    ]
+    for call in calls:
+        with pytest.raises(RuntimeError, match="stopped"):
+            call()
+    assert h.snapshot() == before, "no cursor was left busy with nothing to run it"
+    h.session.close()
+
+
+@scenario
+async def test_frontend_calls_on_a_failed_driver_raise_the_failure(tmp_path: Path) -> None:
+    h, gate = await failing_harness(tmp_path)
+    await h.send("hi")
+    await h.settle()
+    h.session.close()
+    gate.release()
+    await died(h)
+    with pytest.raises(Closed):
+        h.driver.send(h.cursor, "term", "again")
+    with pytest.raises(Closed):
+        h.driver.add_item(h.cursor, ItemData.Extension("x", "y"))
+    await h.driver.stop()
+
+
+@scenario
+async def test_a_frontend_adds_an_item_and_the_cursor_wakes_and_is_announced(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path, provider=FakeProvider([Reply([Part.Text("hi")])]))
+    stream = h.driver.events()
+    item = h.driver.add_item(h.cursor, ItemData.Extension("timer", "tick"))
+    assert await asyncio.wait_for(anext(stream), 1) == Saved(h.cursor)
+    assert [i.id for i in h.session.cursor(h.cursor).items] == [item]
+    with pytest.raises(TypeError, match="input"):
+        h.driver.add_item(h.cursor, ItemData.Input("term", "typed"))
+    await stream.aclose()
+    await h.close()
+
+
+@scenario
+async def test_labels_a_frontend_writes_are_announced_for_each_cursor_they_change(
+    tmp_path: Path,
+) -> None:
+    h = await Harness.create(tmp_path)
+    other = h.driver.open(SYS, "term")
+    h.driver.set_label("main", h.cursor)
+    stream = h.driver.events()
+    h.driver.set_label("main", other)  # moves from h.cursor to other
+    assert {await anext(stream), await anext(stream)} == {Saved(h.cursor), Saved(other)}
+    h.driver.remove_label("main")
+    assert await anext(stream) == Saved(other)
+    await stream.aclose()
+    await h.close()

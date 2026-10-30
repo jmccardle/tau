@@ -439,12 +439,12 @@ async def test_a_frontend_sets_and_removes_a_label(tmp_path: Path) -> None:
     """Labels (section 1): set moves a label, remove drops it, unknown is `NoSuchLabel`."""
     h = await Harness.create(tmp_path)
     other = h.driver.open(SYS, "term")
-    h.driver.session.set_label("main", h.cursor)
-    h.driver.session.set_label("main", other)
+    h.driver.set_label("main", h.cursor)
+    h.driver.set_label("main", other)
     assert h.session.label("main") == other
-    h.driver.session.remove_label("main")
+    h.driver.remove_label("main")
     with pytest.raises(tau_next.NoSuchLabel):
-        h.driver.session.remove_label("main")
+        h.driver.remove_label("main")
     await h.settle()
 
 
@@ -523,7 +523,7 @@ async def test_a_frontends_label_during_a_hook_is_durable(tmp_path: Path) -> Non
     await h.step()
     await h.settle()
     assert gate.held == 1
-    h.driver.session.set_label("main", h.cursor)
+    h.driver.set_label("main", h.cursor)
     await h.crash()
     assert h.session.label("main") == h.cursor
 
@@ -623,7 +623,7 @@ async def test_handles_and_the_driver_read_children_counts_and_labels(tmp_path: 
         return None
 
     h = await Harness.create(tmp_path, extensions=[Scripted("look", pre_step=look)])
-    h.driver.session.set_label("main", h.cursor)
+    h.driver.set_label("main", h.cursor)
     await h.step()
     await h.settle()
     assert seen == {"children": [2, 3], "count": 4, "labels": ["main"]}
@@ -879,10 +879,42 @@ async def test_a_change_to_another_cursor_is_saved_for_that_cursor(
     h = await Harness.create(tmp_path, extensions=[Scripted("meddle", pre_step=meddle)])
     other = h.driver.open(SYS, "term")
     item = await h.add_item("x", "for-other", cursor=other)
-    h.driver.session.set_label("theirs", other)
+    h.driver.set_label("theirs", other)
     await h.settle()
     theirs = h.driver.events(other)
     await h.step()
     await h.settle()
     await h.close()
     assert [e async for e in theirs] == [tau_next.Saved(other)]
+
+
+@scenario
+async def test_a_tree_handle_cannot_be_given_a_hook_to_skip_its_sync_with(tmp_path: Path) -> None:
+    """A handle built outside a hook writes like the session does: it syncs, so the node
+    survives a crash even while a cursor's hook is out."""
+    gate = Gate()
+
+    class Wait:
+        name = "w"
+
+        async def pre_step(self, cursor: Cursor, subject: Subject) -> str | None:
+            await gate.wait()
+            return None
+
+    h = await Harness.create(tmp_path, extensions=[Wait()], gates=[gate])
+    await h.step()
+    await h.settle()  # the cursor's pre_step hook is out
+    with pytest.raises(TypeError):
+        tau_next.TreeHandle(
+            h.session,
+            "frontend",
+            h.clock.now,
+            lambda: None,
+            lambda c: None,
+            hook=h.cursor,  # pyright: ignore[reportCallIssue]
+        )
+    handle = tau_next.TreeHandle(h.session, "frontend", h.clock.now, lambda: None, lambda c: None)
+    node = handle.append(SYS, Body.Custom("note", ""))
+    await h.crash()
+    assert len(h.session.tree) > node, "the write was synced"
+    await h.close()

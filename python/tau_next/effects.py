@@ -40,6 +40,7 @@ from tau_next.protocols import (
     Tool,
     ToolHook,
 )
+from tau_next.tools import ToolError
 
 
 async def run_hooks(
@@ -62,7 +63,9 @@ async def run_hooks(
             with trace.span("hook", f"{name} {ext.name}"):
                 stop = await hook(cursor, subject)
             _check_cursor_hook(name, ext, stop, subject)
-        except Exception as e:
+        except (Exception, asyncio.CancelledError) as e:
+            if not _hook_failed(e):
+                raise
             return Answer.HookFailed(_describe(e))
         finally:
             cursor.retire()
@@ -71,7 +74,17 @@ async def run_hooks(
     return Answer.Hooks(None, subject.draft)
 
 
-def _describe(error: Exception) -> str:
+def _hook_failed(error: BaseException) -> bool:
+    """Whether `error` out of a hook is the hook's failure. A `CancelledError` is one unless
+    the driver is cancelling this task (`stop`, `abort`): a hook that cancels something and
+    awaits it leaks one out, and the cursor must not be left busy with nothing recorded."""
+    if not isinstance(error, asyncio.CancelledError):
+        return True
+    task = asyncio.current_task()
+    return task is None or task.cancelling() == 0
+
+
+def _describe(error: BaseException) -> str:
     """`"Type: msg"` for a failed hook, with its traceback on stderr (it has absolute paths, so
     never in the log)."""
     traceback.print_exception(error, file=sys.stderr)
@@ -90,6 +103,8 @@ def _check_cursor_hook(point: str, ext: Extension, stop: object, subject: Subjec
 def _check_tool_hook(point: str, ext: Extension, stop: object, draft: CallDraft) -> None:
     if stop is not None and not isinstance(stop, str):
         raise TypeError(f"{point} of extension {ext.name!r} returned {stop!r}, not a str or None")
+    if draft.outcome is None and point == "pre_result":
+        raise TypeError(f"{point} of extension {ext.name!r} cleared the outcome it was given")
     if draft.outcome is not None and not isinstance(draft.outcome, Outcome):  # pyright: ignore[reportUnnecessaryIsInstance]
         raise TypeError(
             f"{point} of extension {ext.name!r} set the outcome to {draft.outcome!r}, "
@@ -396,14 +411,18 @@ class CallRun:
                 with trace.span("hook", f"{name} {ext.name}"):
                     stop = await hook(handle, draft)
                 _check_tool_hook(name, ext, stop, draft)
-            except Exception as e:
+            except (Exception, asyncio.CancelledError) as e:
+                if not _hook_failed(e):
+                    raise
                 raise _HookError(author, _describe(e)) from e
             finally:
                 handle.retire()
             if stop is not None:
                 draft.outcome = Outcome.Err(stop)
                 return author
-            if draft.outcome != before:
+            if draft.outcome is None:  # cleared: the tool will produce it, so no one answered
+                changed = None
+            elif draft.outcome != before:
                 changed = author
         return changed
 
@@ -428,16 +447,24 @@ class CallRun:
 
         return progress
 
-    async def _run(self, args_raw: str) -> Outcome:
-        tool = self._tools.get(self._tool)
-        if tool is None:
-            return Outcome.Err(f"unknown tool: {self._tool}")
+    def _start(self, tool: Tool, args_raw: str) -> asyncio.Future[Outcome]:
+        """Call the tool; raises if the call is not an awaitable (or raises itself)."""
         if self._tool in self._progress_tools:
             self._showing = True
             call = cast("ProgressTool", tool).call(args_raw, progress=self._progress())
         else:
             call = tool.call(args_raw)
-        self._task = asyncio.ensure_future(call)
+        return asyncio.ensure_future(call)
+
+    async def _run(self, args_raw: str) -> Outcome:
+        tool = self._tools.get(self._tool)
+        if tool is None:
+            return Outcome.Err(f"unknown tool: {self._tool}")
+        try:
+            self._task = self._start(tool, args_raw)
+        except Exception as e:  # a `call` that is not async, or raises before it returns
+            self._showing = False
+            return Outcome.Err(_describe(e))
         if self._aborted:
             self._task.cancel()
         try:
@@ -449,7 +476,8 @@ class CallRun:
             return Outcome.Interrupted()
         error = self._task.exception()
         if error is not None:
-            return Outcome.Err(str(error))
+            # A ToolError is a message meant for the model; anything else is a bug in the tool.
+            return Outcome.Err(str(error) if isinstance(error, ToolError) else _describe(error))
         outcome = self._task.result()
         if not isinstance(outcome, Outcome.Ok | Outcome.Err):
             message = f"TypeError: tool {self._tool!r} answered {outcome!r}, not an Ok or Err"
