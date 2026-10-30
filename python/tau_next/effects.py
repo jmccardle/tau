@@ -14,6 +14,7 @@ from tau_next._config_layers import ModelCatalog
 from tau_next._core import (
     Answer,
     Author,
+    BadReplay,
     Job,
     Outcome,
     Part,
@@ -221,6 +222,8 @@ class SampleRun:
             return Answer.Sampled(
                 self._parts, SampleEnd.Finished(finish.stop, finish.reason, finish.meta)
             )
+        if isinstance(error, BadReplay):
+            return Answer.Sampled(self._unfinished(), SampleEnd.Failed(str(error), None))
         if not isinstance(error, SampleError):
             raise error
         return Answer.Sampled(self._unfinished(), SampleEnd.Failed(str(error), error.meta))
