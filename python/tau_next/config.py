@@ -28,6 +28,17 @@ def _text(value: object, key: str) -> str:
     return value
 
 
+def url_problem(value: str) -> str | None:
+    """Why `value` is not an http(s) URL with a host, or `None` if it is one."""
+    try:
+        url = urlparse(value)
+    except ValueError as e:  # `http://[x/v1` and the like
+        return f"config 'base_url' is not a valid URL ({e}): {value!r}"
+    if url.scheme not in ("http", "https") or not url.netloc:
+        return f"config 'base_url' must be an http(s) URL, not {value!r}"
+    return None
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """A resolved model: which model to ask, where, and the *name* of the variable holding
@@ -45,9 +56,9 @@ class ModelConfig:
 
     def __post_init__(self) -> None:
         _text(self.model, "model")
-        url = urlparse(_text(self.base_url, "base_url"))
-        if url.scheme not in ("http", "https") or not url.netloc:
-            raise ConfigError(f"config 'base_url' must be an http(s) URL, not {self.base_url!r}")
+        problem = url_problem(_text(self.base_url, "base_url"))
+        if problem is not None:
+            raise ConfigError(problem)
         if self.api_key_env is not None:
             _text(self.api_key_env, "api_key_env")
         _text(self.provider, "provider")

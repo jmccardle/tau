@@ -10,8 +10,10 @@ from world import World, models
 from tau_next import (
     ConfigError,
     ModelCatalog,
+    ModelConfig,
     UntrustedProject,
     approve_project,
+    check_config,
     load_config,
     prompts,
     read_models,
@@ -185,3 +187,48 @@ def test_a_project_directory_is_found_from_a_subdirectory(world: World) -> None:
     sub: Path = root / "src" / "deep"
     sub.mkdir(parents=True)
     assert load_config(sub, world.environ, ask=None).project is not None
+
+
+def test_terminal_pick_at_end_of_input_says_no_answer_and_leaves_the_prompt_line() -> None:
+    out = io.StringIO()
+    with pytest.raises(ConfigError, match="no answer"):
+        terminal_pick(io.StringIO(""), out)(("free:sol", "paid:sol"))
+    assert out.getvalue().endswith("number: \n")
+
+
+def test_the_pick_menu_escapes_control_characters() -> None:
+    out = io.StringIO()
+    terminal_pick(io.StringIO("1\n"), out)(("a\x1b[2Jb", "c"))
+    assert "\x1b" not in out.getvalue()
+    assert "a\\x1b[2Jb" in out.getvalue()
+
+
+def test_suggestions_escape_control_characters() -> None:
+    with pytest.raises(ConfigError) as caught:
+        select_model(grouped(), "sol\x1b[2J", pick=None)
+    assert "\x1b" not in str(caught.value)
+
+
+def test_an_empty_requested_name_is_not_the_default() -> None:
+    with pytest.raises(ConfigError, match="must not be empty"):
+        select_model(grouped("solo"), "", pick=None)
+
+
+def test_a_malformed_base_url_is_a_config_error_and_a_problem_at_its_key() -> None:
+    for url in ("http://[x/v1", "ftp://h/v1", "http://"):
+        with pytest.raises(ConfigError, match="base_url"):
+            ModelConfig("m", url)
+        problems = check_config(
+            cli={"models": {"a": {"model": "m", "base_url": url}}},
+        )
+        assert [p.path for p in problems] == ["models.a.base_url"]
+        with pytest.raises(ConfigError, match="base_url"):
+            read_models(cli={"models": {"a": {"model": "m", "base_url": url}}})
+
+
+def test_a_control_character_in_a_group_or_model_name_is_an_error() -> None:
+    cfg = {"models": {"g\x07": {"models": {"m": {"model": "m", "base_url": "http://h/v1"}}}}}
+    problems = check_config(cli=cfg)
+    assert [p.severity for p in problems] == ["error"]
+    assert "control characters" in problems[0].message
+    assert "\x07" not in problems[0].message

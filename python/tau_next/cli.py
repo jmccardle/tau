@@ -2,22 +2,25 @@
 
 `main` takes its streams, environment, and working directory as arguments so a test
 drives it with real files and real streams. Exit status: 0 success, 1 a problem
-(printed as one message on stderr, never a traceback), 2 a usage error.
+(printed as one message on stderr, never a traceback), 2 a usage error, 130 interrupted.
+Everything printed from config data goes through `safe_text`.
 """
 
 import argparse
 import os
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TextIO
 
 from tau_next.config import ConfigError
 from tau_next.config_layers import ConfigProblem, LayerText, ModelCatalog, check_config
 from tau_next.dotenv import DotenvError
-from tau_next.startup import load_config, prompts, select_model, user_config_path
+from tau_next.startup import load_config, prompts, select_model
 from tau_next.trust import (
+    TAU_DIR,
+    Trusted,
     TrustError,
     approve_project,
     ensure_trusted,
@@ -25,11 +28,15 @@ from tau_next.trust import (
     is_trusted,
     project_config_path,
     project_environment,
+    read_project_config,
+    safe_text,
     tau_home,
     trust_report,
+    user_config_path,
 )
 
 _USAGE_ERROR = 2
+_INTERRUPTED = 130
 _UNTRUSTED = " [untrusted project: not used until `tau trust`]"
 
 
@@ -41,16 +48,18 @@ class _Run:
     cwd: Path
 
 
-def _parser() -> argparse.ArgumentParser:
+def _parser() -> tuple[argparse.ArgumentParser, argparse.ArgumentParser]:
     parser = argparse.ArgumentParser(prog="tau", description="τ next (Trusty).")
     sub = parser.add_subparsers(dest="command")
     config = sub.add_parser("config", help="inspect configuration")
-    config_sub = config.add_subparsers(dest="config_command", required=True)
+    config_sub = config.add_subparsers(dest="config_command", metavar="{check}")
     check = config_sub.add_parser("check", help="report every problem in the config files")
     check.add_argument("--show", metavar="MODEL", help="print MODEL's resolved values and sources")
     trust = sub.add_parser("trust", help="approve a project directory's .tau/")
-    trust.add_argument("dir", nargs="?", type=Path, help="project directory (default: the current)")
-    return parser
+    trust.add_argument(
+        "dir", nargs="?", type=Path, help="a directory in the project (default: the current)"
+    )
+    return parser, config
 
 
 def _problem_line(problem: ConfigProblem, note: str) -> str:
@@ -61,25 +70,60 @@ def _problem_line(problem: ConfigProblem, note: str) -> str:
     return f"{where}: {problem.severity}: {at}{problem.message}{note}"
 
 
+@dataclass
+class _Findings:
+    """What `config check` prints, and whether any of it stops startup."""
+
+    lines: list[str] = field(default_factory=lambda: [])
+    failed: bool = False
+
+    def error(self, where: Path, message: str) -> None:
+        self.lines.append(f"{where}: error: {message}")
+        self.failed = True
+
+
+def _project_findings(
+    root: Path, home: Path, environ: Mapping[str, str], found: _Findings
+) -> tuple[LayerText | None, Mapping[str, str], bool]:
+    """The project's config layer, the environment to check keys against, and whether the
+    project is trusted. Everything that would make startup refuse is added to `found`."""
+    project = Trusted(root, None)
+    layer: LayerText | None = None
+    try:
+        trusted = is_trusted(root, home)
+        if trusted:
+            project = ensure_trusted(root, home, ask=None)
+            layer = project.layer()
+        else:
+            found.error(root / TAU_DIR, f"project is not trusted; run `tau trust {root}`")
+            layer = read_project_config(root)
+    except TrustError as e:  # a symlinked or foreign file: startup refuses it too
+        trusted = False
+        found.error(project_config_path(root), str(e))
+    try:
+        seen = project_environment(project, environ)
+    except (TrustError, DotenvError) as e:
+        found.error(root / ".env", str(e))
+        seen = environ
+    return layer, (seen if trusted else environ), trusted
+
+
 def _check(run: _Run, show: str | None) -> int:
     home = tau_home(run.environ)
     root = find_project(run.cwd, run.environ)
-    config_file = project_config_path(root) if root is not None else None
-    layer: Path | LayerText | None = None
-    trusted = None
-    if root is not None and config_file is not None and config_file.exists():
-        if is_trusted(root, home):
-            trusted = ensure_trusted(root, home, ask=None)
-            layer = trusted.layer()
-        else:
-            layer = config_file
-    problems = check_config(
-        user_config_path(home), layer, environ=project_environment(trusted, run.environ)
-    )
+    found = _Findings()
+    layer: LayerText | None = None
+    environ = run.environ
+    trusted = True
+    if root is not None:
+        layer, environ, trusted = _project_findings(root, home, run.environ, found)
+    problems = check_config(user_config_path(home), layer, environ=environ)
     for p in problems:
-        untrusted = trusted is None and config_file is not None and p.source == str(config_file)
-        run.stdout.write(_problem_line(p, _UNTRUSTED if untrusted else "") + "\n")
-    if any(p.severity == "error" for p in problems):
+        untrusted = not trusted and layer is not None and p.source == layer.source
+        found.lines.append(_problem_line(p, _UNTRUSTED if untrusted else ""))
+    for line in found.lines:
+        run.stdout.write(safe_text(line) + "\n")
+    if found.failed or any(p.severity == "error" for p in problems):
         return 1
     if show is not None:
         loaded = load_config(run.cwd, run.environ, ask=None)
@@ -97,27 +141,51 @@ def _show(catalog: ModelCatalog, name: str, out: TextIO) -> None:
         "api_key_env": config.api_key_env,
         "api_key": "(set)" if config.literal_api_key is not None else None,
     }
-    out.write(f"{name}\n")
+    out.write(f"{safe_text(name)}\n")
     for origin in catalog.explain(name):
         group = f", group {origin.group}" if origin.group else ""
-        out.write(f"  {origin.key:<12} {values.get(origin.key)}  [{origin.source}{group}]\n")
+        value = values.get(origin.key)
+        out.write(safe_text(f"  {origin.key:<12} {value}  [{origin.source}{group}]") + "\n")
+
+
+def _refuse_special(start: Path, environ: Mapping[str, str]) -> None:
+    home = tau_home(environ)
+    special = {
+        "your home directory": Path(environ["HOME"]).resolve() if environ.get("HOME") else None,
+        "TAU_HOME": home.resolve(),
+        "the parent of TAU_HOME": home.resolve().parent,
+    }
+    for what, path in special.items():
+        if path is not None and start == path:
+            raise TrustError(f"refusing to trust {start}: it is {what}")
 
 
 def _trust(run: _Run, given: Path | None) -> int:
     home = tau_home(run.environ)
-    root = given.resolve() if given is not None else find_project(run.cwd, run.environ)
+    start = (run.cwd / given).resolve() if given is not None else run.cwd.resolve()
+    _refuse_special(start, run.environ)
+    if not start.is_dir():
+        raise TrustError(f"{start} is not a directory")
+    root = find_project(start, run.environ)
     if root is None:
-        raise TrustError(f"no project: no .tau/ found from {run.cwd}")
+        raise TrustError(f"no project: no .tau/ found from {start}")
+    if is_trusted(root, home):
+        run.stdout.write(f"already trusted: {safe_text(str(root))}\n")
+        return 0
     report = trust_report(root, home)
-    run.stdout.write(report + "\n")
     try:
         approve_project(root, home)
     except TrustError as e:
-        if str(e) == report:  # the refusal is the report we just printed
-            raise TrustError(f"{root} cannot be trusted; fix the errors above") from e
-        raise
-    run.stdout.write(f"trusted {root}\n")
+        shown = str(e)
+        raise TrustError(shown if shown == report else f"{report}\n{shown}") from e
+    run.stdout.write(f"{report}\ntrusted {safe_text(str(root))}\n")
     return 0
+
+
+def _fail(err: TextIO, message: str) -> int:
+    lines = (safe_text(line) for line in message.splitlines() or [""])
+    err.write("tau: " + "\n".join(lines) + "\n")
+    return 1
 
 
 def main(  # noqa: PLR0913 - the process, injected so a test can supply real ones
@@ -139,15 +207,20 @@ def main(  # noqa: PLR0913 - the process, injected so a test can supply real one
         os.environ if environ is None else environ,
         Path.cwd() if cwd is None else cwd,
     )
-    parser = _parser()
+    parser, config = _parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else list(argv))
     if args.command is None:
-        parser.print_help(out)
+        parser.print_help(err)
+        return _USAGE_ERROR
+    if args.command == "config" and args.config_command is None:
+        config.print_help(err)
         return _USAGE_ERROR
     try:
         if args.command == "trust":
             return _trust(run, args.dir)
         return _check(run, args.show)
     except (ConfigError, TrustError, DotenvError) as e:
-        err.write(f"tau: {e}\n")
-        return 1
+        return _fail(err, str(e))
+    except KeyboardInterrupt:
+        err.write("\ntau: interrupted\n")
+        return _INTERRUPTED

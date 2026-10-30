@@ -13,12 +13,10 @@ without it the config's default_model is used.
 3. We close the session and load it from disk: the same tree comes back.
 """
 
-import argparse
-import asyncio
-import os
-import sys
 import tempfile
 from pathlib import Path
+
+from common import rest, run
 
 from tau_next import (
     Body,
@@ -28,10 +26,7 @@ from tau_next import (
     StepLimit,
     SystemClock,
     base_tools,
-    load_config,
     model_config,
-    prompts,
-    select_model,
 )
 from tau_next.providers.openai import OpenAIProvider
 
@@ -51,9 +46,9 @@ def print_walk(session: Session, at: int) -> None:
         print(f"  {node.id:>3} {type(node.body).__name__:<10} {show(node.body)}")
 
 
-async def ask(driver: Driver, cursor: int, text: str) -> None:
+async def ask(driver: Driver, session: Session, cursor: int, text: str) -> None:
     driver.send(cursor, "tour", text)
-    await driver.rest(cursor)
+    await rest(driver, session, cursor)
 
 
 async def main(name: str, loaded: LoadedConfig) -> None:
@@ -80,13 +75,20 @@ async def main(name: str, loaded: LoadedConfig) -> None:
 
         print("== 1. bash with output past the 10 kB limit")
         before = session.cursor(cursor).at
-        await ask(driver, cursor, "Run `seq 1 5000` with bash and tell me the last number you see.")
+        await ask(
+            driver,
+            session,
+            cursor,
+            "Run `seq 1 5000` with bash and tell me the last number you see.",
+        )
         print_walk(session, session.cursor(cursor).at)
         first_branch = session.cursor(cursor).at
 
         print(f"\n== 2. go back to node {before} and ask something else")
         driver.go_to(cursor, before, "tour")
-        await ask(driver, cursor, "Use bash to print the current date, then tell me the weekday.")
+        await ask(
+            driver, session, cursor, "Use bash to print the current date, then tell me the weekday."
+        )
         print_walk(session, session.cursor(cursor).at)
         print(f"\n  node {before} now has children {session.tree.children(before)}")
         meet = session.tree.lca(first_branch, session.cursor(cursor).at)
@@ -103,14 +105,5 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         again.close()
 
 
-def choose_model(argv: list[str]) -> tuple[str, LoadedConfig]:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", help="qualified or bare model name (default: default_model)")
-    args = parser.parse_args(argv)
-    ask = prompts(sys.stdin, sys.stdout)
-    loaded = load_config(Path.cwd(), os.environ, ask=ask.ask)
-    return select_model(loaded.catalog, args.model, pick=ask.pick), loaded
-
-
 if __name__ == "__main__":
-    asyncio.run(main(*choose_model(sys.argv[1:])))
+    run(main)

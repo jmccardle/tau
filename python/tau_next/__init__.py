@@ -76,7 +76,6 @@ from tau_next.startup import (
     prompts,
     select_model,
     terminal_pick,
-    user_config_path,
 )
 from tau_next.step_limit import StepLimit
 from tau_next.tools import FunctionTool, ToolDefinitionError, ToolError, tool
@@ -92,9 +91,12 @@ from tau_next.trust import (
     is_trusted,
     project_config_path,
     project_environment,
+    read_project_config,
+    safe_text,
     tau_home,
     terminal_ask,
     trust_report,
+    user_config_path,
 )
 
 __version__ = version("ffwf-tau-next")
@@ -196,6 +198,8 @@ __all__ = [
     "prompts",
     "read_dotenv",
     "read_models",
+    "read_project_config",
+    "safe_text",
     "select_model",
     "tau_home",
     "terminal_ask",

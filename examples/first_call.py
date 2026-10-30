@@ -7,12 +7,10 @@ directory holding it). --model takes a qualified name (local:qwen) or a bare one
 without it the config's default_model is used.
 """
 
-import argparse
-import asyncio
-import os
-import sys
 import tempfile
 from pathlib import Path
+
+from common import rest, run
 
 from tau_next import (
     Body,
@@ -20,10 +18,7 @@ from tau_next import (
     LoadedConfig,
     Session,
     SystemClock,
-    load_config,
     model_config,
-    prompts,
-    select_model,
 )
 from tau_next.providers.openai import OpenAIProvider
 
@@ -50,21 +45,12 @@ async def main(name: str, loaded: LoadedConfig) -> None:
         driver.start()
         cursor = session.cursors()[0]
         driver.send(cursor, "example", "hello")
-        await driver.rest(cursor)
+        await rest(driver, session, cursor)
         for node in session.tree.walk(session.cursor(cursor).at):
             print(f"{type(node.body).__name__:<10} {node.by!r:<22} {text(node.body)}")
         await driver.stop()
         session.close()
 
 
-def choose_model(argv: list[str]) -> tuple[str, LoadedConfig]:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", help="qualified or bare model name (default: default_model)")
-    args = parser.parse_args(argv)
-    ask = prompts(sys.stdin, sys.stdout)
-    loaded = load_config(Path.cwd(), os.environ, ask=ask.ask)
-    return select_model(loaded.catalog, args.model, pick=ask.pick), loaded
-
-
 if __name__ == "__main__":
-    asyncio.run(main(*choose_model(sys.argv[1:])))
+    run(main)

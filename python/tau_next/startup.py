@@ -20,8 +20,10 @@ from tau_next.trust import (
     find_project,
     is_interactive,
     project_environment,
+    safe_text,
     tau_home,
     terminal_ask,
+    user_config_path,
 )
 
 Ask = Callable[[str], bool]
@@ -38,12 +40,6 @@ class LoadedConfig:
     environ: Mapping[str, str]
     project: Trusted | None
     home: Path
-
-
-def user_config_path(home: Path) -> Path | None:
-    """`<home>/config.json` if it exists, else `None` (no user config is fine)."""
-    path = home / "config.json"
-    return path if path.exists() else None
 
 
 def load_config(
@@ -85,7 +81,9 @@ def select_model(catalog: ModelCatalog, requested: str | None = None, *, pick: P
     match; with several, `pick` (a live terminal) chooses among the qualified names and
     without one `ConfigError` lists them. No match is a `ConfigError` with close names.
     """
-    name = requested or catalog.default_model
+    if requested is not None and not requested:
+        raise ConfigError("the model name must not be empty")
+    name = requested if requested is not None else catalog.default_model
     if not name:
         raise ConfigError(
             'no model chosen: pass --model NAME, or set "default_model" in your config'
@@ -94,13 +92,13 @@ def select_model(catalog: ModelCatalog, requested: str | None = None, *, pick: P
     if len(found) == 1:
         return found[0]
     if not found:
-        close = _close(catalog, name)
-        hint = f"; did you mean {', '.join(close)}?" if close else ""
-        raise ConfigError(
-            f"model {name!r} is not in your config{hint} (available: {', '.join(catalog.names())})"
-        )
+        close = ", ".join(safe_text(q) for q in _close(catalog, name))
+        hint = f"; did you mean {close}?" if close else ""
+        available = ", ".join(safe_text(q) for q in catalog.names())
+        raise ConfigError(f"model {name!r} is not in your config{hint} (available: {available})")
     if pick is None:
-        raise ConfigError(f"model {name!r} is ambiguous; use one of: {', '.join(found)}")
+        listed = ", ".join(safe_text(q) for q in found)
+        raise ConfigError(f"model {name!r} is ambiguous; use one of: {listed}")
     return pick(found)
 
 
@@ -111,10 +109,14 @@ def terminal_pick(stdin: TextIO, stdout: TextIO) -> Pick:
     def pick(names: tuple[str, ...]) -> str:
         stdout.write("Several models match; choose one:\n")
         for i, q in enumerate(names, 1):
-            stdout.write(f"  {i}. {q}\n")
+            stdout.write(f"  {i}. {safe_text(q)}\n")
         stdout.write("number: ")
         stdout.flush()
-        answer = stdin.readline().strip()
+        line = stdin.readline()
+        if not line:  # end of input: leave the prompt line
+            stdout.write("\n")
+            raise ConfigError("no model chosen: no answer")
+        answer = line.strip()
         if answer in names:
             return answer
         if answer.isdecimal() and 1 <= int(answer) <= len(names):

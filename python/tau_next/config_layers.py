@@ -9,12 +9,13 @@ name. Finding the files and trusting them is not done here.
 import difflib
 import json
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from tau_next.config import ConfigError, ModelConfig
+from tau_next.config import ConfigError, ModelConfig, url_problem
 
 Severity = Literal["error", "warning"]
 
@@ -355,6 +356,8 @@ class _Resolver:
                 '(did you paste the key itself? use api_key_env: "NAME")'
             )
             self.problems.add("error", msg, source, here)
+        elif key == "base_url" and (bad_url := url_problem(text)) is not None:
+            self.problems.add("error", bad_url, source, here)
         elif key == "provider" and text not in _PROVIDERS:
             msg = f"unknown provider {text!r}; known providers are {list(_PROVIDERS)}"
             self.problems.add("error", msg, source, here)
@@ -390,6 +393,9 @@ class _Resolver:
                 continue
             if not name:
                 self.problems.add("error", "name must not be empty", _source_of(node), here)
+            elif any(unicodedata.category(c) == "Cc" for c in name):
+                msg = f"name {name!r} must not contain control characters"
+                self.problems.add("error", msg, _source_of(node), here)
             elif ":" in name:
                 msg = f"name {name!r} must not contain ':'"
                 self.problems.add("error", msg, _source_of(node), here)

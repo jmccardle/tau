@@ -2,12 +2,15 @@
 
 import io
 import json
+import os
+import signal
+import threading
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from world import World, models
+from world import URL, World, models
 
 from tau_next import check_config, is_trusted, load_config
 from tau_next.cli import main
@@ -44,9 +47,19 @@ def test_the_tau_console_script_is_declared() -> None:
 def test_no_subcommand_prints_help_and_exits_2(world: World) -> None:
     result = tau(world)
     assert result.code == 2
-    assert "usage: tau" in result.out
-    assert "config" in result.out
-    assert "trust" in result.out
+    assert result.out == ""
+    assert "usage: tau" in result.err
+    assert "config" in result.err
+    assert "trust" in result.err
+
+
+def test_config_alone_prints_the_help_for_config(world: World) -> None:
+    result = tau(world, "config")
+    assert result.code == 2
+    assert result.out == ""
+    assert "usage: tau config" in result.err
+    assert "check" in result.err
+    assert "config_command" not in result.err
 
 
 # -- tau config check
@@ -93,12 +106,14 @@ def test_check_labels_an_untrusted_projects_problems(world: World) -> None:
     assert "[untrusted project" in result.out
 
 
-def test_check_of_a_sound_untrusted_project_exits_0_and_does_not_use_it(world: World) -> None:
+def test_check_of_a_sound_untrusted_project_fails_because_startup_would(world: World) -> None:
     root = world.project(config=models(p={}))
-    assert tau(world, "config", "check", cwd=root) == Result(0, "", "")
+    result = tau(world, "config", "check", cwd=root)
+    assert result.code == 1
+    assert f"{root / '.tau'}: error: project is not trusted" in result.out
     shown = tau(world, "config", "check", "--show", "p", cwd=root)
     assert shown.code == 1
-    assert "tau trust" in shown.err
+    assert "tau trust" in shown.out
     assert "Traceback" not in shown.err
 
 
@@ -208,19 +223,22 @@ def test_trust_refuses_a_config_with_errors(world: World) -> None:
     root = world.project(config=models(p={"modle": "x"}))
     result = tau(world, "trust", cwd=root)
     assert result.code == 1
-    assert "modle" in result.out
-    assert "cannot be trusted" in result.err
+    assert result.out == ""
+    assert "modle" in result.err  # the report travels with the refusal
+    assert "Its config has errors" in result.err or "error" in result.err
     assert not is_trusted(root, world.tau)
 
 
 def test_trust_without_a_project_says_so(world: World) -> None:
-    result = tau(world, "trust")
+    work = world.home / "work"
+    work.mkdir()
+    result = tau(world, "trust", cwd=work)
     assert result.code == 1
     assert "no project" in result.err
     assert "Traceback" not in result.err
 
 
-@pytest.mark.parametrize("argv", [("config",), ("nonsense",)])
+@pytest.mark.parametrize("argv", [("nonsense",), ("trust", "a", "b")])
 def test_a_usage_error_exits_2(world: World, argv: tuple[str, ...]) -> None:
     with pytest.raises(SystemExit) as stop:
         tau(world, *argv)
@@ -232,3 +250,187 @@ def test_config_json_in_the_examples_is_sound() -> None:
     sample_file = REPO / "examples" / "config.json"
     assert check_config(sample_file, environ=environ) == ()
     assert json.loads(sample_file.read_text(encoding="utf-8"))["default_model"] == "local:qwen"
+
+
+# -- control characters never reach the terminal
+
+ESC = "\x1b"
+
+
+def test_check_escapes_control_characters_in_paths_values_and_messages(world: World) -> None:
+    world.user_config(
+        {
+            "models": {
+                "a": {"model": "m", "base_url": URL, "mod" + ESC + "[2Jl": "x"},
+                "b" + ESC + "[31m": {"model": "m", "base_url": URL},
+            }
+        }
+    )
+    result = tau(world, "config", "check")
+    assert result.code == 1
+    assert ESC not in result.out + result.err
+    assert "\\x1b" in result.out
+    assert "control characters" in result.out  # names are identifiers
+
+
+def test_show_escapes_values_and_suggestions(world: World) -> None:
+    world.user_config(models(a={"model": "m" + ESC + "[2J"}))
+    shown = tau(world, "config", "check", "--show", "a")
+    assert shown.code == 0
+    assert ESC not in shown.out
+    assert "m\\x1b[2J" in shown.out
+    missing = tau(world, "config", "check", "--show", "a" + ESC + "[2J")
+    assert missing.code == 1
+    assert ESC not in missing.out + missing.err
+
+
+def test_errors_are_escaped_whatever_their_source(world: World) -> None:
+    root = world.project(config=models(p={}))
+    (root / ".env").write_text("BAD" + ESC + "LINE\n", encoding="utf-8")
+    result = tau(world, "trust", cwd=root)
+    assert result.code == 1
+    assert ESC not in result.out + result.err
+
+
+# -- tau trust DIR
+
+
+def test_trust_walks_up_from_dir_like_no_argument(world: World) -> None:
+    root = world.project(config=models(p={}))
+    deep = root / "src" / "deep"
+    deep.mkdir(parents=True)
+    assert tau(world, "trust", str(deep)).code == 0
+    assert is_trusted(root, world.tau)
+
+
+def test_trust_resolves_a_relative_dir_against_cwd(world: World) -> None:
+    root = world.project(config=models(p={}))
+    (root / "src").mkdir()
+    assert tau(world, "trust", "src", cwd=root).code == 0
+    assert is_trusted(root, world.tau)
+
+
+def test_trust_of_a_missing_directory_is_one_line(world: World) -> None:
+    result = tau(world, "trust", "nowhere")
+    assert result.code == 1
+    assert result.err.count("\n") == 1
+    assert "not a directory" in result.err
+
+
+def test_trust_twice_says_already_trusted(world: World) -> None:
+    root = world.project(config=models(p={}))
+    assert tau(world, "trust", cwd=root).code == 0
+    again = tau(world, "trust", cwd=root)
+    assert again == Result(0, f"already trusted: {root}\n", "")
+
+
+def test_trust_after_a_change_asks_again(world: World) -> None:
+    root = world.project(config=models(p={}))
+    assert tau(world, "trust", cwd=root).code == 0
+    (root / ".tau" / "config.json").write_text(json.dumps(models(q={})), encoding="utf-8")
+    again = tau(world, "trust", cwd=root)
+    assert again.code == 0
+    assert "trusted" in again.out
+    assert "already" not in again.out
+
+
+def test_trust_refuses_home_tau_home_and_its_parent(world: World) -> None:
+    world.tau.mkdir(mode=0o700)
+    for target in (world.home, world.tau):
+        result = tau(world, "trust", str(target))
+        assert result.code == 1
+        assert "refusing to trust" in result.err
+    elsewhere = {**world.environ, "TAU_HOME": str(world.home / "cfg" / "tau")}
+    (world.home / "cfg" / "tau").mkdir(parents=True, mode=0o700)
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["trust", str(world.home / "cfg")],
+        stdin=io.StringIO(),
+        stdout=out,
+        stderr=err,
+        environ=elsewhere,
+        cwd=world.home,
+    )
+    assert code == 1
+    assert "the parent of TAU_HOME" in err.getvalue()
+
+
+def test_a_refused_trust_prints_the_report_with_the_refusal(world: World) -> None:
+    root = world.project(config=models(p={"modle": "x"}))
+    result = tau(world, "trust", cwd=root)
+    assert result.out == ""
+    assert "Checks:" in result.err or "modle" in result.err
+
+
+# -- config check: everything that would make startup refuse
+
+
+def test_check_reports_an_untrusted_project_without_a_config_file(world: World) -> None:
+    root = world.project()
+    result = tau(world, "config", "check", cwd=root)
+    assert result.code == 1
+    assert "project is not trusted" in result.out
+
+
+@pytest.mark.parametrize("trust_first", [True, False])
+def test_check_reports_a_malformed_dotenv_trusted_or_not(world: World, trust_first: bool) -> None:
+    root = world.project(config=models(p={}))
+    if trust_first:
+        assert tau(world, "trust", cwd=root).code == 0
+    (root / ".env").write_text("this is not a dotenv line\n", encoding="utf-8")
+    result = tau(world, "config", "check", cwd=root)
+    assert result.code == 1
+    assert f"{root / '.env'}: error: " in result.out
+
+
+def test_check_reports_a_symlinked_dotenv_and_a_symlinked_config(world: World) -> None:
+    root = world.project(config=models(p={}))
+    target = world.home / "elsewhere"
+    target.write_text("K=v\n", encoding="utf-8")
+    (root / ".env").symlink_to(target)
+    result = tau(world, "config", "check", cwd=root)
+    assert result.code == 1
+    assert "symlink" in result.out
+    (root / ".tau" / "config.json").unlink()
+    (root / ".tau" / "config.json").symlink_to(target)
+    result = tau(world, "config", "check", cwd=root)
+    assert result.code == 1
+    assert "symlink" in result.out
+    assert "Traceback" not in result.err
+
+
+# -- interruption, end of input, empty names
+
+
+def test_ctrl_c_at_a_prompt_exits_130_without_a_traceback(world: World) -> None:
+    sample(world)
+    master, slave = os.openpty()
+    err = io.StringIO()
+    with (
+        os.fdopen(os.dup(slave), "w") as tty_out,
+        os.fdopen(slave, "r") as tty_in,
+        os.fdopen(master, "w"),
+    ):
+        timer = threading.Timer(0.3, os.kill, (os.getpid(), signal.SIGINT))
+        timer.start()
+        try:
+            code = main(
+                ["config", "check", "--show", "qwen"],
+                stdin=tty_in,
+                stdout=tty_out,
+                stderr=err,
+                environ=world.environ,
+                cwd=world.home,
+            )
+        finally:
+            timer.cancel()
+    assert code == 130
+    assert "Traceback" not in err.getvalue()
+    assert "interrupted" in err.getvalue()
+
+
+def test_an_empty_model_name_is_an_error_not_a_fallback(world: World) -> None:
+    world.user_config({**models(a={}), "default_model": "a"})
+    result = tau(world, "config", "check", "--show", "")
+    assert result.code == 1
+    assert "must not be empty" in result.err
