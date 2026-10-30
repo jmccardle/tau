@@ -200,10 +200,10 @@ test), `decisions/` D1–D12, hand-drawn diagrams (the last ones; rule 6).
   (D15), all sharing one HTTP module and one walk, with `Results` expansion and
   unanswered calls rendered as text. Typed request settings from `Config`; a
   provider's own settings in `options`.
-- Typed config file schema (pydantic); unknown keys are errors. The parser
-  and checker land earlier (order step 4); here the provider's keys fill in.
-- Built-in tools as one `Tool` type. Rust tools ship as their own PyO3
-  wheels, called by the driver with the GIL released; core has no plugin ABI.
+- Config: D13's own parser and checker (built; no pydantic). Each provider
+  checks its own `options` (D15).
+- Base tools (`read`, `write`, `grep`, `bash`) in Rust (`crates/tau-tools`),
+  bound by `tau-py` into the one wheel (roadmap step 9); core has no plugin ABI.
 - **Exit:** behavior suite green except tests that need later phases. The
   as-built review again, on `python/` with the 0.15 tools as they are (radon,
   coverage.py, grimp, `trace_turn.py`), plus a traced turn across both
@@ -223,6 +223,6 @@ and scratchpads replayed on connect), then print/json, REPL, RPC, TUI, each a
 client of the same model. One event projector per wire.
 
 ### Phase 7: release
-Anthropic and Google providers are built (D15); remaining for them is `cache_state`; JMFTS replica; docs (no
+JMFTS replica; docs (no
 0.15 session converter: D9 superseded); absorption into the τ repository as
 0.16.0.
