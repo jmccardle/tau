@@ -118,10 +118,12 @@ class Request:
 
 
 class FakeProvider:
-    """Answers each sample with the next scripted reply and records the request."""
+    """Answers each sample with the next scripted reply and records the request. `check`
+    reports `problems` for every model."""
 
-    def __init__(self, script: Sequence[Reply | Fail]) -> None:
+    def __init__(self, script: Sequence[Reply | Fail], problems: Sequence[str] = ()) -> None:
         self._script = list(script)
+        self._problems = list(problems)
         self._next = 0
         self.requests: list[Request] = []
 
@@ -130,7 +132,7 @@ class FakeProvider:
         return FAKE_PROVIDER
 
     def check(self, model: ModelConfig) -> list[str]:
-        return []
+        return list(self._problems)
 
     async def aclose(self) -> None:
         """Nothing is held open."""

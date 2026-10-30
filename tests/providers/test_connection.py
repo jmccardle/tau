@@ -1,252 +1,58 @@
-"""What the three hosted providers share over HTTP (`_wire.Connection`), tested once and run
-through each: one long-lived client, the loop it belongs to, and `ProviderClosed`."""
+"""What the three hosted providers share (`_wire.Connection`, and the driver over any of them),
+tested once and run through each: one long-lived client, the loop it belongs to, `ProviderClosed`,
+the key, what follows a finish, and a cancel."""
 
 import asyncio
-import threading
-from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 import pytest
-from anthropic_streams import ENVIRON as ANTHROPIC_ENVIRON
-from anthropic_streams import KEY_ENV as ANTHROPIC_KEY_ENV
-from anthropic_streams import RESOLVED as ANTHROPIC_MODEL
-from anthropic_streams import delta as anthropic_delta
-from anthropic_streams import event, message, opened, sent_request, start, text
-from anthropic_streams import finish as anthropic_finish
-from fakes import FakeTool
-from gemini_support import ENVIRON as GEMINI_ENVIRON
-from gemini_support import gemini_chunk, gemini_walk, model, walk_of
 from harness import scenario
-from transcripts import MODEL as OPENAI_MODEL
-from transcripts import chunk
+from wire import (
+    ALIAS,
+    DIALECTS,
+    EACH,
+    ENVIRON,
+    KEY_ENV,
+    SECRET,
+    UNUSED,
+    Dialect,
+    KeepAliveServer,
+    Server,
+    bodies,
+    collect,
+    collect_all,
+    cut,
+    gated,
+    hello_walk,
+    running,
+    sse_text,
+)
 
 from tau_next import (
-    Author,
     Body,
     Delta,
     Finish,
+    Live,
     ModelConfig,
-    Outcome,
     Part,
     Provider,
     ProviderClosed,
     SampleError,
     Stop,
     TextDelta,
+    ThinkingDelta,
+    builtin_providers,
+    model_config,
 )
-from tau_next.providers.anthropic import AnthropicProvider
-from tau_next.providers.gemini import GeminiProvider
-from tau_next.providers.openai import OpenAIProvider
-
-SSE = {"content-type": "text/event-stream"}
-
-
-@dataclass(frozen=True)
-class Dialect:
-    """One provider: how to build it, its model at a base URL, and a reply that says `hi`
-    (`stalled` is that reply up to its first delta)."""
-
-    make: Callable[[httpx.AsyncBaseTransport | None], Provider]
-    model: Callable[[str], ModelConfig]  # takes the base URL of a `KeepAliveServer`
-    reply: str
-    stalled: str
-
-
-DIALECTS = {
-    "openai": Dialect(
-        lambda transport: OpenAIProvider(transport, {}),
-        lambda url: ModelConfig(OPENAI_MODEL, url),
-        chunk({"content": "hi"}) + chunk({}, "stop") + "data: [DONE]\n\n",
-        chunk({"content": "hi"}),
-    ),
-    "anthropic": Dialect(
-        lambda transport: AnthropicProvider(transport, ANTHROPIC_ENVIRON),
-        lambda url: replace(ANTHROPIC_MODEL, base_url=url.removesuffix("/v1")),
-        message(text(0, ["hi"])),
-        start()
-        + event("ping")
-        + opened(0, {"type": "text", "text": ""})
-        + anthropic_delta(0, type="text_delta", text="hi"),
-    ),
-    "gemini": Dialect(
-        lambda transport: GeminiProvider(transport, GEMINI_ENVIRON),
-        lambda url: replace(model(), base_url=url),
-        gemini_chunk([{"text": "hi"}]) + gemini_chunk([], "STOP"),
-        gemini_chunk([{"text": "hi"}]),
-    ),
-}
-EACH = pytest.mark.parametrize("dialect", list(DIALECTS.values()), ids=list(DIALECTS))
-
-
-class CountingTransport(httpx.AsyncBaseTransport):
-    """A network stand-in that counts the requests it serves and the times it is closed: a
-    client that is closed per sample closes its transport per sample."""
-
-    def __init__(self, text: str) -> None:
-        self._text = text
-        self.requests = 0
-        self.closes = 0
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        self.requests += 1
-        return httpx.Response(200, headers=SSE, text=self._text)
-
-    async def aclose(self) -> None:
-        self.closes += 1
-
-
-class KeepAliveServer:
-    """A real HTTP/1.1 server on 127.0.0.1, in its own thread and event loop (so it outlives
-    the loops a test runs samples on). It answers every request with `body` as an SSE
-    response of known length, on a connection it keeps open, and counts the connections.
-    With `stall`, it instead sends that much of `body`, promises more, and goes quiet."""
-
-    def __init__(self, body: str, stall: int | None = None) -> None:
-        self._body = body.encode()
-        self._stall = stall
-        self.connections = 0
-        self._loop = asyncio.new_event_loop()
-        self._server: asyncio.Server | None = None
-
-    async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        self.connections += 1
-        try:
-            while True:
-                head = await reader.readuntil(b"\r\n\r\n")
-                length = 0
-                for line in head.split(b"\r\n"):
-                    if line.lower().startswith(b"content-length:"):
-                        length = int(line.split(b":")[1])
-                await reader.readexactly(length)
-                size = len(self._body) + (0 if self._stall is None else 10)
-                writer.write(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n"
-                    + f"content-length: {size}\r\n\r\n".encode()
-                )
-                writer.write(self._body if self._stall is None else self._body[: self._stall])
-                await writer.drain()
-                if self._stall is not None:
-                    await asyncio.sleep(60)  # the promised rest never comes
-        except (EOFError, ConnectionError, asyncio.CancelledError):
-            pass
-        finally:
-            writer.close()
-
-    async def _stop(self) -> None:
-        """Close the listener and end every connection handler while the loop still runs, so
-        none is left pending when it stops."""
-        assert self._server is not None
-        self._server.close()
-        handlers = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        for task in handlers:
-            task.cancel()
-        await asyncio.gather(*handlers, return_exceptions=True)
-
-    @contextmanager
-    def running(self) -> Iterator[str]:
-        """The base URL of the server, while it runs."""
-        thread = threading.Thread(target=self._loop.run_forever, daemon=True)
-        thread.start()
-
-        async def start_server() -> asyncio.Server:
-            return await asyncio.start_server(self._serve, "127.0.0.1", 0)
-
-        self._server = asyncio.run_coroutine_threadsafe(start_server(), self._loop).result()
-        port = self._server.sockets[0].getsockname()[1]
-        try:
-            yield f"http://127.0.0.1:{port}/v1"
-        finally:
-            asyncio.run_coroutine_threadsafe(self._stop(), self._loop).result()
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            thread.join()
-            self._loop.close()
 
 
 async def sample_all(
     provider: Provider, config: ModelConfig
 ) -> tuple[list[Part | Finish | Delta], SampleError | None]:
     """Everything `sample` yielded, and the `SampleError` it ended with, if any."""
-    items: list[Part | Finish | Delta] = []
-    try:
-        async for item in provider.sample(gemini_walk(), config, []):
-            items.append(item)
-    except SampleError as e:
-        return items, e
-    return items, None
-
-
-@EACH
-@scenario
-async def test_many_samples_share_one_client_until_aclose(dialect: Dialect) -> None:
-    transport = CountingTransport(dialect.reply)
-    provider = dialect.make(transport)
-    config = dialect.model("http://unused.test/v1")
-    for _ in range(4):
-        _, error = await sample_all(provider, config)
-        assert error is None
-    assert (transport.requests, transport.closes) == (4, 0)
-    await provider.aclose()
-    assert transport.closes == 1
-    await provider.aclose()  # closing twice is not a failure
-    assert transport.closes == 1
-
-
-@EACH
-@scenario
-async def test_a_sample_after_aclose_fails_as_closed_not_as_a_transient_error(
-    dialect: Dialect,
-) -> None:
-    provider = dialect.make(CountingTransport(dialect.reply))
-    await provider.aclose()
-    items, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
-    assert items == []
-    assert isinstance(error, ProviderClosed)
-    assert (error.status, error.retry_after) == (None, None)
-
-
-@EACH
-@scenario
-async def test_two_sequential_samples_use_one_connection(dialect: Dialect) -> None:
-    server = KeepAliveServer(dialect.reply)
-    with server.running() as url:
-        provider = dialect.make(None)
-        for _ in range(3):
-            items, error = await sample_all(provider, dialect.model(url))
-            assert error is None
-            assert [i for i in items if isinstance(i, Part)] == [Part.Text("hi")]
-            assert isinstance(items[-1], Finish)
-        await provider.aclose()
-    assert server.connections == 1
-
-
-@EACH
-def test_a_program_that_runs_one_event_loop_per_command_keeps_working(dialect: Dialect) -> None:
-    server = KeepAliveServer(dialect.reply)
-    with server.running() as url:
-        provider = dialect.make(None)
-        for _ in range(2):
-            items, error = asyncio.run(sample_all(provider, dialect.model(url)))
-            assert error is None
-            assert Part.Text("hi") in items
-        asyncio.run(provider.aclose())
-
-
-@EACH
-@scenario
-async def test_aclose_cuts_a_sample_in_flight_as_closed(dialect: Dialect) -> None:
-    server = KeepAliveServer(dialect.reply, stall=len(dialect.stalled))
-    with server.running() as url:
-        provider = dialect.make(None)
-        stream = provider.sample(gemini_walk(), dialect.model(url), [])
-        assert await anext(stream) == TextDelta("hi")
-        rest = asyncio.ensure_future(collect_rest(stream))
-        await asyncio.sleep(0.05)
-        await provider.aclose()
-        parts, error = await asyncio.wait_for(rest, 5)
-    assert parts == [Part.Text("hi")], "the text that arrived is still yielded"
-    assert isinstance(error, ProviderClosed)
+    return await collect_all(provider, hello_walk(), config)
 
 
 async def collect_rest(stream: AsyncIterator[object]) -> tuple[list[object], SampleError | None]:
@@ -259,16 +65,159 @@ async def collect_rest(stream: AsyncIterator[object]) -> tuple[list[object], Sam
     return parts, None
 
 
-def sse_of(text: str) -> CountingTransport:
-    return CountingTransport(text)
+# The one client
+
+
+@EACH
+@scenario
+async def test_samples_share_one_connection_until_aclose_which_may_be_repeated(
+    dialect: Dialect,
+) -> None:
+    server = KeepAliveServer(dialect.reply("hi"))
+    with server.running() as root:
+        provider = dialect.make(None, ENVIRON)
+        for _ in range(3):
+            items, error = await sample_all(provider, dialect.model(root))
+            assert error is None
+            assert [i for i in items if isinstance(i, Part)] == [Part.Text("hi")]
+            assert isinstance(items[-1], Finish)
+        await provider.aclose()
+        await provider.aclose()  # closing twice is not a failure
+    assert server.connections == 1
+
+
+@EACH
+@scenario
+async def test_a_sample_after_aclose_fails_as_closed_not_as_a_transient_error(
+    dialect: Dialect,
+) -> None:
+    provider = dialect.serving(dialect.reply("hi"))
+    await provider.aclose()
+    items, error = await sample_all(provider, dialect.model())
+    assert items == []
+    assert isinstance(error, ProviderClosed)
+    assert (error.status, error.retry_after) == (None, None)
+
+
+@EACH
+def test_a_program_that_runs_one_event_loop_per_command_keeps_working(dialect: Dialect) -> None:
+    server = KeepAliveServer(dialect.reply("hi"))
+    with server.running() as root:
+        provider = dialect.make(None, ENVIRON)
+        for _ in range(2):
+            items, error = asyncio.run(sample_all(provider, dialect.model(root)))
+            assert error is None
+            assert Part.Text("hi") in items
+        asyncio.run(provider.aclose())
+
+
+@EACH
+@scenario
+async def test_aclose_cuts_a_sample_in_flight_as_closed(dialect: Dialect) -> None:
+    server = KeepAliveServer(dialect.reply("hi"), stall=len(dialect.stalled))
+    with server.running() as root:
+        provider = dialect.make(None, ENVIRON)
+        stream = provider.sample(hello_walk(), dialect.model(root), [])
+        assert await anext(stream) == TextDelta("hi")
+        rest = asyncio.ensure_future(collect_rest(stream))
+        await asyncio.sleep(0.05)
+        await provider.aclose()
+        parts, error = await asyncio.wait_for(rest, 5)
+    assert parts == [Part.Text("hi")], "the text that arrived is still yielded"
+    assert isinstance(error, ProviderClosed)
+
+
+# The key
+
+
+@EACH
+@scenario
+async def test_the_key_is_read_at_sample_time_and_goes_in_its_header_only(
+    dialect: Dialect,
+) -> None:
+    server = sse_text(dialect.reply("hi"))
+    environ = {KEY_ENV: SECRET}
+    provider = dialect.make(server.transport, environ)
+    for key in (SECRET, "rotated"):
+        environ[KEY_ENV] = key
+        _, error = await sample_all(provider, dialect.model())
+        assert error is None
+        request = server.requests[-1]
+        assert request.headers[dialect.key_header].endswith(key)
+        assert key not in str(request.url)
+    del environ[KEY_ENV]
+    sent = len(server.requests)
+    _, error = await sample_all(provider, dialect.model())
+    assert error is not None
+    assert KEY_ENV in str(error)
+    assert len(server.requests) == sent, "nothing is sent without the key"
+
+
+@EACH
+@scenario
+async def test_an_http_error_never_holds_the_key(dialect: Dialect) -> None:
+    server = Server(httpx.Response(400, json={"error": {"code": 400, "message": "bad request"}}))
+    _, error = await sample_all(dialect.over(server), dialect.model())
+    assert error is not None
+    assert SECRET not in str(error)
+    assert SECRET not in str(server.requests[0].url)
+
+
+@pytest.mark.parametrize(
+    "key", ["sk-secret-0123\nrest", "sk-secret-0123\u201cquoted\u201d"], ids=["newline", "quote"]
+)
+@scenario
+async def test_a_key_http_cannot_carry_fails_the_sample_without_quoting_it(key: str) -> None:
+    dialect = DIALECTS["anthropic"]
+    server = KeepAliveServer(dialect.reply("hi"))
+    with server.running() as root:
+        provider = dialect.make(None, {KEY_ENV: key})
+        items, error = await sample_all(provider, dialect.model(root))
+        await provider.aclose()
+    assert items == []
+    assert error is not None
+    assert KEY_ENV in str(error)  # refused by `ModelConfig.api_key`, before any header
+    assert "sk-secret" not in str(error)
+    assert "sk-secret" not in repr(error.__cause__)
+
+
+@EACH
+@scenario
+async def test_builtin_providers_send_the_key_from_their_environ(dialect: Dialect) -> None:
+    server = KeepAliveServer(dialect.reply("hi"))
+    providers = builtin_providers({KEY_ENV: SECRET})
+    with server.running() as root:
+        _, error = await sample_all(providers[dialect.name], dialect.model(root))
+    for provider in providers.values():
+        await provider.aclose()
+    assert error is None
+    assert (server.header(dialect.key_header) or "").endswith(SECRET)
+
+
+# What goes wrong on the wire
+
+
+@EACH
+@pytest.mark.parametrize("trouble", [httpx.ConnectError("refused"), httpx.ReadTimeout("slow")])
+@scenario
+async def test_a_transport_error_is_a_sample_error_caused_by_it_and_not_a_closing(
+    dialect: Dialect, trouble: httpx.TransportError
+) -> None:
+    server = Server(trouble)
+    items, error = await sample_all(dialect.over(server), dialect.model())
+    assert items == []
+    assert type(error) is SampleError, "a timeout is trouble with one sample, not a closed provider"
+    assert (error.status, error.retry_after) == (None, None)
+    assert type(trouble).__name__ in str(error)
+    assert error.__cause__ is trouble
 
 
 @EACH
 @scenario
 async def test_a_nan_or_infinity_in_a_stream_event_is_a_sample_error(dialect: Dialect) -> None:
     for constant in ("NaN", "Infinity", "-Infinity"):
-        provider = dialect.make(sse_of(f'data: {{"usage": {{"x": {constant}}}}}\n\n'))
-        items, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
+        provider = dialect.serving(f'data: {{"usage": {{"x": {constant}}}}}\n\n')
+        items, error = await sample_all(provider, dialect.model())
         assert items == []
         assert error is not None
         assert "malformed SSE data" in str(error)
@@ -277,8 +226,7 @@ async def test_a_nan_or_infinity_in_a_stream_event_is_a_sample_error(dialect: Di
 @EACH
 @scenario
 async def test_a_lone_surrogate_in_a_stream_event_is_a_sample_error(dialect: Dialect) -> None:
-    provider = dialect.make(sse_of('data: {"x": "\\ud800"}\n\n'))
-    items, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
+    items, error = await sample_all(dialect.serving('data: {"x": "\\ud800"}\n\n'), dialect.model())
     assert items == []
     assert error is not None
     assert "surrogate" in str(error)
@@ -287,101 +235,97 @@ async def test_a_lone_surrogate_in_a_stream_event_is_a_sample_error(dialect: Dia
 @EACH
 @scenario
 async def test_a_paired_surrogate_escape_is_text_not_an_error(dialect: Dialect) -> None:
-    provider = dialect.make(sse_of(dialect.reply.replace("hi", "\\ud83d\\ude00")))
-    items, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
+    provider = dialect.serving(dialect.reply("hi").replace("hi", "\\ud83d\\ude00"))
+    items, error = await sample_all(provider, dialect.model())
     assert error is None
     assert Part.Text("\U0001f600") in items
 
 
 @scenario
-async def test_an_option_too_big_for_a_float_is_a_problem_not_a_crash() -> None:
-    config = ModelConfig(OPENAI_MODEL, "http://unused.test/v1", options={"temperature": 10**400})
-    assert any("temperature" in p for p in OpenAIProvider(None, {}).check(config))
-
-
-@EACH
-@scenario
-async def test_a_retry_after_that_is_not_finite_is_no_wait(dialect: Dialect) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(429, headers={"retry-after": "9" * 400}, text="slow down")
-
-    provider = dialect.make(httpx.MockTransport(handler))
-    _, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
-    assert error is not None
-    assert (error.status, error.retry_after) == (429, None)
-
-
-@EACH
-@scenario
-async def test_a_transport_error_is_the_cause_of_its_sample_error(dialect: Dialect) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("refused")
-
-    provider = dialect.make(httpx.MockTransport(handler))
-    _, error = await sample_all(provider, dialect.model("http://unused.test/v1"))
-    assert error is not None
-    assert isinstance(error.__cause__, httpx.TransportError)
-
-
-SECRET_KEYS = {
-    "newline": "sk-secret-0123\nrest",
-    "smart quote": "sk-secret-0123\u201cquoted\u201d",
-}
-
-
-@pytest.mark.parametrize("key", list(SECRET_KEYS.values()), ids=list(SECRET_KEYS))
-@scenario
-async def test_a_key_http_cannot_carry_fails_the_sample_without_quoting_it(key: str) -> None:
-    dialect = DIALECTS["anthropic"]
-    server = KeepAliveServer(dialect.reply)
-    with server.running() as url:
-        provider = AnthropicProvider(None, {ANTHROPIC_KEY_ENV: key})
-        items, error = await sample_all(provider, dialect.model(url))
-        await provider.aclose()
-    assert items == []
-    assert error is not None
-    assert ANTHROPIC_KEY_ENV in str(error)  # refused by `ModelConfig.api_key`, before any header
-    assert "sk-secret" not in str(error)
-    assert "sk-secret" not in repr(error.__cause__)
-
-
-@scenario
 async def test_a_non_finite_number_in_the_request_is_a_sample_error() -> None:
-    provider = OpenAIProvider(sse_of(DIALECTS["openai"].reply), {})
-    config = ModelConfig(
-        OPENAI_MODEL, "http://unused.test/v1", options={"extra_body": {"x": float("nan")}}
-    )
-    items, error = await sample_all(provider, config)
+    dialect = DIALECTS["openai"]
+    config = dialect.model(extra_body={"x": float("nan")})
+    items, error = await sample_all(dialect.serving(dialect.reply("hi")), config)
     assert items == []
     assert error is not None
     assert "can't carry" in str(error)
 
 
+# What follows a finish
+
+
+def after_the_finish(dialect: Dialect) -> dict[str, Server]:
+    """The reply `dialect` says, with each kind of trouble after its finish."""
+    whole = dialect.reply("hi")
+    return {
+        "nothing more": sse_text(whole),
+        "late content": sse_text(whole + dialect.late),
+        "an error event": sse_text(whole + dialect.trouble),
+        "malformed data": sse_text(whole + "data: {not json\n\n"),
+        "a chunk that is no object": sse_text(whole + "data: [1]\n\n"),
+        "a connection reset": cut(whole),
+    }
+
+
+@EACH
+@pytest.mark.parametrize("kind", list(after_the_finish(DIALECTS["openai"])))
 @scenario
-async def test_content_after_the_stop_is_dropped_and_the_reply_still_finishes() -> None:
-    body = start() + text(0, ["hi"]) + anthropic_finish("end_turn") + text(1, ["late"])
-    provider = AnthropicProvider(sse_of(body), ANTHROPIC_ENVIRON)
-    items, error = await sample_all(provider, ANTHROPIC_MODEL)
+async def test_trouble_after_the_finish_costs_only_the_meta_not_the_reply(
+    dialect: Dialect, kind: str
+) -> None:
+    server = after_the_finish(dialect)[kind]
+    items, error = await collect(dialect.over(server), hello_walk())
     assert error is None
-    assert [i for i in items if isinstance(i, Part)] == [Part.Text("hi")]
+    assert items[:-1] == [Part.Text("hi")]
     assert isinstance(items[-1], Finish)
     assert items[-1].stop == Stop.End
 
 
-async def sent_kinds(args_raw: str) -> list[str]:
-    """The block types Anthropic sends for a walk whose one call has `args_raw`."""
-    walk = walk_of(
-        Body.User("go"),
-        Body.Assistant([Part.Call("a", "ta", args_raw)], Stop.Tools),
-        Body.Results([("a", Outcome.Ok("done"), Author.Core())]),
-    )
-    request = await sent_request(walk, ANTHROPIC_MODEL, [FakeTool("ta", "A")], ANTHROPIC_ENVIRON)
-    messages: list[dict[str, list[dict[str, str]]]] = request[2]["messages"]  # type: ignore[assignment]
-    return [block["type"] for message in messages for block in message["content"]]
+# A cancel, under the driver
 
 
+@EACH
 @scenario
-async def test_arguments_with_a_nan_or_a_lone_surrogate_send_the_batch_as_text() -> None:
-    assert "tool_use" in await sent_kinds('{"x": 1}')
-    for bad in ('{"x": NaN}', '{"x": Infinity}', '{"x": "\\ud800"}'):
-        assert "tool_use" not in await sent_kinds(bad), bad
+async def test_a_cancel_mid_thinking_leaves_an_interrupted_reply_holding_unsigned_thinking(
+    dialect: Dialect, tmp_path: Path
+) -> None:
+    server, _ = gated(dialect.thinking_head)
+    async with running(tmp_path / "s", dialect.over(server)) as (session, driver, cursor):
+        seen = driver.events(cursor)
+        driver.send(cursor, "test", "hi")
+        async for item in seen:
+            if isinstance(item, Live) and item.delta == ThinkingDelta("think"):
+                break
+        driver.abort(cursor)
+        await driver.rest(cursor)
+        reply = bodies(session, cursor)[-1]
+        await seen.aclose()
+    assert isinstance(reply, Body.Assistant)
+    assert reply.stop == Stop.Interrupted
+    assert reply.parts == [Part.Thinking("let me think")], "what arrived, with no replay data"
+
+
+# A plain turn, under the driver
+
+
+@EACH
+@scenario
+async def test_a_plain_turn_logs_the_model_name_and_neither_the_key_nor_the_url(
+    dialect: Dialect, tmp_path: Path
+) -> None:
+    server = sse_text(dialect.reply("hi"))
+    directory = tmp_path / "s"
+    async with running(directory, dialect.over(server)) as (session, driver, cursor):
+        driver.send(cursor, "test", "hello")
+        await driver.rest(cursor)
+        walk = bodies(session, cursor)
+        assert walk[0] == Body.Config(model_config(ALIAS))
+        assert walk[-2] == Body.User("hello")
+        assert isinstance(walk[-1], Body.Assistant)
+        assert (walk[-1].parts, walk[-1].stop) == ([Part.Text("hi")], Stop.End)
+    assert "tools" not in server.bodies[0], "no tools offered, no tools key"
+    for file in directory.rglob("*"):
+        if file.is_file():
+            data = file.read_bytes()
+            for leak in (SECRET, UNUSED, "unused.test", "api_key", "base_url", KEY_ENV):
+                assert leak.encode() not in data, f"{leak!r} is in {file}"

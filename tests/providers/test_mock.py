@@ -133,17 +133,3 @@ async def test_an_aborted_sample_leaves_an_interrupted_reply_holding_the_text_st
     assert WORDS.startswith(part.text)
     assert part.text.endswith(" ")
     assert len(part.text) < len(WORDS)
-
-
-@scenario
-async def test_a_bad_option_fails_that_sample_and_the_cursor_survives() -> None:
-    for bad in ({"delay_ms": "fast"}, {"reply": 5}, {"dealy_ms": 1}, {"reply": ""}):
-        async with mock_session(options=bad) as (session, driver, cursor):
-            driver.send(cursor, "term", "go")
-            await driver.rest(cursor)  # raises if the driver died
-            driver.check()
-            notes = [n.body for n in (session.tree.node(i) for i in range(len(session.tree)))]
-            errors = [b.data for b in notes if isinstance(b, Body.Custom)]
-            assert len(errors) == 1
-            assert "(mock)" in errors[0]
-            assert not any(isinstance(b, Body.Assistant) and b.parts for b in notes)

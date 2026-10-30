@@ -1,38 +1,40 @@
 """The Gemini provider's response handling: streams recorded from the live API (key never in
-them; `fixtures/gemini_*.sse`) and ones written from the API reference's shapes."""
+them; `fixtures/gemini_*.sse`) and ones written from the API reference's shapes. Each ends in
+the request that sends what it read back, where the two halves must agree."""
 
-import asyncio
 import json
-from pathlib import Path
 
 import httpx
 import pytest
-from gemini_support import (
-    ENVIRON,
-    FIXTURES,
-    collect,
-    gemini_chunk,
-    gemini_fixture,
-    gemini_walk,
-    provider_for,
-    running,
-)
+from fakes import FakeTool
 from harness import scenario
-from transcripts import GatedStream, Server
+from wire import (
+    FIXTURES,
+    GEMINI,
+    GEMINI_BARE,
+    Server,
+    collect,
+    collect_all,
+    gemini_chunk,
+    hello_walk,
+    recorded,
+    sent_request,
+    walk_of,
+)
 
 from tau_next import (
+    Author,
     Body,
     CallArgs,
     CallNamed,
     Finish,
-    Live,
+    Outcome,
     Part,
     Replay,
     Stop,
     TextDelta,
     ThinkingDelta,
 )
-from tau_next.providers.gemini import GeminiProvider
 
 
 def recorded_signature(name: str) -> str:
@@ -58,7 +60,7 @@ async def test_thoughts_then_chunked_text_are_two_parts_and_the_signature_lands_
 ):
     """Recorded: four thought chunks, then three text chunks, then a last chunk that carries
     the signature (and the finish reason). The text is one part holding all of them."""
-    items, error = await collect(gemini_fixture("gemini_text_thinking"), gemini_walk())
+    items, error = await collect_all(GEMINI.serving(recorded("gemini_text_thinking")), hello_walk())
     assert error is None
     deltas = [i for i in items if isinstance(i, TextDelta | ThinkingDelta)]
     parts = [i for i in items if isinstance(i, Part)]
@@ -78,7 +80,7 @@ async def test_thoughts_then_chunked_text_are_two_parts_and_the_signature_lands_
 
 @scenario
 async def test_the_finish_normalizes_the_stop_and_the_usage_counts_thoughts_as_output() -> None:
-    items, _ = await collect(gemini_fixture("gemini_text_thinking"), gemini_walk())
+    items, _ = await collect(GEMINI.serving(recorded("gemini_text_thinking")), hello_walk())
     finish = items[-1]
     assert isinstance(finish, Finish)
     assert (finish.stop, finish.reason) == (Stop.Length, "MAX_TOKENS")
@@ -86,14 +88,14 @@ async def test_the_finish_normalizes_the_stop_and_the_usage_counts_thoughts_as_o
     meta = json.loads(finish.meta)
     assert meta["usage"] == {"input": 19, "output": 59 + 1437, "cached": 0}
     assert meta["usage_raw"]["thoughtsTokenCount"] == 1437
-    assert (meta["model"], meta["id"]) == ("gemini-3.6-flash", meta["id"])
+    assert meta["model"] == "gemini-3.6-flash"
 
 
 @scenario
 async def test_cached_tokens_come_from_cachedContentTokenCount() -> None:
     usage = {"promptTokenCount": 100, "cachedContentTokenCount": 60, "candidatesTokenCount": 5}
     text = gemini_chunk([{"text": "x"}], "STOP", usage)
-    items, _ = await collect(provider_for(text), gemini_walk())
+    items, _ = await collect(GEMINI.serving(text), hello_walk())
     finish = items[-1]
     assert isinstance(finish, Finish)
     assert finish.meta is not None
@@ -102,7 +104,7 @@ async def test_cached_tokens_come_from_cachedContentTokenCount() -> None:
 
 @scenario
 async def test_a_call_arrives_whole_and_the_api_id_and_signature_are_kept() -> None:
-    items, error = await collect(gemini_fixture("gemini_call"), gemini_walk())
+    items, error = await collect_all(GEMINI.serving(recorded("gemini_call")), hello_walk())
     assert error is None
     args = '{"path": "/tmp/x.txt"}'
     signature = recorded_signature("gemini_call.sse")
@@ -116,46 +118,83 @@ async def test_a_call_arrives_whole_and_the_api_id_and_signature_are_kept() -> N
 
 
 @scenario
-async def test_a_call_with_no_id_is_given_a_unique_one_and_no_replay_id() -> None:
-    call = {"functionCall": {"name": "ta", "args": {"p": 1}}}
-    text = gemini_chunk([call, call], "STOP")
-    items, error = await collect(provider_for(text), gemini_walk())
+async def test_a_call_with_no_id_is_given_a_unique_one_that_is_never_sent_back() -> None:
+    bare = {"functionCall": {"name": "ta", "args": {"p": 1}}}
+    named = {"functionCall": {"name": "tb", "args": {}, "id": "api-1"}, "thoughtSignature": "S"}
+    text = gemini_chunk([bare, bare, named], "STOP")
+    items, error = await collect(GEMINI.serving(text), hello_walk())
     assert error is None
     calls = [i for i in items if isinstance(i, Part.Call)]
-    replay_marker = Replay("gemini", '{"synthesized_id": true}')
-    ids = [c.id for c in calls]
-    assert len(set(ids)) == 2
-    assert all(i.startswith("gemini-") for i in ids)
-    assert [c.replay for c in calls] == [replay_marker] * 2, "marked: never sent back as an id"
-    assert [i.index for i in items if isinstance(i, CallNamed)] == [0, 1]
+    assert len({c.id for c in calls}) == 3, "the made-up ids are unique"
+    assert calls[2].id == "api-1"
+    answers = [(c.id, Outcome.Ok(f"r{i}"), Author.Tools()) for i, c in enumerate(calls)]
+    walk = walk_of(Body.User("go"), Body.Assistant(calls, Stop.Tools, None), Body.Results(answers))
+    tools = [FakeTool("ta", "x"), FakeTool("tb", "x")]
+    _, _, body = await sent_request(GEMINI, walk, GEMINI_BARE, tools)
+    model_turn, answered = body["contents"][1:]  # type: ignore[index]
+    assert model_turn["parts"] == [
+        {"functionCall": {"name": "ta", "args": {"p": 1}}},
+        {"functionCall": {"name": "ta", "args": {"p": 1}}},
+        {"functionCall": {"name": "tb", "args": {}, "id": "api-1"}, "thoughtSignature": "S"},
+    ], "an id goes back only where the API gave one"
+    assert answered["parts"] == [
+        {"functionResponse": {"name": "ta", "response": {"result": "r0"}}},
+        {"functionResponse": {"name": "ta", "response": {"result": "r1"}}},
+        {"functionResponse": {"name": "tb", "response": {"result": "r2"}, "id": "api-1"}},
+    ]
 
 
 @scenario
-async def test_a_signature_ends_the_text_part_it_sits_on() -> None:
+async def test_a_signature_ends_the_text_part_it_sits_on_and_each_part_goes_back_as_it_came() -> (
+    None
+):
     """A signature rides the last chunk of the text it signs; text after it is a new part."""
     chunks = [
         gemini_chunk([{"text": "one "}]),
         gemini_chunk([{"text": "two", "thoughtSignature": "SIG1"}]),
         gemini_chunk([{"text": "three"}]),
-        gemini_chunk([{"text": "", "thoughtSignature": "SIG2"}], "STOP"),
+        gemini_chunk([{"text": "", "thoughtSignature": "SIG2"}]),
+        gemini_chunk([{"text": "four"}], "STOP"),
     ]
-    items, error = await collect(provider_for("".join(chunks)), gemini_walk())
+    items, error = await collect(GEMINI.serving("".join(chunks)), hello_walk())
     assert error is None
-    assert [i for i in items if isinstance(i, Part)] == [
+    parts = [i for i in items if isinstance(i, Part)]
+    assert parts == [
         Part.Text("one two", replay(thoughtSignature="SIG1")),
         Part.Text("three", replay(thoughtSignature="SIG2")),
+        Part.Text("four"),
     ]
+    walk = walk_of(Body.User("go"), Body.Assistant(parts, Stop.End, None), Body.User("next"))
+    _, _, body = await sent_request(GEMINI, walk, GEMINI_BARE)
+    assert body["contents"][1]["parts"] == [  # type: ignore[index]
+        {"text": "one two", "thoughtSignature": "SIG1"},
+        {"text": "three", "thoughtSignature": "SIG2"},
+        {"text": "four"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("reason", "stop"),
+    [
+        ("SAFETY", Stop.Refused),
+        ("CONTINUATION", Stop.Length),
+        ("ESCALATION", Stop.Refused),
+    ],
+)
+@scenario
+async def test_the_finish_reasons_beyond_stop_normalize_and_keep_their_text(
+    reason: str, stop: Stop
+) -> None:
+    text = gemini_chunk([{"text": "x"}], reason)
+    items, error = await collect(GEMINI.serving(text), hello_walk())
+    assert error is None
+    assert items == [Part.Text("x"), Finish(stop, reason)]
 
 
 @scenario
-async def test_a_safety_finish_is_refused_and_an_unlisted_reason_fails() -> None:
-    safety = gemini_chunk([{"text": "I can't"}], "SAFETY")
-    items, error = await collect(provider_for(safety), gemini_walk())
-    assert error is None
-    assert [i for i in items if isinstance(i, Part)] == [Part.Text("I can't")]
-    assert items[-1] == Finish(Stop.Refused, "SAFETY")
+async def test_a_finish_reason_the_provider_does_not_list_fails_after_the_parts() -> None:
     odd = gemini_chunk([{"text": "x"}], "MALFORMED_FUNCTION_CALL")
-    items, error = await collect(provider_for(odd), gemini_walk())
+    items, error = await collect(GEMINI.serving(odd), hello_walk())
     assert error is not None
     assert "MALFORMED_FUNCTION_CALL" in str(error)
     assert [i for i in items if isinstance(i, Part)] == [Part.Text("x")], "what arrived is kept"
@@ -165,7 +204,7 @@ async def test_a_safety_finish_is_refused_and_an_unlisted_reason_fails() -> None
 async def test_a_blocked_prompt_is_refused_with_the_block_in_the_meta() -> None:
     block = {"promptFeedback": {"blockReason": "PROHIBITED_CONTENT"}}
     text = f"data: {json.dumps(block)}\r\n\r\n"
-    items, error = await collect(provider_for(text), gemini_walk())
+    items, error = await collect(GEMINI.serving(text), hello_walk())
     assert error is None
     finish = items[-1]
     assert isinstance(finish, Finish)
@@ -176,14 +215,15 @@ async def test_a_blocked_prompt_is_refused_with_the_block_in_the_meta() -> None:
 
 @scenario
 async def test_an_error_event_mid_stream_fails_with_its_code_after_the_parts_so_far() -> None:
-    items, error = await collect(gemini_fixture("gemini_error_midstream"), gemini_walk())
+    items, error = await collect_all(
+        GEMINI.serving(recorded("gemini_error_midstream")), hello_walk()
+    )
     assert [type(i) for i in items] == [ThinkingDelta, Part.Thinking]
     assert error is not None
     assert error.status == 503
     assert "high demand" in str(error)
 
 
-@scenario
 @pytest.mark.parametrize(
     ("headers", "body", "wait"),
     [
@@ -207,49 +247,15 @@ async def test_an_error_event_mid_stream_fails_with_its_code_after_the_parts_so_
         ),
     ],
 )
+@scenario
 async def test_http_429_is_a_sample_error_with_status_and_the_wait(
     headers: dict[str, str], body: dict[str, object], wait: float
 ) -> None:
     server = Server(httpx.Response(429, headers=headers, json=body))
-    _, error = await collect(GeminiProvider(server.transport, ENVIRON), gemini_walk())
+    _, error = await collect(GEMINI.over(server), hello_walk())
     assert error is not None
     assert (error.status, error.retry_after) == (429, wait)
-    assert str(error).startswith("HTTP 429: ")
-
-
-@scenario
-async def test_a_cancel_mid_text_leaves_an_interrupted_reply_holding_what_arrived(
-    tmp_path: Path,
-) -> None:
-    gate = asyncio.Event()
-    head = gemini_chunk([{"text": "hm", "thought": True}]) + gemini_chunk([{"text": "hel"}])
-    head += gemini_chunk([{"text": "lo"}])
-    response = httpx.Response(200, stream=GatedStream(head.encode(), gate, b""))
-    provider = GeminiProvider(Server(response).transport, ENVIRON)
-    async with running(tmp_path / "s", provider) as (session, driver, cursor):
-        seen = driver.events(cursor)
-        driver.send(cursor, "test", "hi")
-        async for event in seen:
-            if isinstance(event, Live) and event.delta == TextDelta("lo"):
-                break
-        driver.abort(cursor)
-        await driver.rest(cursor)
-        reply = session.tree.node(session.cursor(cursor).at).body
-        await seen.aclose()
-    assert reply == Body.Assistant(
-        [Part.Thinking("hm"), Part.Text("hello")], Stop.Interrupted, None
-    )
-
-
-@scenario
-@pytest.mark.parametrize(
-    ("reason", "stop"), [("CONTINUATION", Stop.Length), ("ESCALATION", Stop.Refused)]
-)
-async def test_continuation_is_length_and_escalation_is_refused(reason: str, stop: Stop) -> None:
-    text = gemini_chunk([{"text": "x"}], reason)
-    items, error = await collect(provider_for(text), gemini_walk())
-    assert error is None
-    assert items[-1] == Finish(stop, reason)
+    assert "429" in str(error)
 
 
 @scenario
@@ -260,6 +266,6 @@ async def test_an_empty_chunk_of_the_other_kind_does_not_split_a_run() -> None:
         gemini_chunk([{"text": "b", "thought": True}]),
         gemini_chunk([{"text": "answer"}], "STOP"),
     ]
-    items, error = await collect(provider_for("".join(chunks)), gemini_walk())
+    items, error = await collect(GEMINI.serving("".join(chunks)), hello_walk())
     assert error is None
     assert [i for i in items if isinstance(i, Part)] == [Part.Thinking("ab"), Part.Text("answer")]

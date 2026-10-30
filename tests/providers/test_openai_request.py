@@ -4,9 +4,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from fakes import FakeProvider, FakeTool, Gate, Recorder, Reply
-from gemini_support import walk_of
 from harness import Harness, scenario
-from transcripts import BASE_URL, MODEL, RESOLVED, posted, sent
+from wire import OPENAI, OPENAI_BARE, OPENAI_MODEL, OPENAI_URL, posted, sent, walk_of
 
 from tau_next import (
     Author,
@@ -21,17 +20,12 @@ from tau_next import (
     Tool,
 )
 
-KEY_ENV = "TAU_TEST_KEY"
-SECRET = "sk-test-0123456789"
-
 
 async def body_of(
-    walk: Sequence[Node], model: ModelConfig = RESOLVED, tools: Sequence[Tool] = ()
+    walk: Sequence[Node], model: ModelConfig = OPENAI_BARE, tools: Sequence[Tool] = ()
 ) -> dict[str, object]:
     """The body the provider posted for one sample of `walk`."""
-    server, error = await posted(walk, model, tools)
-    assert error is None
-    return server.bodies[0]
+    return (await posted(OPENAI, walk, model, tools, environ={})).bodies[0]
 
 
 def answer_with_orphan_results(subject: object) -> None:
@@ -54,13 +48,13 @@ async def test_system_and_user_become_messages_and_config_nodes_are_skipped(
     await h.settle()
     await h.step()
     await h.settle()
-    server, error = await posted(h.session.tree.walk(h.session.cursor(h.cursor).at)[:-1])
-    assert error is None
+    walk = h.session.tree.walk(h.session.cursor(h.cursor).at)[:-1]
+    server = await posted(OPENAI, walk, OPENAI_BARE, environ={})
     body = server.bodies[0]
-    assert str(server.requests[0].url) == f"{BASE_URL}/chat/completions"
+    assert str(server.requests[0].url) == f"{OPENAI_URL}/chat/completions"
     assert "authorization" not in server.requests[0].headers
     assert body == {
-        "model": MODEL,
+        "model": OPENAI_MODEL,
         "stream": True,
         "stream_options": {"include_usage": True},
         "messages": [
@@ -175,24 +169,6 @@ async def test_results_that_answer_no_batch_become_a_user_message(tmp_path: Path
     assert isinstance(walk[-1].body, Body.Results)
     body = await body_of(walk)
     assert sent(body)[-1] == {"role": "user", "content": "[tool result zz: v]"}
-    await h.close()
-
-
-@scenario
-async def test_the_key_is_read_from_the_named_variable_at_sample_time(tmp_path: Path) -> None:
-    model = ModelConfig(MODEL, BASE_URL, KEY_ENV)
-    h = await Harness.create(tmp_path)
-    walk = h.session.tree.walk(h.session.cursor(h.cursor).at)
-    server, error = await posted(walk, model, environ={KEY_ENV: SECRET})
-    assert error is None
-    assert server.requests[0].headers["authorization"] == f"Bearer {SECRET}"
-    server, error = await posted(walk, model, environ={KEY_ENV: "rotated"})
-    assert error is None
-    assert server.requests[0].headers["authorization"] == "Bearer rotated"
-    server, error = await posted(walk, model, environ={})
-    assert error is not None
-    assert KEY_ENV in str(error)
-    assert server.requests == [], "nothing is sent without the key"
     await h.close()
 
 

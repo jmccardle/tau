@@ -1,23 +1,17 @@
-"""The OpenAI provider under the driver: a session on disk, a turn, and what the log holds."""
+"""The OpenAI provider under the driver: what a tool turn and a reasoning turn put on the wire
+and in the log. (A plain turn, a cancel, a failure: `test_connection.py`, `test_events.py`.)"""
 
 import json
 import os
 from pathlib import Path
 
-import httpx
 import pytest
 from harness import scenario
-from transcripts import (
-    BASE_URL,
-    CONFIG,
-    MODEL,
-    CutStream,
-    Server,
+from wire import (
+    ALIAS,
+    OPENAI,
+    bodies,
     catalog,
-    chunk,
-    collect,
-    fresh_walk,
-    recorded_error,
     running,
     sent,
     sse,
@@ -28,51 +22,30 @@ from tau_next import (
     Body,
     Driver,
     FunctionTool,
-    Node,
     Part,
     Session,
     StepLimit,
     Stop,
     SystemClock,
+    model_config,
     tool,
 )
 from tau_next.providers.openai import OpenAIProvider
 
-KEY_ENV = "TAU_TEST_KEY"
-SECRET = "sk-test-0123456789"
-
-
 # What the recorded `plain` stream says about itself; it carried no usage.
 PLAIN_META = json.dumps(
     {
-        "model": MODEL,
+        "model": OPENAI.model_id,
         "id": "chatcmpl-PDYpQXnYl6gO6gM1pARqC6R7yqmMGiDs",
         "system_fingerprint": "b1637-9c7a7553",
     }
 )
 
 
-def bodies(session: Session, cursor: int) -> list[Body]:
-    return [n.body for n in session.tree.walk(session.cursor(cursor).at)]
-
-
-@scenario
-async def test_a_plain_turn_through_the_driver(tmp_path: Path) -> None:
-    server = sse("plain")
-    async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (s, driver, c):
-        driver.send(c, "test", "hello")
-        await driver.rest(c)
-        assert bodies(s, c)[2:] == [
-            Body.User("hello"),
-            Body.Assistant([Part.Text("Hello, how are you?")], Stop.End, "stop", PLAIN_META),
-        ]
-    assert server.bodies[0]["messages"][-1] == {"role": "user", "content": "hello"}  # type: ignore[index]
-
-
 @scenario
 async def test_reasoning_is_kept_in_the_reply_and_not_sent_back(tmp_path: Path) -> None:
     server = sse("reasoning")
-    async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (s, driver, c):
+    async with running(tmp_path / "s", OPENAI.over(server)) as (s, driver, c):
         driver.send(c, "test", "17 * 3?")
         await driver.rest(c)
         reply = bodies(s, c)[-1]
@@ -85,118 +58,13 @@ async def test_reasoning_is_kept_in_the_reply_and_not_sent_back(tmp_path: Path) 
     assert "Need compute" not in str(server.bodies[1])
 
 
-@scenario
-async def test_an_http_error_fails_the_step_and_records_a_sample_error(tmp_path: Path) -> None:
-    async with running(tmp_path / "s", OpenAIProvider(recorded_error().transport, {})) as (
-        s,
-        driver,
-        c,
-    ):
-        driver.send(c, "test", "hello")
-        await driver.rest(c)
-        assert not s.cursor(c).auto, "a failed step turns auto-step off"
-        records = [n for n in nodes(s) if isinstance(n.body, Body.Custom)]
-        assert [r.body.kind for r in records if isinstance(r.body, Body.Custom)] == ["sample_error"]
-        assert "HTTP 500" in custom_data(records[0])
-
-
-@scenario
-async def test_a_stream_cut_mid_reply_commits_the_partial_reply_as_an_error(
-    tmp_path: Path,
-) -> None:
-    head = (chunk({"content": "par"})).encode()
-    server = Server(httpx.Response(200, stream=CutStream(head)))
-    async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (s, driver, c):
-        driver.send(c, "test", "hello")
-        await driver.rest(c)
-        reply = bodies(s, c)[-1]
-        assert isinstance(reply, Body.Assistant)
-        assert (reply.parts, reply.stop) == ([Part.Text("par")], Stop.Error)
-        assert reply.meta is not None
-        assert "connection reset" in json.loads(reply.meta)["error"]["message"]
-
-
-@scenario
-async def test_a_failed_reply_keeps_the_meta_that_arrived_before_the_failure(
-    tmp_path: Path,
-) -> None:
-    first = {"id": "c9", "model": "m-9", "choices": [{"index": 0, "delta": {"content": "par"}}]}
-    head = f"data: {json.dumps(first)}\n\n".encode()
-    server = Server(httpx.Response(200, stream=CutStream(head)))
-    async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (s, driver, c):
-        driver.send(c, "test", "hello")
-        await driver.rest(c)
-        reply = bodies(s, c)[-1]
-        assert isinstance(reply, Body.Assistant)
-        assert reply.stop == Stop.Error
-        assert reply.meta is not None
-        said = json.loads(reply.meta)
-        assert (said["id"], said["model"]) == ("c9", "m-9")
-        assert "connection reset" in said["error"]["message"]
-
-
-@scenario
-async def test_the_api_key_is_sent_but_never_stored(tmp_path: Path) -> None:
-    server = sse("plain")
-    directory = tmp_path / "s"
-    provider = OpenAIProvider(server.transport, {KEY_ENV: SECRET})
-    async with running(directory, provider, catalog(KEY_ENV)) as (s, driver, c):
-        driver.send(c, "test", "hello")
-        await driver.rest(c)
-        assert bodies(s, c)[-1] == Body.Assistant(
-            [Part.Text("Hello, how are you?")], Stop.End, "stop", PLAIN_META
-        )
-    assert server.requests[0].headers["authorization"] == f"Bearer {SECRET}"
-    for file in directory.rglob("*"):
-        if file.is_file():
-            assert SECRET.encode() not in file.read_bytes(), f"the key is in {file}"
-            assert BASE_URL.encode() not in file.read_bytes(), f"the URL is in {file}"
-    loaded = Session.load(directory)
-    try:
-        for node in nodes(loaded):
-            assert SECRET not in repr(node)
-    finally:
-        loaded.close()
-
-
-@scenario
-async def test_an_unset_key_variable_fails_the_sample_before_any_request(
-    tmp_path: Path,
-) -> None:
-    server = sse("plain")
-    async with running(tmp_path / "s", OpenAIProvider(server.transport, {}), catalog(KEY_ENV)) as (
-        s,
-        driver,
-        c,
-    ):
-        driver.send(c, "test", "hello")
-        await driver.rest(c)
-        records = [n for n in nodes(s) if isinstance(n.body, Body.Custom)]
-        assert KEY_ENV in custom_data(records[0])
-    assert server.requests == []
-
-
-def nodes(session: Session) -> list[Node]:
-    out: list[Node] = []
-    while True:
-        try:
-            out.append(session.tree.node(len(out)))
-        except LookupError:
-            return out
-
-
-def custom_data(node: Node) -> str:
-    assert isinstance(node.body, Body.Custom)
-    return node.body.data
-
-
 @pytest.mark.skipif("TAU_LIVE_BASE_URL" not in os.environ, reason="set TAU_LIVE_BASE_URL")
 @scenario
 async def test_live_a_plain_turn(tmp_path: Path) -> None:
     """Against a real server: `TAU_LIVE_BASE_URL` and `TAU_LIVE_MODEL` (the id from /v1/models)."""
     model = os.environ.get("TAU_LIVE_MODEL")
     assert model, "TAU_LIVE_MODEL must name the model when TAU_LIVE_BASE_URL is set"
-    live = catalog(model=model, base_url=os.environ["TAU_LIVE_BASE_URL"])
+    live = catalog(ALIAS, model=model, base_url=os.environ["TAU_LIVE_BASE_URL"])
     async with running(tmp_path / "s", OpenAIProvider(), live) as (s, driver, c):
         driver.send(c, "test", "Say hello in five words or fewer.")
         await driver.rest(c)
@@ -223,13 +91,11 @@ async def test_a_tool_round_trip_renders_the_tools_array_and_the_tool_message(
     """The recorded `tool_call` response, run, and the follow-up request that answers it."""
     server = sse_sequence("tool_call", "plain")
     weather = get_weather_tool()
-    session = Session.create(CONFIG, "sys", SystemClock().now(), tmp_path / "s")
-    driver = Driver(
-        session, {"openai": OpenAIProvider(server.transport, {})}, catalog(), tools=[weather]
-    )
-    driver.start()
-    c = session.cursors()[0]
-    try:
+    async with running(tmp_path / "s", OPENAI.over(server), tools=[weather]) as (
+        session,
+        driver,
+        c,
+    ):
         driver.send(c, "test", "weather in Paris?")
         await driver.rest(c)
         first, second = server.bodies
@@ -276,49 +142,9 @@ async def test_a_tool_round_trip_renders_the_tools_array_and_the_tool_message(
         assert walk[-1] == Body.Assistant(
             [Part.Text("Hello, how are you?")], Stop.End, "stop", PLAIN_META
         )
-        for node in session.tree.walk(session.cursor(c).at):
-            if isinstance(node.body, Body.Config | Body.System | Body.User | Body.Custom):
-                assert "get_weather" not in repr(node.body), "tools are not recorded"
-    finally:
-        await driver.stop()
-        session.close()
-
-
-@scenario
-async def test_no_tools_means_no_tools_key(tmp_path: Path) -> None:
-    server = sse("plain")
-    async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (_, driver, c):
-        driver.send(c, "test", "hello")
-        await driver.rest(c)
-    assert "tools" not in server.bodies[0]
-
-
-@scenario
-async def test_a_cut_off_call_with_no_id_or_name_is_recorded_in_the_failure(
-    tmp_path: Path,
-) -> None:
-    delta: dict[str, object] = {"tool_calls": [{"index": 0, "function": {"arguments": '{"ci'}}]}
-    server = Server(httpx.Response(200, stream=CutStream(chunk(delta).encode())))
-    async with running(tmp_path / "s", OpenAIProvider(server.transport, {})) as (s, driver, c):
-        driver.send(c, "test", "hello")
-        await driver.rest(c)
-        records = [n for n in nodes(s) if isinstance(n.body, Body.Custom)]
-        data = custom_data(records[0])
-        assert '{"ci' in data, "the raw argument text is kept"
-        assert "ReadError" in data
-        assert "a call was cut off and dropped" in data
-
-
-@scenario
-async def test_a_cut_off_call_with_a_name_keeps_the_name_in_the_failure(tmp_path: Path) -> None:
-    function = {"name": "get_weather", "arguments": '{"ci'}
-    delta: dict[str, object] = {"tool_calls": [{"index": 0, "function": function}]}
-    server = Server(httpx.Response(200, stream=CutStream(chunk(delta).encode())))
-    items, error = await collect(OpenAIProvider(server.transport, {}), fresh_walk())
-    assert items == []
-    assert error is not None
-    assert "'get_weather'" in str(error)
-    assert '{"ci' in str(error)
+        for body in walk:
+            if isinstance(body, Body.Config | Body.System | Body.User | Body.Custom):
+                assert "get_weather" not in repr(body), "tools are not recorded"
 
 
 @pytest.mark.skipif("TAU_LIVE_BASE_URL" not in os.environ, reason="set TAU_LIVE_BASE_URL")
@@ -335,11 +161,17 @@ async def test_live_a_tool_round_trip(tmp_path: Path) -> None:
         """Read a text file and return its contents."""
         return Path(path).read_text()
 
-    live = catalog(model=model, base_url=os.environ["TAU_LIVE_BASE_URL"])
-    session = Session.create(CONFIG, "Use tools when needed.", SystemClock().now(), tmp_path / "s")
+    live = catalog(ALIAS, model=model, base_url=os.environ["TAU_LIVE_BASE_URL"])
+    session = Session.create(
+        model_config(ALIAS), "Use tools when needed.", SystemClock().now(), tmp_path / "s"
+    )
     # StepLimit bounds the loop of sample, tools, sample: a model that keeps asking stops.
     driver = Driver(
-        session, {"openai": OpenAIProvider()}, live, tools=[read_file], extensions=[StepLimit(6)]
+        session,
+        {"openai": OpenAIProvider()},
+        live,
+        tools=[read_file],
+        extensions=[StepLimit(6)],
     )
     driver.start()
     c = session.cursors()[0]
