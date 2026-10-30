@@ -5,9 +5,9 @@
 //! model; nothing panics or raises for an expected failure (bad arguments,
 //! missing files, a command that exits nonzero).
 //!
-//! `read`, `grep` and `bash` limit their output through [`limit::Sink`]: past
-//! the limit the full output goes to an overflow file and the model gets the
-//! kept text plus a note.
+//! `grep` and `bash` limit their output through [`limit::Sink`]: past the limit
+//! the full output goes to an overflow file and the model gets the kept text plus
+//! a note. `read` uses a sink that saves nothing (the file it reads is on disk).
 
 pub mod bash;
 pub mod grep;

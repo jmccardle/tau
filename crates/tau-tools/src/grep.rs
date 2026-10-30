@@ -142,7 +142,7 @@ impl Grep {
             None => self.search_path(&search, &args)?,
         };
         cancel.check()?;
-        self.render(search, named)
+        Ok(self.render(search, named))
     }
 
     fn search_named(&self, search: &Search, files: &[String]) -> Result<()> {
@@ -197,7 +197,7 @@ impl Grep {
         Ok(false)
     }
 
-    fn render(&self, search: Search, named: bool) -> Result<String> {
+    fn render(&self, search: Search, named: bool) -> String {
         let mut all = into_data(search.found);
         let searched = search.searched.into_inner();
         all.sort_by(|a, b| a.path.cmp(&b.path));
@@ -211,13 +211,13 @@ impl Grep {
                     hits.path
                 );
                 first = false;
-                sink.push(line.as_bytes())?;
+                sink.push(line.as_bytes());
             }
         }
         let mut text = if first {
             format!("No matches found in {searched} file(s)")
         } else {
-            sink.finish()?.text
+            sink.finish().text
         };
         let mut notes = Vec::new();
         let mut binary = into_data(search.binary);
@@ -260,7 +260,7 @@ impl Grep {
         for note in notes {
             let _ = write!(text, "\n{note}");
         }
-        Ok(text)
+        text
     }
 }
 

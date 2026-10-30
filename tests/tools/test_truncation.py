@@ -141,7 +141,10 @@ def test_one_line_longer_than_the_limit_is_cut_on_a_character(
 ) -> None:
     (tmp_path / "long.txt").write_text("é" * 100 + "\n")
     head = ok(call(ReadTool(tmp_path, max_output=15), path="long.txt"))
-    assert head == "é" * 7 + "\n[line 1 is shown only in part; offset=2 continues after it]"
+    assert head == "é" * 7 + (
+        "\n[line 1 is cut at byte 14; read cannot show the rest (use bash: cut -c or tail -c);"
+        " offset=2 continues after it]"
+    )
     tail = parse_truncated(
         ok(call(BashTool(tmp_path, max_output=15, overflow_dir=overflow), command="cat long.txt"))
     )
@@ -239,3 +242,33 @@ def test_an_overflow_directory_open_to_others_or_a_symlink_is_never_written_into
 def test_the_write_tool_has_no_limit_to_exceed(tmp_path: Path) -> None:
     out = ok(call(WriteTool(tmp_path), path="f.txt", content="x" * 100_000))
     assert out == "Wrote 1 line (100000 bytes) to f.txt"
+
+
+FILE_SIZE_LIMITED = """
+import asyncio, json, resource, sys
+from tau_next import BashTool, GrepTool
+
+resource.setrlimit(resource.RLIMIT_FSIZE, (50_000, 50_000))  # a disk that fills up
+overflow = sys.argv[1] + "/overflow"
+bash = BashTool(sys.argv[1], max_output=1000, overflow_dir=overflow)
+command = json.dumps({"command": "seq 1 100000; echo LAST; exit 3"})
+print(asyncio.run(bash.call(command)))
+grep = GrepTool(sys.argv[1], max_output=1000, overflow_dir=overflow)
+print(asyncio.run(grep.call(json.dumps({"pattern": "hit"}))))
+"""
+
+
+def test_a_full_disk_costs_the_overflow_file_not_the_answer(tmp_path: Path) -> None:
+    (tmp_path / "big.txt").write_text("hit\n" * 100000)
+    done = subprocess.run(
+        [sys.executable, "-c", FILE_SIZE_LIMITED, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    bash, grep = done.stdout.splitlines()
+    for answer in (bash, grep):
+        assert "was not saved after 50000 bytes: could not write the full output" in answer
+    assert "LAST" in bash
+    assert "command exited with code 3" in bash
+    assert "big.txt:1:hit" in grep

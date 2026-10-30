@@ -9,9 +9,9 @@ fn run<C: AsRef<[u8]>>(keep: Keep, max: usize, chunks: &[C]) -> (String, tempfil
     let dir = tempfile::tempdir().unwrap();
     let mut sink = Sink::new(&limits(max, &dir), keep);
     for chunk in chunks {
-        sink.push(chunk.as_ref()).unwrap();
+        sink.push(chunk.as_ref());
     }
-    (sink.finish().unwrap().text, dir)
+    (sink.finish().text, dir)
 }
 
 fn overflow_of(dir: &tempfile::TempDir) -> Vec<u8> {
@@ -138,11 +138,11 @@ fn tail_keeps_the_end_when_the_window_has_been_trimmed() {
 /// still there, and the reason is named.
 fn unsaved_note(limits: &Limits) -> String {
     let mut sink = Sink::new(limits, Keep::Head);
-    sink.push(b"too long for four").unwrap();
-    let text = sink.finish().unwrap().text;
+    sink.push(b"too long for four");
+    let text = sink.finish().text;
     assert!(text.starts_with("too"), "{text}");
     assert!(
-        text.contains("the full output (17 bytes) was not saved: "),
+        text.contains("the full output (17 bytes) was not saved"),
         "{text}"
     );
     text
@@ -226,12 +226,22 @@ fn files_older_than_a_day_go_when_the_directory_is_opened() {
     aged("old00000.out", Duration::from_secs(2 * 24 * 60 * 60));
     aged("new00000.out", Duration::from_secs(60 * 60));
     aged("other.txt", Duration::from_secs(2 * 24 * 60 * 60));
+    aged("notes.out", Duration::from_secs(2 * 24 * 60 * 60));
+    aged("Old00000.out", Duration::from_secs(2 * 24 * 60 * 60));
     let mut sink = Sink::new(&Limits::in_dir(4, tau.clone()).unwrap(), Keep::Head);
-    sink.push(b"too long for four").unwrap();
-    drop(sink.finish().unwrap());
+    sink.push(b"too long for four");
+    drop(sink.finish());
     assert!(!tau.join("old00000.out").exists());
     assert!(tau.join("new00000.out").exists());
     assert!(tau.join("other.txt").exists(), "only .out files are ours");
+    assert!(
+        tau.join("notes.out").exists(),
+        "only names we generate are ours"
+    );
+    assert!(
+        tau.join("Old00000.out").exists(),
+        "only names we generate are ours"
+    );
 }
 
 #[test]
@@ -255,9 +265,9 @@ fn the_overflow_file_is_capped_but_counting_goes_on() {
     let text = "line 0\nline 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\n"
         .to_owned();
     for chunk in text.as_bytes().chunks(7) {
-        sink.push(chunk).unwrap();
+        sink.push(chunk);
     }
-    let finished = sink.finish().unwrap();
+    let finished = sink.finish();
     assert_eq!(overflow_of(&dir), &text.as_bytes()[..25]);
     assert!(
         finished
@@ -277,13 +287,8 @@ fn the_cap_note_speaks_in_mib_when_it_can() {
     let dir = tempfile::tempdir().unwrap();
     let limits = Limits::new(10, 2 * MIB, dir.path().join("tau")).unwrap();
     let mut sink = Sink::new(&limits, Keep::Tail);
-    sink.push(&vec![b'x'; 3 * MIB]).unwrap();
-    assert!(
-        sink.finish()
-            .unwrap()
-            .text
-            .contains("holds only the first 2 MiB]")
-    );
+    sink.push(&vec![b'x'; 3 * MIB]);
+    assert!(sink.finish().text.contains("holds only the first 2 MiB]"));
 }
 
 #[test]
@@ -304,8 +309,8 @@ fn invalid_utf8_is_replaced_and_said_so_on_the_side_of_the_omission() {
 fn finish_reports_the_lines_kept() {
     let dir = tempfile::tempdir().unwrap();
     let mut sink = Sink::new(&limits(10, &dir), Keep::Head);
-    sink.push(b"aaaa\nbbbb\ncccc\n").unwrap();
-    let finished = sink.finish().unwrap();
+    sink.push(b"aaaa\nbbbb\ncccc\n");
+    let finished = sink.finish();
     assert!(finished.truncated);
     assert_eq!(finished.kept_lines, 2);
 }

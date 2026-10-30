@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import shlex
+import shutil
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -157,8 +158,10 @@ def _trust(run: _Run, given: Path | None) -> int:
         raise TrustError(f"{start} is not a directory")
     search = find_project(start, run.environ)
     root = search.root
+    created = root is None
     if root is None:
-        if search.skipped is not None:
+        # A `.tau` passed over further up does not matter; one at `start` is in the way.
+        if search.skipped is not None and os.path.lexists(start / TAU_DIR):
             raise TrustError(f"no project: {search.skipped}")
         create_project(start)
         root = start
@@ -170,7 +173,12 @@ def _trust(run: _Run, given: Path | None) -> int:
         run.stdout.write(safe_block(report) + "\n")
         return True
 
-    ensure_trusted(root, home, ask=show_report)
+    try:
+        ensure_trusted(root, home, ask=show_report)
+    except BaseException:
+        if created:  # leave no empty `.tau/` that startup would then find and refuse
+            shutil.rmtree(root / TAU_DIR, ignore_errors=True)
+        raise
     run.stdout.write(safe_block(f"trusted {root}" if asked else f"already trusted: {root}") + "\n")
     return 0
 

@@ -81,7 +81,7 @@ tool = ReadTool(sys.argv[1])
 before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 out = asyncio.run(tool.call(json.dumps({"path": "one.txt"})))
 after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-print((after - before) // 1024, "line 1 is shown only in part" in out.value)
+print((after - before) // 1024, "line 1 is cut at byte" in out.value)
 """
 
 
