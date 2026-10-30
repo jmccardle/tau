@@ -39,6 +39,14 @@ pub enum Error {
     /// A scratchpad file that fails its checksum or decode. The file is
     /// replaced by rename, so this is damage, never a crash.
     Corrupt(PathBuf),
+    /// A log record whose bytes are intact (length and checksum agree) but
+    /// do not decode: a format change, a bug, or damage that kept the
+    /// checksum. Never a crash, so never cut. `record` counts from 0.
+    Undecodable {
+        path: PathBuf,
+        record: usize,
+        offset: usize,
+    },
     /// The log's records do not replay (`tree::Error::BadRecord`).
     Core(tau_core::tree::Error),
 }
@@ -58,6 +66,15 @@ impl fmt::Display for Error {
             Self::NotASession(p) => write!(f, "not a τ session file: {}", p.display()),
             Self::Version(v) => write!(f, "session file version {v}; this build reads {VERSION}"),
             Self::Corrupt(p) => write!(f, "damaged scratchpad file: {}", p.display()),
+            Self::Undecodable {
+                path,
+                record,
+                offset,
+            } => write!(
+                f,
+                "record {record} (byte {offset}) of {} is intact but does not decode",
+                path.display()
+            ),
             Self::Core(e) => write!(f, "the log does not replay: {e:?}"),
         }
     }
@@ -126,7 +143,7 @@ impl Store {
     ///
     /// `Leased` if another store holds the lease; `NotASession` for bad magic
     /// or a log with no `Sync`; `Version`; `Corrupt` for a damaged scratchpad
-    /// file; `Core` for records that do not replay; `Io`.
+    /// file; `Undecodable` for an intact log record that does not decode; `Core` for records that do not replay; `Io`.
     pub fn open(dir: &Path) -> Result<(Self, Session), Error> {
         let path = dir.join(LOG);
         let mut log = OpenOptions::new().read(true).append(true).open(&path)?;
@@ -134,18 +151,12 @@ impl Store {
         let mut bytes = vec![];
         log.read_to_end(&mut bytes)?;
         check_header(&bytes, LOG_MAGIC, &path)?;
-        let (records, kept) = scan(&bytes[HEADER..]);
+        let (records, kept) = scan(&bytes[HEADER..], &path)?;
         if records.is_empty() {
             return Err(Error::NotASession(path));
         }
         let end = HEADER + kept;
-        if end < bytes.len() {
-            let aside = dir.join(format!("dropped-{end}"));
-            File::create(&aside)?.write_all(&bytes[end..])?;
-            File::open(&aside)?.sync_all()?;
-            log.set_len(end as u64)?;
-            log.sync_all()?;
-        }
+        cut_tail(dir, &log, &bytes, end)?;
         let pad = read_pad(&dir.join(PAD))?;
         let session = tau_core::tree::load(records, pad).map_err(Error::Core)?;
         let store = Self {
@@ -215,6 +226,18 @@ impl Store {
     }
 }
 
+/// Keeps `bytes[end..]` aside as `dropped-<end>`, then cuts the log to `end`.
+fn cut_tail(dir: &Path, log: &File, bytes: &[u8], end: usize) -> Result<(), Error> {
+    if end < bytes.len() {
+        let aside = dir.join(format!("dropped-{end}"));
+        File::create(&aside)?.write_all(&bytes[end..])?;
+        File::open(&aside)?.sync_all()?;
+        log.set_len(end as u64)?;
+        log.sync_all()?;
+    }
+    Ok(())
+}
+
 fn lease(f: &File) -> Result<(), Error> {
     f.try_lock().map_err(|e| match e {
         TryLockError::WouldBlock => Error::Leased,
@@ -261,35 +284,66 @@ fn encode(value: &impl Serialize, out: &mut Vec<u8>) {
     out.extend_from_slice(&payload);
 }
 
-/// The record at `at` and where the next one starts; `None` if it is cut
-/// short, fails its checksum, or does not decode.
-fn decode<T: DeserializeOwned>(bytes: &[u8], at: usize) -> Option<(T, usize)> {
-    let head = bytes.get(at..at.checked_add(8)?)?;
-    let len = u32::from_le_bytes(head[..4].try_into().unwrap()) as usize;
-    let crc = u32::from_le_bytes(head[4..].try_into().unwrap());
-    let end = (at + 8).checked_add(len)?;
-    let payload = bytes.get(at + 8..end)?;
-    if checksum(&head[..4], payload) != crc {
-        return None;
-    }
-    Some((serde_json::from_slice(payload).ok()?, end))
+/// What `decode` found at a position.
+enum Decoded<T> {
+    /// A whole record and where the next one starts.
+    Record(T, usize),
+    /// Cut short or failing its checksum: a torn tail, or damage.
+    Torn,
+    /// Length and checksum agree, so the bytes are as written, but they do
+    /// not decode.
+    Undecodable,
 }
 
-/// The records up to the last `Sync` before the first bad record, and the
-/// bytes they span.
-fn scan(bytes: &[u8]) -> (Vec<Record>, usize) {
+fn decode<T: DeserializeOwned>(bytes: &[u8], at: usize) -> Decoded<T> {
+    let Some(head) = at.checked_add(8).and_then(|e| bytes.get(at..e)) else {
+        return Decoded::Torn;
+    };
+    let len = u32::from_le_bytes(head[..4].try_into().unwrap()) as usize;
+    let crc = u32::from_le_bytes(head[4..].try_into().unwrap());
+    let Some(end) = (at + 8).checked_add(len) else {
+        return Decoded::Torn;
+    };
+    let Some(payload) = bytes.get(at + 8..end) else {
+        return Decoded::Torn;
+    };
+    if checksum(&head[..4], payload) != crc {
+        return Decoded::Torn;
+    }
+    match serde_json::from_slice(payload) {
+        Ok(v) => Decoded::Record(v, end),
+        Err(_) => Decoded::Undecodable,
+    }
+}
+
+/// The records up to the last `Sync` before the first torn record, and the
+/// bytes they span. A record that is whole but does not decode is an error,
+/// wherever it is: only a short or checksum-failing record ends the scan.
+fn scan(bytes: &[u8], path: &Path) -> Result<(Vec<Record>, usize), Error> {
     let (mut records, mut batch) = (vec![], vec![]);
     let (mut at, mut kept) = (0, 0);
-    while let Some((r, next)) = decode::<Record>(bytes, at) {
-        let sync = matches!(r, Record::Sync { .. });
-        batch.push(r);
-        at = next;
-        if sync {
-            records.append(&mut batch);
-            kept = at;
+    for n in 0.. {
+        match decode::<Record>(bytes, at) {
+            Decoded::Record(r, next) => {
+                let sync = matches!(r, Record::Sync { .. });
+                batch.push(r);
+                at = next;
+                if sync {
+                    records.append(&mut batch);
+                    kept = at;
+                }
+            }
+            Decoded::Torn => break,
+            Decoded::Undecodable => {
+                return Err(Error::Undecodable {
+                    path: path.into(),
+                    record: n,
+                    offset: HEADER + at,
+                });
+            }
         }
     }
-    (records, kept)
+    Ok((records, kept))
 }
 
 fn read_pad(path: &Path) -> Result<Scratchpad, Error> {
@@ -300,7 +354,7 @@ fn read_pad(path: &Path) -> Result<Scratchpad, Error> {
     check_header(&bytes, PAD_MAGIC, path)?;
     let body = &bytes[HEADER..];
     match decode(body, 0) {
-        Some((pad, end)) if end == body.len() => Ok(pad),
+        Decoded::Record(pad, end) if end == body.len() => Ok(pad),
         _ => Err(Error::Corrupt(path.into())),
     }
 }

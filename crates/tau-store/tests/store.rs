@@ -482,6 +482,70 @@ fn a_failed_save_consumes_the_store_and_the_session_reopens_as_last_synced() {
     assert_eq!(loaded, synced);
 }
 
+/// A record as written to disk: length, CRC-32 of both, payload.
+fn with_checksum(payload: &[u8]) -> Vec<u8> {
+    let len = u32::try_from(payload.len()).unwrap().to_le_bytes();
+    let mut crc = crc32fast::Hasher::new();
+    crc.update(&len);
+    crc.update(payload);
+    let mut out = len.to_vec();
+    out.extend_from_slice(&crc.finalize().to_le_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// A session with one synced log; returns the directory and the log's bytes.
+fn synced_log() -> (tempfile::TempDir, Vec<u8>) {
+    let d = dir();
+    let (mut s, _) = Session::create("{}", "sys", 0);
+    drop(Store::create(d.path(), &mut s).unwrap());
+    let bytes = fs::read(d.path().join("log")).unwrap();
+    (d, bytes)
+}
+
+#[test]
+fn a_torn_final_record_is_still_cut() {
+    let (d, good) = synced_log();
+    let mut bytes = good.clone();
+    let whole = with_checksum(br#"{"Sync":{"pad":null}}"#);
+    bytes.extend_from_slice(&whole[..whole.len() - 3]);
+    fs::write(d.path().join("log"), bytes).unwrap();
+    let (store, _) = Store::open(d.path()).unwrap();
+    assert_eq!(store.dropped, whole.len() as u64 - 3);
+    assert_eq!(fs::read(d.path().join("log")).unwrap(), good);
+}
+
+#[test]
+fn an_intact_record_that_does_not_decode_mid_log_is_an_error() {
+    let (d, mut bytes) = synced_log();
+    let at = bytes.len();
+    bytes.extend(with_checksum(b"not json"));
+    bytes.extend(with_checksum(br#"{"Sync":{"pad":null}}"#));
+    let log = d.path().join("log");
+    fs::write(&log, &bytes).unwrap();
+    let Err(e @ Error::Undecodable { record, offset, .. }) = Store::open(d.path()) else {
+        panic!("expected Undecodable");
+    };
+    assert!(record >= 1, "after the log's own records");
+    assert_eq!(offset, at);
+    assert!(e.to_string().contains(log.to_str().unwrap()), "{e}");
+    assert_eq!(fs::read(&log).unwrap(), bytes, "the log is not cut");
+    assert!(!d.path().join(format!("dropped-{at}")).exists());
+}
+
+#[test]
+fn an_intact_final_record_that_does_not_decode_is_an_error() {
+    let (d, mut bytes) = synced_log();
+    bytes.extend(with_checksum(br#"{"NoSuchRecord":1}"#));
+    let log = d.path().join("log");
+    fs::write(&log, &bytes).unwrap();
+    assert!(matches!(
+        Store::open(d.path()),
+        Err(Error::Undecodable { .. })
+    ));
+    assert_eq!(fs::read(&log).unwrap(), bytes, "the log is not cut");
+}
+
 /// A record line as it was written before `meta` existed: no `meta` key.
 #[test]
 fn a_record_from_before_meta_loads_with_none() {

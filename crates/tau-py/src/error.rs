@@ -37,6 +37,7 @@ exceptions! {
     NotASession: PyValueError = "Not a τ log or scratchpad file.";
     Version: PyValueError = "A session file of a version this build does not read.";
     Corrupt: PyValueError = "A damaged scratchpad file.";
+    Undecodable: PyValueError = "A log record whose bytes are intact but do not decode; the log is not cut.";
     Poisoned: PyRuntimeError = "A call panicked while it held the session; load the session again.";
     WrongAnswer: PyValueError = "An answer to no job; nothing changed.";
     Closed: PyRuntimeError = "The session was closed.";
@@ -101,6 +102,7 @@ fn store_err(e: store::Error) -> PyErr {
         store::Error::NotASession(_) => NotASession::new_err(e.to_string()),
         store::Error::Version(_) => Version::new_err(e.to_string()),
         store::Error::Corrupt(_) => Corrupt::new_err(e.to_string()),
+        store::Error::Undecodable { .. } => Undecodable::new_err(e.to_string()),
         store::Error::Core(e) => tree_err(&e),
     }
 }

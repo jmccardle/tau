@@ -42,6 +42,9 @@ input's text twice.
   cut (made durable, so a session goes on from there) and kept aside as
   `dropped-<offset>`. Damage mid-log is indistinguishable from a torn tail by
   checksum alone, so it is cut too, never believed, and the bytes are kept.
+  A record whose length and checksum agree is intact: a crash cannot make
+  one that does not decode, so load fails with `Undecodable` (file and record
+  position) and cuts nothing.
 
 ## Alternatives
 
