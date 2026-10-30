@@ -16,15 +16,12 @@ from tau_next._config import ModelConfig
 from tau_next._core import Body, Node, Part, Stop
 from tau_next.events import Delta, TextDelta
 from tau_next.protocols import Finish, SampleError, Tool
+from tau_next.providers._wire import is_count, option_problems
 
 NAME = "mock"
 DEFAULT_DELAY_MS = 30
 _OPTIONS = ("reply", "delay_ms")
 _CHUNK = re.compile(r"\S+\s*|\s+")
-
-
-def _is_count(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
 class MockProvider:
@@ -35,21 +32,14 @@ class MockProvider:
         return NAME
 
     def check(self, model: ModelConfig) -> list[str]:
-        problems: list[str] = []
-        if model.provider != NAME:
-            problems.append(f"provider is {model.provider!r}, not {NAME!r}")
+        problems = option_problems(model, _OPTIONS)
         if model.base_url is not None:
             problems.append("has no use for base_url; remove it")
-        problems += [
-            f"unknown option {key!r}; known options are {list(_OPTIONS)}"
-            for key in model.options
-            if key not in _OPTIONS
-        ]
         if "reply" in model.options and (
             not isinstance(model.options["reply"], str) or not model.options["reply"]
         ):
             problems.append("option 'reply' must be a non-empty string")
-        if "delay_ms" in model.options and not _is_count(model.options["delay_ms"]):
+        if "delay_ms" in model.options and not is_count(model.options["delay_ms"]):
             problems.append("option 'delay_ms' must be a non-negative integer")
         return problems
 

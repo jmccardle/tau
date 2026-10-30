@@ -2,12 +2,12 @@
 
 Walk to request in `messages`, response to parts and deltas in `_Stream`, one per reply. The
 request carries what the walk, the tools, and `ModelConfig` say: `model`, `messages`, `stream`,
-`tools` when there are any, `max_tokens`, then the options (`_OPTIONS`), then `extra_body` last.
+`tools` when there are any, what the model's settings set (`_typed_body`), then `extra_body` last.
 """
 
 import os
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import cast
 
 import httpx
@@ -30,10 +30,11 @@ from tau_next.providers._wire import (
     Connection,
     Json,
     count,
-    is_number,
+    extra_body_problems,
+    finish,
     json_object,
-    meta_text,
-    non_finite,
+    note_usage,
+    option_problems,
     plain,
 )
 
@@ -178,11 +179,7 @@ class _Stream:
                 self.meta[key] = value
         usage = chunk.get("usage")
         if isinstance(usage, dict):
-            raw = cast("Json", usage)
-            self.meta["usage_raw"] = raw
-            normal = _usage(raw)
-            if normal is not None:
-                self.meta["usage"] = normal
+            note_usage(self.meta, cast("Json", usage), _usage)
 
     def _end_open(self) -> None:
         """Complete the open part, if any, into `held`. A call with no id or name raises and
@@ -294,14 +291,8 @@ class _Stream:
             self.finish = finish
 
     def stop(self) -> Finish:
-        if self.finish is None:
-            raise SampleError("the stream ended without a finish_reason")
-        stop = STOPS.get(self.finish)
-        if stop is None:
-            raise SampleError(f"unknown finish_reason {self.finish!r}")
-        if self.refused:
-            stop = Stop.Refused
-        return Finish(stop, self.finish, meta_text(self.meta))
+        done = finish(self.finish, STOPS, "finish_reason", self.meta)
+        return replace(done, stop=Stop.Refused) if self.refused else done
 
 
 def _tools(tools: Sequence[Tool]) -> list[Json]:
@@ -338,34 +329,17 @@ def _usage(raw: Json) -> Json | None:
     return None if cached is None else {"input": tokens, "output": output, "cached": cached}
 
 
-def _extra_body_problems(model: ModelConfig, extra: object) -> list[str]:
-    if not isinstance(extra, Mapping):
-        return ["option 'extra_body' must be an object"]
-    fields = cast("Mapping[str, object]", extra)
-    taken = _typed_keys(model)
-    return (
-        [
-            f"option 'extra_body' may not set {k!r}; the provider owns it"
-            for k in fields
-            if k in _OWNED_KEYS
-        ]
-        + [
-            f"option 'extra_body' sets {k!r}, which the model's settings already set"
-            for k in taken
-            if k in fields
-        ]
-        + [f"option 'extra_body' holds {bad!r}, which is not JSON" for bad in non_finite(fields)]
-    )
-
-
-def _typed_keys(model: ModelConfig) -> list[str]:
-    """The request keys the model's own settings already set."""
-    keys = [k for k in ("temperature", "top_p", "reasoning_effort") if k in model.options]
+def _typed_body(model: ModelConfig) -> Json:
+    """The request keys the model's own settings set, with their values."""
+    options = model.options
+    body: Json = {
+        k: options[k] for k in ("temperature", "top_p", "reasoning_effort") if k in options
+    }
     if model.max_tokens is not None:
-        keys.append("max_tokens")
-    if model.options.get("include_usage", True):
-        keys.append("stream_options")
-    return keys
+        body["max_tokens"] = model.max_tokens
+    if options.get("include_usage", True):
+        body["stream_options"] = {"include_usage": True}
+    return body
 
 
 class OpenAIProvider:
@@ -399,8 +373,6 @@ class OpenAIProvider:
     def check(self, model: ModelConfig) -> list[str]:
         """This provider needs a `base_url`, and reads the options in `_OPTIONS`."""
         problems: list[str] = []
-        if model.provider != self.name:
-            problems.append(f"provider is {model.provider!r}, not {self.name!r}")
         if model.base_url is None:
             problems.append("needs a base_url")
         elif model.base_url.rstrip("/").endswith("/chat/completions"):
@@ -409,23 +381,14 @@ class OpenAIProvider:
                 "this provider adds /chat/completions itself"
             )
         options = model.options
-        problems += [
-            f"unknown option {key!r}; known options are {list(_OPTIONS)}"
-            for key in options
-            if key not in _OPTIONS
-        ]
-        problems += [
-            f"option {key!r} must be a number"
-            for key in ("temperature", "top_p")
-            if key in options and not is_number(options[key])
-        ]
+        problems += option_problems(
+            model, _OPTIONS, numbers=("temperature", "top_p"), flags=("include_usage",)
+        )
         effort = options.get("reasoning_effort")
         if "reasoning_effort" in options and not (isinstance(effort, str) and effort):
             problems.append("option 'reasoning_effort' must be a non-empty string")
-        if "include_usage" in options and not isinstance(options["include_usage"], bool):
-            problems.append("option 'include_usage' must be true or false")
         if "extra_body" in options:
-            problems += _extra_body_problems(model, options["extra_body"])
+            problems += extra_body_problems(options["extra_body"], _OWNED_KEYS, _typed_body(model))
         return problems
 
     async def aclose(self) -> None:
@@ -452,18 +415,11 @@ class OpenAIProvider:
             "messages": messages(walk, structured=bool(tools)),
             "stream": True,
         }
-        options = model.options
-        if options.get("include_usage", True):
-            body["stream_options"] = {"include_usage": True}
         if tools:
             body["tools"] = _tools(tools)
-        if model.max_tokens is not None:
-            body["max_tokens"] = model.max_tokens
-        for name in ("temperature", "top_p", "reasoning_effort"):
-            if name in options:
-                body[name] = options[name]
-        if "extra_body" in options:
-            body.update(cast("Json", plain(options["extra_body"])))
+        body.update(_typed_body(model))
+        if "extra_body" in model.options:
+            body.update(cast("Json", plain(model.options["extra_body"])))
         return model.base_url.rstrip("/") + "/chat/completions", headers, body
 
     async def sample(

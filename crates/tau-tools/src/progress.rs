@@ -15,7 +15,7 @@
 //! it, or for the end, when it is shown as it is, lossily. Invalid bytes elsewhere are shown
 //! at once, lossily, and do not hold up what follows.
 
-use std::sync::{Condvar, Mutex};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::lock;
@@ -77,7 +77,6 @@ impl Stream {
         let mut next_at = Instant::now();
         let mut state = lock(&self.state);
         loop {
-            let now = Instant::now();
             if state.closed {
                 let text =
                     String::from_utf8_lossy(&std::mem::take(&mut state.pending)).into_owned();
@@ -87,27 +86,14 @@ impl Stream {
                 }
                 return;
             }
-            if state.pending.is_empty() {
-                state = self
-                    .wake
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let whole = whole_chars(&state.pending);
+            let now = Instant::now();
+            if whole == 0 {
+                // Nothing yet, or only the start of a character: wait for the rest (or the end).
+                state = self.wait(state, None);
             } else if now < next_at {
-                state = self
-                    .wake
-                    .wait_timeout(state, next_at - now)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .0;
+                state = self.wait(state, Some(next_at - now));
             } else {
-                let whole = whole_chars(&state.pending);
-                if whole == 0 {
-                    // Only the start of a character: wait for the rest (or the end).
-                    state = self
-                        .wake
-                        .wait(state)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    continue;
-                }
                 let text: Vec<u8> = state.pending.drain(..whole).collect();
                 drop(state);
                 // Valid UTF-8 up to `whole`, or invalid bytes the command wrote: lossy either way.
@@ -116,6 +102,26 @@ impl Stream {
                 }
                 next_at = Instant::now() + INTERVAL;
                 state = lock(&self.state);
+            }
+        }
+    }
+
+    /// Wait for a wake-up, or for `timeout` if there is one. A poisoned lock is taken as it is.
+    fn wait<'a>(
+        &self,
+        state: MutexGuard<'a, State>,
+        timeout: Option<Duration>,
+    ) -> MutexGuard<'a, State> {
+        match timeout {
+            None => self
+                .wake
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner),
+            Some(t) => {
+                self.wake
+                    .wait_timeout(state, t)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0
             }
         }
     }
