@@ -200,7 +200,7 @@ whose `provider` is not its own.
    thinking block; checked only when the walk ends in tool results, on the loop's first
    assistant message), goes as call markup with its results
    as `[tool result ...]` user text; empty assistant turns are dropped and neighbours merge;
-   a `System` node after the start becomes user text `[system: ...]`; ids the API refuses
+   a `System` node after the start becomes user text `[system note: ...]`; ids the API refuses
    are mapped by a pure function (bad characters to `_`, plus a hash). Replay that cannot
    become a `Replay` fails the sample. Caching marks the system text and the last message
    (default on); a turn that adds 20 or more blocks past the last mark misses the cache
@@ -230,11 +230,11 @@ whose `provider` is not its own.
    - *Errors can arrive inside a 200 stream* (`{"error": {"code": 503, ...}}`), after parts.
    - *Thoughts are counted separately*: `thoughtsTokenCount` is not in `candidatesTokenCount`.
      Normalized `output` is their sum.
-   - Rules the review of the walk module asked of a provider, kept local to `gemini.py` for a
-     later move into the walk: a batch whose call arguments are not a JSON object goes as text
-     with its results; model turns left empty (unsigned thinking only) are dropped and
-     neighbouring contents merge; a `System` node after the first message is a
-     `[system note: ...]` user turn; data core refuses as replay fails the sample.
+   - Rules the review of the walk module asked of a provider, now in `_walk` beside Anthropic's
+     (item 18): a batch whose call arguments are not a JSON object goes as text with its
+     results; model turns left empty (unsigned thinking only) are dropped and neighbouring
+     contents merge; a `System` node after the first message is a `[system note: ...]` user
+     turn. Data core refuses as replay fails the sample, which stays in the provider.
 17. **A failed reply says why.** A sample that failed after parts arrived saved an
    `Error` reply, and the error text went only to `post_step` (`Ending::Failed`): a
    Gemini 503 inside the stream left a lone `Thinking` part and no reason in the tree.
@@ -246,6 +246,21 @@ whose `provider` is not its own.
    Rust change. The no-parts case is unchanged (a `sample_error` node holding the
    text; the sample left no reply to carry it). An old log loads: its failed replies
    just have no `error` entry.
+
+18. **One HTTP module and one walk for the three hosted providers.** `_wire.Connection` holds
+   the client (per loop, `ProviderClosed`, `aclose`) and the sample loop that all three had
+   copied; each provider keeps its request, its `_Stream`, and how its error bodies read
+   (Anthropic leads with the error `type`; Google's `RetryInfo` is read in `gemini.py`, since no
+   other API sends it). `_walk.turns` takes the rules that were local: `object_args`
+   (Anthropic and Gemini; a blank `args_raw` is `{}` for both, which Gemini used to send as text),
+   `structured` (Anthropic sends no `tool_use` without `tools`; nothing says Gemini refuses
+   `functionCall` parts without `tools`, so it does not ask), and the provider hook `text_from`
+   (only Anthropic's manual thinking depends on what a provider would send). `Messages` does
+   the merge and drops what a provider rendered empty; what counts as empty stays the
+   provider's. OpenAI asks for `object_args` only: llama.cpp answers HTTP 500 "Failed to parse tool call
+   arguments as JSON" to a history call whose `arguments` is `{"p"` (probed by hand), and an empty
+   `arguments` goes as `{}`. It offers tools whenever it has any, so it has no use for `structured`. The system note
+   is `[system note: ...]` everywhere. A negative token count is malformed for all three.
 
 ## Open
 

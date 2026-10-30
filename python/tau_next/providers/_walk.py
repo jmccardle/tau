@@ -7,11 +7,14 @@ provider. The text markup (`call_markup`, `outcome_markup`, `stop_note`) is shar
 shows the model the same thing.
 """
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+import json
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
+from typing import cast
 
 from tau_next._core import Body, Node, Outcome, Part, Stop
 from tau_next.protocols import SampleError
+from tau_next.providers._wire import Json
 
 # The stops a reply is noted for when its calls cannot run (model.md 10.6).
 _STOP_NOTES: dict[Stop, str] = {
@@ -95,6 +98,25 @@ def stop_note(note: str) -> str:
     return f"[reply stopped: {note}]"
 
 
+def system_note(text: str) -> str:
+    """A `System` node after the walk's start, for a provider whose one system instruction
+    cannot hold it: user text, since "from here on" is what the node means."""
+    return f"[system note: {text}]"
+
+
+def call_object(call: Part.Call) -> Json | None:
+    """The arguments of a call as the object a wire `input` or `args` must be: `args_raw`
+    parsed (no arguments is `{}`); `None` if it is not a JSON object (a call cut off, or one
+    another provider let through)."""
+    if not call.args_raw.strip():
+        return {}
+    try:
+        parsed: object = json.loads(call.args_raw)
+    except ValueError:
+        return None
+    return cast("Json", parsed) if isinstance(parsed, dict) else None
+
+
 def _calls(body: Body) -> list[Part.Call]:
     if not isinstance(body, Body.Assistant):
         return []
@@ -128,9 +150,7 @@ def _results(body: Body.Results, batch: Body | None) -> Turn:
     return UserTurn("\n".join(outcome_markup(call, o) for call, o, _ in body.outcomes))
 
 
-def turns(walk: Sequence[Node]) -> list[Turn]:
-    """The turns of a walk. `Config` and `Custom` nodes never reach the model. Raises
-    `SampleError` for a `Results` that does not answer its batch call for call."""
+def _base_turns(walk: Sequence[Node]) -> list[Turn]:
     bearing = [n.body for n in walk if not isinstance(n.body, Body.Config | Body.Custom)]
     out: list[Turn] = []
     for i, body in enumerate(bearing):
@@ -148,3 +168,81 @@ def turns(walk: Sequence[Node]) -> list[Turn]:
             case _:
                 raise SampleError(f"a body this provider cannot send: {body}")
     return out
+
+
+def _results_text(results: ToolResults) -> str:
+    """A batch's results as `outcome_markup` lines (`CallResult.text` is their `outcome_text`)."""
+    return "\n".join(f"[tool result {r.id}: {r.text}]" for r in results.results)
+
+
+def turns(
+    walk: Sequence[Node],
+    *,
+    structured: bool = True,
+    object_args: bool = False,
+    text_from: Callable[[list[Turn]], int | None] | None = None,
+) -> list[Turn]:
+    """The turns of a walk. `Config` and `Custom` nodes never reach the model. Raises
+    `SampleError` for a `Results` that does not answer its batch call for call.
+
+    A runnable batch can still be one the provider's API would refuse, and a walk that makes
+    the API refuse fails every later sample on the branch (`model.md` 10.7). So a batch goes as
+    text, its `Results` becoming a `UserTurn` of result lines, when: `structured` is false (the
+    request offers no tools, so the API takes no calls); `object_args` and a call's `args_raw`
+    is not a JSON object (see `call_object`); or its index is at or past the one `text_from`
+    names. `text_from` gets the turns as first read and returns an index or `None`: a rule
+    only the provider can judge (Anthropic's manual thinking)."""
+    read = _base_turns(walk)
+    start = None if text_from is None else text_from(read)
+    out: list[Turn] = []
+    as_text = False
+    for i, turn in enumerate(read):
+        if isinstance(turn, AssistantTurn) and turn.runnable:
+            as_text = (
+                not structured
+                or (start is not None and i >= start)
+                or (object_args and not _object_calls(turn))
+            )
+            out.append(replace(turn, runnable=False) if as_text else turn)
+        elif isinstance(turn, ToolResults) and as_text:
+            out.append(UserTurn(_results_text(turn)))
+            as_text = False
+        else:
+            out.append(turn)
+    return out
+
+
+def _object_calls(turn: AssistantTurn) -> bool:
+    return all(call_object(p) is not None for p in turn.parts if isinstance(p, Part.Call))
+
+
+class Messages:
+    """Wire messages built turn by turn. `items_key` is the key of a message's list (`content`,
+    `parts`). Neighbouring turns of one role are one message (the APIs want roles to
+    alternate), and a turn with nothing to send leaves none, so what it separated merges."""
+
+    def __init__(self, items_key: str) -> None:
+        self._key = items_key
+        self._instruction: list[str] = []
+        self.out: list[Json] = []
+
+    def add(self, role: str, items: list[Json]) -> None:
+        if not items:
+            return
+        if self.out and self.out[-1]["role"] == role:
+            cast("list[Json]", self.out[-1][self._key]).extend(items)
+        else:
+            self.out.append({"role": role, self._key: items})
+
+    def system(self, text: str, item: Callable[[str], Json]) -> None:
+        """A `System` turn: the instruction while no message has been made, else a user `item`
+        holding `system_note(text)`."""
+        if self.out:
+            self.add("user", [item(system_note(text))])
+        else:
+            self._instruction.append(text)
+
+    @property
+    def instruction(self) -> str | None:
+        """The leading `System` texts, blank-line separated; `None` if there were none."""
+        return "\n\n".join(self._instruction) if self._instruction else None

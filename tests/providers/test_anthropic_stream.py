@@ -3,13 +3,11 @@ usage, errors, and the one long-lived client. Streams are written by hand (anthr
 
 import asyncio
 import json
-from dataclasses import replace
 from pathlib import Path
 
 import httpx
 import pytest
 from anthropic_streams import (
-    ENVIRON,
     HEADERS,
     MODEL,
     RESOLVED,
@@ -33,7 +31,6 @@ from anthropic_streams import (
 )
 from fakes import FakeTool
 from harness import scenario
-from test_openai_contract import KeepAliveServer
 from transcripts import GatedStream, Server, fresh_walk
 
 from tau_next import (
@@ -43,7 +40,6 @@ from tau_next import (
     Finish,
     Live,
     Part,
-    ProviderClosed,
     Replay,
     Session,
     Stop,
@@ -51,7 +47,6 @@ from tau_next import (
     ThinkingDelta,
     replay_for,
 )
-from tau_next.providers.anthropic import AnthropicProvider
 
 SIGNED = Part.Thinking(
     THINKING, Replay("anthropic", json.dumps({"type": "thinking", "signature": SIGNATURE}))
@@ -376,48 +371,6 @@ async def test_redacted_thinking_comes_back_on_the_next_request(tmp_path: Path) 
     }
 
 
-# One client
-
-
-class CountingTransport(httpx.AsyncBaseTransport):
-    """A network stand-in that counts the requests it serves and the times it is closed: a
-    client that is closed per sample closes its transport per sample."""
-
-    def __init__(self, server: Server) -> None:
-        self._inner = server.transport
-        self.requests = 0
-        self.closes = 0
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        self.requests += 1
-        return await self._inner.handle_async_request(request)
-
-    async def aclose(self) -> None:
-        self.closes += 1
-
-
-@scenario
-async def test_many_samples_share_one_client_until_aclose() -> None:
-    transport = CountingTransport(stream(message(text(0, ["x"]))))
-    anthropic = AnthropicProvider(transport=transport, environ=ENVIRON)
-    for _ in range(4):
-        _, error = await collect(anthropic, fresh_walk(), RESOLVED)
-        assert error is None
-    assert (transport.requests, transport.closes) == (4, 0)
-    await anthropic.aclose()
-    assert transport.closes == 1
-    _, error = await collect(anthropic, fresh_walk(), RESOLVED)
-    assert isinstance(error, ProviderClosed)
-
-
-def test_a_program_that_runs_one_event_loop_per_command_keeps_working() -> None:
-    anthropic = provider(stream(message(text(0, ["x"]))))
-    for _ in range(2):
-        items, error = asyncio.run(collect(anthropic, fresh_walk(), RESOLVED))
-        assert error is None
-        assert items[0] == Part.Text("x")
-
-
 @scenario
 async def test_the_request_id_header_is_kept_in_meta_on_success_and_on_failure() -> None:
     headers = {**HEADERS, "request-id": "req_018EeWyXxfu5pfWkrYcMdjWG"}
@@ -439,17 +392,3 @@ async def test_a_conflict_error_event_is_status_409() -> None:
     _, error = await collect(provider(stream(body)), fresh_walk(), RESOLVED)
     assert error is not None
     assert error.status == 409
-
-
-@scenario
-async def test_two_sequential_samples_use_one_connection() -> None:
-    server = KeepAliveServer(message(text(0, ["hi"])))
-    with server.running() as url:
-        anthropic = AnthropicProvider(environ=ENVIRON)
-        model = replace(RESOLVED, base_url=url.removesuffix("/v1"))
-        for _ in range(3):
-            items, error = await collect(anthropic, fresh_walk(), model)
-            assert error is None
-            assert items[0] == Part.Text("hi")
-        await anthropic.aclose()
-    assert server.connections == 1

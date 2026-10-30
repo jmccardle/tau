@@ -7,12 +7,11 @@ request carries `systemInstruction` and `contents` from the walk, `tools` when t
 never in the URL.
 """
 
-import asyncio
 import json
 import os
 import re
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import cast
 
@@ -21,29 +20,30 @@ import httpx
 from tau_next._config import ConfigError, ModelConfig
 from tau_next._core import BadReplay, Node, Part, Replay, Stop
 from tau_next.events import CallArgs, CallNamed, Delta, TextDelta, ThinkingDelta
-from tau_next.protocols import Finish, ProviderClosed, SampleError, Tool, replay_for
+from tau_next.protocols import Finish, SampleError, Tool, replay_for
 from tau_next.providers._walk import (
     AssistantTurn,
+    Messages,
     SystemTurn,
     ToolResults,
     UserTurn,
     call_markup,
+    call_object,
     stop_note,
     turns,
 )
-from tau_next.providers.openai import (
-    _count,  # pyright: ignore[reportPrivateUsage]
-    _error_text,  # pyright: ignore[reportPrivateUsage]
-    _events,  # pyright: ignore[reportPrivateUsage]
-    _is_number,  # pyright: ignore[reportPrivateUsage]
-    _non_finite,  # pyright: ignore[reportPrivateUsage]
-    _plain,  # pyright: ignore[reportPrivateUsage]
-    _retry_after,  # pyright: ignore[reportPrivateUsage]
+from tau_next.providers._wire import (
+    Connection,
+    Json,
+    count,
+    is_number,
+    json_object,
+    meta_text,
+    non_finite,
+    plain,
 )
 
-Json = dict[str, object]
 NAME = "gemini"
-HTTP_OK = 200
 DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 _OPTIONS = ("temperature", "top_p", "top_k", "thinking", "safety_settings", "extra_body")
 _THINKING = ("include_thoughts", "budget", "level")
@@ -95,11 +95,8 @@ def _call_part(call: Part.Call) -> Json:
     """A runnable call as a `functionCall` part. Gemini wants the arguments as an object, so
     `args_raw` is parsed here. The `id` goes back only when the API gave one (it is in the replay
     data); an id this provider made up, or another provider's, is never sent."""
-    try:
-        args = json.loads(call.args_raw)
-    except ValueError as e:
-        raise SampleError(f"call {call.id} ({call.tool}): arguments are not JSON: {e}") from e
-    if not isinstance(args, dict):
+    args = call_object(call)
+    if args is None:
         raise SampleError(f"call {call.id} ({call.tool}): arguments are not a JSON object")
     function: Json = {"name": call.tool, "args": args}
     wire_id = _wire_id(call)
@@ -118,11 +115,10 @@ def _wire_id(call: Part.Call) -> str | None:
     return wire_id
 
 
-def _model_parts(turn: AssistantTurn, runnable: bool) -> list[Json]:
+def _model_parts(turn: AssistantTurn) -> list[Json]:
     """Parts in reply order. Text goes as it is (an empty one only when it carries a
     signature). A `Thinking` part goes only when Gemini signed it: unsigned thinking is never
-    sent (`model.md` 10.4). Calls are `functionCall` parts when `runnable` (the turn is, and
-    its arguments are objects), else text
+    sent (`model.md` 10.4). Calls are `functionCall` parts when the turn is runnable, else text
     (`model.md` 10.6)."""
     out: list[Json] = []
     for part in turn.parts:
@@ -135,7 +131,7 @@ def _model_parts(turn: AssistantTurn, runnable: bool) -> list[Json]:
                 signature = _signature(part)
                 if signature is not None:
                     out.append(_signed({"text": text, "thought": True}, signature))
-            case Part.Call() if runnable:
+            case Part.Call() if turn.runnable:
                 out.append(_call_part(part))
             case Part.Call():
                 out.append({"text": call_markup(part)})
@@ -146,9 +142,9 @@ def _model_parts(turn: AssistantTurn, runnable: bool) -> list[Json]:
     return out
 
 
-def _responses(results: ToolResults, calls: Sequence[Part.Call]) -> Json:
-    """One user content of `functionResponse` parts, in the batch's call order (Gemini matches
-    parallel responses by order, and by `id` where the API gave one)."""
+def _responses(results: ToolResults, calls: Sequence[Part.Call]) -> list[Json]:
+    """The `functionResponse` parts of one user content, in the batch's call order (Gemini
+    matches parallel responses by order, and by `id` where the API gave one)."""
     parts: list[Json] = []
     for result, call in zip(results.results, calls, strict=True):
         response: Json = {("error" if result.error else "result"): result.text}
@@ -157,42 +153,7 @@ def _responses(results: ToolResults, calls: Sequence[Part.Call]) -> Json:
         if wire_id is not None:
             function["id"] = wire_id
         parts.append({"functionResponse": function})
-    return {"role": "user", "parts": parts}
-
-
-def _args_are_objects(turn: AssistantTurn) -> bool:
-    """True when every call's `args_raw` is a JSON object, which `functionCall.args` must be.
-    One that is not (another provider's cut-off or empty call, saved with its result) makes the
-    whole batch text: failing the sample would fail every later sample on the branch."""
-    for part in turn.parts:
-        if isinstance(part, Part.Call):
-            try:
-                if not isinstance(json.loads(part.args_raw), dict):
-                    return False
-            except ValueError:
-                return False
-    return True
-
-
-def _results_as_text(results: ToolResults) -> Json:
-    """A batch that went as text: its results as `[tool result <id>: <text>]` lines, which is what
-    `outcome_markup` makes of the same outcomes (`CallResult.text` is already their text)."""
-    lines = [f"[tool result {r.id}: {r.text}]" for r in results.results]
-    return {"role": "user", "parts": [{"text": "\n".join(lines)}]}
-
-
-def _merged(history: list[Json]) -> list[Json]:
-    """Neighbouring contents of one role joined into one (Gemini wants roles to alternate once
-    an empty reply has been dropped). Parts are only concatenated: a signed text part never
-    merges with its neighbour."""
-    out: list[Json] = []
-    for content in history:
-        parts = list(cast("list[Json]", content["parts"]))
-        if out and out[-1]["role"] == content["role"]:
-            cast("list[Json]", out[-1]["parts"]).extend(parts)
-        else:
-            out.append({"role": content["role"], "parts": parts})
-    return out
+    return parts
 
 
 def contents(walk: Sequence[Node]) -> tuple[str | None, list[Json]]:
@@ -202,28 +163,23 @@ def contents(walk: Sequence[Node]) -> tuple[str | None, list[Json]]:
     if there are none). A `System` node later in the walk is a user turn reading
     `[system note: <text>]`: `systemInstruction` is one string for the whole request, and a
     later node means "from here on". A reply with nothing to send (only unsigned thinking, cut
-    off; no parts) is left out and its neighbours merge. `Config` and `Custom` nodes never reach
-    the model."""
-    system: list[str] = []
-    out: list[Json] = []
-    calls: list[Part.Call] | None = None  # the previous reply's calls, if it went as calls
-    for turn in turns(walk):
+    off; no parts) is left out and its neighbours merge. A batch whose call arguments are not a
+    JSON object (`functionCall.args` must be one) goes as text with its results. `Config` and
+    `Custom` nodes never reach the model."""
+    messages = Messages("parts")
+    calls: list[Part.Call] = []  # the previous reply's calls
+    for turn in turns(walk, object_args=True):
         match turn:
-            case SystemTurn(text=text) if not out:
-                system.append(text)
             case SystemTurn(text=text):
-                out.append({"role": "user", "parts": [{"text": f"[system note: {text}]"}]})
+                messages.system(text, lambda note: {"text": note})
             case UserTurn(text=text):
-                out.append({"role": "user", "parts": [{"text": text}]})
+                messages.add("user", [{"text": text}])
             case AssistantTurn():
-                runnable = turn.runnable and _args_are_objects(turn)
-                parts = _model_parts(turn, runnable)
-                if parts:
-                    out.append({"role": "model", "parts": parts})
-                calls = [p for p in turn.parts if isinstance(p, Part.Call)] if runnable else None
+                messages.add("model", _model_parts(turn))
+                calls = [p for p in turn.parts if isinstance(p, Part.Call)]
             case ToolResults():
-                out.append(_results_as_text(turn) if calls is None else _responses(turn, calls))
-    return ("\n\n".join(system) if system else None), _merged(out)
+                messages.add("user", _responses(turn, calls))
+    return messages.instruction, messages.out
 
 
 def _tools(tools: Sequence[Tool]) -> list[Json]:
@@ -263,12 +219,6 @@ def _replay(data: Json) -> Replay:
         raise SampleError(f"the response holds data that cannot be kept for replay: {e}") from e
 
 
-def _json(value: object, what: str) -> Json:
-    if not isinstance(value, dict):
-        raise SampleError(f"{what} is not a JSON object: {value!r}")
-    return cast("Json", value)
-
-
 def _delay(error: Json) -> float | None:
     """Seconds from the `RetryInfo` in an error object's `details`, if it has one."""
     details = error.get("details")
@@ -297,12 +247,12 @@ def _usage(raw: Json) -> Json | None:
     prompt count or with a malformed one. `input` is `promptTokenCount` (it includes the cached
     tokens). `output` is `candidatesTokenCount` plus `thoughtsTokenCount`: thinking is billed as
     output but reported apart. A count the API leaves out is 0 (proto3 omits zeros)."""
-    prompt = _count(raw.get("promptTokenCount"))
+    prompt = count(raw.get("promptTokenCount"))
     if prompt is None:
         return None
     counts: list[int] = []
     for key in ("candidatesTokenCount", "thoughtsTokenCount", "cachedContentTokenCount"):
-        value = _count(raw.get(key, 0))
+        value = count(raw.get(key, 0))
         if value is None:
             return None
         counts.append(value)
@@ -383,11 +333,11 @@ class _Stream:
         sessions and restarts with nothing to coordinate (a counter would repeat). The API's id
         is kept in the replay data as `id` and is sent back; a made-up one is marked
         `synthesized_id` there and never sent."""
-        function = _json(part["functionCall"], "a functionCall")
+        function = json_object(part["functionCall"], "a functionCall")
         name = function.get("name")
         if not (isinstance(name, str) and name):
             raise SampleError(f"a functionCall has no name: {function}")
-        args = _json(function.get("args", {}), "a functionCall's args")
+        args = json_object(function.get("args", {}), "a functionCall's args")
         wire_id = function.get("id")
         if wire_id is not None and not (isinstance(wire_id, str) and wire_id):
             raise SampleError(f"a functionCall's id is not a string: {wire_id!r}")
@@ -411,15 +361,16 @@ class _Stream:
     def _parts(self, raw: object) -> list[Part | Delta]:
         out: list[Part | Delta] = []
         for item in cast("list[object]", raw) if isinstance(raw, list) else []:
-            part = _json(item, "a part")
+            part = json_object(item, "a part")
             extra = set(part) - _PART_KEYS
             if extra:
                 raise SampleError(f"a part this provider cannot read: {sorted(extra)}")
             out += self._call(part) if "functionCall" in part else self._text(part)
         return out
 
-    def meta_text(self) -> str | None:
-        return json.dumps(self.meta) if self.meta else None
+    @property
+    def done(self) -> bool:
+        return self.finish is not None or self.blocked is not None
 
     def feed(self, chunk: Json) -> list[Part | Delta]:
         """The parts and deltas this chunk produced, in order: a part comes before the first
@@ -435,10 +386,10 @@ class _Stream:
             raise SampleError(
                 "the stream carries other than one candidate; this provider reads one"
             )
-        candidate = _json(cast("list[object]", candidates)[0], "a candidate")
+        candidate = json_object(cast("list[object]", candidates)[0], "a candidate")
         if candidate.get("index", 0) != 0:
             raise SampleError("the stream carries a candidate other than index 0")
-        content = _json(candidate.get("content") or {}, "a candidate's content")
+        content = json_object(candidate.get("content") or {}, "a candidate's content")
         out = self._parts(content.get("parts"))
         message = candidate.get("finishMessage")
         if isinstance(message, str) and message:
@@ -451,7 +402,7 @@ class _Stream:
 
     def stop(self) -> Finish:
         if self.blocked is not None:
-            return Finish(Stop.Refused, self.blocked, self.meta_text())
+            return Finish(Stop.Refused, self.blocked, meta_text(self.meta))
         if self.finish is None:
             raise SampleError("the stream ended without a finishReason")
         stop = STOPS.get(self.finish)
@@ -463,7 +414,7 @@ class _Stream:
             )
         if stop == Stop.End and self.calls:
             stop = Stop.Tools
-        return Finish(stop, self.finish, self.meta_text())
+        return Finish(stop, self.finish, meta_text(self.meta))
 
 
 # Options
@@ -479,7 +430,7 @@ def _extra_problems(model: ModelConfig, extra: object) -> list[str]:
         if k in _OWNED_KEYS
     ]
     problems += [
-        f"option 'extra_body' holds {bad!r}, which is not JSON" for bad in _non_finite(fields)
+        f"option 'extra_body' holds {bad!r}, which is not JSON" for bad in non_finite(fields)
     ]
     if "safetySettings" in fields and "safety_settings" in model.options:
         problems.append("option 'extra_body' sets 'safetySettings', which 'safety_settings' sets")
@@ -577,10 +528,9 @@ class GeminiProvider:
     """Samples Gemini's `streamGenerateContent` (`?alt=sse`) for the `ModelConfig` the driver
     resolved.
 
-    One `httpx.AsyncClient` serves every sample, made on the first and closed by `aclose()`,
-    after which a sample fails with `ProviderClosed`; a client belongs to the event loop that made
-    it (as in `OpenAIProvider`). `transport` replaces the network (a test's
-    `httpx.MockTransport`); `environ` is where `api_key_env` is looked up, at sample time.
+    One client serves every sample (see `Connection`). `transport` replaces the network (a
+    test's `httpx.MockTransport`); `environ` is where `api_key_env` is looked up, at sample
+    time.
 
     Settings: `base_url` defaults to the official endpoint; a proxy sets it. A key is required
     (`api_key_env` or `api_key`) and goes in the `x-goog-api-key` header. `max_tokens` is
@@ -600,12 +550,8 @@ class GeminiProvider:
         environ: Mapping[str, str] | None = None,
         timeout: httpx.Timeout | None = None,
     ) -> None:
-        self._transport = transport
         self._environ = os.environ if environ is None else environ
-        self._timeout = timeout or httpx.Timeout(10.0, read=300.0)
-        self._http: httpx.AsyncClient | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None  # the loop `_http` belongs to
-        self._closed = False
+        self._connection = Connection(transport, timeout, body_wait=_retry_delay)
 
     @property
     def name(self) -> str:
@@ -628,7 +574,7 @@ class GeminiProvider:
         problems += [
             f"option {key!r} must be a number"
             for key in ("temperature", "top_p")
-            if key in options and not _is_number(options[key])
+            if key in options and not is_number(options[key])
         ]
         top_k = options.get("top_k")
         if "top_k" in options and not (isinstance(top_k, int) and not isinstance(top_k, bool)):
@@ -643,22 +589,7 @@ class GeminiProvider:
 
     async def aclose(self) -> None:
         """Close the client and its connections. Later samples fail."""
-        self._closed = True
-        client, self._http = self._http, None
-        if client is not None and self._loop is asyncio.get_running_loop():
-            await client.aclose()
-        # a client of another loop is dropped: that loop is gone, and it cannot be awaited here
-
-    def _client(self) -> httpx.AsyncClient:
-        if self._closed:
-            raise ProviderClosed("this provider was closed; build a new one to sample again")
-        loop = asyncio.get_running_loop()
-        if self._http is not None and self._loop is not loop:
-            self._http = None  # its loop is gone (a REPL runs `asyncio.run` per command)
-        if self._http is None:
-            self._http = httpx.AsyncClient(transport=self._transport, timeout=self._timeout)
-            self._loop = loop
-        return self._http
+        await self._connection.aclose()
 
     def request(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
@@ -687,7 +618,7 @@ class GeminiProvider:
         if tools:
             body["tools"] = _tools(tools)
         options = model.options
-        extra = cast("Json", _plain(options["extra_body"])) if "extra_body" in options else {}
+        extra = cast("Json", plain(options["extra_body"])) if "extra_body" in options else {}
         generation: Json = {}
         if model.max_tokens is not None:
             generation["maxOutputTokens"] = model.max_tokens
@@ -702,30 +633,12 @@ class GeminiProvider:
         if generation:
             body["generationConfig"] = generation
         if "safety_settings" in options:
-            body["safetySettings"] = _plain(options["safety_settings"])
+            body["safetySettings"] = plain(options["safety_settings"])
         body.update(extra)
         name = model.model if "/" in model.model else f"models/{model.model}"
         base = (model.base_url or DEFAULT_BASE_URL).rstrip("/")
         url = f"{base}/{name}:streamGenerateContent?alt=sse"
         return url, {"x-goog-api-key": cast("str", key)}, body
-
-    @staticmethod
-    async def _refuse(response: httpx.Response) -> None:
-        """Raise the `SampleError` for an error response, with its status and wait taken
-        (the `Retry-After` header, else the body's `RetryInfo`)."""
-        status = response.status_code
-        wait = _retry_after(response.headers.get("retry-after"))
-        try:
-            body = await response.aread()
-        except httpx.HTTPError as e:
-            raise SampleError(
-                f"HTTP {status}: the error body could not be read ({type(e).__name__}: {e})",
-                status=status,
-                retry_after=wait,
-            ) from e
-        if wait is None:
-            wait = _retry_delay(body)
-        raise SampleError(_error_text(status, body), status=status, retry_after=wait)
 
     async def sample(
         self, walk: Sequence[Node], model: ModelConfig, tools: Sequence[Tool]
@@ -739,34 +652,8 @@ class GeminiProvider:
         with a `blockReason`) ends as `Refused`, the reason in `finish_reason` and the block in
         `meta`."""
         url, headers, body = self.request(walk, model, tools)
-        client = self._client()
-        reply = _Stream()
-        error: SampleError | None = None
-        try:
-            async with client.stream("POST", url, headers=headers, json=body) as response:
-                if response.status_code != HTTP_OK:
-                    await self._refuse(response)
-                async for chunk in _chunks(response):
-                    for item in reply.feed(chunk):
-                        yield item
-        except httpx.HTTPError as e:
-            kind = ProviderClosed if self._closed else SampleError
-            error = kind(f"{type(e).__name__}: {e}")
-        except SampleError as e:
-            error = e
-        if error is None or reply.finish is not None or reply.blocked is not None:
-            try:
-                finish = reply.stop()
-            except SampleError as e:
-                error = e
-            else:
-                yield finish
-                return
-        assert error is not None
-        error.meta = reply.meta_text()
-        for part in reply.close():
-            yield part
-        raise error
+        async for item in self._connection.sample(url, headers, body, _Stream()):
+            yield item
 
 
 def _thinking_config(thinking: Mapping[str, object]) -> Json:
@@ -776,12 +663,3 @@ def _thinking_config(thinking: Mapping[str, object]) -> Json:
         "level": "thinkingLevel",
     }
     return {wire[k]: v for k, v in thinking.items()}
-
-
-async def _chunks(response: httpx.Response) -> AsyncIterator[Json]:
-    """The decoded chunks, to the end of the body (so the connection goes back to the pool)."""
-    async for data in _events(response):
-        try:
-            yield _json(json.loads(data), "a stream chunk")
-        except ValueError as e:
-            raise SampleError(f"malformed SSE data {data[:200]!r}: {e}") from e

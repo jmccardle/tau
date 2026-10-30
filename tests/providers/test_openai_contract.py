@@ -3,9 +3,6 @@ error status, and normalized usage."""
 
 import asyncio
 import json
-import threading
-from collections.abc import AsyncIterator, Iterator
-from contextlib import contextmanager
 from email.utils import formatdate
 from pathlib import Path
 from time import time
@@ -37,8 +34,6 @@ from tau_next import (
     Live,
     ModelConfig,
     Part,
-    ProviderClosed,
-    SampleError,
     Stop,
     TextDelta,
     ThinkingDelta,
@@ -47,79 +42,6 @@ from tau_next import (
 from tau_next.providers.openai import OpenAIProvider
 
 DONE = "data: [DONE]\n\n"
-
-
-class CountingTransport(httpx.AsyncBaseTransport):
-    """A network stand-in that counts the requests it serves and the times it is closed:
-    a client that is closed per sample closes its transport per sample."""
-
-    def __init__(self, server: Server) -> None:
-        self._inner = server.transport
-        self.requests = 0
-        self.closes = 0
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        self.requests += 1
-        return await self._inner.handle_async_request(request)
-
-    async def aclose(self) -> None:
-        self.closes += 1
-
-
-class KeepAliveServer:
-    """A real HTTP/1.1 server on 127.0.0.1, in its own thread and event loop (so it outlives
-    the loops a test runs samples on). It answers every request with `body` as an SSE
-    response of known length, on a connection it keeps open, and counts the connections.
-    With `stall`, it instead sends that much of `body`, promises more, and goes quiet."""
-
-    def __init__(self, body: str, stall: int | None = None) -> None:
-        self._body = body.encode()
-        self._stall = stall
-        self.connections = 0
-        self._loop = asyncio.new_event_loop()
-        self._server: asyncio.Server | None = None
-
-    async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        self.connections += 1
-        try:
-            while True:
-                head = await reader.readuntil(b"\r\n\r\n")
-                length = 0
-                for line in head.split(b"\r\n"):
-                    if line.lower().startswith(b"content-length:"):
-                        length = int(line.split(b":")[1])
-                await reader.readexactly(length)
-                size = len(self._body) + (0 if self._stall is None else 10)
-                writer.write(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n"
-                    + f"content-length: {size}\r\n\r\n".encode()
-                )
-                writer.write(self._body if self._stall is None else self._body[: self._stall])
-                await writer.drain()
-                if self._stall is not None:
-                    await asyncio.sleep(60)  # the promised rest never comes
-        except (EOFError, ConnectionError, asyncio.CancelledError):
-            pass
-        finally:
-            writer.close()
-
-    @contextmanager
-    def running(self) -> Iterator[str]:
-        """The base URL of the server, while it runs."""
-        thread = threading.Thread(target=self._loop.run_forever, daemon=True)
-        thread.start()
-
-        async def start() -> asyncio.Server:
-            return await asyncio.start_server(self._serve, "127.0.0.1", 0)
-
-        self._server = asyncio.run_coroutine_threadsafe(start(), self._loop).result()
-        port = self._server.sockets[0].getsockname()[1]
-        try:
-            yield f"http://127.0.0.1:{port}/v1"
-        finally:
-            self._loop.call_soon_threadsafe(self._server.close)
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            thread.join()
 
 
 def with_options(**options: object) -> ModelConfig:
@@ -135,84 +57,6 @@ def provider_for(text: str) -> OpenAIProvider:
 
 
 PLAIN = chunk({"content": "hi"}, "stop") + DONE
-
-
-# One client
-
-
-@scenario
-async def test_many_samples_share_one_client_until_aclose() -> None:
-    transport = CountingTransport(sse("plain"))
-    provider = OpenAIProvider(transport=transport, environ={})
-    for _ in range(5):
-        _, error = await collect(provider, fresh_walk())
-        assert error is None
-    assert (transport.requests, transport.closes) == (5, 0)
-    await provider.aclose()
-    assert transport.closes == 1
-    await provider.aclose()  # closing twice is not a failure
-    assert transport.closes == 1
-
-
-@scenario
-async def test_two_sequential_samples_use_one_connection() -> None:
-    server = KeepAliveServer(PLAIN)
-    with server.running() as url:
-        provider = OpenAIProvider(environ={})
-        model = ModelConfig(MODEL, url)
-        for _ in range(3):
-            items, error = await collect(provider, fresh_walk(), model)
-            assert (items, error) == ([Part.Text("hi"), Finish(Stop.End, "stop")], None)
-        await provider.aclose()
-    assert server.connections == 1
-
-
-@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")  # the dropped client
-def test_a_program_that_runs_one_event_loop_per_command_keeps_working() -> None:
-    server = KeepAliveServer(PLAIN)
-    with server.running() as url:
-        provider = OpenAIProvider(environ={})
-        model = ModelConfig(MODEL, url)
-        for _ in range(2):
-            items, error = asyncio.run(collect(provider, fresh_walk(), model))
-            assert error is None
-            assert items[0] == Part.Text("hi")
-        asyncio.run(provider.aclose())
-
-
-@scenario
-async def test_a_sample_after_aclose_fails_as_closed_not_as_a_transient_error() -> None:
-    provider = OpenAIProvider(transport=sse("plain").transport, environ={})
-    await provider.aclose()
-    items, error = await collect(provider, fresh_walk())
-    assert items == []
-    assert isinstance(error, ProviderClosed)
-    assert (error.status, error.retry_after) == (None, None)
-
-
-@scenario
-async def test_aclose_cuts_a_sample_in_flight_as_closed() -> None:
-    server = KeepAliveServer(chunk({"content": "he"}), stall=len(chunk({"content": "he"})))
-    with server.running() as url:
-        provider = OpenAIProvider(environ={})
-        stream = provider.sample(fresh_walk(), ModelConfig(MODEL, url), [])
-        assert await anext(stream) == TextDelta("he")
-        rest = asyncio.ensure_future(collect_rest(stream))
-        await asyncio.sleep(0.05)
-        await provider.aclose()
-        parts, error = await asyncio.wait_for(rest, 5)
-    assert parts == [Part.Text("he")], "the text that arrived is still yielded"
-    assert isinstance(error, ProviderClosed)
-
-
-async def collect_rest(stream: AsyncIterator[object]) -> tuple[list[object], SampleError | None]:
-    parts: list[object] = []
-    try:
-        async for item in stream:
-            parts.append(item)
-    except SampleError as e:
-        return parts, e
-    return parts, None
 
 
 # Deltas
