@@ -1,6 +1,6 @@
 # D5: Config is the nearest `Config` on the walk
 
-Status: accepted (Phase 1); amended by D13 (proposed): a `Config` node names
+Status: accepted (Phase 1); amended by D13: a `Config` node names
 a model rather than holding a full snapshot.
 
 ## Context

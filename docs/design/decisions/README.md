@@ -17,5 +17,5 @@ wins; where either differs from the step spike, the spike wins until review.
 | [D10](D10-package-name.md) | Package name | accepted | `tau_next` until absorption into τ 0.16.0. |
 | [D11](D11-core-decides.md) | Where rules live | accepted, spiked | A sans-IO step machine in `tau-core`; the driver performs jobs. |
 | [D12](D12-store-layout.md) | Store layout | accepted | One record log plus a scratchpad file; JMFTS a replica. |
-| [D13](D13-config.md) | Configuration | proposed | One owned file plus trusted project files; a session names its model (`group:name`), never copies it. |
+| [D13](D13-config.md) | Configuration | accepted | One owned file plus trusted project files; a session names its model (`group:name`), never copies it. |
 | [D14](D14-residency.md) | Loading a subset of a long history | deferred | Every body stays in memory; a later version must not widen the core/driver protocol or evict a line being built. |

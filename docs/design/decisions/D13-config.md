@@ -1,6 +1,6 @@
 # D13: Configuration: one owned file, trusted projects, sessions name models
 
-Status: proposed (2026-10-29). Amends D5.
+Status: accepted (2026-10-29). Amends D5.
 
 ## Context
 
@@ -84,6 +84,8 @@ Three needs:
 - Shell environment variables are trusted. A project's `.env` is read only if
   its directory is trusted. CLI flags and the shell environment override
   `.env`.
+- The `.env` reader is our own (`KEY=value`, quotes, comments), not
+  `python-dotenv` when installed: one parse everywhere.
 - `api_key_env` names a variable; the key is read at sample time and reaches no
   node and no log (tested). A literal `api_key` works; the checker warns.
 
@@ -99,14 +101,13 @@ group it came from. τ 0.15's `backend` key is rejected with "`backend` is now
 The parser, trust check, and CLI are Python (`tau_next.config`, the `tau`
 command). `tau-core` never reads config: `Config.data` stays opaque to it.
 
-## Open
+**Trust follows content.** `trusted.json` records each directory with a hash
+of its `.tau/config.json`. A different hash is untrusted again: a live
+terminal is prompted with the diff, a script fails. A `git pull` that changes
+a committed project config cannot slip through.
 
-1. **Does trust follow content?** A path alone lets a later `git pull` change a
-   committed `.tau/config.json` without a prompt. Proposed: `trusted.json`
-   records the directory and a hash of its `config.json`; a different hash
-   prompts again with a diff (and, in a script, fails).
-2. **Finding the project.** Proposed: the nearest `.tau/` from the working
-   directory upward, stopping at `$HOME`, as git finds `.git`.
+**Finding the project.** The nearest `.tau/` from the working directory
+upward, stopping at `$HOME`, as git finds `.git`.
 
 ## Alternatives
 

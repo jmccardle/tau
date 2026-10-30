@@ -577,7 +577,7 @@ A **sample** is one provider request over the **context**, `walk(at)`, with
 *spike* `tree::Config`, `Body::Config`, `Tree::config_at` · retires config
 entry, `CONFIG_KEYS`, `Settings`, model entry
 
-How a step runs; under D13 (proposed) its data names a model by qualified
+How a step runs; under D13 its data names a model by qualified
 name instead of holding a full snapshot. `config_at(n)` is the nearest `Config`
 on `walk(n)` (D5), recorded per node when it is added (`Session::configs`),
 so it costs the same at any depth. Core reads nothing in it: `data` is opaque
@@ -604,7 +604,7 @@ when named is a `ConfigError`, which the provider reports as a failed sample.
 No variable named: no `Authorization` header.
 
 ### user config, project config, TAU_HOME
-D13 (proposed) · retires 0.15's `~/.tau/config.json` reader
+D13 · retires 0.15's `~/.tau/config.json` reader
 
 The **user config** is `$TAU_HOME/config.json` (`TAU_HOME` defaults to
 `~/.tau`); tau owns it and may rewrite it. A **project config** is
@@ -612,7 +612,7 @@ The **user config** is `$TAU_HOME/config.json` (`TAU_HOME` defaults to
 project, CLI flags.
 
 ### group, qualified name
-D13 (proposed) · new
+D13 · new
 
 A **group** is a config object with a `models` object; its other keys apply to
 every model inside, and groups nest. A model's **qualified name** is the path
@@ -621,15 +621,17 @@ Names may not contain `:`. A `Config` node stores a qualified name; a bare
 name is only a search term.
 
 ### trusted directory, trusted.json
-D13 (proposed) · new
+D13 · new
 
 A project directory whose `.tau/` the user approved, listed in
-`$TAU_HOME/trusted.json`. Only a trusted directory's project config and `.env`
+`$TAU_HOME/trusted.json` with a hash of its `.tau/config.json`; a changed
+hash is untrusted again. The project is the nearest `.tau/` upward from the
+working directory, stopping at `$HOME`. Only a trusted directory's project config and `.env`
 are read. Approval also makes `.tau/` the user's, mode `700`, with a
 `.gitignore` of `*`.
 
 ### tau config check, tau trust
-D13 (proposed) · new
+D13 · new
 
 The first `tau` commands. `tau config check` validates the layers and reports
 where each problem is; `--show <model>` prints each resolved value and its

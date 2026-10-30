@@ -18,7 +18,7 @@ with its model sketch (§1) and decisions table (§4), is in git history
 | 1 design docs | **done** (signed off 2026-10-27). `docs/design/` is accepted and aligned to the spike. |
 | 2 behavior spec | **folded into 3** (order below). The `Harness` and fakes exist (`tests/behavior/`); the Phase 2 coverage list is not yet ported in full. |
 | 3 Rust core | **done** (signed off 2026-10-29): core, store, bindings; 3d as-built review in `docs/as-built/`, ratchet on with an empty allowlist. |
-| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. Missing: D13 config (proposed, `decisions/D13-config.md`), the 4 exit review. |
+| 4 driver, provider, tools | **mostly built** ahead of 3d by the roadmap below: driver, OpenAI provider, `@tool`, base tools. Missing: D13 config (accepted, `decisions/D13-config.md`; not built), the 4 exit review. |
 | 5–7 | not started. |
 
 Rulings since revision 7 (recorded in `model.md` and the ADRs):
@@ -81,10 +81,21 @@ directly, so:
 
 4. **Config overhaul** (approved 2026-10-27), in Python: the config file
    parser, project trust, and `tau config check`. Written up as
-   `decisions/D13-config.md` (proposed 2026-10-29), which supersedes the
+   `decisions/D13-config.md` (accepted 2026-10-29), which supersedes the
    points agreed here earlier: model names are qualified by group
    (`group:name`), not unique file-wide; a `Config` node names its model
    instead of storing a snapshot; no schema version before 1.0.
+   Build (2026-10-29; `tau` and `~/.tau` are ours now, shadowing 0.15):
+   - wave 1: **A** `tau_next.config` (layers, groups, qualified names,
+     merge, lookup, resolve with sources, problems); **B** `meta` on
+     `Assistant` (opaque to core; the provider records what a response
+     carries: model, id, fingerprint, usage);
+   - wave 2: **C** a `Config` node names its model, the driver resolves it at
+     sample time; **D** trust (`trusted.json` with a content hash, upward
+     search, owner/700/`.gitignore`, a live-terminal prompt, scripts refused)
+     and our own `.env` reader;
+   - wave 3: **E** the `tau` command (`config check [--show]`, `trust`); the
+     examples take a model name from a sample config in `examples/`.
 5. The `Harness`, `FakeProvider`, `FakeTool` (Phase 2's Python half), and the
    scenarios ported to `tests/behavior/`, which is what carries into τ 0.16.
 6. `parity/` keep-tests over τ 0.15 can be written any time; they block
